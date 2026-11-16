@@ -44,8 +44,8 @@ mod_api::impl_server_host_areas!(Server);
 impl mod_api::Backend for Server {}
 mod_api::impl_backend_areas!(Server);
 impl mod_api::BackendMut for Server {}
-mod_api::impl_backend_mut_areas!(Server, except(levels));
-impl mod_api::prelude::LevelsBackendMut for Server {
+mod_api::impl_backend_mut_areas!(Server, except(level_worldgen));
+impl mod_api::prelude::LevelWorldgenBackendMut for Server {
     fn level_place_feature(
         &mut self,
         level: LevelRef,
