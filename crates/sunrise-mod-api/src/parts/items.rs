@@ -673,13 +673,16 @@ pub mod tests {
         }
     }
     #[cfg(test)]
-    impl mod_api::prelude::LevelsBackend for Shelf {
-        fn level_in_place(&self, level: LevelRef) -> bool {
-            level == here()
-        }
+    impl mod_api::prelude::LevelBlocksBackend for Shelf {
         /// The shelf stands in no named block, so no block's providers answer for it.
         fn level_block(&self, _: LevelRef, _: [i32; 3]) -> Option<crate::BlockKey> {
             None
+        }
+    }
+    #[cfg(test)]
+    impl mod_api::prelude::LevelTickingBackend for Shelf {
+        fn level_in_place(&self, level: LevelRef) -> bool {
+            level == here()
         }
     }
     #[cfg(test)]
@@ -707,7 +710,10 @@ pub mod tests {
     #[cfg(test)]
     impl Backend for Shelf {}
     #[cfg(test)]
-    mod_api::impl_backend_areas!(Shelf, except(block_entities, items, levels));
+    mod_api::impl_backend_areas!(
+        Shelf,
+        except(block_entities, items, level_blocks, level_ticking)
+    );
     #[cfg(test)]
     impl mod_api::prelude::ItemsBackendMut for Shelf {
         fn container_insert(

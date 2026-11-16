@@ -9,8 +9,8 @@ struct World(Vec<(u128, Vec<ChunkArea>)>);
 impl mod_api::Backend for World {}
 mod_api::impl_backend_areas!(World);
 impl mod_api::BackendMut for World {}
-mod_api::impl_backend_mut_areas!(World, except(players));
-impl PlayersBackendMut for World {
+mod_api::impl_backend_mut_areas!(World, except(player_world));
+impl PlayerWorldBackendMut for World {
     fn player_set_chunk_areas(
         &mut self,
         player: mod_api::PlayerRef,

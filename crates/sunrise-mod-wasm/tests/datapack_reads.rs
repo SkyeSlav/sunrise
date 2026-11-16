@@ -14,7 +14,7 @@ impl Host for World {
     }
 }
 impl Backend for World {}
-mod_api::impl_backend_areas!(World, except(levels));
+mod_api::impl_backend_areas!(World, except(level_datapacks));
 mod_api::impl_host_areas!(World, except(levels, keys));
 impl mod_api::prelude::LevelsHost for World {
     fn is_loaded(&self, id: &str) -> bool {
@@ -54,7 +54,7 @@ impl mod_api::prelude::KeysHost for World {
             .tag_contains(&entry.registry.to_string(), &entry.id.to_string(), tag)
     }
 }
-impl mod_api::prelude::LevelsBackend for World {
+impl mod_api::prelude::LevelDatapacksBackend for World {
     fn level_datapack_entries(&self, _: LevelRef, registry: &str) -> Option<Vec<String>> {
         let mut calls = self.1.get();
         calls[0] += 1;

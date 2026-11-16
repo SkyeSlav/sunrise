@@ -32,7 +32,7 @@ struct World {
 impl mod_api::Backend for World {}
 mod_api::impl_backend_areas!(World);
 impl mod_api::BackendMut for World {}
-mod_api::impl_backend_mut_areas!(World, except(players));
+mod_api::impl_backend_mut_areas!(World, except(player_world));
 impl MenusServerHost for World {
     fn menu_set_items(
         &mut self,
@@ -55,7 +55,7 @@ impl MenusServerHost for World {
         Ok(())
     }
 }
-impl PlayersBackendMut for World {
+impl PlayerWorldBackendMut for World {
     fn player_respawn(&mut self, player: mod_api::PlayerRef) -> Result<(), RespawnRefusal> {
         match player.uuid() {
             7 => {

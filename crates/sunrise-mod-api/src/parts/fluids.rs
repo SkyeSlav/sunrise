@@ -271,7 +271,7 @@ pub mod tests {
         }
     }
     #[cfg(test)]
-    impl mod_api::prelude::LevelsBackend for TankWorld {
+    impl mod_api::prelude::LevelTickingBackend for TankWorld {
         fn level_in_place(&self, level: LevelRef) -> bool {
             level == here()
         }
@@ -307,7 +307,10 @@ pub mod tests {
     #[cfg(test)]
     impl Backend for TankWorld {}
     #[cfg(test)]
-    mod_api::impl_backend_areas!(TankWorld, except(block_entities, fluids_energy, levels));
+    mod_api::impl_backend_areas!(
+        TankWorld,
+        except(block_entities, fluids_energy, level_ticking)
+    );
     #[cfg(test)]
     impl mod_api::prelude::FluidsEnergyBackendMut for TankWorld {
         fn fluid_tank_insert(

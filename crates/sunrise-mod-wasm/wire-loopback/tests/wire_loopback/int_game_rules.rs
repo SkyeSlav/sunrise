@@ -49,8 +49,8 @@ impl Hooks for Register {
 /// A server whose `example:cap` is 12 in the level of epoch 7.
 struct World;
 impl mod_api::Backend for World {}
-mod_api::impl_backend_areas!(World, except(levels));
-impl LevelsBackend for World {
+mod_api::impl_backend_areas!(World, except(level_rules));
+impl LevelRulesBackend for World {
     fn level_game_rule_int(
         &self,
         level: mod_api::LevelRef,

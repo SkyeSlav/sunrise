@@ -33,8 +33,8 @@ mod_api::impl_server_host_areas!(Server);
 impl mod_api::Backend for Server {}
 mod_api::impl_backend_areas!(Server);
 impl mod_api::BackendMut for Server {}
-mod_api::impl_backend_mut_areas!(Server, except(players));
-impl mod_api::prelude::PlayersBackendMut for Server {
+mod_api::impl_backend_mut_areas!(Server, except(player_menus));
+impl mod_api::prelude::PlayerMenusBackendMut for Server {
     fn player_open_mod_menu(
         &mut self,
         _: mod_api::PlayerRef,

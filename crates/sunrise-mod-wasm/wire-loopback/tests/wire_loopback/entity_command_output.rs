@@ -13,8 +13,8 @@ mod_api::impl_server_host_areas!(Server);
 impl mod_api::Backend for Server {}
 mod_api::impl_backend_areas!(Server);
 impl mod_api::BackendMut for Server {}
-mod_api::impl_backend_mut_areas!(Server, except(entities));
-impl mod_api::prelude::EntitiesBackendMut for Server {
+mod_api::impl_backend_mut_areas!(Server, except(entity_actions));
+impl mod_api::prelude::EntityActionsBackendMut for Server {
     fn entity_run_command_with_output(
         &mut self,
         entity: mod_api::EntityRef,

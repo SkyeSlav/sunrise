@@ -42,7 +42,7 @@ impl Drop for NestedBreak {
 
 impl Game<'_> {
     /// `ServerPlayerGameMode.destroyBlock` at `pos` as `player` breaks it, as FTB Ultimine does
-    /// (`PlayersBackendMut::player_destroy_block` says what holds and what is refused). With
+    /// (`PlayerInteractionBackendMut::player_destroy_block` says what holds and what is refused). With
     /// `into_inventory`, the drops `block_drops` leaves go to the player's inventory, and what
     /// doesn't fit drops from them as `Inventory.placeItemBackInInventory` drops it. Refused
     /// (false) once [`MAX_NESTED_BREAKS`] breaks are inside one another.

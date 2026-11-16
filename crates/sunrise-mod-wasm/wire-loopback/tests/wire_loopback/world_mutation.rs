@@ -12,9 +12,8 @@ struct World {
     placed: Vec<(u128, LevelRef, [i32; 3], BlockState, bool)>,
 }
 impl mod_api::Backend for World {}
-mod_api::impl_backend_areas!(World, except(players));
-impl PlayersClientBackend for World {}
-impl PlayersBackend for World {
+mod_api::impl_backend_areas!(World, except(player_session));
+impl PlayerSessionBackend for World {
     fn player_sees(
         &self,
         viewer: PlayerRef,
@@ -27,8 +26,17 @@ impl PlayersBackend for World {
     }
 }
 impl mod_api::BackendMut for World {}
-mod_api::impl_backend_mut_areas!(World, except(levels, players));
-impl LevelsBackendMut for World {
+mod_api::impl_backend_mut_areas!(World, except(level_chunks, level_light, player_interaction));
+impl LevelChunksBackendMut for World {
+    fn chunk_resend(&mut self, chunk: ChunkRef) -> Result<(), ChunkRefusal> {
+        if chunk.pos() == [2, -3] {
+            Ok(())
+        } else {
+            Err(ChunkRefusal::NotLoaded)
+        }
+    }
+}
+impl LevelLightBackendMut for World {
     fn level_relight_chunks(
         &mut self,
         _: LevelRef,
@@ -44,15 +52,8 @@ impl LevelsBackendMut for World {
         self.chunks.extend_from_slice(chunks);
         Ok(9)
     }
-    fn chunk_resend(&mut self, chunk: ChunkRef) -> Result<(), ChunkRefusal> {
-        if chunk.pos() == [2, -3] {
-            Ok(())
-        } else {
-            Err(ChunkRefusal::NotLoaded)
-        }
-    }
 }
-impl PlayersBackendMut for World {
+impl PlayerInteractionBackendMut for World {
     fn player_ack_block_changes(
         &mut self,
         player: PlayerRef,

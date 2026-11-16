@@ -22,8 +22,8 @@ at line 878 emits handle methods and gathers Backend/ClientBackend reads.
 unions at line 923 expose the shared backend from Host. A server label in prose
 therefore cannot restrict a client caller.
 
-Players illustrate the hole: `crates/sunrise-mod-vocab/src/host/players.rs:42`
-declares PlayersBackend, and line 48 declares `player_recipe_book_settings` under
+Players illustrate the hole: `crates/sunrise-mod-vocab/src/host/player_recipes.rs`
+declares PlayerRecipesBackend, and `player_recipe_book_settings` there is under
 `Side: server`. PlayersServerHost at line 22 supplies services, not a distinct
 immutable handle backend. Moving a label alone cannot change the generated
 receiver. [PR #2784](https://github.com/arismoko/horizon/pull/2784) motivates the

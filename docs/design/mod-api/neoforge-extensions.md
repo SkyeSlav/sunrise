@@ -257,7 +257,7 @@ are reachable through `BlockEntityRef`.
 | `onLoad()` | Partial | `BlockEntityPart::block_entity` (`hooks/base.rs`) | Initial saved data is set at creation, before the saved NBT is applied; no after-load notice. |
 | `requestModelDataUpdate()` | Missing | — | No model-data invalidation API. |
 | `getModelData()` | Missing | — | No `ModelData`; drawing uses `block_entity_submit` and the model path. |
-| `invalidateCapabilities()` | Covered | `LevelRef::invalidate_capabilities` (`crates/sunrise-mod-vocab/src/host/levels.rs`) | `level.invalidate_capabilities(host, pos)` with the block entity's position, as NeoForge's calls `Level.invalidateCapabilities(worldPosition)`: it moves the capability generation there on; every `BlockCapabilityCache` there compares it and looks up again at its next `get`. At the root commit inside a transaction; nothing when it aborts. |
+| `invalidateCapabilities()` | Covered | `LevelRef::invalidate_capabilities` (`crates/sunrise-mod-vocab/src/host/level_block_updates.rs`) | `level.invalidate_capabilities(host, pos)` with the block entity's position, as NeoForge's calls `Level.invalidateCapabilities(worldPosition)`: it moves the capability generation there on; every `BlockCapabilityCache` there compares it and looks up again at its next `get`. At the root commit inside a transaction; nothing when it aborts. |
 | `applyStructureRotation(mirror, rotation)` | Missing | — | Structure rotation is engine-owned; no callback. |
 
 ## `IFluidExtension`

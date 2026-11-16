@@ -34,8 +34,8 @@ mod_api::impl_server_host_areas!(Server);
 impl mod_api::Backend for Server {}
 mod_api::impl_backend_areas!(Server);
 impl mod_api::BackendMut for Server {}
-mod_api::impl_backend_mut_areas!(Server, except(entities));
-impl mod_api::prelude::EntitiesBackendMut for Server {
+mod_api::impl_backend_mut_areas!(Server, except(entity_riding));
+impl mod_api::prelude::EntityRidingBackendMut for Server {
     fn entity_start_riding(
         &mut self,
         entity: EntityRef,
