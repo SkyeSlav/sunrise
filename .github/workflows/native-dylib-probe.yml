@@ -57,6 +57,10 @@ jobs:
           # Match the launcher's actual compiler host, not Windows MSVC.
           - os: windows-latest
             target: x86_64-pc-windows-gnu
+          # The launcher's macOS host. `ld` refuses a stack size unless it links a main executable, so a mod library
+          # reaches it only if nothing of the game executable's link policy is passed to it.
+          - os: macos-15
+            target: aarch64-apple-darwin
     runs-on: ${{ matrix.os == 'ubuntu-22.04' && needs.route.outputs.self_hosted == 'true' && 'dyna-large' || matrix.os }}
     timeout-minutes: 90
     defaults:
@@ -119,11 +123,20 @@ jobs:
         run: >-
           "$PROBE_PYTHON" tools/prebuilt_game.py build "$SDK_OUT"
       - name: Export counts and Windows format limit
+        if: runner.os != 'macOS'
         run: >-
           "$PROBE_PYTHON" tools/prebuilt_game.py exports "$SDK_OUT"
       - name: Two mod libraries share the game's exact Rust state
+        if: runner.os != 'macOS'
         run: >-
           "$PROBE_PYTHON" tools/native_dylib_probe.py --sdk "$SDK_OUT" --output "$PROBE_OUT"
+      # The shipped route on one native mod, against the SDK just built: the tool every SDK release ships
+      # (`cargo sunrise-mod native-build`), not only this job's own rustc lines.
+      - name: A native mod builds through the shipped route
+        if: runner.os == 'macOS'
+        run: |
+          cargo build -p cargo-sunrise-mod
+          "$PROBE_PYTHON" tools/ci/native_build_route.py --sdk "$SDK_OUT" --tool target/debug/cargo-sunrise-mod --work target/native-route
       - name: The starter mod checks against the API source alone, host and wasm32
         if: runner.os == 'Linux'
         run: |
@@ -133,7 +146,7 @@ jobs:
           "$PROBE_PYTHON" tools/sdk_api_source.py build "$out"
           "$PROBE_PYTHON" tools/sdk_api_source.py check "$out"
       - name: Probe command log
-        if: failure()
+        if: failure() && runner.os != 'macOS'
         run: tail -n 120 "$PROBE_OUT/commands.log"
       - name: Clean private linkage workspace
         if: always() && runner.environment == 'self-hosted'
