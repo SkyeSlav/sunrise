@@ -115,8 +115,8 @@ and some are waiting for Ludovic:
 - **Holding releases back or speeding one up**, from his phone if he likes. Label an issue `release-blocker` to
   hold every release until it is closed; label a pull request `release-now` to release it as soon as it merges.
 - **Creating the GitHub App**: one link, "Create GitHub App", then "Install". His login, his clicks.
-- **Fork pull requests**: their checks run only after a maintainer approves them, and they run on the Mac mini only
-  after a maintainer has read them and added `run-parity`.
+- **Fork pull requests**: their checks run only after a maintainer approves them. Parity harnesses never run a
+  pull request's code: they run only in the daily run, on main's head.
 - **A leaked key**: rotate it (docs/release-flow.md, "Signed checksums"). Launchers older than the new key then
   refuse new versions until players download the launcher again.
 
@@ -128,12 +128,12 @@ and some are waiting for Ludovic:
   within minutes of merging.
 - **Until agents switch to the App**, they still work with Ludovic's own account, so nothing technical tells his
   actions from theirs. Code owners' reviews are switched on together with the App.
-- **The Mac mini** builds the macOS release and also runs pull requests' parity checks: a pull request from this
-  repository runs its code there before review, and a fork's does once a maintainer adds `run-parity`. Code
+- **The Mac mini** builds the macOS release. Pull requests' parity checks no longer run there (parity runs only in
+  the daily run, on main's head), but a release builds whatever merged. Code
   running there as the runner's user could tamper with what the next release builds. Releases check out clean
   (#1024), which removes anything a pull request left in the work folder by accident, but
   not a deliberate attack. The protection is review: only agents and maintainers push to this repository, and a
-  maintainer reads a fork's change before labelling it.
+  maintainer reads a fork's change before it merges.
 - **The first install** with `install.sh` or `install.ps1` checks the signature when OpenSSL 3 is installed: it
   verifies `SHA256SUMS.sig` (a Nightly's `SHA256SUMS.v2.sig`, for its own version) against the release key built
   into the script, then the archive against `SHA256SUMS`. `install.ps1` looks for OpenSSL on the PATH and in Git

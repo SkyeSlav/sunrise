@@ -77,7 +77,7 @@ curve, the HUD's layer and the last pass as the real one does.
 ## Checking a pass
 
 - **HDR off stays byte-identical** unless the pass means to change it:
-  `python3 tools/test_frame_identity_parity.py --base origin/main`, and the `frame-identity` label
+  `python3 tools/test_frame_identity_parity.py --base origin/main`, run by name
   ([release-flow.md](release-flow.md)). It also draws the float frame with HDR on, and holds it to SDR.
 - **Its sessions run with anti-aliasing and frame generation off,** as by default: TAA and frame generation build
   on earlier frames, which `SUNRISE_STILL` doesn't repeat. Check a temporal pass by hand: offscreen with HDR on

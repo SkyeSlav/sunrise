@@ -231,13 +231,12 @@ A change too big to review as one concern starts from a spec:
    cover, or that it promises and the code doesn't do, comes back to you.
 5. **Then the normal review**, as for any pull request.
 
-## Parity checks on forks
+## Parity checks
 
-A pull request from a fork gets the push tier ([CI tiers](#ci-tiers)); the gate runs when a rollup carries it. The
-`parity` check runs the affected
-harnesses on a maintainer's machine, which holds the game files, so it never runs a fork's code on its own: a
-maintainer reads your change, then adds the `run-parity` label, which runs it once on your current commit. After
-new pushes, we add it again.
+A pull request from a fork gets the push tier ([CI tiers](#ci-tiers)); the gate runs when a rollup carries it.
+Parity harnesses never run on a pull request, a fork's or ours: the daily run runs every harness on main's head
+([docs/release-flow.md](docs/release-flow.md#daily-run)), and a harness that fails there becomes a `bug` issue
+listing the pull requests merged since the last green run.
 
 ## Talk to us
 

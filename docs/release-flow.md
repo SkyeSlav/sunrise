@@ -20,7 +20,8 @@ vanilla-parity, jfr-analysis) run only on dispatch:
 | --- | --- | --- | --- |
 | `verify` | Forks' pull requests and scheduled runs on main only, on GitHub's `ubuntu-24.04` (a fork's pull request sees no repository variable, so no switch could move it off a machine that is off); `SELF_HOSTED_CI=all` sends the scheduled runs to our checks runners (label `sunrise-checks`), `light` or `off` keeps them on GitHub ([CI runners](ci-runners.md)). This repository's own pull requests skip it | Three jobs side by side: the public-tree check and Python tests (`verify (tree and tools)`), rustfmt and clippy with warnings denied (`verify (format and lint)`), the Rust tests (`verify (Rust tests)`); `verify` waits for them and passes when each passed or had nothing to do. Dependencies and the workspace build come from a cache saved by scheduled runs on main (GitHub) or the runner's own build folder (ours) | ~8 min |
 
-A pull request's harnesses run by dispatch on Dyna's runners: `gh workflow run dyna-ci.yml -f pr=<N> -f parity=true`.
+Parity harnesses never run on a pull request: the daily run runs every harness on main's head. By hand,
+`gh workflow run dyna-ci.yml -f parity=true` runs the fixed set on main's head (`-f harnesses="a b"` names others).
 
 `verify` runs even in a cancelled run of `checks`, so it fails there instead of being skipped. A pull request that
 changes no Rust (docs, tools) runs only its quick steps and finishes in about a minute. A pull request's public-tree check reads only
@@ -28,18 +29,13 @@ its own commits (`--range base..head`); scheduled runs on main read every ref's 
 
 ### The parity job
 
-The job is `.github/workflows/parity.yml`, a reusable workflow: `run-parity.yml` calls it for a fork's pull request a
-maintainer labels `run-parity`.
+The job is `.github/workflows/parity.yml`, a reusable workflow: the daily run (`daily.yml`) calls it on main's head
+with every harness, and a by-hand `dyna-ci.yml` dispatch with `parity` calls it on main's head with the fixed set or
+the named harnesses. It never runs on a pull request.
 
-A pull request every harness reaches (a crate split moves files every probe links: #2160 ran all 352 harnesses, 71
-minutes on a Mac mini runner, while five other pull requests' jobs queued behind it) carries the `full-parity` label:
-its job runs on playsunrise's runner only (4 harnesses at a time), and waits for it while that runner is busy
-instead of taking the Mac mini's. Labels don't start `checks`: add it when opening the pull request
-(`gh pr create --label full-parity`), or before the next push.
-
-A pull request that must leave the picture alone (HDR, shader packs) carries the `frame-identity` label: its job also
-runs `frame_identity` ([parity-workflow.md](parity-workflow.md)), which no automatic selection picks, since it fails
-any change that moves the picture on purpose. Like `full-parity`, it is read when the job starts.
+`frame_identity` ([parity-workflow.md](parity-workflow.md)) fails any change that moves the picture on purpose, so no
+automatic selection picks it: a change that must leave the picture alone (HDR, shader packs) runs it by name,
+`python3 tools/parity.py frame_identity`.
 
 Sunrise never downloads the game, so harnesses that compare with vanilla run only where the maintainer's own
 copy is: the Mac mini and playsunrise (below). Their runners run as the maintainer's account and keep their checkout
@@ -80,9 +76,7 @@ other platforms unless it is named on the command line. Today it holds only `sav
 platform's libm, pass on the Mac mini since `sunrise_core::jmath` computes what HotSpot computes (checked
 2026-10-14).
 
-**Pull requests from forks** never run code on the Mac mini by themselves. A maintainer who has read the change
-adds the `run-parity` label: that runs the job once, on the commit the pull request had then. To run it again
-after new pushes, remove the label and add it again.
+**Pull requests** never run the parity job, a fork's or ours: it runs on main's head in the daily run.
 
 **Two runners.** The Mac mini has two runners for this repository, `ludovics-mac-mini`
 (`~/.actions-runners/sunrise`, `CARGO_BUILD_JOBS=10`) and `ludovics-mac-mini-2` (`~/.actions-runners/sunrise-2`,
@@ -95,7 +89,7 @@ time, under a lock) and the parity passes and slots.
 parity jobs too, beside the Mac mini and playsunrise: labels `self-hosted`, `X64`, `sunrise-game`, `ludodesktop`, and no
 `Linux`, so ci.yml's by-hand `[self-hosted, linux, sunrise-game]` jobs stay on playsunrise. It is declared in the
 maintainer's NixOS configuration (`services.github-runners`, his private fleet repo), not installed by
-`tools/ci/linux-runner.sh`. A fork's job reaches it only through `run-parity`, so it runs as a system user, `gha`, with
+`tools/ci/linux-runner.sh`. It runs as a system user, `gha`, with
 no sudo, SSH keys or logins; its service sees no `/home` and no device (no GPU: Vulkan is Mesa's lavapipe, on an Xvfb
 of its own), the system is read-only to it, and it runs in a slice at CPU and I/O weight 20, at most 16 of the 24
 threads, 20 GB of memory, nice 10 (`CARGO_BUILD_JOBS=16`, 8 harness slots). It runs only while the maintainer isn't at
@@ -117,8 +111,7 @@ Without Nix, `linux-runner.sh` takes the build libraries, the JDK, sccache, Xvfb
 (lavapipe; there is no GPU) from apt, and Python 3.13 from uv. The partner can reach the machine, so gh is not
 logged in there: the registration token comes from another machine (`RUNNER_TOKEN`), and no job with secrets may
 run there (parity has none). It is also a parity host (`playsunrise` in `tools/parity_hosts.json`, 3 jobs on CPUs 0-3). Since
-2026-10-26 it has the `sunrise-game` label: pull requests' parity jobs run there, on the Mac mini or on the desktop, and
-`full-parity` ones only there.
+2026-10-26 it has the `sunrise-game` label: parity jobs run there, on the Mac mini or on the desktop.
 
 ## Merging
 
@@ -134,10 +127,8 @@ request doesn't wait for them.
 
 **An ordinary pull request merges on CI.** A Team member:
 
-1. reads the whole diff (for a fork, before adding `run-parity`: that runs the fork's code on a maintainer's machine);
-2. adds `run-parity` to a fork's pull request; our own branches run `parity` by themselves. Since #2448 it tests
-   the pull request merged into main;
-3. merges once `verify` and `parity` pass, nobody's change request is open, and every comment has been read (a
+1. reads the whole diff;
+2. merges once `verify` passes, nobody's change request is open, and every comment has been read (a
    "don't merge" from anyone holds it).
 
 Never merge your own pull request: another Team member reviews and merges it. Never push to, force-push or rebase a
@@ -192,10 +183,8 @@ which runs them on main a batch of merges at a time, on the Mac mini's runner:
   2026-11-03, any later failure held every Nightly until a run passed again: 30 h without one). `release.yml`
   also starts when a parity-main run finishes. A forced run (`force=true`) doesn't wait for parity-main.
 
-A pull request still runs its own parity job when it changes a harness script, an oracle
-(`mods/sunrise/src/test/`), a probe (`crates/*/examples/`, `game/*_fixture.rs`, `game/*_harness.rs`), the runner
-(`tools/parity*.py`, `tools/lab.py`, `tools/parity_hosts.json`, `parity*.yml`), or carries the `run-parity` label
-(`run-parity.yml` runs it when the label is added).
+A pull request never runs the parity job, even one that changes a harness script, an oracle, a probe or the
+runner: the next daily run checks it on main's head.
 
 ## Game releases
 
@@ -343,8 +332,6 @@ missing. A launcher without the split (a hotfix of `launcher@1.0.1`) isn't held.
 | `feature` | Listed under **New** in the Nightly's and the launcher's notes |
 | `release-now` | A Nightly as soon as main's checks and parity-main pass, past the batch rule and the day's cap |
 | `skip-release` | Doesn't trigger a Nightly or a launcher release and isn't listed in the notes |
-| `run-parity` | Runs the parity job once on a fork's pull request |
-| `full-parity` | Runs the pull request's parity job on playsunrise's runner only (a change every harness reaches) |
 | `parity-regression` | Opened by the nightly audit for a harness that fails on main |
 | `release-blocker` | On an issue: no Nightly is published while it is open ([When it releases](#when-it-releases)) |
 

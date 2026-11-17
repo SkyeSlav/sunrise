@@ -22,7 +22,7 @@ The organisation has two owners since the council's poll P28, so the last two ro
 Nobody merges automatically. A Team member:
 
 1. Reads the whole diff. For a fork, do it before approving its workflow runs (they wait under **Actions**:
-   "Approve and run") and before adding `run-parity`.
+   "Approve and run").
 2. Waits for `verify`, the one required check. A pull request that changes no Rust finishes it in about a minute.
 3. Merges with a merge commit once `verify` passed, no change request is open and every comment has been read. A
    "don't merge" from anyone holds it. Never merge your own pull request, never use `gh pr merge --auto`, never

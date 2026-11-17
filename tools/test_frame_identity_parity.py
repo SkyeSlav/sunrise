@@ -5,8 +5,8 @@ Pictures of the game hold Minecraft's textures and can't be committed, so this t
 (BASE_SHA on the parity runner, else the merge-base with origin/main) and the change, draws the same fixed scenes with
 each offscreen under SUNRISE_STILL=1 (a frozen scene draws the same frame every run, docs/agent-control.md), and
 requires the decoded pixels to be identical. The oracle is the base build, not vanilla. It fails any change that moves
-the picture on purpose, so no automatic selection runs it (named_only in tools/parity_hosts.json): a pull request that
-must leave the picture alone carries the frame-identity label (docs/release-flow.md).
+the picture on purpose, so no automatic selection runs it (named_only in tools/parity_hosts.json): a change that must
+leave the picture alone runs it by name (tools/parity.py frame_identity).
 
 Sessions, each a fresh game and world (seed 7) per build:
 
