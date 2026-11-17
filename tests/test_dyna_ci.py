@@ -10,6 +10,7 @@ import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+PARITY = ROOT / ".github/workflows/parity.yml"
 BASH = shutil.which("bash")
 POSIX_BASH = BASH is not None and not (
     os.name == "nt" and os.path.dirname(os.path.normcase(BASH)).endswith(os.path.normcase(r"\system32")))
@@ -509,21 +510,25 @@ class DynaRoutingTests(unittest.TestCase):
         self.assertIn("runs-on: ubuntu-latest", dispatcher)
         self.assertIn('gh workflow run dyna-ci.yml --repo "$GITHUB_REPOSITORY" --ref main', dispatcher)
         self.assertIn("if: github.event_name != 'schedule'", blocks["changes"])
-        parity = blocks["vanilla-parity"]
-        self.assertIn("github.event_name == 'workflow_dispatch'", parity)
-        self.assertIn("github.repository == 'sunrise-org/sunrise'", parity)
+        # Parity by hand runs main's head only: never a pull request's (the daily runs every harness, parity.yml).
+        caller = blocks["vanilla-parity"]
+        self.assertIn("github.event_name == 'workflow_dispatch'", caller)
+        self.assertIn("github.repository == 'sunrise-org/sunrise'", caller)
+        self.assertIn("inputs.parity && !inputs.pr", caller)
+        self.assertIn("needs.changes.outputs.trusted == 'true'", caller)
+        self.assertIn("uses: ./.github/workflows/parity.yml", caller)
+        self.assertIn("commit: ${{ github.sha }}", caller)
+        parity = dict(jobs(PARITY.read_text()))["vanilla-parity"]
         self.assertIn("runs-on: dyna-large", parity)
         self.assertIn("persist-credentials: false", parity)
-        # A parity dispatch on a pull request runs only this job, and never a fork's code beside the vanilla data.
-        self.assertIn("needs.changes.outputs.trusted == 'true'", parity)
-        self.assertIn("ref: ${{ needs.changes.outputs.pr_sha || github.sha }}", parity)
+        self.assertIn("ref: ${{ inputs.commit }}", parity)
         for name in ("lint", "verify", "verify-static", "format", "launcher", "pr-status"):
             header = blocks[name].split("    steps:\n", 1)[0]
             self.assertIn("!inputs.parity", header, name)
 
     def test_named_harnesses_client_lib_tests_are_built_before_the_harnesses(self):
         from test_ci_runners import jobs
-        parity = dict(jobs((ROOT / ".github/workflows/dyna-ci.yml").read_text()))["vanilla-parity"]
+        parity = dict(jobs(PARITY.read_text()))["vanilla-parity"]
         step = parity.split("- name: Build the named harnesses' game probes\n", 1)[1]
         script = textwrap.dedent(step.split("        run: |\n", 1)[1].split("\n      - ", 1)[0])
         with tempfile.TemporaryDirectory() as temporary:
@@ -553,6 +558,9 @@ class DynaRoutingTests(unittest.TestCase):
                                                    "test --locked --no-run -p sunrise-client --lib"])
             self.assertEqual(built("lib"), ["test --locked --no-run -p sunrise-client-lib --lib"])
             self.assertEqual(built("fast"), [])
+            # The daily's `all`: every harness script's builds.
+            self.assertEqual(built("all"), ["test --locked --no-run -p sunrise-client-lib --lib",
+                                            "test --locked --no-run -p sunrise-client --lib"])
             # damage_catalog, as it is: both lib tests, client-lib first.
             shutil.copy(ROOT / "tools/test_damage_catalog_parity.py", tree / "tools")
             self.assertEqual(built("damage_catalog"), ["test --locked --no-run -p sunrise-client-lib --lib",
@@ -560,7 +568,7 @@ class DynaRoutingTests(unittest.TestCase):
 
     def test_parity_output_stays_on_the_runner_whatever_the_tested_tree_holds(self):
         from test_ci_runners import jobs
-        parity = dict(jobs((ROOT / ".github/workflows/dyna-ci.yml").read_text()))["vanilla-parity"]
+        parity = dict(jobs(PARITY.read_text()))["vanilla-parity"]
         # The helper comes from the workflow's revision: nothing on PATH is taken from the checkout.
         self.assertNotIn("$GITHUB_WORKSPACE/tools", parity)
         # A link an older job left on the persistent slot is replaced, never written through.

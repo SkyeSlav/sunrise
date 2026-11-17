@@ -163,6 +163,47 @@ jobs:
     with:
       commit: ${{ needs.resolve.outputs.commit }}
 
+  # Every vanilla parity harness on this commit (parity.yml, tools/parity.py --all): parity runs here, never on a
+  # rollup or a pull request (owner, 2026-11-17). After the test shards, so its large runner is never one of three
+  # beside them while gates wait; and outside the summary's legs, so its hours never hold the nightly. parity-report
+  # files its reds, one issue per harness.
+  parity:
+    needs: [resolve, shards]
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.resolve.outputs.skip == 'false' }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/parity.yml
+    with:
+      commit: ${{ needs.resolve.outputs.commit }}
+      harnesses: all
+      report: true
+  parity-report:
+    needs: [resolve, parity]
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.resolve.outputs.skip == 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      issues: write
+      actions: read
+      pull-requests: read  # as the summary: whether this commit holds the fix that closed a harness's last issue
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the merges since the last green daily, the suspects
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: daily-report-parity
+          path: ${{ runner.temp }}/reports/daily-report-parity
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ needs.resolve.outputs.commit }}
+          DRY_RUN: ${{ needs.resolve.outputs.dry_run }}
+          RESULT: ${{ needs.parity.result }}
+          REPORTS: ${{ runner.temp }}/reports
+        run: python3 tools/ci/daily_summary.py --parity "$RESULT"
+
   # Reads every leg's result and verdict file (never a log) and moves `daily-green` or files the issues.
   summary:
     # The resolved commit names the job: what a scheduled run's lookup (daily_summary.py --seen) matches.

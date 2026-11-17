@@ -26,6 +26,8 @@ permissions:
 jobs:
   vanilla-parity:
     runs-on: dyna-large
+    # Every harness (`all`) takes about 11 harness-hours, 4 at a time (tools/parity.py -j 4); a runner ends at 6 h.
+    timeout-minutes: 330
     permissions:
       contents: read
     steps:
@@ -158,6 +160,10 @@ jobs:
           export CARGO_TARGET_DIR="$PWD/.local/parity-target"
           read -ra names <<< "$HARNESSES"
           scripts=()
+          if [ "$HARNESSES" = all ]; then
+            scripts=(tools/test_*_parity.py)
+            names=()
+          fi
           for name in "${names[@]}"; do
             [[ "$name" =~ ^[a-z0-9_]+(#[0-9]+)?$ ]] || { echo "::error::not a harness name: $name"; exit 1; }
             script="tools/test_${name%%#*}_parity.py"
@@ -184,7 +190,7 @@ jobs:
           done
           echo "Game probe builds: $((SECONDS - started)) s" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Named harnesses
-        if: inputs.harnesses != ''
+        if: inputs.harnesses != '' && inputs.harnesses != 'all'
         env:
           HARNESSES: ${{ inputs.harnesses }}
           PARITY_HOSTS: ''
@@ -196,7 +202,7 @@ jobs:
           python tools/parity.py -j 4 --timeout 2400 "${names[@]}"
       # Harness subprocess timeouts can be shorter than a cold release build. Match their build commands and target dir.
       - name: Build parity probes
-        if: inputs.harnesses == ''
+        if: inputs.harnesses == '' || inputs.harnesses == 'all'
         run: |
           cargo build --release --bin sunrise-parity
           cargo build --release --bin sunrise-tick-parity
@@ -209,6 +215,12 @@ jobs:
           cargo build --release -p sunrise-core --example biome_zoom_fixture
           cargo build --release -p sunrise-world --bin sunrise-world --example world_probe
           cargo build --release -p sunrise-world --example world_probe
+      # The daily run: every harness, ignoring earlier passes (the fixed-set steps below are among them).
+      - name: Every harness
+        if: inputs.harnesses == 'all'
+        env:
+          PARITY_HOSTS: ''
+        run: python tools/parity.py --all -j 4 --timeout 2400
       - name: Compare Rust foundations with pinned vanilla client and server bytecode
         if: inputs.harnesses == ''
         run: python tools/test_rust_parity.py
@@ -460,6 +472,20 @@ jobs:
       - name: Compare float logarithms at domain and rounding boundaries
         if: inputs.harnesses == ''
         run: python tools/test_float_log_parity.py
+      # The daily's verdict: harness names with pass or fail from tools/parity.py's log on the runner, nothing else
+      # of it (tools/ci/parity_verdict.py); daily_summary.py --parity files an issue per failing harness from it.
+      # python3, not the `python` above: this step's output is the verdict's, not a harness's.
+      - name: Write the harnesses' verdict
+        if: always() && inputs.report
+        run: python3 tools/ci/parity_verdict.py "$DYNA_CI_BUILD/parity-logs/parity.log" "$RUNNER_TEMP/daily-report.json"
+      - name: Upload the harnesses' verdict
+        if: always() && inputs.report
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-report-parity
+          path: ${{ runner.temp }}/daily-report.json
+          if-no-files-found: ignore
+          retention-days: 7
       # Failure logs kept on the slot (see "Keep harness output on the runner") stay three days, then go.
       - name: Prune kept failure logs
         if: always()

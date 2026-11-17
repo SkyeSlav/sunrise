@@ -27,7 +27,10 @@ names this run's URL, and none is posted twice for one run (a rerun of failed jo
 write, completes what is missing). `daily_summary.py --seen SHA` prints a completed real daily run of SHA, if any.
 `daily_summary.py --after JOB RESULT` reports a job that runs after the summary (the SDK's publish, `sdk-publish`) the
 same way: not `success` files or comments on `Daily: JOB did not complete`, naming its failed steps; `success` closes
-it.
+it. `daily_summary.py --parity RESULT` reports the parity leg (daily.yml `parity`, every vanilla harness, after the
+summary so it never holds the nightly): from its verdict file (tools/ci/parity_verdict.py), one issue per failing
+harness, `Daily: parity <harness>`, with the pull requests merged since the last green daily as suspects, closed by
+its next pass; a leg that ended without a full verdict files `Daily: parity did not complete`.
 Only a run on refs/heads/main with DRY_RUN=false writes; otherwise it prints what it would do to the job summary.
 Lookups come first and fail the job on any API error (a rate limit included), so a failed lookup never files
 duplicates.
@@ -66,6 +69,8 @@ ACTIONS = {
                        "to the updated sample in a pull request here."),
 }
 HELPERS = ("plan", "route", "fresh", "gate")
+# The parity leg (daily.yml `parity`): reported after the summary (parity()), never part of its green.
+PARITY = "parity"
 # The one green skip: the SDK build skips when sdk-<sha> already exists, which `sdk / fresh` found (it
 # succeeded). Any other skip of an expected job is red.
 FRESH = "sdk / fresh"
@@ -191,8 +196,8 @@ def report_for(job, reports):
 
 def known(name):
     """daily.yml's own jobs and its legs' jobs; any other job is one the summary cannot judge."""
-    return (name in ("resolve", "schedule-dispatch", "sdk-publish-report")
-            or name.startswith(("summary ", "nightly / ", "sdk-publish / "))
+    return (name in ("resolve", "schedule-dispatch", "sdk-publish-report", "parity-report")
+            or name.startswith(("summary ", "nightly / ", "sdk-publish / ", f"{PARITY} / "))
             or name.split(" / ", 1)[0] in LEGS and " / " in name)
 
 
@@ -446,6 +451,8 @@ def detail(item):
         "gpu": f"fails with a Vulkan driver present. Panic location: {where}.",
         "passes-now": f"passes now but is listed as a known failure in `{item['policy']}`: take it off that list.",
         "no-longer-runs": f"is listed in `{item['policy']}` but no longer runs: remove the row or restore the test.",
+        "parity": "differs from vanilla 26.3 in the daily run. Its logs hold vanilla data, so they stay on the runner, "
+                  "in the folder the job log names.",
     }
     return f"`{item['test']}` ({item['package']}, leg `{item['leg']}`) {kinds[item['kind']]}"
 
@@ -630,6 +637,45 @@ def after(name, result, call=api, run_git=git, query=graphql):
     return 0
 
 
+def parity(result, call=api, run_git=git, query=graphql):
+    """Reports the parity leg, which concluded `result` (`needs.parity.result`), from its verdict file in REPORTS:
+    a failing harness files or comments on `Daily: parity <harness>`, a passing one closes its open issue, and a leg
+    that ended without a full verdict files `Daily: parity did not complete`. Writes only where the summary would."""
+    env = os.environ
+    writes = env.get("GITHUB_REF") == "refs/heads/main" and env.get("DRY_RUN") == "false"
+    run_url = f"{env.get('GITHUB_SERVER_URL', 'https://github.com')}/{env['GITHUB_REPOSITORY']}/actions/runs/{env['GITHUB_RUN_ID']}"
+    commit = env["COMMIT"]
+    reports = [json.loads(path.read_text()) for path in sorted(Path(env["REPORTS"]).glob("*/*.json"))] \
+        if Path(env.get("REPORTS", "")).is_dir() else []
+    report = next((report for report in reports if PARITY in report.get("shards", ())), None) or {}
+    tests = [dict(item, leg=PARITY) for item in report.get("problems", ()) if TEST_NAME.fullmatch(item["test"])]
+    passed = {(item["package"], item["test"]) for item in report.get("passed", ())}
+    unfinished = []
+    if not report or report.get("incomplete") or (result != "success" and not tests):
+        jobs = pages(call, f"actions/runs/{env['GITHUB_RUN_ID']}/jobs?filter=latest", "jobs")
+        steps = [f"{job['name']}: {step}" for job in jobs if job["name"].startswith(f"{PARITY} / ")
+                 for step in failed_steps(job)]
+        reason = ("no verdict file: the job ended before it wrote one" if not report else
+                  "the harness run did not finish" if report.get("incomplete") else "failed outside its harnesses")
+        unfinished.append((PARITY, result, steps, reason))
+    open_issues = {issue["title"]: issue["number"]
+                   for issue in pages(call, f"issues?state=open&labels={LABEL}")
+                   if "pull_request" not in issue and issue["title"].startswith(f"{PREFIX}{PARITY} ")}
+    numbers = suspects(commit, run_git) if tests or unfinished else []
+    reds = {test_title(item) for item in tests} | {leg_title(leg) for leg, *_ in unfinished}
+    fixes = fixes_after(commit, reds - open_issues.keys(), call, query, run_git)
+    actions = plan(commit, run_url, tests, unfinished, passed, set() if unfinished else {PARITY}, False, open_issues,
+                   numbers, fixes)
+    text = render(actions, writes)
+    print(text)
+    if env.get("GITHUB_STEP_SUMMARY"):
+        with open(env["GITHUB_STEP_SUMMARY"], "a") as summary:
+            summary.write(text)
+    if writes:
+        apply(actions, call, run_url)
+    return 0
+
+
 def seen(sha, call=api):
     """The URL of a completed real daily run of sha (its summary job, named `summary <sha>`, finished), or ""."""
     current = int(os.environ["GITHUB_RUN_ID"])
@@ -650,4 +696,6 @@ if __name__ == "__main__":
         sys.exit(0)
     if sys.argv[1:2] == ["--after"]:
         sys.exit(after(sys.argv[2], sys.argv[3]))
+    if sys.argv[1:2] == ["--parity"]:
+        sys.exit(parity(sys.argv[2]))
     sys.exit(main())

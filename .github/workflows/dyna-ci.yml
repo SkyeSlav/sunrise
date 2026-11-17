@@ -30,7 +30,7 @@ on:
         type: string
         default: ''
       parity:
-        description: Run only the vanilla parity harnesses (with pr, on that pull request's head; never a fork's), not the gate
+        description: Run only the vanilla parity harnesses on main's head, not the gate (never with pr; the daily runs every harness)
         type: boolean
         default: false
       harnesses:
@@ -1077,14 +1077,15 @@ jobs:
           { echo "prepared output check: $([ "$result" -eq 0 ] && echo pass || echo fail)"; echo "actual: $actual"; echo "expected: $expected"; } | tee -a "$GITHUB_STEP_SUMMARY"
           exit "$result"
 
-  # Main's daily dispatch runs the fixed set below; a dispatch with `parity` runs it (or `harnesses`) on `pr`'s head.
-  # Vanilla's data and the harnesses' output (vanilla's values) stay on the runner: the log gets PASS/FAIL lines only.
+  # Parity runs in the daily run on main's head (daily.yml `parity`, every harness), never on a rollup or a pull request
+  # (owner, 2026-11-17). A dispatch with `parity` runs the fixed set (or `harnesses`) on main's head by hand, to read a
+  # daily red again; with `pr` it runs nothing.
   vanilla-parity:
     needs: changes
-    if: github.repository == 'sunrise-org/sunrise' && github.event_name == 'workflow_dispatch' && !inputs.prepare-output-check && !inputs.github-fallback && (!inputs.pr || inputs.parity && needs.changes.outputs.pr_sha != '') && needs.changes.outputs.trusted == 'true'
+    if: github.repository == 'sunrise-org/sunrise' && github.event_name == 'workflow_dispatch' && inputs.parity && !inputs.pr && !inputs.prepare-output-check && !inputs.github-fallback && needs.changes.outputs.trusted == 'true'
     permissions:
       contents: read
     uses: ./.github/workflows/parity.yml
     with:
-      commit: ${{ needs.changes.outputs.pr_sha || github.sha }}
+      commit: ${{ github.sha }}
       harnesses: ${{ inputs.harnesses }}

@@ -155,6 +155,59 @@ class DailySummaryTests(unittest.TestCase):
         self.run_after(quiet, "failure", ref="refs/heads/topic")
         self.assertEqual(quiet.writes, [])
 
+    def run_parity(self, api, result, log, run="77", fixes=None):
+        """daily_summary.py --parity on the verdict tools/ci/parity_verdict.py writes from `log` (None: no file)."""
+        from tools.ci import parity_verdict
+        with tempfile.TemporaryDirectory() as folder:
+            if log is not None:
+                path = Path(folder, "reports", "daily-report-parity")
+                path.mkdir(parents=True)
+                (path / "daily-report.json").write_text(json.dumps(parity_verdict.verdict(log)))
+            env = {"GITHUB_REPOSITORY": "arismoko/horizon", "GITHUB_RUN_ID": run, "GITHUB_REF": "refs/heads/main",
+                   "GITHUB_SERVER_URL": "https://github.com", "COMMIT": COMMIT, "DRY_RUN": "false",
+                   "REPORTS": str(Path(folder, "reports"))}
+            with mock.patch.dict(os.environ, env, clear=True), contextlib.redirect_stdout(io.StringIO()):
+                summary.parity(result, api, git((2101, 2102), True), closers(fixes or {}))
+
+    def test_a_failing_harness_files_one_issue_with_the_suspects_and_its_pass_closes_it(self):
+        api = Api([job("parity / vanilla-parity", "failure", ["Every harness"])])
+        log = ("PASS loot_a 3s\nFAIL boat_rider 884s  (log)\nPASS sculk#1 2s\nFAIL sculk#2 4s\n"
+               "RETRIED sculk#2: failed, then failed again on its one retry\n2 passed, 2 failed in 300.2 min.\n")
+        self.run_parity(api, "failure", log)
+        created = [body for method, path, body in api.writes if method == "POST" and path == "issues"]
+        self.assertEqual([body["title"] for body in created], ["Daily: parity boat_rider", "Daily: parity sculk"])
+        self.assertIn("#2101", created[0]["body"])
+        self.assertIn("#2102", created[0]["body"])
+        self.assertNotIn("884", created[0]["body"], "a harness's log text stays on the runner")
+        # The next run: boat_rider still fails (a comment, no second issue); sculk passes in every shard and closes.
+        api.writes.clear()
+        api.runs = {78: {"jobs": []}}
+        self.run_parity(api, "failure", "FAIL boat_rider 9s\nPASS sculk#1 1s\nPASS sculk#2 1s\n"
+                                        "1 passed, 1 failed in 290.0 min.\n", run="78")
+        self.assertEqual([(method, path) for method, path, _ in api.writes],
+                         [("POST", "issues/1000/comments"), ("POST", "issues/1001/comments"), ("PATCH", "issues/1001")])
+
+    def test_a_parity_leg_without_a_full_verdict_files_did_not_complete(self):
+        # The job ran out of time: the harnesses that finished still count, the rest is one issue for the leg.
+        api = Api([job("parity / vanilla-parity", "cancelled", ["Every harness"])],
+                  issues=[{"number": 7, "title": "Daily: parity loot_a"}, {"number": 8, "title": "Daily: parity loot_b"}])
+        self.run_parity(api, "cancelled", "PASS loot_a 3s\nFAIL loot_c 2s\n")
+        created = [body for method, path, body in api.writes if method == "POST" and path == "issues"]
+        self.assertEqual([body["title"] for body in created], ["Daily: parity loot_c", "Daily: parity did not complete"])
+        self.assertIn("`parity / vanilla-parity: Every harness`", created[1]["body"])
+        self.assertIn(("PATCH", "issues/7", {"state": "closed", "state_reason": "completed"}), api.writes)
+        self.assertNotIn(("PATCH", "issues/8", {"state": "closed", "state_reason": "completed"}), api.writes,
+                         "a harness that did not run stays open")
+        # No verdict at all (the job ended before it ran a harness): only the leg's issue, which a full run closes.
+        api = Api([job("parity / vanilla-parity", "failure", ["Prepare vanilla data"])])
+        self.run_parity(api, "failure", None)
+        self.assertEqual([body["title"] for method, path, body in api.writes if path == "issues"],
+                         ["Daily: parity did not complete"])
+        api.writes.clear()
+        api.runs = {78: {"jobs": []}}
+        self.run_parity(api, "success", "PASS loot_a 3s\n1 passed, 0 failed in 280.0 min.\n", run="78")
+        self.assertIn(("PATCH", "issues/1000", {"state": "closed", "state_reason": "completed"}), api.writes)
+
     def test_all_green_moves_the_tag_and_closes_issues_that_went_green(self):
         api = Api(GREEN_JOBS, issues=[{"number": 5, "title": "Daily: sunrise-world a::b"},
                                       {"number": 6, "title": "Daily: fn-replace-check / fn-replace-check did not complete"},
@@ -640,6 +693,9 @@ class DailyWorkflowTests(unittest.TestCase):
         self.assertEqual(report["steps"][-1]["env"]["DRY_RUN"], "${{ needs.resolve.outputs.dry_run }}")
 
         self.assertEqual(jobs["nightly"]["with"]["daily"], "true")
+        report = jobs["parity-report"]
+        self.assertIn("daily_summary.py --parity", report["steps"][-1]["run"])
+        self.assertEqual(report["steps"][-1]["env"]["DRY_RUN"], "${{ needs.resolve.outputs.dry_run }}")
         self.assertTrue(jobs["summary"]["name"].startswith("summary ${{ needs.resolve.outputs.commit }}"))
 
     def test_the_sdk_build_packs_exactly_the_archives_a_release_needs(self):
@@ -706,6 +762,17 @@ class DailyWorkflowTests(unittest.TestCase):
         self.assertLess(order.index("Exactly the assets a Nightly needs"), order.index("Release sdk-<sha>"))
         hand = yaml.load((ROOT / ".github/workflows/prebuilt-game.yml").read_text(), Loader=yaml.BaseLoader)
         self.assertEqual(hand["jobs"]["publish"]["with"]["publish"], "${{ github.ref == 'refs/heads/main' }}")
+
+    def test_every_harness_runs_on_the_daily_commit_after_the_shards_and_never_holds_the_nightly(self):
+        jobs = self.workflow["jobs"]
+        parity = jobs["parity"]
+        self.assertEqual(parity["uses"], "./.github/workflows/parity.yml")
+        self.assertEqual(parity["with"], {"commit": "${{ needs.resolve.outputs.commit }}", "harnesses": "all",
+                                          "report": "true"})
+        self.assertIn("shards", parity["needs"])
+        for name in ("summary", "nightly", "sdk-publish"):
+            self.assertNotIn("parity", jobs[name]["needs"], name)
+        self.assertEqual(jobs["parity-report"]["needs"], ["resolve", "parity"])
 
     def test_every_leg_is_a_called_workflow_with_the_commit(self):
         jobs = self.workflow["jobs"]
