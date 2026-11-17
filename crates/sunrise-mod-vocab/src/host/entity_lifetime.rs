@@ -1,0 +1,77 @@
+//! The `entity_lifetime` area: how long an entity has lived, and removing it. Host method declarations; access defaults and game forwarders are generated.
+#![allow(unused_variables)]
+use crate::*;
+/// The handles' reads of the `entity_lifetime` area, implemented by the game and reached through [`Backend`].
+// hidden: a handle's backend, reached through `Backend`; mods call the handle, never this trait
+#[doc(hidden)]
+#[sunrise_mod_api_macros::host_area]
+pub trait EntityLifetimeBackend {
+    /// Side: server.
+    /// Whether the entity is in its level: from when `entity_join_level` let
+    /// it in (false while that hook runs for it and before) until it
+    /// leaves or a mod removes it. Players, and the kinds that hook doesn't
+    /// tell (displays, markers, interactions, evoker fangs, area effect
+    /// clouds, ominous item spawners), are in it while the handle names them.
+    /// False for a stale handle or on a client.
+    #[access(WorldOnly)]
+    fn entity_added_to_level(&self, entity: EntityRef) -> bool;
+    /// Side: server.
+    /// `Entity.getPortalCooldown`: a player's own portal state, the falling
+    /// block's, a pearl's End gateway state, or the level's for the other
+    /// kinds its portal walk carries (zero when it keeps no state for one).
+    #[access(WorldOnly)]
+    fn entity_portal_cooldown(&self, entity: EntityRef) -> Option<i32>;
+    /// Side: server.
+    /// Ticks the entity has lived (`Entity.tickCount`): mobs, item entities,
+    /// experience orbs and minecarts. Wraps as vanilla's `int` does.
+    #[access(WorldOnly)]
+    fn entity_tick_count(&self, entity: EntityRef) -> Option<i32>;
+}
+/// The handles' writes of the `entity_lifetime` area, implemented by the game and reached through [`BackendMut`].
+// hidden: a handle's backend, reached through `Backend`; mods call the handle, never this trait
+#[doc(hidden)]
+#[sunrise_mod_api_macros::host_area]
+pub trait EntityLifetimeBackendMut {
+    /// Side: server.
+    /// Removes the entity with no death and no loot (`Entity.discard`): a
+    /// chest boat or a minecart with a chest still drops what it holds, and
+    /// a boat its lead, as vanilla's `remove` does. False for a player, a dragon
+    /// part (it leaves with its dragon), or a stale handle.
+    /// The tick scope below is the port's own transactional requirement:
+    /// NeoForge adds no event, deferral or drop capture around a block entity's
+    /// tick, and new item spawning stays immediate. With no scope open the
+    /// engine behaves exactly as vanilla for these item operations: removal
+    /// is immediate, no overlay is created, and nothing is staged.
+    /// Dropped-item removal during a mod block-entity tick is staged with its
+    /// final snapshot, and immediately hidden from that scope's reads. It is
+    /// discarded on writeback rejection. Non-item removal and spawning are
+    /// deliberately immediate and are not undone by rejection.
+    #[access(WorldOnly)]
+    fn entity_discard(&mut self, entity: EntityRef) -> bool;
+    /// Side: server.
+    /// Removes the entity for `reason` (`Entity.remove`): `Discarded`, as
+    /// `discard`, or `Killed`, which also runs a mob's effects that act on
+    /// removal (Oozing's slimes, Weaving's cobwebs, Wind Charged's burst),
+    /// still with no death and no loot. False for a player, a dragon part (it
+    /// leaves with its dragon), or a stale handle.
+    /// Dropped items share `entity_discard`'s block-entity tick staging;
+    /// non-item removal is deliberately immediate.
+    #[access(WorldOnly)]
+    fn entity_remove(&mut self, entity: EntityRef, reason: RemovalReason) -> bool;
+    /// Side: server.
+    /// Sets the entity's portal cooldown (`Entity.setPortalCooldown`), the
+    /// value `entity_portal_cooldown` reads, where that read keeps it: the
+    /// level's portal state for the kinds its portal walk carries (mobs,
+    /// items, experience orbs, boats, minecarts, primed TNT, fireworks,
+    /// tridents, arrows and the thrown items and fireballs a chunk saves).
+    /// Server-only; a negative value or a client-side write is refused. Takes
+    /// effect on the next tick: a positive value blocks portal entry (and is
+    /// refilled while the entity stands in a portal), and 0 lets it enter at
+    /// once. Not synced except in the spawn information at login, respawn and
+    /// dimension change. Refused by name for a player, an acting guest, a
+    /// falling block and an ender pearl, whose cooldown lives in a store of
+    /// its own that this write does not own. False for a kind the read
+    /// refuses, a stale handle, or on a client.
+    #[access(WorldOnly)]
+    fn entity_set_portal_cooldown(&mut self, entity: EntityRef, ticks: i32) -> bool;
+}
