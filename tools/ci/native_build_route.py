@@ -39,9 +39,9 @@ def main():
     identity = json.loads((sdk / sdk_tools.IDENTITY).read_text())
     shutil.rmtree(work, ignore_errors=True)
     mods = work / "mods"
-    mod = mods / "route-probe"
+    mod = mods / "route_probe"
     (mod / "src").mkdir(parents=True)
-    fill = lambda text: text.replace("{id}", "route-probe").replace("{name}", "Route probe").replace("{metadata}", "")
+    fill = lambda text: text.replace("{id}", "route_probe").replace("{name}", "Route probe").replace("{metadata}", "")
     (mod / "Cargo.toml").write_text(fill((TEMPLATE / "api.toml").read_text()))
     (mod / "src/lib.rs").write_text(fill((TEMPLATE / "lib.rs").read_text()))
     (mod / "sunrise-mod.toml").write_text(
