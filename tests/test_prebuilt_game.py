@@ -43,11 +43,12 @@ class StageToolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source, stage = root / "next", root / "stage"
-            before = {"same": b"unchanged\r\n", "nested/changed": b"old", "stale/removed": b"old",
+            before = {"same": b"unchanged\r\n", "nested/changed": b"new", "stale/removed": b"old",
                       "file-to-dir": b"old", "dir-to-file/old": b"old"}
-            after = {"same": b"unchanged\r\n", "nested/changed": b"new", "nested/added": b"new",
+            # A revert can have older source mtimes and the same byte count as the previous build's sources.
+            after = {"same": b"unchanged\r\n", "nested/changed": b"old", "nested/added": b"new",
                      "file-to-dir/new": b"new", "dir-to-file": b"new"}
-            for folder, files, mtime in ((stage, before, 1000), (source, after, 2000)):
+            for folder, files, mtime in ((stage, before, 2000), (source, after, 1000)):
                 for name, data in files.items():
                     path = folder / name
                     path.parent.mkdir(parents=True, exist_ok=True)
@@ -59,10 +60,68 @@ class StageToolTests(unittest.TestCase):
             prebuilt_game.sync_stage(source, stage)
 
             self.assertEqual(same.stat().st_mtime_ns, same_mtime)
-            self.assertNotEqual(changed.stat().st_mtime_ns, changed_mtime)
+            self.assertGreater(changed.stat().st_mtime_ns, changed_mtime)
             self.assertEqual(sorted(prebuilt_game.tree(stage)), sorted(prebuilt_game.tree(source)))
             self.assertEqual({path.relative_to(stage).as_posix(): path.read_bytes()
                               for path in stage.rglob("*") if path.is_file()}, after)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX executable bits and symlinks")
+    def test_sync_mirrors_execute_bits_without_rewriting_bytes_or_following_links(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, stage = root / "next", root / "stage"
+            for folder in (source, stage):
+                folder.mkdir()
+                (folder / "script").write_bytes(b"unchanged")
+                (folder / "link").symlink_to("script")
+            incoming, staged = source / "script", stage / "script"
+            staged.chmod(0o644)
+            os.utime(staged, (1000, 1000))
+            mtime = staged.stat().st_mtime_ns
+            for mode in (0o755, 0o644):
+                with self.subTest(mode=mode):
+                    incoming.chmod(mode)
+                    prebuilt_game.sync_stage(source, stage)
+                    self.assertEqual(staged.stat().st_mode & 0o777, mode)
+                    self.assertEqual(staged.stat().st_mtime_ns, mtime)
+                    self.assertEqual(staged.read_bytes(), b"unchanged")
+                    self.assertFalse((stage / "link").is_symlink())
+                    self.assertFalse((stage / "link").exists())
+
+    def test_stage_tool_failure_cleans_scratch_and_keeps_previous_stage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory)
+            stage = target / "stage"
+            stage.mkdir()
+            marker = stage / "old"
+            marker.write_bytes(b"previous build")
+            with patch.object(prebuilt_game, "head", return_value=COMMIT), \
+                 patch.object(prebuilt_game, "tracked_files", return_value=[("new", b"new input", 0o644)]), \
+                 patch.object(prebuilt_game, "run", side_effect=subprocess.CalledProcessError(1, "sunrise-stage")):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    prebuilt_game.stage(target, stage_tool=target / "sunrise-stage")
+            self.assertEqual(list(target.iterdir()), [stage])
+            self.assertEqual(list(stage.iterdir()), [marker])
+            self.assertEqual(marker.read_bytes(), b"previous build")
+
+    def test_sdk_build_rejects_a_second_writer_and_releases_the_lock_after_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def build_then_fail(out, server, target_dir):
+                self.assertEqual(target_dir, root.resolve() / "prebuilt")
+                with self.assertRaisesRegex(SystemExit, "Use a separate CARGO_TARGET_DIR"):
+                    prebuilt_game.build(root / "other-sdk", server=False)
+                raise RuntimeError("build failed")
+
+            with patch.dict(os.environ, CARGO_TARGET_DIR=directory), \
+                 patch.object(prebuilt_game, "_build_locked", side_effect=build_then_fail) as build_locked:
+                with self.assertRaisesRegex(RuntimeError, "build failed"):
+                    prebuilt_game.build(root / "sdk", server=True)
+                build_locked.assert_called_once()
+                build_locked.side_effect = None
+                prebuilt_game.build(root / "other-sdk", server=False)
+                build_locked.assert_called_with(root / "other-sdk", False, root.resolve() / "prebuilt")
 
     def test_prebuilt_tool_stages_fresh_tracked_copy_without_cargo(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -77,6 +136,7 @@ class StageToolTests(unittest.TestCase):
             git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "core.autocrlf=false"]
             subprocess.run([*git, "init", "-q"], cwd=source, check=True)
             subprocess.run([*git, "add", "tracked.rs", "crates"], cwd=source, check=True)
+            subprocess.run([*git, "update-index", "--chmod=+x", "tracked.rs"], cwd=source, check=True)
             subprocess.run([*git, "commit", "-qm", "fixture"], cwd=source, check=True)
             commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=source, check=True, text=True,
                                     stdout=subprocess.PIPE).stdout.strip()
@@ -106,6 +166,8 @@ class StageToolTests(unittest.TestCase):
                                           str(scratch / "internals.json"), commit])
                 self.assertIsNone(kwargs["env"])
                 self.assertEqual((scratch / "tracked.rs").read_bytes(), committed)
+                if os.name == "posix":
+                    self.assertTrue((scratch / "tracked.rs").stat().st_mode & 0o100)
                 self.assertFalse((scratch / "untracked.rs").exists())
                 (scratch / "tracked.rs").write_text("staged")
                 return "staged fixture\n"
@@ -128,8 +190,13 @@ class StageToolTests(unittest.TestCase):
                     mtimes[file] = file.stat().st_mtime_ns
                 self.assertEqual(prebuilt_game.stage(target, stage_tool=tool, sdk_dylibs=True), staged)
                 self.assertEqual({file: file.stat().st_mtime_ns for file in mtimes}, mtimes)
-            self.assertEqual(len(calls), 3)
-            self.assertEqual(metadata_calls, calls[1:])
+
+                self.assertEqual(prebuilt_game.stage(target, stage_tool=tool, sdk_dylibs=False), staged)
+                self.assertEqual(staged_manifest.read_bytes(), manifest.read_bytes())
+                if os.name == "posix":
+                    self.assertTrue((staged / "tracked.rs").stat().st_mode & 0o100)
+            self.assertEqual(len(calls), 4)
+            self.assertEqual(metadata_calls, calls[1:3])
             self.assertTrue(all(not scratch.exists() for scratch in calls))
             self.assertTrue((source / "tracked.rs").read_bytes().endswith(b"fn edited() {}\r\n"))
 
