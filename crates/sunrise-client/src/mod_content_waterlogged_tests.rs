@@ -52,6 +52,7 @@ impl LevelAccess for Level {
     fn before_state_for_placement(
         &self,
         _: &Ticks,
+        _: Option<&sunrise_world::level::PreviewBlocks>,
         _: BlockStateId,
         _: &PlacementContext,
         _: FluidState,

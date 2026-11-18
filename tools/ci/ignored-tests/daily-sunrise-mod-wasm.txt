@@ -3,6 +3,7 @@
 sunrise-mod-wasm compile_budget_tests::actual_child_timeout_then_same_module_succeeds_and_is_cached lib daily child-process
 sunrise-mod-wasm compile_budget_tests::invalid_startup_settings_publish_and_report_refusals_on_both_sides lib daily child-process
 sunrise-mod-wasm compile_budget_tests::unavailable_or_untrusted_cache_refuses_applied_unix_budget lib daily child-process
+sunrise-mod-wasm compiled_guest_block_path_type_reads_saved_data_like_native test:predicted_block_notice daily wasm-fixture
 sunrise-mod-wasm compiled_guest_reads_predicted_like_native test:predicted_block_notice daily wasm-fixture
 sunrise-mod-wasm runtime::equip_scope_tests::equip_scope_copies_once_per_instance_for_eight_candidates_and_two_parts lib daily wasm-fixture
 sunrise-mod-wasm module_cache::tests::child_failures_refuse_without_unbounded_compilation lib daily slow

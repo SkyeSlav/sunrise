@@ -69,6 +69,10 @@ additional-css = ["theme/sunrise.css"]
 git-repository-url = "https://github.com/sunrise-org/sunrise"
 edit-url-template = "https://github.com/sunrise-org/sunrise/edit/main/docs/modding/{path}"
 
+# Pages that moved keep their old address.
+[output.html.redirect]
+"/start/installing.html" = "../players/installing-mods.html"
+
 # The how-to groups are long: show each part's top chapters, open one to see its pages.
 [output.html.fold]
 enable = true

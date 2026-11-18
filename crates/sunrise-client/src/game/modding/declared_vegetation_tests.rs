@@ -1,5 +1,5 @@
 //! Explicit vegetation behaves the same on different templates and is not inferred from Parts.
-use mod_api::{BlockPart, Hooks, LevelHost, MayPlaceOnEvent, Registrar};
+use mod_api::{BlockPart, Hooks, LevelSide, MayPlaceOnEvent, Registrar};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -13,7 +13,7 @@ use sunrise_world::level::{PlaceContext, PlaceOutcome};
 struct Plant(Arc<AtomicUsize>);
 #[mod_api::sunrise_part]
 impl BlockPart for Plant {
-    fn may_place_on(&self, _: &dyn LevelHost, _: &mut MayPlaceOnEvent) -> Option<bool> {
+    fn may_place_on(&self, _: LevelSide<'_>, _: &mut MayPlaceOnEvent) -> Option<bool> {
         self.0.fetch_add(1, Ordering::Relaxed);
         None // Leave the declaration's default supports_vegetation rule in place.
     }
@@ -23,7 +23,7 @@ struct Soil(bool);
 impl BlockPart for Soil {
     fn can_sustain_plant(
         &self,
-        _: &dyn LevelHost,
+        _: LevelSide<'_>,
         _: &mut mod_api::CanSustainPlantEvent,
     ) -> Option<bool> {
         Some(self.0)
@@ -207,9 +207,9 @@ fn declared_vegetation_places_and_breaks_independently_of_its_template() {
                             "prediction for {id} on {soil}"
                         );
                         assert_eq!(
-                            heard.load(Ordering::Relaxed),
-                            before,
-                            "the client never asks the Part"
+                            heard.load(Ordering::Relaxed) > before,
+                            id != "garden:bare",
+                            "the client asks only blocks with a subscribed Part: {id}"
                         );
                     }
                 }

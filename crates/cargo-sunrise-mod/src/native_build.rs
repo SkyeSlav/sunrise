@@ -35,7 +35,7 @@ pub fn run(args: &[String]) -> ExitCode {
 
 /// Fetches through the proxy its environment names (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY`), as the launcher passes its own.
 /// The tool as the native build's host: `work` its folder, English, its own network, used files noted for the reply.
-fn install_host(work: &Path) {
+pub(crate) fn install_host(work: &Path) {
     let _ = WORK.set(work.to_owned());
     host::install(host::Host {
         tr: |en| en,
@@ -160,6 +160,7 @@ fn locked(plan: &contract::LockPlan) -> Result<serde_json::Value, (&'static str,
         .and_then(|bundle| {
             sunrise_native_build::registry_generate::generate(
                 || Ok(plan.toolchain.clone()),
+                sunrise_native_build::registry_generate::game_lock,
                 &bundle,
                 plan.update,
             )

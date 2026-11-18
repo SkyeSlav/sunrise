@@ -1140,10 +1140,10 @@ mod tests {
         std::fs::create_dir_all(root.path().join("tags/dialog")).unwrap();
         std::fs::write(
             root.path().join("tags/dialog/conditional.json"),
-            r#"{"neoforge:conditions":[{"type":"neoforge:false"}],"values":["minecraft:a"]}"#,
+            r#"{"neoforge:conditions":[{"type":"neoforge:never"}],"values":["minecraft:a"]}"#,
         )
         .unwrap();
-        let files = vec![("tags/minecraft:dialog/conditional".into(), vec![br#"{"neoforge:conditions":[{"type":"neoforge:false"}],"values":["minecraft:b"],"remove":["minecraft:a"]}"#.to_vec()])];
+        let files = vec![("tags/minecraft:dialog/conditional".into(), vec![br#"{"neoforge:conditions":[{"type":"neoforge:never"}],"values":["minecraft:b"],"remove":["minecraft:a"]}"#.to_vec()])];
         let dynamic = Dynamic {
             registries: HashMap::from([(
                 "minecraft:dialog".into(),

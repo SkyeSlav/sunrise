@@ -41,7 +41,9 @@ fn wire_loopback_load_conditions_native_and_guest_registrars_and_callbacks_agree
         mod_api::testing::with_mods(
             vec![mod_api::ModEntry::new("wire_test", hooks)].into(),
             || {
-                let mut registrar = mod_api::LoadConditionDeclarations::default();
+                let mut registrar = mod_api::LoadConditionDeclarations::new(
+                    sunrise_world::conditions::is_builtin_condition,
+                );
                 mod_api::dispatch_register_load_conditions(
                     &mod_api::RegistrationContext::new(),
                     &mut registrar,

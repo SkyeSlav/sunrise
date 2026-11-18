@@ -3,7 +3,7 @@ name = "{name}"
 version = "0.1.0"
 description = ""
 authors = []
-# A native mod: Rust in src/, compiled by the launcher against the game build [native] pins, beside data/ and assets/.
+# A native mod: Rust in src/, compiled by `cargo sunrise-mod build` (and the launcher) against the game build [native] pins, beside data/ and assets/.
 api = "0.2"
 side = "both"
 # registries: "May add blocks, items, mob effects and entity types to your worlds".

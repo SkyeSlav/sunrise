@@ -156,11 +156,12 @@ fn a_veto_of_the_first_of_two_reports_in_one_tick_corrects_and_the_second_is_not
     assert_eq!(look(&hub), [0.0, 0.0], "the vetoed report is not applied");
     assert!(hub.guests[0].awaiting_teleport.is_some());
     // The second waited behind it, and meets the unconfirmed correction: only the server's own
-    // handling of a report that arrives then, no hearing.
+    // handling of a report that arrives then, no hearing. While a teleport is awaited a report
+    // keeps its rotation and loses its position, as the awaiting check does.
     assert!(moves(&drain(&mut hub)).is_empty());
     assert!(hub.guests[0].pending_move.is_none());
     assert!(hub.guests[0].inbox.is_empty());
-    assert_eq!(look(&hub), [0.0, 0.0]);
+    assert_eq!(look(&hub), [20.0, 0.0]);
 }
 
 #[test]

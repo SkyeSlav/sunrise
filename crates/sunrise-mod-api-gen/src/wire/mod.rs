@@ -1409,12 +1409,11 @@ mod tests {
             .join()
             .unwrap();
     }
-    /// #792 stage 4b: an entity part crosses to wasm with its tick alone — the
-    /// five native-only methods are excused off the surface, and the registrar
-    /// call that attaches a wasm mod's part crosses.
+    /// The tick and rider decision cross to wasm, as does registration; the
+    /// five native-only methods are excused off the surface.
     #[test]
     #[ignore = "daily"]
-    fn entity_part_crosses_to_wasm_with_its_tick_alone() {
+    fn entity_part_crosses_to_wasm_with_tick_and_rider_decision() {
         std::thread::Builder::new()
             .stack_size(64 << 20)
             .spawn(|| {
@@ -1440,6 +1439,10 @@ mod tests {
                 assert!(
                     crosses("EntityPart", "general_entity_tick"),
                     "the general entity tick crosses"
+                );
+                assert!(
+                    crosses("EntityPart", "can_rider_interact"),
+                    "the client rider interaction decision crosses"
                 );
                 assert!(
                     crosses("Registrar", "attach_entity_part"),

@@ -5,8 +5,11 @@ register it from
 `Hooks::register_load_conditions` using its `RegistrationContext` and
 `event.conditions.register(Identifier::parse("testmod:flag").unwrap(), Flag)`.
 Registration happens once per mod load, with one handler per id and a read-only
-`RegistrationContext`. The name must belong to the calling mod's namespace. Duplicate names refuse registration and name both owners;
-a registration error refuses admission even if you ignore it.
+`RegistrationContext`. Any mod may register an unused ID in any namespace:
+mod B can register `a:x` while mod A registers `a:y`. Built-in IDs such as
+`neoforge:always`, `neoforge:never` and `neoforge:mod_loaded` cannot be replaced.
+A duplicate ID names both mods in the error. A registration error refuses
+admission even if you ignore it.
 
 ```rust,ignore
 struct Flag;
@@ -49,22 +52,17 @@ runtime's normal failure policy.
 version. A callback error refuses the reload and names the file. The previous
 usable recipe and resource generation stays installed.
 
-A namespace is owned only when a loaded mod registered at least one condition
-in it. A loaded mod ID alone does not own a condition namespace. An unknown
-name in an owned namespace refuses reload, naming the file, condition and
-registering mod. This refusal also applies at every depth inside `not`, `and` and `or`,
-even beside an already false or true branch.
+Registering a foreign ID does not give the registering mod ownership of its
+namespace. A mod's own namespace has the existing stricter handling if it
+registers a handler there: unknown names in that namespace refuse the reload,
+naming the file, condition and owning mod. This applies at every depth inside
+`not`, `and` and `or`, even beside an already false or true branch.
 
-An unknown name in any other namespace fails closed:
-the file is absent if the unknown id appears anywhere inside `not`, `and` or
-`or`, at any depth. Evaluation visits every branch, so `or(true, othermod:unknown)`
-also leaves the file absent. One ERROR-level log entry per file names that file
-and all its distinct unknown condition ids; repeated occurrences do not produce
-extra entries within one candidate reload. The vanilla view used outside a
-candidate reload has no per-file store, so it logs once per evaluation.
+An unknown name in any other namespace also makes its file absent, wherever it
+appears inside `not`, `and` or `or`. Evaluation visits every branch, so an `or`
+containing `neoforge:always` and an unknown condition still leaves the file out.
+An ERROR-level diagnostic names the file and distinct unknown IDs. Recipe loading
+also refuses the load for those unknown IDs.
 
 The public [NeoForge data load condition documentation](https://docs.neoforged.net/docs/resources/server/conditions/)
-describes `ICondition` and the top-level `neoforge:conditions` array. Sunrise's
-owned-namespace refusal is the Sunrise-specific addition described above.
-Foreign unknown ids leave the file absent and produce an error-level diagnostic;
-they do not themselves refuse the whole reload.
+describes `ICondition` and the top-level `neoforge:conditions` array.

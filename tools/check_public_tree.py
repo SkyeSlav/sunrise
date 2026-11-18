@@ -16,6 +16,12 @@ ORIGINAL_JDK_TOOLS = {
     # Original generator of the Java character tables: calls only the public Character API and prints ranges; no JDK implementation source.
     "tools/JavaCharacterTables.java",
     "tests/java/JfrFixture.java",
+    # Original differential-fuzz driver for java.lang.Math: calls only the public Math API on generated inputs (its
+    # "mthtable" case applies Mth's one-line sine-table formula, as crates/sunrise-core/src/geometry/trig.rs does).
+    "tools/jmath_fuzz/JmathFuzz.java",
+    # Original differential-fuzz driver for vanilla's math helpers: no game source; it calls the 26.3 jar's methods at
+    # run time (public ones, and Entity's private getInputVector by reflection) from the player's own prepared jars.
+    "tools/jmath_fuzz/VanillaMathFuzz.java",
     # HISTORY-ONLY: this original comparison driver is no longer in the current tree.
     # Keep its old path allowed so --history/--pre-push accept its legitimate historical addition.
     "tools/refactors/api-pr3/JsonNbtOracle.java",

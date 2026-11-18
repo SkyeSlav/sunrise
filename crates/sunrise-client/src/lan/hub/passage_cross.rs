@@ -139,7 +139,7 @@ impl Hub {
         });
         use play::relative::{DELTA_X, DELTA_Y, DELTA_Z, ROTATE_DELTA, X, X_ROT, Y, Y_ROT, Z};
         let all = X | Y | Z | Y_ROT | X_ROT | DELTA_X | DELTA_Y | DELTA_Z | ROTATE_DELTA;
-        self.teleport_relative(i, Some(to), all);
+        self.teleport_relative(i, Some(to), all, [0.0; 3]);
     }
 
     /// Refuses guest `i`'s crossing of passage `id`: the client is told `why`, then put back

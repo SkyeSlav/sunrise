@@ -287,7 +287,12 @@ pub fn build_with_conditions(
     // A tag naming an id nobody registers fails as a whole in vanilla, and
     // carried-over mods name blocks left out or other mods' ids: such
     // entries are dropped instead, so the rest of the tag holds.
-    let known = Known::new(base, &plan, &tags)?;
+    let mod_biomes = worldgen
+        .get(BIOMES)
+        .into_iter()
+        .flatten()
+        .map(|(id, _)| id.clone());
+    let known = Known::new(base, &plan, &tags, mod_biomes)?;
     for (file, merge) in &mut tags {
         for (values, _) in &mut merge.layers {
             values.retain(|v| known.keeps(file, v));
@@ -356,6 +361,11 @@ pub fn build_with_conditions(
     // what mods add to sets, pools and lists, by priority, then in mod and
     // file order.
     let mut placed_doc = None;
+    let mut biome_doc = None;
+    // A mod's biomes follow vanilla's, by namespace then path.
+    if let Some(entries) = worldgen.get_mut(BIOMES) {
+        entries.sort_by(|a, b| a.0.split_once(':').cmp(&b.0.split_once(':')));
+    }
     for (bundle, entries) in &worldgen {
         if !base.join(bundle).exists() {
             continue;
@@ -370,6 +380,8 @@ pub fn build_with_conditions(
         overlay.write(bundle, &serde_json::to_vec(&doc)?)?;
         if *bundle == PLACED_FEATURES {
             placed_doc = Some(doc);
+        } else if *bundle == BIOMES {
+            biome_doc = Some(doc);
         }
     }
     if !modifiers.is_empty() || (!mods.is_empty() && base.join(BIOMES).exists()) {
@@ -380,6 +392,7 @@ pub fn build_with_conditions(
             inventory.server_ids().map(str::to_owned).collect(),
             biome_tag_doc,
             placed_doc,
+            biome_doc,
             &tags,
             &mut warnings,
         )?;

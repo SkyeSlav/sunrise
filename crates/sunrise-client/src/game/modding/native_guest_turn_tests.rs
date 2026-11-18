@@ -1,9 +1,9 @@
 //! Real-game regressions for native handles used during a guest's turn.
 
 use super::lan::LanSettings;
-use mod_api::prelude::*;
+use mod_api::{EntityMoveEvent, Flow, Hooks, LoopContext, MoveCause, prelude::*};
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicI32, AtomicUsize},
 };
 use sunrise_client::{
@@ -315,6 +315,173 @@ fn another_guest_and_online_players_are_visible_during_a_turn() {
             assert_eq!(online[1].entity().position(game).unwrap(), [3.0, 64.0, 5.0]);
         })
         .unwrap();
+    });
+}
+
+/// `entity_move_by` moves a guest the server holds, acting or not, through its own body and the
+/// hub's copy together, tells its client, and refuses what it cannot move without changing
+/// anything.
+#[test]
+#[ignore = "daily"]
+fn move_by_moves_a_player_and_refuses_what_it_cannot() {
+    with_guests(|game| {
+        // A guest has a body once it has had a turn.
+        for conn in [12, 13] {
+            game.as_guest(conn, |_| {}).unwrap();
+        }
+        let a = game.player(12).unwrap();
+        let b = game.player(13).unwrap();
+        let before = b.entity().position(game).unwrap();
+        let by = game
+            .entity_move_by(b.entity(), [0.5, 0.0, 0.25], MoveCause::SelfMovement)
+            .unwrap();
+        assert_eq!(by, [0.5, 0.0, 0.25]);
+        let now = [before[0] + 0.5, before[1], before[2] + 0.25];
+        assert_eq!(b.entity().position(game), Some(now));
+        let hub = &game.lan.as_ref().unwrap().hub;
+        let guest = hub.guest(13).unwrap();
+        assert_eq!(guest.position, now, "the hub's copy follows the body");
+        assert!(guest.awaiting_teleport.is_some(), "the client is told");
+        // The acting player is moved in its turn, and another during it.
+        game.as_guest(12, |game| {
+            let own = a.entity().position(game).unwrap();
+            assert_eq!(
+                game.entity_move_by(a.entity(), [0.0, 0.0, -2.0], MoveCause::SelfMovement),
+                Some([0.0, 0.0, -2.0])
+            );
+            assert_eq!(
+                a.entity().position(game),
+                Some([own[0], own[1], own[2] - 2.0])
+            );
+            assert!(
+                game.entity_move_by(b.entity(), [1.0, 0.0, 0.0], MoveCause::SelfMovement)
+                    .is_some()
+            );
+        })
+        .unwrap();
+        // Nothing moves for a value that is not finite or a target outside the world.
+        let held = b.entity().position(game);
+        for delta in [
+            [f64::NAN, 0.0, 0.0],
+            [0.0, f64::INFINITY, 0.0],
+            [4.0e7, 0.0, 0.0],
+        ] {
+            assert_eq!(
+                game.entity_move_by(b.entity(), delta, MoveCause::SelfMovement),
+                None,
+                "{delta:?}"
+            );
+        }
+        assert_eq!(b.entity().position(game), held);
+    });
+}
+
+/// A player's `entity_move_by` fires `entity_move` once, for the player and with the caller's
+/// cause; a listener that cancels it leaves the player where it was and the client untold.
+#[test]
+#[ignore = "daily"]
+fn a_players_move_by_is_heard_once_and_a_cancel_moves_nothing() {
+    struct Cancel(Arc<Mutex<Vec<(u32, MoveCause)>>>);
+    #[mod_api::__subscriptions]
+    impl Hooks for Cancel {
+        fn entity_move(&self, _: &dyn LoopContext, event: &mut EntityMoveEvent<'_>) -> Flow {
+            self.0.lock().unwrap().push((event.entity, event.cause));
+            Flow::Cancel
+        }
+    }
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "refuser",
+        Box::new(Cancel(heard.clone())),
+    )]
+    .into();
+    mod_platform::testing::with_mods(mods, || {
+        with_guests(|game| {
+            game.as_guest(13, |_| {}).unwrap();
+            let b = game.player(13).unwrap();
+            let before = b.entity().position(game);
+            let moved = game.entity_move_by(b.entity(), [1.0, 0.0, 0.0], MoveCause::Piston);
+            assert_eq!(moved, Some([0.0; 3]));
+            assert_eq!(b.entity().position(game), before);
+            assert!(
+                game.lan
+                    .as_ref()
+                    .unwrap()
+                    .hub
+                    .guest(13)
+                    .unwrap()
+                    .awaiting_teleport
+                    .is_none()
+            );
+            assert_eq!(
+                *heard.lock().unwrap(),
+                [(b.entity().id(), MoveCause::Piston)]
+            );
+        });
+    });
+}
+
+/// A boat in the way stops a player's `entity_move_by`, as it stops a player walking: the move
+/// ends against the boat's side, not at the target.
+#[test]
+#[ignore = "daily"]
+fn a_players_move_by_stops_at_a_boat() {
+    with_guests(|game| {
+        game.as_guest(13, |_| {}).unwrap();
+        let b = game.player(13).unwrap();
+        let [x, y, z] = b.entity().position(game).unwrap();
+        let free = game
+            .entity_move_by(b.entity(), [4.0, 0.0, 0.0], MoveCause::SelfMovement)
+            .unwrap();
+        assert_eq!(free, [4.0, 0.0, 0.0], "nothing in the way");
+        // Back to where it was, then a boat 2 blocks along, its box across the line of travel.
+        game.entity_move_by(b.entity(), [-4.0, 0.0, 0.0], MoveCause::SelfMovement)
+            .unwrap();
+        game.next_entity += 1;
+        let id = game.next_entity;
+        game.boats.push(crate::game::boats::Boat::new(
+            id,
+            "oak".into(),
+            Vec3::new(x + 2.0, y, z),
+            0.0,
+        ));
+        let by = game
+            .entity_move_by(b.entity(), [4.0, 0.0, 0.0], MoveCause::SelfMovement)
+            .unwrap();
+        assert!(
+            by[0] > 0.5 && by[0] < 1.6,
+            "stopped against the boat's side, moved {by:?}"
+        );
+    });
+}
+
+/// The server has no predictive landing on a happy ghast: a player over a ghast that is not held
+/// still falls through it (`HappyGhast.canBeCollidedWith`, `isClientSide` branch), so a mod's
+/// move down is not stopped at its top the way the client's own walk is.
+#[test]
+#[ignore = "daily"]
+fn a_players_move_by_falls_through_a_happy_ghast_that_is_not_held_still() {
+    with_guests(|game| {
+        game.as_guest(13, |_| {}).unwrap();
+        let b = game.player(13).unwrap();
+        let [x, y, z] = b.entity().position(game).unwrap();
+        game.next_entity += 1;
+        let id = game.next_entity;
+        let kind = game
+            .res
+            .mob_types()
+            .get("minecraft:happy_ghast")
+            .unwrap()
+            .clone();
+        game.mobs.push(Mob::new(id, kind, Vec3::new(x, y, z), 0.0));
+        let up = game
+            .entity_move_by(b.entity(), [0.0, 6.0, 0.0], MoveCause::SelfMovement)
+            .unwrap();
+        assert_eq!(up, [0.0, 6.0, 0.0], "room to rise past the ghast's top");
+        let down = game
+            .entity_move_by(b.entity(), [0.0, -6.0, 0.0], MoveCause::SelfMovement)
+            .unwrap();
+        assert_eq!(down, [0.0, -6.0, 0.0], "not stopped on a ghast's top");
     });
 }
 

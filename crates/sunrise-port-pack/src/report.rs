@@ -230,8 +230,8 @@ fn old_layout(work: &Path, key: &str) -> OldLayout {
     }
     let recipes = match count("recipes_old_result") {
         0 => String::new(),
-        1 => "1 recipe result names `item`, which 26.3 skips; ".to_owned(),
-        n => format!("{n} recipe results name `item`, which 26.3 skips; "),
+        1 => "1 recipe result names `item`, moved to outside/; ".to_owned(),
+        n => format!("{n} recipe results name `item`, moved to outside/; "),
     };
     OldLayout::Renamed(format!(
         "made for Minecraft 1.20 or older: {renamed} data files moved to 1.21's folder names, \

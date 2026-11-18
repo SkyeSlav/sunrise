@@ -768,6 +768,14 @@ impl crate::prelude::ItemsBackendMut for FakeHost {
         let (player, slot) = self.players.place(place)?;
         player.slots.get(&slot).cloned()
     }
+    fn game_on_crafted_by(
+        &mut self,
+        _: &ItemPlace,
+        _: &Transaction,
+        _: i32,
+    ) -> Result<(), crate::CraftedByError> {
+        Err(crate::CraftedByError::Unavailable)
+    }
     fn game_insert(
         &mut self,
         place: &ItemPlace,

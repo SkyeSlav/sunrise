@@ -59,6 +59,56 @@ impl SectionMask {
     pub fn iter(self) -> Indexes {
         Indexes(self)
     }
+    /// Removes and returns up to `*budget` indexes nearest `center`, taking
+    /// their number off `budget`. A column admitted part-way must spend its
+    /// slots where the camera is, not on the lowest sections of a tall column.
+    pub fn take_near(&mut self, budget: &mut usize, center: i32) -> Self {
+        let mut taken = Self::EMPTY;
+        while *budget > 0 {
+            let mut best: Option<(u32, usize)> = None;
+            for i in self.iter() {
+                let distance = (i as i32 - center).unsigned_abs();
+                if best.is_none_or(|(nearest, _)| distance < nearest) {
+                    best = Some((distance, i));
+                }
+            }
+            let Some((_, index)) = best else {
+                break;
+            };
+            self.remove(index);
+            taken.insert(index);
+            *budget -= 1;
+        }
+        taken
+    }
+    /// Removes and returns the lowest `*budget` indexes (all of them when
+    /// there are fewer), taking their number off `budget`. The mesh scheduler
+    /// spends a budget of sections, and one column's dirty sections can be
+    /// more than what is left of it: the rest stay here, for the next update.
+    pub fn take_up_to(&mut self, budget: &mut usize) -> Self {
+        let mut taken = Self::EMPTY;
+        for (word, out) in self.0.iter_mut().zip(&mut taken.0) {
+            if *budget == 0 {
+                break;
+            }
+            let ones = word.count_ones() as usize;
+            if ones <= *budget {
+                *out = std::mem::take(word);
+                *budget -= ones;
+            } else {
+                // Fewer than `ones` (at most 63) bits to take: clear the
+                // lowest of them one at a time, what remains is the rest.
+                let mut rest = *word;
+                for _ in 0..*budget {
+                    rest &= rest - 1;
+                }
+                *out = *word & !rest;
+                *word = rest;
+                *budget = 0;
+            }
+        }
+        taken
+    }
 }
 
 impl std::ops::BitOr for SectionMask {
@@ -160,5 +210,73 @@ mod tests {
             [0, 2, 3]
         );
         assert_eq!(format!("{a:?}"), "{1, 70, 200}");
+    }
+
+    /// A partial column spends its slots on the sections nearest the camera,
+    /// and the halves still make up the original set.
+    #[test]
+    fn take_near_spends_the_budget_around_the_centre() {
+        let original: SectionMask = [0, 2, 12, 20, 23].into_iter().collect();
+        let take = |budget: usize, center: i32| {
+            let (mut rest, mut left) = (original, budget);
+            let taken = rest.take_near(&mut left, center);
+            assert_eq!(taken | rest, original);
+            assert_eq!(taken & rest, SectionMask::EMPTY);
+            (taken.iter().collect::<Vec<_>>(), rest, left)
+        };
+        // Nothing to spend: nothing moves.
+        assert_eq!(take(0, 12), (vec![], original, 0));
+        // The two nearest: 12 (0 away) then 20 (8), not the lowest sections.
+        let (taken, rest, left) = take(2, 12);
+        assert_eq!((taken, left), (vec![12, 20], 0));
+        assert_eq!(rest.iter().collect::<Vec<_>>(), [0, 2, 23]);
+        // A budget past the count takes everything and leaves the rest unspent.
+        assert_eq!(take(9, 0), (vec![0, 2, 12, 20, 23], SectionMask::EMPTY, 4));
+        // An empty mask spends nothing.
+        let (mut rest, mut left) = (SectionMask::EMPTY, 5);
+        assert_eq!(rest.take_near(&mut left, 3), SectionMask::EMPTY);
+        assert_eq!((rest, left), (SectionMask::EMPTY, 5));
+    }
+    /// `take_up_to` splits off the lowest indexes, across words, and the two
+    /// halves always make up the original set.
+    #[test]
+    fn take_up_to_takes_the_lowest_within_the_budget() {
+        let original: SectionMask = [2, 5, 63, 64, 100, 190, 255].into_iter().collect();
+        let take = |budget: usize| {
+            let (mut rest, mut left) = (original, budget);
+            let taken = rest.take_up_to(&mut left);
+            assert_eq!(taken | rest, original, "budget {budget}");
+            assert_eq!(taken & rest, SectionMask::EMPTY, "budget {budget}");
+            (taken.iter().collect::<Vec<_>>(), rest, left)
+        };
+        // No budget: nothing taken, nothing changed.
+        assert_eq!(take(0), (vec![], original, 0));
+        // More budget than indexes: all of them, the unspent budget left.
+        assert_eq!(
+            take(10),
+            (vec![2, 5, 63, 64, 100, 190, 255], SectionMask::EMPTY, 3)
+        );
+        assert_eq!(
+            take(7),
+            (vec![2, 5, 63, 64, 100, 190, 255], SectionMask::EMPTY, 0)
+        );
+        // Part of the budget: the lowest, inside the first word and past it.
+        let (taken, rest, left) = take(2);
+        assert_eq!((taken, left), (vec![2, 5], 0));
+        assert_eq!(rest.iter().collect::<Vec<_>>(), [63, 64, 100, 190, 255]);
+        let (taken, rest, left) = take(4);
+        assert_eq!((taken, left), (vec![2, 5, 63, 64], 0));
+        assert_eq!(rest.iter().collect::<Vec<_>>(), [100, 190, 255]);
+        // A full word split mid-way.
+        let (mut rest, mut left) = (SectionMask::ALL, 70);
+        let taken = rest.take_up_to(&mut left);
+        assert_eq!(
+            (taken, rest, left),
+            (SectionMask::below(70), !SectionMask::below(70), 0)
+        );
+        // An empty mask spends nothing.
+        let (mut rest, mut left) = (SectionMask::EMPTY, 5);
+        assert_eq!(rest.take_up_to(&mut left), SectionMask::EMPTY);
+        assert_eq!((rest, left), (SectionMask::EMPTY, 5));
     }
 }

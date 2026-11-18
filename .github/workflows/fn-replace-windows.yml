@@ -45,7 +45,7 @@ jobs:
         run: |
           rustup target add wasm32-unknown-unknown
           commit=$(git rev-parse HEAD)
-          python tools/prebuilt_game.py pack prebuilt legs/sdk-leg-windows-server
+          python tools/prebuilt_game.py pack prebuilt legs/sdk-leg-windows-server --with-tool
           python tools/prebuilt_game.py gather legs dist
           python tools/sdk_api_source.py build api-source
           python tools/sdk_api_source.py archive api-source dist/api-source.tar.xz
@@ -62,8 +62,7 @@ jobs:
         env:
           CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS: true
         run: |
-          git clone --quiet https://github.com/sunrise-org/sunrise-launcher "$RUNNER_TEMP/sunrise-launcher"
-          git -C "$RUNNER_TEMP/sunrise-launcher" checkout --quiet "$(tools/ci/launcher_pin.sh)"
+          tools/ci/launcher_checkout.sh "$RUNNER_TEMP/sunrise-launcher"
           rustup toolchain install "$(cat tools/ci/rust-version)-x86_64-pc-windows-msvc" --profile minimal
           (cd "$RUNNER_TEMP/sunrise-launcher" && cargo +"$(cat "$GITHUB_WORKSPACE/tools/ci/rust-version")-x86_64-pc-windows-msvc" build --release --locked)
           echo "LAUNCHER=$RUNNER_TEMP/sunrise-launcher/target/release/sunrise-launcher.exe" >> "$GITHUB_ENV"

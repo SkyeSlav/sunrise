@@ -219,7 +219,9 @@ pub(super) fn conditions_for_mods(
     let table = sources
         .load_conditions
         .get_or_init(|| {
-            let mut registrar = mod_api::LoadConditionDeclarations::default();
+            let mut registrar = mod_api::LoadConditionDeclarations::new(
+                sunrise_world::conditions::is_builtin_condition,
+            );
             Game::native_register_load_conditions(
                 &mod_api::RegistrationContext::new(),
                 &mut registrar,
@@ -239,6 +241,7 @@ pub(super) fn conditions_for_mods(
     enabled.retain(|owner| sources.code_owner_enabled(owner));
     let owned = table
         .iter()
+        .filter(|(name, (owner, _))| name.namespace() == owner)
         .map(|(name, (owner, _))| (name.namespace().to_owned(), owner.clone()))
         .collect();
     Ok(conditions.with_lookup(owned, move |name, args| {

@@ -9,10 +9,12 @@
   python3 tools/test_areas.py run --changed origin/main      # the touched areas; harnesses as parity.py --changed picks them
   python3 tools/test_areas.py coverage                       # tracked crate files no area claims
 
-Picking from a diff stays with tools/parity.py --changed (harnesses) and tools/ci/test_scope.py (crates). An area
-names a set of tests, adds the daily and LAN tests nothing picks from a diff, and is how to ask for "the explosion
-tests". `--daily` needs the prepared data (SUNRISE_TEST_RESOURCES), as the daily run does; `--lan` builds and starts
-two games (tools/lan_e2e.py), and the network area holds every LAN check (~40 minutes).
+Picking from a diff stays with tools/parity.py --changed (harnesses) and tools/ci/test_scope.py (crates): `run`
+from a diff also tests the crates of the paths no area claims, as test_scope.py picks them. An area names a set of
+tests, adds the daily and LAN tests nothing picks from a diff, and is how to ask for "the explosion tests". `--daily`
+needs the prepared data (SUNRISE_TEST_RESOURCES), as the daily run does, and names the daily tests that need the wasm
+fixture, which run apart; `--lan` builds and starts two games (tools/lan_e2e.py), and the network area holds every
+LAN check (~40 minutes). An opt-in LAN check (LAN_OPT_IN) runs only on a game built for it: `--lan-bin-dir DIR`.
 """
 
 import argparse
@@ -34,6 +36,8 @@ LAN = ROOT / "tools" / "lan_e2e.py"
 # lan_e2e.py's check names: `CHECKS = [...]` and the `CHECKS += [...]` beside each later check.
 CHECK_LISTS = re.compile(r"^CHECKS\s*\+?=\s*\[(.*?)\]", re.M | re.S)
 QUOTED = re.compile(r"'([^']+)'")
+# The checks lan_e2e.py's default run leaves out, and the game each needs: its own build doesn't have it.
+LAN_OPT_IN = {"recipes-smod": "a game built with the native Recipes mod"}
 HARNESS = re.compile(r"^tools/test_(\w+)_parity\.py$")
 TARGET = re.compile(r"^(?:lib|(?:bin|test):[\w-]+)$")
 
@@ -81,8 +85,10 @@ def matching(patterns, names):
 
 
 def harness_names():
-    """Every harness, as tools/parity.py names them."""
-    return sorted(path.name[len("test_"):-len("_parity.py")] for path in (ROOT / "tools").glob("test_*_parity.py"))
+    """The harnesses tools/parity.py runs by name, and the proofs it refuses: {name: how to run it by hand}."""
+    from tools import parity
+    runnable = sorted({parity.base_name(name) for name in parity.harnesses()})
+    return runnable, dict(parity.MANUAL)
 
 
 def lan_checks():
@@ -98,9 +104,10 @@ def tracked():
 
 
 def daily_rows():
-    """The daily rows (tools/ci/ignored-tests/) the daily run runs: what `run --daily` chooses from."""
+    """Every daily row (tools/ci/ignored-tests/), with those of the job that builds the wasm fixture: what
+    `run --daily` chooses from."""
     from tools.ci import ignored_tests
-    return ignored_tests.daily_rows()
+    return [row for row in ignored_tests.listed_entries() if row.mark == "daily"]
 
 
 def covers(entry, package, target, test):
@@ -131,15 +138,19 @@ def select(table, paths):
     return Selection(tuple(area for area in table.areas if area.name in chosen), tuple(unmapped), tuple(escalated))
 
 
-def plan(area, harnesses, checks, rows, daily=False, lan=False):
-    """The commands that run one area's tests, cheapest first, and what each tier holds."""
+def plan(area, harnesses, checks, rows, daily=False, lan=False, by_hand=(), lan_bins=None):
+    """The commands that run one area's tests, cheapest first, and what each tier holds. `harnesses` are the ones
+    tools/parity.py runs, `by_hand` the proofs it refuses; `lan_bins` is a game built for the opt-in LAN checks."""
+    from tools.ci import ignored_tests
     commands = []
     for entry in area.cargo:
         commands.append(["cargo", "test", "-p", entry.package, *target_flags(entry.target),
                          *(["--", entry.filter] if entry.filter else [])])
     chosen = [row for row in rows if any(covers(entry, row.package, row.reference, row.test) for entry in area.cargo)]
+    # A row needing an input only one job builds (the wasm fixture) runs in that job, each test alone: named, not run.
+    fixture = [row for row in chosen if row.reason in ignored_tests.DAILY_INPUTS]
+    chosen = [row for row in chosen if row not in fixture]
     if daily:
-        from tools.ci import ignored_tests
         groups = defaultdict(list)
         for row in chosen:
             groups[row.package, row.reference].append(row.test)
@@ -153,9 +164,12 @@ def plan(area, harnesses, checks, rows, daily=False, lan=False):
     if named:
         commands.append([sys.executable, "tools/parity.py", *named])
     picked = matching(area.lan, checks)
-    if lan and picked:
-        commands.append([sys.executable, "tools/lan_e2e.py", *(flag for check in picked for flag in ("--check", check))])
-    return commands, {"daily": chosen, "harnesses": named, "lan": picked}
+    runnable = [check for check in picked if lan_bins or check not in LAN_OPT_IN]
+    if lan and runnable:
+        commands.append([sys.executable, "tools/lan_e2e.py", *(["--bin-dir", lan_bins] if lan_bins else []),
+                         *(flag for check in runnable for flag in ("--check", check))])
+    return commands, {"daily": chosen, "fixture": fixture, "harnesses": named,
+                      "by_hand": matching(area.harnesses, by_hand), "lan": picked}
 
 
 def describe(area, tiers):
@@ -167,9 +181,29 @@ def describe(area, tiers):
               + (f" -- {entry.filter}" if entry.filter else "") for entry in area.cargo]
     lines.append(f"  daily      {len(tiers['daily'])} tests"
                  + (f" ({', '.join(f'{reason} {count}' for reason, count in sorted(reasons.items()))})" if reasons else ""))
+    if tiers["fixture"]:
+        lines.append(f"  fixture    {len(tiers['fixture'])} daily tests, run apart: "
+                     + "; ".join(apart(tiers["fixture"])))
     lines.append(f"  harnesses  {len(tiers['harnesses'])}: {' '.join(tiers['harnesses'])}")
+    if tiers["by_hand"]:
+        lines.append(f"  by hand    {len(tiers['by_hand'])}: {' '.join(tiers['by_hand'])}")
     lines.append(f"  lan        {len(tiers['lan'])}: {' '.join(tiers['lan'])}")
     return "\n".join(lines)
+
+
+def apart(rows):
+    """The job's own runner for daily rows needing a built input: every test of that input, each in its process."""
+    from tools.ci import ignored_tests
+    variables = sorted({ignored_tests.DAILY_INPUTS[row.reason] for row in rows})
+    return [f"python3 tools/ci/ignored_tests.py --needs {variable} --one-process-each" for variable in variables]
+
+
+def fallback(selection, workspace):
+    """The crate tests for a diff's paths no area claims, as tools/ci/test_scope.py picks them for CI's verify (their
+    packages and those depending on them), or the whole workspace's when a path reaches every area."""
+    packages = None if selection.escalated else workspace.scope(selection.unmapped)
+    chosen = ["--workspace"] if packages is None else [flag for name in sorted(packages) for flag in ("-p", name)]
+    return ["cargo", "test", *chosen, "--lib", "--bins", "--tests"]
 
 
 def changed(args):
@@ -189,10 +223,10 @@ def report(selection):
     names = " ".join(area.name for area in selection.areas) or "none"
     print(f"areas: {names}")
     if selection.escalated:
-        print(f"these reach every area, so run the full set (tools/pr_ready.py): {' '.join(selection.escalated)}")
+        print(f"these reach every area, so `run` tests the whole workspace: {' '.join(selection.escalated)}")
     if selection.unmapped:
-        print(f"in no area ({len(selection.unmapped)}), so their crates' tests are not run here "
-              f"(tools/ci/test_scope.py names them): {' '.join(selection.unmapped)}")
+        print(f"in no area ({len(selection.unmapped)}), so `run` tests their crates as tools/ci/test_scope.py picks "
+              f"them: {' '.join(selection.unmapped)}")
 
 
 def main(argv=None):
@@ -206,6 +240,8 @@ def main(argv=None):
         source.add_argument("--changed-files", metavar="FILE", help="the areas these paths (one per line) touch")
         command.add_argument("--daily", action="store_true", help="also the area's daily tests (needs prepared data)")
         command.add_argument("--lan", action="store_true", help="also the area's LAN checks (starts two games)")
+    commands.choices["run"].add_argument("--lan-bin-dir", metavar="DIR", help="prebuilt sunrise-client and sunrise-ctl "
+                                         "for lan_e2e.py, built for the opt-in LAN checks, which run only on them")
     coverage = commands.add_parser("coverage")
     coverage.add_argument("--files", action="store_true", help="list each tracked file no area claims")
     args = parser.parse_args(argv)
@@ -241,8 +277,9 @@ def main(argv=None):
     else:
         parser.error("run needs area names, --changed or --changed-files")
 
-    harnesses, checks, rows = harness_names(), lan_checks(), daily_rows()
-    plans = [(area, *plan(area, harnesses, checks, rows, args.daily, args.lan)) for area in areas]
+    (harnesses, manual), checks, rows = harness_names(), lan_checks(), daily_rows()
+    lan_bins = args.lan_bin_dir if args.command == "run" else None
+    plans = [(area, *plan(area, harnesses, checks, rows, args.daily, args.lan, manual, lan_bins)) for area in areas]
     if args.command == "list":
         for area, _, tiers in plans:
             print(describe(area, tiers))
@@ -252,6 +289,9 @@ def main(argv=None):
     for _, area_commands, _ in plans:
         steps += [command for command in area_commands if command[1:2] != ["tools/parity.py"]]
     if paths is not None:
+        if selection.unmapped or selection.escalated:
+            from tools.ci import test_scope
+            steps.append(fallback(selection, test_scope.Workspace(test_scope.cargo_metadata())))
         # From a diff, harnesses come from the runner's traced dependencies, not the areas' lists.
         source = ["--changed", args.changed] if args.changed else ["--changed-files", str(Path(args.changed_files).resolve())]
         steps.append([sys.executable, "tools/parity.py", *source])
@@ -265,13 +305,25 @@ def main(argv=None):
         wanted = {flag for command in lan for flag in command[2:] if flag != "--check"}
         checks_wanted = [check for check in checks if check in wanted]  # the driver's own order
         steps = [command for command in steps if command not in lan]
-        steps.append([sys.executable, "tools/lan_e2e.py", *(flag for check in checks_wanted for flag in ("--check", check))])
+        steps.append([sys.executable, "tools/lan_e2e.py", *(["--bin-dir", lan_bins] if lan_bins else []),
+                      *(flag for check in checks_wanted for flag in ("--check", check))])
+    # What the areas hold that this run leaves to another.
+    notes = [f"{name} is run by hand: {manual[name]}"
+             for name in sorted({name for _, _, tiers in plans for name in tiers["by_hand"]})]
+    fixture = [row for _, _, tiers in plans for row in tiers["fixture"]]
+    if args.daily and fixture:
+        notes.append(f"{len(fixture)} daily tests need an input built apart: {'; '.join(apart(fixture))}")
+    if args.lan and not lan_bins:
+        opt_in = sorted({check for _, _, tiers in plans for check in tiers["lan"] if check in LAN_OPT_IN})
+        notes += [f"{check} needs {LAN_OPT_IN[check]}: pass it with --lan-bin-dir" for check in opt_in]
 
     failed = []
     for command in dict.fromkeys(tuple(command) for command in steps):
         print("$ " + " ".join(command), flush=True)
         if subprocess.run(command, cwd=ROOT).returncode != 0:
             failed.append(" ".join(command))
+    if notes:
+        print("not run here:\n  " + "\n  ".join(notes))
     if failed:
         print("failed:\n  " + "\n  ".join(failed))
         return 1

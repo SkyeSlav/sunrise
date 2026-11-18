@@ -443,6 +443,10 @@ pub enum Spread {
 mod block_entity_neighbors;
 pub use block_entity_neighbors::BlockEntityNeighbors;
 
+/// The blocks a preview standing in for a level changed (a client's guess at a click), which a
+/// placement or survival hook asked from inside it reads over that level.
+pub type PreviewBlocks = HashMap<BlockPos, BlockStateId>;
+
 /// The world as seen by block behaviour. Implemented by the game and tests.
 pub trait LevelAccess: BlockEntityNeighbors {
     /// `Player.canEat(false)` at the cake bite, after item-specific interactions
@@ -782,11 +786,14 @@ pub trait LevelAccess: BlockEntityNeighbors {
     /// placement (vanilla's `null` return: the block goes nowhere and nothing
     /// is consumed), and `None` leaves the block's own `getStateForPlacement`
     /// to run. `ticks` is the simulation's own, which a signal read of the level needs
-    /// (comparator outputs, moving pistons). The default does nothing.
+    /// (comparator outputs, moving pistons). `preview` is set when a preview standing in for
+    /// this level asks (a client's guess at a click): the blocks it changed, which the hook's
+    /// reads see over this level. The default does nothing.
     #[allow(clippy::option_option)]
     fn before_state_for_placement(
         &self,
         _ticks: &Ticks,
+        _preview: Option<&PreviewBlocks>,
         _state: BlockStateId,
         _context: &PlacementContext,
         _fluid: FluidState,
@@ -810,13 +817,14 @@ pub trait LevelAccess: BlockEntityNeighbors {
     /// block answers it: placing it (`BlockItem.canPlace`), a plant's or an
     /// attached block's shape update, and every other rule that asks. `state`
     /// may not be in the level yet (it is being placed). An answer put in
-    /// `survives` is the result, and the block's own rule doesn't run. `ticks` is as for
+    /// `survives` is the result, and the block's own rule doesn't run. `ticks` and `preview` are as for
     /// `before_state_for_placement`. Return true only if the disabled owner's
     /// rule should keep an existing block in place instead of running vanilla's rule.
     /// The default leaves the answer unset and returns false.
     fn before_can_survive(
         &self,
         _ticks: &Ticks,
+        _preview: Option<&PreviewBlocks>,
         _pos: BlockPos,
         _state: BlockStateId,
         _survives: &mut Option<bool>,
@@ -830,10 +838,13 @@ pub trait LevelAccess: BlockEntityNeighbors {
     }
     /// `IBlockExtension.canSustainPlant` for the soil `ground` at `ground_pos`
     /// and the plant `state` above it, before the plant answers `mayPlaceOn`.
-    /// An answer put in `sustains` is the result. Returns the same inert signal as
+    /// An answer put in `sustains` is the result. `ticks` and `preview` are as for
+    /// `before_state_for_placement`. Returns the same inert signal as
     /// `before_can_survive` (false by default).
     fn before_can_sustain_plant(
         &self,
+        _ticks: &Ticks,
+        _preview: Option<&PreviewBlocks>,
         _state: BlockStateId,
         _ground: BlockStateId,
         _ground_pos: BlockPos,
@@ -877,10 +888,13 @@ pub trait LevelAccess: BlockEntityNeighbors {
     }
     /// `VegetationBlock.mayPlaceOn(ground, level, groundPos)` for the plant
     /// `state`, before the plant answers it: the blocks a plant can stand on,
-    /// which its `canSurvive` asks. An answer put in `may` is the result. Returns the
-    /// same inert signal as `before_can_survive` (false by default).
+    /// which its `canSurvive` asks. An answer put in `may` is the result. `ticks`
+    /// and `preview` are as for `before_state_for_placement`. Returns the same
+    /// inert signal as `before_can_survive` (false by default).
     fn before_may_place_on(
         &self,
+        _ticks: &Ticks,
+        _preview: Option<&PreviewBlocks>,
         _state: BlockStateId,
         _ground: BlockStateId,
         _ground_pos: BlockPos,
@@ -2039,6 +2053,8 @@ pub struct Signals<'a, L: signal_access::SignalAccess + ?Sized> {
     /// `RedstoneWireBlock.shouldSignal` is false while a wire samples its
     /// neighbours (`getBlockSignal`).
     pub(crate) wire_signal_off: bool,
+    /// Set when a read needed a comparator output `ticks` doesn't hold.
+    pub(crate) unknown_output: std::cell::Cell<bool>,
 }
 impl<'a, L: LevelAccess + ?Sized> Sim<'a, L> {
     /// This simulation's level, read-only.
@@ -2048,6 +2064,7 @@ impl<'a, L: LevelAccess + ?Sized> Sim<'a, L> {
             level: &*self.level,
             ticks: &*self.ticks,
             wire_signal_off: self.wire_signal_off.get(),
+            unknown_output: std::cell::Cell::new(false),
         }
     }
 }
@@ -2063,6 +2080,7 @@ impl Behaviours {
             level,
             ticks,
             wire_signal_off: false,
+            unknown_output: std::cell::Cell::new(false),
         }
     }
     pub(crate) fn sim<'a, L: LevelAccess + ?Sized>(

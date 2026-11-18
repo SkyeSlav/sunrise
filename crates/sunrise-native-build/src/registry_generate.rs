@@ -4,6 +4,7 @@ use crate::rust::Toolchain;
 use std::{
     collections::BTreeSet,
     fs,
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -130,12 +131,76 @@ pub fn rewrite_dependencies(
     Ok(())
 }
 
+/// The `Cargo.lock` of the game build `revision`, which a mod's lock starts from: kept in the
+/// build's folder, and downloaded from that commit once. A kept file that no longer reads as a
+/// lock is downloaded again.
+pub fn game_lock(revision: &str) -> Result<String, String> {
+    let kept = super::root()
+        .join("game-lock")
+        .join(format!("{revision}.lock"));
+    if let Ok(text) = fs::read_to_string(&kept)
+        && super::registry_lock::RegistryLock::parse(&text).is_ok()
+    {
+        crate::host::mark_used(&kept)?;
+        return Ok(text);
+    }
+    let url = format!(
+        "{}/{revision}/Cargo.lock",
+        sunrise_addresses::GAME_SOURCE_FILES
+    );
+    let unavailable = |error: String| {
+        crate::host::trf(
+            "The mod's lock starts from the Cargo.lock of its game build, {revision}, which could not be downloaded: {error}. To lock without the network, put that file at {path}.",
+            &[
+                ("revision", revision),
+                ("error", &error),
+                ("path", &kept.display().to_string()),
+            ],
+        )
+    };
+    let mut text = String::new();
+    // One byte past the limit shows an answer that is too large, where a cut one could still parse.
+    crate::host::get(&url)
+        .map_err(unavailable)?
+        .take(GAME_LOCK_LIMIT + 1)
+        .read_to_string(&mut text)
+        .map_err(|e| unavailable(e.to_string()))?;
+    if text.len() as u64 > GAME_LOCK_LIMIT {
+        return Err(unavailable("the answer is too large to be a lock".into()));
+    }
+    super::registry_lock::RegistryLock::parse(&text).map_err(unavailable)?;
+    let folder = kept.parent().expect("a file in the build's folder");
+    fs::create_dir_all(folder).map_err(|e| e.to_string())?;
+    let mut pending = tempfile::NamedTempFile::new_in(folder).map_err(|e| e.to_string())?;
+    pending
+        .write_all(text.as_bytes())
+        .map_err(|e| e.to_string())?;
+    pending.persist(&kept).map_err(|e| e.to_string())?;
+    crate::host::mark_used(&kept)?;
+    Ok(text)
+}
+
+/// More than any game lock holds; a larger answer is not one.
+const GAME_LOCK_LIMIT: u64 = 16 << 20;
+
 /// The mod's registry pins resolved with the toolchain `rust` gives, once the mod's inputs passed.
+/// Resolution starts from `game`, the `Cargo.lock` of the mod's game build: a package the game
+/// also locks keeps the game's version, so mods made for one build agree on those packages, and
+/// only the mod's own packages take the newest version that fits. `game` is asked for the lock of
+/// the build the mod pins.
 pub fn generate<T: Toolchain>(
     rust: impl FnOnce() -> Result<T, String>,
+    game: impl FnOnce(&str) -> Result<String, String>,
     bundle: &Bundle,
     update: bool,
 ) -> Result<(), String> {
+    // A wasm mod with `[[inject]]` rows is a bundle too, and pins no game build to lock against.
+    let native = bundle.manifest.native.as_ref().ok_or_else(|| {
+        crate::host::trf(
+            "{path} is not a native mod.",
+            &[("path", &bundle.dir.display().to_string())],
+        )
+    })?;
     // Project owns the original API declaration and source-policy boundary.
     api::Project::read(bundle).map_err(|e| e.to_string())?;
     let destination = bundle.dir.join("Cargo.lock");
@@ -144,16 +209,26 @@ pub fn generate<T: Toolchain>(
             "Cargo.lock already exists; use --update-lock to replace its pins explicitly".into(),
         );
     }
+    fs::create_dir_all(super::root()).map_err(|e| e.to_string())?;
     let work = tempfile::tempdir_in(super::root()).map_err(|e| e.to_string())?;
     stage(bundle, work.path())?;
+    let seed = super::registry_lock::RegistryLock::parse(&game(&native.sunrise)?)?;
+    fs::write(
+        work.path().join("Cargo.lock"),
+        seed.seed("version=4\npackage=[]\n")?,
+    )
+    .map_err(|e| e.to_string())?;
     let rust = rust()?;
-    let command = super::cargo(&rust, work.path(), "generate-lockfile");
+    // `cargo update --workspace` keeps a seeded package's version where the mod's requirements
+    // allow it and drops the seeded packages the mod doesn't reach; `generate-lockfile` would
+    // ignore the seed.
+    let mut command = super::cargo(&rust, work.path(), "update");
+    command.arg("--workspace");
     super::run(command, "Resolving registry dependency pins", |_| {})?;
     let text = super::read_lock(work.path())?;
     super::registry_lock::RegistryLock::parse(&text)?;
     // Refusals and resolution errors above never mutate the existing lock.
     let mut pending = tempfile::NamedTempFile::new_in(&bundle.dir).map_err(|e| e.to_string())?;
-    use std::io::Write;
     pending
         .write_all(text.as_bytes())
         .map_err(|e| e.to_string())?;
@@ -226,9 +301,14 @@ mod tests {
             panic!("no toolchain before the refusal")
         };
         assert!(
-            generate(unreached, &bundle, false)
-                .unwrap_err()
-                .contains("--update-lock")
+            generate(
+                unreached,
+                |_| panic!("no game lock before the refusal"),
+                &bundle,
+                false
+            )
+            .unwrap_err()
+            .contains("--update-lock")
         );
         for extra in [
             "[patch.crates-io]\nitoa={path='outside'}\n",
@@ -246,6 +326,30 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn a_wasm_mod_with_injections_has_no_game_build_to_lock_against() {
+        let manifest = sunrise_mod_package::Manifest::parse(&format!(
+            "id='wasm_inject'\nname='Wasm inject'\nversion='1.0.0'\napi='0.2'\ncapabilities=['registries']\n[wasm]\nsha512='{}'\ntoolchain='fixture'\n[[inject]]\nid='tick'\nat='game::tick'\nkind='head'\nwith='tick'\n",
+            "0".repeat(128)
+        ))
+        .unwrap();
+        let bundle = Bundle {
+            manifest,
+            dir: "wasm-inject".into(),
+        };
+        let unreached = || -> Result<crate::rust::Unpacked, String> {
+            panic!("no toolchain before the refusal")
+        };
+        let error = generate(
+            unreached,
+            |_| panic!("no game lock before the refusal"),
+            &bundle,
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(error, "wasm-inject is not a native mod.");
+    }
+
     #[test]
     fn local_dependencies_are_traversed_but_cannot_escape() {
         let input = tempfile::tempdir().unwrap();
@@ -275,5 +379,95 @@ mod tests {
                 .unwrap_err()
                 .contains("outside the mod")
         );
+    }
+
+    /// A mod's own package needs packages the game locks: the lock gives the game's version of
+    /// each, not the newest, and a build's check takes it.
+    #[test]
+    #[ignore = "daily"]
+    fn a_mods_lock_starts_from_the_games_versions() {
+        use crate::registry_lock::RegistryLock;
+        let input = tempfile::tempdir().unwrap();
+        let vendor = tempfile::tempdir().unwrap();
+        let bundle = fixture(input.path());
+        for (name, version, dependency) in [
+            ("zipish", "1.0.0", "getrandom='0.4'"),
+            ("getrandom", "0.4.3", "libc='0.2'"),
+            ("getrandom", "0.4.4", "libc='0.2'"),
+            ("libc", "0.2.190", ""),
+            ("libc", "0.2.191", ""),
+            ("unused", "1.0.0", ""),
+        ] {
+            let folder = vendor.path().join(format!("{name}-{version}"));
+            fs::create_dir_all(folder.join("src")).unwrap();
+            fs::write(folder.join("src/lib.rs"), "").unwrap();
+            fs::write(
+                folder.join("Cargo.toml"),
+                format!(
+                    "[package]\nname='{name}'\nversion='{version}'\n[dependencies]\n{dependency}\n"
+                ),
+            )
+            .unwrap();
+            fs::write(
+                folder.join(".cargo-checksum.json"),
+                format!(r#"{{"package":"{}","files":{{}}}}"#, "a".repeat(64)),
+            )
+            .unwrap();
+        }
+        fs::write(
+            input.path().join("Cargo.toml"),
+            "[package]\nname='fixture'\nversion='0.1.0'\n[dependencies]\nsunrise-mod-api={ path='.sunrise/sdk/api/crates/sunrise-mod-api' }\nzipish='1'\n",
+        )
+        .unwrap();
+        let package = |name: &str, version: &str, dependencies: &str| {
+            format!(
+                "[[package]]\nname = \"{name}\"\nversion = \"{version}\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"{}\"\ndependencies = [{dependencies}]\n",
+                "a".repeat(64)
+            )
+        };
+        // The game's own crate and a package only the game uses stay out of the mod's lock.
+        let game = format!(
+            "version = 4\n[[package]]\nname = \"game\"\nversion = \"1.0.0\"\ndependencies = [\"getrandom\", \"unused\"]\n{}{}{}",
+            package("getrandom", "0.4.3", "\"libc\""),
+            package("libc", "0.2.190", ""),
+            package("unused", "1.0.0", "")
+        );
+        let sysroot = std::process::Command::new("rustc")
+            .args(["--print", "sysroot"])
+            .output()
+            .unwrap()
+            .stdout;
+        let host = std::process::Command::new("rustc")
+            .args(["--print", "host-tuple"])
+            .output()
+            .unwrap()
+            .stdout;
+        let toolchain = crate::rust::Unpacked {
+            dir: String::from_utf8(sysroot).unwrap().trim().into(),
+            target: String::from_utf8(host).unwrap().trim().into(),
+            cargo_home: input.path().join("cargo-home"),
+            cargo_config: vec![
+                "net.offline=true".into(),
+                "source.crates-io.replace-with='fixture'".into(),
+                format!("source.fixture.directory='{}'", vendor.path().display()),
+            ],
+            c_bin: None,
+        };
+        generate(|| Ok(toolchain), |_| Ok(game.clone()), &bundle, false).unwrap();
+        let text = fs::read_to_string(input.path().join("Cargo.lock")).unwrap();
+        let pins = RegistryLock::parse(&text).unwrap();
+        let locked: Vec<_> = pins
+            .packages
+            .keys()
+            .map(|id| format!("{} {}", id.name, id.version))
+            .collect();
+        assert_eq!(
+            locked,
+            ["getrandom 0.4.3", "libc 0.2.190", "zipish 1.0.0"],
+            "{text}"
+        );
+        let mut allowed = RegistryLock::parse(&game).unwrap();
+        allowed.extend(&pins).unwrap();
+        allowed.check_pins(&pins).unwrap();
     }
 }

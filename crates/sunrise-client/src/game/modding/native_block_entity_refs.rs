@@ -847,6 +847,8 @@ pub(super) fn part_snapshot(
     }))
 }
 
+/// The handle of the loaded block entity at `pos`, without loading a chunk or taking one
+/// that is out of the world for its own tick.
 pub(super) fn world_block_entity(
     world: &World,
     level: LevelRef,
@@ -860,7 +862,7 @@ pub(super) fn world_block_entity(
 }
 
 fn loaded_block_entity(world: &World, [x, y, z]: [i32; 3]) -> Option<&BlockEntity> {
-    if !world.loaded(x, z) {
+    if !world.loaded(x, z) || !world.shape.contains_y(y) {
         return None;
     }
     world
@@ -896,6 +898,88 @@ mod tests {
         assert!(data.contains_key(&"Items".into()));
     }
 
+    /// What a reader of a vanilla machine's progress (a crafting CPU's estimate, a progress
+    /// line) needs is in `BlockEntity.saveWithoutMetadata`, which `block_entity_data` returns:
+    /// a furnace's cooking and burning timers and the fuel's speed, a brewing stand's brew
+    /// timer counting down, its total, its fuel and its bottles.
+    #[test]
+    fn saved_data_carries_vanilla_machine_progress() {
+        use sunrise_client::{
+            brewing::BrewingStand,
+            containers::{Furnace, FurnaceKind},
+        };
+        let world = World::new(BlockStateId(0), 0);
+        let int = |data: &Compound, key: &str| match data.get(&key.into()) {
+            Some(Tag::Int(value)) => *value,
+            other => panic!("{key} is {other:?}"),
+        };
+        let float = |data: &Compound, key: &str| match data.get(&key.into()) {
+            Some(Tag::Float(bits)) => f32::from_bits(*bits),
+            other => panic!("{key} is {other:?}"),
+        };
+        let slots = |data: &Compound| match data.get(&"Items".into()) {
+            Some(Tag::List(items)) => items
+                .iter()
+                .map(|item| match item.get("Slot") {
+                    Some(Tag::Byte(slot)) => *slot,
+                    other => panic!("slot is {other:?}"),
+                })
+                .collect::<Vec<_>>(),
+            other => panic!("Items is {other:?}"),
+        };
+
+        let furnace = BlockEntity::Furnace(Furnace {
+            kind: FurnaceKind::BlastFurnace,
+            items: [Some(ItemStack::new("minecraft:raw_iron", 3)), None, None],
+            lit_remaining: 750,
+            lit_total: 800,
+            cooking_timer: 40,
+            cooking_total: 100,
+            speed: 2.0,
+            recipes_used: Default::default(),
+        });
+        let data = save_without_metadata(
+            &world,
+            (0, 64, 0),
+            &furnace,
+            "minecraft:blast_furnace",
+            &Default::default(),
+        )
+        .unwrap();
+        assert_eq!(int(&data, "cooking_time_spent"), 40);
+        assert_eq!(int(&data, "cooking_total_time"), 100);
+        assert_eq!(int(&data, "lit_time_remaining"), 750);
+        assert_eq!(int(&data, "lit_total_time"), 800);
+        assert_eq!(float(&data, "speed_multiplier"), 2.0);
+        assert_eq!(slots(&data), vec![0], "the input slot is held");
+
+        let mut stand = BrewingStand::new();
+        stand.brew_time = 150;
+        stand.total_brew_time = 400;
+        stand.fuel = 12;
+        stand.items[0] = Some(ItemStack::new("minecraft:potion", 1));
+        stand.items[2] = Some(ItemStack::new("minecraft:potion", 1));
+        stand.items[3] = Some(ItemStack::new("minecraft:nether_wart", 1));
+        let stand = BlockEntity::Brewing(Box::new(stand));
+        let data = save_without_metadata(
+            &world,
+            (1, 64, 0),
+            &stand,
+            "minecraft:brewing_stand",
+            &Default::default(),
+        )
+        .unwrap();
+        assert_eq!(int(&data, "BrewTime"), 150);
+        assert_eq!(int(&data, "total_brew_time"), 400);
+        assert_eq!(int(&data, "Fuel"), 12);
+        assert_eq!(float(&data, "speed_multiplier"), 1.0);
+        assert_eq!(
+            slots(&data),
+            vec![0, 2, 3],
+            "two bottles and the ingredient"
+        );
+    }
+
     #[test]
     #[ignore = "daily"]
     fn retained_handles_reject_replacements_and_rollback_restores_identity() {
@@ -915,6 +999,32 @@ mod tests {
             };
             game.world.block_entities.insert(pos, holder());
             let original = game.block_entity(level, [1, 64, 1]).unwrap();
+            assert_eq!(original.merge_data(game, compound("{count:3}")), Ok(true));
+            game.with_level(|_, host, ticks| {
+                let wrapped = super::super::mod_api_host::LevelTicks::new(&*host, ticks);
+                assert_eq!(
+                    mod_api::LevelHost::block_entity(&wrapped, [1, 64, 1]),
+                    mod_api::LevelHost::block_entity(&*host, [1, 64, 1]),
+                );
+                assert_eq!(
+                    mod_api::LevelHost::block_entity(&wrapped, [1, 64, 1]),
+                    Some(original),
+                );
+                assert_eq!(
+                    mod_api::LevelHost::block_entity(&wrapped, [1, 400, 1]),
+                    None,
+                );
+                // The ticks wrapper hands the same reads through, saved data included.
+                let data = mod_api::LevelHost::block_entity_data(&*host, original);
+                assert_eq!(
+                    data.as_ref().and_then(|data| data.get(&"count".into())),
+                    Some(&mod_api::Tag::Int(3))
+                );
+                assert_eq!(
+                    mod_api::LevelHost::block_entity_data(&wrapped, original),
+                    data,
+                );
+            });
             assert_eq!(original.set_data_slots(game, vec![7]), Ok(true));
             let mut tentative = None;
             let _: Result<(), ()> = game.transaction(|game, _| {
@@ -986,6 +1096,16 @@ mod tests {
             .block_entities
             .insert(key, BlockEntity::Mod(Box::default()));
         assert!(loaded_block_entity(&world, pos).is_none());
+        let outside_pos = [-1, world.shape.max_y(), 0];
+        world
+            .block_entities
+            .insert((-1, outside_pos[1], 0), BlockEntity::DaylightDetector);
+        assert!(loaded_block_entity(&world, outside_pos).is_none());
+        let below_pos = [-1, world.shape.min_y - 1, 0];
+        world
+            .block_entities
+            .insert((-1, below_pos[1], 0), BlockEntity::DaylightDetector);
+        assert!(loaded_block_entity(&world, below_pos).is_none());
     }
 
     fn compound(snbt: &str) -> Compound {

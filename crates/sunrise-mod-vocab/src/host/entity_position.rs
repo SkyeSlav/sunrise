@@ -89,11 +89,23 @@ pub trait EntityPositionBackendMut {
     /// piston's per-tick limit, 0.51 blocks per axis, on the first non-zero axis only; a
     /// mob's budget carries across calls in a tick, any other kind's lasts the call. Returns how far
     /// the entity moved, `delta` less what the collisions took. None for a stale handle, on a
-    /// client, for a player (its client owns its position; teleport it instead), for an entity
-    /// outside the game's entity walk (a display, a painting, an item frame, an End crystal, a
-    /// dragon part) and for a delta that is not finite or has a component beyond 64 blocks. The
-    /// entity's own tick still does what follows a move: fall damage, block effects and
-    /// triggers.
+    /// client, for an entity outside the game's entity walk (a display, a painting, an item
+    /// frame, an End crystal, a dragon part) and for a delta that is not finite or has a
+    /// component beyond 64 blocks. The entity's own tick still does what follows a move: fall
+    /// damage, block effects and triggers.
+    ///
+    /// A player moves as `Entity.move` with `MoverType.SELF` would, whatever `cause` the hook
+    /// hears: blocks, entity and moving colliders and the player's collision exclusions stop
+    /// it and a step up is taken (a spectator goes through everything, and `MoveCause::Piston`'s
+    /// per-tick limit does not apply). The server's copy moves at once and the player's client
+    /// is told with a relative teleport, so it adds the displacement to where it is when the
+    /// packet arrives and keeps its motion and look. Until the client confirms, the server drops
+    /// the player's own movement reports: a mod that moves a player on many ticks in a row holds
+    /// it still (a development build warns after 20), so use `entity_push` or a client-side
+    /// write for motion every tick. A player a moving collider carries stays carried while the
+    /// target is still over the collider. `None` for a player who is a rider (its vehicle moves
+    /// it), a sleeper, one without a connection, a target outside the world's bounds or a move
+    /// the collision query cannot answer; nothing moves then.
     #[access(WorldOnly)]
     fn entity_move_by(
         &mut self,

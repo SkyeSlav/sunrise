@@ -369,6 +369,7 @@
   "sunrise.chat.repeats": " (x%s)",
   "sunrise.chat.search": "Search chat:",
   "sunrise.chat.timestamp": "[%s] ",
+  "sunrise.configuration.error": "Configuration error: %s",
   "sunrise.controller.direct_craft": "Quick Craft",
   "sunrise.controller.guide.alternatives": "Alternatives",
   "sunrise.controller.guide.attack": "Attack",

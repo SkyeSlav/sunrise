@@ -469,6 +469,78 @@ impl Game<'_> {
         }
     }
 
+    /// Write back an already-held engine stack after in-place item processing, without
+    /// routing it through insertion rules or changing its count. Refuses virtual previews
+    /// and handler-owned slots: their display mirrors do not own the item.
+    pub(super) fn replace_crafted_menu_slot(
+        &mut self,
+        menu: MenuRef,
+        slot: usize,
+        stack: ItemStack,
+    ) -> bool {
+        let player = menu.fields().player;
+        match self.menu_slot_backing(menu, slot) {
+            Some(MenuSlotBacking::Player(index)) => self.native_as_player_handle(player, |game| {
+                game.journal_player(player.uuid());
+                let held = match index {
+                    0..36 => &mut game.inventory[index],
+                    36..40 => &mut game.armor[39 - index],
+                    _ => &mut game.offhand,
+                };
+                *held = Some(stack);
+            }),
+            Some(MenuSlotBacking::BlockEntity { .. } | MenuSlotBacking::Entity { .. }) => {
+                let Some((pos, index)) = self.native_menu_guest(menu).and_then(|guest| {
+                    guest
+                        .menu
+                        .as_ref()?
+                        .slots
+                        .held_block_slot(&self.world, guest, slot)
+                }) else {
+                    return false;
+                };
+                if pos.1 == VEHICLE_KEY_Y {
+                    let entity = pos.2 as u32;
+                    self.journal_entity(entity);
+                    return self
+                        .edit_entity_slots(entity, |slots, _| {
+                            let Some(held) = slots.get_mut(index) else {
+                                return false;
+                            };
+                            *held = Some(stack);
+                            true
+                        })
+                        .unwrap_or(false);
+                }
+                self.journal_block_entity_slot(pos, index);
+                let Some(held) = self
+                    .world
+                    .block_entities
+                    .get_mut(&pos)
+                    .and_then(|block| block.slots_mut().get_mut(index))
+                else {
+                    return false;
+                };
+                *held = Some(stack);
+                self.after_commit(super::transactions::After::Changed(pos));
+                true
+            }
+            Some(
+                MenuSlotBacking::Ender(_)
+                | MenuSlotBacking::CraftGrid(_)
+                | MenuSlotBacking::Native(_),
+            ) => {
+                self.journal_menus(player);
+                let Some(held) = self.native_menu_storage(menu, slot) else {
+                    return false;
+                };
+                *held = Some(stack);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Carried (cursor) stack; outer None means unavailable.
     pub(super) fn menu_carried(&self, menu: MenuRef) -> Option<Option<ItemStack>> {
         if self.remote.is_some() {

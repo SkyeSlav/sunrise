@@ -36,6 +36,8 @@ const API_SOURCE: &str = "api-source.tar.xz";
 const SMALL: u64 = 16 << 20;
 /// The most the API source may unpack to.
 const API_LIMIT: u64 = 512 << 20;
+/// The most one compiled slice may unpack to.
+const SLICE_LIMIT: u64 = 8 << 30;
 /// The most the build data may unpack to: its four files at the tool's bound for one.
 const BUILD_DATA_LIMIT: u64 = 4 * crate::bounded::MAX_CATALOG;
 
@@ -47,6 +49,8 @@ pub(crate) struct PinnedSdk {
     /// The form people read: `nightly-2026-11-13 (afe471c)`, or the short sha.
     pub(crate) name: String,
     pub(crate) dir: PathBuf,
+    /// The horizon-mixins revision the build's `sdk.json` names: the tool a native mod pins.
+    pub(crate) mixins: String,
     /// The build's surface export, `surface.json` in `dir`.
     pub(crate) surface: PathBuf,
 }
@@ -54,8 +58,12 @@ pub(crate) struct PinnedSdk {
 /// The SDK the project at `project` pins, in its `.sunrise/sdk/`, fetched first when the folder is
 /// missing or holds another build.
 pub(crate) fn ensure_sdk(project: &Path) -> Result<PinnedSdk, String> {
-    let build = pin(project)?;
-    fetch(&Base::from_env(), &keys(), &build, &project.join(DIR), true)
+    fetch_pinned(project, &pin(project)?)
+}
+
+/// `build`'s SDK in the project's `.sunrise/sdk/`, API source included.
+pub(crate) fn fetch_pinned(project: &Path, build: &str) -> Result<PinnedSdk, String> {
+    fetch(&Base::from_env(), &keys(), build, &project.join(DIR), true)
 }
 
 /// The game checkout the project at `project` builds against, when its `sunrise-mod-api`
@@ -371,6 +379,48 @@ pub(crate) fn fetch(
     Ok(pinned(&index, dir))
 }
 
+/// The compiled slices (`runtime`, `api`, `engine`) of the build `index` describes, for `target`,
+/// verified and unpacked once into `dir/<target>/`, the folders `native-build`'s plan names. `say`
+/// gets one line per download.
+pub(crate) fn fetch_slices(
+    base: &Base,
+    index: &Index,
+    target: &str,
+    dir: &Path,
+    say: &dyn Fn(&str),
+) -> Result<sunrise_native_build::prebuilt::Package, String> {
+    let build = &index.build.commit;
+    let names = index
+        .route_assets("engine", target, sdk::Side::Client)
+        .map_err(|e| format!("sdk-{build} has no slices for this computer ({target}): {e}"))?;
+    let into = dir.join(target);
+    let package = sunrise_native_build::prebuilt::Package::at(&into);
+    if fs::read_to_string(into.join(STAMP)).is_ok_and(|stamp| stamp == *build) {
+        return Ok(package);
+    }
+    if let Err(e) = fs::remove_dir_all(&into)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(format!("{}: {e}", into.display()));
+    }
+    fs::create_dir_all(&into).map_err(|e| format!("{}: {e}", into.display()))?;
+    for name in names {
+        let asset = index
+            .asset(&name)
+            .map_err(|e| format!("sdk-{build}: {e}"))?;
+        let Some((kind, ..)) = sdk::Asset::parts_of(&name) else {
+            return Err(format!("sdk-{build}: {name} is no slice"));
+        };
+        say(&format!(
+            "Downloading {name} ({} MB), once for every project",
+            asset.size.div_ceil(1_000_000)
+        ));
+        unpack(base, index, &name, &into, kind.name(), SLICE_LIMIT)?;
+    }
+    fs::write(into.join(STAMP), build).map_err(|e| format!("{}: {e}", into.display()))?;
+    Ok(package)
+}
+
 /// Downloads the archive `name` that `index` lists into `dir`, and unpacks it, verified, into
 /// `dir`'s folder `into`.
 fn unpack(
@@ -404,6 +454,7 @@ fn pinned(index: &Index, dir: &Path) -> PinnedSdk {
         },
         build,
         dir: dir.to_owned(),
+        mixins: index.mixins.rev.clone(),
         surface: dir.join(SURFACE),
     }
 }

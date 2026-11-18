@@ -134,7 +134,10 @@ fn refuses_by_name(attach: Attach, method: &str) {
     let text = error.join("\n");
     assert!(text.contains("refused registration"), "{text}");
     assert!(text.contains(&format!("EntityPart::{method}:")), "{text}");
-    assert!(text.contains("general_entity_tick"), "{text}");
+    assert!(
+        text.contains("cannot override native-only methods"),
+        "{text}"
+    );
 }
 
 #[test]

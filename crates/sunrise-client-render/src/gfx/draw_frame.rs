@@ -537,6 +537,13 @@ impl Renderer {
         let now = std::time::Instant::now();
         let mut visible_lods = std::mem::take(&mut self.visible_lods);
         visible_lods.clear();
+        // The animated layers this frame draws, marked as each list is made.
+        let mut animated = self
+            .animated_textures
+            .then_some(&mut self.active_animated_layers);
+        if let Some(active) = &mut animated {
+            active.fill(0);
+        }
         if frame.title {
             visible.clear();
         } else {
@@ -548,11 +555,17 @@ impl Renderer {
                 let Some(tile) = lods.get(&key) else {
                     return;
                 };
-                visible_lods.extend(if inside {
+                let Some(listed) = (if inside {
                     tile.visible_inside(key, camera, now)
                 } else {
                     tile.visible(key, camera, &view, now)
-                });
+                }) else {
+                    return;
+                };
+                visible_lods.push(listed);
+                if let Some(active) = &mut animated {
+                    mark_layers(active, &tile.animated);
+                }
             });
             visible_lods.sort_unstable_by_key(|v| (v.distance, v.key));
         }
@@ -623,29 +636,11 @@ impl Renderer {
             }
         }
         if self.animated_textures {
-            self.active_animated_layers.fill(0);
+            // The far tiles' layers were marked as they were listed.
             let lists = self.world_views.sections.sections();
             for v in visible.iter().chain(&shadow_visible).chain(lists) {
                 let s = self.sections.get(v.slot);
-                for &layer in &*s.animated_layers {
-                    let layer = layer as usize;
-                    self.active_animated_layers[layer / u64::BITS as usize] |=
-                        1_u64 << (layer % u64::BITS as usize);
-                }
-            }
-            for v in &visible_lods {
-                if let Some(tile) = self.lods.get(&v.key) {
-                    for &layer in &*tile.drawn().animated_layers {
-                        let layer = layer as usize;
-                        self.active_animated_layers[layer / u64::BITS as usize] |=
-                            1_u64 << (layer % u64::BITS as usize);
-                    }
-                    for &layer in &*tile.mesh.animated_layers {
-                        let layer = layer as usize;
-                        self.active_animated_layers[layer / u64::BITS as usize] |=
-                            1_u64 << (layer % u64::BITS as usize);
-                    }
-                }
+                mark_layers(&mut self.active_animated_layers, &s.animated_layers);
             }
             // Visibility is collected before terrain draw commands are recorded,
             // so upload the current mask here and keep animation updates ahead
@@ -3429,5 +3424,13 @@ impl Renderer {
                 shadow_visible,
             },
         )
+    }
+}
+
+/// Marks `layers` in `active`, a bit per animated sprite layer (`Renderer::animate`).
+fn mark_layers(active: &mut [u64], layers: &[u16]) {
+    for &layer in layers {
+        let layer = usize::from(layer);
+        active[layer / u64::BITS as usize] |= 1 << (layer % u64::BITS as usize);
     }
 }

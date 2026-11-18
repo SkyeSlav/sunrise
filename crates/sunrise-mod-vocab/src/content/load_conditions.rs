@@ -40,11 +40,11 @@ impl From<(Identifier, String)> for ConditionError {
 /// return `ConditionError` for invalid mod input, never panic while decoding it.
 /// Called once per entry per candidate reload, before publication. Return false
 /// to omit the entry, or an error to keep the previous usable generation.
-/// Registering a condition owns its namespace: unknown names there refuse the
-/// reload. Foreign unknown ids anywhere inside `not`, `and` or `or` omit the
-/// file, even in `or(true, unknown)`, with one ERROR-level log entry per file
-/// per candidate reload naming its distinct unknown ids. The vanilla view, which
-/// has no candidate store, logs on each evaluation instead.
+/// An unknown ID in a mod's own namespace refuses the reload if that mod
+/// registered a handler in that namespace. Registering a foreign ID doesn't
+/// make its namespace owned. Other unknown IDs omit the file at any depth
+/// inside `not`, `and` or `or`, with one ERROR log entry per file per candidate.
+/// Recipes refuse unknown IDs regardless of namespace.
 /// A returned error or native panic refuses the candidate reload, naming the
 /// file, condition and owner. Handlers must not mutate published data.
 pub trait LoadCondition: Send + Sync + 'static {
@@ -54,8 +54,8 @@ pub trait LoadCondition: Send + Sync + 'static {
 
 /// Registrar borrowed during `register_load_conditions`.
 pub trait LoadConditions {
-    /// Register a handler under the dispatching mod's namespace.
-    /// Duplicate names are refused with both owners in the diagnostic.
+    /// Register a handler under any namespace, independently of the dispatching mod.
+    /// Built-in IDs and duplicate names are refused; duplicate diagnostics name both mods.
     fn register_handler(
         &mut self,
         name: Identifier,
@@ -76,12 +76,23 @@ impl dyn LoadConditions + '_ {
 // no wire: process-local callback storage; handlers cross through generated dispatch.
 /// Engine-owned declarations retaining the dispatch owner of each handler.
 // exhaustive: private fields prevent mod construction or destructuring.
-#[derive(Default)]
 pub struct LoadConditionDeclarations {
+    is_reserved: fn(&Identifier) -> bool,
     entries: Entries,
     errors: Vec<ConditionError>,
 }
 impl LoadConditionDeclarations {
+    /// Start collecting declarations with the game evaluator's built-in ID check.
+    // hidden: the engine creates this collector; mods receive only the registrar.
+    #[doc(hidden)]
+    pub fn new(is_reserved: fn(&Identifier) -> bool) -> Self {
+        Self {
+            is_reserved,
+            entries: BTreeMap::new(),
+            errors: Vec::new(),
+        }
+    }
+
     /// Finish registration, refusing even errors a listener ignored.
     // hidden: engine preparation consumes the declaration table.
     #[doc(hidden)]
@@ -98,20 +109,21 @@ impl LoadConditions for LoadConditionDeclarations {
         name: Identifier,
         condition: Arc<dyn LoadCondition>,
     ) -> Result<(), ConditionError> {
-        let owner = crate::content::crash::current_native_mod()
-            .expect("load condition registration inside mod dispatch");
-        if let Some((previous, _)) = self.entries.get(&name) {
-            let error = ConditionError {
-                message: format!("condition {name} registered by both {previous} and {owner}"),
-            };
+        let Some(owner) = crate::content::crash::current_native_mod() else {
+            return Err(ConditionError::new(format!(
+                "cannot register condition {name} outside register_load_conditions dispatch"
+            )));
+        };
+        if (self.is_reserved)(&name) {
+            let error = ConditionError::new(format!(
+                "mod {owner} cannot register condition {name}: that ID is built in"
+            ));
             self.errors.push(error.clone());
             return Err(error);
         }
-        if name.namespace() != owner {
+        if let Some((previous, _)) = self.entries.get(&name) {
             let error = ConditionError {
-                message: format!(
-                    "mod {owner} cannot register condition {name} outside its namespace"
-                ),
+                message: format!("condition {name} registered by both {previous} and {owner}"),
             };
             self.errors.push(error.clone());
             return Err(error);
@@ -123,6 +135,27 @@ impl LoadConditions for LoadConditionDeclarations {
 
 #[cfg(test)]
 mod error_tests {
+    use super::*;
+
+    struct Always;
+    impl LoadCondition for Always {
+        fn test(&self, _: &serde_json::Value) -> Result<bool, ConditionError> {
+            Ok(true)
+        }
+    }
+
+    #[test]
+    fn detached_registration_returns_a_named_error() {
+        let mut declarations = LoadConditionDeclarations::new(|_| false);
+        let error = declarations
+            .register_handler(Identifier::parse("demo:flag").unwrap(), Arc::new(Always))
+            .unwrap_err();
+        assert_eq!(
+            error.message,
+            "cannot register condition demo:flag outside register_load_conditions dispatch"
+        );
+    }
+
     #[test]
     fn condition_error_supports_standard_error_propagation() {
         fn propagate() -> Result<(), Box<dyn std::error::Error>> {

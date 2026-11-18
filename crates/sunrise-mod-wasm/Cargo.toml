@@ -93,4 +93,4 @@ required-features = ["listener-fixture"]
 [[test]]
 name = "main_stack_probe"
 harness = false
-required-features = ["runtime-fixture"]
+required-features = ["runtime-fixture", "test-copy-probe"]

@@ -18,14 +18,11 @@ impl log::Log for Log {
     fn log(&self, record: &log::Record<'_>) {
         let line = record.args().to_string();
         if line.contains("wasm mod fixture stopped its group") {
-            eprintln!(
-                "probe, not in game: wasm mod fixture trapped: {}",
-                if line.contains("stack") {
-                    "guest stack overflow"
-                } else {
-                    "other fault"
-                }
-            );
+            if line.contains("stack") {
+                eprintln!("probe, not in game: wasm mod fixture trapped: guest stack overflow");
+            } else {
+                eprintln!("probe, not in game: wasm mod fixture trapped: other fault: {line}");
+            }
         } else {
             eprintln!("{line}");
         }
@@ -111,7 +108,11 @@ fn proof() {
         world_partial_tick: 0.25,
         partial_tick: 0.5,
     };
-    client.render_frame_pre(&mut host, &mut render);
+    // Depth, not time, is under test: a busy runner can take past a hook's 100 ms epoch deadline
+    // over 60000 frames, which trapped as "other fault" instead of answering (2026-11-16).
+    sunrise_mod_wasm::copy_probe::with_load_budget(|| {
+        client.render_frame_pre(&mut host, &mut render)
+    });
     assert_eq!(render.elapsed, Duration::from_secs(60000));
     assert_eq!(
         (render.world_partial_tick, render.partial_tick),
@@ -135,7 +136,7 @@ fn proof() {
             world_running: true,
         },
     };
-    server.server_tick(&mut host, &mut tick);
+    sunrise_mod_wasm::copy_probe::with_load_budget(|| server.server_tick(&mut host, &mut tick));
     assert!(matches!(
         tick.phase,
         mod_api::ServerTickPhase::ServerTickEnd {

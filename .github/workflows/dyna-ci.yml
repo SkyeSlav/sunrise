@@ -121,7 +121,10 @@ jobs:
         timeout-minutes: 11
         env:
           FETCH_STEP: Fetch this commit's history for selection
-        # On our runners the slot's history mirror makes this a short fetch (tools/ci/history_fetch.sh).
+          # Selection diffs the base against the head (their merge base and two trees), so it takes the commits
+          # alone, and Git fetches the trees the diff reads. The whole history took 80 to 220 s on a slot whose
+          # mirror was cold, and every gate job waits for this one.
+          HISTORY_FILTER: tree:0
         run: bash tools/ci/history_fetch.sh
       - name: Select checks once for this pull request
         if: github.event_name == 'pull_request'
@@ -287,7 +290,7 @@ jobs:
             # The slot's build folder persists between jobs; point the checkout's target at it.
             mkdir -p "$CARGO_TARGET_DIR"
             ln -s "$CARGO_TARGET_DIR" target
-            # Keep clippy-driver direct, but reuse sccache for ordinary dependency compilations.
+            # sccache for every compile, Clippy runs on workspace crates included (tools/ci/compiler-cache.sh).
             echo "RUSTC_WRAPPER=$GITHUB_WORKSPACE/tools/ci/compiler-cache.sh" >> "$GITHUB_ENV"
           fi
           bash tools/ci/rustup_install.sh --profile minimal --component rustfmt --component clippy --target wasm32-unknown-unknown

@@ -11,9 +11,12 @@ use std::path::Path;
 /// Parse an installed mod version, padding omitted minor and patch components.
 /// This is also the comparison used for saved-world mod versions.
 pub fn parse_version(version: &str) -> Result<Version, semver::Error> {
-    let padded = match version.matches('.').count() {
-        0 => format!("{version}.0.0"),
-        1 => format!("{version}.0"),
+    // Only the `major.minor.patch` core is padded: the dots of a pre-release (`1-rc.1`) or build part
+    // after a `-` or `+` belong to it.
+    let (core, suffix) = version.split_at(version.find(['-', '+']).unwrap_or(version.len()));
+    let padded = match core.matches('.').count() {
+        0 => format!("{core}.0.0{suffix}"),
+        1 => format!("{core}.0{suffix}"),
         _ => version.to_owned(),
     };
     Version::parse(&padded)
@@ -631,6 +634,30 @@ pub fn rewrite(
 
 #[cfg(test)]
 mod tests {
+    /// A short version with a pre-release or build part is padded before it, not after it.
+    #[test]
+    fn a_short_version_with_a_pre_release_is_padded_in_its_core() {
+        for (short, full) in [
+            ("1", "1.0.0"),
+            ("1.2", "1.2.0"),
+            ("1.2.3", "1.2.3"),
+            ("1.2-beta", "1.2.0-beta"),
+            ("1-rc.1", "1.0.0-rc.1"),
+            ("1.2-rc.1", "1.2.0-rc.1"),
+            ("1.2.3-rc.1", "1.2.3-rc.1"),
+            ("1.2+build.5", "1.2.0+build.5"),
+            ("1.0-SNAPSHOT", "1.0.0-SNAPSHOT"),
+        ] {
+            assert_eq!(
+                super::parse_version(short).unwrap(),
+                semver::Version::parse(full).unwrap(),
+                "{short}"
+            );
+        }
+        assert!(super::parse_version("").is_err());
+        assert!(super::parse_version("one.two").is_err());
+    }
+
     use super::*;
 
     #[test]

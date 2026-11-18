@@ -215,7 +215,7 @@ class SdkAssetTests(unittest.TestCase):
             os.utime(path, (mtime, mtime))
         return out
 
-    def pack(self, out: Path, dist: Path) -> None:
+    def pack(self, out: Path, dist: Path, **options) -> None:
         def run(command, **kwargs):
             self.assertEqual(command[-3:], ["surface", str(prebuilt_game.ROOT), str(dist / "surface.json")])
             (dist / "surface.json").write_text('{"hash": "ab"}')
@@ -224,7 +224,7 @@ class SdkAssetTests(unittest.TestCase):
         (built / prebuilt_game.TOOL_PROGRAM).write_bytes(b"tool")
         with patch.object(prebuilt_game, "head", return_value=COMMIT), patch.object(prebuilt_game, "run", side_effect=run), \
                 patch.object(prebuilt_game, "tool", return_value=built):
-            prebuilt_game.pack(out, dist, stage_tool=Path("sunrise-stage"))
+            prebuilt_game.pack(out, dist, stage_tool=Path("sunrise-stage"), **options)
 
     def test_pack_writes_three_archives_that_split_the_package_and_the_same_every_run(self):
         import lzma
@@ -349,6 +349,19 @@ class SdkAssetTests(unittest.TestCase):
         nodes[1]["deps"].append({"pkg": "sunrise-mod-wasm", "dep_kinds": [{"kind": None}]})
         with self.assertRaisesRegex(SystemExit, "sunrise-mod-wasm"):
             prebuilt_game.slices(metadata, copied, ["bin/sunrise-client"])
+
+    def test_a_server_leg_packs_the_tool_only_when_asked(self):
+        for with_tool in (False, True):
+            with self.subTest(with_tool=with_tool), tempfile.TemporaryDirectory() as directory, \
+                    patch.object(sys, "platform", "linux"):
+                root = Path(directory)
+                out = self.out(root / "server", 1000)
+                identity = json.loads((out / prebuilt_game.IDENTITY).read_text())
+                identity["side"] = "server"
+                (out / prebuilt_game.IDENTITY).write_text(json.dumps(identity))
+                self.pack(out, root / "dist", with_tool=with_tool)
+                names = {path.name for path in (root / "dist").iterdir()}
+                self.assertEqual("tool-x86_64-unknown-linux-gnu.tar.xz" in names, with_tool)
 
     def test_gather_takes_every_legs_archives_once_and_one_build_data_that_all_copies_match(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(sys, "platform", "linux"):
@@ -815,6 +828,38 @@ class LauncherPinTests(unittest.TestCase):
         finally:
             pin.write_text(original)
         self.assertEqual(subprocess.run([str(script)], capture_output=True, text=True).stdout.strip(), original.strip())
+
+
+class LauncherCheckoutTests(unittest.TestCase):
+    def test_checks_out_the_pinned_commit_detached_and_refuses_an_unfetchable_pin(self):
+        script = prebuilt_game.ROOT / "tools/ci/launcher_checkout.sh"
+        pin_file = prebuilt_game.ROOT / "tools/ci/launcher-pin"
+        original = pin_file.read_text()
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            subprocess.run(git + ["init", "-q", str(source)], check=True)
+            commits = []
+            for name in ("one", "two"):
+                (source / "file").write_text(name)
+                subprocess.run(git + ["-C", str(source), "add", "file"], check=True)
+                subprocess.run(git + ["-C", str(source), "commit", "-q", "-m", name], check=True)
+                commits.append(subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"], check=True,
+                                              capture_output=True, text=True).stdout.strip())
+            env = {**os.environ, "LAUNCHER_URL": source.as_uri(), "GIT_CONFIG_GLOBAL": os.devnull}
+            try:
+                pin_file.write_text(commits[0] + "\n")
+                done = subprocess.run([str(script), str(root / "out")], env=env, capture_output=True, text=True)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertEqual((root / "out/file").read_text(), "one")
+                state = subprocess.run(["git", "-C", str(root / "out"), "symbolic-ref", "-q", "HEAD"], capture_output=True)
+                self.assertNotEqual(state.returncode, 0)  # detached
+                pin_file.write_text("f" * 40 + "\n")
+                done = subprocess.run([str(script), str(root / "out2")], env=env, capture_output=True, text=True)
+                self.assertNotEqual(done.returncode, 0)
+            finally:
+                pin_file.write_text(original)
 
 
 class SmokeStartTests(unittest.TestCase):

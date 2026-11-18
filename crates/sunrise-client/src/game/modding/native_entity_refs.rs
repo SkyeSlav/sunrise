@@ -1547,11 +1547,12 @@ pub(super) mod tests {
             // Default: soils with no part answer as vanilla's plant rule does.
             assert!(survives(game, "minecraft:dirt"));
             assert!(!survives(game, "minecraft:stone"));
-            // A client's copy of the level does not ask the part.
+            // A non-authoritative copy of the level asks the part too (the client side itself is
+            // covered by `client_placement_prediction_asks_placement_and_survival_parts`).
             game.options.execution_role = crate::game::execution_role::ExecutionRole::Client;
             game.options.dedicated = None;
-            assert!(!survives(game, "minecraft:glass"));
-            assert!(survives(game, "minecraft:grass_block"));
+            assert!(survives(game, "minecraft:glass"));
+            assert!(!survives(game, "minecraft:grass_block"));
         });
     }
 

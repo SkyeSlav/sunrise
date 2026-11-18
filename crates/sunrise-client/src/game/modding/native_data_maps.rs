@@ -772,7 +772,7 @@ mod tests {
                 "minecraft:stick": {"neoforge:conditions": [
                     {"type": "neoforge:mod_loaded", "modid": "absent"}], "value": 2},
                 "minecraft:planks": {"neoforge:conditions": [
-                    {"type": "neoforge:true"}], "value": 3}
+                    {"type": "neoforge:always"}], "value": 3}
             }})],
         )]);
         let maps = load(&f);
@@ -895,9 +895,9 @@ mod tests {
             "data_maps/mymod:item/fuel",
             &[
                 json!({"values":{"minecraft:coal":1}}),
-                json!({"neoforge:conditions":[{"type":"neoforge:false"}],"replace":true,"values":{
+                json!({"neoforge:conditions":[{"type":"neoforge:never"}],"replace":true,"values":{
                     "minecraft:stick":2,
-                    "minecraft:coal":{"neoforge:conditions":[{"type":"neoforge:false"}],"value":3}
+                    "minecraft:coal":{"neoforge:conditions":[{"type":"neoforge:never"}],"value":3}
                 }}),
             ],
         )]);

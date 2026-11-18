@@ -68,6 +68,11 @@ jobs:
         with:
           pattern: sdk-leg-*
           path: legs
+      # The Linux leg's sunrise-stage, compiled from this commit (prebuilt-game-build.yml).
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdk-stage-tool
+          path: ${{ runner.temp }}/stage-tool
       - name: Gather the legs' assets, with one build data and surface
         run: python3 tools/prebuilt_game.py gather legs dist
       - name: The API source, with its generated code written out
@@ -92,7 +97,9 @@ jobs:
             git archive "$previous" crates/sunrise-mod-vocab/changes | tar -x -C base
           fi
           # A stale note fails the PR report, not the publish: the diff is written either way.
-          cargo run --locked --release -q -p sunrise-mod-api-gen --bin sunrise-stage -- surface-diff \
+          stage="$RUNNER_TEMP/stage-tool/sunrise-stage"
+          chmod +x "$stage"
+          "$stage" surface-diff \
             previous-surface.json dist/surface.json --notes crates/sunrise-mod-vocab/changes \
             --base-notes base/crates/sunrise-mod-vocab/changes --json surface-diff.json | tee -a "$GITHUB_STEP_SUMMARY" \
             || echo "::warning::a change note names an id that did not change since $previous"

@@ -11,6 +11,9 @@ Steps:
 Files that carry rules, history or build logic (AGENTS.md, CONTRIBUTING.md, GOVERNANCE.md, the sync
 decision notes, CI, tools, tests) are not rewritten here; they are fixed by hand and listed in step 3.
 
+Run again after `launcher/` is gone, it changes nothing. Symlinks (`CLAUDE.md` -> `AGENTS.md`) are never rewritten,
+and no file outside the repository is written.
+
 Usage: python3 tools/remove_launcher_tree.py [--dry-run]
 """
 
@@ -57,11 +60,16 @@ def git(*args: str) -> str:
 def main() -> None:
     dry = "--dry-run" in sys.argv
     tracked = git("ls-files").splitlines()
+    if not any(path.startswith("launcher/") for path in tracked):
+        print("launcher/ is already removed: nothing to do")
+        return
     changed = []
     for path in tracked:
         if path in SKIP or path.startswith(SKIP_PREFIXES) or not path.endswith((".md", ".rs")):
             continue
         file = ROOT / path
+        if file.is_symlink() or not file.resolve().is_relative_to(ROOT):
+            continue
         text = file.read_text(encoding="utf-8")
         new = rewrite(path, text)
         if new != text:

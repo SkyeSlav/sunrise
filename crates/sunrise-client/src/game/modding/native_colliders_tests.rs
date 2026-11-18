@@ -221,6 +221,59 @@ fn each_level_collides_with_its_own_colliders() {
     });
 }
 
+/// A call into the level in place, made while another level's colliders are in scope (a hook of
+/// one level reaching into another), reads the level in place's colliders, and the caller's
+/// are back afterwards.
+#[test]
+#[ignore = "daily"]
+fn a_call_into_another_level_reads_that_levels_colliders_and_restores_the_callers() {
+    use sunrise_core::geometry::Aabb;
+    use sunrise_world::entity_obstruction::EntityIdentity;
+    with_world(|game| {
+        let (spot, other) = ([1.5, 70.0, 1.5], [10.5, 70.0, 10.5]);
+        stand(game, spot).set_collider(game, Some(deck())).unwrap();
+        game.enter_level(Dim::Nether).unwrap();
+        game.native_level_opened(Dim::Nether);
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.streaming.forced.insert((0, 0));
+        stand(game, other).set_collider(game, Some(deck())).unwrap();
+        // Each level ticks once, so each has recorded its colliders.
+        tick_level(game);
+        game.enter_level(Dim::Overworld).unwrap();
+        tick_level(game);
+        let meets = |at: [f64; 3]| {
+            let mut found = Vec::new();
+            let bounds = Aabb::new(
+                Vec3::new(at[0] - 0.5, 69.2, at[2] - 0.5),
+                Vec3::new(at[0] + 0.5, 69.8, at[2] + 0.5),
+            );
+            sunrise_client_render::moving_colliders::near(EntityIdentity(0), bounds, &mut found);
+            found.len()
+        };
+        // The overworld's colliders are the caller's scope.
+        let placed = game.placed_moving_colliders();
+        sunrise_client_render::moving_colliders::in_level(placed, || {
+            assert_eq!((meets(spot), meets(other)), (1, 0));
+            game.enter_level(Dim::Nether).unwrap();
+            game.in_this_levels_colliders(|_| {
+                assert_eq!(
+                    (meets(spot), meets(other)),
+                    (0, 1),
+                    "the level in place's colliders, not the caller's"
+                );
+            });
+            assert_eq!(
+                (meets(spot), meets(other)),
+                (1, 0),
+                "the caller's colliders are back"
+            );
+            game.enter_level(Dim::Overworld).unwrap();
+        });
+    });
+}
+
 /// A game that simulates its overworld, with the chunk the tests build on loaded.
 fn with_world(test: impl FnOnce(&mut Game<'_>)) {
     super::native_entity_refs::tests::with_game(|game| {

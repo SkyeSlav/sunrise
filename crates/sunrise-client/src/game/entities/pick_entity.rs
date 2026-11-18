@@ -109,13 +109,39 @@ impl Game<'_> {
         })
     }
 
-    pub(super) fn pick_entity_candidate(&self) -> Option<CrosshairTarget> {
-        let hit = self.crosshair_entity_hit()?;
+    pub(super) fn pick_entity_candidate(&mut self) -> Option<CrosshairTarget> {
+        use super::pick_accumulator::PickAccumulator;
+        let subscribed = mod_api::__private::has_scoped_hook(mod_api::HookId::CanRiderInteract);
+        let mut pick = if subscribed {
+            PickAccumulator::recording(
+                self.entity_reach,
+                std::mem::take(&mut self.client_pick.rider_candidates),
+            )
+        } else {
+            PickAccumulator::new(self.entity_reach)
+        };
+        self.collect_pick_candidates(&mut pick);
+        if subscribed {
+            let seal = self.transaction_open();
+            self.client_pick.rider_candidates = pick.dispatch(self);
+            self.transaction_close(&seal, true);
+        }
+        let hit = pick.hovered?;
         let (eye, direction) = self.aim()?;
         Some(CrosshairTarget::Entity {
-            entity: EntityRef::new(self.native_lifecycle.epoch()?, hit.id as u32),
+            entity: EntityRef::new(self.native_lifecycle.epoch()?, hit.id),
             point: std::array::from_fn(|i| eye[i] + direction[i] * hit.distance),
         })
+    }
+
+    pub(super) fn collect_pick_candidates(
+        &self,
+        pick: &mut super::pick_accumulator::PickAccumulator,
+    ) {
+        self.remote_object_hit_with_pick(true, pick);
+        self.mob_hit_within_with_pick(self.entity_reach, pick);
+        self.redirectable_hit_with_pick(pick);
+        self.dragon_hit_with_pick(pick);
     }
 
     /// The entity the crosshair hits before any block, as `Entity.getId`; an

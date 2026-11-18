@@ -11,13 +11,13 @@ use sunrise_core::geometry::{
 };
 
 /// Where the deck's origin starts, above a floor whose top is at y 5.
-const ORIGIN: [f64; 3] = [20.5, 9.0, 12.0];
+pub(super) const ORIGIN: [f64; 3] = [20.5, 9.0, 12.0];
 /// The collider entities: not the guest's own entity id.
-const DECK: u32 = 100;
+pub(super) const DECK: u32 = 100;
 const OTHER: u32 = 101;
 
 /// A stone floor with its top at y 5, and `walls`: blocks (x, z) filled from the floor up.
-fn scene(fixture: &crate::test_fixtures::Vanilla, walls: &[(i32, i32)]) -> World {
+pub(super) fn scene(fixture: &crate::test_fixtures::Vanilla, walls: &[(i32, i32)]) -> World {
     let assets = &fixture.assets;
     let mut scene = World::test_scene(assets, &fixture.render, 10).unwrap();
     let stone = assets.registry.default_state("minecraft:stone").unwrap();
@@ -34,7 +34,7 @@ fn scene(fixture: &crate::test_fixtures::Vanilla, walls: &[(i32, i32)]) -> World
     scene
 }
 
-fn deck(length: f64) -> Arc<ColliderBoxes> {
+pub(super) fn deck(length: f64) -> Arc<ColliderBoxes> {
     Arc::new(ColliderBoxes::new(vec![Aabb::new(
         Vec3::new(-1.5, -1.0, -length / 2.0),
         Vec3::new(1.5, 0.0, length / 2.0),
@@ -42,14 +42,14 @@ fn deck(length: f64) -> Arc<ColliderBoxes> {
 }
 
 /// The server's side of one level: colliders that move, and the history of where they were.
-struct Rig {
+pub(super) struct Rig {
     history: Rc<RefCell<History>>,
     /// Each collider's entity, boxes and frame now.
     colliders: Vec<(u32, Arc<ColliderBoxes>, Frame)>,
 }
 
 impl Rig {
-    fn new(colliders: Vec<(u32, Arc<ColliderBoxes>, Frame)>) -> Self {
+    pub(super) fn new(colliders: Vec<(u32, Arc<ColliderBoxes>, Frame)>) -> Self {
         let mut rig = Self {
             history: Rc::default(),
             colliders,
@@ -76,7 +76,7 @@ impl Rig {
     }
 
     /// A server tick: every collider moves to `frame(entity)` and the level records them.
-    fn tick(&mut self, frame: impl Fn(u32) -> Frame) {
+    pub(super) fn tick(&mut self, frame: impl Fn(u32) -> Frame) {
         for (id, _, at) in &mut self.colliders {
             *at = frame(*id);
         }
@@ -84,20 +84,20 @@ impl Rig {
     }
 
     /// Runs `f` as the level's tick holds its scopes.
-    fn within<R>(&self, f: impl FnOnce() -> R) -> R {
+    pub(super) fn within<R>(&self, f: impl FnOnce() -> R) -> R {
         let _history = HistoryScope::enter(self.history.clone());
         in_level(self.prepared(), f)
     }
 
     /// The frame `age` ticks ago.
-    fn frame(&self, id: u32, age: f64) -> Frame {
+    pub(super) fn frame(&self, id: u32, age: f64) -> Frame {
         let history = self.history.borrow();
         let (log, _) = history.get(id).unwrap();
         log.frame_at(history.now(), age).unwrap()
     }
 }
 
-fn along(z: f64) -> Frame {
+pub(super) fn along(z: f64) -> Frame {
     Frame::translation(Vec3::new(ORIGIN[0], ORIGIN[1], z))
 }
 
@@ -114,10 +114,10 @@ impl Lcg {
     }
 }
 
-struct Guestside<'a> {
-    hub: Hub,
+pub(super) struct Guestside<'a> {
+    pub(super) hub: Hub,
     fixture: &'a crate::test_fixtures::Vanilla,
-    world: World,
+    pub(super) world: World,
     border: crate::worldborder::WorldBorder,
     /// What the hub warned of in the last report (`moved wrongly`, `moved too quickly`).
     warnings: Vec<String>,
@@ -126,11 +126,17 @@ struct Guestside<'a> {
     /// Whether the client answers a correction at once (the default); a test that looks at the
     /// server while the correction is on its way turns it off and calls [`Self::confirm`].
     answers: bool,
+    /// What the hub sent the guest: see [`Self::sent`].
+    rx: std::sync::mpsc::Receiver<crate::lan::Out>,
 }
 
 impl<'a> Guestside<'a> {
-    fn new(fixture: &'a crate::test_fixtures::Vanilla, walls: &[(i32, i32)], rtt_ms: i32) -> Self {
-        let (mut hub, _rx) = hub_with_a_guest();
+    pub(super) fn new(
+        fixture: &'a crate::test_fixtures::Vanilla,
+        walls: &[(i32, i32)],
+        rtt_ms: i32,
+    ) -> Self {
+        let (mut hub, rx) = hub_with_a_guest();
         hub.guests.update(0, |g| {
             g.latency.store(rtt_ms, Ordering::Relaxed);
             g.on_ground = true;
@@ -145,12 +151,13 @@ impl<'a> Guestside<'a> {
             warnings: Vec::new(),
             corrected: None,
             answers: true,
+            rx,
         }
     }
 
     /// One server tick of the hub with these packets in the guest's inbox: the same handling a
     /// client's packets get (the speed test, the move check, the commit, the teleport handshake).
-    fn tick(&mut self, rig: &Rig, packets: Vec<S>) -> Vec<HostEvent> {
+    pub(super) fn tick(&mut self, rig: &Rig, packets: Vec<S>) -> Vec<HostEvent> {
         for packet in packets {
             self.hub
                 .guests
@@ -255,7 +262,7 @@ impl<'a> Guestside<'a> {
     }
 
     /// The client's answer to the server's teleport: it stands where the server put it.
-    fn confirm(&mut self, rig: &Rig) {
+    pub(super) fn confirm(&mut self, rig: &Rig) {
         let g = &self.hub.guests[0];
         let (id, at) = g.awaiting_teleport.expect("a teleport is awaited");
         let (yaw, pitch) = (g.yaw, g.pitch);
@@ -274,22 +281,47 @@ impl<'a> Guestside<'a> {
     }
 
     /// [`Self::send`] on the ground, no hint.
-    fn report(&mut self, rig: &Rig, to: [f64; 3], hint: Option<u8>) -> (bool, bool, bool) {
+    pub(super) fn report(
+        &mut self,
+        rig: &Rig,
+        to: [f64; 3],
+        hint: Option<u8>,
+    ) -> (bool, bool, bool) {
         self.send(rig, to, hint, true)
     }
 
-    fn guest(&self) -> &Guest {
+    /// The packets the hub sent the guest since the last call, in order.
+    pub(super) fn sent(&self) -> Vec<play::Clientbound> {
+        let mut out = Vec::new();
+        while let Ok(sent) = self.rx.try_recv() {
+            let bodies = match sent {
+                crate::lan::Out::Packet(body) => vec![body],
+                crate::lan::Out::Packets(bodies) => bodies,
+                crate::lan::Out::Disconnect(_) => Vec::new(),
+            };
+            for body in bodies {
+                let mut reader = sunrise_protocol::buf::Reader::new(&body);
+                let id = reader.varint().unwrap();
+                if let Ok(packet) = play::Clientbound::decode(id, &body[reader.position()..]) {
+                    out.push(packet);
+                }
+            }
+        }
+        out
+    }
+
+    pub(super) fn guest(&self) -> &Guest {
         &self.hub.guests[0]
     }
 }
 
 /// Where an honest client puts its player: the deck as it saw it `age` ticks ago.
-fn honest(rig: &Rig, age: f64, local: Vec3) -> [f64; 3] {
+pub(super) fn honest(rig: &Rig, age: f64, local: Vec3) -> [f64; 3] {
     let at = rig.frame(DECK, age).to_world(local);
     [at.x, at.y, at.z]
 }
 
-fn first(fixture: &crate::test_fixtures::Vanilla) -> (Rig, Guestside<'_>) {
+pub(super) fn first(fixture: &crate::test_fixtures::Vanilla) -> (Rig, Guestside<'_>) {
     let mut rig = Rig::new(vec![(DECK, deck(20.0), along(ORIGIN[2]))]);
     let mut side = Guestside::new(fixture, &[], 100);
     // Ten ticks standing still, the player on the deck.

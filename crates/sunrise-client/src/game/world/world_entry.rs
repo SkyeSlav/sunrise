@@ -793,7 +793,13 @@ impl Game<'_> {
             {
                 Some(sources) => sources,
                 None => {
-                    lan::sync::prepare_server_sources(root, &self.res.core.item_data, &overlay)?
+                    let sources = lan::sync::prepare_server_sources(
+                        root,
+                        &self.res.core.item_data,
+                        &overlay,
+                    )?;
+                    sources.check()?;
+                    sources
                 }
             };
             Some(

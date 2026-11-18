@@ -1054,7 +1054,7 @@ fn every_crossing_method_lists_one_distinct_call_name() {
 #[test]
 #[ignore = "daily"]
 fn the_recipe_placement_protocol_is_pinned_to_the_shapes_it_carries() {
-    const PINNED: &str = "7ac8342cd861d9a76ab542d43ded039f";
+    const PINNED: &str = "25629ca0c672c9560cbfcb15491f60ff";
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let generated = crate::sources(&root, crate::FillMode::Require).unwrap();
     let providers = crate::capability_providers::generate(&root, &[]).unwrap().0;

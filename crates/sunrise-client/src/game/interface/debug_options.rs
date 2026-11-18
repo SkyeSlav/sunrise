@@ -136,7 +136,7 @@ impl Game<'_> {
             Screen::Creative => {
                 self.pad_clear_focus();
                 self.carried = None;
-                self.set_screen(Screen::Playing);
+                self.set_screen_with(Screen::Playing, |g| g.close_creative_menu());
                 self.capture(true);
             }
             Screen::Mod => self.close_mod_screen(),

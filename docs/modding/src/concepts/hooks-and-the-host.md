@@ -196,6 +196,12 @@ sits beside it. The levels of `state_for_placement`, `can_survive` and the level
 the levels other callbacks get (a damage hit's, a part's read view) may return `None` for any of them, signal reads
 and `collision_shape` alike.
 A signal read never asks `state_for_placement` or `can_survive`, so it cannot re-enter the hook it was read in.
+On a client (its placement prediction and its own shape updates ask `state_for_placement`, `can_survive`,
+`may_place_on` and `can_sustain_plant` too) these reads answer from the client's loaded copy of the level, and the
+reads above that refuse clients return `None`, as do `block_in_tag` and `fluid_in_tag`. `tags()` still returns a
+service: `Tags::key` can resolve a key, but membership (`is_in_tag`) and member lists (`items`, `fluids`, `blocks`)
+return `None` in this view. `BlockEntityPartState::state_in` gives its default there. Never answer from those as if
+they were the server's: a client's own shape update that refuses a block removes it on that client.
 `LevelTicksHost`'s signal reads moved here and now return `Option`.
 
 Before a block's placement state is selected, `ItemPart::placement_context` replaces the item's

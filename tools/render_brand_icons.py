@@ -138,16 +138,12 @@ def main():
     # Apple's grid: the tile is 13/16 of the canvas (832 of 1024), centred, so it sits with other Mac icons.
     mac = {size: png(render(svg, size, tile=size * 13 // 16)) for size in (128, 256, 512, 1024)}
     for size in SIZES:
-        for folder in (ICONS / f'hicolor/{size}x{size}/apps', ICONS / 'fork'):
-            name = 'sunrise.png' if folder.name == 'apps' else f'{size}.png'
-            (folder / name).write_bytes(at[size])
+        (ICONS / f'hicolor/{size}x{size}/apps/sunrise.png').write_bytes(at[size])
     shutil.copyfile(MASTER, ICONS / 'hicolor/scalable/apps/sunrise.svg')
-    shutil.copyfile(MASTER, ICONS / 'fork/launcher.svg')
     windows = ico([(size, at[size]) for size in (16, 24, 32, 48, 64, 256)])
     mac_icns = icns([(b'ic07', mac[128]), (b'ic08', mac[256]), (b'ic09', mac[512]), (b'ic10', mac[1024])])
-    for folder, ico_name, icns_name in ((ICONS, 'sunrise.ico', 'sunrise.icns'), (ICONS / 'fork', 'launcher.ico', 'launcher.icns')):
-        (folder / ico_name).write_bytes(windows)
-        (folder / icns_name).write_bytes(mac_icns)
+    (ICONS / 'sunrise.ico').write_bytes(windows)
+    (ICONS / 'sunrise.icns').write_bytes(mac_icns)
     (BRAND / 'icon-1024.png').write_bytes(at[1024])
     (BRAND / 'icon-macos-1024.png').write_bytes(mac[1024])
     (BRAND / 'web/favicon-32.png').write_bytes(at[32])

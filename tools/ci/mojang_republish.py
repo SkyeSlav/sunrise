@@ -8,7 +8,7 @@ Fetches Mojang's public version manifest and, for each version research-lock.jso
 downloaded and compared with the lock entry by content (tools/lab.py `pinned_content_differs`: id, client and server
 jars, Java major, libraries):
 - the same content: Mojang re-issued the file for its asset index alone. tools/lab.py and sunrise-prepare accept it
-  as it is, but the launcher accepts a version JSON by its sha1 (launcher/src/sources.rs `Pins::read`), so a sha1
+  as it is, but the launcher accepts a version JSON by its sha1 (sunrise-launcher's src/sources.rs `Pins::read`), so a sha1
   not yet in `accepted_manifest_sha1` gets an issue "Mojang re-issued <version>: <sha8>" with the line to add;
 - other content: it opens an issue "Mojang changed <version>: <sha8>" naming what differs, because Sunrise refuses
   that file until the lock pins the new content. An issue with that title, open or closed, is not opened again or
@@ -59,7 +59,7 @@ def plan(game, manifest, fetch, open_issues):
         body = (f"Mojang re-issued the {version} version JSON with the pinned content (jars, Java major, libraries), "
                 "so sunrise-prepare already accepts it.\n\n"
                 f"- manifest sha1: `{checksum}`\n- url: {entry['url']}\n\n"
-                "The launcher accepts a version JSON by its sha1 (`launcher/src/sources.rs` `Pins::read`): a player whose "
+                "The launcher accepts a version JSON by its sha1 (sunrise-launcher's `src/sources.rs`, `Pins::read`): a player whose "
                 "launcher holds this one gets the pinned file downloaded from Mojang instead, so cannot prepare offline. "
                 "Add it to `research-lock.json`:\n\n"
                 f"```json\n{snippet}\n```\n")

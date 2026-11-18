@@ -27,23 +27,23 @@ class CompilerCacheTests(unittest.TestCase):
                 path.chmod(0o755)
             env = dict(os.environ, PATH=directory + os.pathsep + os.environ["PATH"],
                        CARGO_INCREMENTAL="1")
-            for compiler, args, cached in [
-                (str(bin_dir / "clippy-driver"), ["/toolchain/rustc", "-vV"], False),
+            # Clippy on a workspace crate is cached like rustc; only mod_points is rewritten (the next test).
+            for compiler, args in [
+                (str(bin_dir / "clippy-driver"), ["/toolchain/rustc", "-vV"]),
                 (str(bin_dir / "clippy-driver"),
-                 ["/toolchain/rustc", "--crate-name", "workspace", "--cfg", 'feature="with spaces"'], False),
+                 ["/toolchain/rustc", "--crate-name", "workspace", "--cfg", 'feature="with spaces"']),
                 (str(bin_dir / "clippy-driver"),
-                 ["/toolchain/rustc", "--crate-name", "mod_points_extra", "-C", "incremental=state"], False),
-                ("/toolchain/rustc", ["--crate-name", "dependency", "--emit=metadata"], True),
-                ("/toolchain/rustc", ["-vV"], True),
+                 ["/toolchain/rustc", "--crate-name", "mod_points_extra", "-C", "incremental=state"]),
+                ("/toolchain/rustc", ["--crate-name", "dependency", "--emit=metadata"]),
+                ("/toolchain/rustc", ["-vV"]),
             ]:
                 with self.subTest(compiler=compiler, args=args):
                     result = subprocess.run([WRAPPER, compiler, *args], env=env,
                                             text=True, capture_output=True, timeout=5)
                     self.assertEqual(result.returncode, 7, result.stderr)
                     argv, incremental = json.loads(result.stdout)
-                    expected = [str(bin_dir / "sccache"), compiler, *args] if cached else [compiler, *args]
-                    self.assertEqual(argv, expected)
-                    self.assertEqual(incremental, None if cached else "1")
+                    self.assertEqual(argv, [str(bin_dir / "sccache"), compiler, *args])
+                    self.assertIsNone(incremental)
 
     def test_generated_points_use_cacheable_rustc_and_still_deny_warnings(self):
         with tempfile.TemporaryDirectory() as directory:

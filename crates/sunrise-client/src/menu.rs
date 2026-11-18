@@ -2661,7 +2661,10 @@ impl Menu {
                         .merchant_remove_count
                         .wrapping_add((clicked.count - stack.count) as i32);
                     self.merchant_check_take_achievements(&clicked);
-                    if let Some(m) = self.state.merchant.as_mut() {
+                    // MerchantMenu.playTradeSound: not for a ClientSideMerchant.
+                    if let Some(m) = self.state.merchant.as_mut()
+                        && !m.client_side
+                    {
                         m.events.push(crate::merchant::Event::TradeSound);
                     }
                 } else if index != 0 && index != 1 {

@@ -24,7 +24,7 @@ animation, as only vanilla's dragon and piglin heads animate.
 This listener is compiled in the API tests:
 
 ```rust,ignore
-{{#include ../../../../crates/sunrise-client/tests/mod_api_hooks.rs:create_skull_models}}
+{{#include ../../../../crates/sunrise-client/tests/it/mod_api_hooks.rs:create_skull_models}}
 ```
 
 A registered kind is a name a `minecraft:head` item model can use, exactly as a vanilla one:

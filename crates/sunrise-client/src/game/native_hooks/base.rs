@@ -349,25 +349,6 @@ impl GameLevel<'_> {
         self.fire_update_shape(ticks, call);
     }
 
-    /// On an authoritative server, `VegetationBlock.mayPlaceOn` for plant
-    /// `state` on `ground` at `ground_pos`. The plant inherits vegetation rules
-    /// from its template or opts into them in its block declaration. Only when
-    /// the soil's `can_sustain_plant` leaves the decision to the plant does this
-    /// method answer what it can stand on. `None` keeps its default rule.
-    /// Answer only for your own blocks. The level is read-only.
-    #[inline(always)]
-    pub(in crate::game) fn native_may_place_on(
-        &self,
-        dimension: LevelDimension,
-        state: BlockStateId,
-        ground: BlockStateId,
-        ground_pos: BlockPos,
-        may: &mut Option<bool>,
-        inert: &mut bool,
-    ) {
-        self.fire_may_place_on(dimension, state, ground, ground_pos, may, inert);
-    }
-
     /// An authoritative server's `ServerLevel.tickBlock` is about to run a
     /// due scheduled tick of the block `state` at `pos` (`BlockState.tick`):
     /// the block is still the one the tick was scheduled for. Change the
@@ -4785,9 +4766,11 @@ impl Game<'_> {
 
 /// The level a placement or survival question is asked of: the game's level with the
 /// simulation's ticks shared beside it, which a signal read needs (comparator outputs, moving
-/// pistons). The listener's `&dyn LevelHost` is this, so `state_for_placement` and `can_survive`
-/// can read redstone and shapes. A read goes only through `Signals`, which asks the signal hooks
-/// and never `state_for_placement` or `can_survive`: a listener cannot re-enter itself through it.
+/// pistons). The listener's `&dyn LevelHost` is this, so `state_for_placement`, `can_survive`,
+/// `may_place_on` and `can_sustain_plant` can read redstone and shapes; asked from a preview
+/// (a client's guess at a click), it reads over the blocks the preview set. A read goes only
+/// through `Signals`, which asks the signal hooks and never `state_for_placement` or
+/// `can_survive`: a listener cannot re-enter itself through it.
 pub(in crate::game) type LevelView<'a> =
     super::super::mod_api_host::LevelTicks<'a, &'a GameLevel<'a>, &'a Ticks>;
 impl GameLevel<'_> {
@@ -4797,15 +4780,35 @@ impl GameLevel<'_> {
     }
 }
 impl LevelView<'_> {
-    /// On an authoritative server, `BlockState.canSurvive` for `state` at
-    /// `pos` (`BlockBehaviour.canSurvive`), before the block answers it: as
-    /// it is placed (`BlockItem.canPlace`), from a shape update of a block
-    /// whose template checks it (a plant, a torch, a sign: false breaks the
-    /// block with its drops), and wherever else vanilla asks. `state` may not
-    /// be in the world yet, so decide from `state`. Answer only for your own
-    /// blocks: `Some(false)` refuses the spot, `Some(true)` allows it, and
-    /// the block's own rule doesn't run. The level is read-only. Asked on
-    /// every shape update of such a block: keep it short.
+    /// `VegetationBlock.mayPlaceOn` for the plant `state` on `ground` at
+    /// `ground_pos`, when the soil's `can_sustain_plant` leaves the decision to
+    /// the plant. The plant inherits vegetation rules from its template or opts
+    /// into them in its block declaration. Answer only for your own blocks.
+    /// The level is read-only. Asked on both sides: a client asks it from its
+    /// placement prediction and its own shape updates.
+    #[inline(always)]
+    pub(in crate::game) fn native_may_place_on(
+        &self,
+        dimension: LevelDimension,
+        state: BlockStateId,
+        ground: BlockStateId,
+        ground_pos: BlockPos,
+        may: &mut Option<bool>,
+        inert: &mut bool,
+    ) {
+        self.fire_may_place_on(dimension, state, ground, ground_pos, may, inert);
+    }
+
+    /// `BlockState.canSurvive` for `state` at `pos`
+    /// (`BlockBehaviour.canSurvive`), before the block answers it: as it is
+    /// placed (`BlockItem.canPlace`), from a shape update of a block whose
+    /// template checks it (a plant, a torch, a sign: false breaks the block with
+    /// its drops), and wherever else vanilla asks. `state` may not be in the
+    /// world yet, so decide from `state`. Answer only for your own blocks:
+    /// `Some(false)` refuses the spot, `Some(true)` allows it, and the block's
+    /// own rule doesn't run. The level is read-only. Asked on every shape update
+    /// of such a block: keep it short. Asked on both sides: a client asks it from
+    /// its placement prediction and its own shape updates.
     #[inline(always)]
     pub(in crate::game) fn native_can_survive(
         &self,
@@ -4836,8 +4839,8 @@ impl LevelView<'_> {
     /// dispenser's `DirectionalPlaceContext`), and the answer still takes its
     /// survival and entity obstruction checks. A trait mod returns
     /// `Some(Some(state))` to choose a state, `Some(None)` to refuse, or
-    /// `None` to leave the answer to the next mod or vanilla.
-    /// Authoritative servers only.
+    /// `None` to leave the answer to the next mod or vanilla. Asked on both
+    /// sides: a client asks it from its placement prediction.
     #[inline(always)]
     #[allow(clippy::option_option)]
     pub(in crate::game) fn native_state_for_placement(

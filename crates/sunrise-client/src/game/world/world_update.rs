@@ -184,6 +184,7 @@ impl Game<'_> {
                 (p.position.x.floor() as i32) >> 4,
                 (p.position.z.floor() as i32) >> 4,
             );
+            self.streaming.center_y = p.position.y.floor() as i32;
         }
         sunrise_client::spans::time("tick_pregen", || self.tick_pregen());
         // A headless game has nothing to draw sections with: like a server's, they aren't

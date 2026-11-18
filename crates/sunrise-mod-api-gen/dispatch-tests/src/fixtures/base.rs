@@ -361,7 +361,7 @@ fn placement_replacement_can_refuse_and_stops_later_mods() {
         }
         fn state_for_placement(
             &self,
-            _: &dyn LevelHost,
+            _: LevelSide<'_>,
             _: &mut StateForPlacementEvent<'_>,
         ) -> Option<Option<BlockState>> {
             self.0.lock().unwrap().push(self.1);
@@ -397,7 +397,7 @@ fn placement_replacement_can_refuse_and_stops_later_mods() {
         BlockState::new(BlockKey::Test, u16::MAX),
     ] {
         dispatch_state_for_placement(
-            &Level,
+            LevelSide::Server(&Level),
             LevelDimension,
             state,
             &PlacementContext,
@@ -413,7 +413,7 @@ fn placement_replacement_can_refuse_and_stops_later_mods() {
         assert!(calls.lock().unwrap().is_empty());
     }
     dispatch_state_for_placement(
-        &Level,
+        LevelSide::Server(&Level),
         LevelDimension,
         BlockState::new(BlockKey::Test, 0),
         &PlacementContext,
@@ -428,7 +428,7 @@ fn placement_replacement_can_refuse_and_stops_later_mods() {
     assert_eq!(answer, Some(None));
     assert_eq!(*calls.lock().unwrap(), vec![1]);
     dispatch_state_for_placement(
-        &Level,
+        LevelSide::Server(&Level),
         LevelDimension,
         BlockState::new(BlockKey::Test, 0),
         &PlacementContext,

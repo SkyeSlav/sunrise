@@ -322,12 +322,80 @@ class DailySummaryTests(unittest.TestCase):
         _, out = self.run_summary(api, [shard_report()], results=dict(LEGS, **{"sdk-windows-macos": {"result": "failure"}}))
         self.assertEqual(out.splitlines(), ["green=false", "sdk_green=false"])
         created = [body for _, path, body in api.writes if path == "issues"]
-        self.assertEqual([body["title"] for body in created], ["Daily: sdk / build windows did not complete"])
-        self.assertIn(f"Failed steps: `{step}`.", created[0]["body"])
+        self.assertEqual([body["title"] for body in created], ["Daily: sdk native linkage probe (windows)"])
+        self.assertIn(f"fails at the step `{step}`", created[0]["body"])
+        self.assertNotIn("fn-replace-check", created[0]["body"], "fn-replace-check reads only the Linux legs")
         # A second call that was cancelled before any of its jobs ran leaves the sdk leg not green either.
         jobs = [job for job in GREEN_JOBS if not job["name"].startswith("sdk")] + [job("sdk / fresh"), job("sdk / build linux")]
         _, out = self.run_summary(Api(jobs), [shard_report()], results=dict(LEGS, **{"sdk-windows-macos": {"result": "cancelled"}}))
         self.assertIn("sdk_green=false", out)
+
+    def test_a_linux_sdk_check_red_is_one_issue_and_fn_replace_check_missing_its_input_files_none(self):
+        probe = "Two mod libraries share the game's exact Rust state"
+        jobs = [j for j in GREEN_JOBS if j["name"] not in ("sdk / build linux", summary.FN_REPLACE_JOB)] + [
+            job("sdk / build linux", "failure", [probe]),
+            job(summary.FN_REPLACE_JOB, "failure", ["The Linux legs are here"])]
+        api = Api(jobs, issues=[{"number": 6, "title": "Daily: fn-replace-check / fn-replace-check did not complete"}])
+        _, out = self.run_summary(api, [shard_report()], results=dict(
+            LEGS, sdk={"result": "failure"}, **{"fn-replace-check": {"result": "failure"}}))
+        self.assertEqual(out.splitlines(), ["green=false", "sdk_green=false"])
+        created = [body for _, path, body in api.writes if path == "issues"]
+        self.assertEqual([body["title"] for body in created], ["Daily: sdk native linkage probe (linux)"])
+        self.assertIn("`fn-replace-check` could not run: it needs this leg's SDK", created[0]["body"])
+        self.assertFalse(any(path.startswith("issues/6") for _, path, _ in api.writes),
+                         "a blocked fn-replace-check neither comments on nor closes its own issue")
+
+    def test_a_failed_linux_fresh_check_with_no_published_sdk_files_one_issue(self):
+        # The Linux call's `fresh` failed, so no Linux build job ran and fn-replace-check found no input.
+        linux = GREEN_JOBS.index(job("sdk / fresh"))
+        jobs = [j for at, j in enumerate(GREEN_JOBS) if at != linux and j["name"] not in (
+            "sdk / build linux", "sdk / build linux-server", summary.FN_REPLACE_JOB)] + [
+            job("sdk / fresh", "failure", ["Is sdk-<sha> published?"]), job("sdk / build linux", "skipped"),
+            job("sdk / build linux-server", "skipped"), job(summary.FN_REPLACE_JOB, "failure", ["The Linux legs are here"])]
+        api = Api(jobs)
+        _, out = self.run_summary(api, [shard_report()], results=dict(
+            LEGS, sdk={"result": "failure"}, **{"fn-replace-check": {"result": "failure"}}))
+        self.assertEqual(out.splitlines(), ["green=false", "sdk_green=false"])
+        created = [body for _, path, body in api.writes if path == "issues"]
+        self.assertEqual([body["title"] for body in created], ["Daily: sdk did not complete"])
+        self.assertIn("`fn-replace-check` could not run: it needs this leg's SDK", created[0]["body"])
+
+    def test_fn_replace_check_missing_its_input_from_a_green_linux_sdk_is_its_own_red(self):
+        jobs = [j for j in GREEN_JOBS if j["name"] != summary.FN_REPLACE_JOB] + [
+            job(summary.FN_REPLACE_JOB, "failure", ["The Linux legs are here"])]
+        api = Api(jobs)
+        _, out = self.run_summary(api, [shard_report()], results=dict(LEGS, **{"fn-replace-check": {"result": "failure"}}))
+        self.assertEqual(out.splitlines(), ["green=false", "sdk_green=false"])
+        self.assertEqual([body["title"] for _, path, body in api.writes if path == "issues"],
+                         ["Daily: fn-replace-check / fn-replace-check did not complete"])
+
+    def test_a_genuine_fn_replace_red_beside_a_linux_sdk_red_is_filed_too(self):
+        jobs = [j for j in GREEN_JOBS if j["name"] not in ("sdk / build linux-server", summary.FN_REPLACE_JOB)] + [
+            job("sdk / build linux-server", "failure", ["Build and collect"]),
+            job(summary.FN_REPLACE_JOB, "failure", ["Refusals by name"])]
+        api = Api(jobs)
+        self.run_summary(api, [shard_report()], results=dict(
+            LEGS, sdk={"result": "failure"}, **{"fn-replace-check": {"result": "failure"}}))
+        self.assertCountEqual([body["title"] for _, path, body in api.writes if path == "issues"],
+                              ["Daily: fn-replace-check / fn-replace-check did not complete",
+                               "Daily: sdk / build linux-server did not complete"])
+
+    def test_an_sdk_check_issue_closes_only_when_its_step_passed(self):
+        title = "Daily: sdk API-source check (linux)"
+        step = "The starter mod checks against the API source alone, host and wasm32"
+        # sdk-<sha> already existed: the build skipped, so the check never ran and its issue stays open.
+        jobs = [j for j in GREEN_JOBS if not j["name"].startswith("sdk / build ")] + [
+            job(name, "skipped") for name in ("sdk / build linux", "sdk / build linux-server",
+                                              "sdk / build windows", "sdk / build macos")]
+        api = Api(jobs, issues=[{"number": 9, "title": title}])
+        _, out = self.run_summary(api, [shard_report()])
+        self.assertIn("green=true", out)
+        self.assertFalse(any(path.startswith("issues/9") for _, path, _ in api.writes))
+        ran = dict(job("sdk / build linux"))
+        ran["steps"] = ran["steps"] + [{"name": step, "conclusion": "success"}]
+        api = Api([j for j in GREEN_JOBS if j["name"] != "sdk / build linux"] + [ran], issues=[{"number": 9, "title": title}])
+        self.run_summary(api, [shard_report()])
+        self.assertIn("issues/9", [path for method, path, _ in api.writes if method == "PATCH"])
 
     def test_the_sdk_legs_alone_decide_sdk_green(self):
         jobs = [job("shards / ignored-tests-shards (sunrise-world)", "failure", ["Run"])] + GREEN_JOBS[2:]

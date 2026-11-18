@@ -26,9 +26,9 @@
 //! damage, death or attribute operations.
 //! An entity added inside one goes at an abort, one removed is only marked until the root
 //! commit, and mods hear of joins and leaves at the root commit (`transactions/entities.rs`).
-use super::{BlockEntity, BlockStateId, Game, machines::HopperState};
+use super::{BlockEntity, BlockStateId, Game, machines::HopperState, maps::MapData};
 use mod_api::{Transaction, TransactionLifecycle, TransactionSeal};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use sunrise_client::{items::ItemStack, world::BlockEntityExtras};
 use sunrise_core::position::BlockPos;
 use sunrise_mod_runtime::attachments::{Attachments, Holder};
@@ -162,6 +162,8 @@ pub(super) struct Level {
     /// attachment map in it: an abort puts them back, so a chunk only a tentative write marked
     /// is clean again.
     chunk_marks: HashMap<(i32, i32), sunrise_client::world::ChunkMark>,
+    /// New map data and its reserved IDs. Neither enters the saved map table until root commit.
+    pub(super) new_maps: BTreeMap<i32, MapData>,
     /// What the root commit does, in order.
     after: Vec<After>,
     /// Internal decide/fire/apply state. No menu route uses this yet.
@@ -573,6 +575,7 @@ impl Game<'_> {
                 for (chunk, mark) in level.chunk_marks {
                     outer.chunk_marks.entry(chunk).or_insert(mark);
                 }
+                outer.new_maps.append(&mut level.new_maps);
                 outer.after.extend(level.after);
                 // The nearest enclosing transaction of this level takes its entities back; a
                 // parent in another level can't, and with none in this level they are told now.
@@ -1087,6 +1090,10 @@ impl Game<'_> {
         }
     }
     fn root_commit(&mut self, level: Level) {
+        // A deferred listener may read a new map or create one of its own.
+        for (id, data) in level.new_maps {
+            self.publish_map(id, data);
+        }
         let mut told = std::collections::HashSet::new();
         let mut biome_columns = std::collections::HashSet::new();
         for after in level.after {

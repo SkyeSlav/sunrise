@@ -1,7 +1,7 @@
 //! Fishing: `FishingRodItem.use` (cast / reel in), the `FishingHook` (flight,
 //! bobbing, lure and bite timers, open water, hooking mobs, retrieving the
 //! `gameplay/fishing` loot) and `FishingHookRenderer` (bobber and line).
-use super::{Game, creatures::ProjectileHitter, lan_mobs::guest_bounds, view_vector};
+use super::{Game, billboard_axes, creatures::ProjectileHitter, lan_mobs::guest_bounds};
 use std::sync::Arc;
 use sunrise_client::advancements::EntityView;
 use sunrise_client::lan::entity::States;
@@ -1430,9 +1430,8 @@ impl Game<'_> {
         else {
             return;
         };
-        let forward = glam::DVec3::from_array(view_vector(self.yaw, self.pitch));
-        let right = forward.cross(glam::DVec3::Y).normalize_or_zero();
-        let up = right.cross(forward).normalize_or_zero();
+        // FishingHookRenderer.submit: turned by the camera's orientation.
+        let [right, up] = billboard_axes(self.camera_orientation());
         let s = 0.25;
         let uv = [[r.u0, r.v1], [r.u1, r.v1], [r.u1, r.v0], [r.u0, r.v0]];
         for p in hooks {
@@ -1464,9 +1463,7 @@ impl Game<'_> {
     /// from a quarter block above the hook to the rod in its owner's hand,
     /// `width` pixels wide (`Window.getAppropriateLineWidth`).
     pub(super) fn fishing_line(&self, alpha: f64, size: [u32; 2]) -> Vec<Line> {
-        let own = self
-            .hook_position(alpha)
-            .zip(self.rod_hand_position(alpha, size));
+        let own = self.hook_position(alpha).zip(self.rod_hand_position(alpha));
         let width = sunrise_client::gfx::outline_width(size[0]);
         let mut lines = Vec::new();
         for (hook, hand) in own.into_iter().chain(self.remote_hook_ends(alpha)) {
@@ -1486,7 +1483,7 @@ impl Game<'_> {
     }
     /// `FishingHookRenderer.getPlayerHandPos`: on the near plane in first
     /// person, beside the body otherwise.
-    fn rod_hand_position(&self, alpha: f64, size: [u32; 2]) -> Option<glam::DVec3> {
+    fn rod_hand_position(&self, alpha: f64) -> Option<glam::DVec3> {
         let p = self.player.as_ref()?;
         let right_arm = self.main_hand_rod() != self.settings.main_hand_left;
         let invert: f32 = if right_arm { 1.0 } else { -1.0 };
@@ -1497,36 +1494,7 @@ impl Game<'_> {
         let eye = glam::DVec3::new(feet.x, feet.y + f64::from(p.dimensions.eye_height), feet.z);
         if self.camera_type.is_first_person() {
             let fov = self.settings.fov as i32 as f32;
-            // Camera.getNearPlane(fov).getPointOnPlane(invert * 0.525, -0.1).
-            let aspect = f64::from(size[0]) / f64::from(size[1].max(1));
-            let height =
-                (f64::from(fov * (std::f64::consts::PI / 180.0) as f32) / 2.0).tan() * 0.05;
-            let forward = glam::DVec3::from_array(view_vector(self.yaw, self.pitch));
-            let left = -forward.cross(glam::DVec3::Y).normalize_or_zero();
-            let up = forward.cross(left).normalize_or_zero();
-            let point = forward * 0.05 + up * (height * -0.1)
-                - left * (height * aspect * f64::from(invert * 0.525));
-            let point = point * (960.0 / f64::from(fov));
-            // Vec3.yRot(swing * 0.5), then xRot(-swing * 0.7).
-            let (s, c) = (
-                f64::from(trig::sin(f64::from(swing * 0.5))),
-                f64::from(trig::cos(f64::from(swing * 0.5))),
-            );
-            let point = glam::DVec3::new(
-                point.x * c + point.z * s,
-                point.y,
-                point.z * c - point.x * s,
-            );
-            let (s, c) = (
-                f64::from(trig::sin(f64::from(-swing * 0.7))),
-                f64::from(trig::cos(f64::from(-swing * 0.7))),
-            );
-            let point = glam::DVec3::new(
-                point.x,
-                point.y * c + point.z * s,
-                point.z * c - point.y * s,
-            );
-            Some(eye + point)
+            Some(eye + near_plane_hand(self.near_plane(), fov, invert, swing))
         } else {
             let model = self.player_model.as_ref()?;
             let body = mod_api::client::camera::lerp(
@@ -1551,6 +1519,36 @@ impl Game<'_> {
             )
         }
     }
+}
+/// `FishingHookRenderer.getPlayerHandPos` in first person, from the eye: the camera's
+/// `getNearPlane(fov).getPointOnPlane(invert * 0.525, -0.1)` scaled by 960 / fov, then
+/// `Vec3.yRot(swing * 0.5)` and `xRot(-swing * 0.7)`.
+fn near_plane_hand(
+    plane: sunrise_client::camera::NearPlane,
+    fov: f32,
+    invert: f32,
+    swing: f32,
+) -> glam::DVec3 {
+    let point = glam::DVec3::from_array(plane.point_on_plane(invert * 0.525, -0.1))
+        * (960.0 / f64::from(fov));
+    let (s, c) = (
+        f64::from(trig::sin(f64::from(swing * 0.5))),
+        f64::from(trig::cos(f64::from(swing * 0.5))),
+    );
+    let point = glam::DVec3::new(
+        point.x * c + point.z * s,
+        point.y,
+        point.z * c - point.x * s,
+    );
+    let (s, c) = (
+        f64::from(trig::sin(f64::from(-swing * 0.7))),
+        f64::from(trig::cos(f64::from(-swing * 0.7))),
+    );
+    glam::DVec3::new(
+        point.x,
+        point.y * c + point.z * s,
+        point.z * c - point.y * s,
+    )
 }
 impl Game<'_> {
     /// The hooks drawn here, with their owners' ids (0 for this player's own).
@@ -2302,6 +2300,26 @@ fn cast_direction(yaw: f32, pitch: f32) -> (f32, f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::{Hook, cast_direction, entity_hit_margin, first_entity_hit, pull_item, rebound};
+
+    /// `FishingHookRenderer.getPlayerHandPos` in first person on HotSpot 25.0.4.1: the camera at
+    /// yaw 30 looking straight up, fov 70 on 854 x 480, the right arm mid-swing (0.5). The
+    /// offset from the eye, as double bits.
+    #[test]
+    fn the_rod_hand_stays_on_the_near_plane_looking_straight_up() {
+        let mut camera = sunrise_client::camera::Camera::default();
+        camera.set_rotation(30.0, -90.0);
+        let plane = camera.near_plane(70.0, 854.0, 480.0);
+        assert_eq!(
+            super::near_plane_hand(plane, 70.0, 1.0, 0.5)
+                .to_array()
+                .map(f64::to_bits),
+            [
+                0xbfdc_771f_22e0_62d8,
+                0x3fe5_6f4f_fc00_3d1e,
+                0x3fc5_139d_516c_7487,
+            ]
+        );
+    }
 
     /// `fishing_medium`'s surface: a bobber is in the medium below `floor(surface) + 1`, and a
     /// surface that is not finite, or under the bobber, is no medium.

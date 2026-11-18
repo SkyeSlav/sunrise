@@ -328,6 +328,15 @@ fn load_bitmap(
     if rows.is_empty() || rows[0].is_empty() {
         return out;
     }
+    // `BitmapProvider.Definition.validateDimensions`: the cell size comes from the first row.
+    if let Some(i) = rows.iter().position(|row| row.len() != rows[0].len()) {
+        log::warn!(
+            "font sheet {file}: lines in codepoint map have to be the same length (expected: {}, got: {}) for line {i}",
+            rows[0].len(),
+            rows[i].len()
+        );
+        return out;
+    }
     let cell_w = sw / rows[0].len() as u32;
     let cell_h = sh / rows.len() as u32;
     let height = p["height"].as_f64().unwrap_or(8.0) as f32;
@@ -883,7 +892,7 @@ impl Font {
                             let mut rgba = Vec::with_capacity((cell.w * cell.h * 4) as usize);
                             for y in cell.y..cell.y + cell.h {
                                 let at = ((y * stride + cell.x) * 4) as usize;
-                                rgba.extend_from_slice(&pixels[at..at + (cell.w * 4) as usize]);
+                                rgba.extend_from_slice(pixels.get(at..at + (cell.w * 4) as usize)?);
                             }
                             let (x, y) =
                                 region.place(cell.w, cell.h, rgba, self.atlas, self.region)?;
@@ -1953,5 +1962,57 @@ mod tests {
         assert!(font.glyph('z').rect.is_none());
         font.begin_frame();
         assert_eq!(font.epoch(), epoch);
+    }
+
+    /// `BitmapProvider.Definition`: every row of `chars` is as long as the first, else the
+    /// provider is refused. A 2048 wide sheet stays out of the HUD atlas, so its glyphs are copied
+    /// from the sheet when first drawn; with rows of 1 and 2 characters the cell is 2048 wide and
+    /// `c` would be copied from past the sheet's end.
+    #[test]
+    fn a_bitmap_font_with_rows_of_different_lengths_is_refused() {
+        let sheet = png(2048, 16, |_, _| true);
+        let def = br#"{"providers":[{"type":"bitmap","file":"minecraft:font/wide.png","ascent":7,"chars":["a","bc"]}]}"#;
+        let root = root(
+            "uneven-rows",
+            &[
+                ("assets/minecraft/font/default.json", def),
+                ("assets/minecraft/textures/font/wide.png", &sheet),
+            ],
+        );
+        let font = load(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        for c in ['c', 'a'] {
+            let g = font.glyph(c);
+            assert!(g.rect.is_none(), "{c:?} is the missing glyph");
+            assert_eq!(g.advance, 6.0, "{c:?} is the missing glyph");
+        }
+        assert!(font.take_patches().is_empty());
+    }
+
+    /// Rows of the same length: each row's glyphs come from their own cells of the sheet.
+    #[test]
+    fn a_bitmap_font_with_rows_of_one_length_draws_every_row() {
+        // 8x8 cells: `c` has 3 opaque columns, `d` 7.
+        let sheet = png(16, 16, |x, y| y >= 8 && (x < 3 || (8..15).contains(&x)));
+        let def = br#"{"providers":[{"type":"bitmap","file":"minecraft:font/rows.png","ascent":7,"chars":["ab","cd"]}]}"#;
+        let root = root(
+            "even-rows",
+            &[
+                ("assets/minecraft/font/default.json", def),
+                ("assets/minecraft/textures/font/rows.png", &sheet),
+            ],
+        );
+        let font = load(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        let c = font.glyph('c');
+        assert_eq!(c.advance, 4.0);
+        assert_eq!((c.right, c.bottom), (8.0, 8.0));
+        assert!(c.rect.is_some());
+        assert_eq!(font.glyph('d').advance, 8.0);
+        let patches = font.take_patches();
+        assert_eq!(patches.len(), 2);
+        let opaque: Vec<bool> = patches[0].rgba.chunks(4).map(|t| t[3] != 0).collect();
+        let expected: Vec<bool> = (0..64).map(|i| i % 8 < 3).collect();
+        assert_eq!(opaque, expected, "c's cell, row by row");
     }
 }

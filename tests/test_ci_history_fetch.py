@@ -65,8 +65,44 @@ class HistoryFetchTests(unittest.TestCase):
                         self.assertNotIn("::error::", result.stdout)
 
     @unittest.skipUnless(shutil.which("git") and shutil.which("timeout"), "needs git and timeout")
-    def test_the_slot_mirror_fills_then_lends_its_history_to_the_next_checkout(self):
+    def test_selection_takes_the_commits_and_fetches_only_the_trees_its_diff_reads(self):
         _, name, step = next(steps())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            quiet = dict(capture_output=True, text=True, check=True)
+            git = lambda *args, cwd=root: subprocess.run(["git", *args], cwd=cwd, **quiet).stdout.strip()
+            server = root / "server"
+            git("init", "-q", "-b", "main", str(server))
+            git("config", "uploadpack.allowFilter", "true", cwd=server)
+            for n in range(6):
+                (server / f"d{n}").mkdir()
+                (server / f"d{n}" / "f").write_text(f"{n}\n")
+                git("add", ".", cwd=server)
+                git("-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-qm", f"c{n}",
+                    cwd=server)
+            heads = git("rev-list", "--reverse", "main", cwd=server).split()
+            build = root / "build"
+            checkout = root / "checkout"
+            git("init", "-q", str(checkout))
+            git("remote", "add", "origin", f"file://{server}", cwd=checkout)
+            git("fetch", "-q", "--depth=1", "origin", heads[5], cwd=checkout)
+            git("checkout", "-q", "FETCH_HEAD", cwd=checkout)
+            env = dict(os.environ, **step["env"], DYNA_CI_BUILD=str(build), GITHUB_REPOSITORY="org/repo")
+            result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", step["run"].replace(
+                "tools/ci/", f"{ROOT}/tools/ci/")], cwd=checkout, env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(git("rev-list", "--count", "HEAD", cwd=checkout), "6")
+            # The older commits came without their trees, and the slot's mirror was neither borrowed nor filled.
+            missing = git("rev-list", "--objects", "--missing=print", heads[2], cwd=checkout).split()
+            self.assertIn(f"?{git('rev-parse', heads[2] + '^{tree}', cwd=server)}", missing)
+            self.assertFalse(build.exists())
+            # Selection's diff still reads both trees, fetching what it lacks.
+            self.assertEqual(git("diff", "--name-only", f"{heads[2]}...{heads[5]}", cwd=checkout).split(),
+                             ["d3/f", "d4/f", "d5/f"])
+
+    @unittest.skipUnless(shutil.which("git") and shutil.which("timeout"), "needs git and timeout")
+    def test_the_slot_mirror_fills_then_lends_its_history_to_the_next_checkout(self):
+        _, name, step = list(steps())[1]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             quiet = dict(capture_output=True, text=True, check=True)

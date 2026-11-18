@@ -5,11 +5,9 @@ Create a project, edit its JSON files, then build and run it.
 
 ## Create and package your mod
 
+Install the tool first ([Install the mod tool](../start/install-tool.md)).
+
 ```sh
-# A prebuilt binary for Linux x86_64/aarch64, macOS x86_64/arm64 or Windows x86_64:
-cargo binstall --git https://github.com/sunrise-org/sunrise cargo-sunrise-mod
-# Or build it from source, without cargo-binstall:
-cargo install --git https://github.com/sunrise-org/sunrise cargo-sunrise-mod
 cargo sunrise-mod new my-mod        # a content mod: manifest, one block with its model, loot and recipe
 cd my-mod
 cargo sunrise-mod run               # build my-mod.smod, then start the game with it turned on
@@ -1227,7 +1225,10 @@ that replaces a biome keeps the mods' changes too.
 
 **A biome of your own.** A mod's `data/<ns>/worldgen/biome/<path>.json` (any namespace but `minecraft`) adds a biome.
 The game loads it into its biome table after vanilla's biomes, sorted by path and then namespace, so vanilla's biome ids
-never move. A joining client receives it in the biome registry with its data even when it has the vanilla pack, builds
+never move. The content build puts it in the content root's biome bundle as `<ns>:<path>`, after vanilla's biomes and
+in namespace then path order; a file in the `minecraft` namespace is ignored, since mods cannot replace vanilla's
+biomes. Biome tags keep the mod's ids, biome modifiers apply over vanilla's biomes and the mods' together (a modifier
+reaches a mod biome through its tag and never drops it), and `/locate biome` and `/place` suggest it. A joining client receives it in the biome registry with its data even when it has the vanilla pack, builds
 it from that data, and plays its colours, ambient particles, ambient sounds and music from it; a client with the same
 mod already has it. Its network id is its place in the registry sorted by path, then namespace, as in vanilla.
 Saved worlds name a column's biomes, not their ids: a world saved before the mod existed holds only vanilla names and

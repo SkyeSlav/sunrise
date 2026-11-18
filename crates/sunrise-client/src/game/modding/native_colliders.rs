@@ -468,6 +468,23 @@ impl Game<'_> {
         self.collider_histories.0.get(&self.dim).cloned()
     }
 
+    /// Runs `f` with this level's moving colliders and history in scope, for a call into a level
+    /// other than the one ticking (a hook of one level moving a player of another): the scopes
+    /// are otherwise installed per level tick, and a query would read the caller's. The
+    /// history is the level's own, as its tick recorded it, and nothing is recorded now.
+    pub(in crate::game) fn in_this_levels_colliders<R>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let placed = self.placed_moving_colliders();
+        let history = self
+            .is_logical_server()
+            .then(|| self.collider_histories.0.get(&self.dim).cloned())
+            .flatten();
+        let _history = sunrise_client_render::moving_colliders::HistoryScope::replace(history);
+        sunrise_client_render::moving_colliders::in_level(placed, || f(self))
+    }
+
     /// Records the level's colliders as its tick begins into the level's history and answers it,
     /// for a server; a client keeps none. A level with no collider keeps nothing.
     pub(in crate::game) fn collider_history(

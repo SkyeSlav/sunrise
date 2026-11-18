@@ -25,6 +25,26 @@ pub fn data_dir_with(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> PathBu
     std::env::temp_dir()
 }
 
+/// The private home: the game home `--home` or `SUNRISE_HOME` named, where a host whose game
+/// folder runs no code (a phone's shared storage) keeps what the game needs. `None` when the
+/// home is the default one, which no one asked for.
+pub fn private_home_in(
+    home: &Path,
+    env: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    (home != data_dir_with(env).join("sunrise")).then(|| home.to_path_buf())
+}
+
+/// The folder holding `.sunrise-cache`: the private home when there is one, else the game
+/// folder, where the caches have always been.
+pub fn cache_home_in(
+    home: &Path,
+    game_dir: &Path,
+    env: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> PathBuf {
+    private_home_in(home, env).unwrap_or_else(|| game_dir.to_path_buf())
+}
+
 #[derive(Clone, Debug)]
 pub struct ModSelectionContext {
     pub game_dir: PathBuf,
@@ -234,6 +254,18 @@ mod tests {
                 .unwrap()
                 .is_information_request()
         );
+    }
+
+    #[test]
+    fn the_private_home_is_a_home_someone_named() {
+        let env = |key: &str| (key == "XDG_DATA_HOME").then(|| "/data".into());
+        let default = Path::new("/data/sunrise");
+        let named = Path::new("/private/app");
+        let game = Path::new("/game");
+        assert_eq!(private_home_in(default, env), None);
+        assert_eq!(private_home_in(named, env), Some(named.to_path_buf()));
+        assert_eq!(cache_home_in(default, game, env), game);
+        assert_eq!(cache_home_in(named, game, env), named);
     }
 
     fn parse(args: &[&str], home: Option<&str>) -> LaunchArguments {

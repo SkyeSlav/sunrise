@@ -16,7 +16,7 @@ use std::sync::atomic::Ordering;
 use sunrise_client_render::moving_colliders::{as_mover, at_age, with_history};
 use sunrise_core::geometry::{
     Aabb, Vec3,
-    carried::{Ages, Body, Carried, Fit, Footing, judge},
+    carried::{Ages, Body, Carried, Fit, Footing, footing, judge},
 };
 
 /// How a report stands to the colliders of the level.
@@ -279,6 +279,35 @@ impl Hub {
         self.guests.update(i, |g| {
             g.on_collider = Some(Carried {
                 committed: back.map_or(held.committed, |b| Vec3::new(b[0], b[1], b[2])),
+                ..held
+            });
+        });
+    }
+
+    /// After a displacement ([`Hub::displace`]) put the player at `target`: keeps `carried`
+    /// attached to the same collider when `target` is still over it as the server places the
+    /// collider now (the place on it is re-derived), and lets go otherwise.
+    pub(super) fn keep_carried_at(&mut self, i: usize, carried: Option<Carried>, target: [f64; 3]) {
+        let Some(held) = carried else { return };
+        let g = &self.guests[i];
+        let dimensions = g.dimensions();
+        let body = Body {
+            half_width: f64::from(dimensions.width) / 2.0,
+            height: f64::from(dimensions.height),
+        };
+        let at = Vec3::new(target[0], target[1], target[2]);
+        let local = with_history(|history| {
+            let (log, boxes) = history.get(held.collider)?;
+            let local = log.frame_at(history.now(), 0.0)?.to_local(at);
+            footing(boxes, local, body).map(|_| local)
+        })
+        .flatten();
+        let Some(local) = local else { return };
+        self.guests.update(i, |g| {
+            g.on_collider = Some(Carried {
+                local,
+                reported: at,
+                committed: at,
                 ..held
             });
         });

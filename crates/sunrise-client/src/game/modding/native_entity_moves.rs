@@ -9,8 +9,10 @@ use super::{
     commands::{Target, entity_pitch},
     vehicle_teleport::TeleportMotion,
 };
+use crate::game::{collision_source::Mover, move_gate::MoveWho};
 use mod_api::{EntityRef, MoveCause};
 use sunrise_core::geometry::Vec3;
+use sunrise_world::entity_move::MoverType;
 
 /// `Level.isInSpawnableBounds` and `/tp`'s limits: 30,000,000 blocks out,
 /// 20,000,000 up or down.
@@ -119,21 +121,36 @@ impl Game<'_> {
     }
     /// Moves the entity by `delta` as `Entity.move(cause, delta)` does: collided, stepping,
     /// through the `entity_move` hook. How far it moved; None for a stale handle, on a client,
-    /// for a player, for an entity outside the entity walk, and for an unknown cause and for a delta
-    /// that is not finite or beyond 64 blocks on an axis.
+    /// for an entity outside the entity walk, and for an unknown cause and for a delta that is
+    /// not finite or beyond 64 blocks on an axis. A player is moved by `move_player_by`.
     pub(super) fn entity_move_by(
         &mut self,
         entity: EntityRef,
         delta: [f64; 3],
         cause: MoveCause,
     ) -> Option<[f64; 3]> {
-        if self.remote.is_some()
-            || !delta.iter().all(|v| v.is_finite() && v.abs() <= 64.0)
-            || self.native_entity_target(entity).is_none()
-        {
+        if self.remote.is_some() || !delta.iter().all(|v| v.is_finite() && v.abs() <= 64.0) {
             return None;
         }
         let mover = sunrise_client::move_gate::mover_of(cause)?;
+        let t = self.native_entity_target(entity)?;
+        if matches!(t, Target::Player | Target::Guest(_)) {
+            let conn = match t {
+                Target::Player => self.lan_acting?,
+                Target::Guest(conn) => conn,
+                _ => return None,
+            };
+            // The level the player is in, as a teleport is made in it, with that level's moving
+            // colliders when it is not the one ticking.
+            let elsewhere = self.resident_target_dimension(t)? != self.dim;
+            return self.in_target_level(t, |game| {
+                if elsewhere {
+                    game.in_this_levels_colliders(|game| game.move_player_by(t, conn, mover, delta))
+                } else {
+                    game.move_player_by(t, conn, mover, delta)
+                }
+            })?;
+        }
         let handle = self.native_walk_entity(entity.id())?;
         let [x, y, z] = delta;
         let moved = self.move_listed_entity(handle, mover, Vec3::new(x, y, z));
@@ -312,6 +329,78 @@ impl Game<'_> {
             self.mobs[i].needs_sync = true;
         }
         true
+    }
+    /// Moves a player by `delta` through the level (`Entity.move`) after the `entity_move` hook
+    /// has heard it, and tells its client with a relative teleport (`Hub::displace`). The
+    /// displacement made, or `None` (see the host trait for what is refused).
+    fn move_player_by(
+        &mut self,
+        t: Target,
+        conn: u32,
+        mover: MoverType,
+        delta: [f64; 3],
+    ) -> Option<[f64; 3]> {
+        let acting = t == Target::Player;
+        {
+            let guest = self.lan.as_ref()?.hub.guest(conn)?;
+            if guest.vehicle.is_some() || guest.sleeping {
+                return None;
+            }
+        }
+        // The hook hears the move once, as `Entity.move` begins; a cancel is a move of nothing.
+        let who = if acting {
+            MoveWho::Player
+        } else {
+            MoveWho::Guest(conn)
+        };
+        let gate = self.entity_move(who, mover, Vec3::new(delta[0], delta[1], delta[2]));
+        if gate.skipped() {
+            return Some([0.0; 3]);
+        }
+        let delta = gate.delta().components();
+        let host = self.lan.as_ref()?;
+        let guest = host.hub.guest(conn)?;
+        let body = if acting {
+            self.player.as_ref()
+        } else {
+            guest.motion.as_deref()
+        }?;
+        let from = [body.position.x, body.position.y, body.position.z];
+        let to = [from[0] + delta[0], from[1] + delta[1], from[2] + delta[2]];
+        if !in_bounds(to) {
+            return None;
+        }
+        // A spectator goes through everything, as its moves are not checked.
+        let reached = if guest.spectator() {
+            to
+        } else {
+            // The solid entities (boats, shulkers, a still happy ghast) the player may meet.
+            let entities = self.entity_collisions(Mover::PlayerAt { feet_y: from[1] });
+            self.lan.as_ref()?.hub.settle_conn(
+                conn,
+                from,
+                to,
+                &self.world,
+                self.collision,
+                &entities,
+            )?
+        };
+        let target = Vec3::new(reached[0], reached[1], reached[2]);
+        if acting {
+            self.player.as_mut()?.position = target;
+        } else {
+            let host = self.lan.as_mut()?;
+            host.hub.update_guest(conn, |g| {
+                g.motion.as_deref_mut().map(|m| m.position = target)
+            })??;
+        }
+        let by = [
+            reached[0] - from[0],
+            reached[1] - from[1],
+            reached[2] - from[2],
+        ];
+        self.lan.as_mut()?.hub.displace(conn, reached, by);
+        Some(by)
     }
 }
 

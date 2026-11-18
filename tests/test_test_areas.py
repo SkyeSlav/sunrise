@@ -1,17 +1,25 @@
 """tools/test_areas.toml stays whole: every test belongs to an area, and every pattern in it matches something."""
 
+import contextlib
+import io
+import shutil
+import subprocess
+import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from tools import test_areas as areas
-from tools.ci import ignored_tests
+from tools.ci import ignored_tests, test_scope
 
 
 class MapTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.map = areas.load()
-        cls.harnesses = areas.harness_names()
+        runnable, by_hand = areas.harness_names()
+        cls.harnesses = runnable + sorted(by_hand)
         cls.checks = areas.lan_checks()
         cls.tracked = areas.tracked()
 
@@ -34,6 +42,30 @@ class MapTests(unittest.TestCase):
         bad = [f"{area.name}: {entry}" for area in self.map.areas for entry in area.cargo
                if not areas.TARGET.match(entry.target)]
         self.assertEqual([], bad, "a cargo entry's target is `lib`, `bin:NAME` or `test:NAME`")
+
+    @unittest.skipUnless(shutil.which("cargo"), "needs cargo metadata")
+    def test_cargo_entries_name_a_package_and_its_target(self):
+        targets = {(package["name"], "lib" if kind.endswith("lib") else f"{kind}:{target['name']}")
+                   for package in test_scope.cargo_metadata()["packages"]
+                   for target in package["targets"] for kind in target["kind"]}
+        missing = [f"{area.name}: {entry.package} {entry.target}" for area in self.map.areas for entry in area.cargo
+                   if (entry.package, entry.target) not in targets]
+        self.assertEqual([], missing, "cargo entries whose package has no such target")
+
+    def test_a_library_file_selects_its_own_unit_tests(self):
+        # A test of the library itself, not only of the gameplay calling it.
+        for path, package, test in (
+                ("crates/sunrise-world/src/nbt_path.rs", "sunrise-world", "nbt_path::tests::get_follows_the_path"),
+                ("crates/sunrise-client-render/src/hud/gui_sprite.rs", "sunrise-client-render",
+                 "hud::gui_sprite::tests::vanilla_ids_drop_their_namespace_and_a_mods_keep_theirs")):
+            with self.subTest(path=path):
+                entries = [entry for area in areas.select(self.map, [path]).areas for entry in area.cargo]
+                self.assertTrue(any(areas.covers(entry, package, "lib", test) for entry in entries))
+
+    def test_the_wasm_fixture_tests_are_named_with_their_area(self):
+        mod_api = next(area for area in self.map.areas if area.name == "mod-api")
+        _, tiers = areas.plan(mod_api, [], [], areas.daily_rows())
+        self.assertTrue(tiers["fixture"])
 
     def test_every_harness_is_in_an_area_or_unassigned(self):
         unplaced = sorted(set(self.harnesses) - self.placed() - set(self.map.unassigned))
@@ -107,6 +139,71 @@ class SelectionTests(unittest.TestCase):
             commands, _ = areas.plan(area, [], [], [row, other], daily=True)
         self.assertEqual(["cargo", "test", "-p", "game", "--lib", "--", "--ignored", "--exact",
                           "game::tnt::tests::a_fuse_burns"], commands[-1])
+
+    def test_daily_rows_needing_the_wasm_fixture_are_named_not_run(self):
+        area = areas.Area("mods", "", (), (areas.Cargo("game", "lib", "game::wasm::"),), (), ())
+        row = ignored_tests.Row("game", "game::wasm::tests::a_mod_loads", "lib", "daily", "x.txt", "wasm-fixture")
+        commands, tiers = areas.plan(area, [], [], [row], daily=True)
+        self.assertEqual([["cargo", "test", "-p", "game", "--lib", "--", "game::wasm::"]], commands)
+        self.assertEqual(([], [row]), (tiers["daily"], tiers["fixture"]))
+
+    def test_a_proof_run_by_hand_is_named_not_passed_to_parity(self):
+        area = areas.Area("boom", "", (), (), ("tnt_*",), ())
+        commands, tiers = areas.plan(area, ["tnt_fuse"], [], [], by_hand=["tnt_proof"])
+        self.assertEqual([[sys.executable, "tools/parity.py", "tnt_fuse"]], commands)
+        self.assertEqual(["tnt_proof"], tiers["by_hand"])
+
+    def test_an_opt_in_lan_check_runs_only_on_prebuilt_binaries(self):
+        area = areas.Area("mods", "", (), (), (), ("recipes-smod",))
+        commands, tiers = areas.plan(area, [], ["chest", "recipes-smod"], [], lan=True)
+        self.assertEqual(([], ["recipes-smod"]), (commands, tiers["lan"]))
+        commands, _ = areas.plan(area, [], ["chest", "recipes-smod"], [], lan=True, lan_bins="/bins")
+        self.assertEqual([[sys.executable, "tools/lan_e2e.py", "--bin-dir", "/bins", "--check", "recipes-smod"]],
+                         commands)
+
+
+def package(name, folder, *dependencies):
+    return {"name": name, "manifest_path": f"/repo/{folder}/Cargo.toml",
+            "targets": [{"src_path": f"/repo/{folder}/src/lib.rs"}],
+            "dependencies": [{"name": dependency} for dependency in dependencies]}
+
+
+class RunFromDiffTests(unittest.TestCase):
+    """`run --changed-files`: the paths no area claims still get their crates' tests."""
+
+    def cargo_runs(self, paths):
+        table = areas.Map((areas.Area("boom", "", ("crates/game/src/explosion*",),
+                                      (areas.Cargo("game", "lib", "explosion::"),), (), ()),), ("Cargo.lock",), ())
+        metadata = {"workspace_root": "/repo", "packages": [
+            package("game", "crates/game"), package("menu", "crates/menu"), package("app", "crates/app", "menu")]}
+        ran = []
+
+        def run(command, cwd):
+            ran.append(list(command))
+            return subprocess.CompletedProcess(command, 0)
+
+        with tempfile.TemporaryDirectory() as folder, contextlib.ExitStack() as stack:
+            listed = Path(folder) / "paths.txt"
+            listed.write_text("\n".join(paths), encoding="utf-8")
+            for name, value in (("load", table), ("harness_names", ([], {})), ("lan_checks", []), ("daily_rows", [])):
+                stack.enter_context(mock.patch.object(areas, name, return_value=value))
+            stack.enter_context(mock.patch.object(test_scope, "cargo_metadata", return_value=metadata))
+            stack.enter_context(mock.patch.object(areas.subprocess, "run", side_effect=run))
+            stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            self.assertEqual(0, areas.main(["run", "--changed-files", str(listed)]))
+        return [command for command in ran if command[0] == "cargo"]
+
+    def test_an_unmapped_only_diff_tests_its_crates_and_their_dependents(self):
+        self.assertEqual([["cargo", "test", "-p", "app", "-p", "menu", "--lib", "--bins", "--tests"]],
+                         self.cargo_runs(["crates/menu/src/slots.rs"]))
+
+    def test_a_mixed_diff_runs_its_areas_and_the_rest_as_crates(self):
+        area = ["cargo", "test", "-p", "game", "--lib", "--", "explosion::"]
+        self.assertEqual([area, ["cargo", "test", "-p", "app", "-p", "menu", "--lib", "--bins", "--tests"]],
+                         self.cargo_runs(["crates/game/src/explosion.rs", "crates/menu/src/slots.rs"]))
+        # A path that reaches every area runs the whole workspace's tests.
+        self.assertEqual([area, ["cargo", "test", "--workspace", "--lib", "--bins", "--tests"]],
+                         self.cargo_runs(["crates/game/src/explosion.rs", "Cargo.lock"]))
 
 
 if __name__ == "__main__":

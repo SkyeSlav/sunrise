@@ -1369,7 +1369,16 @@ impl<L: super::signal_access::SignalAccess + ?Sized> Signals<'_, L> {
             .comparator_outputs
             .get(&pos)
             .copied()
-            .unwrap_or(0)
+            .unwrap_or_else(|| {
+                self.unknown_output.set(true);
+                0
+            })
+    }
+    /// Whether a read so far needed a comparator output the ticks don't hold, which it took
+    /// as 0: a server's comparator that never computed one, or any on a client, whose ticks
+    /// don't hold the server's outputs.
+    pub fn read_unknown_output(&self) -> bool {
+        self.unknown_output.get()
     }
     fn wire_signal(&self, state: BlockStateId, pos: BlockPos, direction: Direction) -> i32 {
         if self.wire_signal_off || direction == Direction::Down {

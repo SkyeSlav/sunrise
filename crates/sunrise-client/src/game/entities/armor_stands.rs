@@ -561,6 +561,13 @@ impl Game<'_> {
     }
     /// The armor stand under the crosshair, its distance and the hit point.
     pub(super) fn armor_stand_hit(&self) -> Option<(usize, f64, [f64; 3])> {
+        let mut pick = crate::game::pick_accumulator::PickAccumulator::new(self.entity_reach);
+        self.armor_stand_hit_with_pick(&mut pick)
+    }
+    pub(super) fn armor_stand_hit_with_pick(
+        &self,
+        pick: &mut crate::game::pick_accumulator::PickAccumulator,
+    ) -> Option<(usize, f64, [f64; 3])> {
         if let Some(hit) = self.cached_entity_pick() {
             let (entity, distance, point) = hit?;
             let index = self.armor_stands.iter().position(|f| f.id == entity.id())?;
@@ -571,7 +578,7 @@ impl Game<'_> {
         let mut best: Option<(usize, f64, [f64; 3])> = None;
         for (i, a) in self.armor_stands.iter().enumerate() {
             // Minecraft.pick never hits the camera entity it looks from.
-            if a.marker || self.remote_camera_id() == Some(a.id) {
+            if a.marker {
                 continue;
             }
             let b = a.bounds();
@@ -591,7 +598,7 @@ impl Game<'_> {
                 t0 = t0.max(ta);
                 t1 = t1.min(tb);
             }
-            if hit && t0 <= t1 && best.is_none_or(|b| t0 < b.1) {
+            if hit && t0 <= t1 && pick.consider(self, a.id, t0) {
                 best = Some((i, t0, std::array::from_fn(|k| eye[k] + dir[k] * t0)));
             }
         }

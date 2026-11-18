@@ -102,7 +102,11 @@ source and caches), `toolchain` (as for `native-build`) and `mods` (the mod's fo
 | Command | Its own plan field | Reply | Error `kind` |
 |---|---|---|---|
 | `native-discover` | `catalog`, optional: a folder that doesn't exist yet | without `catalog`, `{"internals": […]}`: the game internals the mod names, each as the pinned game's catalog lists it (`cargo sunrise-mod internals sync` writes them into `sunrise-mod.toml`). With it, `{"catalog": folder}`: the pinned game's `internals.json` and `points.json` with only this mod's `[[native.module]]` rows applied, copied there | `source` (the pinned game's source isn't cached and couldn't be downloaded), `discover` |
-| `native-lock` | `update`, optional: resolve again when the mod has a lock | `{"lock": path}`: the mod's registry dependencies pinned in its `Cargo.lock` | `lock` |
+| `native-lock` | `update`, optional: resolve again when the mod has a lock | `{"lock": path}`: the mod's registry dependencies pinned in its `Cargo.lock`, starting from the versions the pinned game locks | `lock` |
+
+`native-lock` reads the pinned game's `Cargo.lock`, kept as `game-lock/<commit>.lock` in `work` and downloaded from
+that commit of the game's repository the first time; with no network, put the file there. It creates `work` when it
+is missing.
 
 `native-discover` checks the mod against the pinned game's source with the deprecation lint forced on the mod alone;
 it runs the tool itself as Cargo's rustc wrapper for that.

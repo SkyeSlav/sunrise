@@ -24,7 +24,7 @@ fn variants(name: &str) -> Vec<Value> {
         leaf.clone(),
         json!({"type":"neoforge:not", "value":{"type":"neoforge:not", "value":leaf}}),
         json!({"type":"neoforge:and", "values":[{"type":"neoforge:mod_loaded","modid":"absent"},leaf]}),
-        json!({"type":"neoforge:or", "values":[{"type":"neoforge:true"},leaf]}),
+        json!({"type":"neoforge:or", "values":[{"type":"neoforge:always"},leaf]}),
     ]
 }
 #[test]
@@ -73,7 +73,7 @@ fn registered_conditions_cache_each_entry_and_new_reload_evaluates_again() {
         assert_eq!(count.load(Ordering::SeqCst), expected);
     }
     let conditions = registered(count);
-    assert!(conditions.allows_file(&json!({"neoforge:conditions":[{"type":"neoforge:and","values":[{"type":"testmod:flag","value":true},{"type":"neoforge:or","values":[{"type":"testmod:flag","value":false},{"type":"neoforge:true"}]}]}]}), "nested.json"));
+    assert!(conditions.allows_file(&json!({"neoforge:conditions":[{"type":"neoforge:and","values":[{"type":"testmod:flag","value":true},{"type":"neoforge:or","values":[{"type":"testmod:flag","value":false},{"type":"neoforge:always"}]}]}]}), "nested.json"));
     assert!(!conditions.allows_file(
         &json!({"neoforge:conditions":[{"type":"testmod:flag","value":"bad"}]}),
         "bad.json"
@@ -101,7 +101,7 @@ fn loaded_mod_ids_alone_do_not_own_condition_namespaces() {
 fn no_mod_conditions_do_not_construct_file_context_for_known_nodes() {
     let conditions = LoadConditions::new([]);
     for (node, expected) in [
-        (json!({"type":"neoforge:true"}), true),
+        (json!({"type":"neoforge:always"}), true),
         (
             json!({"type":"neoforge:mod_loaded","modid":"absent"}),
             false,

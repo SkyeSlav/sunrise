@@ -221,6 +221,12 @@ impl Game<'_> {
         self.send(S::ContainerClose(play::ContainerClose { container: id }));
         self.remote_close_local();
     }
+    /// `LocalPlayer.closeContainer` as the creative inventory closes: its
+    /// `ItemPickerMenu` is window 0, and a server hears the close as it does
+    /// any container screen's (`AbstractContainerScreen.onClose`).
+    pub(in crate::game) fn close_creative_menu(&self) {
+        self.send(S::ContainerClose(play::ContainerClose { container: 0 }));
+    }
     /// `MultiPlayerGameMode.handleInventoryButtonClick`: button `button` of
     /// the menu the server opened goes to it (`ContainerButtonClick`), whose
     /// menu decides what it does (`clickMenuButton`). No sound: that is the
@@ -289,7 +295,8 @@ impl Game<'_> {
                 .set(Some((container, "minecraft:merchant".to_owned())));
             r.set_menu_title(Some(text.clone()));
         }
-        let session = sunrise_client::merchant::Session::new(Vec::new(), true);
+        let mut session = sunrise_client::merchant::Session::new(Vec::new(), true);
+        session.client_side = true;
         self.open_remote_merchant(session, (!title.is_empty()).then_some(text));
     }
     /// ClientboundMerchantOffersPacket.

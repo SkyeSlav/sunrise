@@ -718,6 +718,7 @@ fn block_aliases_keep_the_original_item_in_placement_context() {
         fn before_state_for_placement(
             &self,
             _: &sunrise_world::level::Ticks,
+            _: Option<&sunrise_world::level::PreviewBlocks>,
             _: BlockStateId,
             c: &PlacementContext,
             _: sunrise_world::fluid::FluidState,
@@ -5597,6 +5598,82 @@ fn configured_features_load_from_the_26_3_path() {
         .unwrap();
     assert_eq!(ids, &[serde_json::json!("zinc:nested/new")]);
     fs::remove_dir_all(scratch).unwrap();
+}
+
+/// A content mod's own biomes join the biome set after vanilla's, by namespace
+/// then path; a `minecraft` biome file never joins it (the content fence refuses the file). Its tag keeps them, a
+/// modifier on that tag reaches them, and the biome suggestions list them.
+#[test]
+fn a_mods_own_biomes_join_the_biome_set() {
+    let base = biome_base("mod-biomes");
+    let scratch = base.parent().unwrap().to_owned();
+    fs::write(
+        base.join("command-registries.json"),
+        r#"{"blocks":{},"items":[],"by_registry":{"minecraft:worldgen/biome":{"ids":["minecraft:desert","minecraft:plains"]}}}"#,
+    )
+    .unwrap();
+    let foo = r#"{"temperature":1.5,"downfall":0.0,"features":[[]]}"#;
+    let m = folder_mod(
+        &scratch.join("zinc"),
+        &[
+            ("sunrise-mod.toml", &manifest("zinc", "")),
+            ("data/zinc/worldgen/biome/foo.json", foo),
+            ("data/zinc/worldgen/biome/bar/a.json", foo),
+            (
+                "data/zinc/worldgen/feature/ore_zinc.json",
+                r#"{"type":"minecraft:ore","config":{}}"#,
+            ),
+            (
+                "data/zinc/worldgen/placed_feature/ore_zinc.json",
+                r#"{"feature":"zinc:ore_zinc","placement":[]}"#,
+            ),
+            (
+                "data/zinc/tags/worldgen/biome/hot.json",
+                r#"{"values":["zinc:foo","zinc:missing"]}"#,
+            ),
+            (
+                "data/zinc/neoforge/biome_modifier/hot_ore.json",
+                r##"{"type":"neoforge:add_features","biomes":"#zinc:hot",
+                    "features":"zinc:ore_zinc","step":"underground_ores"}"##,
+            ),
+        ],
+    );
+    let out = scratch.join("out");
+    build_fixture(&base, Path::new(""), &[m], &out).unwrap();
+    let text = |root: &Path| fs::read_to_string(root.join("worldgen/biomes.json")).unwrap();
+    let bundle: BTreeMap<String, String> = serde_json::from_str(&text(&out)).unwrap();
+    let vanilla: BTreeMap<String, String> = serde_json::from_str(&text(&base)).unwrap();
+    for (id, biome) in &vanilla {
+        assert_eq!(&bundle[id], biome, "{id}");
+    }
+    assert_eq!(bundle.len(), vanilla.len() + 2);
+    let features = biome_features(&out);
+    assert_eq!(
+        features["zinc:foo"],
+        serde_json::json!([[], [], [], [], [], [], ["zinc:ore_zinc"]])
+    );
+    assert_eq!(features["zinc:bar/a"], serde_json::json!([[]]));
+    // After vanilla's, then by path.
+    let at = |id: &str| text(&out).find(&format!("\"{id}\":")).unwrap();
+    assert!(at("minecraft:plains") < at("zinc:bar/a") && at("zinc:bar/a") < at("zinc:foo"));
+    let tag: BTreeMap<String, String> =
+        serde_json::from_slice(&fs::read(out.join("worldgen/biome_tags.json")).unwrap()).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&tag["zinc:hot"]).unwrap()["values"],
+        serde_json::json!(["zinc:foo"])
+    );
+    let commands: serde_json::Value =
+        serde_json::from_slice(&fs::read(out.join("command-registries.json")).unwrap()).unwrap();
+    assert_eq!(
+        commands["by_registry"]["minecraft:worldgen/biome"]["ids"],
+        serde_json::json!([
+            "minecraft:desert",
+            "minecraft:plains",
+            "zinc:bar/a",
+            "zinc:foo"
+        ])
+    );
+    let _ = fs::remove_dir_all(&scratch);
 }
 
 /// A world's data pack that replaces a vanilla biome (Terralith's plains)

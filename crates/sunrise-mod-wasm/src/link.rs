@@ -77,7 +77,10 @@ impl fmt::Display for LinkError {
             Self::Malformed { member, why } => write!(f, "{member}: {why}"),
             Self::TooLarge { member } => write!(f, "{member}: needs more memory than a group has"),
             Self::Unresolved { member, symbol } => {
-                write!(f, "{member}: imports {symbol}, which no earlier member has")
+                write!(
+                    f,
+                    "{member}: imports {symbol}, which no earlier member has. It was built against another game build's libraries, or a mod it needs is missing: rebuild it with this build's SDK (cargo sunrise-mod update, then build --wasm)"
+                )
             }
             Self::Duplicate {
                 symbol,

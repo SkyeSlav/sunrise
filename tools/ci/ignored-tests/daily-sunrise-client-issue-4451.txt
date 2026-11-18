@@ -118,6 +118,7 @@ sunrise-client game::boats::lifetime_tests::a_bound_boat_commits_the_driven_clie
 sunrise-client game::boats::lifetime_tests::a_bound_boat_keeps_its_registration_through_ticks_until_discard lib daily resources
 sunrise-client game::boats::lifetime_tests::a_bound_ridden_boat_commits_the_server_leash_tick lib daily resources
 sunrise-client game::boats::paddle_tests::a_paddled_boat_accelerates_by_the_sine_table_at_its_turned_yaw lib daily resources
+sunrise-client game::boats::tests::a_driven_boat_eases_to_a_teleport_and_reports_where_it_is_going lib daily resources
 sunrise-client game::boats::tests::destruction_and_underwater_ejection_snap_rejected_passenger_descendants lib daily resources
 sunrise-client game::books::book_escape_tests::enter_signs_a_title_of_spaces_but_not_an_empty_one lib daily resources
 sunrise-client game::books::book_escape_tests::escape_in_the_editor_saves_nothing lib daily resources
@@ -1014,6 +1015,7 @@ sunrise-client game::minecarts::lifetime_tests::terminal_vehicle_damage_and_nati
 sunrise-client game::minecarts::rejected_passenger_tests::cart_destruction_ejects_rejected_rider_and_snaps_frozen_descendant lib daily resources
 sunrise-client game::minecarts::rejected_passenger_tests::rejected_cart_passenger_occupies_capacity_physics_pickup_and_interaction lib daily resources
 sunrise-client game::minecarts::tests::a_furnace_cart_is_capped_at_half_the_rule_speed_under_the_new_physics lib daily resources
+sunrise-client game::minecarts::tests::an_old_behaviour_cart_writes_is_on_rails_each_tick lib daily resources
 sunrise-client game::minecarts::tests::cart_index_finds_the_mobs_a_scan_finds lib daily resources
 sunrise-client game::minecarts::tnt_impact_tests::a_cart_on_a_slope_presses_a_plate_at_its_temporary_position lib daily resources
 sunrise-client game::minecarts::tnt_impact_tests::a_cart_resting_against_a_fence_keeps_toggling_the_plate_above_it lib daily resources
@@ -2159,6 +2161,8 @@ sunrise-client game::piston_push::order_tests::a_pushed_tnt_loses_velocity_into_
 sunrise-client game::place_feature_tests::an_inline_feature_draws_the_level_random_as_its_named_twin lib daily resources
 sunrise-client game::place_feature_tests::an_inline_simple_block_feature_places_like_a_named_one lib daily resources
 sunrise-client game::place_feature_tests::inline_and_named_features_fail_and_succeed_alike lib daily resources
+sunrise-client game::play_keys::pause_close_tests::escape_out_of_the_pause_menu_closes_no_container lib daily resources
+sunrise-client game::play_keys::creative_close_tests::leaving_the_creative_inventory_tells_the_server lib daily resources
 sunrise-client game::play_keys::swap_hands_tests::a_guest_swap_through_its_connection_is_heard_once_and_sends_the_hands lib daily resources
 sunrise-client game::play_keys::swap_hands_tests::the_own_player_swap_asks_the_listener_for_each_hand lib daily resources
 sunrise-client game::play_ping_tests::dead_guest_play_ping_is_transport_not_an_action lib daily resources
@@ -2216,6 +2220,7 @@ sunrise-client game::recipe_book_variants_tests::control_a_multi_display_recipe_
 sunrise-client game::recipe_properties_tests::tests::disconnect_discards_properties_before_reconnect lib daily resources
 sunrise-client game::remote::attachment_query_tests::synced_client_queries_follow_replacement_retirement_and_level_changes lib daily resources
 sunrise-client game::remote::block_entity_data_tests::block_entity_data_received_after_merge lib daily resources
+sunrise-client game::remote::boat_push_order_tests::a_boat_pushes_the_player_in_the_level_tick_order lib daily resources
 sunrise-client game::remote::effect_blend_tests::ordinary_effect_blends_follow_the_client_lifecycle lib daily resources
 sunrise-client game::remote::effect_blend_tests::ordinary_effect_first_read_does_not_restart_the_blend lib daily resources
 sunrise-client game::remote::effect_blend_tests::ordinary_effect_infinite_partial_ticks_follow_the_blend_direction lib daily resources
@@ -2270,6 +2275,7 @@ sunrise-client game::remote::level_sound_tests::packets_ask_client_level_before_
 sunrise-client game::remote::movement_input_tests::movement_input_disabled_listener_keeps_vanilla_keys lib daily resources
 sunrise-client game::remote::movement_input_tests::movement_input_without_listeners_keeps_vanilla_latch_double_tap_and_controller lib daily resources
 sunrise-client game::remote::movement_input_tests::native_movement_input_keys_axes_and_sprint lib daily resources
+sunrise-client game::remote::movement_input_tests::the_sneak_key_counts_while_riding lib daily resources
 sunrise-client game::remote::native_entity_tests::a_villager_raid_sweat_event_draws_particles lib daily resources
 sunrise-client game::remote::passage_cross_tests::a_crossing_a_mod_cancels_on_the_wire_moves_nothing lib daily resources
 sunrise-client game::remote::passage_cross_tests::a_window_crosses_and_keeps_its_velocity_through_the_acceptance lib daily resources
@@ -2278,7 +2284,7 @@ sunrise-client game::remote::player_tick_tests::a_mod_that_does_not_listen_is_ne
 sunrise-client game::remote::player_tick_tests::client_player_ticks_on_the_death_screen_too lib daily resources
 sunrise-client game::remote::player_tick_tests::guest_tick_brackets_sleep_cooldowns_pickups_and_death lib daily resources
 sunrise-client game::remote::player_tick_tests::the_name_tag_over_a_player_shows_the_name_a_mod_formats lib daily resources
-sunrise-client game::remote::rider_tick_tests::a_riders_move_takes_the_look_of_the_tick_and_keeps_its_ground lib daily resources
+sunrise-client game::remote::rider_tick_tests::a_riders_move_takes_the_look_of_the_tick_and_leaves_it_off_the_ground lib daily resources
 sunrise-client game::remote::tables::tests::a_servers_block_and_item_tags_replace_the_games lib daily resources
 sunrise-client game::remote::tests::a_mod_chat_line_shows_locally_and_sends_nothing lib daily resources
 sunrise-client game::remote::tests::a_reconfiguring_client_plays_menu_music_and_never_indexes_past_the_biomes lib daily resources
@@ -2328,6 +2334,7 @@ sunrise-client game::remote_tags::tests::remote_tag_packets_rebuild_vanilla_ench
 sunrise-client game::remote_vehicles::plugin_seat_tests::controlling_client_copies_sneak_press_and_release_into_rider lib daily resources
 sunrise-client game::remote_vehicles::plugin_seat_tests::local_rider_uses_attachments_and_follows_a_moving_seat_chain lib daily resources
 sunrise-client game::remote_vehicles::tests::a_driven_horse_moves_on_the_riders_last_tick_input lib daily resources
+sunrise-client game::remote_vehicles::tests::the_driven_vehicle_takes_the_servers_teleports_and_moves lib daily resources
 sunrise-client game::render_tick::tests::a_mod_cancels_the_screen_effect_of_one_block lib daily resources
 sunrise-client game::residency_tick::tests::client_tick_drains_actual_bound_owner_events_without_a_lookup lib daily resources
 sunrise-client game::resource_load::scope_tests::loader_workers_keep_owning_mod_sets_and_share_only_matching_numeric_payloads lib daily resources
@@ -2511,6 +2518,7 @@ sunrise-client game::tnt::tests::live_data_commands_adopt_into_the_existing_tnt 
 sunrise-client game::tnt::tests::portal_blast_sulfur_cube_uses_only_positive_cooldown lib daily resources
 sunrise-client game::tnt::tests::portal_transfer_ordinary_nbt_cannot_supply_runtime_immunity lib daily resources
 sunrise-client game::tnt::tests::portal_transfer_tnt_state_follows_memory_but_not_saved_nbt lib daily resources
+sunrise-client game::trading::select_on_a_server_tests::picking_a_trade_on_a_server_moves_the_payment_here_too lib daily resources
 sunrise-client game::transactions::decision::engine::tests::actual_menu_cursor_aba_is_stale_and_undoes_a_nested_commit lib daily resources
 sunrise-client game::transactions::decision::engine::tests::actual_menu_frozen_click_and_outer_abort_use_the_game_journal lib daily resources
 sunrise-client game::transactions::decision::engine::tests::actual_owner_nested_edit_and_panic_roll_back_before_the_next_click lib daily resources
@@ -2531,6 +2539,7 @@ sunrise-client game::transactions::tests::cauldron_effects_wait_for_root_and_abo
 sunrise-client game::transactions::tests::cauldron_stat_listener_observes_committed_state_and_can_cancel lib daily resources
 sunrise-client game::transactions::tests::container_limits_preserve_capacity_and_transaction_rollback lib daily resources
 sunrise-client game::transactions::tests::menu_journals_keep_only_the_first_write_inside_a_transaction lib daily resources
+sunrise-client game::trident::tests::a_riptide_from_the_ground_leaves_the_player_in_the_air lib daily resources
 sunrise-client game::trident::tests::riptide_launch_preserves_float_push lib daily resources
 sunrise-client game::trident::tests::trident_release_rechecks_stack_durability_after_charge lib daily resources
 sunrise-client game::use_hand::bow_enchantment_tests::a_multishot_bow_fires_three_arrows_ten_degrees_apart lib daily resources

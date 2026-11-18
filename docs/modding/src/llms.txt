@@ -1,12 +1,14 @@
 # Modding Sunrise
 
-> Sunrise is Minecraft: Java Edition 26.3 in Rust. A mod is one `.smod`: content (`assets/`, `data/`) and, for a code mod, a Rust crate built natively by the launcher or to `mod.wasm`, against the `mod_api` crate (`sunrise-mod-api`).
+> Sunrise is Minecraft: Java Edition 26.3 in Rust. A mod is one `.smod`: content (`assets/`, `data/`) and, for a code mod, a Rust crate built natively by `cargo sunrise-mod build` (and started by `cargo sunrise-mod run`) or to `mod.wasm`, against the `mod_api` crate (`sunrise-mod-api`).
 
 Rules for code: implement `mod_api::Hooks` at the crate root with `#[mod_api::sunrise_mod]`; prefer a hook or Part method; otherwise an `[[inject]]` listener at a published point (native and wasm); change the game's own code only through the native route (`[[native.mixin]]`, `[[native.loop]]`, `[[native.bridge]]`, `[[native.module]]`, native only). Hook names follow NeoForge 26.3; events are `&mut`; writes take a `ServerHost`. The id and version come only from `sunrise-mod.toml`; ids are `[a-z0-9_]`. A mod is `[native]` or `[wasm]`, never both; unknown manifest fields are refused.
 
 ## Getting started
 
-- [Installing and using mods](https://sunrise-org.github.io/sunrise/start/installing.html)
+- [Using an AI agent](https://sunrise-org.github.io/sunrise/for-agents.html): the install and quickstart commands and the rules, on one page.
+- [Install the mod tool](https://sunrise-org.github.io/sunrise/start/install-tool.html): the prebuilt `cargo-sunrise-mod` for Linux, macOS and Windows.
+- [Installing and using mods](https://sunrise-org.github.io/sunrise/players/installing-mods.html)
 - [Your first content mod](https://sunrise-org.github.io/sunrise/start/first-content-mod.html)
 - [Your first native mod](https://sunrise-org.github.io/sunrise/start/first-mod.html)
 - [Your first WebAssembly mod](https://sunrise-org.github.io/sunrise/start/first-wasm-mod.html)

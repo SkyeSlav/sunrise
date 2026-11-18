@@ -70,7 +70,7 @@ fn generic_entries_follow_real_server_tables_and_atomic_reload() {
     write(&fire, r#"{"power":7}"#);
     write(
         &tag,
-        r#"{"neoforge:conditions":[{"type":"neoforge:false"}],"values":["registry_entry_test:fire"]}"#,
+        r#"{"neoforge:conditions":[{"type":"neoforge:never"}],"values":["registry_entry_test:fire"]}"#,
     );
     write(
         &pack.join("data/registry_entry_test/registry_entry_test/secret/shadow.json"),
@@ -78,7 +78,7 @@ fn generic_entries_follow_real_server_tables_and_atomic_reload() {
     );
     write(
         &pack.join("data/registry_entry_test/registry_entry_test/spell/conditioned.json"),
-        r#"{"neoforge:conditions":[{"type":"neoforge:false"}],"power":"not an integer"}"#,
+        r#"{"neoforge:conditions":[{"type":"neoforge:never"}],"power":"not an integer"}"#,
     );
     write(
         &pack.join("data/registry_entry_test/not_a_registry/fake.json"),

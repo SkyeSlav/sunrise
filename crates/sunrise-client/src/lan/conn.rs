@@ -6,6 +6,7 @@
 //! network threads ([`io_pool`]): they forward decoded packets to the game
 //! thread, frame, compress and encrypt what the game queues, and keep the
 //! keep-alive schedule on their own so a long tick never times a client out.
+mod configuration_tasks;
 mod payloads;
 use super::config_payloads::ConfigIo;
 use super::{
@@ -1588,6 +1589,15 @@ fn login_and_configure(
         lost(shared, &format!("{name} ({})", uuid_string(uuid)), &text);
         return Ok(None);
     }
+    configuration_tasks::configure(
+        c,
+        shared,
+        uuid,
+        name,
+        &mut info,
+        &payload_transport,
+        &mut payload_negotiation,
+    )?;
     if let Some(epoch) = payload_transport.epoch()
         && !epoch.wait_main()
     {
@@ -2654,7 +2664,7 @@ mod tests {
     }
 
     /// Logs in through `c` and answers the `LoginFinished` profile.
-    fn login_profile(c: &mut Connection, name: &str) -> login::GameProfile {
+    pub(super) fn login_profile(c: &mut Connection, name: &str) -> login::GameProfile {
         c.send(
             &handshake::Serverbound::Intention(handshake::Intention {
                 protocol: sunrise_protocol::PROTOCOL_VERSION,

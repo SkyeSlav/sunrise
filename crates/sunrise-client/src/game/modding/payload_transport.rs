@@ -326,6 +326,9 @@ mod raw_fault_tests;
 #[path = "payload_transport/sender_tests.rs"]
 mod sender_tests;
 #[cfg(test)]
+#[path = "payload_transport/task_tests.rs"]
+mod task_tests;
+#[cfg(test)]
 #[path = "payload_transport/tests.rs"]
 mod tests;
 #[cfg(test)]

@@ -273,6 +273,10 @@ fn is_date(text: &str) -> bool {
 /// (design: the SDK is published as its own signed release per build).
 pub const SDK_PREFIX: &str = "sdk-";
 
+/// The tag of the rolling mod tool release (`mod-tool`, mod-tool.yml): the newest `cargo-sunrise-mod` built from main,
+/// whose sums are signed for exactly this tag. It is never a game release.
+pub const MOD_TOOL: &str = "mod-tool";
+
 /// Whether `tag` names a mod SDK's release (`sdk-…`), whatever follows the prefix.
 pub fn is_sdk(tag: &str) -> bool {
     tag.starts_with(SDK_PREFIX)
@@ -306,6 +310,11 @@ pub fn signed_digest(
     if is_sdk(tag) {
         return Err(format!(
             "{tag} is a mod SDK, not a game release: it is never installed as the game."
+        ));
+    }
+    if tag == MOD_TOOL {
+        return Err(format!(
+            "{tag} is the mod tool, not a game release: it is never installed as the game."
         ));
     }
     digest_in(tag, tag, asset, sums, signature, keys)
@@ -708,6 +717,26 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn the_mod_tools_signed_list_is_never_a_game_release() {
+        let (key, sums, signature) = signed(MOD_TOOL);
+        let keys = [key.public()];
+        // Signed for its own tag, correctly, and still refused as a game release by name.
+        assert!(
+            signed_digest(
+                MOD_TOOL,
+                "sunrise-linux-x86_64.tar.gz",
+                Some(sums.as_bytes()),
+                Some(&signature),
+                &keys
+            )
+            .is_err()
+        );
+        assert!(verify(MOD_TOOL, sums.as_bytes(), &signature, &keys).is_ok());
+        // And its signature is not valid for a game release's tag.
+        assert!(verify("v2026.11.13", sums.as_bytes(), &signature, &keys).is_err());
     }
 
     #[test]

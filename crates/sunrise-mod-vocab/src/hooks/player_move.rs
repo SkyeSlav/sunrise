@@ -33,8 +33,8 @@ pub trait Hooks {
     /// drops a pending report cleanly. Not heard: the first tick in a level (the
     /// tick after a join or a level change; the second is heard), a player riding
     /// something (`vehicle_moved` hears the vehicle), any teleport (its
-    /// confirmation is validated and committed without the hook, at the teleport's
-    /// target, and so is the veto's own correction; a report that arrives while a teleport is
+    /// confirmation's own position is validated from the teleport's target and
+    /// committed without the hook, and so is the veto's own correction; a report that arrives while a teleport is
     /// unconfirmed is not heard either), and a passage crossing (its caller
     /// reads the position at once, so the report is committed in place). The
     /// first report after a teleport that passed validation is heard, with the

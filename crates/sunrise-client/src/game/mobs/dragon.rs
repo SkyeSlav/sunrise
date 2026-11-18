@@ -2026,6 +2026,13 @@ impl Game<'_> {
     /// Player melee on the dragon's parts or a crystal under the crosshair.
     /// The dragon part under the crosshair within reach: its id and distance.
     pub(super) fn dragon_hit(&self) -> Option<(u32, f64)> {
+        let mut pick = crate::game::pick_accumulator::PickAccumulator::new(self.entity_reach);
+        self.dragon_hit_with_pick(&mut pick)
+    }
+    pub(super) fn dragon_hit_with_pick(
+        &self,
+        pick: &mut crate::game::pick_accumulator::PickAccumulator,
+    ) -> Option<(u32, f64)> {
         if let Some(hit) = self.cached_entity_pick() {
             let (entity, distance, _) = hit?;
             return self
@@ -2054,7 +2061,7 @@ impl Game<'_> {
                 t0 = t0.max(ta);
                 t1 = t1.min(tb);
             }
-            if hit && t0 <= t1 && best.is_none_or(|b| t0 < b.1) {
+            if hit && t0 <= t1 && pick.consider(self, id, t0) {
                 best = Some((id, t0));
             }
         }
@@ -3825,9 +3832,8 @@ impl Game<'_> {
         else {
             return;
         };
-        let forward = glam::DVec3::from_array(super::view_vector(self.yaw, self.pitch));
-        let right = forward.cross(glam::DVec3::Y).normalize_or_zero();
-        let up = right.cross(forward).normalize_or_zero();
+        // DragonFireballRenderer.submit: turned by the camera's orientation.
+        let [right, up] = super::billboard_axes(self.camera_orientation());
         for b in self
             .creatures
             .projectiles
@@ -5083,11 +5089,12 @@ impl Game<'_> {
     }
     /// The dragon's parts as a server's client attacks them: the server's
     /// ids for `EnderDragonPart`s follow the dragon's.
-    pub(super) fn remote_dragon_part_hit(
+    pub(super) fn remote_dragon_part_hit_with_pick(
         &self,
         eye: [f64; 3],
         dir: [f64; 3],
         reach: f64,
+        pick: &mut crate::game::pick_accumulator::PickAccumulator,
     ) -> Option<(i32, f64, [f64; 3])> {
         let d = self.dragon.as_ref().filter(|d| d.alive() && d.id != 0)?;
         (0..8)
@@ -5095,9 +5102,10 @@ impl Game<'_> {
                 let b = d.part_box(i);
                 let p = d.parts[i].0;
                 super::ray_box(eye, dir, reach, b)
+                    .filter(|&t| pick.consider(self, d.id + 1 + i as u32, t))
                     .map(|t| ((d.id + 1 + i as u32) as i32, t, [p.x, p.y, p.z]))
             })
-            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .last()
     }
 }
 

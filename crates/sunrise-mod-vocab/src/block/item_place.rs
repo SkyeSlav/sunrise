@@ -573,6 +573,25 @@ impl ItemPlace {
         done.unwrap_or(0)
     }
 
+    /// Runs the item's `ItemStack.onCraftedBy` processing for a stack this place holds, as a
+    /// server-side menu take does. This awards the player's `crafted` statistic, applies item
+    /// post-processing such as a filled map's pending scale or lock, and runs the normal stat
+    /// hook. Only a [`MenuSlot`](Self::MenuSlot) or [`PlayerCursor`](Self::PlayerCursor) is
+    /// accepted; the changed stack and statistic are part of `tx`.
+    pub fn on_crafted_by(
+        &self,
+        host: &mut dyn ServerHost,
+        tx: &Transaction,
+        amount: i32,
+    ) -> Result<(), crate::CraftedByError> {
+        if !matches!(self, Self::MenuSlot { .. } | Self::PlayerCursor { .. }) {
+            return Err(crate::CraftedByError::NotHeld);
+        }
+        backend_mut_of(host)
+            .ok_or(crate::CraftedByError::Unavailable)?
+            .game_on_crafted_by(self, tx, amount)
+    }
+
     /// Edit the whole stack here, keeping its item and count. Unlike exchanging one,
     /// this changes every item in the slot together, without splitting off a copy.
     /// A missing stack, changed item/count or refused exchange returns false without

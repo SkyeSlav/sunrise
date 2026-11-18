@@ -42,39 +42,42 @@ const SAMPLE_JOBS: usize = 4;
 const QUEUED_PER_SAMPLER: usize = 32;
 /// The last `refresh`es `Lod::refreshed_since` tells apart by area.
 const MAX_REFRESHED: usize = 64;
-/// Threads that sample far tiles beside the mesher. Sampling is the cold-load
-/// bottleneck (each task evaluates a shared density lattice for 256 columns),
-/// so medium machines use two thirds of their cores, not half.
+/// Threads that sample far tiles beside the mesher: a quarter of the cores,
+/// at most eight. Sampling is the cold-load bottleneck (each task evaluates a
+/// shared density lattice for 256 columns).
 ///
-/// The mesher has little to do until tiles are sampled, so its threads sit
-/// idle through the part of a cold build that waits on sampling. Measured on
-/// a 12-thread machine building 4336 tiles at LOD distance 256, from the game
-/// answering the control socket until every target tile is sampled, four runs
-/// a configuration:
+/// The three far pools ([`sampling_threads`], [`meshing_threads`],
+/// [`decoration_threads`]) were once sized for the shortest build, taking more
+/// threads than the machine had beside the near chunks' workers. While far
+/// terrain built, the frame ran on a machine that was busy everywhere: every
+/// render thread span, the HUD's too, took three to ten times its idle time,
+/// and the near chunks loaded slower. Sampling and meshing now stay under
+/// half the cores, and decoration takes a fifth. Measured with `--benchmark travel` at render distance 12 and
+/// `lodDistance` 256 on a 16-thread laptop (Ryzen 7 6800H):
 ///
-/// | samplers / meshers | sampling | whole build |
-/// |---|---|---|
-/// | 6 / 5 (before) | 15.0 s | 23.9 s |
-/// | 8 / 3 | 11.8 s | 18.6 s |
-/// | 9 / 2 | 10.6 s | 19.1 s |
+/// | samplers / meshers / decoration | flight 1% low | near chunks in | far terrain in |
+/// |---|---|---|---|
+/// | 8 / 7 / 6 (before) | 46 fps | 5.6 s | 90 s |
+/// | 4 / 3 / 3 | 126 fps | 4.4 s | 115 s |
+/// | 3 / 2 / 2 | 143 fps | 3.4 s | 160 s |
 ///
-/// Nine samplers finish sampling sooner still, but leave the mesher two
-/// threads and the whole build ends later. The cap keeps a large machine
-/// from starving its mesher, and `meshing_threads` keeps the frame and the
-/// ticks a core either way.
+/// Fewer threads still raise the lows a little more, but the far build then
+/// takes much longer.
 fn sampling_threads(cores: usize) -> usize {
-    if cores >= 8 {
-        (cores * 2 / 3).min(8)
-    } else {
-        (cores / 4).clamp(1, 3)
-    }
+    (cores / 4).clamp(1, 8)
 }
-/// Tile meshing used to be one worker with a whole selection batch at a time.
-/// It now has its own pool, sized so ticks and the frame keep a core.
+/// Tile meshing has its own pool: the rest of half the cores after the
+/// samplers and one core for the far terrain worker itself.
 fn meshing_threads(cores: usize) -> usize {
-    cores
+    (cores / 2)
         .saturating_sub(sampling_threads(cores) + 1)
         .clamp(1, 16)
+}
+/// Far decoration's threads (`vanillagen::lod`): a fifth of the cores. They
+/// run at idle priority, but on the same cores as the frame and the near
+/// chunks all the same.
+pub fn decoration_threads(cores: usize) -> usize {
+    (cores / 5).clamp(1, 12)
 }
 /// While the near terrain loads on a machine with four threads or fewer, far
 /// terrain starts one sample job at most this often and no detail: it would
@@ -4836,22 +4839,18 @@ mod tests {
         }
     }
     #[test]
-    fn extra_sampling_threads_only_on_large_machines() {
-        // Small machines are unchanged: a quarter of their cores, never more
-        // than three, so the near chunks and the frame keep theirs.
-        assert_eq!([1, 2, 4].map(sampling_threads), [1, 1, 1]);
-        // From eight, two thirds rather than half, still capped at eight.
-        assert_eq!([8, 11, 12].map(sampling_threads), [5, 7, 8]);
-        assert_eq!([16, 64].map(sampling_threads), [8, 8]);
-        assert_eq!([2, 8, 12, 16].map(meshing_threads), [1, 2, 3, 7]);
-        // From four cores up the two pools together leave one for the frame
-        // and the ticks. Below that both clamp to one and there is nothing
-        // to spare, which is the existing behaviour.
-        for cores in [4usize, 8, 11, 12, 16, 64] {
-            assert!(
-                sampling_threads(cores) + meshing_threads(cores) < cores,
-                "{cores} cores leaves nothing for the frame"
-            );
+    fn far_terrain_pools_stay_within_half_the_cores() {
+        assert_eq!(
+            [1, 2, 4, 8, 12, 16, 64].map(sampling_threads),
+            [1, 1, 1, 2, 3, 4, 8]
+        );
+        assert_eq!([2, 4, 8, 12, 16].map(meshing_threads), [1, 1, 1, 2, 3]);
+        assert_eq!([2, 4, 8, 12, 16].map(decoration_threads), [1, 1, 1, 2, 3]);
+        // From eight cores sampling and meshing stay under half of them, so
+        // the frame, the ticks and the near chunks keep the other half.
+        for cores in [8usize, 11, 12, 16, 24, 32] {
+            let busy = sampling_threads(cores) + meshing_threads(cores);
+            assert!(busy < cores / 2, "{cores} cores: far terrain takes {busy}");
         }
     }
 

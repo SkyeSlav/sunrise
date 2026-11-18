@@ -35,6 +35,13 @@ impl Game<'_> {
     /// first and LeashFenceKnotEntity.interact takes the click. The fence block behind only ties
     /// the player's own mobs (LeadItem.useOn), it never takes one back.
     fn remote_knot_hit(&self) -> Option<(i32, f64, [f64; 3])> {
+        let mut pick = crate::game::pick_accumulator::PickAccumulator::new(self.entity_reach);
+        self.remote_knot_hit_with_pick(&mut pick)
+    }
+    fn remote_knot_hit_with_pick(
+        &self,
+        pick: &mut crate::game::pick_accumulator::PickAccumulator,
+    ) -> Option<(i32, f64, [f64; 3])> {
         if let Some(hit) = self.cached_entity_pick() {
             let (entity, distance, _) = hit?;
             let block = *self.remote_knots.get(&entity.id())?;
@@ -53,9 +60,10 @@ impl Game<'_> {
                     Vec3::new(p.x + half, p.y + knot.height, p.z + half),
                 );
                 ray_box(eye, dir, self.entity_reach, bounds)
+                    .filter(|&d| pick.consider(self, id, d))
                     .map(|d| (id as i32, d, [p.x, p.y, p.z]))
             })
-            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .last()
     }
 
     /// Whether a use starts on an entity: the crosshair's `EntityHitResult`, or a fence knot.
@@ -73,6 +81,14 @@ impl Game<'_> {
     /// The nearest boat, minecart, item frame, armor stand, painting, End crystal or dragon part
     /// the view hits within reach; also fence knots when using.
     pub(super) fn remote_object_hit(&self, attacking: bool) -> Option<ObjectHit> {
+        let mut pick = crate::game::pick_accumulator::PickAccumulator::new(self.entity_reach);
+        self.remote_object_hit_with_pick(attacking, &mut pick)
+    }
+    pub(super) fn remote_object_hit_with_pick(
+        &self,
+        attacking: bool,
+        pick: &mut crate::game::pick_accumulator::PickAccumulator,
+    ) -> Option<ObjectHit> {
         if let Some(hit) = self.cached_entity_pick() {
             let (entity, distance, point) = hit?;
             if self.mobs.iter().any(|m| m.id == entity.id())
@@ -106,57 +122,61 @@ impl Game<'_> {
                 f64::from(p[2]) + 0.5,
             ]
         };
-        let mut hits: Vec<(i32, f64, [f64; 3])> = Vec::new();
-        if let Some((i, d)) = self.painting_hit() {
+        let mut hit: Option<(i32, f64, [f64; 3])> = None;
+        if let Some((i, d)) = self.painting_hit_with_pick(pick) {
             let p = &self.paintings[i];
-            hits.push((p.id as i32, d, block_centre(p.pos)));
+            hit = Some((p.id as i32, d, block_centre(p.pos)));
         }
-        if let Some((i, d)) = self.frame_hit() {
+        if let Some((i, d)) = self.frame_hit_with_pick(pick) {
             let f = &self.item_frames[i];
-            hits.push((f.id as i32, d, block_centre(f.pos)));
+            hit = Some((f.id as i32, d, block_centre(f.pos)));
         }
-        if let Some((i, d, _)) = self.armor_stand_hit() {
+        if let Some((i, d, _)) = self.armor_stand_hit_with_pick(pick) {
             let a = &self.armor_stands[i];
             let p = a.position;
-            hits.push((a.id as i32, d, [p.x, p.y, p.z]));
+            hit = Some((a.id as i32, d, [p.x, p.y, p.z]));
         }
-        if let Some((i, d, _)) = self.cushion_hit() {
+        if let Some((i, d, _)) = self.cushion_hit_with_pick(pick) {
             let c = &self.cushions[i];
             let p = c.position;
-            hits.push((c.id as i32, d, [p.x, p.y, p.z]));
+            hit = Some((c.id as i32, d, [p.x, p.y, p.z]));
         }
-        if let Some((i, d)) = self.boat_hit() {
+        if let Some((i, d)) = self.boat_hit_with_pick(pick) {
             let p = self.boats[i].position;
-            hits.push((self.boats[i].id as i32, d, [p.x, p.y, p.z]));
+            hit = Some((self.boats[i].id as i32, d, [p.x, p.y, p.z]));
         }
-        if let Some((i, d)) = self.cart_hit() {
+        if let Some((i, d)) = self.cart_hit_with_pick(pick) {
             let p = self.carts[i].position;
-            hits.push((self.carts[i].id as i32, d, [p.x, p.y, p.z]));
+            hit = Some((self.carts[i].id as i32, d, [p.x, p.y, p.z]));
         }
         // Interaction.isPickable: an invisible box the server clicks through
         // to its scripts, for both uses and attacks.
         let reach = self.entity_reach;
         for (&id, i) in &self.interactions {
-            if let Some(d) = ray_box(eye, dir, reach, i.bounds()) {
+            if let Some(d) =
+                ray_box(eye, dir, reach, i.bounds()).filter(|&d| pick.consider(self, id as u32, d))
+            {
                 let p = i.position;
-                hits.push((id, d, [p.x, p.y, p.z]));
+                hit = Some((id, d, [p.x, p.y, p.z]));
             }
         }
         if (!attacking || self.client_pick.ray.is_some())
-            && let Some((id, d, p)) = self.remote_knot_hit()
+            && let Some((id, d, p)) = self.remote_knot_hit_with_pick(pick)
         {
-            hits.push((id, d, p));
+            hit = Some((id, d, p));
         }
         // A right click on a crystal interacts with it too (MultiPlayerGameMode.interact
         // sends the packet), then passes on to the item (Entity.interact).
-        if let Some((i, d)) = self.crystal_hit() {
+        if let Some((i, d)) = self.crystal_hit_with_pick(eye, dir, pick) {
             let p = self.crystals[i].position;
-            hits.push((self.crystals[i].id as i32, d, [p.x, p.y, p.z]));
+            hit = Some((self.crystals[i].id as i32, d, [p.x, p.y, p.z]));
         }
         // EnderDragonPart.isPickable: the server's dragon hurts by part, and
         // a right click on one passes as a crystal's does.
-        hits.extend(self.remote_dragon_part_hit(eye, dir, reach));
-        let (id, distance, origin) = hits.into_iter().min_by(|a, b| a.1.total_cmp(&b.1))?;
+        if let Some(part) = self.remote_dragon_part_hit_with_pick(eye, dir, reach, pick) {
+            hit = Some(part);
+        }
+        let (id, distance, origin) = hit?;
         let point = at(distance);
         Some(ObjectHit {
             id,
@@ -174,12 +194,25 @@ impl Game<'_> {
     /// target id).
     pub(super) fn crystal_hit(&self) -> Option<(usize, f64)> {
         let (eye, dir) = self.aim()?;
-        self.crystals
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| c.id != 0)
-            .filter_map(|(i, c)| ray_box(eye, dir, self.entity_reach, c.bounds()).map(|d| (i, d)))
-            .min_by(|a, b| a.1.total_cmp(&b.1))
+        let mut pick = super::pick_accumulator::PickAccumulator::new(self.entity_reach);
+        self.crystal_hit_with_pick(eye, dir, &mut pick)
+    }
+
+    fn crystal_hit_with_pick(
+        &self,
+        eye: [f64; 3],
+        dir: [f64; 3],
+        pick: &mut super::pick_accumulator::PickAccumulator,
+    ) -> Option<(usize, f64)> {
+        let mut hit = None;
+        for (i, crystal) in self.crystals.iter().enumerate().filter(|(_, c)| c.id != 0) {
+            if let Some(d) = ray_box(eye, dir, self.entity_reach, crystal.bounds())
+                .filter(|&d| pick.consider(self, crystal.id, d))
+            {
+                hit = Some((i, d));
+            }
+        }
+        hit
     }
 
     /// `ClientPacketListener.handleSetEntityPassengersPacket`: who rides
@@ -275,8 +308,12 @@ impl Game<'_> {
                 }
             }
         } else if self.riding == Some(vehicle_id) {
-            // The server takes the player out, then teleports it.
+            // The server takes the player out, then teleports it. A boat's easing toward
+            // a teleport this client was given ends with its control.
             self.riding = None;
+            if let Some(i) = self.boats.iter().position(|b| b.id == vehicle_id) {
+                self.boats.update(i, |b| b.lerp = None);
+            }
             if let Some(m) = self.mob_index.get_mut(&mut self.mobs, vehicle_id) {
                 m.rider = None;
             }
@@ -472,11 +509,14 @@ impl Game<'_> {
         else {
             return Vec::new();
         };
+        // ServerboundMoveVehiclePacket.fromEntity: while a teleport eases the
+        // boat, the spot it is going to.
+        let (at, yaw, pitch) = b.client_position();
         vec![
             S::MoveVehicle(play::MoveVehicleRequest {
-                position: [b.position.x, b.position.y, b.position.z],
-                yaw: b.yaw,
-                pitch: 0.0,
+                position: [at.x, at.y, at.z],
+                yaw,
+                pitch,
                 on_ground: b.on_ground,
             }),
             S::PaddleBoat(play::PaddleBoat {
@@ -486,10 +526,93 @@ impl Game<'_> {
         ]
     }
 
+    /// The vehicle this client moves, when it is `id`, as `PositionMoveRotation.of` sees it:
+    /// its client position and rotation (`getClientPositionAndRotation`: for a boat a teleport
+    /// is easing, where it is going) and its known movement, which is its controller's
+    /// (`getKnownMovement`): the local player's, nothing while it rides (`Entity.rideTick`).
+    pub(super) fn driven_vehicle(&self, id: u32) -> Option<(Vec3, f32, f32, Vec3)> {
+        let known = self.player.as_ref().map_or(Vec3::ZERO, |p| p.velocity);
+        if let Some(m) = self.driven_mount().filter(|m| m.id == id) {
+            return Some((m.position, m.yaw, m.head_pitch, known));
+        }
+        let b = self.driven_boat().filter(|&i| self.boats[i].id == id)?;
+        let (at, yaw, pitch) = self.boats[b].client_position();
+        Some((at, yaw, pitch, known))
+    }
+
+    /// The boat this client steers, as an index into `boats`.
+    fn driven_boat(&self) -> Option<usize> {
+        self.riding
+            .filter(|&id| self.controls_boat(id))
+            .and_then(|id| self.boats.iter().position(|b| b.id == id))
+    }
+
+    /// `Entity.getClientPosition` of the vehicle this client moves: for a boat a
+    /// teleport is easing, where it is going.
+    pub(super) fn driven_client_position(&self) -> Option<Vec3> {
+        if let Some(m) = self.driven_mount() {
+            return Some(m.position);
+        }
+        self.driven_boat()
+            .map(|i| self.boats[i].client_position().0)
+    }
+
+    /// `handleTeleportEntity` (`setValuesFromPositionPacket`) for the vehicle this
+    /// client moves, with the packet's relative parts already counted: a boat eases
+    /// there (`moveOrInterpolateTo`) unless it is more than 64 blocks away, when it is
+    /// put there and reported to the server at once; a mount is put there. Its
+    /// deltaMovement and onGround are the packet's.
+    pub(super) fn teleport_driven_vehicle(
+        &mut self,
+        to: [f64; 3],
+        rotation: (f32, f32),
+        velocity: Vec3,
+        on_ground: bool,
+    ) {
+        let at = Vec3::new(to[0], to[1], to[2]);
+        if let Some(id) = self.driven_mount().map(|m| m.id) {
+            self.remote_move_vehicle_and_file(to, rotation);
+            if let Some(m) = self.mob_index.get_mut(&mut self.mobs, id) {
+                m.velocity = velocity;
+                m.on_ground = on_ground;
+            }
+            return;
+        }
+        let Some(i) = self.driven_boat() else {
+            return;
+        };
+        // tooBigToInterpolate measures from where the boat is going while it eases.
+        let far = self.boats[i].client_position().0.distance_squared(at) > 4096.0;
+        let id = self.boats[i].id;
+        self.boats.update(i, |b| {
+            if far {
+                b.lerp = None;
+                b.position = at;
+                b.previous = at;
+                b.yaw = rotation.0;
+                b.previous_yaw = rotation.0;
+                b.pitch = rotation.1;
+            } else {
+                b.interpolate_to(at, rotation.0, rotation.1);
+            }
+            b.velocity = velocity;
+            b.on_ground = on_ground;
+        });
+        if far {
+            self.entity_section_moved_id(id);
+            if let Some(report) = self.remote_vehicle_packets().into_iter().next() {
+                self.send(report);
+            }
+        }
+    }
+
     /// `ClientPacketListener.handleMoveVehicle`: the server put the boat or
-    /// the mount the player drives back.
-    pub(super) fn remote_move_vehicle(&mut self, position: [f64; 3], yaw: f32) {
+    /// the mount the player drives back (`absSnapTo`: position and rotation, the
+    /// old ones too; its deltaMovement stays).
+    pub(super) fn remote_move_vehicle(&mut self, position: [f64; 3], (yaw, pitch): (f32, f32)) {
         let at = Vec3::new(position[0], position[1], position[2]);
+        // absSnapRotationTo.
+        let (yaw, pitch) = (yaw % 360.0, pitch.clamp(-90.0, 90.0) % 360.0);
         if let Some(id) = self.driven_mount().map(|m| m.id)
             && let Some(m) = self.mob_index.get_mut(&mut self.mobs, id)
         {
@@ -497,22 +620,21 @@ impl Game<'_> {
             m.position = at;
             m.yaw = yaw;
             m.previous_yaw = yaw;
-            m.velocity = Vec3::ZERO;
+            m.head_pitch = pitch;
+            m.previous_head_pitch = pitch;
             return;
         }
-        let Some(i) = self
-            .riding
-            .filter(|&id| self.controls_boat(id))
-            .and_then(|id| self.boats.iter().position(|b| b.id == id))
-        else {
+        let Some(i) = self.driven_boat() else {
             return;
         };
+        // After the interpolation is cancelled.
         self.boats.update(i, |b| {
+            b.lerp = None;
             b.previous = at;
             b.position = at;
             b.yaw = yaw;
             b.previous_yaw = yaw;
-            b.velocity = Vec3::ZERO;
+            b.pitch = pitch;
         });
     }
 
@@ -753,6 +875,62 @@ mod tests {
 
     use super::*;
     use sunrise_client::mobs::MobTypes;
+
+    /// handleTeleportEntity and handleMoveVehicle for the vehicle this client moves (a saddled pig steered with a
+    /// carrot on a stick): a relative teleport counts from where the pig is on this client, and a server move
+    /// puts it there and is answered at once with a ServerboundMoveVehiclePacket from that spot.
+    #[test]
+    #[ignore = "daily"]
+    fn the_driven_vehicle_takes_the_servers_teleports_and_moves() {
+        crate::game::native_entity_refs::tests::with_game(|game| {
+            use sunrise_client::{items::ItemStack, motion::PlayerMotion};
+            use sunrise_protocol::packets::play::Clientbound as C;
+            let root =
+                std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
+            let (mut peer, _writer) = crate::game::remote::tests::connect_menu_test(game);
+            peer.set_read_timeout(Some(std::time::Duration::from_millis(50)))
+                .unwrap();
+            game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 0.5)).unwrap());
+            let types = MobTypes::load(&root).unwrap();
+            let pig = std::sync::Arc::new(types.types["minecraft:pig"].clone());
+            let mut m = Mob::new(7, pig, Vec3::new(3.5, 64.0, 2.5), 0.0);
+            m.set_saddle(Some(ItemStack::new("minecraft:saddle", 1)));
+            game.mobs.clear();
+            game.mobs.push(m);
+            game.inventory[game.selected] = Some(ItemStack::new("minecraft:carrot_on_a_stick", 1));
+            game.riding = Some(7);
+            game.remote.as_mut().unwrap().first_passenger = true;
+            assert!(game.driven_mount().is_some());
+            use play::relative as rel;
+            game.apply_packet(C::TeleportEntity(play::TeleportEntity {
+                id: 7,
+                position: [0.0, 0.0, 4.0],
+                delta: [0.0; 3],
+                yaw: 0.0,
+                pitch: 0.0,
+                relatives: rel::X | rel::Y | rel::Z | rel::Y_ROT | rel::X_ROT,
+                on_ground: false,
+            }))
+            .unwrap();
+            assert_eq!(game.mobs[0].position, Vec3::new(3.5, 64.0, 6.5));
+            while peer.recv().is_ok() {}
+            game.apply_packet(C::MoveVehicle(play::MoveVehicle {
+                position: [1.5, 64.0, 1.5],
+                yaw: 90.0,
+                pitch: 0.0,
+            }))
+            .unwrap();
+            assert_eq!(game.mobs[0].position, Vec3::new(1.5, 64.0, 1.5));
+            let mut answers = Vec::new();
+            while let Ok((id, bytes)) = peer.recv() {
+                if let Ok(play::Serverbound::MoveVehicle(p)) = play::Serverbound::decode(id, &bytes)
+                {
+                    answers.push(p.position);
+                }
+            }
+            assert_eq!(answers, [[1.5, 64.0, 1.5]]);
+        });
+    }
 
     #[test]
     #[ignore = "requires prepared resources and the vanilla mount-control reference"]

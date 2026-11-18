@@ -75,7 +75,7 @@ in Controls, and adding one would put a non-vanilla mapping into `options.txt`.
 ### Moved to native mods
 
 The **FPS counter**, **Keystrokes** and **Zoom** are official native mods now (in
-horizon-rust/horizon-mods under `native/<name>/`, [mods.md](modding/src/start/installing.md#sunrises-official-mods)), with the same look and
+horizon-rust/horizon-mods under `native/<name>/`, [mods.md](modding/src/players/installing-mods.md#sunrises-own-mods)), with the same look and
 options. Players install them from the launcher's Mods page, and the launcher builds them into the game
 ([modding/src/how-to/native-mods.md](modding/src/how-to/native-mods.md)). The game keeps
 the hook points they use (`crates/sunrise-client/src/game/native_hooks/`). The Extras page keeps a **Zoom** row: the mod's switch and Settings button when

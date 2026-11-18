@@ -2775,9 +2775,11 @@ const TAG_BUNDLES: [&str; 2] = ["block-tags.json", "worldgen/block_tags.json"];
 const BIOME_TAGS: &str = "worldgen/biome_tags.json";
 /// Worldgen registries a content mod may add to, and the bundle the
 /// worldgen loader reads each from (id → the file's text): what structure
-/// mods hold. Biomes, noise and density functions change the terrain and
+/// mods hold, and a mod's own biomes (any namespace but `minecraft`, which
+/// no mod can replace). Noise and density functions change the terrain and
 /// are not read from mods.
-const WORLDGEN_BUNDLES: [(&str, &str); 6] = [
+const WORLDGEN_BUNDLES: [(&str, &str); 7] = [
+    ("biome", "worldgen/biomes.json"),
     ("structure", "worldgen/structures.json"),
     ("structure_set", "worldgen/structure_sets.json"),
     ("template_pool", "worldgen/template_pools.json"),
@@ -2788,7 +2790,8 @@ const WORLDGEN_BUNDLES: [(&str, &str); 6] = [
 
 /// The registry of `command-registries.json` that each bundle's ids join,
 /// for the commands that suggest them (`/locate`, `/place`).
-const COMMAND_REGISTRIES: [(&str, &str); 6] = [
+const COMMAND_REGISTRIES: [(&str, &str); 7] = [
+    ("worldgen/biomes.json", "minecraft:worldgen/biome"),
     ("worldgen/structures.json", "minecraft:worldgen/structure"),
     (
         "worldgen/structure_sets.json",
@@ -2814,6 +2817,9 @@ fn worldgen_entry(file: &str) -> Option<(&'static str, String)> {
     let (ns, rest) = file.strip_prefix("data/")?.split_once("/worldgen/")?;
     let (kind, path) = rest.split_once('/')?;
     let (_, bundle) = WORLDGEN_BUNDLES.iter().find(|(k, _)| *k == kind)?;
+    if *bundle == BIOMES && ns == "minecraft" {
+        return None;
+    }
     Some((bundle, format!("{ns}:{}", path.strip_suffix(".json")?)))
 }
 
@@ -2914,7 +2920,7 @@ const PLACED_FEATURES: &str = "worldgen/placed_features.json";
 const CARVERS: &str = "worldgen/carvers.json";
 
 /// Rewrites the biome bundle with the mods' biome modifiers. `biome_tags`
-/// and `placed` are the bundles as the mods left them (`None`: the base's).
+/// `placed` and `biome_doc` are the bundles as the mods left them (`None`: the base's).
 fn place_in_biomes(
     base: &Path,
     overlay: &Overlay<'_>,
@@ -2922,6 +2928,7 @@ fn place_in_biomes(
     enabled_mods: Vec<String>,
     biome_tags: Option<J>,
     placed: Option<J>,
+    biome_doc: Option<J>,
     tags: &BTreeMap<String, TagMerge>,
     warnings: &mut Vec<String>,
 ) -> Result<()> {
@@ -2945,7 +2952,10 @@ fn place_in_biomes(
     if !base.join(BIOMES).exists() {
         return Err(format!("biome modifiers need {BIOMES}").into());
     }
-    let mut doc = read_json(&base.join(BIOMES))?;
+    let mut doc = match biome_doc {
+        Some(doc) => doc,
+        None => read_json(&base.join(BIOMES))?,
+    };
     let biome_tags = bundle(biome_tags, BIOME_TAGS)?;
     let placed: BTreeSet<String> = bundle(placed, PLACED_FEATURES)?.into_keys().collect();
     let feature_tags = bundle(None, FEATURE_TAGS)?;
@@ -3317,7 +3327,12 @@ struct Known {
     tag_files: std::collections::BTreeSet<String>,
 }
 impl Known {
-    fn new(base: &Path, plan: &Plan, tags: &BTreeMap<String, TagMerge>) -> Result<Self> {
+    fn new(
+        base: &Path,
+        plan: &Plan,
+        tags: &BTreeMap<String, TagMerge>,
+        mod_biomes: impl Iterator<Item = String>,
+    ) -> Result<Self> {
         let mut blocks: std::collections::BTreeSet<String> =
             plan.defaults.keys().cloned().collect();
         blocks.extend(plan.blocks.iter().map(|b| b.decl.id.clone()));
@@ -3335,10 +3350,12 @@ impl Known {
                 false => Default::default(),
             })
         };
+        let mut biomes = keys(BIOMES)?;
+        biomes.extend(mod_biomes);
         Ok(Known {
             blocks,
             items,
-            biomes: keys("worldgen/biomes.json")?,
+            biomes,
             biome_tags: keys(BIOME_TAGS)?,
             tag_files: tags.keys().cloned().collect(),
         })

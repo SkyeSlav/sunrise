@@ -11,7 +11,7 @@
       "9f67e10ed013deeaad20ac3c800652765d493408",
       "969f7ab0ce024e8dcf95372971bcf291b34ed9f7"
     ],
-    "accepted_manifest_note": "Other 26.3 version JSONs Mojang re-issued for the asset index alone. The launcher (launcher/src/sources.rs `Pins::read`) accepts a launcher's version JSON by its sha1: the pinned one or one of these; any other it downloads from Mojang, so offline it cannot prepare. sunrise-prepare and tools/lab.py accept by content (`libraries_sha256` below) and do not read this list.",
+    "accepted_manifest_note": "Other 26.3 version JSONs Mojang re-issued for the asset index alone. The launcher (sunrise-launcher's src/sources.rs `Pins::read`) accepts a launcher's version JSON by its sha1: the pinned one or one of these; any other it downloads from Mojang, so offline it cannot prepare. sunrise-prepare and tools/lab.py accept by content (`libraries_sha256` below) and do not read this list.",
     "client_sha1": "e877b6a07acd633fb3bb475002175cec036e7b87",
     "server_sha1": "33680f5f2ac32864d6d7cf5e56a705fdb3e05f4c",
     "libraries_sha256": "979d985b42c6e76bfe9fa94f471ff157f7f68ea2bc0f0cb3991846bf8bb1567b",

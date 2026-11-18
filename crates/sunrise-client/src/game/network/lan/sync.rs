@@ -37,7 +37,20 @@ pub(in crate::game) fn server_sources(
     item_data: &ItemData,
     overlay: &sunrise_world::loot::PackOverlay,
 ) -> std::io::Result<Arc<ResolvedSources>> {
-    server_sources_with(root, item_data, overlay, || {
+    server_sources_with(root, item_data, overlay, false, || {
+        server_data_load(root, item_data)
+    })
+}
+
+/// `server_sources` for an owning load that goes on to build the tables with
+/// `Recipes::from_resolved`, which reports the recipes that failed to resolve
+/// together with its own. Sources with failures are never cached.
+fn server_sources_collecting(
+    root: &std::path::Path,
+    item_data: &ItemData,
+    overlay: &sunrise_world::loot::PackOverlay,
+) -> std::io::Result<Arc<ResolvedSources>> {
+    server_sources_with(root, item_data, overlay, true, || {
         server_data_load(root, item_data)
     })
 }
@@ -46,6 +59,7 @@ fn server_sources_with(
     root: &std::path::Path,
     item_data: &ItemData,
     overlay: &sunrise_world::loot::PackOverlay,
+    collecting: bool,
     load: impl FnOnce() -> std::io::Result<sunrise_world::native_load_context::LoadContext>,
 ) -> std::io::Result<Arc<ResolvedSources>> {
     let generation = item_data.defaults().generation();
@@ -58,17 +72,32 @@ fn server_sources_with(
         return Ok(held.sources.clone());
     }
     let context = load()?;
-    let sources = Arc::new(
-        ResolvedSources::load(root, overlay, &context)
-            .map_err(|error| std::io::Error::other(error.to_string()))?,
-    );
-    *slot = Some(ServerSources {
-        root: root.to_owned(),
-        generation,
-        overlay: key,
-        sources: sources.clone(),
-    });
+    let sources = collect(root, overlay, &context, collecting)?;
+    if sources.is_complete() {
+        *slot = Some(ServerSources {
+            root: root.to_owned(),
+            generation,
+            overlay: key,
+            sources: sources.clone(),
+        });
+    }
     Ok(sources)
+}
+
+fn collect(
+    root: &std::path::Path,
+    overlay: &sunrise_world::loot::PackOverlay,
+    context: &sunrise_world::native_load_context::LoadContext,
+    collecting: bool,
+) -> std::io::Result<Arc<ResolvedSources>> {
+    let loaded = ResolvedSources::load_collecting(root, overlay, context)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    if !collecting {
+        loaded
+            .check()
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+    }
+    Ok(Arc::new(loaded))
 }
 
 /// Initial tables borrow the settings already captured with their item data.
@@ -82,25 +111,20 @@ pub(in crate::game) fn initial_sources(
     use sunrise_world::native_load_context::DataLoadOrigin;
     let context = item_data.context();
     if context.origin() == DataLoadOrigin::ServerDataLoad {
-        server_sources_with(root, item_data, overlay, || Ok(context.clone()))
+        server_sources_with(root, item_data, overlay, true, || Ok(context.clone()))
     } else {
-        Ok(Arc::new(
-            ResolvedSources::load(root, overlay, context)
-                .map_err(|error| std::io::Error::other(error.to_string()))?,
-        ))
+        collect(root, overlay, context, true)
     }
 }
 
 /// Build server recipes privately so a refused reload leaves the current cache intact.
+/// Like `load_sources`, for a caller that builds the tables with `Recipes::from_resolved`.
 pub(in crate::game) fn prepare_server_sources(
     root: &std::path::Path,
     item_data: &ItemData,
     overlay: &sunrise_world::loot::PackOverlay,
 ) -> std::io::Result<Arc<ResolvedSources>> {
-    Ok(Arc::new(
-        ResolvedSources::load(root, overlay, &server_data_load(root, item_data)?)
-            .map_err(|error| std::io::Error::other(error.to_string()))?,
-    ))
+    collect(root, overlay, &server_data_load(root, item_data)?, true)
 }
 
 pub(in crate::game) fn install_server_sources(
@@ -126,11 +150,13 @@ pub(in crate::game) fn load_sources(
 ) -> std::io::Result<Arc<ResolvedSources>> {
     use sunrise_world::native_load_context::DataLoadOrigin;
     match origin {
-        DataLoadOrigin::ServerDataLoad => server_sources(root, item_data, overlay),
-        DataLoadOrigin::ClientPreload | _ => Ok(Arc::new(
-            ResolvedSources::load(root, overlay, &data_load_context(root, item_data, origin)?)
-                .map_err(|error| std::io::Error::other(error.to_string()))?,
-        )),
+        DataLoadOrigin::ServerDataLoad => server_sources_collecting(root, item_data, overlay),
+        DataLoadOrigin::ClientPreload | _ => collect(
+            root,
+            overlay,
+            &data_load_context(root, item_data, origin)?,
+            true,
+        ),
     }
 }
 
@@ -444,6 +470,41 @@ mod initial_source_tests {
         let data = ItemData::load(root.path(), context).unwrap();
         assert!(
             initial_sources(root.path(), &data, &sunrise_world::loot::PackOverlay::NONE).is_err()
+        );
+    }
+
+    #[test]
+    fn initial_sources_keep_refused_recipes_for_the_table_build() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("items.json"), "{}").unwrap();
+        let folder = root.path().join("data/minecraft/recipe");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("a.json"), r#"{"type":"absent:serializer"}"#).unwrap();
+        std::fs::write(
+            folder.join("b.json"),
+            r#"{"type":"minecraft:crafting_shapeless","ingredients":[],"result":{"id":"minecraft:stick"}}"#,
+        )
+        .unwrap();
+        let inputs = Arc::new(LoadInputs::new(Default::default(), Default::default()));
+        let context = LoadContext::new(DataLoadOrigin::ClientPreload, inputs, [] as [&str; 0]);
+        let data = ItemData::load(root.path(), context).unwrap();
+        let sources =
+            initial_sources(root.path(), &data, &sunrise_world::loot::PackOverlay::NONE).unwrap();
+        assert!(!sources.is_complete());
+        let none = sunrise_world::loot::PackOverlay::NONE;
+        let error = sunrise_client::crafting::Recipes::from_resolved(
+            root.path(),
+            &sunrise_client::items::Items::for_tests(Default::default()),
+            &none,
+            &sources,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(error.starts_with("2 recipes failed to load:"), "{error}");
+        assert!(
+            error.find("recipe/a.json").unwrap() < error.find("recipe/b.json").unwrap(),
+            "{error}"
         );
     }
 }

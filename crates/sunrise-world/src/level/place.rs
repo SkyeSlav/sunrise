@@ -323,7 +323,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let fluid = self.fluid_at(ctx.pos);
         let mut answer = None;
         self.level
-            .before_state_for_placement(&*self.ticks, default, ctx, fluid, &mut answer);
+            .before_state_for_placement(&*self.ticks, None, default, ctx, fluid, &mut answer);
         match answer {
             // A mod's answer, for a state of the block being placed, as
             // vanilla's `getStateForPlacement` returns its own `defaultBlockState`

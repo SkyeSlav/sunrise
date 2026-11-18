@@ -157,6 +157,19 @@ pub(super) fn peer(port: u16, name: &str, sunrise: bool) -> Connection {
     let local =
         sunrise_client::raw_payloads::Local::capture(sunrise_client::raw_payloads::Side::Client)
             .unwrap();
+    if sunrise {
+        // A server queries a client only once its brand says Sunrise.
+        let mut brand = sunrise_protocol::buf::Writer::new();
+        brand.string("sunrise");
+        c.send(
+            &cfg::Serverbound::CustomPayload(cfg::CustomPayload {
+                channel: "minecraft:brand".into(),
+                data: brand.data,
+            })
+            .encode(),
+        )
+        .unwrap();
+    }
     loop {
         assert!(Instant::now() < deadline, "configuration deadline: {name}");
         let (id, body) = c.recv().unwrap();
@@ -178,6 +191,8 @@ pub(super) fn peer(port: u16, name: &str, sunrise: bool) -> Connection {
                 c.send(&cfg::Serverbound::SelectKnownPacks(p).encode())
                     .unwrap();
             }
+            // The server pings a Sunrise client whose Offer is not in by its pack reply.
+            cfg::Clientbound::Ping(p) => c.send(&cfg::Serverbound::Pong(p).encode()).unwrap(),
             cfg::Clientbound::FinishConfiguration(_) => break,
             cfg::Clientbound::Disconnect(p) => panic!("disconnected: {p:?}"),
             _ => {}

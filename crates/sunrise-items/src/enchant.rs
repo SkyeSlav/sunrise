@@ -2182,8 +2182,8 @@ mod ignite_tests {
         ));
         std::fs::create_dir_all(root.join("data/minecraft/tags/enchantment")).unwrap();
         std::fs::write(root.join("items.json"), "{}").unwrap();
-        std::fs::write(root.join("data/minecraft/tags/enchantment/conditional.json"), json!({"neoforge:conditions":[{"type":"neoforge:false"}],"values":["minecraft:sharpness"]}).to_string()).unwrap();
-        let files = vec![("tags/minecraft:enchantment/conditional".into(), vec![json!({"neoforge:conditions":[{"type":"neoforge:false"}],"values":["minecraft:smite"],"remove":["minecraft:sharpness"]}).to_string().into_bytes()])];
+        std::fs::write(root.join("data/minecraft/tags/enchantment/conditional.json"), json!({"neoforge:conditions":[{"type":"neoforge:never"}],"values":["minecraft:sharpness"]}).to_string()).unwrap();
+        let files = vec![("tags/minecraft:enchantment/conditional".into(), vec![json!({"neoforge:conditions":[{"type":"neoforge:never"}],"values":["minecraft:smite"],"remove":["minecraft:sharpness"]}).to_string().into_bytes()])];
         let defaults = sunrise_world::item_defaults::read(&root).unwrap();
         let base = Enchantments::load(&root, &defaults).unwrap();
         assert_eq!(

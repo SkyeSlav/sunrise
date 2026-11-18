@@ -16,6 +16,9 @@ identity, kind, panic location, policy file), then:
   why each run stopped as its verdict file says (signal or exit status, memory peak and limit, wall time, the tests
   still running past 60 s; stopped_text); a leg whose red asks for an action is titled as that action (ACTIONS:
   `Daily: update the machine sample for the mod API change`);
+- a failed check of the SDK a leg just built (SDK_CHECKS: the native linkage probe, the API-source check): one issue
+  per check and platform, `Daily: sdk <check> (<platform>)`, closed only by a run in which that step passed; when a
+  Linux SDK leg failed, fn-replace-check's missing input is said on that leg's issue, not filed again;
 - a test (or leg) green again: closes its open issue with a comment.
 A job cancelled before any of its steps ran (one still waiting for a runner) never ran, so it is neither red nor
 green, and nor is a leg whose call was cancelled with only such jobs: nothing is filed or closed for it. A run cancelled
@@ -78,6 +81,22 @@ FRESH = "sdk / fresh"
 WINDOWS_ROWS_JOB = "windows-runtime-leases / runtime-leases"
 WINDOWS_ROWS_STEP = "The Windows-only daily rows"
 FIXTURE_TESTS_STEPS = ("Validate and load the fixture", "Run the client tests that load the compiled fixture")
+# The SDK legs' checks of the SDK they just built (prebuilt-game-build.yml), by step: a failed one is its own issue per
+# check and platform, `Daily: sdk <check> (<platform>)`, closed only by a run in which that step passed.
+SDK_BUILD = "sdk / build "
+SDK_CHECKS = {
+    "Two mod libraries share the game's exact Rust state": "native linkage probe",
+    "The starter mod checks against the API source alone, host and wasm32": "API-source check",
+}
+SDK_CHECK = "sdk-check"
+# fn-replace-check reads the Linux legs' SDK: when one of those failed, its only failures are the missing input, which
+# the Linux leg's own issue already accounts for.
+LINUX_SDK_JOBS = ("sdk / build linux", "sdk / build linux-server")
+# The Linux legs' call's own result, kept apart from the sdk leg's (PART_OF): its `fresh` can fail with no published
+# SDK to reuse, and then no Linux build job runs at all.
+LINUX_SDK_CALL = "sdk (Linux legs)"
+FN_REPLACE_JOB = "fn-replace-check / fn-replace-check"
+FN_REPLACE_INPUT_STEPS = ("Run actions/download-artifact@v4", "The Linux legs are here")
 # A pull request merged on its own (`Merge pull request #N from`) or as a rollup's member (`Merge #N at <sha>`).
 MERGE = re.compile(r"^Merge (?:pull request #(\d+) from |#(\d+) at )")
 MAX_PAGES = 100
@@ -138,6 +157,7 @@ def leg_results(needs):
     """Each leg's call result from RESULTS (toJSON(needs)), a leg made of several calls (PART_OF) taking the first that
     did not succeed."""
     results = dict(needs)
+    results[LINUX_SDK_CALL] = needs.get("sdk", {})
     for part, leg in PART_OF.items():
         if part in results and results.get(leg, {}).get("result") == "success":
             results[leg] = results[part]
@@ -275,12 +295,20 @@ def verdicts(jobs, reports, results, legs, parity_report):
     fresh_ok = any(job["name"] == FRESH and job["conclusion"] == "success" for job in jobs)
     helpers = failed_helpers(jobs)
     unstarted = unstarted_legs(jobs, results)
+    linux_sdk_red = {job["name"] for job in jobs if job["name"] in LINUX_SDK_JOBS and not job_green(job, fresh_ok)}
+    if results.get(LINUX_SDK_CALL, {}).get("result", "success") != "success":
+        linux_sdk_red.add("sdk")  # the leg's own item (its failed `fresh`, say) is the Linux legs' too
+    fn_replace_blocked = False
     for job in leg_jobs(jobs):
         if never_started(job) or job["name"].startswith(f"{PARITY} / "):
             continue  # parity uses its own verdict, including when the job passed
         report = report_for(job, reports)
         if report:
             passed |= {(item["package"], item["test"]) for item in report["passed"]}
+        if job["name"].startswith(SDK_BUILD):
+            platform = job["name"][len(SDK_BUILD):]
+            passed |= {("sdk", f"{SDK_CHECKS[step['name']]} ({platform})") for step in job.get("steps") or []
+                       if step["name"] in SDK_CHECKS and step.get("conclusion") == "success"}
         if job_green(job, fresh_ok):
             green_legs.add(job["name"])
             continue
@@ -310,6 +338,14 @@ def verdicts(jobs, reports, results, legs, parity_report):
                     if report["incomplete"] else "failed tests whose names are withheld"))
             elif job["name"] == WINDOWS_ROWS_JOB and (outside := [step for step in steps if step != WINDOWS_ROWS_STEP]):
                 unfinished.append((job["name"], job["conclusion"], outside, "failed outside its tests"))
+        elif job["name"].startswith(SDK_BUILD) and any(step in SDK_CHECKS for step in steps):
+            platform = job["name"][len(SDK_BUILD):]
+            tests += [{"package": "sdk", "test": f"{SDK_CHECKS[step]} ({platform})", "kind": SDK_CHECK, "step": step,
+                       "panic": None, "policy": None, "leg": job["name"]} for step in steps if step in SDK_CHECKS]
+            if outside := [step for step in steps if step not in SDK_CHECKS]:
+                unfinished.append((job["name"], job["conclusion"], outside, "failed outside its checks"))
+        elif job["name"] == FN_REPLACE_JOB and linux_sdk_red and steps and set(steps) <= set(FN_REPLACE_INPUT_STEPS):
+            fn_replace_blocked = True  # not green, and the Linux SDK leg's item says why
         else:
             unfinished.append((job["name"], job["conclusion"], steps, "failed at the steps named"))
     for job in jobs:
@@ -325,7 +361,7 @@ def verdicts(jobs, reports, results, legs, parity_report):
     for leg in legs:
         result = results.get(leg, {}).get("result", "missing")
         accounted = any(item["leg"].split(" / ", 1)[0] == leg for item in tests) or any(
-            entry[0].split(" / ", 1)[0] == leg for entry in unfinished)
+            entry[0].split(" / ", 1)[0] == leg for entry in unfinished) or (leg == "fn-replace-check" and fn_replace_blocked)
         if leg in unstarted:
             continue
         if leg == PARITY:
@@ -355,6 +391,13 @@ def verdicts(jobs, reports, results, legs, parity_report):
             unfinished.append((leg, result, [], "did not complete, and no job or test of it says why"))
         elif result == "success" and not accounted:
             green_legs.add(leg)  # a whole leg that reported and passed closes its leg-level issue
+    if fn_replace_blocked:
+        blocked = "`fn-replace-check` could not run: it needs this leg's SDK"
+        for item in tests:
+            if item["leg"] in linux_sdk_red:
+                item["blocks"] = blocked
+        unfinished = [(leg, conclusion, steps, f"{reason}. {blocked}" if leg in linux_sdk_red else reason)
+                      for leg, conclusion, steps, reason in unfinished]
     green = legs_green(legs, jobs, results, tests, unfinished) and not tests and not unfinished
     failing = {(item["package"], item["test"]) for item in tests}
     return tests, unfinished, passed - failing, green_legs, green
@@ -485,8 +528,10 @@ def detail(item):
         "passes-now": f"passes now but is listed as a known failure in `{item['policy']}`: take it off that list.",
         "no-longer-runs": f"is listed in `{item['policy']}` but no longer runs: remove the row or restore the test.",
         "parity": "failed in the daily run. Its logs hold vanilla data, so they stay on the runner.",
+        SDK_CHECK: f"fails at the step `{item.get('step')}`, so this SDK is not published.",
     }
-    return f"`{item['test']}` ({item['package']}, leg `{item['leg']}`) {kinds[item['kind']]}"
+    blocks = f" {item['blocks']}." if item.get("blocks") else ""
+    return f"`{item['test']}` ({item['package']}, leg `{item['leg']}`) {kinds[item['kind']]}{blocks}"
 
 
 def leg_detail(leg, conclusion, steps, reason):
@@ -631,7 +676,7 @@ def main(call=api, run_git=git, query=graphql):
     numbers = suspects(commit, run_git) if tests or unfinished else []
     reds = {test_title(item) for item in tests} | {leg_title(leg) for leg, *_ in unfinished}
     fixes = fixes_after(commit, reds - open_issues.keys(), call, query, run_git)
-    other_tests = [item for item in tests if item["leg"] != PARITY]
+    other_tests = [item for item in tests if item["kind"] not in (PARITY, SDK_CHECK)]
     previous = previous_run(commit, call, run_git) if other_tests else None
     lines = {test_title(item): line for item in other_tests
              if (line := test_suspect_line(item, previous, commit, run_git))}

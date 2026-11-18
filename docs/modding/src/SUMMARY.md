@@ -2,13 +2,18 @@
 
 [Modding Sunrise](introduction.md)
 
+# For players
+
+- [Installing and using mods](players/installing-mods.md)
+
 # Getting started
 
-- [Installing and using mods](start/installing.md)
+- [Install the mod tool](start/install-tool.md)
 - [Your first content mod](start/first-content-mod.md)
 - [Your first native mod](start/first-mod.md)
 - [Your first WebAssembly mod](start/first-wasm-mod.md)
 - [Writing hooks](start/writing-hooks.md)
+- [Using an AI agent](for-agents.md)
 
 # Concepts
 

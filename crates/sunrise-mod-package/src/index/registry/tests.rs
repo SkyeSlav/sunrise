@@ -172,6 +172,34 @@ fn builds_the_sample_index() {
 }
 
 #[test]
+fn downloads_and_stars_come_from_the_counts_and_a_zero_is_left_out() {
+    let s = Scratch::new("counts");
+    let mut index = s.build().unwrap();
+    let first = &index.projects[0];
+    let url = first.versions[0].file.url.clone();
+    let repo = first
+        .source
+        .strip_prefix("https://github.com/")
+        .unwrap()
+        .to_ascii_uppercase();
+    let counts: Counts = serde_json::from_str(&format!(
+        r#"{{"downloads": {{"{url}": 7, "{url}?other": 100}}, "stars": {{"{repo}": 3}}}}"#
+    ))
+    .unwrap();
+    count(&mut index, &counts);
+    assert_eq!(
+        (index.projects[0].downloads, index.projects[0].stars),
+        (7, 3)
+    );
+    // A project the counts don't name counts nothing, and the index leaves both out.
+    let second = &index.projects[1];
+    assert_eq!((second.downloads, second.stars), (0, 0));
+    let json = serde_json::to_value(&index).unwrap();
+    assert!(json["projects"][1].get("downloads").is_none());
+    assert_eq!(json["projects"][0]["downloads"], 7);
+}
+
+#[test]
 fn lists_every_problem_of_a_registry() {
     let s = Scratch::new("bad");
     // A file that isn't the one its hash names, an unsigned version of a

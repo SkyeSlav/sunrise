@@ -1,15 +1,39 @@
 # Entity parts and mob goals
 
 Entity Parts run in native mods in full. A wasm mod may also register one with `r.entity_part`, but
-only the part's `general_entity_tick` crosses: the goal, behavior, spawn-size and shear methods
+the part's `general_entity_tick` and client-side `can_rider_interact` cross. The goal, behavior, spawn-size and shear methods
 (`register_goals`, `register_behaviors`, `spawn_cluster_size`, `is_shearable`, `on_sheared`) are native-only.
 A wasm part that overrides one of them is refused at load by name, as
-`EntityPart::<method>: a wasm entity part crosses with its general_entity_tick alone`, instead of the
+`EntityPart::<method>: a wasm entity part cannot override native-only methods`, instead of the
 override being silently never called.
 
 On wasm each general row keeps its own attachments, so two rows of one type share the part but not
 their state. A trap in a row's tick rolls that row's writes back and stops the mod's dependency group (the
 mod and the mods linked to it); the game keeps it stopped, and mods outside that group go on ticking.
+
+## Picking while riding
+
+`can_rider_interact` mirrors NeoForge's `IEntityExtension.canRiderInteract`. Attach an
+`EntityPart` to the candidate's entity type and set `event.allowed = true` to let a
+rider pick it like an unrelated entity. The output starts false; parts run in
+dependency order and the last write wins. The hook has version 1 and exposes
+`event.entity: EntityRef` and a writable `event.allowed: bool` with a `ClientHost`.
+
+The ordinary client pick excludes entities sharing the camera's root vehicle,
+including other passengers, not just the directly ridden entity. The shared
+accumulator preserves vanilla's running-nearest-zero exception: picking from
+inside a box sets nearest to zero, and a later same-root intersection can replace
+the hovered entity without changing nearest. The hook is asked only when a
+non-inside candidate reaches that same-vehicle branch; true applies ordinary
+nearest selection instead. No part subscription means no hook-buffer work or
+dispatch. Subscribed picks reuse a retained candidate buffer. Tick and frame picks
+both use it. Attack-range component rays do not exclude root-vehicle relatives
+and never ask this hook. Server interaction checks remain reach-only.
+
+The existing family traversal order is retained; exact vanilla section and
+within-section insertion ordering is a separate engine correction.
+
+## Goals
 
 `r.entity_part("minecraft:zombie", ZombieGoals)` attaches an `EntityPart` to one entity type, a mod's
 own or vanilla's. Its method `register_goals` runs at every `Mob` construction of that type —

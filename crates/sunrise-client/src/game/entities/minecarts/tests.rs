@@ -622,3 +622,33 @@ fn a_mounted_shulker_does_not_push_a_cart() {
     assert!(!takes_push_from_cart(Species::Shulker));
     assert!(takes_push_from_cart(Species::Cow));
 }
+
+/// `OldMinecartBehavior.tick` writes `onRails` every tick before the track
+/// move: a cart on a rail reads true after its tick, one off the track false.
+#[test]
+#[ignore = "daily"]
+fn an_old_behaviour_cart_writes_is_on_rails_each_tick() {
+    super::super::native_entity_refs::tests::with_game(|game| {
+        game.world.chunks.insert(
+            (0, 0),
+            std::sync::Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)),
+        );
+        let rail = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:rail")
+            .unwrap();
+        for z in 0..16 {
+            game.world.set(0, 64, z, rail).unwrap();
+        }
+        let mut on = Minecart::new(1, CartKind::Rideable, Vec3::new(0.5, 64.0625, 2.5));
+        let mut off = Minecart::new(2, CartKind::Rideable, Vec3::new(8.5, 80.0, 8.5));
+        on.first_tick = false;
+        off.on_rails = true;
+        game.tick_cart(&mut on, [0.0; 2], 0, &mut CartIndex::default());
+        game.tick_cart(&mut off, [0.0; 2], 0, &mut CartIndex::default());
+        assert!(on.on_rails);
+        assert!(!off.on_rails);
+    });
+}

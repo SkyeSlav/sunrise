@@ -49,17 +49,26 @@ Keep the callback a pure function of the level, position and state, without side
 
 ## Path classification
 
-`BlockPart::block_path_type` answers for `event.state` at `event.pos`, with a read-only
-host for the owning level. Return `Some(PathType)` to replace the whole static classification,
-even for air, or `None` to use vanilla. The same state may answer differently by position.
+`BlockPart::block_path_type` answers for `event.state` at `event.pos`, with an owning
+`&dyn LevelHost`. Return `Some(PathType)` to replace
+the whole static classification, even for air, or `None` to use vanilla. The callback runs on
+the server only, and no mob is supplied. The same state may answer differently by position.
+Queries on the supplied level (such as `level.block_state(pos)` or looking up a block entity via
+`level.block_entity(pos)` and `level.block_entity_data(entity)`) are strictly read-only: they never
+perform writes, random draws, chunk loads or lazy loot generation. `level.block_entity(pos)`
+returns `None` when no block entity is present, the chunk is unloaded, `pos` is outside the build
+height, or the block entity is temporarily out of the world for its own tick.
+`level.block_entity_data(entity)` returns validated saved data without identity metadata, or
+`None` for stale generations and handles from another level or world.
+
 This is separate from `is_pathfindable`, which remains state-only. The server caches the final
 static classification in 4096 direct-mapped positional slots shared by its AI workers, including
 `Open` for missing navigation-region chunks. A collision replaces a slot. A matching
 `sendBlockUpdated` notification clears it: ordinary writes require an actual state change,
 `UPDATE_CLIENTS` and full chunk status at least `BLOCK_TICKING`; direct block-entity notifications
-clear even unchanged state. Time, `/reload`, chunk load and chunk unload do not clear it. Keep
-the answer deterministic for that lifetime. Neighbour and mob-specific adjustments are not
-stored in this cache; existing per-search evaluator caches remain.
+clear even unchanged state. Time, `/reload`, chunk load and chunk unload do not clear it, and
+there is no neighbour invalidation. Keep the answer deterministic for that lifetime. Neighbour
+and mob-specific adjustments are not stored in this cache; existing per-search evaluator caches remain.
 
 `BlockPart::adjacent_block_path_type` answers for a neighbour at its own `event.pos`;
 `event.path_type` is that neighbour's classified type, not the node's type. Return `Some`

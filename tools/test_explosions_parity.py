@@ -84,19 +84,34 @@ class Scene:
                 for x in range(self.cx - r, self.cx + r + 1) for z in range(self.cz - r, self.cz + r + 1)]
 
     def items(self, *ids):
-        """Dropped item entities around the scene, in all and per item id."""
-        ops = [cmd(f'/execute if entity @e[type=item,{self.box()}]')]
-        return ops + [cmd(f'/execute if entity @e[type=item,{self.box()},nbt={{Item:{{id:"minecraft:{i}"}}}}]')
-                      for i in ids]
+        """Dropped items around the scene: the item entities (stacks), then the items themselves, in all and per item
+        id, summed from each stack's count (a scoreboard sum, so the engines' entity order doesn't matter)."""
+        every = f'@e[type=item,{self.box()}]'
+        ops = [cmd(f'/execute if entity {every}'), *setup('/scoreboard objectives add blast_items dummy')]
+        for i in (None, *ids):
+            stacks = every if i is None else f'@e[type=item,{self.box()},nbt={{Item:{{id:"minecraft:{i}"}}}}]'
+            ops += setup('/scoreboard players set #items blast_items 0',
+                         f'/execute as {stacks} store result score @s blast_items run data get entity @s Item.count',
+                         f'/scoreboard players operation #items blast_items += {stacks} blast_items')
+            ops.append(cmd('/scoreboard players get #items blast_items'))
+        return ops + setup('/scoreboard objectives remove blast_items')
 
 
 def tnt_in_water():
     """An explosion inside a fluid breaks nothing: `ExplosionDamageCalculator` counts the fluid's resistance (water
-    100) at the start of every ray. Beside it, a waterlogged slab resists like its water."""
+    100) at the start of every ray. Beside it, a waterlogged slab resists like its water. A pig in the TNT's own water
+    cell shows the blast went off: water blocks no ray to an entity, so the pig is hurt and pushed."""
     s = Scene(0, 3)
     ops = s.enter() + s.cube('dirt')
-    ops += setup(f'/setblock {s.cx} {s.cy} {s.cz} water', f'/setblock {s.cx + 1} {s.cy} {s.cz} stone_slab[waterlogged=true]')
+    ops += setup(f'/setblock {s.cx} {s.cy} {s.cz} water', f'/setblock {s.cx + 1} {s.cy} {s.cz} stone_slab[waterlogged=true]',
+                 f'/summon pig {s.cx}.5 {s.cy} {s.cz}.5 {{NoAI:1b,Silent:1b,PersistenceRequired:1b,Tags:["blast_water"],'
+                 'attributes:[{id:"minecraft:max_health",base:1000.0d}],Health:1000.0f}')
     ops += [s.sync(0), cmd(f'/summon tnt {s.cx}.5 {s.cy} {s.cz}.5 {{fuse:0}}'), *s.go(2)]
+    pig = '@e[type=pig,tag=blast_water,limit=1]'
+    # Vanilla must show the blast (its pig hurt), or the scene proves nothing: the run stops before comparing.
+    went_off = cmd(f'/execute unless data entity {pig} {{Health:1000.0f}}', expect_result=1)
+    ops += [went_off, cmd(f'/execute if entity @e[type=tnt,{s.box()}]'), cmd(f'/data get entity {pig} Health'),
+            cmd(f'/data get entity {pig} Motion')]
     ops += s.air() + [cmd(f'/execute if block {s.cx + 1} {s.cy} {s.cz} minecraft:stone_slab')] + s.items('dirt')
     return [('explosion tnt in water', ops + s.leave())]
 

@@ -10,7 +10,7 @@ use sunrise_mod_package::index::{
 /// Where the registry's site is published (its icons).
 const SITE: &str = "https://horizon-rust.github.io/horizon-mods/";
 
-const USAGE: &str = "usage: cargo sunrise-mod registry build <checkout> --files <dir> --out <index.json> [--release <url>] [--site <url>] [--generated <time>]
+const USAGE: &str = "usage: cargo sunrise-mod registry build <checkout> --files <dir> --out <index.json> [--release <url>] [--site <url>] [--generated <time>] [--counts <counts.json>]
        cargo sunrise-mod registry review <base checkout> <head checkout> --author <login> [--json]
        cargo sunrise-mod registry check <base checkout> <head checkout> --files <dir>
        cargo sunrise-mod registry list <checkout>
@@ -57,7 +57,7 @@ pub fn main(args: &[String]) -> Result<(), String> {
                 .map(str::to_owned)
                 .or_else(|| std::env::var("REGISTRY_GENERATED").ok())
                 .unwrap_or_default();
-            let index = registry::build(&Sources {
+            let mut index = registry::build(&Sources {
                 registry: Path::new(checkout),
                 files: Path::new(files),
                 release: flag(rest, "--release").unwrap_or(FILE_HOST),
@@ -65,6 +65,12 @@ pub fn main(args: &[String]) -> Result<(), String> {
                 generated,
             })
             .map_err(lines)?;
+            // GitHub's download and star counts, which the workflow fetched.
+            if let Some(path) = flag(rest, "--counts") {
+                let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+                let counts = serde_json::from_str(&text).map_err(|e| format!("{path}: {e}"))?;
+                registry::count(&mut index, &counts);
+            }
             let text = serde_json::to_string_pretty(&index).map_err(|e| e.to_string())?;
             std::fs::write(out, text + "\n").map_err(|e| format!("{out}: {e}"))?;
             println!(

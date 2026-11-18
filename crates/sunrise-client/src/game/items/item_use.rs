@@ -1390,7 +1390,8 @@ pub(super) mod interact_vibration_tests {
                     inside: false,
                 };
                 let held = game.held().cloned();
-                let (result, (changes, _)) = game.remote_block_template(&hit, held.as_ref(), true);
+                let (result, (changes, _)) =
+                    game.remote_block_template(&hit, held.as_ref(), true, true);
                 assert_eq!(result, sunrise_world::level::InteractionResult::Success);
                 assert_eq!(changes.len(), 1, "the client predicts a bitten cake");
                 let bitten = game.with_level(|b, _, _| {

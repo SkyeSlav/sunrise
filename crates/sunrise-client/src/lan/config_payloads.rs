@@ -115,6 +115,19 @@ impl<'a> ConfigIo<'a> {
             None => self.connection.send(body),
         }
     }
+    /// Give configuration tasks the same writer used by application payload replies.
+    pub(super) fn task_sender(
+        &mut self,
+        transport: Arc<Transport>,
+    ) -> sunrise_protocol::Result<ConfigSender> {
+        if self.sender.is_none() {
+            self.sender = Some(ConfigSender {
+                writer: QueuedWriter::new(self.connection.writer.take())?,
+                transport,
+            });
+        }
+        Ok(self.sender.as_ref().unwrap().clone())
+    }
     /// Asks a Sunrise-branded client how many levels besides its own it can view.
     pub fn ask_viewed_levels(&mut self) -> sunrise_protocol::Result<()> {
         let query = self.channels.viewed_levels.query();

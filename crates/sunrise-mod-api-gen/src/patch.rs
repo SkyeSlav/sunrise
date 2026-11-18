@@ -1045,6 +1045,7 @@ pub fn generate(
         }
     }
     let mut bridge_traits = Vec::new();
+    let mut bridge_names: Vec<syn::Ident> = Vec::new();
     for bridge in &extras.bridges {
         match bridge_trait(&mut source, bridge) {
             Ok((path, trait_name, tokens)) => {
@@ -1058,6 +1059,7 @@ pub fn generate(
                     syn::parse_str(&path.replacen("sunrise_client", "crate", 1))
                         .expect("a module path");
                 bridge_traits.push(quote!(pub use #mirror::#trait_name;));
+                bridge_names.push(trait_name.clone());
             }
             Err((code, why)) => refusals.push(refuse(&bridge.id, code, why)),
         }
@@ -1073,7 +1075,11 @@ pub fn generate(
     }
     let mut libs = Vec::new();
     for (source_crate, tree) in &trees {
-        let bridges = source_crate == "sunrise_client" && !bridge_traits.is_empty();
+        let bridges = if source_crate == "sunrise_client" {
+            bridge_names.as_slice()
+        } else {
+            &[]
+        };
         let used = (source_crate != "sunrise_client").then(|| {
             let mut used = extras.idents.clone();
             idents_in(&tree_tokens(tree), &mut used);
@@ -1088,7 +1094,7 @@ pub fn generate(
                     .collect());
             }
         };
-        let bridge_module = bridges.then(|| {
+        let bridge_module = (!bridges.is_empty()).then(|| {
             quote! {
                 /// The bridges' traits, which every mirror module imports.
                 #[doc(hidden)]
@@ -1433,7 +1439,7 @@ fn mirror(
     source: &mut Source,
     path: &str,
     tree: &Tree,
-    bridges: bool,
+    bridges: &[syn::Ident],
     used: Option<&BTreeSet<String>>,
 ) -> Result<proc_macro2::TokenStream, String> {
     let items = source.module(path)?.items.clone();
@@ -1506,9 +1512,12 @@ fn mirror(
     // Repeated before the children, which see them by textual scope as the game's did.
     let macros = source.scope_macros(path);
     let copies = &tree.copies;
-    let bridge_import = bridges.then(|| {
+    // Each trait by `as _`, never a glob: a glob would make horizon-mixins take `format!`/`vec!`/
+    // `matches!` in a function copied here as possibly shadowed, and an unnamed import cannot
+    // collide with the module's own names.
+    let bridge_import = bridges.iter().map(|name| {
         quote!(
-            use crate::__fnr_bridges::*;
+            use crate::__fnr_bridges::#name as _;
         )
     });
     // The explicit re-exports name every item the module defines; the glob is there only for
@@ -1520,7 +1529,7 @@ fn mirror(
         .then(|| quote!(pub use #original::*;));
     Ok(quote! {
         #glob
-        #bridge_import
+        #(#bridge_import)*
         #(#macros)*
         #(#explicit)*
         #(#uses)*
@@ -1864,22 +1873,16 @@ mod tests {
             hashes: BTreeMap::new(),
             stale: None,
         };
-        let ancestor = mirror(
-            &mut source,
-            "lower::ancestor",
-            &Tree::default(),
-            false,
-            None,
-        )
-        .unwrap()
-        .to_string();
+        let ancestor = mirror(&mut source, "lower::ancestor", &Tree::default(), &[], None)
+            .unwrap()
+            .to_string();
         assert!(ancestor.contains("public_helper"));
         assert!(!ancestor.contains("private_helper"));
         let mut target = Tree::default();
         target.copies.push(quote!(
             pub fn copy() {}
         ));
-        let target = mirror(&mut source, "lower::ancestor", &target, false, None)
+        let target = mirror(&mut source, "lower::ancestor", &target, &[], None)
             .unwrap()
             .to_string();
         assert!(target.contains("private_helper"));
@@ -1894,7 +1897,7 @@ mod tests {
                 &mut source,
                 "sunrise_client::game",
                 &Tree::default(),
-                false,
+                &[],
                 None
             )
             .unwrap()
@@ -1926,7 +1929,7 @@ mod tests {
             stale: None,
         };
         let used = BTreeSet::from(["Arc".to_owned()]);
-        let out = mirror(&mut source, "fixture", &Tree::default(), false, Some(&used)).unwrap();
+        let out = mirror(&mut source, "fixture", &Tree::default(), &[], Some(&used)).unwrap();
         let parsed: syn::File = syn::parse2(out).unwrap();
         let imports: Vec<String> = uses(&parsed.items)
             .iter()
@@ -1956,13 +1959,47 @@ mod tests {
             hashes: BTreeMap::new(),
             stale: None,
         };
-        let out = mirror(&mut source, "fixture", &Tree::default(), false, None).unwrap();
+        let out = mirror(&mut source, "fixture", &Tree::default(), &[], None).unwrap();
         let parsed: syn::File = syn::parse2(out).unwrap();
         let imports: Vec<String> = uses(&parsed.items)
             .iter()
             .map(|item| item.tree.to_token_stream().to_string())
             .collect();
         assert_eq!(imports, ["std :: sync :: Arc", "std :: rc :: Rc"]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_mirror_imports_the_bridge_traits_by_name_never_by_glob() {
+        let dir = std::env::temp_dir().join(format!("fnr-bridge-imports-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("mod.rs");
+        std::fs::write(&file, "pub fn f() {}").unwrap();
+        let mut source = Source {
+            root: dir.clone(),
+            loaded: BTreeSet::new(),
+            files: BTreeMap::from([("fixture".to_owned(), vec![file])]),
+            parsed: BTreeMap::new(),
+            local_macros: BTreeSet::new(),
+            libraries: BTreeMap::new(),
+            owners: BTreeMap::new(),
+            cache: Cache::default(),
+            hashes: BTreeMap::new(),
+            stale: None,
+        };
+        let traits = [format_ident!("BridgeA"), format_ident!("BridgeB")];
+        let out = mirror(&mut source, "fixture", &Tree::default(), &traits, None).unwrap();
+        // A glob would make horizon-mixins refuse a bare `matches!` in a function copied here.
+        let text = out.to_string().replace(' ', "");
+        assert!(
+            text.contains("usecrate::__fnr_bridges::BridgeAas_;"),
+            "{text}"
+        );
+        assert!(
+            text.contains("usecrate::__fnr_bridges::BridgeBas_;"),
+            "{text}"
+        );
+        assert!(!text.contains("::*"), "{text}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -2007,7 +2044,8 @@ mod tests {
         assert!(lib.contains(
             "pubmod__fnr_bridges{pubusecrate::game::__Fnr_Bridge___horizon_mixins_m_ticks;}"
         ));
-        assert!(lib.contains("usecrate::__fnr_bridges::*;"));
+        assert!(lib.contains("usecrate::__fnr_bridges::__Fnr_Bridge___horizon_mixins_m_ticksas_;"));
+        assert!(!lib.contains("__fnr_bridges::*"));
         let error = generate_here(
             &[],
             &Extras {

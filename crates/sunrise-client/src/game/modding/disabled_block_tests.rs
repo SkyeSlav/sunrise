@@ -131,7 +131,7 @@ mod tests {
     impl BlockPart for Survival {
         fn can_survive(
             &self,
-            _: &dyn mod_api::LevelHost,
+            _: mod_api::LevelSide<'_>,
             _: &mut mod_api::CanSurviveEvent,
         ) -> Option<bool> {
             Some(true)
@@ -143,7 +143,7 @@ mod tests {
     impl BlockPart for Plant {
         fn may_place_on(
             &self,
-            _: &dyn mod_api::LevelHost,
+            _: mod_api::LevelSide<'_>,
             _: &mut mod_api::MayPlaceOnEvent,
         ) -> Option<bool> {
             Some(true)
@@ -155,7 +155,7 @@ mod tests {
     impl BlockPart for Soil {
         fn can_sustain_plant(
             &self,
-            _: &dyn mod_api::LevelHost,
+            _: mod_api::LevelSide<'_>,
             _: &mut mod_api::CanSustainPlantEvent,
         ) -> Option<bool> {
             Some(true)

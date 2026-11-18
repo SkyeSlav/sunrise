@@ -98,7 +98,9 @@ commit on main. In order:
    newest dyna-checks main-push run did not pass every gate job (a pending job is not passed). Nothing else holds
    it: no daily tests, no `daily-green`, no batch rules, no daily cap, no pause, no release-blocker.
 2. `snapshot-sdk` builds the commit's prebuilt SDK on every OS (`prebuilt-game-build.yml`; skipped when
-   `sdk-<sha>` already exists) and `snapshot-sdk-publish` signs and publishes it as `sdk-<sha>` from this run's
+   `sdk-<sha>` already exists). A build it makes runs the SDK's own checks too, as the daily run's does: the native
+   linkage probe on the Linux and Windows client legs and the API-source check on Linux; an `sdk-<sha>` that already
+   exists is reused as it is, and neither check runs again. `snapshot-sdk-publish` signs and publishes it as `sdk-<sha>` from this run's
    artifacts through `sdk-publish.yml`, the one workflow that publishes an SDK (the daily run and `prebuilt-game.yml` call it too).
 3. `snapshot` starts `nightly build` with `kind=snapshot` and that commit. It re-checks the gate and the SDK, builds
    the commit alone (no picked pull requests, no build branch, no nightly-state), as `SUNRISE_VERSION`
@@ -339,6 +341,32 @@ forward: revert the pull request (or `/nightly remove` a pick), label the revert
 can go out once the daily and gate pass. Meanwhile a player can pick an earlier build on the launcher's
 Versions page (the last week's `nightly-<date>`, or a `vX.Y.Z`), and `sunrise-server update --version <tag>` does
 the same for a server.
+
+## Rolling mod tool
+
+`mod-tool.yml` keeps one release, the pre-release `mod-tool` (never "latest"), holding the newest `cargo-sunrise-mod`
+built from main: `tool-<target>.tar.xz` for each host (the archives an SDK holds, made by `tools/prebuilt_game.py tool`),
+`tool.json` (the commit, its date, the `native-*` contract number), `SHA256SUMS` and `SHA256SUMS.sig`. The sums are signed
+with the release key for the tag `mod-tool` (message `horizon release mod-tool\n` and the sums), so `tool.json`'s commit is
+signed too; `sunrise-release-sign verify --tag mod-tool` checks it, and `signed_digest` refuses the tag as a game release.
+Why it exists: the tool shipped only inside each `sdk-<commit>`, so a tool fix reached modders with the next Nightly.
+
+- When: on a push to main and by dispatch, never on a pull request. `decide` builds only when a file of the tool changed
+  since the commit `mod-tool` holds (`tools/ci/mod_tool.py crates` lists the folders: the workspace crates
+  `cargo-sunrise-mod` depends on, from `cargo metadata`, plus the lock, the compiler pin and the files that build and sign
+  it) and dyna-checks' gate is green on the commit, as for a snapshot. It refuses a commit not on main and one that does
+  not contain what `mod-tool` holds, so an older commit never replaces a newer tool.
+- Who signs: the `sign` job alone, in the `release` environment, on main with publishing on; it checks out only
+  `tools/ci/sign_release.sh`. Any other run, a dry run included, signs with a throwaway key and publishes nothing.
+- Publishing: a dispatch with `-f dry_run=false` on main, or a push while the repository variable `MOD_TOOL_AUTOPUBLISH`
+  is `true` (without it a push run is a dry run). The archives are replaced first and the sums and signature last, so a
+  reader catching the release between them fails its check and tries again; the tag moves to the commit.
+- A tool is built against any SDK whose layout it knows. A pinned SDK older than the tool's needs stops the build with
+  the command that repins it and the SDK's own tool (`sdk-<commit>/tool-<target>.tar.xz`); the install page says which
+  tool to take when.
+- Not done: immutable per-commit tags (`mod-tool-<commit>`, each signed for its own tag) beside the moving one. Until
+  then an old `mod-tool` set that was once signed still verifies if it were served again; `tool.json`'s commit and date
+  and `cargo sunrise-mod --version` show which tool a user has.
 
 ## Prebuilt SDK retention design (#3011)
 

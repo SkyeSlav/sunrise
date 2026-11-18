@@ -9,6 +9,8 @@ description = "The game as the platform runs it: the engine's entry with the pla
 [dependencies]
 sunrise-guest-stack = { path = "../sunrise-guest-stack" }
 sunrise-client = { path = "../sunrise-client", default-features = false }
+# Named only so `default` below can turn on its `default`: see there.
+sunrise-client-lib = { path = "../sunrise-client-lib", default-features = false }
 sunrise-mod-package = { path = "../sunrise-mod-package", default-features = false, features = ["index"] }
 
 sunrise-mod-host = { path = "../sunrise-mod-host", default-features = false }
@@ -24,7 +26,10 @@ path = "src/main.rs"
 test = false
 
 [features]
-default = ["audio", "controllers", "sunrise-extras"]
+# `sunrise-client-lib/default` adds no code (it is that crate's `audio` and `controllers`), but Cargo hashes feature
+# names: without it, `-p sunrise-game` and `-p sunrise-game -p sunrise-client-lib` (which turns on the library's
+# default) built the library and sunrise-client twice into one target folder.
+default = ["audio", "controllers", "sunrise-extras", "sunrise-client-lib/default"]
 audio = ["sunrise-client/audio"]
 controllers = ["sunrise-client/controllers"]
 sunrise-extras = ["sunrise-client/sunrise-extras"]

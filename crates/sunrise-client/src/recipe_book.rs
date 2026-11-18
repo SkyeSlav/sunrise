@@ -1471,7 +1471,7 @@ mod tests {
 
     #[test]
     fn content_recipe_condition_gates_crafting_and_index() {
-        let recipe = r#"{"type":"minecraft:crafting_shapeless","ingredients":["minecraft:flint"],"result":{"id":"minecraft:stick"},"neoforge:conditions":[{"type":"neoforge:not","value":{"type":"neoforge:true"}}]}"#;
+        let recipe = r#"{"type":"minecraft:crafting_shapeless","ingredients":["minecraft:flint"],"result":{"id":"minecraft:stick"},"neoforge:conditions":[{"type":"neoforge:not","value":{"type":"neoforge:always"}}]}"#;
         let root = content_recipe_root("condition", recipe);
         let items = crate::items::Items::for_tests(HashMap::new());
         let recipes = Recipes::load(

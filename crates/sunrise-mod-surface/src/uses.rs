@@ -19,7 +19,12 @@
 //! `Marker`); [`Built::Base`] when every literal ends in a base (and for a union, whose literal
 //! names one field); [`Built::None`] otherwise. A pattern ending in `..` is a read. Which struct a
 //! name means is decided by two rules, with no module resolution:
-//! - a name written with a path (`a::b::Name`) is every API struct of that name;
+//! - a name written with a path (`a::b::Name`) is every API struct of that name, except after
+//!   a type: `Shape::Pos(..)` or `TextHover::Item { .. }`, where the segment before the name is
+//!   `Self`, a type the mod defines, a name the mod binds to an API type or an API type's name, is
+//!   a variant or associated item, never the struct. That segment is read through the mod's
+//!   `use` items first, so `use mod_api as Pos; Pos::Settings { .. }` still builds `Settings`;
+//!   a qualifier the scan cannot tell from a module is not taken for a type;
 //! - an unqualified name (or `Self` in an impl for one) is the mod's own type only in a file
 //!   that defines it at its top level under no `#[cfg]`, binds it with no `use`, has no glob, no
 //!   inline module, no `use` with a metavariable, and only standard or API macros and attributes
@@ -1536,15 +1541,42 @@ impl<'a, 's, 't> Resolver<'a, 's, 't> {
     }
 
     /// Whether the name a path ends in is a member of a type (`Source::Block(..)`, a variant of
-    /// the mod's own enum or of an API one) and so no struct of that name: the segment before it
-    /// is `Self`, a type the mod defines, or a name the API gives to a record.
+    /// the mod's own enum or of an API one) and so no struct of that name. The segment before it
+    /// is read through the mod's own `use` items first: an API root or module it is bound to
+    /// (`use mod_api as Pos;`, `use mod_api::content as c;`) makes the path a module path, so
+    /// the name may be a struct; only `Self`, a type the mod defines, a name bound to an API
+    /// type, or an API type's name written as it stands makes it a member.
     fn is_member(&self, path: &[&str]) -> bool {
-        path.len() >= 2 && {
-            let owner = path[path.len() - 2];
-            owner == "Self"
-                || self.module.types.contains(owner)
-                || self.index.by_name.contains_key(owner)
+        let [.., owner, _] = path else {
+            return false;
+        };
+        let names_type = |segments: &[&str]| {
+            let joined = segments.join("::");
+            self.index
+                .by_name
+                .get(segments.last().copied().unwrap_or_default())
+                .into_iter()
+                .flatten()
+                .filter(|id| id.starts_with("type:") && !id.contains('.'))
+                .any(|id| {
+                    id.split_once(':').map_or("", |(_, rest)| rest) == joined
+                        || self
+                            .index
+                            .public_paths
+                            .get(id)
+                            .is_some_and(|paths| paths.contains(&joined))
+                })
+        };
+        if *owner == "Self" {
+            return true;
         }
+        if self.module.roots.contains(owner) {
+            return false;
+        }
+        if let Some(bound) = self.module.bound.get(owner) {
+            return bound.iter().any(|segments| names_type(segments));
+        }
+        self.module.types.contains(owner) || names_type(&[owner])
     }
 
     /// The innermost impl in file `index` whose body holds `byte`: its target, `None` inside

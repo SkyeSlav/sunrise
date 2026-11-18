@@ -25,14 +25,14 @@ with the same hooks, Parts, attachments and `[dependencies]`. The build target i
 
 <div class="cards">
 
-[**Install and play with mods**](start/installing.md)
+[**Install and play with mods**](players/installing-mods.md)
 Where mods go, how to turn them on, and what the Mods screen shows.
 
 [**Make a content mod**](start/first-content-mod.md)
 A new block with its item, model, recipe and loot, in a few files.
 
 [**Make a native mod**](start/first-mod.md)
-A Rust mod that answers a hook, built and run by the launcher.
+A Rust mod that answers a hook, built and run by `cargo sunrise-mod`.
 
 [**Make a WebAssembly mod**](start/first-wasm-mod.md)
 The same Rust, built to `mod.wasm` and run in the game's sandbox.

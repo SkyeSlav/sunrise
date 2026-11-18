@@ -28,10 +28,15 @@ jobs:
     steps:
       # The checker comes from the base commit, never the pull request: a branch made before it existed still gets
       # checked, and a pull request can't change the check it is held to. Its commits are only read as git objects.
+      # The check reads commits alone, so the clone takes the whole history without trees or files (tree:0) and
+      # checks out only the checker: a few seconds, where the full clone took 100 to 130 s of a Dyna slot.
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
+          filter: tree:0
+          sparse-checkout: tools/ci/dco_check.py
+          sparse-checkout-cone-mode: false
       - name: The pull request's commits
         env:
           HEAD: ${{ github.event.pull_request.head.sha }}

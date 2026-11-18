@@ -407,6 +407,12 @@ pub(super) fn emit<'a>(
                         "block_entity_kind(|| super::content::registry_keys::block_entity_type_name({key}))"
                     ),
                     "& str" => format!("{table}(|| Some({key}))"),
+                    "EntityRef" if table == "entity" => {
+                        let host = &host.as_ref().ok_or("entity handle needs a Host")?.0;
+                        format!(
+                            "entity(|| {key}.kind({host}).and_then(super::content::registry_keys::entity_type_name))"
+                        )
+                    }
                     "BlockEntityRef" if table == "block_entity" => {
                         let host = &host.as_ref().ok_or("block entity handle needs a Host")?.0;
                         format!(
@@ -687,7 +693,12 @@ pub(super) fn emit<'a>(
             signature.ident = syn::Ident::new(&format!("fire_{name}"), signature.ident.span());
             let target_path: syn::Path = syn::parse_str(target)
                 .map_err(|error| format!("invalid target for {name}: {error}"))?;
-            let receiver = &target_path.segments[target_path.segments.len() - 2].ident;
+            let receiver = &target_path.segments[target_path.segments.len() - 2];
+            let receiver_impl = if receiver.arguments.is_empty() {
+                format!("{}<'_>", receiver.ident)
+            } else {
+                receiver.to_token_stream().to_string()
+            };
             let guarded_carrier = !declared.is_empty()
                 && (hook.stack_count.is_some()
                     || carried.iter().any(|(_, ty)| {
@@ -824,7 +835,7 @@ pub(super) fn emit<'a>(
                 format!("mod_api::{call}({passed});")
             };
             fire.push_str(&format!(
-                "impl {receiver}<'_> {{ #[inline] pub(super) {signature} {{ {body} }} }}\n",
+                "impl {receiver_impl} {{ #[inline] pub(super) {signature} {{ {body} }} }}\n",
                 signature = signature.to_token_stream()
             ));
             if fill {

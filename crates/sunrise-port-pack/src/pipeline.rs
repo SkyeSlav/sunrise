@@ -220,11 +220,12 @@ pub fn carry(
             Ok(report) => {
                 done += 1;
                 log(format!(
-                    "{}: {} files, {} recipes upgraded ({} kept), {} loot tables upgraded ({} added), {} item definitions added, {} blocks ({} left out, {} with differences), {} items ({} left out), {} convention tags, {} outside",
+                    "{}: {} files, {} recipes upgraded ({} moved out, {} old results moved out), {} loot tables upgraded ({} added), {} item definitions added, {} blocks ({} left out, {} with differences), {} items ({} left out), {} convention tags, {} outside",
                     r.key,
                     report.copied,
                     report.recipes_upgraded,
-                    report.recipes_kept.len(),
+                    report.recipes_custom.len(),
+                    report.recipes_old_result,
                     report.loot_tables_upgraded,
                     report.loot_tables_added,
                     report.item_definitions_added,

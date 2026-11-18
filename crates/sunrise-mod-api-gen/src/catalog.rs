@@ -41,7 +41,8 @@ pub enum Contract {
 pub enum HostAccess {
     /// The shared read-only `Host`.
     Read,
-    /// A level host, for a receiver that is a level but not `GameLevel`.
+    /// A level host, for a receiver that is a level but not `GameLevel`: read-only on `&self`,
+    /// with the random host on `&mut self`.
     Level,
     /// A hit's host: a level host that can also play level sounds and draw from the
     /// random of the entities the hit lends (`HitHost`). Server hooks only.

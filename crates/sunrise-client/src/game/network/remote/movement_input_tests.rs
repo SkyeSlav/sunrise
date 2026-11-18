@@ -45,7 +45,7 @@ fn connect(game: &mut Game<'_>) -> sunrise_protocol::connection::Pipe {
 }
 
 fn tick(game: &mut Game<'_>) {
-    game.tick_local_player(Vec::new(), Vec3::ZERO, 7).unwrap();
+    game.tick_local_player(Vec::new(), 7).unwrap();
 }
 
 fn matrix(mods: mod_api::Mods) {
@@ -303,3 +303,26 @@ fn movement_input_disabled_listener_keeps_vanilla_keys() {
 
 #[path = "local_rotation_tests.rs"]
 mod local_rotation_tests;
+
+/// LocalPlayer.isShiftKeyDown is the input's sneak while the player rides too, so the
+/// sneak held to get off already counts on the first tick out of the vehicle.
+#[test]
+#[ignore = "daily"]
+fn the_sneak_key_counts_while_riding() {
+    mod_platform::testing::with_mods(Vec::new().into(), || {
+        with_client_game(|game| {
+            let server = connect(game);
+            reset_player(game, 20);
+            let boat =
+                crate::game::boats::Boat::new(5, "oak".into(), Vec3::new(8.0, 64.0, 8.0), 0.0);
+            game.boats.push(boat);
+            game.riding = Some(5);
+            game.remote.as_mut().unwrap().first_passenger = false;
+            game.keys.insert(KeyCode::ShiftLeft);
+            tick(game);
+            assert_eq!(game.riding, Some(5));
+            assert!(game.player.as_ref().unwrap().shift_key_down);
+            server.shutdown();
+        });
+    });
+}

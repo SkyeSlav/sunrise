@@ -577,6 +577,10 @@ pub struct Streaming {
     saves_beside_final: bool,
     lighting: FxHashMap<(i32, i32), u64>,
     meshing: FxHashMap<(i32, i32, i32), u64>,
+    /// Mesh jobs actually in flight. `meshing` can hide more than one job for a
+    /// section when an edit replaces its entry before the old job lands, so the
+    /// room is counted from this, not from the map's length.
+    mesh_jobs: usize,
     /// The sequence each section's latest accepted mesh was dispatched at
     /// (`CompiledSectionMesh.compileTaskStartTimeNs`).
     compile_started: FxHashMap<(i32, i32, i32), u64>,
@@ -601,6 +605,9 @@ pub struct Streaming {
     mesh_columns_scratch: Vec<((i32, i32), SectionMask)>,
     sequence: u64,
     pub center: (i32, i32),
+    /// The centre's height: a column admitted part-way spends its slots on the
+    /// sections nearest the camera, not on the lowest.
+    pub center_y: i32,
     /// The view distance around `center`; below 0, no area there (a dedicated
     /// server nobody is on).
     pub radius: i32,
@@ -1206,6 +1213,7 @@ impl Streaming {
             saves_beside_final: generator.decorates_beside_final(),
             lighting: Default::default(),
             meshing: Default::default(),
+            mesh_jobs: 0,
             compile_started: Default::default(),
             lit: Default::default(),
             meshed: Default::default(),
@@ -1220,6 +1228,7 @@ impl Streaming {
             mesh_columns_scratch: Vec::new(),
             sequence: 0,
             center: (0, 0),
+            center_y: 0,
             radius: 8,
             forced: HashSet::new(),
             commanded: HashSet::new(),
@@ -1270,6 +1279,7 @@ impl Streaming {
     /// rebuild every loaded, lit section.
     pub fn reload_sections(&mut self, world: &mut World) {
         self.meshing.clear();
+        self.mesh_jobs = 0;
         self.compile_started.clear();
         Self::mark_loaded_sections_dirty(world, &self.lit);
     }
@@ -1368,6 +1378,7 @@ impl Streaming {
         // pass over them all (80,000 at render distance 32) took 1.7 ms of the frame.
         if world.chunks.is_empty() {
             self.meshing.clear();
+            self.mesh_jobs = 0;
             self.compile_started.clear();
             self.waiting.clear();
         } else {
@@ -1773,6 +1784,15 @@ impl Streaming {
                 paused: true,
             });
         }
+        // A section dirtied while its mesh was in flight must not upload that
+        // mesh: drop its entry so the result is stale, and leave the section
+        // dirty for the next job. The alternative is drawing the pre-edit
+        // border face the edit was meant to hide.
+        for ((x, z), sections) in world.dirty_sections.columns() {
+            for sy in sections.iter() {
+                self.meshing.remove(&(x, sy as i32, z));
+            }
+        }
         ExtraCover::refresh(&mut self.cover, &self.extra);
         ForcedCover::refresh(&mut self.forced_cover, &self.forced);
         self.cover_current = true;
@@ -1846,6 +1866,7 @@ impl Streaming {
                     self.apply_lit(world, x, z, sections, snapshot);
                 }
                 Done::Meshed(x, sy, z, mesh, seq) => {
+                    self.mesh_jobs = self.mesh_jobs.saturating_sub(1);
                     if self.meshing.get(&(x, sy, z)) != Some(&seq) {
                         resume.stale.push(((x, sy, z), mesh));
                         continue;
@@ -1990,7 +2011,7 @@ impl Streaming {
         commit: StreamingCommit,
     ) -> (Vec<((i32, i32, i32), SectionMesh)>, Vec<Arc<Chunk>>) {
         let StreamingCommit {
-            uploads,
+            mut uploads,
             removed,
             paused,
         } = commit;
@@ -2280,17 +2301,60 @@ impl Streaming {
         // Meshes waiting for upload count too: when uploads fall behind (a
         // low frame rate at a wide distance), meshing on held gigabytes of
         // them until the system swapped.
+        // `room` counts sections, but a fresh column brings every one of its
+        // sections dirty at once: choosing `room` columns could submit 24
+        // times the room. Columns are chosen nearest first, then the budget
+        // is spent section by section, lowest first; a column it runs out in
+        // keeps the rest of its sections dirty.
         let room = (self.workers * 32).saturating_sub(self.meshing.len() + self.upload_backlog);
         nearest_first(&mut candidates, room);
-        for (_, x, z, sections) in candidates.drain(..) {
+        let mut budget = room;
+        // An all-air section meshes to nothing (`Mesher::mesh_reusing`) unless
+        // a mod adds section geometry, and most of a tall column is air: the
+        // first mesh of one goes straight to the uploads rather than through
+        // a worker. Registration is set once, so with none now the workers'
+        // tables have none either. Only a first mesh: a section that has one
+        // (`compile_started`) may have had it accepted in this very update,
+        // and two meshes of one section in `uploads` can be uploaded in
+        // either order once the game sorts its upload queue.
+        let air_meshes_empty = !crate::mesher::has_section_geometry();
+        for (_, x, z, _) in candidates.drain(..) {
+            if budget == 0 {
+                break;
+            }
             let Some(region) = Self::region(world, x, z) else {
                 continue;
             };
-            world.dirty_sections.take_column(x, z);
-            for sy in sections.iter().map(|sy| sy as i32) {
+            let mut sections = world.dirty_sections.take_column(x, z);
+            let center = (self.center_y - world.layout().min_y()).div_euclid(16);
+            let taken = sections.take_near(&mut budget, center);
+            if !sections.is_empty() {
+                world.dirty_sections.insert_column_mask((x, z), sections);
+            }
+            let centre = region[1][1].as_ref().expect("centre chunk");
+            for sy in taken.iter().map(|sy| sy as i32) {
                 let first = self.meshed.insert((x, z));
                 self.sequence += 1;
+                let air = air_meshes_empty
+                    && !self.compile_started.contains_key(&(x, sy, z))
+                    && centre
+                        .sections
+                        .get(sy as usize)
+                        .is_some_and(|section| section.is_uniform(0));
+                if air {
+                    // What `Done::Meshed` does for an accepted mesh; dropping
+                    // `meshing`'s entry turns an older job still out for this
+                    // section stale, as a newer submission would.
+                    self.meshing.remove(&(x, sy, z));
+                    self.compile_started.insert((x, sy, z), self.sequence);
+                    self.meshed_total += 1;
+                    let mut mesh = SectionMesh::default();
+                    mesh.sort_solid();
+                    uploads.push(((x, sy, z), mesh));
+                    continue;
+                }
                 self.meshing.insert((x, sy, z), self.sequence);
+                self.mesh_jobs += 1;
                 self.submit(
                     Some((x, z)),
                     if first { 2 } else { 0 },
@@ -2486,6 +2550,7 @@ impl Streaming {
         self.viewing.clear();
         self.waiting.clear();
         self.meshing.clear();
+        self.mesh_jobs = 0;
         self.lighting.clear();
         self.jobs.notify_all();
     }

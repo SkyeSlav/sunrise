@@ -4154,6 +4154,7 @@ fn the_level_chooses_the_state_a_block_is_placed_in() {
         fn before_state_for_placement(
             &self,
             _: &Ticks,
+            _: Option<&PreviewBlocks>,
             state: BlockStateId,
             context: &PlacementContext,
             fluid: FluidState,
@@ -4372,6 +4373,7 @@ fn survive_hooks_answer_for_the_block() {
         fn before_can_survive(
             &self,
             _: &Ticks,
+            _: Option<&PreviewBlocks>,
             _pos: BlockPos,
             state: BlockStateId,
             survives: &mut Option<bool>,
@@ -4386,6 +4388,8 @@ fn survive_hooks_answer_for_the_block() {
         }
         fn before_may_place_on(
             &self,
+            _: &Ticks,
+            _: Option<&PreviewBlocks>,
             state: BlockStateId,
             ground: BlockStateId,
             _ground_pos: BlockPos,

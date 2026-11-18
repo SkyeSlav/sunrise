@@ -477,7 +477,12 @@ pub fn load_installed(
     let game_dir = &launch.context.game_dir;
     let dev = &launch.context.dev_mods;
     let budget = compile_budget::CompileBudget::read(launch, player_dir);
-    let mut cache = module_cache::ModuleCache::new(game_dir.join(module_cache::CACHE_DIR));
+    let env = |key: &str| std::env::var_os(key);
+    let home = &launch.context.home;
+    let mut cache = module_cache::ModuleCache::new(
+        sunrise_mod_package::selection::cache_home_in(home, game_dir, env)
+            .join(module_cache::CACHE_DIR),
+    );
     if let Ok(budget) = budget.as_ref() {
         cache.budget = *budget;
     }
@@ -579,9 +584,10 @@ pub fn load_installed(
             ..Loaded::default()
         },
         Ok(_) => {
-            let std = std::env::current_exe()
-                .ok()
-                .and_then(|exe| std::fs::read(exe.with_file_name("sunrise-wasm-std.wasm")).ok());
+            let std = read_std(
+                std::env::current_exe().ok().as_deref(),
+                sunrise_mod_package::selection::private_home_in(home, env).as_deref(),
+            );
             load_available_std(
                 std.as_deref(),
                 packages,
@@ -604,6 +610,18 @@ pub fn load_installed(
             .collect(),
     );
     loaded
+}
+
+const STD_FILE: &str = "sunrise-wasm-std.wasm";
+
+/// The wasm std library: beside the executable, else in the private home, for a host whose
+/// executable sits where nothing of the game's can be installed.
+fn read_std(executable: Option<&Path>, private_home: Option<&Path>) -> Option<Vec<u8>> {
+    executable
+        .map(|exe| exe.with_file_name(STD_FILE))
+        .into_iter()
+        .chain(private_home.map(|home| home.join(STD_FILE)))
+        .find_map(|path| std::fs::read(path).ok())
 }
 
 /// Loaded wasm entries are installed in the same dispatch list as native entries.
@@ -881,6 +899,25 @@ fn load_with_cache(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn std_is_read_beside_the_executable_then_from_the_private_home() {
+        let exe_dir = tempfile::tempdir().unwrap();
+        let private = tempfile::tempdir().unwrap();
+        let exe = exe_dir.path().join("game");
+        assert_eq!(read_std(Some(&exe), Some(private.path())), None);
+        std::fs::write(private.path().join(STD_FILE), b"private").unwrap();
+        assert_eq!(
+            read_std(Some(&exe), Some(private.path())).as_deref(),
+            Some(&b"private"[..])
+        );
+        std::fs::write(exe_dir.path().join(STD_FILE), b"beside").unwrap();
+        assert_eq!(
+            read_std(Some(&exe), Some(private.path())).as_deref(),
+            Some(&b"beside"[..])
+        );
+        assert_eq!(read_std(None, None), None);
+    }
 
     #[test]
     fn a_boundary_refusal_names_each_item_with_its_versions_and_counts_the_rest() {

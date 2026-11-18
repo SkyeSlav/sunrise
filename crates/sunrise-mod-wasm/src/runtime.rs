@@ -199,17 +199,93 @@ pub(crate) fn engine_config() -> wasmtime::Config {
 pub(crate) fn engine() -> wasmtime::Result<Engine> {
     let config = engine_config();
     let engine = Engine::new(&config)?;
-    let weak = engine.weak();
-    std::thread::Builder::new()
-        .name("wasm epoch".into())
-        .spawn(move || {
-            loop {
-                std::thread::sleep(Duration::from_millis(1));
-                let Some(engine) = weak.upgrade() else { break };
-                engine.increment_epoch();
-            }
-        })?;
+    let ticker = TICKER
+        .as_ref()
+        .map_err(|why| wasmtime::Error::msg(format!("wasm epoch thread: {why}")))?;
+    ticker.register(&engine);
     Ok(engine)
+}
+
+/// What the epoch thread shares with the guest calls: how many are running, and the engines
+/// to tick.
+struct Shared {
+    running: AtomicUsize,
+    engines: Mutex<Vec<wasmtime::EngineWeak>>,
+}
+
+/// Drives the epoch of every engine, one tick a millisecond, but only while a guest runs: an
+/// idle game never wakes it. Deadlines count ticks, so a guest's budget is as long as when the
+/// thread ticked for the engines' whole life.
+struct Ticker {
+    shared: Arc<Shared>,
+    thread: std::thread::Thread,
+}
+
+impl Ticker {
+    fn start(name: &str) -> std::io::Result<Self> {
+        let shared = Arc::new(Shared {
+            running: AtomicUsize::new(0),
+            engines: Mutex::new(Vec::new()),
+        });
+        let ticking = shared.clone();
+        let thread = std::thread::Builder::new()
+            .name(name.into())
+            .spawn(move || {
+                loop {
+                    if ticking.running.load(Ordering::Acquire) == 0 {
+                        // A guest that starts after the check above leaves the unpark token.
+                        std::thread::park();
+                        continue;
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                    ticking
+                        .engines
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .retain(|weak| {
+                            weak.upgrade().is_some_and(|engine| {
+                                engine.increment_epoch();
+                                true
+                            })
+                        });
+                }
+            })?
+            .thread()
+            .clone();
+        Ok(Self { shared, thread })
+    }
+
+    fn register(&self, engine: &Engine) {
+        self.shared
+            .engines
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(engine.weak());
+    }
+
+    /// Ticks until the returned guard drops, together with any other guard held.
+    fn ticking(&self) -> Ticking {
+        if self.shared.running.fetch_add(1, Ordering::AcqRel) == 0 {
+            self.thread.unpark();
+        }
+        Ticking(self.shared.clone())
+    }
+}
+
+static TICKER: std::sync::LazyLock<std::io::Result<Ticker>> =
+    std::sync::LazyLock::new(|| Ticker::start("wasm epoch"));
+
+/// Held for as long as a guest runs on this thread: the epoch ticks while any is held.
+pub(crate) struct Ticking(Arc<Shared>);
+impl Ticking {
+    pub(crate) fn begin() -> Option<Self> {
+        TICKER.as_ref().ok().map(Ticker::ticking)
+    }
+}
+impl Drop for Ticking {
+    fn drop(&mut self) {
+        self.0.running.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 struct Releases<T> {
@@ -985,6 +1061,7 @@ impl WasmMod {
         sunrise_guest_stack::check_current().map_err(|error| Refusal::Runtime(error.into()))?;
         // The table of what the mods use against the game's, before anything is compiled or run.
         crate::imports::check(members)?;
+        let _ticking = Ticking::begin();
         std::sync::LazyLock::force(&EXPORT_NAMES);
         std::sync::LazyLock::force(&OUTSIDE_GUEST);
         let group: Vec<_> = members
@@ -1207,6 +1284,8 @@ impl WasmMod {
         // Deferred releases run only on a top-level call: a resumed nested call is still
         // inside another export of the guest.
         let top = resumed.is_none();
+        // A resumed call runs inside the top-level call that lent it, which already ticks.
+        let _ticking = top.then(Ticking::begin);
         let mut store = match resumed.as_mut() {
             Some(resumed) => resumed.context(),
             None => {

@@ -18,14 +18,11 @@ impl Game<'_> {
         self.update_chunk_tickets();
         self.score_destroyed_entities();
         sunrise_client::spans::time("tick_effects", || self.tick_effects(running));
-        self.tick_sign_editor();
         // Player.tick's ItemCooldowns.tick for the window's player (a
         // server's players count theirs down in `tick_guests`).
         self.shield_cooldown = self.shield_cooldown.saturating_sub(1);
         self.cooldowns.tick();
         sunrise_client::spans::time("tick_using", || self.tick_using());
-        self.tick_bundle_hover();
-        sunrise_client::spans::time("tick_hud", || self.tick_hud());
         // The player's digging comes in with its packets, before the level
         // ticks; ServerLevel.tick then runs the scheduled and random block
         // ticks before any entity, so what they drop or spawn (dispensed
@@ -146,7 +143,6 @@ impl Game<'_> {
             log.extend(held);
         }
         span("tick_friends", || self.tick_friends());
-        sunrise_client::spans::time("tick_hand", || self.tick_hand());
         sunrise_client::spans::time("tick_sleep", || self.tick_sleep());
         span("sleep_status", || self.announce_sleep_status());
         span("sleep_status", || self.free_left_beds());
@@ -174,39 +170,25 @@ impl Game<'_> {
             sunrise_client::spans::time("tick_sculk_blocks", || self.tick_sculk_blocks())?;
         }
         if running {
-            // ClientLevel.tickBlockEntities (not while paused or frozen):
-            // chest lids, books, shulker boxes, bells, conduits, heads.
-            sunrise_client::spans::time("tick_block_entity_anims", || {
-                self.tick_block_entity_anims()
+            // The bells' and conduits' server tickers, after the other block entities.
+            sunrise_client::spans::time("tick_block_entity_servers", || {
+                self.tick_block_entity_servers()
             });
             // A conduit's hurt teleports an enderman now (`Enderman.hurtServer`).
             span("settle_hurt_teleports", || self.settle_hurt_teleports())?;
+            // A server's particles are not only drawn: a firework's blast sound and mob pickups ride on them.
             sunrise_client::spans::time("tick_particles", || self.tick_particles());
-            span("tick_client_ambient", || self.tick_client_ambient());
         }
         // ServerLevel.tick's `entityManager.tick()`, frozen or not, after every
         // block entity ticker (the bells, conduits and gateways above too): the
         // chunks loaded before this pass have their entities loaded from the next.
         self.world.entities_pending.clear();
-        span("tick_frame_visuals", || self.tick_frame_visuals(running));
         if running {
             // MinecraftServer.tickServer: GameTestTicker.SINGLETON.tick().
             span("tick_game_tests", || self.tick_game_tests());
         }
         // ServerBossEvent broadcasts, after this level's entities have ticked.
         span("publish_boss_bars", || self.publish_boss_bars());
-        // Minecraft.handleKeybinds: held use repeats only while no item is in
-        // use (a raised shield or a drawn bow places and uses nothing).
-        if self.right
-            && self.use_delay == 0
-            && self.using.is_none()
-            && self.screen == Screen::Playing
-            && !self.dialog_open()
-            && self.sleeping.is_none()
-        {
-            self.use_with_hand()?;
-            self.use_delay = 4;
-        }
         if running {
             sunrise_client::spans::time("lan_note_joined", || self.lan_note_joined());
         }

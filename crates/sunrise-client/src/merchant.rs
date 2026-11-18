@@ -210,6 +210,9 @@ pub struct Session {
     pub ambient_sound_time: i32,
     /// `Villager.lastTradedPlayer` is set: the TRADE reputation event is due.
     pub last_traded: bool,
+    /// A server's merchant on its client (`ClientSideMerchant`): a trade only counts the
+    /// offer's use, and the merchant says and gives nothing; the server does that.
+    pub client_side: bool,
     pub events: Vec<Event>,
 }
 impl Session {
@@ -231,6 +234,7 @@ impl Session {
             future_xp: 0,
             ambient_sound_time: 0,
             last_traded: false,
+            client_side: false,
             events: Vec::new(),
         }
     }
@@ -264,6 +268,10 @@ impl Session {
             return false;
         };
         offer.uses += 1;
+        // ClientSideMerchant.notifyTrade: increaseUses alone.
+        if self.client_side {
+            return false;
+        }
         let offer = offer.clone();
         self.ambient_sound_time = -80;
         self.events
@@ -322,6 +330,10 @@ impl Session {
     }
     /// `AbstractVillager.notifyTradeUpdated`.
     pub fn notify_trade_updated(&mut self, has_result: bool) {
+        // ClientSideMerchant.notifyTradeUpdated does nothing.
+        if self.client_side {
+            return;
+        }
         if self.ambient_sound_time > -80 + 20 {
             self.ambient_sound_time = -80;
             let pitch = self.voice_pitch();

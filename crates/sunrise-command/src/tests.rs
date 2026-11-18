@@ -2047,3 +2047,74 @@ fn only_the_argument_a_provider_owns_is_marked_as_owned() {
     );
     assert!(!owned, "`suggest` alone leaves the completions open");
 }
+
+/// A syntax error at byte `cursor` of `input`.
+fn error_at(input: &str, cursor: usize) -> CommandError {
+    let mut reader = Reader::new(input);
+    reader.cursor = cursor;
+    CommandError::at(Text::literal("x"), &reader)
+}
+
+/// The window around the cursor counts UTF-16 units, not bytes, in `context` and in the
+/// parts the server's syntax-failure message is built from.
+#[test]
+fn context_window_counts_java_characters() {
+    // ASCII: the last ten characters, and the rest of the input.
+    let e = error_at("say hello world again", 15);
+    let w = e.context_window().unwrap();
+    assert!(w.ellipsis);
+    assert_eq!(w.before, "ello world");
+    assert_eq!(w.after, " again");
+    assert_eq!(e.context().unwrap(), "...ello world<--[HERE]");
+    // Accented letters are two bytes, one unit: ten units, not five characters of bytes.
+    // 8 x 'é' (16 bytes) + "ab" + "cd": cursor after "ab" (byte 18, Java index 10).
+    let e = error_at("ééééééééabcd", 18);
+    let w = e.context_window().unwrap();
+    assert!(!w.ellipsis);
+    assert_eq!(w.before, "ééééééééab");
+    assert_eq!(w.after, "cd");
+    assert_eq!(e.context().unwrap(), "ééééééééab<--[HERE]");
+    // One more unit: Java index 11, so the window drops the first 'é' and gets "...".
+    let e = error_at("ééééééééabcd", 19);
+    let w = e.context_window().unwrap();
+    assert!(w.ellipsis);
+    assert_eq!(w.before, "éééééééabc");
+    assert_eq!(w.after, "d");
+    // Astral characters are two units (four bytes): five emoji are ten units.
+    let e = error_at("😀😀😀😀😀x y", 20);
+    let w = e.context_window().unwrap();
+    assert!(!w.ellipsis);
+    assert_eq!(w.before, "😀😀😀😀😀");
+    assert_eq!(w.after, "x y");
+    // Six emoji are twelve units: "..." and the last five.
+    let e = error_at("😀😀😀😀😀😀z", 24);
+    let w = e.context_window().unwrap();
+    assert!(w.ellipsis);
+    assert_eq!(w.before, "😀😀😀😀😀");
+    assert_eq!(w.after, "z");
+    // A window that cuts a pair in half shows the kept half as U+FFFD, as `context` does.
+    let e = error_at("😀😀😀😀😀a", 21);
+    let w = e.context_window().unwrap();
+    assert!(w.ellipsis);
+    assert_eq!(w.before, "\u{FFFD}😀😀😀😀a");
+    assert_eq!(e.context().unwrap(), "...\u{FFFD}😀😀😀😀a<--[HERE]");
+    // Ten units or fewer before the cursor: no "...".
+    let e = error_at("give @s x", 5);
+    let w = e.context_window().unwrap();
+    assert!(!w.ellipsis);
+    assert_eq!(w.before, "give ");
+    assert_eq!(w.after, "@s x");
+    // Cursor at the end: nothing after it. Past the end clamps.
+    for cursor in [9, 99] {
+        let e = error_at("give @s x", cursor);
+        let w = e.context_window().unwrap();
+        assert_eq!(w.before, "give @s x");
+        assert_eq!(w.after, "");
+    }
+    // No input, no window.
+    assert!(
+        CommandError::new(Text::literal("x"))
+            .context_window()
+            .is_none()
+    );
+}

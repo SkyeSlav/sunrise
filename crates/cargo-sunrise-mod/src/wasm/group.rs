@@ -573,6 +573,71 @@ pub(super) fn build(
     Ok(())
 }
 
+/// Drops every `-C metadata` of `args`, in both spellings, and returns the values it held.
+fn take_metadata(args: &mut Vec<String>) -> Vec<String> {
+    let mut taken = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] == "-C"
+            && args
+                .get(index + 1)
+                .is_some_and(|a| a.starts_with("metadata="))
+        {
+            taken.push(args.remove(index + 1));
+            args.remove(index);
+        } else if args[index].starts_with("-Cmetadata=") {
+            taken.push(args.remove(index));
+        } else {
+            index += 1;
+        }
+    }
+    taken
+}
+
+/// The `-C metadata` of a std unit built for the wasm target: the symbol-mangling disambiguator
+/// (the `Cs…` hash of `_RNv…` names) comes from it. Cargo's own value hashes the whole
+/// `rustc -vV`, whose `host:` line differs between a Windows and a Linux build of the same
+/// toolchain, so a mod built on one host would import std names the other host's std member does
+/// not export. This one is the pinned toolchain, the unit's package and crate and its `--cfg`s
+/// (which carry the enabled features) and nothing of the host.
+fn std_metadata(
+    toolchain: &str,
+    package: &str,
+    version: &str,
+    krate: &str,
+    args: &[String],
+) -> String {
+    let mut cfgs: Vec<&str> = args
+        .windows(2)
+        .filter(|a| a[0] == "--cfg")
+        .map(|a| a[1].as_str())
+        .chain(args.iter().filter_map(|a| a.strip_prefix("--cfg=")))
+        .collect();
+    cfgs.sort_unstable();
+    format!(
+        "sunrise-std@{toolchain}:{package}-{version}:{krate}:{}",
+        sha512_of(cfgs.join(",").as_bytes())
+    )
+}
+
+/// Whether this rustc unit builds a std crate: the standard library's own, or a dependency of it
+/// that `-Zbuild-std` compiles.
+fn is_std_unit(args: &[String], manifest_dir: Option<&str>) -> bool {
+    args.iter().any(|a| a == "feature=\"rustc-dep-of-std\"")
+        || manifest_dir.is_some_and(|p| {
+            p.replace('\\', "/")
+                .contains("/lib/rustlib/src/rust/library/")
+        })
+}
+
+/// Whether it builds for the wasm target, and not a build script or proc macro that runs on the
+/// host (cargo passes no `--target` to those).
+fn is_wasm_std_unit(args: &[String], manifest_dir: Option<&str>) -> bool {
+    args.windows(2)
+        .any(|a| a[0] == "--target" && a[1] == super::TARGET)
+        && is_std_unit(args, manifest_dir)
+}
+
 /// Cargo still resolves and supplies every extern. This wrapper only scopes guest generation
 /// and linker ownership to the package whose rustc unit is executing.
 pub fn rustc(mut args: Vec<String>) -> Result<(), String> {
@@ -582,12 +647,8 @@ pub fn rustc(mut args: Vec<String>) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     let package = std::env::var("CARGO_PKG_NAME").unwrap_or_default();
     let config = &configs[&package];
-    if args.iter().any(|a| a == "feature=\"rustc-dep-of-std\"")
-        || std::env::var("CARGO_MANIFEST_DIR").is_ok_and(|p| {
-            p.replace('\\', "/")
-                .contains("/lib/rustlib/src/rust/library/")
-        })
-    {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
+    if is_std_unit(&args, manifest_dir.as_deref()) {
         let krate = args
             .windows(2)
             .find(|a| a[0] == "--crate-name")
@@ -603,6 +664,20 @@ pub fn rustc(mut args: Vec<String>) -> Result<(), String> {
             std::fs::write(dir.join(format!("lib{krate}{extra}.rlib")), [])
                 .map_err(|e| e.to_string())?;
         }
+    }
+    if is_wasm_std_unit(&args, manifest_dir.as_deref())
+        && let Some(krate) = args
+            .windows(2)
+            .find(|a| a[0] == "--crate-name")
+            .map(|a| a[1].clone())
+    {
+        // `-C extra-filename` stays: it only names the output files and no symbol.
+        take_metadata(&mut args);
+        let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
+        args.push(format!(
+            "-Cmetadata={}",
+            std_metadata(super::TOOLCHAIN, &package, &version, &krate, &args)
+        ));
     }
     // Cargo keeps generated source under this target directory. Its location and the
     // invocation's cwd must not alter dependency SVHs in independently staged builds.
@@ -636,14 +711,7 @@ pub fn rustc(mut args: Vec<String>) -> Result<(), String> {
             );
         // Cargo's default disambiguator includes the staging package path. A mod's stable
         // identity must instead agree when its author and its dependents build separately.
-        let mut index = 0;
-        while index + 1 < args.len() {
-            if args[index] == "-C" && args[index + 1].starts_with("metadata=") {
-                args.drain(index..index + 2);
-            } else {
-                index += 1;
-            }
-        }
+        take_metadata(&mut args);
         let mut features: Vec<_> = args
             .windows(2)
             .filter(|a| a[0] == "--cfg" && a[1].starts_with("feature="))
@@ -685,6 +753,93 @@ pub fn rustc(mut args: Vec<String>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn unit(cargo_hash: &str, features: &[&str]) -> Vec<String> {
+        let mut args: Vec<String> = ["--crate-name", "core", "--target", "wasm32-unknown-unknown"]
+            .map(String::from)
+            .into();
+        for feature in features {
+            args.extend(["--cfg".into(), format!("feature=\"{feature}\"")]);
+        }
+        args.extend([
+            "-C".into(),
+            format!("metadata={cargo_hash}"),
+            "-C".into(),
+            format!("extra-filename=-{cargo_hash}"),
+        ]);
+        args
+    }
+
+    fn disambiguated(mut args: Vec<String>, toolchain: &str, krate: &str) -> Vec<String> {
+        take_metadata(&mut args);
+        let value = std_metadata(toolchain, krate, "0.0.0", krate, &args);
+        args.push(format!("-Cmetadata={value}"));
+        args
+    }
+
+    fn metadata(args: &[String]) -> Vec<String> {
+        args.iter()
+            .filter(|a| a.starts_with("-Cmetadata="))
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn std_symbol_disambiguator_ignores_cargos_host_dependent_hash() {
+        // Cargo's `-C metadata` hashes the host line of `rustc -vV`: the same unit built on two
+        // hosts reaches the wrapper with two values.
+        let linux = disambiguated(
+            unit("1111111111111111", &["panic_immediate_abort"]),
+            "1.99.1",
+            "core",
+        );
+        let windows = disambiguated(
+            unit("9999999999999999", &["panic_immediate_abort"]),
+            "1.99.1",
+            "core",
+        );
+        assert_eq!(metadata(&linux), metadata(&windows));
+        assert_eq!(metadata(&linux).len(), 1);
+        // Only the output file name keeps cargo's value, which no symbol carries.
+        assert!(linux.contains(&"extra-filename=-1111111111111111".to_string()));
+        assert!(!linux.iter().any(|a| a == "metadata=1111111111111111"));
+    }
+
+    #[test]
+    fn std_symbol_disambiguator_follows_toolchain_crate_and_features() {
+        let value = |toolchain, krate, features: &[&str]| {
+            metadata(&disambiguated(unit("1", features), toolchain, krate))
+        };
+        let base = value("1.99.1", "core", &["a"]);
+        assert_ne!(base, value("1.99.2", "core", &["a"]));
+        assert_ne!(base, value("1.99.1", "alloc", &["a"]));
+        assert_ne!(base, value("1.99.1", "core", &["a", "b"]));
+        // The order cargo lists features in does not matter.
+        assert_eq!(
+            value("1.99.1", "core", &["a", "b"]),
+            value("1.99.1", "core", &["b", "a"])
+        );
+    }
+
+    #[test]
+    fn only_std_units_for_the_wasm_target_are_std_units() {
+        let wasm = unit("1", &[]);
+        let library = Some("/r/lib/rustlib/src/rust/library/core");
+        assert!(is_wasm_std_unit(&wasm, library));
+        assert!(is_wasm_std_unit(
+            &wasm,
+            Some("C:\\r\\lib\\rustlib\\src\\rust\\library\\core")
+        ));
+        let mut dependency = wasm.clone();
+        dependency.extend(["--cfg".into(), "feature=\"rustc-dep-of-std\"".into()]);
+        assert!(!is_wasm_std_unit(&wasm, Some("/home/u/mod")));
+        assert!(is_wasm_std_unit(
+            &dependency,
+            Some("/home/u/.cargo/registry/hashbrown")
+        ));
+        // A build script of std runs on the host: no `--target`.
+        assert!(!is_wasm_std_unit(&wasm[..2], library));
+    }
 
     #[test]
     fn a_wasm_mod_may_not_depend_on_the_games_wasmtime() {

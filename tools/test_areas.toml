@@ -1,18 +1,22 @@
 # Code areas and the tests that cover them: `python3 tools/test_areas.py list|run|coverage`.
 # tests/test_test_areas.py keeps it whole: every harness, LAN check and game-boot daily test belongs to an area
-# (or, for harnesses, to [unassigned], a list that only shrinks), and every pattern matches something.
+# (or, for harnesses, to [unassigned], a list that only shrinks), every pattern matches something, and every cargo
+# entry's package has its target (cargo metadata).
 #
 # Per area:
 #   paths      repository paths, fnmatch patterns (`*` crosses `/`); a changed file under one selects the area
 #   cargo      Rust tests: { package, target ("lib", "bin:NAME" or "test:NAME"), filter (a libtest substring) }.
 #              `run` runs the filter's ordinary tests; `run --daily` also runs the daily rows
-#              (tools/ci/ignored-tests/) whose package, target and test path the entry matches.
-#   harnesses  parity harness names (tools/test_<name>_parity.py), fnmatch patterns
-#   lan        tools/lan_e2e.py check names, fnmatch patterns; run with `run --lan`
+#              (tools/ci/ignored-tests/) whose package, target and test path the entry matches, and names those
+#              that need the wasm fixture, which its own job runs.
+#   harnesses  parity harness names (tools/test_<name>_parity.py), fnmatch patterns; a proof parity.py refuses
+#              (PARITY_MANUAL) is named, to run by hand
+#   lan        tools/lan_e2e.py check names, fnmatch patterns; run with `run --lan`, and an opt-in check
+#              (test_areas.py LAN_OPT_IN) only on a game built for it, `--lan-bin-dir`
 # Selection from a diff stays with tools/parity.py --changed (harnesses) and tools/ci/test_scope.py (crates):
 # an area adds its name, its daily game-boot tests and its LAN checks, and is how a person asks for "the explosion tests".
 
-# A changed path here can reach every area: `list --changed` says to run the full set instead.
+# A changed path here can reach every area: `run --changed` tests the whole workspace as well.
 escalate = [
   "Cargo.lock", "Cargo.toml", "tools/ci/rust-version", "research-lock.json",
   "tools/parity.py", "tools/parity_reach.py", "tools/parity_shim.py", "tools/lab.py", "tools/integration_env.py",
@@ -147,7 +151,7 @@ paths = [
 ]
 cargo = [
   { package = "sunrise-client-render", target = "lib", filter = "streaming" },
-  { package = "sunrise-client", target = "test:streaming_meshes", filter = "" },
+  { package = "sunrise-client-lib", target = "test:streaming_meshes", filter = "" },
 ]
 harnesses = ["chunk_status", "chunk_entity_order", "chunk_restart_ticks", "paletted_container", "section_mesh", "portal_tickets"]
 lan = ["distance", "forced-levels"]
@@ -164,7 +168,7 @@ cargo = [
   { package = "sunrise-client-lib", target = "lib", filter = "lan::" },
   { package = "sunrise-protocol", target = "lib", filter = "" },
   { package = "sunrise-client", target = "lib", filter = "game::remote::" },
-  { package = "sunrise-client", target = "test:lan_bot", filter = "" },
+  { package = "sunrise-client-lib", target = "test:lan_bot", filter = "" },
 ]
 harnesses = [
   "lan*", "server_*", "remote_*", "dedicated_*", "online_mode", "secure_chat", "wire_stream", "item_wire",
@@ -179,7 +183,7 @@ lan = ["*"]
 name = "saves"
 about = "saving and loading worlds, entities and players, region files, datafix"
 paths = [
-  "crates/sunrise-client/src/save.rs", "crates/sunrise-client/src/entity_nbt.rs",
+  "crates/sunrise-client/src/save.rs", "crates/sunrise-client/src/save/*", "crates/sunrise-client/src/entity_nbt.rs",
   "crates/sunrise-client/src/game/world/saving.rs", "crates/sunrise-client/src/game/world/persist*",
   "crates/sunrise-client/src/game/world/storage.rs", "crates/sunrise-client/src/game/world/autosave.rs",
   "crates/sunrise-world/src/region.rs", "crates/sunrise-world/src/datafix/*", "crates/sunrise-core/src/nbt.rs",
@@ -189,7 +193,7 @@ cargo = [
   { package = "sunrise-client-lib", target = "lib", filter = "save::" },
   { package = "sunrise-world", target = "lib", filter = "datafix::" },
   { package = "sunrise-world", target = "lib", filter = "region::" },
-  { package = "sunrise-client", target = "test:generation_saves", filter = "" },
+  { package = "sunrise-client-lib", target = "test:generation_saves", filter = "" },
 ]
 harnesses = [
   "save_roundtrip", "world_reopen", "world", "datafix", "*_save_reload", "*_save", "*_load", "*_saved_*",
@@ -271,11 +275,12 @@ about = "command parsing and execution, functions, scoreboards, selectors, data 
 paths = [
   "crates/sunrise-command/*", "crates/sunrise-client/src/game/administration/*", "crates/sunrise-client/src/scoreboard_cmd.rs",
   "crates/sunrise-client/src/data_cmd.rs", "crates/sunrise-client-core/src/scoreboard.rs",
-  "crates/sunrise-world/src/nbt_path.rs", "crates/sunrise-client/src/game/world/server_reload/*",
+  "crates/sunrise-*/src/nbt_path.rs", "crates/sunrise-client/src/game/world/server_reload/*",
   "tools/command_exec_corpus.py", "tools/command_parse_corpus.py",
 ]
 cargo = [
   { package = "sunrise-command", target = "lib", filter = "" },
+  { package = "sunrise-world", target = "lib", filter = "nbt_path::" },
   { package = "sunrise-client", target = "lib", filter = "game::commands::" },
   { package = "sunrise-client", target = "lib", filter = "game::server_reload::" },
 ]
@@ -298,7 +303,8 @@ paths = [
   "crates/sunrise-client/src/menu.rs", "crates/sunrise-client/src/container_screen.rs", "crates/sunrise-client/src/creative.rs",
   "crates/sunrise-client/src/crafting.rs", "crates/sunrise-client/src/recipe_book*", "crates/sunrise-client/src/stations.rs",
   "crates/sunrise-client-render/src/containers.rs", "crates/sunrise-world/src/simple_container.rs",
-  "crates/sunrise-client/src/game/interface/container_hooks.rs", "crates/sunrise-client/src/game/interface/extras/mouse_tweaks.rs",
+  "crates/sunrise-client/src/game/interface/container_*",
+  "crates/sunrise-client/src/game/interface/extras/mouse_tweaks.rs",
 ]
 cargo = [
   { package = "sunrise-client-lib", target = "lib", filter = "menu::" },
@@ -325,6 +331,7 @@ paths = [
 ]
 cargo = [
   { package = "sunrise-assets", target = "lib", filter = "" },
+  { package = "sunrise-client-render", target = "lib", filter = "hud" },
   { package = "sunrise-client-render", target = "test:standard_pack_gpu_entities", filter = "" },
   { package = "sunrise-client", target = "lib", filter = "game::advancements::" },
 ]
@@ -342,6 +349,26 @@ lan = [
   "looks", "body", "scale-body", "cursor", "hands", "f3_density", "fireworks", "rocket-*", "stopsound", "keys_released",
   "sprint-fov", "boat-dismount-pose", "popped_break_effects", "frames", "signs", "sign", "sign_copy", "books",
 ]
+
+[[area]]
+name = "tick-order"
+about = "the order entities and blocks tick in: the level's tick, the join-order walk"
+# game.rs holds tick_world; `*_tick.rs`: ordered_tick.rs, and level_tick.rs once tick_world moves there.
+paths = [
+  "crates/sunrise-client/src/game.rs", "crates/sunrise-client/src/game/world/*_tick.rs",
+  "crates/sunrise-client/src/join_seq.rs",
+]
+harnesses = ["tick_order", "chunk_entity_order", "entity_lookup_order"]
+
+[[area]]
+name = "client-packets"
+about = "what the client sends to a server: movement, acks, keep-alives, settings, mod channels"
+paths = [
+  "crates/sunrise-client/src/player_sync.rs", "crates/sunrise-client/src/net.rs",
+  "crates/sunrise-client/src/game/network/remote*", "crates/sunrise-protocol/src/packets/*",
+  "crates/sunrise-client/src/game/world/tick_script.rs", "tools/net_capture.py", "tools/wire_stream.py",
+]
+harnesses = ["wire_stream", "protocol_*", "item_wire", "stop_sound_wire", "player_sync"]
 
 [[area]]
 name = "mod-api"

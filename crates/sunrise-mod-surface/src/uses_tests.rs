@@ -759,13 +759,35 @@ fn a_variant_of_the_mods_own_enum_is_not_a_literal_of_an_api_struct_of_the_same_
         ),
         Some(Built::None)
     );
-    // An API enum's variant likewise is not the struct of its name.
+    // An API enum's variant likewise is not the struct of its name, as a pattern, a call or a unit value.
     assert_eq!(
         built(
-            "use mod_api::{Pos, TextHover};\nfn t(h: TextHover) { match h { TextHover::Pos(p) => {} _ => {} } }",
+            "use mod_api::{Item, TextHover};\nfn t(h: TextHover) { match h { TextHover::Item { .. } => {} _ => {} } let a = TextHover::Item; }",
+            "type:Item"
+        ),
+        Some(Built::None)
+    );
+    assert_eq!(
+        built(
+            &format!("{own}fn t() {{ let a = Shape::Pos; }}"),
             "type:Pos"
         ),
         Some(Built::None)
+    );
+    // A qualifier bound to the API's crate or a module of it is a path, not a type, whatever its name.
+    assert_eq!(
+        built(
+            "use mod_api as Pos;\nfn t() { let a = Pos::Settings { height: 1 }; }",
+            "type:Settings"
+        ),
+        Some(Built::Full)
+    );
+    assert_eq!(
+        built(
+            "use mod_api as Pos;\nstruct Pos;\nfn t() { let a = Pos::Settings { height: 1 }; }",
+            "type:Settings"
+        ),
+        Some(Built::Full)
     );
     // The API's own literals are still read, written out, imported, or through a module's path.
     assert_eq!(

@@ -563,6 +563,44 @@ pub fn conditions_hold_with_lookup(
     evaluate(v, loaded, lookup, owned, &Context::default(), &mut |_| {})
 }
 
+/// Does the built-in evaluator already implement this condition ID?
+pub fn is_builtin_condition(id: &sunrise_core::identifier::Identifier) -> bool {
+    BuiltinCondition::from_parts(id.namespace(), id.path()).is_some()
+}
+
+#[derive(Clone, Copy)]
+enum BuiltinCondition {
+    ModLoaded,
+    Always,
+    Never,
+    FeatureFlags,
+    Registered,
+    TagEmpty,
+    Not,
+    And,
+    Or,
+}
+
+impl BuiltinCondition {
+    fn from_parts(namespace: &str, path: &str) -> Option<Self> {
+        if namespace != "neoforge" {
+            return None;
+        }
+        Some(match path {
+            "mod_loaded" => Self::ModLoaded,
+            "always" => Self::Always,
+            "never" => Self::Never,
+            "feature_flags_enabled" => Self::FeatureFlags,
+            "registered" => Self::Registered,
+            "tag_empty" => Self::TagEmpty,
+            "not" => Self::Not,
+            "and" => Self::And,
+            "or" => Self::Or,
+            _ => return None,
+        })
+    }
+}
+
 fn evaluate(
     v: &Value,
     loaded: &ModLoaded,
@@ -581,11 +619,18 @@ fn evaluate(
     ) -> Result<Option<bool>, String> {
         // Both NeoForge codecs default `registry` to `minecraft:item`.
         let registry = || qualified(c["registry"].as_str().unwrap_or("minecraft:item"));
-        Ok(match c["type"].as_str() {
-            Some("neoforge:mod_loaded") => Some(c["modid"].as_str().is_some_and(loaded)),
-            Some("neoforge:true") => Some(true),
-            Some("neoforge:false") => Some(false),
-            Some("neoforge:feature_flags_enabled") => match &context.features {
+        let Some(name) = c["type"].as_str() else {
+            return Ok(None);
+        };
+        let builtin = name
+            .split_once(':')
+            .and_then(|(namespace, path)| BuiltinCondition::from_parts(namespace, path));
+        use BuiltinCondition::*;
+        Ok(match builtin {
+            Some(ModLoaded) => Some(c["modid"].as_str().is_some_and(loaded)),
+            Some(Always) => Some(true),
+            Some(Never) => Some(false),
+            Some(FeatureFlags) => match &context.features {
                 Some(enabled) => {
                     let Some(flags) = c["flags"].as_array() else {
                         unknown("neoforge:feature_flags_enabled (invalid flags)");
@@ -606,7 +651,7 @@ fn evaluate(
                     None
                 }
             },
-            Some("neoforge:registered") => match &context.registries {
+            Some(Registered) => match &context.registries {
                 Some(registries) => Some(
                     c["value"]
                         .as_str()
@@ -617,7 +662,7 @@ fn evaluate(
                     None
                 }
             },
-            Some("neoforge:tag_empty") => match &context.tags {
+            Some(TagEmpty) => match &context.tags {
                 Some(tags) => match c["tag"].as_str() {
                     Some(tag) => Some(!tags.contains(&registry(), &qualified(tag))),
                     None => {
@@ -630,18 +675,16 @@ fn evaluate(
                     None
                 }
             },
-            Some("neoforge:not") => {
-                hold(&c["value"], loaded, lookup, owned, context, unknown)?.map(|v| !v)
-            }
-            Some(kind @ ("neoforge:and" | "neoforge:or")) => {
+            Some(Not) => hold(&c["value"], loaded, lookup, owned, context, unknown)?.map(|v| !v),
+            Some(kind @ (And | Or)) => {
                 // Visit every child: an unknown node invalidates the whole file,
                 // including after a sibling already determines its boolean result.
-                let mut answer = kind == "neoforge:and";
+                let mut answer = matches!(kind, And);
                 let mut known = true;
                 for child in c["values"].as_array().into_iter().flatten() {
                     match hold(child, loaded, lookup, owned, context, unknown)? {
                         Some(value) => {
-                            if kind == "neoforge:and" {
+                            if matches!(kind, And) {
                                 answer &= value;
                             } else {
                                 answer |= value;
@@ -652,7 +695,7 @@ fn evaluate(
                 }
                 known.then_some(answer)
             }
-            Some(name) => match lookup(name, c) {
+            None => match lookup(name, c) {
                 Some(answer) => Some(answer?),
                 None => {
                     if let Some(owner) = name
@@ -667,7 +710,6 @@ fn evaluate(
                     None
                 }
             },
-            None => None,
         })
     }
     let mut allowed = true;
@@ -759,14 +801,14 @@ mod tests {
             {"type": "neoforge:mod_loaded", "modid": "create"},
             {"type": "neoforge:or", "values": [
                 {"type": "neoforge:mod_loaded", "modid": "ic2"},
-                {"type": "neoforge:true"}
+                {"type": "neoforge:always"}
             ]}
         ]);
         c.insert("neoforge:conditions".to_owned(), both);
         assert!(conditions_hold(&Value::Object(c), &loaded));
         // One failing condition in the list fails the file.
         let failing = json!([
-            {"type": "neoforge:true"},
+            {"type": "neoforge:always"},
             {"type": "neoforge:mod_loaded", "modid": "ic2"}
         ]);
         let mut f = serde_json::Map::new();
@@ -785,12 +827,12 @@ mod tests {
             ]
         });
         assert!(!conditions_hold(&nested_not, &loaded));
-        // `or` with a `true` beside a `not` of an unknown: one child is
+        // `or` with `always` beside a `not` of an unknown: one child is
         // known-true, but the other's subtree holds an unknown.
         let nested_or = json!({
             "neoforge:conditions": [
                 {"type": "neoforge:or", "values": [
-                    {"type": "neoforge:true"},
+                    {"type": "neoforge:always"},
                     {"type": "neoforge:not", "value":
                         {"type": "example:unknown"}}
                 ]}
@@ -804,15 +846,18 @@ mod tests {
     }
 
     #[test]
-    fn false_omits_the_file_and_not_false_loads_it() {
-        let conditions = LoadConditions::vanilla();
-        assert!(!conditions.allows(&file(json!({"type": "neoforge:false"}))));
+    fn always_and_never_evaluate_without_a_registered_handler() {
+        let conditions = LoadConditions::new([]).with_lookup(BTreeMap::new(), |name, _| {
+            panic!("built-in condition {name} fell through to the mod lookup")
+        });
+        assert!(conditions.allows(&file(json!({"type": "neoforge:always"}))));
+        assert!(!conditions.allows(&file(json!({"type": "neoforge:never"}))));
         assert!(conditions.allows(&file(
-            json!({"type": "neoforge:not", "value": {"type": "neoforge:false"}})
+            json!({"type": "neoforge:not", "value": {"type": "neoforge:never"}})
         )));
         assert!(
             conditions.allows(&file(json!({"type": "neoforge:or", "values": [
-                {"type": "neoforge:false"}, {"type": "neoforge:true"}
+                {"type": "neoforge:never"}, {"type": "neoforge:always"}
             ]})))
         );
     }

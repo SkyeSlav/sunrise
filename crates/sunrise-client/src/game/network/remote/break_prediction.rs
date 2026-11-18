@@ -1,21 +1,28 @@
+//! Optimistic block writes and reconciliation on the multiplayer client.
 use super::*;
+use sunrise_core::position::BlockPos;
+
+/// `BlockStatePredictionHandler.ServerVerifiedState`: the most recent sequence,
+/// the server's latest state, and the player's position at the first prediction.
+pub(super) struct Prediction {
+    sequence: i32,
+    state: BlockStateId,
+    player_pos: [f64; 3],
+    removed_entity: Option<Box<RemovedEntity>>,
+}
+
+/// A predicted write displaced this entity. The server need not resend its payload
+/// or its synced attachments when a denial puts the same block back.
+struct RemovedEntity {
+    state: BlockStateId,
+    entity: BlockEntity,
+    attachments: Option<ResidentAttachments>,
+}
 
 impl Game<'_> {
     /// MultiPlayerGameMode.destroyBlock: the predicted break.
     pub(super) fn predict_break(&mut self, pos: [i32; 3], state: BlockStateId, sequence: i32) {
         self.tutorial_destroy(state, 1.0);
-        // BlockStatePredictionHandler.retainKnownServerState.
-        let here = self.player_position();
-        if let Some(r) = self.remote.as_mut() {
-            r.predictions
-                .entry(pos)
-                .and_modify(|p| p.sequence = sequence)
-                .or_insert(Prediction {
-                    sequence,
-                    state: state.0 as i32,
-                    player_pos: here,
-                });
-        }
         // Block.playerWillDestroy's destroy event (particles and the break
         // sound), which BaseFireBlock skips: the server's extinguish sound
         // is all a player hears.
@@ -23,12 +30,217 @@ impl Game<'_> {
             self.play_break_sound(pos, state);
             self.destroy_particles(pos, state);
         }
-        // The server's block update follows (waterlogged blocks leave water).
-        let air = self.world.air;
-        if self.world.set(pos[0], pos[1], pos[2], air).is_ok() {
-            self.world.block_entities.remove(&(pos[0], pos[1], pos[2]));
-            self.client_block_written(pos, state, air, true);
+        // Run the local shape updates over the removal, including the fluid left behind.
+        // Keep every resulting write under the break's sequence, so packet reconciliation
+        // can correct them without running the local rules again.
+        let [x, y, z] = pos;
+        let pos = BlockPos::new(x, y, z);
+        let (mut changes, order) = self.with_level(|b, base, ticks| {
+            let mut level = DryLevel::new(base);
+            level.reads = Some(ticks);
+            level.notice_order = Some(Default::default());
+            b.remove_block(
+                &mut level,
+                &mut sunrise_world::level::Ticks::default(),
+                pos,
+                false,
+            );
+            (
+                level.changed,
+                level.notice_order.unwrap_or_default().into_inner(),
+            )
+        });
+        // Apply every final state before publishing anything. Emit one notice per net
+        // change, in the simulation's after-shape order (the last notice for each position).
+        let mut applied = Vec::with_capacity(changes.len());
+        for at in order.into_iter().rev() {
+            if let Some(state) = changes.remove(&at) {
+                let pos = [at.x, at.y, at.z];
+                if let Some(previous) = self.predict_block(pos, state, sequence) {
+                    applied.push((pos, previous, state));
+                }
+            }
+        }
+        for (pos, previous, state) in applied.into_iter().rev() {
+            self.finish_client_block_write(pos, Some(previous), state, true);
         }
         self.mining = None;
+    }
+
+    /// The blocks a use changed, kept under its sequence until acknowledgement.
+    pub(in crate::game) fn predict_blocks(&mut self, changes: &DryChanges, seq: i32) {
+        for &(p, state) in changes {
+            let pos = [p.x, p.y, p.z];
+            let previous = self.predict_block(pos, state, seq);
+            self.finish_client_block_write(pos, previous, state, true);
+        }
+    }
+
+    fn predict_block(
+        &mut self,
+        pos: [i32; 3],
+        state: BlockStateId,
+        seq: i32,
+    ) -> Option<BlockStateId> {
+        let [x, y, z] = pos;
+        let before = self.world.block(x, y, z);
+        let here = self.player_position();
+        if let Some(r) = self.remote.as_mut() {
+            r.predictions
+                .entry(pos)
+                .and_modify(|e| e.sequence = seq)
+                .or_insert(Prediction {
+                    sequence: seq,
+                    state: before,
+                    player_pos: here,
+                    removed_entity: None,
+                });
+        }
+        self.write_client_block(pos, state, None)
+    }
+
+    /// Retire the synced copy from the live holder; retain it only with a removed
+    /// prediction entity from the block the server still believes is here.
+    pub(super) fn retire_client_block_entity(
+        &mut self,
+        pos: [i32; 3],
+        previous: BlockStateId,
+        removed: Option<BlockEntity>,
+    ) {
+        let Some(r) = self.remote.as_mut() else {
+            return;
+        };
+        let mut attachments = r.attachments.remove(&Holder::BlockEntity(pos));
+        if let (Some(p), Some(entity)) = (r.predictions.get_mut(&pos), removed)
+            && p.removed_entity.is_none()
+            && self.res.facts().get(p.state).name == self.res.facts().get(previous).name
+        {
+            if let Some(attachments) = &mut attachments {
+                attachments.take_index_binding();
+                attachments.retire();
+            }
+            p.removed_entity = Some(Box::new(RemovedEntity {
+                state: previous,
+                entity,
+                attachments,
+            }));
+        }
+    }
+
+    /// ClientLevel.setServerVerifiedBlockState: a predicted block keeps its on-screen
+    /// state until acknowledgement, but remembers the server's update for then.
+    pub(super) fn server_block(&mut self, pos: [i32; 3], state: i32) {
+        // An unknown state (a server with mods we lack) reads as air, as in its chunks.
+        let state = state.max(0) as u32;
+        let state = BlockStateId(if sunrise_client::chunk::known_block_state(state) {
+            state
+        } else {
+            0
+        });
+        if let Some(p) = self
+            .remote
+            .as_mut()
+            .and_then(|r| r.predictions.get_mut(&pos))
+        {
+            p.state = state;
+            if let Some(removed) = &p.removed_entity
+                && self.res.facts().get(removed.state).name != self.res.facts().get(state).name
+            {
+                p.removed_entity = None;
+            }
+            return;
+        }
+        let previous = self.write_client_block(pos, state, None);
+        self.finish_client_block_write(pos, previous, state, false);
+    }
+
+    /// BlockStatePredictionHandler.endPredictionsUpTo: settle the server's known
+    /// state and restore data before the correction notice. Confirmations are silent.
+    pub(super) fn end_predictions(&mut self, sequence: i32) {
+        let Some(r) = self.remote.as_mut() else {
+            return;
+        };
+        let last_teleport = r.last_teleport_sequence;
+        let settled: Vec<_> = r
+            .predictions
+            .extract_if(|_, p| p.sequence <= sequence)
+            .collect();
+        for (pos, prediction) in settled {
+            let [x, y, z] = pos;
+            let state = prediction.state;
+            if self.world.block(x, y, z) == state {
+                continue;
+            }
+            let previous = self.write_client_block(pos, state, prediction.removed_entity);
+            self.finish_client_block_write(pos, previous, state, false);
+            // ClientLevel.syncBlockState: the returning block may now hold the player.
+            let meets = self.block_meets_player(pos, state);
+            if let Some(at) = snap_target(prediction.player_pos, last_teleport, sequence, meets) {
+                self.snap_player_to(at);
+            }
+        }
+    }
+
+    fn write_client_block(
+        &mut self,
+        pos: [i32; 3],
+        state: BlockStateId,
+        restored: Option<Box<RemovedEntity>>,
+    ) -> Option<BlockStateId> {
+        let [x, y, z] = pos;
+        let previous = self.world.block(x, y, z);
+        if !self.world.loaded(x, z) || self.world.set(x, y, z, state).is_err() {
+            return None;
+        }
+        if let Some(restored) = restored {
+            let RemovedEntity {
+                entity,
+                attachments,
+                ..
+            } = *restored;
+            self.world.block_entities.replace((x, y, z), entity);
+            if let Some(remote) = self.remote.as_mut() {
+                let holder = Holder::BlockEntity(pos);
+                if let Some(attachments) = attachments {
+                    // A fresh sync received from the server takes precedence over saved data.
+                    remote.attachments.entry(holder).or_insert(attachments);
+                }
+                self.bind_remote_attachment(holder);
+            }
+        } else {
+            self.sync_block_entity((x, y, z), Some(previous), state);
+        }
+        Some(previous)
+    }
+
+    fn finish_client_block_write(
+        &mut self,
+        pos: [i32; 3],
+        previous: Option<BlockStateId>,
+        state: BlockStateId,
+        predicted: bool,
+    ) {
+        if let Some(previous) = previous {
+            self.client_block_written(pos, previous, state, predicted);
+        }
+        // A block we just placed: play its place sound (the server skips the placer).
+        if let Some((target, _)) = self.remote.as_ref().and_then(|r| r.placing)
+            && target == pos
+            && !self.res.facts().is_air(state)
+        {
+            let s = self.own_sound_type(pos, state, mod_api::BlockSoundCause::Place);
+            let at = [
+                f64::from(pos[0]) + 0.5,
+                f64::from(pos[1]) + 0.5,
+                f64::from(pos[2]) + 0.5,
+            ];
+            self.play_client_local_sound(
+                LevelSound::new(&s.place, at, (s.volume + 1.0) / 2.0, s.pitch * 0.8)
+                    .in_source(mod_api::SoundSource::Blocks),
+            );
+            if let Some(r) = self.remote.as_mut() {
+                r.placing = None;
+            }
+        }
     }
 }

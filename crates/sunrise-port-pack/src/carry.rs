@@ -68,8 +68,13 @@ pub fn renamed_in_1_21(name: &str) -> Option<String> {
     })
 }
 
+/// A recipe type in the `minecraft` namespace: 26.3 assumes it for a type with no namespace.
+fn minecraft_type(kind: &str) -> bool {
+    kind.starts_with("minecraft:") || !kind.contains(':')
+}
+
 /// A recipe result naming its item as `item`, as before 1.20.5; 26.3 reads only `id`
-/// (or a bare id) and skips the recipe.
+/// (or a bare id), and a recipe it can't decode fails the whole data load.
 fn result_before_1_20_5(recipe: &Value) -> bool {
     let r = &recipe["result"];
     r.get("item").is_some() && r.get("id").is_none()
@@ -104,9 +109,12 @@ pub struct Report {
     pub loot_tables_added: usize,
     /// Worldgen and structure files (`data/<id>/worldgen/`, `structure/`).
     pub worldgen: usize,
-    /// Recipes left as they were: custom types, NeoForge conditions, results before 1.20.5.
-    pub recipes_kept: Vec<String>,
-    /// Of those, the recipes whose result names its item as `item` ([`result_before_1_20_5`]).
+    /// Recipes of a type that isn't a `minecraft:` serializer, moved to `outside/`: one
+    /// unregistered type fails 26.3's whole data load, so a code mod that registers the type
+    /// carries them back.
+    pub recipes_custom: Vec<String>,
+    /// Recipes whose result names its item as `item` ([`result_before_1_20_5`]), moved to
+    /// `outside/`: 26.3 can't decode them and one such recipe fails the whole data load.
     #[serde(skip_serializing_if = "is_zero")]
     pub recipes_old_result: usize,
     /// Recipes whose result is one of the mod's own items that isn't declared (its block was
@@ -316,7 +324,7 @@ pub fn ingredient(v: &Value) -> Option<Value> {
 /// a vanilla type or one of its ingredients has no 26.3 form.
 pub fn upgrade_recipe(recipe: &mut Value) -> bool {
     let kind = recipe["type"].as_str().unwrap_or("");
-    if !kind.starts_with("minecraft:") || recipe.get("neoforge:conditions").is_some() {
+    if !minecraft_type(kind) || recipe.get("neoforge:conditions").is_some() {
         return false;
     }
     let mut out = recipe.clone();
@@ -1064,7 +1072,17 @@ pub fn carry(
         if off {
             report.recipes_off.push(name.clone());
         }
-        let keep = keep && unreadable.is_none() && !off;
+        let broken = if keep && !off {
+            recipe_broken(&name, &bytes)
+        } else {
+            None
+        };
+        match broken {
+            Some(Broken::CustomType) => report.recipes_custom.push(name.clone()),
+            Some(Broken::OldResult) => report.recipes_old_result += 1,
+            None => {}
+        }
+        let keep = keep && unreadable.is_none() && !off && broken.is_none();
         if let Some(why) = unreadable {
             report.unreadable.insert(name.clone(), why);
         }
@@ -1096,31 +1114,27 @@ pub fn carry(
             {
                 bytes = serde_json::to_vec_pretty(&model).unwrap_or(bytes);
             }
-            if let Some(file) = rel
-                .strip_prefix("recipe/")
-                .filter(|_| name.starts_with("data/"))
-            {
+            if rel.starts_with("recipe/") && name.starts_with("data/") {
                 if let Ok(mut recipe) = serde_json::from_slice::<Value>(&bytes) {
                     tags_used(&recipe, &mut convention);
                     let renamed = renamed_ids(&mut recipe);
                     // Kept, so its conditions passed (`recipe_off`): 26.3 has no use for them.
-                    if recipe["type"]
-                        .as_str()
-                        .is_some_and(|t| t.starts_with("minecraft:"))
-                    {
+                    if recipe["type"].as_str().is_some_and(minecraft_type) {
                         recipe
                             .as_object_mut()
                             .map(|o| o.remove("neoforge:conditions"));
                     }
-                    let old_result = result_before_1_20_5(&recipe);
-                    let upgraded = !old_result && upgrade_recipe(&mut recipe);
-                    if upgraded {
-                        report.recipes_upgraded += 1;
-                    } else {
-                        report.recipes_old_result += usize::from(old_result);
-                        report.recipes_kept.push(file.to_owned());
-                    }
-                    if upgraded || renamed {
+                    // The game looks serializers up by their full id.
+                    let qualified = match recipe["type"].as_str() {
+                        Some(t) if !t.contains(':') => {
+                            recipe["type"] = Value::from(format!("minecraft:{t}"));
+                            true
+                        }
+                        _ => false,
+                    };
+                    let upgraded = upgrade_recipe(&mut recipe);
+                    report.recipes_upgraded += usize::from(upgraded);
+                    if upgraded || renamed || qualified {
                         bytes = serde_json::to_vec_pretty(&recipe).unwrap_or(bytes);
                     }
                 }
@@ -1566,6 +1580,34 @@ fn recipe_off(
     }
 }
 
+/// Why 26.3 can't decode a recipe file ([`recipe_broken`]).
+#[derive(Clone, Copy)]
+enum Broken {
+    CustomType,
+    OldResult,
+}
+
+/// Whether `name` is a recipe file 26.3 can't decode: a `type` that isn't a `minecraft`
+/// serializer (or has none), or a result before 1.20.5. Run after [`recipe_off`], so a recipe
+/// whose own conditions fail is already out; one whose conditions pass is still broken. A
+/// recipe that doesn't parse isn't this: it is [`Report::unreadable`].
+fn recipe_broken(name: &str, bytes: &[u8]) -> Option<Broken> {
+    let Some(("data", _, rest)) = split(name) else {
+        return None;
+    };
+    if !rest.starts_with("recipe/") || !rest.ends_with(".json") {
+        return None;
+    }
+    let recipe = serde_json::from_slice::<Value>(bytes).ok()?;
+    if !recipe["type"].as_str().is_some_and(minecraft_type) {
+        Some(Broken::CustomType)
+    } else if result_before_1_20_5(&recipe) {
+        Some(Broken::OldResult)
+    } else {
+        None
+    }
+}
+
 /// The item a recipe makes: `result.id` (1.21 and later), `result.item` or a bare id.
 fn recipe_result(recipe: &Value) -> Option<&str> {
     let r = &recipe["result"];
@@ -2008,7 +2050,6 @@ mod tests {
         assert_eq!(report.folders_renamed, 5);
         let carried = out.join("carry/data");
         for moved in [
-            "example/recipe/stone.json",
             "example/recipe/cobble.json",
             "example/loot_table/blocks/stone.json",
             "example/structure/hut.nbt",
@@ -2029,14 +2070,14 @@ mod tests {
         };
         assert_eq!(pickaxe("block"), tag_1_21);
         assert_eq!(pickaxe("blocks"), tag_1_20);
-        // The 1.20 result is kept as it was, not counted as upgraded.
+        // The 1.20 result can't be decoded: moved out as it was, not counted as upgraded.
         assert_eq!(report.recipes_upgraded, 1);
-        assert_eq!(report.recipes_kept, ["stone.json"]);
         assert_eq!(report.recipes_old_result, 1);
-        let stone: Value =
-            serde_json::from_slice(&fs::read(carried.join("example/recipe/stone.json")).unwrap())
-                .unwrap();
-        assert_eq!(stone, serde_json::from_slice::<Value>(old_recipe).unwrap());
+        assert!(!carried.join("example/recipe/stone.json").exists());
+        assert_eq!(
+            fs::read(out.join("outside/data/example/recipe/stone.json")).unwrap(),
+            old_recipe
+        );
 
         let records = [Record {
             key: "example".into(),
@@ -2061,7 +2102,7 @@ mod tests {
         assert!(!row.reason.contains("  "), "{}", row.reason);
         assert!(
             row.reason
-                .contains("(1 recipe result names `item`, which 26.3 skips; NBT"),
+                .contains("(1 recipe result names `item`, moved to outside/; NBT"),
             "{}",
             row.reason
         );
@@ -2528,7 +2569,7 @@ mod tests {
             &BTreeMap::new(),
         )
         .unwrap();
-        assert_eq!(report.copied, 16);
+        assert_eq!(report.copied, 15);
         let unreadable: Vec<&str> = report.unreadable.keys().map(String::as_str).collect();
         assert_eq!(
             unreadable,
@@ -2537,7 +2578,7 @@ mod tests {
                 "data/gem/tags/item/empty.json"
             ]
         );
-        assert_eq!(report.outside.len(), 2);
+        assert_eq!(report.outside.len(), 3);
         // A vanilla tag that replaces is kept as it is: the game honours it.
         let replacing: Value = serde_json::from_slice(
             &fs::read(out.join(
@@ -2553,7 +2594,10 @@ mod tests {
             fs::read(out.join("carry/assets/gem/lang/de_de.json")).unwrap()[0],
             b'{'
         );
-        assert_eq!((report.recipes_upgraded, report.recipes_kept.len()), (1, 1));
+        assert_eq!((report.recipes_upgraded, report.recipes_old_result), (1, 0));
+        assert_eq!(report.recipes_custom, ["data/gem/recipe/infuse.json"]);
+        assert!(out.join("outside/data/gem/recipe/infuse.json").exists());
+        assert!(!out.join("carry/data/gem/recipe/infuse.json").exists());
         assert_eq!(report.item_definitions_added, 2);
         assert_eq!(report.blocks["gem_door"], "minecraft:oak_door");
         assert_eq!(report.blocks["gem_block"], "minecraft:stone");

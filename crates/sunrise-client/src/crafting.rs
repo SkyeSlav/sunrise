@@ -1324,12 +1324,26 @@ fn shrink(pattern: &[Vec<char>]) -> Vec<Vec<char>> {
 }
 pub use sunrise_items::recipe_sources::qualified;
 
-fn recipe_refused(name: &str, reason: &str) -> Box<dyn std::error::Error> {
+fn recipe_refused(name: &str, reason: &str) -> String {
     let id = qualified(name);
     let (namespace, path) = id.split_once(':').unwrap();
-    let message = format!("recipes: data/{namespace}/recipe/{path}.json refused: {reason}");
-    // The error-level diagnostic naming the file (#1273); the load returns the
-    // same message, which its caller may log again at its own level.
+    format!("recipes: data/{namespace}/recipe/{path}.json refused: {reason}")
+}
+/// One message for every recipe that failed the load, in registration order
+/// (vanilla collects every element's error, then fails). The error-level
+/// diagnostic naming the files (#1273); the load returns the same message,
+/// which its caller may log again at its own level.
+fn load_failed(mut failures: Vec<(String, String)>) -> Box<dyn std::error::Error> {
+    failures.sort_by_cached_key(|(name, _)| registration_key(name));
+    let count = failures.len();
+    let mut message = format!(
+        "{count} {} failed to load:",
+        if count == 1 { "recipe" } else { "recipes" }
+    );
+    for (_, failure) in failures {
+        message.push_str("\n  ");
+        message.push_str(&failure);
+    }
     log::error!("{message}");
     message.into()
 }
@@ -1387,6 +1401,10 @@ pub struct ResolvedSources {
     stations: std::sync::OnceLock<Vec<Option<crate::stations::ParsedStationRecipe>>>,
     /// What mods added to the recipe property sets, asked once per load.
     pub property_additions: PropertyAdditions,
+    /// Recipes `resolve_collecting` refused, by name and reason; the strict
+    /// entry points turn them into the load's error, `Recipes::from_resolved`
+    /// adds them to its own validation failures.
+    failures: Vec<(String, String)>,
 }
 /// The items mods added to the recipe property sets
 /// (`RecipeManager.RECIPE_PROPERTY_SETS`) in one load, by set key without
@@ -1472,11 +1490,38 @@ impl ResolvedSources {
         overlay: &PackOverlay,
         context: &sunrise_world::native_load_context::LoadContext,
     ) -> Result<Self> {
+        Self::load_collecting(root, overlay, context)?.checked()
+    }
+    /// `load` that keeps the refused recipes instead of failing: the caller
+    /// must build the tables with `Recipes::from_resolved`, which reports them
+    /// together with the validation failures and refuses the whole generation.
+    /// A caller that publishes or reads the sources otherwise uses `load`.
+    pub fn load_collecting(
+        root: &Path,
+        overlay: &PackOverlay,
+        context: &sunrise_world::native_load_context::LoadContext,
+    ) -> Result<Self> {
         let context = context.with_fluid_tags(sunrise_items::items::fluid_tag_list(root, overlay)?);
-        Self::resolve(
+        Self::resolve_collecting(
             sunrise_items::recipe_sources::sources(root, overlay)?,
             &context,
         )
+    }
+    /// Whether every recipe resolved; sources with failures are never shared.
+    pub fn is_complete(&self) -> bool {
+        self.failures.is_empty()
+    }
+    /// The error naming every recipe that failed to resolve, if any did.
+    pub fn check(&self) -> Result<()> {
+        if self.failures.is_empty() {
+            Ok(())
+        } else {
+            Err(load_failed(self.failures.clone()))
+        }
+    }
+    fn checked(self) -> Result<Self> {
+        self.check()?;
+        Ok(self)
     }
     /// `sources` (`recipe_sources::sources`' shape), the hook asked once for
     /// each mod ingredient in the recipes the loader parses (minecraft's own
@@ -1484,20 +1529,25 @@ impl ResolvedSources {
     /// An unregistered ingredient kind in a known recipe type refuses the
     /// whole load, naming its file and kind.
     pub fn resolve(
+        sources: Vec<(String, Value)>,
+        context: &sunrise_world::native_load_context::LoadContext,
+    ) -> Result<Self> {
+        Self::resolve_collecting(sources, context)?.checked()
+    }
+    fn resolve_collecting(
         mut sources: Vec<(String, Value)>,
         context: &sunrise_world::native_load_context::LoadContext,
     ) -> Result<Self> {
         // Every consumer keeps vanilla's resource-file registration order.
         sources.sort_by_cached_key(|(name, _)| registration_key(name));
-        for (name, file) in &sources {
-            if let Some(serializer) = file["type"].as_str() {
-                mod_kinds::recipe_type(name, serializer)?;
-            }
-        }
         let listened = mod_api::__private::listened(mod_api::HookId::Ingredient);
         let recipes = sources
             .into_iter()
-            .map(|(name, file)| {
+            .map(|(name, file)| -> std::result::Result<ResolvedRecipe, (String, String)> {
+                let refused = |reason: String| (name.clone(), reason);
+                if let Some(serializer) = file["type"].as_str() {
+                    mod_kinds::recipe_type(&name, serializer).map_err(refused)?;
+                }
                 let mut resolved = file.clone();
                 let parsed_here = resolved["type"]
                     .as_str()
@@ -1535,10 +1585,10 @@ impl ResolvedSources {
                         .flat_map(Ingredient::custom_kinds)
                         .collect();
                     if !listened && let Some((kind, _)) = kinds.first() {
-                        return Err(recipe_refused(
+                        return Err(refused(recipe_refused(
                             &name,
                             &format!("ingredient kind {kind} is not registered by any mod"),
-                        ));
+                        )));
                     }
                     for (kind, _) in kinds.iter().filter(|(_, empty)| *empty) {
                         log::warn!(
@@ -1558,9 +1608,15 @@ impl ResolvedSources {
                     resolved,
                 })
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Vec<std::result::Result<_, (String, String)>>>();
+        let mut failures = Vec::new();
+        let recipes = recipes
+            .into_iter()
+            .filter_map(|recipe| recipe.map_err(|failure| failures.push(failure)).ok())
+            .collect();
         Ok(Self {
             recipes,
+            failures,
             property_additions: PropertyAdditions::ask(context),
             ..Self::default()
         })
@@ -1603,7 +1659,7 @@ impl Recipes {
         overlay: &PackOverlay,
         context: &sunrise_world::native_load_context::LoadContext,
     ) -> Result<Self> {
-        let sources = ResolvedSources::load(root, overlay, context)?;
+        let sources = ResolvedSources::load_collecting(root, overlay, context)?;
         Self::from_resolved(root, items, overlay, &sources)
     }
     /// The tables from condition-selected recipe sources (recipe_sources::sources' shape).
@@ -1619,7 +1675,7 @@ impl Recipes {
             root,
             items,
             overlay,
-            &ResolvedSources::resolve(sources, context)?,
+            &ResolvedSources::resolve_collecting(sources, context)?,
         )
     }
     /// Tables from one condition-selected load. Unregistered serializers and malformed
@@ -1630,11 +1686,7 @@ impl Recipes {
         overlay: &PackOverlay,
         sources: &ResolvedSources,
     ) -> Result<Self> {
-        for recipe in &sources.recipes {
-            if let Some(serializer) = recipe.file["type"].as_str() {
-                mod_kinds::recipe_type(&recipe.name, serializer)?;
-            }
-        }
+        let mut failures = sources.failures.clone();
         let mut mod_read_only = Vec::new();
         let mut crafting = Vec::new();
         let mut cooking = Vec::new();
@@ -1656,11 +1708,19 @@ impl Recipes {
                 } else {
                     format!("minecraft:{name}")
                 };
-                entry = Some(crate::crafting::RecipeSnapshot::new(
-                    id,
-                    mod_kinds::recipe_type(name, kind)?,
-                    json.clone(),
-                ));
+                match mod_kinds::recipe_type(name, kind) {
+                    Ok(recipe_type) => {
+                        entry = Some(crate::crafting::RecipeSnapshot::new(
+                            id,
+                            recipe_type,
+                            json.clone(),
+                        ));
+                    }
+                    Err(failure) => {
+                        failures.push((name.clone(), failure));
+                        continue;
+                    }
+                }
             }
             if custom_type(json).is_some() {
                 if let Some(recipe) = mod_kinds::decode(name, json)
@@ -1679,8 +1739,10 @@ impl Recipes {
             if !VANILLA_RECIPE_SERIALIZERS.contains(&kind) {
                 continue;
             }
-            Ingredient::validate_recipe(resolved, items)
-                .map_err(|error| recipe_refused(name, &error))?;
+            if let Err(error) = Ingredient::validate_recipe(resolved, items) {
+                failures.push((name.clone(), recipe_refused(name, &error)));
+                continue;
+            }
             let v = &**resolved;
             let text = |k: &str| v[k].as_str().unwrap_or("").to_owned();
             meta.insert(name.clone(), (text("category"), text("group")));
@@ -1879,25 +1941,29 @@ impl Recipes {
                     None
                 }
                 "minecraft:brewing" => {
-                    crate::brewing::BrewingRecipe::validate(v)
-                        .map_err(|error| recipe_refused(name, error))?;
+                    if let Err(error) = crate::brewing::BrewingRecipe::validate(v) {
+                        failures.push((name.clone(), recipe_refused(name, error)));
+                        continue;
+                    }
                     None
                 }
                 "minecraft:stonecutting"
                 | "minecraft:smithing_transform"
                 | "minecraft:smithing_trim" => None,
                 _ => {
-                    return Err(recipe_refused(
-                        name,
-                        &format!("recipe type {kind} has no parser"),
+                    failures.push((
+                        name.clone(),
+                        recipe_refused(name, &format!("recipe type {kind} has no parser")),
                     ));
+                    continue;
                 }
             };
             if parsed_by_game && parsed.is_none() && cooking.len() == cooked && station.is_none() {
                 let reason = failure.into_inner().unwrap_or_else(|| {
                     format!("invalid ingredients or required fields for {kind}")
                 });
-                return Err(recipe_refused(name, &reason));
+                failures.push((name.clone(), recipe_refused(name, &reason)));
+                continue;
             }
             // Every known recipe was parsed successfully before any table
             // can be published; every view reads that same parse.
@@ -1944,6 +2010,9 @@ impl Recipes {
             if let Some(recipe) = parsed {
                 crafting.push((name.clone(), recipe));
             }
+        }
+        if !failures.is_empty() {
+            return Err(load_failed(failures));
         }
         let facts = items
             .items
@@ -2373,7 +2442,7 @@ mod tests {
             fs::write(
                 folder.join(format!("{file}.json")),
                 serde_json::to_vec(&serde_json::json!({
-                    "type":kind, "neoforge:conditions":[{"type":"neoforge:false"}]
+                    "type":kind, "neoforge:conditions":[{"type":"neoforge:never"}]
                 }))
                 .unwrap(),
             )
@@ -3226,7 +3295,7 @@ mod tests {
             // A pack's gated file answers the same gate.
             let packs = [(
                 "recipe/minecraft:pack_yes".to_owned(),
-                vec![file(r#"[{"type":"neoforge:true"}]"#, "pack_yes")],
+                vec![file(r#"[{"type":"neoforge:always"}]"#, "pack_yes")],
             )];
             let recipes = Recipes::load(
                 &root,

@@ -268,7 +268,7 @@ fn content_root_tag_layers_ignore_failing_top_level_conditions() {
         ("lower", r#"{"values":["minecraft:stone"]}"#),
         (
             "conditional",
-            r#"{"neoforge:conditions":[{"type":"neoforge:false"}],"values":["minecraft:dirt"]}"#,
+            r#"{"neoforge:conditions":[{"type":"neoforge:never"}],"values":["minecraft:dirt"]}"#,
         ),
     ];
     let mods: Vec<_> = packages

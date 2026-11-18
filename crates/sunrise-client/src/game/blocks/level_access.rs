@@ -619,21 +619,17 @@ impl LevelAccess for GameLevel<'_> {
     fn before_state_for_placement(
         &self,
         ticks: &Ticks,
+        preview: Option<&sunrise_world::level::PreviewBlocks>,
         state: BlockStateId,
         context: &PlacementContext,
         fluid: FluidState,
         answer: &mut Option<Option<BlockStateId>>,
     ) {
-        if self.native_authoritative
-            && let Some(fluid) = native_world_read::api_fluid_state(fluid)
-        {
-            self.view(ticks).native_state_for_placement(
-                self.dimension,
-                state,
-                context,
-                fluid,
-                answer,
-            );
+        // Asked on both sides: a client's placement prediction asks it too.
+        if let Some(fluid) = native_world_read::api_fluid_state(fluid) {
+            self.view(ticks)
+                .previewing(preview)
+                .native_state_for_placement(self.dimension, state, context, fluid, answer);
         }
     }
     fn placement_context(
@@ -688,27 +684,34 @@ impl LevelAccess for GameLevel<'_> {
     fn before_can_survive(
         &self,
         ticks: &Ticks,
+        preview: Option<&sunrise_world::level::PreviewBlocks>,
         pos: BlockPos,
         state: BlockStateId,
         survives: &mut Option<bool>,
     ) -> bool {
         let mut inert = false;
-        if self.native_authoritative {
-            self.view(ticks)
-                .native_can_survive(self.dimension, pos, state, survives, &mut inert);
-        }
+        self.view(ticks).previewing(preview).native_can_survive(
+            self.dimension,
+            pos,
+            state,
+            survives,
+            &mut inert,
+        );
         inert
     }
     fn before_can_sustain_plant(
         &self,
+        ticks: &Ticks,
+        preview: Option<&sunrise_world::level::PreviewBlocks>,
         state: BlockStateId,
         ground: BlockStateId,
         ground_pos: BlockPos,
         sustains: &mut Option<bool>,
     ) -> bool {
         let mut inert = false;
-        if self.native_authoritative {
-            self.native_can_sustain_plant(
+        self.view(ticks)
+            .previewing(preview)
+            .native_can_sustain_plant(
                 self.dimension,
                 state,
                 ground,
@@ -716,7 +719,6 @@ impl LevelAccess for GameLevel<'_> {
                 sustains,
                 &mut inert,
             );
-        }
         inert
     }
     fn asks_is_fertile(&self) -> bool {
@@ -752,15 +754,22 @@ impl LevelAccess for GameLevel<'_> {
     }
     fn before_may_place_on(
         &self,
+        ticks: &Ticks,
+        preview: Option<&sunrise_world::level::PreviewBlocks>,
         state: BlockStateId,
         ground: BlockStateId,
         ground_pos: BlockPos,
         may: &mut Option<bool>,
     ) -> bool {
         let mut inert = false;
-        if self.native_authoritative {
-            self.native_may_place_on(self.dimension, state, ground, ground_pos, may, &mut inert);
-        }
+        self.view(ticks).previewing(preview).native_may_place_on(
+            self.dimension,
+            state,
+            ground,
+            ground_pos,
+            may,
+            &mut inert,
+        );
         inert
     }
     fn is_client_side(&self) -> bool {

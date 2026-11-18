@@ -52,6 +52,11 @@ id, version, license, authors, credits and description:
 
 The screen has no on/off switch; the launcher and `sunrise-mods.txt` decide which mods run.
 
+## Making a mod
+
+[Install the mod tool](../start/install-tool.md), then follow [Your first native mod](../start/first-mod.md) or
+[Your first content mod](../start/first-content-mod.md).
+
 ## Sunrise's own mods
 
 Sunrise's optional extras are native mods in

@@ -35,7 +35,7 @@ fn foreign_unknown_after_true_is_absent_and_logged_once_at_error_level() {
         };
         RECORDS.with_borrow_mut(Vec::clear);
         let file = json!({"neoforge:conditions":[{"type":"neoforge:or","values":[
-            {"type":"neoforge:true"},{"type":"othermod:unknown"}
+            {"type":"neoforge:always"},{"type":"othermod:unknown"}
         ]}]});
         for _ in 0..2 {
             assert!(!conditions.allows_file(&file, "data/testmod/recipe/foreign_or_true.json"));
@@ -45,7 +45,7 @@ fn foreign_unknown_after_true_is_absent_and_logged_once_at_error_level() {
             "data/testmod/recipe/foreign_or_true.json: unknown load conditions [othermod:unknown]; file left out".into())]));
         RECORDS.with_borrow_mut(Vec::clear);
         let nested = json!({"neoforge:conditions":[{"type":"neoforge:or","values":[
-            {"type":"neoforge:true"},
+            {"type":"neoforge:always"},
             {"type":"neoforge:and","values":[
                 {"type":"neoforge:mod_loaded","modid":"absent"},
                 {"type":"neoforge:not","value":{"type":"neoforge:not","value":{"type":"othermod:unknown"}}},
@@ -65,7 +65,7 @@ fn foreign_unknown_after_true_is_absent_and_logged_once_at_error_level() {
     // fallback emission branch as well as the stored-candidate branch above.
     RECORDS.with_borrow_mut(Vec::clear);
     let file = json!({"neoforge:conditions":[{"type":"neoforge:or","values":[
-        {"type":"neoforge:true"},{"type":"othermod:unknown"},{"type":"othermod:unknown"}
+        {"type":"neoforge:always"},{"type":"othermod:unknown"},{"type":"othermod:unknown"}
     ]}]});
     assert!(
         !LoadConditions::vanilla().allows_file(&file, "data/testmod/recipe/foreign_static.json")

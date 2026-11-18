@@ -6,7 +6,7 @@
 //! objective displayed below names. Other players' names (on a LAN host
 //! or a server) show whenever `LivingEntityRenderer.shouldShowName` allows,
 //! and the player's own in third person with the `ownNameTag` extra.
-use super::{Game, view_vector};
+use super::{Game, billboard_axes};
 use sunrise_client::{
     block_entity_render::vertex_light,
     hud::{HudAtlas, HudBatch, HudVertex},
@@ -706,20 +706,12 @@ impl Game<'_> {
         marks: Marks,
         mut layouts: Option<&mut NameTagLayouts>,
     ) -> Vec<sunrise_client::font::Patch> {
-        // The camera's facing (Camera.rotation()), turned round in third-person
-        // front view, so the text reads the right way from where it is seen.
-        let (view_yaw, view_pitch) = match self.posed_rotation {
-            // The frame's camera, already turned round in front view.
-            Some(rotation) => rotation,
-            None if self.camera_type == mod_api::CameraType::ThirdPersonFront => {
-                (self.yaw + 180.0, -self.pitch)
-            }
-            None => (self.yaw, self.pitch),
-        };
-        let forward = glam::DVec3::from_array(view_vector(view_yaw, view_pitch));
-        let right = forward.cross(glam::DVec3::Y).normalize_or_zero();
-        let up = right.cross(forward).normalize_or_zero();
-        let away = forward.as_vec3() * 0.002;
+        // SubmitNodeCollection.submitNameTag turns the tag by the camera's orientation
+        // (Camera.rotation()), turned round in third-person front view, so the text reads the
+        // right way from where it is seen.
+        let orientation = self.camera_orientation();
+        let [right, up] = billboard_axes(orientation);
+        let away = orientation * glam::Vec3::NEG_Z * 0.002;
         let mut batch = HudBatch::new(
             [1, 1],
             sunrise_client::hud::GuiScale {

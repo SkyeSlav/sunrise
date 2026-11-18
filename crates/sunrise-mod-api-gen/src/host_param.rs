@@ -42,7 +42,7 @@ pub(super) fn validate(
             HostAccess::Level
                 if !game_level(hook)
                     && !ticks
-                    && (hook.side == Side::Server && mutable == Some(true)
+                    && (hook.side == Side::Server && mutable.is_some()
                         || hook.side == Side::Both && mutable == Some(false)) => {}
             // A hit's capability is the server hit's: a both-side hit's host only reads.
             HostAccess::Hit

@@ -133,6 +133,13 @@ jobs:
         run: >-
           python tools/prebuilt_game.py pack prebuilt dist
           --stage-tool target/prebuilt/tools/release/sunrise-stage${{ runner.os == 'Windows' && '.exe' || '' }}
+      # The shipped route on one native mod, against the SDK just built: the tool every SDK release ships
+      # (`cargo sunrise-mod native-build`), which `pack` built above. `ld` refuses a stack size unless it links a main
+      # executable, so a mod library reaches macOS's linker only if nothing of the game executable's link policy is
+      # passed to it.
+      - name: A native mod builds through the shipped route
+        if: matrix.name == 'macos'
+        run: python tools/ci/native_build_route.py --sdk prebuilt --tool target/release/cargo-sunrise-mod --work target/native-route
       - name: Asset sizes
         run: (cd dist && du -h *) | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
@@ -141,4 +148,15 @@ jobs:
           path: dist
           if-no-files-found: error
           retention-days: 7
+          overwrite: true
+      # The sunrise-stage `build` compiled from this commit, for sdk-publish.yml's surface diff on Linux, which
+      # otherwise compiled it again (80 to 87 s). Not an SDK asset: its name is outside `sdk-leg-*`.
+      - name: The stage tool for the index
+        uses: actions/upload-artifact@v4
+        if: matrix.name == 'linux'
+        with:
+          name: sdk-stage-tool
+          path: target/prebuilt/tools/release/sunrise-stage
+          if-no-files-found: error
+          retention-days: 1
           overwrite: true

@@ -398,6 +398,8 @@ pub enum Refusal {
     Build { expected: String, found: String },
     /// The package layout is one this reader does not know.
     PackageFormat(u64),
+    /// The pinned horizon-mixins revision is not a full commit sha.
+    MixinsRev(String),
     /// An asset names a kind this reader does not know.
     Kind { asset: String, kind: String },
     /// An asset names a codec this reader does not know.
@@ -445,14 +447,18 @@ impl fmt::Display for Refusal {
             Self::Malformed(why) => write!(f, "{INDEX} is not a valid SDK index: {why}"),
             Self::Schema(schema) => write!(
                 f,
-                "{INDEX} has schema {schema}; this program reads schema {SCHEMA}. Update it to use this SDK"
+                "{INDEX} has schema {schema}; this program reads schema {SCHEMA}, so it is older than this SDK. Update it (`cargo sunrise-mod`: run the install block of the book's \"Install the mod tool\" page), or use the tool in this SDK's own release"
             ),
             Self::Build { expected, found } => {
                 write!(f, "{INDEX} is for build {found}, not {expected}")
             }
             Self::PackageFormat(format) => write!(
                 f,
-                "{INDEX} has package format {format}; this program reads format {PACKAGE_FORMAT}. Update it to use this SDK"
+                "{INDEX} has package format {format}; this program reads format {PACKAGE_FORMAT}, so it is older than this SDK. Update it (`cargo sunrise-mod`: run the install block of the book's \"Install the mod tool\" page), or use the tool in this SDK's own release"
+            ),
+            Self::MixinsRev(rev) => write!(
+                f,
+                "{INDEX}'s mixins revision {rev:?} is not a full commit sha (40 lowercase hex digits)"
             ),
             Self::Kind { asset, kind } => write!(f, "{asset}: unknown asset kind {kind:?}"),
             Self::Codec { asset, codec } => write!(f, "{asset}: unknown codec {codec:?}"),
@@ -674,7 +680,7 @@ impl Index {
     }
 
     /// Read `sdk.json` for build `commit`: its schema, build, package format and every asset's
-    /// kind, codec and name are checked here, once.
+    /// kind, codec and name, and the mixins revision, are checked here, once.
     pub fn read(bytes: &[u8], commit: &str) -> Result<Index, Refusal> {
         let malformed = |error: serde_json::Error| Refusal::Malformed(error.to_string());
         Self::schema(bytes)?;
@@ -687,6 +693,9 @@ impl Index {
         }
         if written.package_format != u64::from(PACKAGE_FORMAT) {
             return Err(Refusal::PackageFormat(written.package_format));
+        }
+        if !crate::manifest::revision(&written.mixins.rev) {
+            return Err(Refusal::MixinsRev(written.mixins.rev));
         }
         let mut assets = BTreeMap::new();
         for (name, asset) in written.assets {

@@ -2248,16 +2248,66 @@ fn ray_box(eye: [f64; 3], dir: [f64; 3], reach: f64, b: Aabb) -> Option<f64> {
     }
     (t0 <= t1).then_some(t0)
 }
-/// `Entity.calculateViewVector`, which `GameRenderer.pick` aims with: float radians through `Mth.sin` and
-/// `Mth.cos`, vanilla's 65536-entry table. A placement's cursor and an interaction's point come from this ray, and
-/// the exact trigonometry below moved them by up to ~1e-4 of a block.
-fn pick_view_vector(yaw: f32, pitch: f32) -> [f64; 3] {
+/// `Entity.calculateViewVector`, behind `getViewVector`, `getLookAngle` and `GameRenderer.pick`: float radians
+/// through `Mth.sin` and `Mth.cos`, vanilla's 65536-entry table. Aims, a deflected projectile's motion, a spear's
+/// reach and a placement's cursor all come from it.
+fn view_vector(yaw: f32, pitch: f32) -> [f64; 3] {
     let v = sunrise_world::view_direction::view_vector(pitch, yaw);
     [v.x, v.y, v.z]
 }
-fn view_vector(yaw: f32, pitch: f32) -> [f64; 3] {
-    let (y, p) = (f64::from(yaw).to_radians(), f64::from(pitch).to_radians());
-    [-y.sin() * p.cos(), -p.sin(), y.cos() * p.cos()]
+#[cfg(test)]
+mod view_vector_tests {
+    /// `Entity.calculateViewVector` on HotSpot 25.0.4.1 (x86-64) for angles where double-precision `sin`/`cos`
+    /// gave other bits: (pitch, yaw) as float bits, vanilla's x, y and z as double bits.
+    #[test]
+    fn the_view_vector_has_vanillas_bits() {
+        let cases: [(u32, u32, [u64; 3]); 4] = [
+            (
+                0xc1d5_be2f,
+                0x43b0_17dc,
+                [
+                    0x3fbf_198b_0000_0000,
+                    0x3fdc_c507_6000_0000,
+                    0x3fec_514d_4000_0000,
+                ],
+            ),
+            (
+                0x42b4_0000,
+                0x43b4_0001,
+                [
+                    0x0000_0000_0000_0000,
+                    0xbff0_0000_0000_0000,
+                    0x3ca1_a626_4000_0000,
+                ],
+            ),
+            (
+                0xc2ad_4925,
+                0x43a0_0c61,
+                [
+                    0x3fa3_3b12_a000_0000,
+                    0x3fef_f1e7_2000_0000,
+                    0x3fa6_fe4a_e000_0000,
+                ],
+            ),
+            (
+                0x3b32_7d58,
+                0x4ea6_1ddd,
+                [
+                    0xbfd0_9895_4000_0000,
+                    0x8000_0000_0000_0000,
+                    0xbfee_e7c7_8000_0000,
+                ],
+            ),
+        ];
+        for (pitch, yaw, expected) in cases {
+            let v = super::view_vector(f32::from_bits(yaw), f32::from_bits(pitch));
+            assert_eq!(
+                v.map(f64::to_bits),
+                expected,
+                "pitch {pitch:#x}, yaw {yaw:#x}"
+            );
+        }
+    }
 }
 /// `Level.canHaveWeather`: sky light, no ceiling, and not the End (the one
 /// level the rule names by id).
@@ -2283,6 +2333,37 @@ fn camera_rotation(
         -view_pitch.to_radians(),
         0.0,
     )
+}
+/// The world directions of a camera-facing quad's x and y: `PoseStack.rotate` by the camera's
+/// orientation, as `FishingHookRenderer`, `DragonFireballRenderer` and
+/// `SubmitNodeCollection.submitNameTag` turn theirs. Both stay whole looking straight up or
+/// down, where the view vector has no horizontal part.
+fn billboard_axes(orientation: glam::Quat) -> [glam::DVec3; 2] {
+    [glam::Vec3::X, glam::Vec3::Y].map(|axis| (orientation * axis).as_dvec3())
+}
+#[cfg(test)]
+mod billboard_axes_tests {
+    /// `Camera.setRotation(30, -90)` (looking straight up) on HotSpot 25.0.4.1: its orientation
+    /// turns x and y to these, as float bits. glam's quaternion is not JOML's to the last bit.
+    #[test]
+    fn a_billboard_looking_straight_up_takes_the_cameras_axes() {
+        let expected: [[u32; 3]; 2] = [
+            [0xbf5d_b3d8, 0x0000_0000, 0xbf00_0002],
+            [0x3f00_0002, 0xb180_0001, 0xbf5d_b3d7],
+        ];
+        let axes = super::billboard_axes(super::camera_rotation(
+            sunrise_client::camera::CameraType::FirstPerson,
+            30.0,
+            -90.0,
+        ));
+        for (axis, expected) in axes.into_iter().zip(expected) {
+            let expected = glam::Vec3::from_array(expected.map(f32::from_bits)).as_dvec3();
+            assert!(
+                axis.abs_diff_eq(expected, 1e-6),
+                "{axis} against {expected}"
+            );
+        }
+    }
 }
 impl Game<'_> {
     /// `Level.canHaveWeather`, from the level's dimension type (sky light, no
@@ -2356,9 +2437,9 @@ impl Game<'_> {
         if let Some(e) = self.spectated_camera_snapshot() {
             let [x, y, z] = e.position;
             let eye = [x, y + f64::from(e.eye_height), z];
-            return Some((eye, pick_view_vector(e.y_rot, e.x_rot)));
+            return Some((eye, view_vector(e.y_rot, e.x_rot)));
         }
-        Some((self.eye_position()?, pick_view_vector(self.yaw, self.pitch)))
+        Some((self.eye_position()?, view_vector(self.yaw, self.pitch)))
     }
     /// `Player.blockInteractionRange`: the block pick's and mining's reach.
     fn reach(&self) -> f64 {
@@ -4592,95 +4673,12 @@ impl Game<'_> {
             return Ok(());
         }
         self.abort_open_transactions();
-        // `Player.entityInteractionRange`/`blockInteractionRange` for the tick's
-        // picks: the attribute carries creative's and a server's modifiers.
-        self.entity_reach = self.interaction_range("minecraft:entity_interaction_range", 3.0, 5.0);
-        self.block_reach = self.interaction_range("minecraft:block_interaction_range", 4.5, 5.0);
-        self.tick_debug_keys()?;
-        self.tick_debug_charts();
-        self.tick_tutorial();
-        if self.screen == Screen::Creative {
-            self.refresh_creative_tabs();
-            // CreativeModeInventoryScreen.containerTick: a player without
-            // infinite materials gets the survival inventory instead.
-            if !self.creative {
-                if let Some(c) = self.carried.take() {
-                    let _ = self.add_stack_to_inventory(c);
-                }
-                self.set_screen(Screen::Inventory);
-            }
-        }
+        self.update_interaction_ranges();
+        self.tick_client_lead()?;
         if self.remote.is_some() {
             return self.with_residency_tick(Self::tick_remote);
         }
-        // Only a server ticks its own world from here: its players are guests, swapped in for
-        // their turns (`as_guest`), and the window's player is a client of it.
-        self.ticks += 1;
-        self.repro_tick();
-        self.track_experience_display();
-        self.tick_enchanting_book();
-        // `/tick freeze` stops the world but not the player.
-        let running = match self.level_pass.running {
-            Some(running) => running,
-            None => self.clock.world_runs(),
-        };
-        // GameRenderer.tick: a wither's bar darkens the world, then fades;
-        // the activated item counts down.
-        self.boss_overlay.tick_darken(running);
-        self.tick_item_activation();
-        span("mods_inventory_ticks", || self.native_inventory_ticks());
-        if running {
-            // `MinecraftServer.tickChildren`: `commandFunctions` runs before
-            // any level ticks, so a tick function reads the game time and the
-            // day clock from before this tick. Vanilla's SavedData is loaded
-            // long before this point; the lazy scoreboard/storage read has to
-            // be done by then too, or a load tag writes over what it restores.
-            self.load_scoreboard();
-            span("tick_functions", || self.tick_functions());
-            self.world.game_time += 1;
-            if self
-                .ui
-                .rules
-                .bool_at(sunrise_client::gamerules::vanilla::ADVANCE_WEATHER)
-            {
-                self.world.weather.tick_timers(&mut self.world.random);
-            }
-            self.world.weather.tick_levels();
-        } else if self.clock.still() {
-            // Under `SUNRISE_STILL` a frozen world's rain and thunder sit at their levels, as a
-            // shader pack's smoothed values do, so `/weather rain` shows full rain without
-            // stepping the world (and its mobs) through the fade.
-            self.world.weather.settle_levels();
-        }
-        // ClientLevel.tick: the sky flash fades in a frozen level too.
-        self.tick_weather_effects();
-        let _ = span("player_autosaves", || self.finish_player_autosaves(false));
-        // MinecraftServer.tickServer's countdown, then autoSave: three
-        // hundred seconds of ticks at the rate the server runs at now.
-        self.ticks_until_autosave -= 1;
-        self.autosaving = self.ticks_until_autosave <= 0;
-        if let Some(serving) = &self.serving {
-            serving.set_saving(self.autosaving);
-        }
-        if self.autosaving {
-            span("autosave", || self.save_game_with(false))?;
-            self.ticks_until_autosave = self.next_autosave_interval();
-            if let Some(serving) = &self.serving {
-                serving.set_saving(false);
-            }
-        }
-        if running {
-            self.advance_clock();
-            // `ServerLevel.tickTime`, once the clock has moved on.
-            span("scheduled_functions", || self.run_scheduled_functions());
-        }
-        if self.use_delay > 0 {
-            self.use_delay -= 1;
-        }
-        self.tick_totem();
-        self.update_totem_ready();
-        span("tick_command_extras", || self.tick_command_extras());
-        self.tick_world(running)
+        self.tick_first_level()
     }
     /// The title remains the no-level sentinel while debug options covers it.
     /// Only UI dispatch ignores it; world loading and simulation still see it.
@@ -6168,24 +6166,44 @@ impl Game<'_> {
         if let Some(hit) = self.tick_mob {
             return hit;
         }
-        self.mob_hit_within(self.entity_reach)
+        let mut pick = crate::game::pick_accumulator::PickAccumulator::new(self.entity_reach);
+        self.mob_hit_within_with_pick(self.entity_reach, &mut pick)
     }
-    /// [`Game::mob_hit`] out to `reach` instead of the entity interaction range
-    /// (`ProjectileUtil.getHitResultOnViewVector` with another range).
+    /// The brush's `ProjectileUtil.getHitResultOnViewVector` uses the nearest
+    /// box entry, excluding the source but not its vehicle or passengers.
     pub(super) fn mob_hit_within(&self, reach: f64) -> Option<(usize, f64, [f64; 3])> {
+        let source = self.pick_camera_id();
+        let mut nearest = f64::INFINITY;
+        self.mob_hit_within_consider(reach, |id, distance| {
+            if Some(id) == source || distance == 0.0 || distance >= nearest {
+                return false;
+            }
+            nearest = distance;
+            true
+        })
+    }
+    pub(super) fn mob_hit_within_with_pick(
+        &self,
+        reach: f64,
+        pick: &mut crate::game::pick_accumulator::PickAccumulator,
+    ) -> Option<(usize, f64, [f64; 3])> {
+        self.mob_hit_within_consider(reach, |id, distance| pick.consider(self, id, distance))
+    }
+    fn mob_hit_within_consider(
+        &self,
+        reach: f64,
+        mut consider: impl FnMut(u32, f64) -> bool,
+    ) -> Option<(usize, f64, [f64; 3])> {
         let (eye, dir) = self.aim()?;
         let mut best: Option<(usize, f64, [f64; 3])> = None;
         for (i, m) in self.mobs.iter().enumerate() {
-            // ProjectileUtil.getEntityHitResult: the mob the player rides
-            // shares its root vehicle and is never the hit, nor is the
-            // camera entity the pick starts from. EntitySelector.CAN_BE_PICKED
-            // is isPickable — `!isRemoved`, not alive: a health-0 fake player
-            // still answers a click.
-            if m.removed || Some(m.id) == self.riding || Some(m.id) == self.remote_camera_id() {
+            // EntitySelector.CAN_BE_PICKED is isPickable — `!isRemoved`,
+            // not alive: a health-0 fake player still answers a click.
+            if m.removed {
                 continue;
             }
             if let Some(t) = ray_box(eye, dir, reach, m.bounds())
-                && best.is_none_or(|b| t < b.1)
+                && consider(m.id, t)
             {
                 let point = Vec3::new(
                     eye[0] + dir[0] * t,

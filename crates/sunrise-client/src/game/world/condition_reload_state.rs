@@ -77,8 +77,8 @@ mod tests {
     #[test]
     fn registry_entry_elements_keep_their_original_bytes() {
         let entry = br#"{ "tiers": [
-            {"neoforge:conditions": [{"type": "neoforge:false"}], "name": "tin"},
-            {"neoforge:conditions": [{"type": "neoforge:true"}], "name": "iron"}
+            {"neoforge:conditions": [{"type": "neoforge:never"}], "name": "tin"},
+            {"neoforge:conditions": [{"type": "neoforge:always"}], "name": "iron"}
         ] }"#
             .to_vec();
         assert_eq!(

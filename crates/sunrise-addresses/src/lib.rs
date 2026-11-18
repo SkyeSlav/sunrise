@@ -80,6 +80,10 @@ pub const MIXINS_TOOL_RELEASES: &str = "https://github.com/sunrise-org/sunrise/r
 /// overrides it.
 pub const SDK_RELEASES: &str = "https://github.com/sunrise-org/sunrise/releases/download";
 
+/// A file of the game's source at one commit; the commit and the file's path follow. `native-lock`
+/// reads the pinned build's `Cargo.lock` from it.
+pub const GAME_SOURCE_FILES: &str = "https://raw.githubusercontent.com/sunrise-org/sunrise";
+
 /// The fork's newest releases, which `cargo sunrise-mod` reads to find the one SDK a short sha names.
 pub const SDK_RELEASE_LIST: &str =
     "https://api.github.com/repos/sunrise-org/sunrise/releases?per_page=100";

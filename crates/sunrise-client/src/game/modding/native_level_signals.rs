@@ -7,7 +7,8 @@ use sunrise_client::{items::Items, world::World};
 use sunrise_core::{geometry::Direction, position::BlockPos};
 use sunrise_world::{level::signal_access::SignalAccess, registry::BlockStateId};
 
-/// Created only after `level_in_place` accepts the level. No mutable world,
+/// Created for the game's current level (`self.level(self.dim.id())` or after
+/// `level_in_place` confirms the level matches `self.world`). No mutable world,
 /// random source, entity snapshots or transaction is needed by a signal read.
 pub(super) struct ReadLevel<'g, 'a> {
     pub game: &'g Game<'a>,
@@ -241,6 +242,12 @@ impl LevelHost for ReadLevel<'_, '_> {
             name,
         )
     }
+    fn block_entity_data(&self, entity: mod_api::BlockEntityRef) -> Option<mod_api::Compound> {
+        use mod_api::__private::game::Fields;
+        (entity.fields().level == self.level)
+            .then(|| self.game.block_entity_data(entity))
+            .flatten()
+    }
     fn block_state(&self, [x, y, z]: [i32; 3]) -> Option<mod_api::BlockState> {
         self.game.world.block(x, y, z).try_into_api().ok()
     }
@@ -311,8 +318,12 @@ impl LevelHost for ReadLevel<'_, '_> {
         super::native_level_refs::world_brightness(&self.game.world, layer, pos)
     }
     fn raw_brightness(&self, pos: [i32; 3], sky_darken: i32) -> i32 {
-        self.brightness(mod_api::LightLayer::Block, pos)
-            .max(self.brightness(mod_api::LightLayer::Sky, pos) - sky_darken)
+        // Java's unchecked subtraction: a listener may pass any darkening, including
+        // `i32::MIN`, and the result wraps as vanilla's `int` arithmetic does.
+        self.brightness(mod_api::LightLayer::Block, pos).max(
+            self.brightness(mod_api::LightLayer::Sky, pos)
+                .wrapping_sub(sky_darken),
+        )
     }
     fn is_loaded(&self, [x, y, z]: [i32; 3]) -> bool {
         self.game.world.is_loaded_at(x, y, z)

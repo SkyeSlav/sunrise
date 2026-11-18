@@ -580,6 +580,12 @@ impl NearPlane {
             corner(-1.0, -1.0),
         ]
     }
+    /// `getPointOnPlane(x, y)`: `forward + up * y - left * x`.
+    pub fn point_on_plane(&self, x: f32, y: f32) -> [f64; 3] {
+        std::array::from_fn(|i| {
+            self.forward[i] + self.up[i] * f64::from(y) - self.left[i] * f64::from(x)
+        })
+    }
 }
 
 /// `Camera`: the eye-height and field-of-view easing and the view placement.

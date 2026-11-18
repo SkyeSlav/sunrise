@@ -261,12 +261,12 @@ impl Game<'_> {
                 if let Some(result) = crate::game::native_hooks::block_use_result(answer) {
                     (result, DryUse::default())
                 } else if hand == Hand::Main {
-                    self.remote_block_template(&hit, held.as_ref(), true)
+                    self.remote_block_template(&hit, held.as_ref(), true, true)
                 } else {
                     (InteractionResult::Pass, DryUse::default())
                 }
             } else if hand == Hand::Main && !spectator && vanilla_block {
-                self.remote_block_reacts(&hit, held.as_ref())
+                self.remote_block_reacts(&hit, held.as_ref(), true)
             } else {
                 // useItemOn runs for the off hand too (useWithoutItem doesn't):
                 // RespawnAnchorBlock.useItemOn charges an anchor with its

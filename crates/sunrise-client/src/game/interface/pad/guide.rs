@@ -572,7 +572,7 @@ impl Game<'_> {
         if let Some(hit) = block {
             if info.block.is_some() && Self::can_hint_block_placement(&stack) {
                 let placeable = if self.may_build() {
-                    self.remote_can_place(hit, &stack).is_some()
+                    self.remote_would_place(hit, &stack)
                 } else {
                     self.can_place_on_in_adventure(hit.pos)
                 };

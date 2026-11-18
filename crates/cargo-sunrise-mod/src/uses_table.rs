@@ -203,6 +203,7 @@ mod tests {
             build: "a".repeat(40),
             name: "nightly-2026-11-13 (afe471c)".into(),
             dir: "sdk".into(),
+            mixins: "b".repeat(40),
             surface: "sdk/surface.json".into(),
         };
         assert_eq!(

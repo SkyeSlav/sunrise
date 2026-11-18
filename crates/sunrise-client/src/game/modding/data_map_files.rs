@@ -301,7 +301,7 @@ mod condition_tests {
     fn typed_maps_ignore_file_conditions_and_keep_value_conditions() {
         let files = vec![(
             "data_maps/test:item/fuel".to_owned(),
-            vec![br#"{"neoforge:conditions":[{"type":"neoforge:false"}],"values":{"minecraft:stick":2,"minecraft:coal":{"neoforge:conditions":[{"type":"neoforge:false"}],"value":3}}}"#.to_vec()],
+            vec![br#"{"neoforge:conditions":[{"type":"neoforge:never"}],"values":{"minecraft:stick":2,"minecraft:coal":{"neoforge:conditions":[{"type":"neoforge:never"}],"value":3}}}"#.to_vec()],
         )];
         let overlay = sunrise_world::loot::PackOverlay {
             files: &files,

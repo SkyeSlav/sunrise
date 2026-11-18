@@ -24,7 +24,7 @@ const LLD_ENV: &str = "SUNRISE_MOD_LLD";
 /// The library mods' crate names, comma-separated, that a member leaves out.
 const PROVIDED_ENV: &str = "SUNRISE_MOD_PROVIDED";
 const PROFILE: &str = "sunrise-wasm";
-const FLAGS: &str = "-Crelocation-model=pic -Zshare-generics=n -Zdefault-visibility=hidden --cfg=sunrise_shared_artifacts_v2";
+const FLAGS: &str = "-Crelocation-model=pic -Zshare-generics=n -Zdefault-visibility=hidden --cfg=sunrise_shared_artifacts_v3";
 
 /// Guest boundary exports, kept even though they originate in an rlib dependency.
 const GUEST_EXPORTS: &[&str] = &["sunrise_in", "sunrise_hook"];

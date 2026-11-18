@@ -753,7 +753,14 @@ impl Config {
     /// wrote, for [`sync_back`].
     pub fn write_properties(&self, dir: &Path) -> std::io::Result<Vec<(String, String)>> {
         let path = dir.join(PROPERTIES);
-        let mut properties = read_properties(&path).unwrap_or_default();
+        // Only a missing file starts empty. One that cannot be read is left as it is and the start stops
+        // with why, so the owner's other keys (RCON, command blocks...) are not reset to defaults.
+        let mut properties = match std::fs::read(&path) {
+            Ok(bytes) => Properties::load_file(&bytes)
+                .map_err(|e| std::io::Error::other(format!("{}: {e}", path.display())))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Properties::default(),
+            Err(e) => return Err(e),
+        };
         let written = self.vanilla();
         for (key, value) in &written {
             properties.put(key, value.clone());
@@ -1343,6 +1350,26 @@ mod tests {
             .map(|e| e.unwrap().file_name())
             .collect();
         assert_eq!(names, [std::ffi::OsString::from(FILE)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_server_properties_that_cannot_be_read_is_left_alone() {
+        let dir =
+            std::env::temp_dir().join(format!("sunrise-server-config-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(FILE), render(&Config::default())).unwrap();
+        // The owner's own keys, and a line the properties parser refuses (a bad \u escape).
+        let own = "enable-rcon=true\nrcon.password=secret\nresource-pack=C:\\uZZZZ\\pack.zip\n";
+        std::fs::write(dir.join(PROPERTIES), own).unwrap();
+        let error = Config::default().write_properties(&dir).unwrap_err();
+        assert!(error.to_string().contains(PROPERTIES), "{error}");
+        assert_eq!(std::fs::read_to_string(dir.join(PROPERTIES)).unwrap(), own);
+        // No file at all is a first start: it is written from server.toml.
+        std::fs::remove_file(dir.join(PROPERTIES)).unwrap();
+        Config::default().write_properties(&dir).unwrap();
+        assert!(dir.join(PROPERTIES).is_file());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

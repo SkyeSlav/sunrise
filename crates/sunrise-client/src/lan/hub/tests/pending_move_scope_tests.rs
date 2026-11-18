@@ -161,8 +161,8 @@ fn a_confirmation_with_a_changed_position_is_not_heard() {
     hub.teleport_command(0, [10.5, 70.0, 10.5], [false; 3]);
     hub.ticks = 11;
     let (id, _) = hub.guests[0].awaiting_teleport.unwrap();
-    // The server's own handling: the accepted position is the teleport's, the packet's own values go
-    // through the same validation as any report.
+    // `handleAcceptTeleportPacket` snaps to the teleport's target, then handles the packet's own
+    // position as an ordinary report: it is where the client stands.
     let moved = S::AcceptTeleportation(play::AcceptTeleportation {
         id,
         x: 10.75,
@@ -176,19 +176,44 @@ fn a_confirmation_with_a_changed_position_is_not_heard() {
     assert!(hub.guests[0].pending_move.is_none());
     assert_eq!(
         hub.guests[0].position,
-        [10.5, 70.0, 10.5],
-        "the teleport's target, not the packet's position"
+        [10.75, 70.0, 10.5],
+        "the client's landing, not the teleport's target"
     );
 }
 
 #[test]
-fn a_confirmation_never_commits_the_displacement_a_veto_refused() {
+fn a_confirmation_from_too_far_is_corrected_to_the_teleports_target() {
+    let mut hub = standing(true, vec![]);
+    hub.teleport_command(0, [10.5, 70.0, 10.5], [false; 3]);
+    hub.ticks = 11;
+    let (id, _) = hub.guests[0].awaiting_teleport.unwrap();
+    // The speed test holds the packet's own position to the same limit as any report.
+    let far = S::AcceptTeleportation(play::AcceptTeleportation {
+        id,
+        x: 510.5,
+        y: 70.0,
+        z: 10.5,
+        yaw: 0.0,
+        pitch: 0.0,
+    });
+    push(&mut hub, vec![far]);
+    drain(&mut hub);
+    assert_eq!(hub.guests[0].position, [10.5, 70.0, 10.5]);
+    assert!(
+        hub.guests[0].awaiting_teleport.is_some(),
+        "the client is sent back to the target"
+    );
+}
+
+#[test]
+fn a_confirmation_lands_where_the_client_says_even_after_a_veto_corrected_it() {
     let mut hub = standing(true, vec![at(0.5)]);
     let conn = hub.guests[0].conn;
     assert_eq!(moves(&drain(&mut hub)), [conn]);
     hub.resolve_move(conn, false);
     let (id, _) = hub.guests[0].awaiting_teleport.unwrap();
-    // The client confirms the correction while claiming the position the veto refused.
+    // The client confirms the correction from the position the veto refused: its report of where
+    // it stands is handled as any other, from the correction's target.
     let refused = S::AcceptTeleportation(play::AcceptTeleportation {
         id,
         x: 0.5,
@@ -202,8 +227,8 @@ fn a_confirmation_never_commits_the_displacement_a_veto_refused() {
     assert!(hub.guests[0].awaiting_teleport.is_none(), "it confirmed");
     assert_eq!(
         hub.guests[0].position,
-        [0.0, 64.0, 0.0],
-        "the correction's target"
+        [0.5, 64.0, 0.0],
+        "the position the confirmation reports"
     );
 }
 

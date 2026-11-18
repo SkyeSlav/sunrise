@@ -89,6 +89,12 @@ impl Game<'_> {
     /// again, a game with no mod listening to either, and a server's or a guest's `Game`
     /// are a plain assignment.
     pub(super) fn set_screen(&mut self, screen: Screen) {
+        self.set_screen_with(screen, |_| {});
+    }
+    /// `set_screen`, with `before` run once the hooks let the change go ahead and
+    /// before it applies: what a screen's own `onClose` does only when it really
+    /// closes (a container screen's close packet).
+    pub(super) fn set_screen_with(&mut self, screen: Screen, before: impl FnOnce(&mut Self)) {
         if self.screen == screen {
             return;
         }
@@ -112,6 +118,7 @@ impl Game<'_> {
         if self.screen == screen && owner.is_none() {
             return;
         }
+        before(self);
         if self.screen == Screen::Options {
             self.ui.options.discard_draw();
         }

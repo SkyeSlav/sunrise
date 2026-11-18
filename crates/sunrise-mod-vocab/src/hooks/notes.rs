@@ -214,11 +214,6 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   3 accepted, 4 downloaded, 5 invalid URL, 6 failed reload, 7 discarded). It only hears. The pack a dedicated server
   offers during the configuration is answered before the player has joined and is not heard. The player's state is
   swapped in, so `PlayerRef::tell` works.
-- **`native_projectile_hit(owner, kind, hit_entity, pos, cancel)`**: a projectile a server player launched (arrow,
-  snowball, egg, thrown trident, ender pearl, ...) hit an entity (`hit_entity`) or a block at `pos`, heard before any
-  of its effects (NeoForge's `ProjectileImpactEvent`). Set `cancel` and it does nothing: it vanishes, a thrown trident
-  flies on through. The shooter's state is swapped in, so `PlayerRef::tell` answers them. Mobs' and the host's
-  projectiles are not heard, nor are fishing bobbers and firework rockets.
 - **`tnt_primed(player, pos, cancel)`**: TNT at `pos` is about to be lit by a flint and steel or fire charge
   (`player` is whoever clicked, whose state is swapped in), fire, a redstone signal, an arrow or a dispenser (`player` is
   None). Set `cancel` and it is not primed: the block stays, or is put back if fire or a signal had already taken it
@@ -1731,7 +1726,7 @@ still go on each event or registrar.
   an advancement of a content mod or a data pack names (`mymod:pipe_connected`) for one player, as a NeoForge mod's
   `SimpleCriterionTrigger.trigger`.
 
-- Where a mod block can stay, on an authoritative server. `can_survive(dimension, pos, state, survives)` answers
+- Where a mod block can stay. `can_survive(dimension, pos, state, survives)` answers
   `BlockState.canSurvive` before the block does: as it is placed (`BlockItem.canPlace`: `Some(false)` refuses the spot),
   from the shape update of a block whose template checks it (a plant, a torch, a sign: `Some(false)` breaks it with its
   drops when a neighbour changes), and wherever else vanilla asks. `state` may not be in the world yet, so decide from
@@ -1739,7 +1734,7 @@ still go on each event or registrar.
   mod plant, whose block declaration opts into vegetation or whose template inherits it. The soil's `can_sustain_plant`
   decides first, then the plant; an empty answer keeps the plant's rule. Placement refuses unsupported ground and
   neighbour updates pop the plant off. Answer only for your own blocks. The level is read-only; both run on shape
-  updates, so keep them short.
+  updates, so keep them short. With `can_sustain_plant` and `state_for_placement` they are asked on both sides (their docs).
 
 - Drawing mod block entities on the client. `block_entity_submit(pos, block, state, entity, draw)` runs once a frame
   for each mod block entity in view, as vanilla's `BlockEntityRenderer.submit` does (within its view distance, 64 blocks
@@ -1793,7 +1788,7 @@ still go on each event or registrar.
   waterlogged block reads. It is asked for every placer that goes through vanilla's placement (a player's
   `BlockItem.place`, a dispenser's `DirectionalPlaceContext`), and the answer still takes its survival and entity
   obstruction checks. `native_state_with_property(state, key, value)` builds the state from `state` and one of its
-  properties, its own declared ones included. Authoritative servers only.
+  properties, its own declared ones included. Asked on both sides (see above): a client refusal keeps its stack unspent.
 
 - A `minecraft:post_attack` enchantment effect of a mod's own kind, on a mob a player's weapon hit: `enchant_effect` (see
   [A mod's own enchantment effect kinds](../how-to/items/enchantment-effect-kinds.md)).
@@ -2337,7 +2332,7 @@ registration path.
 
 - `native_server_event(name, uuid, message)` posts an `announce` event to a dedicated server's event stream (`GET /api/v1/events`); sunrise-server's Discord bridge relays it, in gold, when `[discord] events` lists `announce` (off by default). False elsewhere and for an empty message.
 
-- `native_state_block(state)` names the block a state belongs to (`BlockState.getBlock()`), on a server hook's level and on the game: `state_for_placement` is asked for every block placed, so a mod compares it with its own block to answer only for it.
+- `native_state_block(state)` names the block a state belongs to (`BlockState.getBlock()`), on a hook's level and on the game: `state_for_placement` is asked for every block placed, so a mod compares it with its own block to answer only for it.
 
 - The helper `native_physical_window_size()`, which returns the window's width and height in physical pixels, independent of GUI scale. It returns no size on a server or when no window exists.
 

@@ -57,6 +57,13 @@ impl Candidate {
     }
 }
 
+/// Which side of the connection runs the rule: `Level.isClientSide()`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Client,
+    Server,
+}
+
 /// Who is moving, which decides the rule.
 #[derive(Clone, Copy, Debug)]
 pub enum Mover {
@@ -67,9 +74,14 @@ pub enum Mover {
         happy_ghast: bool,
         mount: Option<u32>,
     },
-    /// The player: a boat or a happy ghast it does not ride, a living shulker; a ghast also
-    /// when the player's feet are over its top.
-    Player { feet_y: f64, riding: Option<u32> },
+    /// The player: a boat or a happy ghast it does not ride, a living shulker; on the client a
+    /// ghast also when the player's feet are over its top (`HappyGhast.canBeCollidedWith`'s
+    /// `isClientSide` branch, its predictive landing), on the server only one held still.
+    Player {
+        feet_y: f64,
+        riding: Option<u32>,
+        side: Side,
+    },
     /// A dropped item, an armor stand, an orb, primed TNT, a falling block, a pushed body:
     /// a boat, a living shulker, a happy ghast held still.
     Passive,
@@ -116,12 +128,17 @@ impl Mover {
                         || c.mount == Some(id)
                         || (mount.is_some() && c.mount == mount))
             }
-            Mover::Player { feet_y, riding } => match c.kind {
+            Mover::Player {
+                feet_y,
+                riding,
+                side,
+            } => match c.kind {
                 SolidKind::Shulker => c.alive,
                 SolidKind::HappyGhast => {
                     Some(c.id) != riding
                         && ghast_adult
-                        && (feet_y >= c.bounds.max_position().y || c.still)
+                        && (c.still
+                            || (side == Side::Client && feet_y >= c.bounds.max_position().y))
                 }
                 SolidKind::Boat => Some(c.id) != riding,
                 _ => false,
@@ -183,8 +200,9 @@ mod tests {
     use super::*;
     use sunrise_core::geometry::Vec3;
 
-    /// `HappyGhast.canBeCollidedWith(Player)`: an adult alive ghast is solid to a player whose feet
-    /// are at or over its top, or while it is held still; never a baby or a dead one.
+    /// `HappyGhast.canBeCollidedWith(Player)`: an adult alive ghast is solid to a player while it
+    /// is held still, and on the client also to one whose feet are at or over its top; never a
+    /// baby or a dead one.
     #[test]
     fn a_players_feet_over_a_happy_ghasts_top_or_its_still_timeout_make_it_solid() {
         let ghast = |alive, baby, still| Candidate {
@@ -197,18 +215,26 @@ mod tests {
                 Aabb::new(Vec3::new(0.0, 80.0, 0.0), Vec3::new(4.0, 84.0, 4.0)),
             )
         };
-        let solid = |feet_y, c: Candidate| {
+        let solid = |side, feet_y, c: Candidate| {
             Mover::Player {
                 feet_y,
                 riding: None,
+                side,
             }
             .solid(&c, || None)
         };
-        assert!(solid(84.0, ghast(true, false, false)));
-        assert!(solid(85.0, ghast(true, false, false)));
-        assert!(!solid(83.99, ghast(true, false, false)));
-        assert!(solid(83.99, ghast(true, false, true)));
-        assert!(!solid(84.0, ghast(true, true, true)));
-        assert!(!solid(84.0, ghast(false, false, true)));
+        let client = |feet_y, c| solid(Side::Client, feet_y, c);
+        let server = |feet_y, c| solid(Side::Server, feet_y, c);
+        assert!(client(84.0, ghast(true, false, false)));
+        assert!(client(85.0, ghast(true, false, false)));
+        assert!(!client(83.99, ghast(true, false, false)));
+        assert!(client(83.99, ghast(true, false, true)));
+        assert!(!client(84.0, ghast(true, true, true)));
+        assert!(!client(84.0, ghast(false, false, true)));
+        // The server has no predictive landing: only the still timeout makes it solid.
+        assert!(!server(85.0, ghast(true, false, false)));
+        assert!(server(83.99, ghast(true, false, true)));
+        assert!(server(85.0, ghast(true, false, true)));
+        assert!(!server(85.0, ghast(true, true, true)));
     }
 }

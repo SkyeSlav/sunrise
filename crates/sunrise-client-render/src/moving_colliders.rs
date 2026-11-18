@@ -391,8 +391,14 @@ pub struct HistoryScope {
 
 impl HistoryScope {
     pub fn enter(history: Rc<RefCell<History>>) -> Self {
+        Self::replace(Some(history))
+    }
+
+    /// Makes `history` the one in scope, `None` meaning a level that keeps none: the guard
+    /// then puts back whatever was in scope before.
+    pub fn replace(history: Option<Rc<RefCell<History>>>) -> Self {
         Self {
-            before: HISTORY.with(|cell| cell.borrow_mut().replace(history)),
+            before: HISTORY.with(|cell| std::mem::replace(&mut *cell.borrow_mut(), history)),
         }
     }
 }

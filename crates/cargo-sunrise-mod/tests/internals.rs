@@ -4,10 +4,18 @@ use std::{
     path::PathBuf,
     process::{Command, Output},
 };
-use sunrise_mod_package::{Manifest, manifest::MANIFEST};
+use sunrise_mod_package::{
+    Manifest,
+    manifest::MANIFEST,
+    sdk::{self, Index},
+};
 
 const OLD: &str = "0123456789abcdef0123456789abcdef01234567";
 const NEW: &str = "89abcdef0123456789abcdef0123456789abcdef";
+/// The manifest's pinned tool, before any update.
+const MANIFEST_MIXINS: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+/// The tool `NEW`'s `sdk.json` names.
+const NEW_MIXINS: &str = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c";
 const OLD_CATALOG: &str = include_str!("fixtures/internals-old.json");
 const NEW_CATALOG: &str = include_str!("fixtures/internals-new.json");
 
@@ -20,12 +28,38 @@ impl Project {
             .join("../../target/i3-d/tests")
             .join(format!("internals-{name}-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join(MANIFEST), format!("# A modder's description\nid = 'example'\nname = 'Example'\nversion = '0.1.0'\napi = '0.2'\ncapabilities = ['registries']\n{declarations}\n[native] # native settings\ngame = '26.3'\nsunrise = '{OLD}' # pinned game\nmixins = '{}'\n", "a".repeat(40))).unwrap();
+        fs::write(dir.join(MANIFEST), format!("# A modder's description\nid = 'example'\nname = 'Example'\nversion = '0.1.0'\napi = '0.2'\ncapabilities = ['registries']\n{declarations}\n[native] # native settings\ngame = '26.3'\nsunrise = '{OLD}' # pinned game\nmixins = '{MANIFEST_MIXINS}'\n")).unwrap();
         fs::write(dir.join("Cargo.toml"), "# Keep this comment\n[package]\nname = 'example'\nversion = '0.1.0'\n[dependencies]\nsunrise-mod-api = { path = '.sunrise/sdk/api/crates/sunrise-mod-api' } # API pin\nsunrise-internals = { path = '.sunrise/sdk/api/crates/sunrise-internals' } # facade pin\n").unwrap();
         let project = Self { dir };
         project.catalog(OLD, OLD_CATALOG);
         project.catalog(NEW, NEW_CATALOG);
+        project.sdk(OLD, MANIFEST_MIXINS);
+        project.sdk(NEW, NEW_MIXINS);
         project
+    }
+    /// The `sdk.json` of `revision`'s verified fetch, naming the tool `mixins`: a stamped folder
+    /// is read as it is, so an offline fixture needs the file a signed release carries.
+    fn sdk(&self, revision: &str, mixins: &str) {
+        let release = self.dir.join("release").join(revision);
+        fs::create_dir_all(&release).unwrap();
+        fs::write(release.join("surface.json"), r#"{"hash":"ab"}"#).unwrap();
+        let build = sdk::Build {
+            commit: revision.into(),
+            game: sdk::GAME.into(),
+            date: "2026-11-13".into(),
+            nightly: None,
+        };
+        let mut index = Index::of_folder(&release, build, "1.99.1".into()).unwrap();
+        index.mixins.rev = mixins.into();
+        fs::write(
+            self.dir
+                .join(".sunrise/cache")
+                .join(revision)
+                .join(sdk::INDEX),
+            index.to_json(),
+        )
+        .unwrap();
+        fs::remove_dir_all(self.dir.join("release")).unwrap();
     }
     fn catalog(&self, revision: &str, text: &str) {
         // A verified fetch leaves the build's stamp and its unpacked build data.
@@ -213,6 +247,8 @@ fn update_diffs_signatures_refreshes_present_hashes_and_keeps_missing_declaratio
     let manifest = project.manifest();
     let native = manifest.native.unwrap();
     assert_eq!(native.sunrise, NEW);
+    // The destination SDK's tool replaces the manifest's.
+    assert_eq!(native.mixins, NEW_MIXINS);
     assert_eq!(
         manifest
             .internals
@@ -262,6 +298,7 @@ fn table_declarations_keep_their_format_when_adding_and_refreshing() {
     let report = success(&project.run(&["update", "--sunrise", NEW]));
     assert!(report.contains("unchanged: sunrise_client::game::Game"));
     assert_eq!(project.manifest().internals.len(), 2);
+    assert_eq!(project.manifest().native.unwrap().mixins, NEW_MIXINS);
     assert!(project.text().contains("# fingerprint"));
 }
 
@@ -340,6 +377,26 @@ fn unreadable_new_catalog_does_not_move_either_pin_or_hashes() {
         fs::read_to_string(project.dir.join("Cargo.toml")).unwrap(),
         cargo
     );
+}
+
+#[test]
+#[ignore = "daily"]
+fn update_refuses_a_malformed_mixins_revision_and_changes_no_file() {
+    let project = Project::new(
+        "bad-mixins",
+        "internals = [{ path = 'sunrise_client::game::Game', hash = 'stale' }]\n",
+    );
+    for rev in ["main", &NEW_MIXINS.to_uppercase(), &NEW_MIXINS[1..]] {
+        project.sdk(NEW, rev);
+        let manifest = fs::read(project.dir.join(MANIFEST)).unwrap();
+        let cargo = fs::read(project.dir.join("Cargo.toml")).unwrap();
+        let output = project.run(&["update", "--sunrise", NEW]);
+        assert!(!output.status.success(), "{rev}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("mixins revision"), "{rev}: {error}");
+        assert_eq!(fs::read(project.dir.join(MANIFEST)).unwrap(), manifest);
+        assert_eq!(fs::read(project.dir.join("Cargo.toml")).unwrap(), cargo);
+    }
 }
 
 #[cfg(unix)]

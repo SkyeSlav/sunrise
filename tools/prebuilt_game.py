@@ -11,6 +11,8 @@ native trait mods against it with rustc alone, in seconds, without the game's so
                                                           # and surface.json, in DIST; for the client side also
                                                           # tool-<target>.tar.xz (cargo-sunrise-mod); --stage-tool the
                                                           # sunrise-stage `build` compiled, instead of compiling it
+    python3 tools/prebuilt_game.py tool DIST              # just this computer's tool-<target>.tar.xz, as `pack` makes it
+                                                          # (the rolling mod-tool release, tools/ci/mod_tool.py)
     python3 tools/prebuilt_game.py gather LEGS DIST       # the release folder from every packing leg's DIST, once
                                                           # their build data and surface are checked equal
     python3 tools/prebuilt_game.py index DIST [--nightly NAME] [--previous BUILD DIFF]  # DIST/sdk.json
@@ -727,16 +729,16 @@ def smoke(out: Path) -> None:
 
 # What `smoke` adds to the starter for `smoke_user` to call; never inlined, so the call crosses the libraries.
 SMOKE_LIBRARY_ITEM = """
-/// Called from `smoke_user`'s library.
+/// Called from `smoke_user`'s library. Named apart from the starter's own items (its private `greeting`).
 #[inline(never)]
-pub fn greeting() -> &'static str {
+pub fn library_name() -> &'static str {
     "smoke"
 }
 """
 SMOKE_USER_ITEM = """
 /// A call into `smoke`'s library.
-pub fn greeting_length() -> usize {
-    smoke::greeting().len()
+pub fn library_name_length() -> usize {
+    smoke::library_name().len()
 }
 """
 
@@ -875,10 +877,12 @@ def archives(out: Path, sliced: dict[str, list[str]]) -> dict[str, list[str]]:
                                 if parent != Path("."))} | set(names)) for kind, names in chosen.items()}
 
 
-def pack(out: Path, dist: Path, stage_tool: Path | None = None) -> None:
+def pack(out: Path, dist: Path, stage_tool: Path | None = None, with_tool: bool = False) -> None:
     """The SDK release's assets from a checked folder OUT, into DIST: the package as its `runtime`, `api` and `engine`
     archives for its target and side ([`archives`]), the build data, the surface export of this source and, for the
-    client side, the target's `tool` ([`tool`]): one per target, as it serves both sides."""
+    client side, the target's `tool` ([`tool`]): one per target, as it serves both sides. `with_tool` packs it on a server
+    leg too, for a server-only SDK that no client leg completes (the fn-replace fixtures): the launcher needs the tool
+    even to export a server."""
     check(out)
     identity = json.loads((out / IDENTITY).read_text())
     if identity.get("package_format") != package_format(ROOT) or identity.get("commit") != head():
@@ -888,7 +892,7 @@ def pack(out: Path, dist: Path, stage_tool: Path | None = None) -> None:
     jobs = {dist / f"{kind}-{identity['target']}{suffix}.tar.xz": (out, names)
             for kind, names in archives(out, identity["slices"]).items()}
     jobs[dist / BUILD_DATA_ARCHIVE] = (out, [".", *BUILD_DATA])
-    if identity["side"] == "client":
+    if identity["side"] == "client" or with_tool:
         jobs[dist / f"tool-{identity['target']}.tar.xz"] = (tool(identity["target"]), [".", TOOL_PROGRAM])
     # Each archive keeps its single xz stream; only independent archives run concurrently.
     with ProcessPoolExecutor(max_workers=len(jobs)) as pool:
@@ -913,6 +917,14 @@ def tool(target: str) -> Path:
     if not (folder / TOOL_PROGRAM).is_file():
         sys.exit(f"cargo built no {folder / TOOL_PROGRAM}")
     return folder
+
+
+def pack_tool(dist: Path) -> None:
+    """DIST/tool-<target>.tar.xz for this computer, the archive `pack` puts in an SDK: built and packed the same way."""
+    target = rustc_host()
+    dist.mkdir(parents=True, exist_ok=True)
+    tar_xz(tool(target), [".", TOOL_PROGRAM], dist / f"tool-{target}.tar.xz")
+    print(f"tool-{target}.tar.xz: {(dist / f'tool-{target}.tar.xz').stat().st_size} bytes")
 
 
 def members(archive: Path, names: tuple[str, ...]) -> dict[str, str]:
@@ -1042,6 +1054,10 @@ def main() -> None:
     # `build` compiles sunrise-stage from the commit's own source before staging it (target/prebuilt/tools); the
     # surface export reuses that binary instead of compiling it again in another target folder.
     pack_parser.add_argument("--stage-tool", type=Path, help="the sunrise-stage binary to export the surface with")
+    pack_parser.add_argument("--with-tool", action="store_true",
+                             help="also pack the target's tool on a server leg (a server-only SDK no client leg completes)")
+    tool_parser = commands.add_parser("tool")
+    tool_parser.add_argument("dist", type=Path)
     gather_parser = commands.add_parser("gather")
     gather_parser.add_argument("legs", type=Path)
     gather_parser.add_argument("dist", type=Path)
@@ -1066,7 +1082,9 @@ def main() -> None:
     elif args.command == "start":
         start(args.out.resolve())
     elif args.command == "pack":
-        pack(args.out.resolve(), args.dist.resolve(), args.stage_tool)
+        pack(args.out.resolve(), args.dist.resolve(), args.stage_tool, args.with_tool)
+    elif args.command == "tool":
+        pack_tool(args.dist.resolve())
     elif args.command == "gather":
         gather(args.legs.resolve(), args.dist.resolve())
     elif args.command == "index":

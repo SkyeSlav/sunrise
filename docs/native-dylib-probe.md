@@ -93,7 +93,9 @@ crate type or dependency architecture was changed.
 CI runs the probe on the Linux and Windows GNU client legs of
 `.github/workflows/prebuilt-game-build.yml`, against each leg's own SDK before
 packing. Linux also checks the starter against the API source alone on the host
-and on wasm32. If the SDK for the commit is already published, the workflow skips
+and on wasm32. The macOS leg builds one native mod through the shipped route, `cargo sunrise-mod native-build`
+(`tools/ci/native_build_route.py`), so a library linked with the game executable's link policy fails there: `ld` accepts a
+stack size only for a main executable. If the SDK for the commit is already published, the workflow skips
 the build and its checks.
 
 Gameplay, launcher readiness, library descriptors, malicious/stale mod refusal

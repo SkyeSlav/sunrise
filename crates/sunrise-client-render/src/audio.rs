@@ -79,14 +79,25 @@ impl Muffle {
     fn apply(&mut self, bus: &[f32], data: &mut [f32], channels: usize, rate: u32) {
         let rate = rate as f32;
         let glide = 1.0 - (-1.0 / (MUFFLE_GLIDE * rate)).exp();
+        // The filter coefficient only depends on `lowpass`, which glides every frame but sits
+        // still once it has reached its target: reuse the last one while it hasn't moved, so a
+        // settled muffle pays for `powf` and `exp` once per buffer rather than once per frame.
+        // NaN never equals, so the first frame always computes.
+        let mut coefficient = (f32::NAN, 0.0f32);
         for (frame, muffled) in data.chunks_mut(channels).zip(bus.chunks(channels)) {
             for (current, target) in self.current.iter_mut().zip(self.target) {
                 *current += (target - *current) * glide;
             }
             let [amount, lowpass] = self.current;
             let gain = 1.0 - amount;
-            let cutoff = OPEN_CUTOFF * (MUFFLED_CUTOFF / OPEN_CUTOFF).powf(lowpass);
-            let a = 1.0 - (-std::f32::consts::TAU * cutoff / rate).exp();
+            if coefficient.0 != lowpass {
+                let cutoff = OPEN_CUTOFF * (MUFFLED_CUTOFF / OPEN_CUTOFF).powf(lowpass);
+                coefficient = (
+                    lowpass,
+                    1.0 - (-std::f32::consts::TAU * cutoff / rate).exp(),
+                );
+            }
+            let a = coefficient.1;
             for ((out, s), stage) in frame.iter_mut().zip(muffled).zip(&mut self.stages) {
                 stage[0] += (s - stage[0]) * a;
                 stage[1] += (stage[0] - stage[1]) * a;
@@ -3115,6 +3126,40 @@ mod tests {
             heard(6000.0, [0.5, 1.0], true),
             heard(6000.0, [0.0; 2], false)
         );
+    }
+
+    #[test]
+    fn a_muffles_low_pass_matches_a_per_frame_reference() {
+        // The coefficient is reused while the glide hasn't moved `lowpass`; the output must
+        // still equal recomputing it every frame, through the glide and once settled.
+        let rate = 48_000u32;
+        let input: Vec<f32> = (0..2 * 4800)
+            .map(|i| ((i / 2) as f32 * 0.37).sin() * 0.5)
+            .collect();
+        let mut muffle = Muffle {
+            target: [0.3, 0.8],
+            ..Default::default()
+        };
+        let glide = 1.0 - (-1.0 / (MUFFLE_GLIDE * rate as f32)).exp();
+        let (mut current, mut stages) = ([0.0f32; 2], [[0.0f32; 2]; 2]);
+        for _ in 0..3 {
+            let mut got = vec![0.0f32; input.len()];
+            muffle.apply(&input, &mut got, 2, rate);
+            let mut want = vec![0.0f32; input.len()];
+            for (frame, heard) in want.chunks_mut(2).zip(input.chunks(2)) {
+                for (c, t) in current.iter_mut().zip([0.3f32, 0.8]) {
+                    *c += (t - *c) * glide;
+                }
+                let cutoff = 20_000.0f32 * (300.0f32 / 20_000.0).powf(current[1]);
+                let a = 1.0 - (-std::f32::consts::TAU * cutoff / rate as f32).exp();
+                for ((out, s), stage) in frame.iter_mut().zip(heard).zip(&mut stages) {
+                    stage[0] += (s - stage[0]) * a;
+                    stage[1] += (stage[0] - stage[1]) * a;
+                    *out += (s + (stage[1] - s) * current[1]) * (1.0 - current[0]);
+                }
+            }
+            assert_eq!(got, want);
+        }
     }
 
     #[test]

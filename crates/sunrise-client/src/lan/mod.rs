@@ -9,6 +9,7 @@ pub mod abilities;
 mod advancements;
 pub mod announced_channels;
 pub mod config_payloads;
+pub mod configuration_tasks;
 pub use advancements::ServerAdvancements;
 pub mod anticheat;
 pub mod arrivals;
@@ -61,7 +62,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering},
-        mpsc::{Receiver, channel},
+        mpsc::{Receiver, Sender, channel},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -105,6 +106,7 @@ pub struct Joined {
     /// started (`arrivals`).
     pub expected: bool,
 }
+
 pub(crate) fn event_channel() -> (
     crate::net::ingress::Producer<NetEvent>,
     crate::net::ingress::Consumer<NetEvent>,
@@ -460,6 +462,7 @@ pub struct Shared {
     /// What the next login is sent; `PlayerList.reloadResources` swaps it.
     sync: Mutex<Arc<data::SyncData>>,
     pub events: crate::net::ingress::Producer<NetEvent>,
+    configuration_requests: Option<Sender<configuration_tasks::ConfigurationRequest>>,
     pub config: NetConfig,
     motd: Mutex<String>,
     max_players: AtomicUsize,
@@ -713,7 +716,9 @@ pub fn base64(data: &[u8]) -> String {
 /// A running LAN server.
 pub struct Lan {
     pub shared: Arc<Shared>,
+    pub configuration_tasks: configuration_tasks::Tasks,
     events: crate::net::ingress::Consumer<NetEvent>,
+    configuration_requests: Option<Receiver<configuration_tasks::ConfigurationRequest>>,
     pub port: u16,
     listener: Option<JoinHandle<()>>,
     /// Stops the accept loop alone: local connections stay.
@@ -733,7 +738,21 @@ impl Lan {
     }
     /// ServerConnectionListener.startTcpServerListener with a configuration.
     pub fn start_with(sync: Arc<data::SyncData>, config: NetConfig) -> io::Result<Self> {
+        Self::start_with_configuration_tasks(sync, config, false)
+    }
+    /// Start a listener whose game thread collects tasks for each joining connection.
+    pub fn start_with_configuration_tasks(
+        sync: Arc<data::SyncData>,
+        config: NetConfig,
+        register_tasks: bool,
+    ) -> io::Result<Self> {
         let (tx, events) = event_channel();
+        let (request_tx, request_rx) = if register_tasks {
+            let (tx, rx) = channel();
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
         let (listen, port, announce) = (config.listen, config.port, config.announce);
         let hide_online_players = config.hide_online_players;
         let enable_status = config.enable_status;
@@ -742,6 +761,7 @@ impl Lan {
                 .map_err(io::Error::other)?,
             sync: Mutex::new(sync),
             events: tx,
+            configuration_requests: request_tx,
             motd: Mutex::new(config.motd.clone()),
             max_players: AtomicUsize::new(config.max_players),
             hide_online_players: AtomicBool::new(hide_online_players),
@@ -762,7 +782,9 @@ impl Lan {
         });
         let mut lan = Self {
             shared,
+            configuration_tasks: configuration_tasks::Tasks::default(),
             events,
+            configuration_requests: request_rx,
             port: 0,
             listener: None,
             listener_stop: Arc::new(AtomicBool::new(false)),
@@ -772,6 +794,14 @@ impl Lan {
             lan.listen(port, announce)?;
         }
         Ok(lan)
+    }
+    /// Take registration requests before this server tick admits any guests.
+    pub fn configuration_requests(
+        &self,
+    ) -> impl Iterator<Item = configuration_tasks::ConfigurationRequest> + '_ {
+        self.configuration_requests
+            .iter()
+            .flat_map(Receiver::try_iter)
     }
     /// Start accepting connections on `port` (0 picks a free one), and
     /// announce the world on the local network when `announce`

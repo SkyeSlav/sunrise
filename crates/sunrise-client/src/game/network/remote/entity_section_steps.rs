@@ -31,10 +31,18 @@ impl Game<'_> {
         self.entity_section_moved_id(id as u32);
     }
 
-    pub(super) fn remote_move_vehicle_and_file(&mut self, position: [f64; 3], yaw: f32) {
-        self.remote_move_vehicle(position, yaw);
-        if let Some(mount) = self.driven_mount() {
-            self.entity_section_moved_id(mount.id);
+    /// The driven vehicle put at `position` with `rotation`, its section crossing filed.
+    pub(in crate::game) fn remote_move_vehicle_and_file(
+        &mut self,
+        position: [f64; 3],
+        rotation: (f32, f32),
+    ) {
+        self.remote_move_vehicle(position, rotation);
+        let boat = self
+            .riding
+            .filter(|&id| self.controls_boat(id) && self.boats.iter().any(|b| b.id == id));
+        if let Some(id) = self.driven_mount().map(|m| m.id).or(boat) {
+            self.entity_section_moved_id(id);
         }
     }
 

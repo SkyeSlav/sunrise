@@ -4,7 +4,7 @@ A WebAssembly mod is the same Rust you write for a native mod, built to `mod.was
 sandbox, with limits on time and memory, so a player needs no compiler and no trust prompt for native code. In
 this page you build the greeter from [Your first native mod](first-mod.md) as a WebAssembly mod.
 
-You need `cargo sunrise-mod` ([installed as in the content mod tutorial](first-content-mod.md#1-install-the-mod-tool))
+You need `cargo sunrise-mod` ([Install the mod tool](install-tool.md))
 and [rustup](https://rustup.rs): the first build installs the pinned Rust toolchain with `rust-src`.
 
 ## 1. Start from the native project
@@ -44,8 +44,8 @@ Never write `[wasm]` by hand; rebuild instead.
 
 ## 3. Play
 
-Copy `greeter.smod` into the game folder's `sunrise-mods/` (in the launcher: **Open folder** in the instance's ⋮
-menu), and turn it on with a line `mod.greeter:true` in `sunrise-mods.txt` beside `options.txt`. The game loads it at start-up; join a world and the greeting appears.
+Copy `greeter.smod` into the game folder's `sunrise-mods/` (the game folder is the one that holds `options.txt`),
+and turn it on with a line `mod.greeter:true` in `sunrise-mods.txt` beside `options.txt`. The game loads it at start-up; join a world and the greeting appears.
 If the game refuses the mod (a wrong layout, a missing dependency, a limit), the Mods screen shows why in red.
 
 ## What differs from native

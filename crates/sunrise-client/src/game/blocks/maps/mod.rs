@@ -885,7 +885,11 @@ impl Game<'_> {
     /// read needs no `&mut`. None for a map id nothing made.
     pub(super) fn with_map<R>(&self, id: i32, f: impl FnOnce(&MapData) -> R) -> Option<R> {
         map_read(
-            self.maps.data.get(&id),
+            self.transactions
+                .iter()
+                .rev()
+                .find_map(|level| level.new_maps.get(&id))
+                .or_else(|| self.maps.data.get(&id)),
             || {
                 if self.maps.missing.contains(&id) {
                     return None;
@@ -896,11 +900,22 @@ impl Game<'_> {
             f,
         )
     }
-    /// The map's data, loaded from `data/minecraft/maps/<id>.dat` on first use.
+    /// The map's data, including new maps in the open transaction. Committed maps are
+    /// loaded from `data/minecraft/maps/<id>.dat` on first use.
     pub(super) fn map(&mut self, id: i32) -> Option<&mut MapData> {
+        if let Some(data) = self
+            .transactions
+            .iter_mut()
+            .rev()
+            .find_map(|level| level.new_maps.get_mut(&id))
+        {
+            return Some(data);
+        }
         if !self.maps.data.contains_key(&id) && !self.maps.missing.contains(&id) {
-            let loaded = sunrise_client::save::read_dat(&self.map_path(&format!("{id}.dat")))
-                .and_then(|t| MapData::from_nbt(&t));
+            let path = self
+                .world_root
+                .join(format!("data/minecraft/maps/{id}.dat"));
+            let loaded = sunrise_client::save::read_dat(&path).and_then(|t| MapData::from_nbt(&t));
             match loaded {
                 Some(m) => {
                     self.maps.data.insert(id, m);
@@ -967,23 +982,39 @@ impl Game<'_> {
         // The server owns a remote map: only the texture has to change.
         map.dirty = false;
     }
-    fn next_map_id(&mut self) -> i32 {
-        let last = *self.maps.last_id.get_or_insert_with(|| {
-            sunrise_client::save::read_dat(&self.world_root.join("data/minecraft/maps/last_id.dat"))
+    /// The next ID in this save, after any map reserved by an open transaction.
+    /// Peeking must not dirty the persisted counter, even on a save with no maps.
+    pub(super) fn peek_map_id(&self) -> i32 {
+        if let Some(id) = self
+            .transactions
+            .iter()
+            .rev()
+            .find_map(|level| level.new_maps.last_key_value().map(|(&id, _)| id))
+        {
+            return id + 1;
+        }
+        self.maps.last_id.unwrap_or_else(|| {
+            sunrise_client::save::read_dat(&self.map_path("last_id.dat"))
                 .and_then(|t| match t.get("data")?.get("map")? {
                     Tag::Int(v) => Some(*v),
                     _ => None,
                 })
                 .unwrap_or(-1)
-        });
-        self.maps.last_id = Some(last + 1);
-        last + 1
+        }) + 1
     }
-    /// The id the next new map gets, without taking it.
-    pub(super) fn peek_map_id(&mut self) -> i32 {
-        let id = self.next_map_id();
-        self.maps.last_id = Some(id - 1);
-        id
+
+    /// Register a reserved ID; only committed data and the committed counter are saveable.
+    pub(super) fn publish_map(&mut self, id: i32, data: MapData) {
+        self.maps.last_id = Some(self.maps.last_id.map_or(id, |last| last.max(id)));
+        self.maps.data.insert(id, data);
+    }
+
+    fn store_new_map(&mut self, id: i32, data: MapData) {
+        if let Some(level) = self.transactions.last_mut() {
+            level.new_maps.insert(id, data);
+        } else {
+            self.publish_map(id, data);
+        }
     }
     /// Maps made by exploration map trades: (id, target, zoom, decoration).
     pub(super) fn register_exploration_maps(&mut self, made: Vec<(i32, [i32; 3], u8, String)>) {
@@ -992,9 +1023,7 @@ impl Game<'_> {
             // MapItem.applyNewSavedData: tracking, unlimited tracking.
             let mut data = MapData::fresh(f64::from(at[0]), f64::from(at[2]), zoom, &dimension);
             data.unlimited = true;
-            self.maps.data.insert(id, data);
-            let last = self.maps.last_id.unwrap_or(-1).max(id);
-            self.maps.last_id = Some(last);
+            self.store_new_map(id, data);
             self.render_biome_preview(id);
         }
     }
@@ -1086,15 +1115,16 @@ impl Game<'_> {
             .tag_entries("worldgen/biome", "minecraft:water_on_map_outlines")
             .into_iter()
             .collect();
-        let Some(m) = self.maps.data.get(&id) else {
+        let Some((scale, center)) = self
+            .with_map(id, |map| {
+                (map.dimension == dim).then_some((1i32 << map.scale, map.center))
+            })
+            .flatten()
+        else {
             return;
         };
-        if m.dimension != dim {
-            return;
-        }
-        let scale = 1i32 << m.scale;
-        let start_x = m.center[0] / scale - 64;
-        let start_z = m.center[1] / scale - 64;
+        let start_x = center[0] / scale - 64;
+        let start_z = center[1] / scale - 64;
         let sea_level = crate::game::Dim::sea_level_of_id(dim);
         let quarts: Vec<[i32; 3]> = (0..128)
             .flat_map(|row| {
@@ -1120,7 +1150,7 @@ impl Game<'_> {
         const NORMAL: u8 = 1;
         const HIGH: u8 = 2;
         const LOWEST: u8 = 3;
-        let Some(m) = self.maps.data.get_mut(&id) else {
+        let Some(m) = self.map(id) else {
             return;
         };
         for mx in 1..127 {
@@ -1164,8 +1194,8 @@ impl Game<'_> {
     }
     /// Registers `data` under a free map id.
     pub(super) fn new_map_id(&mut self, data: MapData) -> i32 {
-        let id = self.next_map_id();
-        self.maps.data.insert(id, data);
+        let id = self.peek_map_id();
+        self.store_new_map(id, data);
         id
     }
     /// `EmptyMapItem.use`: a new map centred around the player.
@@ -1176,9 +1206,7 @@ impl Game<'_> {
         let Some(p) = self.player.as_ref().map(|p| p.position) else {
             return false;
         };
-        let id = self.next_map_id();
-        let data = MapData::fresh(p.x, p.z, 0, self.dimension_id());
-        self.maps.data.insert(id, data);
+        let id = self.new_map_id(MapData::fresh(p.x, p.z, 0, self.dimension_id()));
         let mut filled = ItemStack::new("minecraft:filled_map", 1);
         filled.data_mut().map_id = Some(id);
         if self.creative {

@@ -142,9 +142,15 @@ fn perf_wasm() -> Result<(), String> {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let status = Command::new(&cargo)
         .current_dir(repo)
+        // The cdylib is asked for here, not in sunrise-perf's manifest: a cdylib's file name carries no hash, so every
+        // native build of the crate would write the same file and rebuild it, and all above it, whenever two builds
+        // in one target folder resolve it differently. LTO stays off, as it was while the manifest also asked for an
+        // rlib (Cargo skips LTO for such a crate): the page's wasm keeps its size.
         .args([
-            "build",
+            "rustc",
             "--release",
+            "--config",
+            "profile.release.lto=false",
             "--lib",
             "-p",
             "sunrise-perf",
@@ -152,9 +158,11 @@ fn perf_wasm() -> Result<(), String> {
             "wasm",
             "--target",
             "wasm32-unknown-unknown",
+            "--crate-type",
+            "cdylib",
         ])
         .status()
-        .map_err(|e| format!("{cargo} build: {e}"))?;
+        .map_err(|e| format!("{cargo} rustc: {e}"))?;
     if !status.success() {
         return Err(
             "the wasm build failed; `rustup target add wasm32-unknown-unknown` installs the target"

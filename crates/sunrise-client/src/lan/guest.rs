@@ -363,6 +363,9 @@ pub struct Guest {
     /// What the player's client last said about the age of its copy of the collider
     /// (`sunrise:carry_age`): the collider and the ticks. Used by the next report only.
     pub carry_hint: Option<(u32, u8)>,
+    /// The tick a mod last displaced the player and how many ticks in a row it has (a development
+    /// build warns at 20; a release build never reads it).
+    pub displaced_streak: (u64, u32),
     /// Where a rejected report puts the player back: the feet as the server last accepted
     /// them, in the collider's frame, under the collider's transform now.
     pub carry_correction: Option<[f64; 3]>,
@@ -795,6 +798,7 @@ impl Guest {
             collision_exclusions: Default::default(),
             on_collider: None,
             carry_hint: None,
+            displaced_streak: (0, 0),
             carry_correction: None,
             carry_commit: None,
             carry_rejects: 0,

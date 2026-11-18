@@ -2076,13 +2076,13 @@ impl Hub {
             self.guests
                 .update(i, |guest| guest.above_ground_ticks = value);
         }
-        self.teleport_relative(i, position, 0);
+        self.teleport_relative(i, position, 0, [0.0; 3]);
     }
 
     /// `ServerGamePacketListenerImpl.teleport` alone (a refused or too fast
     /// move, a teleport sent again): the flying ticks go on.
     pub(super) fn resend_teleport(&mut self, i: usize, position: Option<[f64; 3]>) {
-        self.teleport_relative(i, position, 0);
+        self.teleport_relative(i, position, 0, [0.0; 3]);
     }
 
     /// A teleport to `position` that keeps the player's motion and look
@@ -2095,7 +2095,7 @@ impl Hub {
         }
         use play::relative::{DELTA_X, DELTA_Y, DELTA_Z, ROTATE_DELTA, X_ROT, Y_ROT};
         let relatives = Y_ROT | X_ROT | DELTA_X | DELTA_Y | DELTA_Z | ROTATE_DELTA;
-        self.teleport_relative(i, Some(position), relatives);
+        self.teleport_relative(i, Some(position), relatives, [0.0; 3]);
     }
 
     /// A command's teleport to `position` (`ServerGamePacketListenerImpl.teleport`
@@ -2119,7 +2119,7 @@ impl Hub {
             self.guests
                 .update(i, |guest| guest.above_ground_ticks = value);
         }
-        self.teleport_relative(i, Some(position), relatives);
+        self.teleport_relative(i, Some(position), relatives, [0.0; 3]);
     }
 
     /// A rider's own teleport when its vehicle is teleported
@@ -2134,12 +2134,74 @@ impl Hub {
                 .update(i, |guest| guest.above_ground_ticks = value);
         }
         use play::relative::{DELTA_X, DELTA_Y, DELTA_Z};
-        self.teleport_relative(i, Some(position), DELTA_X | DELTA_Y | DELTA_Z);
+        self.teleport_relative(i, Some(position), DELTA_X | DELTA_Y | DELTA_Z, [0.0; 3]);
     }
 
+    /// A displacement of the player by `by` to `target`, made on its server copy by the caller
+    /// (its body is at `target`; `Guest::position` is set here), told to its client as a
+    /// relative teleport: the client adds `by` to where it is now (`Relative.X/Y/Z`), keeps its motion and look
+    /// (`DELTA_*`, `ROTATE_DELTA`, `Y_ROT`, `X_ROT`), and nothing snaps back by what it
+    /// walked while the packet was on its way. Its confirmation puts the server copy where it
+    /// has been since, the awaited target, and its reports until then are dropped as for any
+    /// teleport.
+    ///
+    /// A player a moving collider carries stays carried when the target is still on the
+    /// collider as the server places it now, with the place on the collider re-derived from the
+    /// target; otherwise it lets go, and its next report that fits attaches it again. Either
+    /// way no report is counted against it. Nothing happens for a player the hub has no more.
+    pub fn displace(&mut self, conn: u32, target: [f64; 3], by: [f64; 3]) {
+        let Some(i) = self.guests.connection_index(conn) else {
+            return;
+        };
+        let carried = self.guests[i].on_collider;
+        self.guests.update(i, |g| g.above_ground_ticks = 0);
+        use play::relative::{DELTA_X, DELTA_Y, DELTA_Z, ROTATE_DELTA, X, X_ROT, Y, Y_ROT, Z};
+        let relatives = X | Y | Z | Y_ROT | X_ROT | DELTA_X | DELTA_Y | DELTA_Z | ROTATE_DELTA;
+        self.teleport_relative(i, Some(target), relatives, by);
+        self.keep_carried_at(i, carried, target);
+        self.note_displaced(i);
+    }
+
+    /// A development build's warning for a player displaced on 20 ticks in a row: each
+    /// pending confirmation drops that player's own movement reports, so a mod that moves a
+    /// player every tick holds it still. Once per streak, and nothing is built unless it fires.
+    #[cfg(debug_assertions)]
+    fn note_displaced(&mut self, i: usize) {
+        const STREAK: u32 = 20;
+        let ticks = self.ticks;
+        let streak = self.guests.update(i, |g| {
+            let (last, run) = g.displaced_streak;
+            let run = match ticks.checked_sub(last) {
+                Some(0) => run,
+                Some(1) => run + 1,
+                _ => 1,
+            };
+            g.displaced_streak = (ticks, run);
+            run
+        });
+        if streak == STREAK {
+            log::warn!(
+                "{} was moved by a mod on {STREAK} ticks in a row: each pending confirmation drops \
+                 the player's own movement reports, so it cannot walk; use a velocity push \
+                 (`entity_push`) or a client-side write for motion every tick",
+                self.guests[i].name
+            );
+        }
+    }
+
+    #[cfg(not(debug_assertions))]
+    fn note_displaced(&mut self, _: usize) {}
+
     /// ServerGamePacketListenerImpl.teleport with `relatives`: the rotation
-    /// and motion they name are sent as zero changes.
-    fn teleport_relative(&mut self, i: usize, position: Option<[f64; 3]>, relatives: i32) {
+    /// and motion they name are sent as zero changes, and a position axis it names
+    /// as `shift` (no change when `shift` is zero).
+    fn teleport_relative(
+        &mut self,
+        i: usize,
+        position: Option<[f64; 3]>,
+        relatives: i32,
+        shift: [f64; 3],
+    ) {
         let ticks = self.ticks;
         self.guests.update(i, |g| {
             g.teleport_tick = ticks;
@@ -2158,8 +2220,10 @@ impl Hub {
             use play::relative::{DELTA_X, DELTA_Y, DELTA_Z};
             g.awaiting_keeps_motion = relatives & (DELTA_X | DELTA_Y | DELTA_Z) != 0;
             let turn = relatives & (play::relative::Y_ROT | play::relative::X_ROT) != 0;
-            // A relative axis (X, Y, Z: bits 0 to 2) goes as no change (`follow_passage`).
-            let at = std::array::from_fn(|k| [g.position[k], 0.0][(relatives >> k & 1) as usize]);
+            // A relative axis (X, Y, Z: bits 0 to 2) goes as its shift: none for a rotation or
+            // motion alone (`follow_passage`), the displacement for a move.
+            let at =
+                std::array::from_fn(|k| [g.position[k], shift[k]][(relatives >> k & 1) as usize]);
             g.send(&C::PlayerPosition(play::PlayerPosition {
                 teleport: id,
                 position: at,
@@ -4138,8 +4202,11 @@ impl Hub {
                                 g.record.get_or_insert_default().teleported(at, kept);
                             }
                         });
-                        let rot = (p.yaw, p.pitch);
-                        self.position_change(i, at, rot, 0, Hearing::Confirmation, ctx, events);
+                        // The confirmation is then an ordinary report of where the client
+                        // is: its own position goes through the speed test, the collided
+                        // replay and the moved-wrongly test, from the target just snapped to.
+                        let (to, rot) = ([p.x, p.y, p.z], (p.yaw, p.pitch));
+                        self.position_change(i, to, rot, 0, Hearing::Confirmation, ctx, events);
                     }
                 }
                 // handlePlayerAbilities: the client flies only if it may.
@@ -4479,6 +4546,13 @@ impl Hub {
         if let Some((_, at)) = g.awaiting_teleport {
             if self.ticks - g.teleport_tick > 20 {
                 self.resend_teleport(i, Some(at));
+            }
+            // The awaiting check applies the report's rotation and drops its position, its
+            // ground flag and its collision flag. Nothing is counted against the player.
+            if let Some((yaw, pitch)) = rot {
+                self.guests.update(i, |g| {
+                    (g.yaw, g.pitch) = (wrap_degrees(yaw), wrap_degrees(pitch))
+                });
             }
             return;
         }
@@ -5292,6 +5366,7 @@ mod tests {
     mod cave_air_tests;
     mod collision_exclusion_tests;
     mod collision_part_tests;
+    mod displace_tests;
     mod effect_meta_tests;
     #[path = "../far_tests.rs"]
     mod far_tests;

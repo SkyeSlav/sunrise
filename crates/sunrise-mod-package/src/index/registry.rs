@@ -11,6 +11,7 @@ use super::{
     File, Index, Kind, Project, Revoked, SCHEMA, Version, hex64, inspect, page as rules, valid_id,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// The folder of entries in the registry repository.
@@ -669,6 +670,49 @@ pub fn build(src: &Sources) -> Result<Index, Vec<String>> {
     let local = src.release.starts_with("file:///");
     index.check_with(local).map_err(|e| vec![e])?;
     Ok(index)
+}
+
+/// What GitHub counts for the registry, gathered by its publish workflow (this crate makes no
+/// network calls): each release asset's `download_count` by its download address, and each
+/// source repository's `stargazers_count` by `owner/repo`.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Counts {
+    #[serde(default)]
+    pub downloads: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub stars: BTreeMap<String, u64>,
+}
+
+/// Sets each project's `downloads`, its files' counts summed (every version's file and native
+/// binaries), and its `stars`, its GitHub `source` repository's. A file or a repository the
+/// counts don't name counts 0.
+pub fn count(index: &mut Index, counts: &Counts) {
+    for project in &mut index.projects {
+        project.downloads = project
+            .versions
+            .iter()
+            .flat_map(|v| std::iter::once(&v.file).chain(v.native_binaries.iter().map(|b| &b.file)))
+            .filter_map(|file| counts.downloads.get(&file.url))
+            .sum();
+        project.stars = github_repo(&project.source)
+            .and_then(|repo| {
+                counts
+                    .stars
+                    .iter()
+                    .find_map(|(name, stars)| name.eq_ignore_ascii_case(&repo).then_some(*stars))
+            })
+            .unwrap_or(0);
+    }
+}
+
+/// `owner/repo` of a `https://github.com/<owner>/<repo>[/...]` address (GitHub compares them
+/// without case).
+fn github_repo(source: &str) -> Option<String> {
+    let mut parts = source.strip_prefix("https://github.com/")?.split('/');
+    let (owner, repo) = (parts.next()?, parts.next()?);
+    let repo = repo.strip_suffix(".git").unwrap_or(repo);
+    (!owner.is_empty() && !repo.is_empty()).then(|| format!("{owner}/{repo}"))
 }
 
 /// What a pull request changes, for its reviewers.

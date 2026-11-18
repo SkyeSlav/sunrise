@@ -32,6 +32,7 @@ use sunrise_client::join_seq::{
         table::{EntityLookup, Location, SourceEntity},
     },
 };
+use sunrise_client::spans::time as span;
 use sunrise_client::{
     Result,
     block_entity_anim::BlockEntityAnims,
@@ -1265,7 +1266,7 @@ impl Game<'_> {
                             self.tick_lan(true);
                             Ok(())
                         } else if k == 0 {
-                            self.tick()
+                            self.tick_server_first()
                         } else {
                             let running = running.unwrap_or_else(|| self.clock.world_runs());
                             // ClientLevel.tick: the sky flash fades in a frozen level too.
@@ -2304,5 +2305,81 @@ mod request_save_tests {
         assert_eq!(levels.requested_saves, [Dim::Nether, Dim::End]);
         levels.clear();
         assert!(levels.requested_saves.is_empty());
+    }
+}
+
+impl Game<'_> {
+    /// `Game::tick` as a server runs it for its first level: no window lead, which only the window's `Game` has.
+    pub(super) fn tick_server_first(&mut self) -> Result<()> {
+        self.expire_client_cracks();
+        if self.agent.hold_server {
+            return Ok(());
+        }
+        self.abort_open_transactions();
+        self.update_interaction_ranges();
+        self.tick_first_level()
+    }
+
+    /// A server's tick of its first level: the clock, functions, autosave and weather it owns, then the level.
+    pub(super) fn tick_first_level(&mut self) -> Result<()> {
+        // Only a server ticks its own world from here: its players are guests, swapped in for
+        // their turns (`as_guest`), and the window's player is a client of it.
+        self.ticks += 1;
+        self.repro_tick();
+        // `/tick freeze` stops the world but not the player.
+        let running = match self.level_pass.running {
+            Some(running) => running,
+            None => self.clock.world_runs(),
+        };
+        span("mods_inventory_ticks", || self.native_inventory_ticks());
+        if running {
+            // `MinecraftServer.tickChildren`: `commandFunctions` runs before
+            // any level ticks, so a tick function reads the game time and the
+            // day clock from before this tick. Vanilla's SavedData is loaded
+            // long before this point; the lazy scoreboard/storage read has to
+            // be done by then too, or a load tag writes over what it restores.
+            self.load_scoreboard();
+            span("tick_functions", || self.tick_functions());
+            self.world.game_time += 1;
+            if self
+                .ui
+                .rules
+                .bool_at(sunrise_client::gamerules::vanilla::ADVANCE_WEATHER)
+            {
+                self.world.weather.tick_timers(&mut self.world.random);
+            }
+            self.world.weather.tick_levels();
+        } else if self.clock.still() {
+            // Under `SUNRISE_STILL` a frozen world's rain and thunder sit at their levels, as a
+            // shader pack's smoothed values do, so `/weather rain` shows full rain without
+            // stepping the world (and its mobs) through the fade.
+            self.world.weather.settle_levels();
+        }
+        // ClientLevel.tick: the sky flash fades in a frozen level too.
+        self.tick_weather_effects();
+        let _ = span("player_autosaves", || self.finish_player_autosaves(false));
+        // MinecraftServer.tickServer's countdown, then autoSave: three
+        // hundred seconds of ticks at the rate the server runs at now.
+        self.ticks_until_autosave -= 1;
+        self.autosaving = self.ticks_until_autosave <= 0;
+        if let Some(serving) = &self.serving {
+            serving.set_saving(self.autosaving);
+        }
+        if self.autosaving {
+            span("autosave", || self.save_game_with(false))?;
+            self.ticks_until_autosave = self.next_autosave_interval();
+            if let Some(serving) = &self.serving {
+                serving.set_saving(false);
+            }
+        }
+        if running {
+            self.advance_clock();
+            // `ServerLevel.tickTime`, once the clock has moved on.
+            span("scheduled_functions", || self.run_scheduled_functions());
+        }
+        self.tick_totem();
+        self.update_totem_ready();
+        span("tick_command_extras", || self.tick_command_extras());
+        self.tick_world(running)
     }
 }

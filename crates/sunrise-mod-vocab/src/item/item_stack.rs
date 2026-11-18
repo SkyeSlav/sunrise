@@ -138,6 +138,23 @@ impl crate::NoBackend for StackWriteError {
     }
 }
 
+/// Why an [`ItemPlace`](crate::ItemPlace) could not run the item's crafted-by processing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub enum CraftedByError {
+    /// The place is not a menu slot or the carried stack, or it no longer holds a stack.
+    NotHeld,
+    /// The host has no server game backend, or the transaction or place is no longer usable.
+    Unavailable,
+}
+
+impl crate::NoBackend for CraftedByError {
+    fn no_backend() -> Self {
+        Self::Unavailable
+    }
+}
+
 /// The two nonempty portions of a consuming split. Either portion can be absent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]

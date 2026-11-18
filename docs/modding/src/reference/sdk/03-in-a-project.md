@@ -29,8 +29,11 @@ The build a mod is made for is its pin, always a full commit sha in the file:
 - a native mod: `[native] sunrise` in `sunrise-mod.toml`;
 - a wasm mod: `sdk` under `[package.metadata.sunrise]` in `Cargo.toml`.
 
-`cargo sunrise-mod new` writes the current Nightly's build, or `--sunrise`'s. `cargo sunrise-mod update` moves
-either pin, changing only its value. Wherever a build is given, these forms are accepted:
+`cargo sunrise-mod new` writes the current Nightly's build, or `--sunrise`'s. A native mod pins a second thing beside
+its build: `[native] mixins`, the horizon-mixins revision, which `new` takes from the pinned SDK's `sdk.json`
+(`mixins.rev`), never from the tool's own build. `cargo sunrise-mod update` moves the pin, changing only its value;
+for a native mod it fetches the destination SDK's `sdk.json` first and writes that SDK's `mixins.rev` as well, and an
+`sdk.json` whose revision is not 40 lowercase hex digits is refused before any file changes. Wherever a build is given, these forms are accepted:
 
 | Written | Means |
 |---|---|

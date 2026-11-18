@@ -44,7 +44,10 @@ It exits 2 when an input cannot be read or judged.
 
 The check reads the mod's source with a Rust parser; it is not a compiler and does not expand macros. A name
 it cannot resolve with certainty counts as used and as built field by field. A struct literal written with a
-path (`world::DimensionSettings { … }`) counts for the API's struct of that name; an unqualified one counts as
+path (`world::DimensionSettings { … }`) counts for the API's struct of that name, unless the segment before the
+name is a type (`Self`, a type the mod defines, or an API type: `Shape::Pos(…)` and `TextHover::Item { … }` are
+variants, not the structs `Pos` and `Item`), which the scan reads through the mod's `use` items first, so
+`use mod_api as Pos; Pos::Settings { … }` is still the API's `Settings`; an unqualified one counts as
 the mod's own only in the file that defines it outside any `#[cfg]`, when nothing in that file (a `use`, a glob,
 an inline module, a macro or attribute that is not standard or the API's) could change what the name means and
 the mod has no `include!`. What the parser cannot see counts as doubt, which refuses rather than guesses:

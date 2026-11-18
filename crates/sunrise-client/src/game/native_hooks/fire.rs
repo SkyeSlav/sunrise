@@ -2,6 +2,7 @@
 #![allow(clippy::all)]
 use super::mod_api_host::FireOddsLevel;
 use super::*;
+use crate::game::native_level_signals::ReadLevel;
 use mod_api::BlockFace;
 
 include!(concat!(env!("OUT_DIR"), "/mod_api_fire_generated.rs"));

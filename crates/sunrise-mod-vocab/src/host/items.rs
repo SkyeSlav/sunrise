@@ -485,6 +485,16 @@ pub trait ItemsBackendMut {
     /// (`ItemPlace::stack` reads those), and on a client.
     #[access(WorldOnly)]
     fn game_stack(&mut self, place: &ItemPlace) -> Option<ItemStack>;
+    /// Side: server. Runs `ItemStack.onCraftedBy` for a stack held by a menu slot or its cursor,
+    /// including the item's post-processing and the player's crafted statistic, in transaction
+    /// `tx`.
+    #[access(WorldOnly)]
+    fn game_on_crafted_by(
+        &mut self,
+        place: &ItemPlace,
+        tx: &Transaction,
+        amount: i32,
+    ) -> Result<(), CraftedByError>;
     /// Side: server.
     /// `ItemAccess.insert` at a player's place, an item entity's or an entity's slot: up to
     /// `amount` of `resource`, into the place where it's empty or holds the same item and

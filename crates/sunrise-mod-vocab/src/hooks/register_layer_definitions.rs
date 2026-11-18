@@ -22,7 +22,7 @@ at a `PartPose`, on a texture of the given size. Texture offsets, mirroring and
 `CubeDeformation` match vanilla's model builders. This listener is compiled in the API tests:
 
 ```rust,ignore
-{{#include ../../../../crates/sunrise-client/tests/mod_api_hooks.rs:register_layer_definitions}}
+{{#include ../../../../crates/sunrise-client/tests/it/mod_api_hooks.rs:register_layer_definitions}}
 ```
 
 `ClientHost::bake_layer` bakes a registered layer or a vanilla layer by its

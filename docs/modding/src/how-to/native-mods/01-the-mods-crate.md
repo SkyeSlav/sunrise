@@ -33,11 +33,28 @@ requirements are exact pins. Before fetching crate archives, every resulting ide
 checksum must match a supplied lock. Cargo checks downloaded archives against those checksums.
 Only after this fetch does the launcher resolve the actual staged workspace **offline**.
 
-The game's locked packages, checksums and dependency graph stay immutable. A different mod-owned
-version may coexist where Cargo permits it. If a requested version would replace a game version,
-the build refuses it rather than updating the game. A native library with conflicting providers
-cannot be silently substituted. Feature selections must not introduce unpinned packages or
-change the game's graph.
+The game's own packages never change because of a mod. The game ships prebuilt, and a mod's registry
+packages are compiled for the mod and linked into the mod's library, so a package both use exists
+twice: the features and dependency versions of the mod's copy are the mod's own. What a build checks
+is that every registry package it compiles is pinned, by version and checksum, in the game's lock or
+in the lock of a mod in the build.
+
+All native mods of an instance compile in one Cargo workspace, which resolves one version of a
+package for every mod that uses it. When two mods' locks pin different versions that both their
+requirements allow, both mods are built on one of the two. So a mod may be built on another
+semver-compatible version of a dependency than the one its author locked; a requirement that must
+not move is written as an exact one (`dtoa = "=1.0.9"`).
+
+`native-lock` starts from the game's `Cargo.lock`, which it downloads once from the pinned game
+commit. A package the game also locks takes the game's version where the mod's requirements allow
+it, so mods made for one game build agree on those packages; the mod's other packages take the newest
+version that fits. A requirement the game's version can't meet (`libc = "0.2.999"`) gives the mod
+its own version of that package.
+
+A package the SDK builds from its own patched source (the `[patch]` table of the SDK's
+`engine/Cargo.toml`) is used in that form only: at the SDK's version a mod's graph gets the SDK's
+source, never the registry's. A native library with conflicting providers cannot be silently
+substituted.
 
 Git dependencies other than the proven launcher-owned SDK declaration, alternate registries,
 paths escaping the mod, linked dependency paths, `[patch]`, `[replace]`, and mod-owned Cargo source

@@ -1,6 +1,6 @@
 //! The one stored pick, refreshed before tick inputs and frame extraction.
 use super::*;
-use crate::game::{Dim, pick_view_vector};
+use crate::game::{Dim, view_vector};
 use mod_api::CrosshairTarget;
 
 #[cfg(test)]
@@ -16,6 +16,7 @@ pub(in crate::game) struct ClientPick {
     entity_reach: f64,
     result: Option<CrosshairTarget>,
     pub entity_metadata: (bool, bool),
+    pub rider_candidates: Vec<crate::game::pick_accumulator::PickCandidate>,
     dispatching: bool,
 }
 
@@ -111,7 +112,7 @@ impl Game<'_> {
                     0.0
                 }
         });
-        let direction = pick_view_vector(
+        let direction = view_vector(
             camera.view_y_rot(partial_tick),
             camera.view_x_rot(partial_tick),
         );
@@ -140,8 +141,19 @@ impl Game<'_> {
                     hit: hit.native(),
                 })
             });
+        let camera_id = self.pick_camera_id();
         let attack_candidate = self.attack_range_pick_entity();
         let entity_candidate = attack_candidate.or_else(|| self.pick_entity_candidate());
+        // A rider listener may change the camera. Neither the entity nor
+        // the block traced from the old camera belongs to the new pick.
+        if camera_id != self.pick_camera_id()
+            || self.client_pick.epoch != self.native_lifecycle.epoch()
+            || self.client_pick.dimension != Some(self.dim)
+        {
+            self.client_pick.ray = None;
+            self.publish_client_pick(None);
+            return;
+        }
         let original = attack_candidate.or_else(|| match entity_candidate {
             Some(CrosshairTarget::Entity { point, .. })
                 if occluder.is_none_or(|distance| self.pick_distance(point) < distance) =>
@@ -194,6 +206,13 @@ impl Game<'_> {
             ),
             _ => (false, false),
         };
+    }
+
+    pub(in crate::game) fn native_can_rider_interact(
+        &mut self,
+        call: mod_api::__private::CanRiderInteractCall<'_>,
+    ) {
+        self.fire_can_rider_interact(call);
     }
 
     pub(in crate::game) fn native_client_pick(

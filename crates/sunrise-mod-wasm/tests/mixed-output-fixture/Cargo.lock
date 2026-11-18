@@ -293,6 +293,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustc-hash"
+version = "2.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
+
+[[package]]
 name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -372,6 +378,7 @@ name = "sunrise-core"
 version = "0.1.0"
 dependencies = [
  "libm",
+ "rustc-hash",
  "serde",
  "serde_json",
  "unicode_names2",
@@ -416,6 +423,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sunrise-game-discovery",
+ "sunrise-mod-call",
  "sunrise-mod-point-shape",
  "sunrise-mod-source",
  "sunrise-mod-surface",
@@ -432,6 +440,13 @@ dependencies = [
  "quote",
  "sunrise-mod-point-shape",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "sunrise-mod-call"
+version = "0.1.0"
+dependencies = [
+ "sha2",
 ]
 
 [[package]]
@@ -471,7 +486,7 @@ dependencies = [
  "proc-macro2",
  "serde",
  "serde_json",
- "sha2",
+ "sunrise-mod-call",
  "syn 2.0.119",
 ]
 

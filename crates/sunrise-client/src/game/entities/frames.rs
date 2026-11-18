@@ -291,6 +291,13 @@ impl Game<'_> {
     }
     /// The frame under the crosshair within reach and its distance.
     pub(super) fn frame_hit(&self) -> Option<(usize, f64)> {
+        let mut pick = crate::game::pick_accumulator::PickAccumulator::new(self.entity_reach);
+        self.frame_hit_with_pick(&mut pick)
+    }
+    pub(super) fn frame_hit_with_pick(
+        &self,
+        pick: &mut crate::game::pick_accumulator::PickAccumulator,
+    ) -> Option<(usize, f64)> {
         if let Some(hit) = self.cached_entity_pick() {
             let (entity, distance, _) = hit?;
             let index = self.item_frames.iter().position(|f| f.id == entity.id())?;
@@ -315,7 +322,7 @@ impl Game<'_> {
                 t0 = t0.max(ta);
                 t1 = t1.min(tb);
             }
-            if hit && t0 <= t1 && best.is_none_or(|b| t0 < b.1) {
+            if hit && t0 <= t1 && pick.consider(self, f.id, t0) {
                 best = Some((i, t0));
             }
         }

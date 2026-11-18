@@ -28,7 +28,7 @@ merge every valid layer, ignoring whole-file conditions, including content-root
 block/biome tag bundles. The damage registry remains frozen after world open; reloads reevaluate
 its tags. Generated item default components retain their prototype lifetime.
 
-Supported forms are `neoforge:mod_loaded`, `neoforge:true`, `neoforge:false`,
+Supported forms are `neoforge:mod_loaded`, `neoforge:always`, `neoforge:never`,
 `neoforge:not` (`value`), `neoforge:and` / `neoforge:or` (`values`),
 `neoforge:feature_flags_enabled` (`flags`: every flag the world enables),
 `neoforge:registered` (`registry`, default `minecraft:item`, and `value`) and
@@ -47,16 +47,18 @@ enchantments, jukebox songs, instruments, damage types, advancements and
 synchronized registry JSON. Tag files and data-map files ignore top-level
 `neoforge:conditions`. Data-map values retain their own conditions, evaluated
 when each value is read; failing values are omitted. An unknown kind in a
-namespace where a loaded mod registered conditions refuses reload, naming the
-file, condition and owner. Other unknown kinds omit the file with one named
-error-level log entry, including beneath `not` or `or`. Files without the array load normally.
+namespace where its own mod registered a handler refuses reload, naming the
+file, condition and owner. A registration by another mod grants no ownership.
+Recipes refuse unknown kinds in any namespace. Otherwise, an unknown kind
+omits the file with one named error-level log entry, including beneath `not`
+or `or`. Files without the array load normally.
 
 `mod_loaded` reads an immutable snapshot of the owning generation's server-enabled
 mod IDs, including code-only native and WebAssembly mods, plus `minecraft`.
 Client-only, disabled and refused packages are absent. Namespaces do not imply a
 loaded mod. Changed enabled IDs participate in cache identity and are published
 with successful reloads; failed preparation preserves the old generation, and
-retained readers keep their old snapshot. Recipe condition behavior is unchanged.
+retained readers keep their old snapshot.
 This shared contract does not add readers for the two modifier kinds above.
 
 ## Holder sets

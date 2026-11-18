@@ -311,24 +311,21 @@ impl Game<'_> {
     }
     pub(in crate::game) fn syntax_failure(&mut self, e: &CommandError, command: &str) {
         self.command_failure(e.message.clone());
-        let Some(input) = &e.input else { return };
-        let cursor = e.cursor.min(input.len());
+        let Some(window) = e.context_window() else {
+            return;
+        };
         let suggest = Style {
             click: Some(text::ClickEvent::SuggestCommand(format!("/{command}"))),
             ..Style::default()
         };
         let mut context = Text::empty();
-        if cursor > 10 {
+        if window.ellipsis {
             context.push("...");
         }
-        let start = (0..=cursor.saturating_sub(10))
-            .rev()
-            .find(|&i| input.is_char_boundary(i))
-            .unwrap_or(0);
-        context.push(&input[start..cursor]);
-        if cursor < input.len() {
+        context.push(window.before.as_str());
+        if !window.after.is_empty() {
             context.push(
-                Text::literal(&input[cursor..])
+                Text::literal(window.after)
                     .with_color(text::RED)
                     .underlined(),
             );

@@ -7,6 +7,7 @@ use crate::{
     mesher::SectionMesh,
 };
 use glam::{DVec3, Vec3};
+use smallvec::SmallVec;
 use std::{
     collections::VecDeque,
     time::{Duration, Instant},
@@ -68,6 +69,43 @@ pub(super) struct Tile {
     /// Its slot in occlusion culling's results (`cull::TILE`), kept while
     /// meshes of the same tile replace one another.
     pub cull_slot: u32,
+    /// The animated sprite layers of both meshes it holds (`animated_layers`):
+    /// the frame walk marks them as it lists the tile, without reaching into
+    /// its boxed meshes.
+    pub animated: SmallVec<[u16; 4]>,
+}
+
+/// The animated sprite layers a tile drawing `mesh`, or `previous` in its
+/// place, can show: those of either.
+fn animated_layers(mesh: &SectionGpu, previous: Option<&SectionGpu>) -> SmallVec<[u16; 4]> {
+    let mut layers = SmallVec::from_slice(&mesh.animated_layers);
+    for &layer in previous.iter().flat_map(|p| p.animated_layers.iter()) {
+        if !layers.contains(&layer) {
+            layers.push(layer);
+        }
+    }
+    layers
+}
+
+/// Puts the tiles above `key` (its parent and theirs, up to `MAX_LEVEL`) in
+/// `tiles`; one already there has its own above it.
+fn insert_ancestors(tiles: &mut FxHashSet<TileKey>, mut key: TileKey) {
+    while key.level < MAX_LEVEL && tiles.insert(key.parent()) {
+        key = key.parent();
+    }
+}
+
+/// The tiles that hold any of the chunk `columns`: each column's own level-0
+/// tile and those above it.
+fn holding_columns(columns: impl IntoIterator<Item = (i32, i32)>) -> FxHashSet<TileKey> {
+    let mut tiles = FxHashSet::default();
+    for (x, z) in columns {
+        let key = TileKey { x, z, level: 0 };
+        if tiles.insert(key) {
+            insert_ancestors(&mut tiles, key);
+        }
+    }
+    tiles
 }
 
 /// How long a tile takes to fade in over the ones it replaces.
@@ -410,9 +448,11 @@ impl Renderer {
                         self.lod_cull_next - 1
                     })
                 });
+                let animated = animated_layers(&mesh, previous.as_deref().map(|(p, _)| p));
                 self.add_lod_tile(
                     key,
                     Tile {
+                        animated,
                         mesh: Box::new(mesh),
                         bounds,
                         shown,
@@ -499,27 +539,16 @@ impl Renderer {
             self.shrink_gate.wait(start, super::SHRINK_SETTLE);
         }
         self.release_left(start);
-        let faded: Vec<_> = self
-            .lods
-            .iter()
-            .filter(|(_, tile)| tile.dying.is_some_and(|d| start - d >= FADE))
-            .map(|(&key, _)| key)
-            .collect();
-        for key in faded {
-            self.remove_lod(key);
+        // Tiles go dying and stand-ins get their time only as a job ends, so
+        // once the last job's fade is over no tile is left to look at.
+        if let Some(settled) = self.lod_settled {
+            self.release_faded(start);
+            if start >= settled {
+                self.lod_settled = None;
+            }
         }
-        let stood_in: Vec<_> = self
-            .lods
-            .values_mut()
-            .filter_map(|tile| match tile.previous.as_deref() {
-                Some((_, Some(since))) if start - *since >= FADE => {
-                    tile.previous.take().map(|p| *p)
-                }
-                _ => None,
-            })
-            .collect();
-        for (previous, _) in stood_in {
-            self.release_mesh(previous);
+        if self.lod_pending.is_none() {
+            return;
         }
         // The columns near chunks take in this job, and the tiles holding the
         // job's new finer ones: a tile meshed again around them keeps its
@@ -537,18 +566,15 @@ impl Renderer {
                     .map(|(key, _)| key),
             );
         for &key in new {
-            let mut key = key;
-            while key.level < MAX_LEVEL && around_new.insert(key.parent()) {
-                key = key.parent();
-            }
+            insert_ancestors(&mut around_new, key);
         }
-        let taken: Vec<_> = self
-            .lod_pending
-            .iter()
-            .flat_map(|pending| pending.cutout.iter().flatten())
-            .filter(|column| !self.lod_cutout.contains(column))
-            .copied()
-            .collect();
+        let taken = holding_columns(
+            self.lod_pending
+                .iter()
+                .flat_map(|pending| pending.cutout.iter().flatten())
+                .filter(|column| !self.lod_cutout.contains(column))
+                .copied(),
+        );
         while let Some(pending) = &mut self.lod_pending {
             // Keys meshed again keep their place; removed ones are skipped.
             let next = std::iter::from_fn(|| pending.order.pop_front())
@@ -566,10 +592,7 @@ impl Renderer {
                     .collect();
                 let mut above_replaced = FxHashSet::default();
                 for &key in &replaced {
-                    let mut key = key;
-                    while key.level < MAX_LEVEL && above_replaced.insert(key.parent()) {
-                        key = key.parent();
-                    }
+                    insert_ancestors(&mut above_replaced, key);
                 }
                 let over_replaced = |key: TileKey| {
                     let mut ancestor = key;
@@ -597,10 +620,7 @@ impl Renderer {
                 kept.extend(cut.iter().map(|&(x, z)| TileKey { x, z, level: 0 }));
                 let mut above = FxHashSet::default();
                 for &key in &kept {
-                    let mut key = key;
-                    while key.level < MAX_LEVEL && above.insert(key.parent()) {
-                        key = key.parent();
-                    }
+                    insert_ancestors(&mut above, key);
                 }
                 let alone = |key: TileKey| {
                     let mut ancestor = key;
@@ -632,20 +652,43 @@ impl Renderer {
                 if let Some(cutout) = pending.cutout {
                     self.set_lod_cutout(cutout);
                 }
+                self.lod_settled = Some(start + FADE);
                 return;
             };
             let mesh = pending.meshes.remove(&key).expect("pending tile");
-            let [x, _, z] = key.origin();
-            let size = key.size();
-            let keep = mesh.keep
-                || around_new.contains(&key)
-                || taken.iter().any(|&(cx, cz)| {
-                    (x..x + size).contains(&(cx * 16)) && (z..z + size).contains(&(cz * 16))
-                });
+            let keep = mesh.keep || around_new.contains(&key) || taken.contains(&key);
             self.upload_lod(key, &mesh, keep);
             if start.elapsed() >= budget {
                 return;
             }
+        }
+    }
+
+    /// Releases the tiles that have faded out and the stand-ins whose
+    /// replacements have faded in, `FADE` after their job ended.
+    fn release_faded(&mut self, start: Instant) {
+        let faded: Vec<_> = self
+            .lods
+            .iter()
+            .filter(|(_, tile)| tile.dying.is_some_and(|d| start - d >= FADE))
+            .map(|(&key, _)| key)
+            .collect();
+        for key in faded {
+            self.remove_lod(key);
+        }
+        let stood_in: Vec<_> = self
+            .lods
+            .values_mut()
+            .filter_map(|tile| match tile.previous.as_deref() {
+                Some((_, Some(since))) if start - *since >= FADE => {
+                    tile.animated = animated_layers(&tile.mesh, None);
+                    tile.previous.take().map(|p| *p)
+                }
+                _ => None,
+            })
+            .collect();
+        for (previous, _) in stood_in {
+            self.release_mesh(previous);
         }
     }
 
@@ -788,6 +831,37 @@ mod tests {
             min: Vec3::from(min),
             max: Vec3::from(max),
         }
+    }
+
+    /// The tiles holding a set of chunk columns are those whose block square
+    /// holds one of the columns' corners, at every level.
+    #[test]
+    fn tiles_holding_columns_are_those_over_them() {
+        let columns = [(-1, 5), (0, 0), (37, -70)];
+        let tiles = holding_columns(columns);
+        let mut held = 0;
+        for level in 0..=MAX_LEVEL {
+            for x in -6..6 {
+                for z in -6..6 {
+                    let key = TileKey { x, z, level };
+                    let [x0, _, z0] = key.origin();
+                    let size = key.size();
+                    let over = columns.iter().any(|&(cx, cz)| {
+                        (x0..x0 + size).contains(&(cx * 16)) && (z0..z0 + size).contains(&(cz * 16))
+                    });
+                    assert_eq!(tiles.contains(&key), over, "{key:?}");
+                    held += usize::from(over);
+                }
+            }
+        }
+        // The first two columns are held at every level, (37, -70) within the
+        // range above only by coarser tiles.
+        assert!(held > 2 * (usize::from(MAX_LEVEL) + 1));
+        assert!(tiles.contains(&TileKey {
+            x: 37,
+            z: -70,
+            level: 0
+        }));
     }
 
     /// A tile its cell vouches for gets the same distance, and so the same

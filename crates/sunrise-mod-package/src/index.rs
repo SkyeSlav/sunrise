@@ -792,6 +792,8 @@ pub struct Facts {
     /// The Minecraft version, when the file names one (a modpack does).
     pub game: Option<String>,
     pub requires: Vec<Requirement>,
+    /// A mod that declares `[wasm]`: its `mod.wasm` runs in the game's sandbox.
+    pub wasm: bool,
 }
 
 impl Facts {
@@ -856,6 +858,7 @@ pub fn inspect(kind: &Kind, path: &Path) -> Result<Facts, String> {
             let m = package.manifest;
             crate::Content::read(path, &m)?;
             Ok(Facts {
+                wasm: m.wasm.is_some(),
                 capabilities: m.capabilities,
                 id: Some(m.id),
                 version: Some(m.version),

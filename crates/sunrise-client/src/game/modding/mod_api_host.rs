@@ -370,6 +370,18 @@ impl SidedLevel for super::GameLevel<'_> {
     }
 }
 
+impl<
+    'a: 'b,
+    'b,
+    L: std::ops::Deref<Target = super::GameLevel<'a>>,
+    T: std::ops::Deref<Target = Ticks>,
+> SidedLevel for LevelTicks<'b, L, T>
+{
+    fn client_side(&self) -> bool {
+        self.level.client_side()
+    }
+}
+
 impl SidedLevel for super::native_hooks::HitLevel<'_> {
     fn client_side(&self) -> bool {
         self.0.client_side()
@@ -956,6 +968,8 @@ impl mod_api::HitHost for super::native_hooks::HitLevel<'_> {
 pub(in crate::game) struct LevelTicks<'b, L, T = &'b mut Ticks> {
     level: L,
     ticks: T,
+    /// The blocks a preview standing in for the level changed, which the reads see over it.
+    preview: Option<&'b sunrise_world::level::PreviewBlocks>,
     /// The level's and the ticks' borrow, which the delegating reads below are bounded by.
     borrow: std::marker::PhantomData<&'b ()>,
 }
@@ -965,8 +979,21 @@ impl<'b, L, T> LevelTicks<'b, L, T> {
         Self {
             level,
             ticks,
+            preview: None,
             borrow: std::marker::PhantomData,
         }
+    }
+    /// This level as the preview that changed `preview` sees it (`None`: as it is).
+    pub(in crate::game) fn previewing(
+        mut self,
+        preview: Option<&'b sunrise_world::level::PreviewBlocks>,
+    ) -> Self {
+        self.preview = preview;
+        self
+    }
+    /// The block the preview put at `pos`, if it changed it.
+    fn previewed(&self, pos: BlockPos) -> Option<sunrise_world::registry::BlockStateId> {
+        self.preview?.get(&pos).copied()
     }
 }
 
@@ -989,12 +1016,31 @@ impl<
         mod_api::LevelHost::can_see_sky(&*self.level, pos)
     }
     fn block_entity(&self, pos: [i32; 3]) -> Option<mod_api::BlockEntityRef> {
+        // A block the preview changed has no block entity left.
+        if self
+            .previewed(BlockPos::new(pos[0], pos[1], pos[2]))
+            .is_some()
+        {
+            return None;
+        }
         mod_api::LevelHost::block_entity(&*self.level, pos)
     }
     fn container_size(&self, at: mod_api::BlockSide) -> Option<usize> {
+        if self
+            .previewed(BlockPos::new(at.pos[0], at.pos[1], at.pos[2]))
+            .is_some()
+        {
+            return None;
+        }
         mod_api::LevelHost::container_size(&*self.level, at)
     }
     fn container_stack(&self, at: mod_api::BlockSide, slot: usize) -> Option<mod_api::ItemStack> {
+        if self
+            .previewed(BlockPos::new(at.pos[0], at.pos[1], at.pos[2]))
+            .is_some()
+        {
+            return None;
+        }
         mod_api::LevelHost::container_stack(&*self.level, at, slot)
     }
     fn block_entity_part_snapshot(
@@ -1006,6 +1052,11 @@ impl<
         mod_api::LevelHost::block_entity_part_snapshot(&*self.level, entity, namespace, name)
     }
     fn block_entity_data(&self, entity: mod_api::BlockEntityRef) -> Option<mod_api::Compound> {
+        use mod_api::__private::game::Fields;
+        let [x, y, z] = entity.fields().position;
+        if self.previewed(BlockPos::new(x, y, z)).is_some() {
+            return None;
+        }
         mod_api::LevelHost::block_entity_data(&*self.level, entity)
     }
     fn block_state_id(&self, name: &str) -> Option<mod_api::BlockState> {
@@ -1015,7 +1066,10 @@ impl<
         mod_api::LevelHost::block_state_default(&*self.level, block)
     }
     fn block_state(&self, pos: [i32; 3]) -> Option<mod_api::BlockState> {
-        mod_api::LevelHost::block_state(&*self.level, pos)
+        match self.previewed(BlockPos::new(pos[0], pos[1], pos[2])) {
+            Some(state) => state.try_into_api().ok(),
+            None => mod_api::LevelHost::block_state(&*self.level, pos),
+        }
     }
     fn state_block(&self, state: mod_api::BlockState) -> Option<&str> {
         mod_api::LevelHost::state_block(&*self.level, state)
@@ -1036,7 +1090,10 @@ impl<
         mod_api::LevelHost::tags(&*self.level)
     }
     fn fluid_state(&self, pos: [i32; 3]) -> Option<mod_api::FluidState> {
-        mod_api::LevelHost::fluid_state(&*self.level, pos)
+        match self.previewed(BlockPos::new(pos[0], pos[1], pos[2])) {
+            Some(state) => self.state_fluid_state(state.try_into_api().ok()?),
+            None => mod_api::LevelHost::fluid_state(&*self.level, pos),
+        }
     }
     fn state_fluid_state(&self, state: mod_api::BlockState) -> Option<mod_api::FluidState> {
         mod_api::LevelHost::state_fluid_state(&*self.level, state)
@@ -1068,37 +1125,30 @@ impl<
         mod_api::LevelHost::enabled_features(&*self.level)
     }
     fn signal(&self, pos: [i32; 3], direction: Direction) -> Option<i32> {
-        Some(
-            self.signals()
-                .signal(BlockPos::new(pos[0], pos[1], pos[2]), direction),
-        )
+        self.read_signals(|s| s.signal(BlockPos::new(pos[0], pos[1], pos[2]), direction))
     }
     fn direct_signal(&self, pos: [i32; 3], direction: Direction) -> Option<i32> {
-        Some(
-            self.signals()
-                .direct_signal(BlockPos::new(pos[0], pos[1], pos[2]), direction),
-        )
+        self.read_signals(|s| s.direct_signal(BlockPos::new(pos[0], pos[1], pos[2]), direction))
     }
     fn direct_signal_to(&self, pos: [i32; 3]) -> Option<i32> {
-        Some(
-            self.signals()
-                .direct_signal_to(BlockPos::new(pos[0], pos[1], pos[2])),
-        )
+        self.read_signals(|s| s.direct_signal_to(BlockPos::new(pos[0], pos[1], pos[2])))
     }
     fn best_neighbor_signal(&self, pos: [i32; 3]) -> Option<i32> {
-        Some(
-            self.signals()
-                .best_neighbor_signal(BlockPos::new(pos[0], pos[1], pos[2])),
-        )
+        self.read_signals(|s| s.best_neighbor_signal(BlockPos::new(pos[0], pos[1], pos[2])))
     }
     fn has_neighbor_signal(&self, pos: [i32; 3]) -> Option<bool> {
-        Some(
-            self.signals()
-                .has_neighbor_signal(BlockPos::new(pos[0], pos[1], pos[2])),
-        )
+        self.read_signals(|s| s.has_neighbor_signal(BlockPos::new(pos[0], pos[1], pos[2])))
     }
     fn collision_shape(&self, pos: [i32; 3]) -> Option<Vec<[f64; 6]>> {
-        mod_api::LevelHost::collision_shape(&*self.level, pos)
+        let Some(state) = self.previewed(BlockPos::new(pos[0], pos[1], pos[2])) else {
+            return mod_api::LevelHost::collision_shape(&*self.level, pos);
+        };
+        Some(super::native_state_shapes::collision_boxes(
+            self.level.collision,
+            self.level.world,
+            state,
+            pos,
+        ))
     }
 }
 
@@ -1143,10 +1193,118 @@ impl<
     T: std::ops::Deref<Target = Ticks>,
 > LevelTicks<'b, L, T>
 {
-    /// The level in place read through the game's own `SignalGetter`, with this write's
-    /// comparator outputs.
-    fn signals(&self) -> sunrise_world::level::Signals<'_, super::GameLevel<'a>> {
-        self.level.behaviours.signals(&*self.level, &self.ticks)
+    /// A read of the level in place (over the preview's blocks) through the game's own
+    /// `SignalGetter`, with these ticks' comparator outputs. A client's ticks don't hold the
+    /// server's outputs: a read that needed one it lacks is unknown there, `None`.
+    fn read_signals<R>(
+        &self,
+        read: impl FnOnce(&sunrise_world::level::Signals<'_, Self>) -> R,
+    ) -> Option<R> {
+        let signals = self.level.behaviours.signals(self, &self.ticks);
+        let value = read(&signals);
+        (!(self.level.client_side && signals.read_unknown_output())).then_some(value)
+    }
+}
+
+/// The signal reads of the level in place, over the preview's blocks: a block the preview
+/// changed has no block entity left, as `DryLevel` reads it.
+impl<
+    'a: 'b,
+    'b,
+    L: std::ops::Deref<Target = super::GameLevel<'a>>,
+    T: std::ops::Deref<Target = Ticks>,
+> sunrise_world::level::signal_access::SignalAccess for LevelTicks<'b, L, T>
+{
+    fn block_state(&self, pos: BlockPos) -> sunrise_world::registry::BlockStateId {
+        self.previewed(pos)
+            .unwrap_or_else(|| sunrise_world::level::LevelAccess::block_state(&*self.level, pos))
+    }
+    fn shulker_is_closed(&self, pos: BlockPos) -> Option<bool> {
+        if self.previewed(pos).is_some() {
+            return None;
+        }
+        sunrise_world::level::LevelAccess::shulker_is_closed(&*self.level, pos)
+    }
+    fn published_collision_shape(
+        &self,
+        pos: BlockPos,
+        state: sunrise_world::registry::BlockStateId,
+    ) -> Option<sunrise_core::geometry::VoxelShape> {
+        if self.previewed(pos).is_some() {
+            return None;
+        }
+        sunrise_world::level::LevelAccess::published_collision_shape(&*self.level, pos, state)
+    }
+    fn adjust_signal_source(
+        &self,
+        state: sunrise_world::registry::BlockStateId,
+        vanilla: bool,
+    ) -> bool {
+        sunrise_world::level::LevelAccess::adjust_signal_source(&*self.level, state, vanilla)
+    }
+    fn has_weak_power_hook(&self) -> bool {
+        sunrise_world::level::LevelAccess::has_weak_power_hook(&*self.level)
+    }
+    fn adjust_should_check_weak_power(
+        &self,
+        pos: BlockPos,
+        state: sunrise_world::registry::BlockStateId,
+        direction: Direction,
+        vanilla: bool,
+    ) -> bool {
+        sunrise_world::level::LevelAccess::adjust_should_check_weak_power(
+            &*self.level,
+            pos,
+            state,
+            direction,
+            vanilla,
+        )
+    }
+    fn has_redstone_wire_connection_hook(&self) -> bool {
+        sunrise_world::level::LevelAccess::has_redstone_wire_connection_hook(&*self.level)
+    }
+    fn adjust_should_redstone_wire_connect_to(
+        &self,
+        pos: BlockPos,
+        state: sunrise_world::registry::BlockStateId,
+        direction: Option<Direction>,
+        vanilla: bool,
+    ) -> bool {
+        sunrise_world::level::LevelAccess::adjust_should_redstone_wire_connect_to(
+            &*self.level,
+            pos,
+            state,
+            direction,
+            vanilla,
+        )
+    }
+    fn adjust_signal(
+        &self,
+        pos: BlockPos,
+        state: sunrise_world::registry::BlockStateId,
+        direction: Direction,
+        direct: bool,
+        vanilla: i32,
+    ) -> i32 {
+        sunrise_world::level::LevelAccess::adjust_signal(
+            &*self.level,
+            pos,
+            state,
+            direction,
+            direct,
+            vanilla,
+        )
+    }
+    fn block_entity_signal(
+        &self,
+        pos: BlockPos,
+        state: sunrise_world::registry::BlockStateId,
+        direction: Direction,
+    ) -> i32 {
+        if self.previewed(pos).is_some() {
+            return 0;
+        }
+        sunrise_world::level::LevelAccess::block_entity_signal(&*self.level, pos, state, direction)
     }
 }
 

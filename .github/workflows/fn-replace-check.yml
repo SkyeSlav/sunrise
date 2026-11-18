@@ -161,7 +161,7 @@ jobs:
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
         run: |
           python3 tools/prebuilt_game.py build "$FNR_SCRATCH/prebuilt" --server
-          python3 tools/prebuilt_game.py pack "$FNR_SCRATCH/prebuilt" "$FNR_SCRATCH/legs/sdk-leg-server"
+          python3 tools/prebuilt_game.py pack "$FNR_SCRATCH/prebuilt" "$FNR_SCRATCH/legs/sdk-leg-server" --with-tool
       # The daily run's SDK: the Linux legs only, the ones this check reads (sdk-publish.yml gathers every leg).
       - uses: actions/download-artifact@v4
         if: steps.sdk.outputs.source == 'legs'
@@ -215,9 +215,7 @@ jobs:
           CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS: true
         run: |
           launcher_src="$FNR_SCRATCH/sunrise-launcher"
-          rm -rf "$launcher_src"
-          git clone --quiet https://github.com/sunrise-org/sunrise-launcher "$launcher_src"
-          git -C "$launcher_src" checkout --quiet "$(tools/ci/launcher_pin.sh)"
+          tools/ci/launcher_checkout.sh "$launcher_src"
           target="$launcher_src/target"
           cargo build --release --locked --manifest-path "$launcher_src/Cargo.toml" --target-dir "$target"
           echo "LAUNCHER=$(realpath "$target/release/sunrise-launcher")" >> "$GITHUB_ENV"

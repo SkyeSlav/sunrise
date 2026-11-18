@@ -4772,6 +4772,7 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "sunrise-client",
+ "sunrise-client-lib",
  "sunrise-core",
  "sunrise-guest-stack",
  "sunrise-mod-host",
@@ -5274,6 +5275,7 @@ dependencies = [
  "open",
  "serde",
  "serde_json",
+ "subtle",
  "sunrise-addresses",
  "sunrise-platform",
  "ureq",

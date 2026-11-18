@@ -338,6 +338,11 @@ impl EnchantmentKey {
     }
 }
 
+/// The canonical load-owned name of a resolved entity type, without allocating.
+pub fn entity_type_name(key: EntityTypeKey) -> Option<&'static str> {
+    resolved_entity_types().get()?.id(key.0)
+}
+
 /// The canonical name of a built-in entity-type key, for diagnostics.
 pub fn entity_type_key_id(key: EntityTypeKey) -> Option<String> {
     crate::parts::registration_name(crate::parts::RegistrationKeyKind::EntityType, key.0)

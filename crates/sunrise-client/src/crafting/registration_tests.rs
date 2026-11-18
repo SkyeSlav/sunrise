@@ -20,11 +20,11 @@ fn unregistered_serializer_refuses_whole_load_after_false_conditions() {
         .to_string();
     assert_eq!(
         error,
-        "recipe data/minecraft/recipe/unknown.json, unregistered recipe serializer absent:serializer"
+        "2 recipes failed to load:\n  recipes: data/minecraft/recipe/known_bad.json refused: invalid result: {\"count\":100,\"id\":\"minecraft:stick\"}\n  recipe data/minecraft/recipe/unknown.json, unregistered recipe serializer absent:serializer"
     );
     std::fs::write(
         folder.join("unknown.json"),
-        r#"{"type":"absent:serializer","neoforge:conditions":[{"type":"neoforge:not","value":{"type":"neoforge:true"}}]}"#,
+        r#"{"type":"absent:serializer","neoforge:conditions":[{"type":"neoforge:not","value":{"type":"neoforge:always"}}]}"#,
     )
     .unwrap();
     // With the serializer skipped by its false condition, the malformed sibling still
@@ -136,7 +136,7 @@ fn unknown_serializer_refuses_before_unclaimed_ingredient_is_dropped() {
             .to_string();
         assert_eq!(
             error,
-            "recipe data/minecraft/recipe/future.json, unregistered recipe serializer minecraft:future_serializer"
+            "1 recipe failed to load:\n  recipe data/minecraft/recipe/future.json, unregistered recipe serializer minecraft:future_serializer"
         );
         let root = tempfile::tempdir().unwrap();
         let error = Recipes::from_sources(
@@ -151,7 +151,113 @@ fn unknown_serializer_refuses_before_unclaimed_ingredient_is_dropped() {
         .to_string();
         assert_eq!(
             error,
-            "recipe data/minecraft/recipe/future.json, unregistered recipe serializer minecraft:future_serializer"
+            "1 recipe failed to load:\n  recipe data/minecraft/recipe/future.json, unregistered recipe serializer minecraft:future_serializer"
         );
+    });
+}
+
+#[test]
+fn a_failed_load_names_every_bad_recipe() {
+    mod_platform::testing::with_mods(Vec::new().into(), || {
+        let sources = vec![
+            (
+                "minecraft:b".into(),
+                serde_json::json!({"type":"absent:two"}),
+            ),
+            (
+                "minecraft:a".into(),
+                serde_json::json!({"type":"absent:one"}),
+            ),
+            (
+                "ns:c".into(),
+                serde_json::json!({"type":"minecraft:crafting_special_repairitem"}),
+            ),
+        ];
+        let error = ResolvedSources::resolve(sources, &crate::test_resources::server_load())
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            error,
+            "2 recipes failed to load:\n  recipe data/minecraft/recipe/a.json, unregistered recipe serializer absent:one\n  recipe data/minecraft/recipe/b.json, unregistered recipe serializer absent:two"
+        );
+    });
+}
+
+#[test]
+fn a_failed_load_reports_resolution_and_validation_failures_together() {
+    mod_platform::testing::with_mods(Vec::new().into(), || {
+        let sources = vec![
+            (
+                "minecraft:a".into(),
+                serde_json::json!({"type":"absent:serializer"}),
+            ),
+            (
+                "minecraft:b".into(),
+                serde_json::json!({"type":"minecraft:crafting_shapeless","ingredients":[{"type":"absent:kind"}],"result":{"id":"minecraft:stick"}}),
+            ),
+            (
+                "minecraft:c".into(),
+                serde_json::json!({"type":"minecraft:crafting_shapeless","ingredients":[],"result":{"id":"minecraft:stick"}}),
+            ),
+            (
+                "minecraft:d".into(),
+                serde_json::json!({"type":"minecraft:crafting_shapeless","ingredients":["minecraft:stone"],"result":{"id":"minecraft:stick"}}),
+            ),
+        ];
+        let root = tempfile::tempdir().unwrap();
+        let error = Recipes::from_sources(
+            root.path(),
+            &Items::for_tests(Default::default()),
+            &PackOverlay::NONE,
+            sources,
+            &crate::test_resources::server_load(),
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        let lines: Vec<_> = error.lines().collect();
+        assert_eq!(lines[0], "3 recipes failed to load:", "{error}");
+        for (line, file) in lines[1..].iter().zip(["a", "b", "c"]) {
+            assert!(
+                line.contains(&format!("data/minecraft/recipe/{file}.json")),
+                "{error}"
+            );
+        }
+        assert!(!error.contains("d.json"), "{error}");
+    });
+}
+
+#[test]
+fn collected_sources_and_table_build_report_every_stage_together() {
+    mod_platform::testing::with_mods(Vec::new().into(), || {
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("data/minecraft/recipe");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("a.json"), r#"{"type":"absent:serializer"}"#).unwrap();
+        std::fs::write(
+            folder.join("b.json"),
+            r#"{"type":"minecraft:crafting_shapeless","ingredients":[],"result":{"id":"minecraft:stick"}}"#,
+        )
+        .unwrap();
+        let context = crate::test_resources::server_load();
+        let sources =
+            ResolvedSources::load_collecting(root.path(), &PackOverlay::NONE, &context).unwrap();
+        assert!(!sources.is_complete());
+        let error = Recipes::from_resolved(
+            root.path(),
+            &Items::for_tests(Default::default()),
+            &PackOverlay::NONE,
+            &sources,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(error.starts_with("2 recipes failed to load:"), "{error}");
+        assert!(
+            error.find("a.json").unwrap() < error.find("b.json").unwrap(),
+            "{error}"
+        );
+        assert!(ResolvedSources::load(root.path(), &PackOverlay::NONE, &context).is_err());
     });
 }

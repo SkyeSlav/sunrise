@@ -330,6 +330,41 @@ pub fn fdlibm_atan2(y: f64, x: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `Projectile.updateRotation`'s targets on HotSpot 25.0.4.1 (x86-64): yaw `Mth.atan2(x, z)` and pitch
+    /// `Mth.atan2(y, horizontalDistance)`, each times the folded 180F / (float)PI, for motions where the platform's
+    /// `atan2`, `hypot` and `to_degrees` gave other bits. Motion as double bits, vanilla's yaw and pitch as float bits.
+    #[test]
+    fn projectile_rotation_has_vanillas_bits() {
+        for (motion, expected) in [
+            (
+                [
+                    0xbfec_7fc1_f531_3a70u64,
+                    0x4007_7aa5_d12b_e478,
+                    0xc000_64f4_3646_2051,
+                ],
+                [0xc31c_82c9u32, 0x4252_ddaf],
+            ),
+            (
+                [
+                    0x3e7c_22e2_0000_0000,
+                    0xc1cb_edf9_e000_0000,
+                    0x3f6f_c022_0000_0000,
+                ],
+                [0x3aca_c11e, 0xc2b3_ffff],
+            ),
+        ] {
+            let m = crate::geometry::Vec3::new(
+                f64::from_bits(motion[0]),
+                f64::from_bits(motion[1]),
+                f64::from_bits(motion[2]),
+            );
+            let rotation = [
+                atan2_degrees(m.x, m.z),
+                atan2_degrees(m.y, m.horizontal_distance()),
+            ];
+            assert_eq!(rotation.map(f32::to_bits), expected, "motion {motion:x?}");
+        }
+    }
     /// Values the 26.3 client computes on x86-64 HotSpot.
     #[test]
     fn atan2_matches_the_client_tables() {

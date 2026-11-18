@@ -7,12 +7,30 @@ folder.
 | Command | What it does |
 |---|---|
 | `new <path> --template native\|wasm [--sunrise <build>]` | Makes a code mod pinned to the current Nightly's build, or the one named, and fetches its SDK. Without `--template` it makes a content mod, which has no SDK. |
-| `build`, `build --wasm` | Fetches the pinned SDK when needed, then packs the `.smod` with its [`uses.json`](04-fit.md#usesjson). |
+| `build`, `build --wasm` | Fetches the pinned SDK when needed, then packs the `.smod` with its [`uses.json`](04-fit.md#usesjson). For a native mod it then compiles the crate against the build's prebuilt game, as [`native-build`](08-native-build.md) does, with no launcher: see [`build` for a native mod](#build-for-a-native-mod). |
+| `run [--resources <folder>] [-- <game args>]` | For a native mod, builds, stages the game with the mod in `target/sunrise-mod/run/` and starts it. |
 | `check [--uses]` | The package rules, and every render pipeline shader (`assets/*/shaders/pipeline/**/*.wgsl`) composed and validated by the game's own code, failing with `<file>: <reason>` for each refusal ([render pipelines](../../how-to/client/render-pipelines.md)); then, for a code mod, fetches the pinned SDK when needed and runs `cargo check` for this computer and for wasm32, then what the mod uses of its pinned build: `Greeter uses 14 items of the API (6 hooks, 5 methods, 3 types). Made for nightly-2026-11-13 (afe471c).` `--uses` lists each item with the line that brought it in, and how the mod builds each struct it builds with a literal. |
 | `hooks <text> [--all]` | Searches the pinned build's hooks offline, by id, doc and their NeoForge, Fabric and Paper names; every word must match. `--all` searches every record. Matches in the id come first, then in a counterpart, then in the doc. |
 | `sdk diff <build> <build>` | What changed in the surface from the first build to the second, [classified](02-surface.md#what-a-change-is), with the second build's change notes (why, and what a mod does now) under the changes they name: the notes of the changes since the SDK published before it. It reads only the builds' small files, so it works for builds whose compiled files are pruned. |
 | `fits [<file.smod>] [--build <build>]…` | Whether the mod, or a package, fits the current Nightly or each build named: one line per build, `made for`, `fits`, or `does not fit` with the changed items. |
 | `update [--sunrise <build>] [--accept <id>]…` | Moves the pin to the current Nightly (or the build named). A native mod first gets what the move breaks in it; a wasm mod gets no report. |
+
+## `build` for a native mod
+
+After packing, `build` fetches the build's `runtime`, `api` and `engine` slices for this computer once, checks the
+signed sums and each slice as the SDK fetch does, and unpacks them into the tool's cache, shared by every project:
+`$XDG_CACHE_HOME/sunrise-mod` (else `~/.cache/sunrise-mod`) on Linux, `~/Library/Caches/sunrise-mod` on macOS,
+`%LOCALAPPDATA%\sunrise-mod` on Windows; `SUNRISE_MOD_CACHE` names another folder. Deleting the folder clears it.
+The Rust is the one `sdk.json` names: `rustup`'s, installed with `--profile minimal` when missing, or the `rustc` on
+`PATH` when it is exactly that version; otherwise `build` stops and says the version and both ways to get it.
+A mod with crates.io dependencies and no `Cargo.lock` gets one; `build --update-lock` resolves again. The compile
+is [`native-build`'s](08-native-build.md), in process, with registry crates approved (the mod's own `Cargo.toml`),
+for the `client` side. It prints `Built <library>` and the build log's path, and exits non-zero with the error on failure.
+
+`run` additionally needs `--resources <folder>`, prepared resources made from your own Minecraft (`sunrise-prepare
+--prepare --output <folder>`). It copies the built game program, its libraries, the `native-mods.json` record naming
+the mod's library and the mod's package into `target/sunrise-mod/run/app/`, keeps the game folder and `SUNRISE_HOME`
+in `run/game/` and `run/home/`, and starts the program with `--game-dir`, `--resources` and the arguments after `--`.
 
 ## `fits`
 

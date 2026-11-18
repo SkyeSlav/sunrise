@@ -2,7 +2,7 @@
 //! queries and the stand's root-vehicle grid, offered to the one rule in
 //! `sunrise_client::entity_solids` (which a mob's own move reads too).
 use super::{Game, boats::Boat, minecarts::Minecart};
-use sunrise_client::entity_solids::{Candidate, Mover as Rule, SolidKind, Solids};
+use sunrise_client::entity_solids::{Candidate, Mover as Rule, Side, SolidKind, Solids};
 use sunrise_core::geometry::{Aabb, Vec3};
 
 /// The mover asking, as the game's callers name it.
@@ -10,6 +10,8 @@ use sunrise_core::geometry::{Aabb, Vec3};
 pub(in crate::game) enum Mover<'a> {
     /// The window's player.
     Player,
+    /// Any player that is not riding, by the height of its feet: a guest the server holds.
+    PlayerAt { feet_y: f64 },
     /// A mover that is neither a player nor a vehicle: an item, a stand, an orb, TNT, a
     /// falling block, a body a piston pushes.
     Passive,
@@ -72,17 +74,30 @@ impl Game<'_> {
                     Rule::Player {
                         feet_y: p.position.y,
                         riding: self.riding,
+                        side: if self.remote.is_some() {
+                            Side::Client
+                        } else {
+                            Side::Server
+                        },
                     },
                     None,
                 )
             }
+            Mover::PlayerAt { feet_y } => (
+                Rule::Player {
+                    feet_y,
+                    riding: None,
+                    side: Side::Server,
+                },
+                None,
+            ),
             Mover::Passive => (Rule::Passive, None),
             Mover::Cart(c) => (Rule::Cart { id: c.id }, Some(cart_reach(c))),
             Mover::Boat { id, area } => (Rule::Boat { id }, Some(area)),
         };
         let solids = Solids::new(rule, area);
         match mover {
-            Mover::Player | Mover::Passive => {
+            Mover::Player | Mover::PlayerAt { .. } | Mover::Passive => {
                 for (j, m) in self.mobs.iter().enumerate() {
                     if solids.takes(m.solid_kind()) {
                         let c = m.solid_candidate();
