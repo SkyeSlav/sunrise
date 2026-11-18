@@ -47,7 +47,7 @@ def main():
     (mod / "sunrise-mod.toml").write_text(
         fill((TEMPLATE / "sunrise-mod.toml").read_text())
         + f'\n[native]\ngame = "26.3"\nsunrise = "{identity["commit"]}"\nmixins = "{MIXINS_REV}"\n'
-        + '\n[[internals]]\npath = "sunrise_client::Game"\n')
+        + '\n[[internals]]\npath = "sunrise_client::game::Game"\n')
 
     command = [str(args.tool), "sunrise-mod"]
     reply, code = tool([*command, "native-layout"], {
