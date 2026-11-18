@@ -33,6 +33,8 @@ class ExtrasFeaturesTest(unittest.TestCase):
     def check(self, default, extras_off, *, root="sunrise-game"):
         def cargo(command, **kwargs):
             self.assertEqual(kwargs["env"]["RUSTC_BOOTSTRAP"], "1")
+            self.assertIn("--locked", command)
+            self.assertIn("--offline", command)
             if command[command.index("-p") + 1] != root:
                 return SHARED
             return extras_off if "--no-default-features" in command else default

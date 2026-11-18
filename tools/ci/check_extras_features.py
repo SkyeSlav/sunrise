@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Check that the vanilla (Extras-off) build reuses every dependency the default build compiled, so CI builds the
-second variant incrementally: only workspace crates, which own the Extras features, may differ. Compares Cargo's own
-plan of each build (`--unit-graph`, which compiles nothing): a dependency unit is reused when its package, target,
-mode, features, profile and platform match and so do the units it depends on, as Cargo's fingerprint requires.
-Linux, the platform it runs on. `--unit-graph` is unstable: RUSTC_BOOTSTRAP=1 is set for this planning call only."""
+"""Check that the Linux audio-only vanilla (Extras-off) builds of sunrise-game and sunrise-mod-host can reuse
+every third-party dependency unit they need from their corresponding default builds. EXTRAS_OFF_FEATURES defines
+that profile; the Nightly and release workflows will use the same constant when they build the vanilla variant.
+The check does not cover other profiles or platforms.
+
+Compare Cargo's locked, offline plans (`--unit-graph`, which compiles nothing) after fetching dependencies.
+A unit matches when its package, target, mode, features, profile, platform and dependency units match.
+`--unit-graph` is unstable: RUSTC_BOOTSTRAP=1 is set for the planning call only."""
 
 import hashlib
 import json
@@ -15,8 +18,6 @@ from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD_ROOTS = ("sunrise-game", "sunrise-mod-host")
-# The vanilla build: Extras off, and controllers with it (an Extras feature). The release workflows will use this
-# same feature set when they build both variants.
 EXTRAS_OFF_FEATURES = "audio"
 
 
@@ -29,7 +30,8 @@ def in_workspace(pkg_id):
 def plan(root, *, extras_off):
     """{key: unit} of every dependency unit outside the workspace, each keyed by what it is built from: itself and,
     recursively, the units it depends on."""
-    command = ["cargo", "build", "--locked", "--release", "-p", root, "--unit-graph", "-Z", "unstable-options"]
+    command = ["cargo", "build", "--locked", "--offline", "--release", "-p", root, "--unit-graph", "-Z",
+               "unstable-options"]
     if extras_off:
         command += ["--no-default-features", "--features", EXTRAS_OFF_FEATURES]
     units = json.loads(subprocess.check_output(command, cwd=ROOT, text=True,
