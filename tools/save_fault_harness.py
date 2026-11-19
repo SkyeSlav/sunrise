@@ -3,22 +3,20 @@ from contextlib import contextmanager
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
 import time
 
 try:
-    from . import anvil_dump, lab, lan_e2e
-    from .integration_env import require_server_reports
+    from . import anvil_dump, lab
+    from .integration_env import game_environment, require_server_reports
     from .test_dedicated_crash_save import PLAYER, offline_uuid
     from .test_dedicated_server_parity import Server, free_port, write_server_dir
 except ImportError:
     import anvil_dump
     import lab
-    import lan_e2e
-    from integration_env import require_server_reports
+    from integration_env import game_environment, require_server_reports
     from test_dedicated_crash_save import PLAYER, offline_uuid
     from test_dedicated_server_parity import Server, free_port, write_server_dir
 
@@ -33,8 +31,8 @@ OLD_ITEM = 'iron_ingot'
 
 def build():
     require_server_reports(lab.RESOURCES)
-    subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'sunrise-game', '-p', 'sunrise-client-lib',
-                    '--bin', 'sunrise-client', '--bin', 'sunrise-ctl'], cwd=lab.ROOT, check=True)
+    subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'sunrise-game', '--bin', 'sunrise-client'],
+                   cwd=lab.ROOT, check=True)
     return lab.cargo_target() / 'fast' / 'sunrise-client'
 
 
@@ -82,16 +80,22 @@ def dedicated(binary, directory, label, *, point=None, ready=True):
 
 @contextmanager
 def joined(binary, server, port):
-    client = lan_e2e.Game('savefault', binary.with_name('sunrise-ctl'), lab.RESOURCES)
-    try:
-        client.raw('launch', '--headless', '--game', binary, '--game-dir', client.work)
-        client.raw('connect', f'127.0.0.1:{port}', PLAYER)
-        client.raw('wait-for', 'loaded', '--timeout', 120)
-        server.wait_for(rf'{PLAYER} joined the game', timeout=120)
-        yield
-    finally:
-        client.close()
-        shutil.rmtree(client.work)
+    with tempfile.TemporaryDirectory(prefix='sunrise-save-player-') as work, tempfile.TemporaryFile() as log:
+        env = game_environment(os.environ, work)
+        client = subprocess.Popen([binary, '--headless', '--game-dir', work, '--resources', lab.RESOURCES,
+                                   '--render-distance', '2', '--server', f'127.0.0.1:{port}', '--name', PLAYER],
+                                  cwd=work, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+        try:
+            try:
+                server.wait_for(rf'{PLAYER} joined the game', timeout=120)
+            except AssertionError as why:
+                log.seek(0)
+                tail = log.read().decode(errors='replace').splitlines()[-20:]
+                raise AssertionError(f'{why}\nClient log:\n' + '\n'.join(tail)) from why
+            yield
+        finally:
+            client.kill()
+            client.wait(timeout=30)
 
 
 def save(server):
