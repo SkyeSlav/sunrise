@@ -2378,10 +2378,9 @@ impl Game<'_> {
 /// the tick panics there, to see what crash teardown keeps.
 /// `armed` is asked only when the variable names `point`, so the tick pays one
 /// load of a `OnceLock` without it.
-pub(super) fn crash_fixture(point: &str, armed: impl FnOnce() -> bool) {
-    static FIXTURE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    let fixture = FIXTURE.get_or_init(|| std::env::var("SUNRISE_CRASH_FIXTURE").ok());
-    if fixture.as_deref() == Some(point) && armed() {
+pub(super) fn crash_fixture(point: &'static str, armed: impl FnOnce() -> bool) {
+    use sunrise_world::crash_fixture::{CrashFixture, selected};
+    if selected() == Some(CrashFixture::Panic(point)) && armed() {
         panic!("crash fixture at {point}");
     }
 }

@@ -372,6 +372,16 @@ impl RegionFile {
             return Err(e);
         }
         let old = self.offsets[i];
+        #[cfg(target_os = "linux")]
+        if !external
+            && old != 0
+            && crate::crash_fixture::selected()
+                == Some(crate::crash_fixture::CrashFixture::SaveRegion(chunk))
+            && directory.ends_with("region")
+        {
+            // Kill with the new payload written, but the header still pointing to the old one.
+            crate::crash_fixture::await_save_kill("region");
+        }
         self.offsets[i] = (start as u32) << 8 | sectors as u32;
         self.timestamps[i] = record.timestamp;
         self.write_header()?;

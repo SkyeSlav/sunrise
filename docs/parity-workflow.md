@@ -56,6 +56,15 @@ python3 tools/parity.py --changed-files paths.txt  # the same for listed paths, 
 
 CI runs the automatic harnesses only in the [daily on main's head](release-flow.md#parity-on-main), not on pull requests or rollups. The daily posts harness names and outcomes; its logs stay private on the runner. One selection, several shares: the plan job computes the selection once from the tested commit and splits it (`tools/ci/parity_shards.py` names the count), each runner runs exactly its share (`tools/parity.py --harness-file`), and `tools/ci/parity_verdict.py --merge` turns the shares into the one file the daily summary reads, refusing a run whose shares miss a planned harness or run one twice. A commit of main from before the shares runs as one job, as it did then.
 
+The Linux daily also runs `save_kill` and `save_corruption` through this runner, like
+`dedicated_crash_save`. To run them directly on Linux with prepared resources, use
+`python3 tools/test_save_kill_parity.py` and `python3 tools/test_save_corruption_parity.py`.
+They boot a dedicated server in disposable worlds and exercise its real save and load paths.
+The kill check uses `SUNRISE_CRASH_FIXTURE` to stop a writer at a named publish boundary,
+then sends SIGKILL and reopens the world. This tests process death, not disk power loss.
+The corruption check changes copies of the saves and checks recovery, refusal, or chunk regeneration.
+Neither runs in the PR or rollup gate.
+
 Each harness runs unmodified under a tracer that records the files it depended on: its Python modules, its Java oracle and the oracle sources javac pulled in, other repository files it read, and the Rust sources of the probes it ran (from Cargo's `.d` dep-info files). A pass stands until one of those files, the pinned vanilla artifacts, `Cargo.lock` or the Rust/Java toolchains change. State and logs are in `.local/parity-runner/`; each harness's own outputs stay in its `.local/<name>/` directory.
 
 Vanilla oracle runs are reused as well. `tools/parity_shim.py` stands in for `java` and `javac`: it records each oracle run's outputs and the content of every file under the paths its arguments name, and replays the run while those are unchanged. After a Rust-only change a harness pays only for its Rust side (`block_update`: 53 s to 5 s). Files an oracle writes outside its named paths aren't tracked, so a harness that fails while reusing oracle results is rerun fresh, and stops reusing them if it then passes. `--fresh` never reuses them; `--all` allows reuse only when

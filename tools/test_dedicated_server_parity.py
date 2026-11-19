@@ -125,12 +125,12 @@ def write_server_dir(directory, port, world=None):
 class Server:
     """A server process with its console on stdin and its log collected."""
 
-    def __init__(self, command, directory, log_name):
+    def __init__(self, command, directory, log_name, *, env=None):
         self.log_path = directory.parent / f'{log_name}.log'
         self.log = self.log_path.open('w', encoding='utf-8')
         self.lines = []
         self.scratch = tempfile.TemporaryDirectory(prefix='hz-server-')
-        env = game_environment(os.environ, self.scratch.name)
+        env = game_environment(os.environ if env is None else env, self.scratch.name)
         self.process = subprocess.Popen(list(map(str, command)), cwd=directory, env=env, stdin=subprocess.PIPE,
                                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                         encoding='utf-8', errors='replace')

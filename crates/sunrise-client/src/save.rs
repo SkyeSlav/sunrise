@@ -3287,6 +3287,22 @@ fn write_dat_as(path: &Path, tag: Tag, durable: bool) -> Result<()> {
         };
         // Util.safeReplaceFile: no backup, no replacement.
         fs::rename(path, old).map_err(|e| format!("{}: {e}", path.display()))?;
+        #[cfg(target_os = "linux")]
+        {
+            use sunrise_world::crash_fixture::{CrashFixture, await_save_kill, selected};
+            // Between the two renames, a reader needs the backup.
+            match selected() {
+                Some(CrashFixture::SaveLevel) if file == "level.dat" => await_save_kill("level"),
+                Some(CrashFixture::SavePlayer)
+                    if path
+                        .parent()
+                        .is_some_and(|parent| parent.ends_with("players/data")) =>
+                {
+                    await_save_kill("player");
+                }
+                _ => {}
+            }
+        }
     }
     fs::rename(temporary, path)?;
     if durable {
