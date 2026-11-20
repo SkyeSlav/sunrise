@@ -20,7 +20,7 @@ const COMMANDS: &[Command] = &[
         name: "build",
         everyday: true,
         usage: "build [--update-lock]",
-        summary: "Packs the mod into target/sunrise-mod/<id>.smod; a native mod is compiled first.",
+        summary: "Packs the mod into target/sunrise-mod/<id>.smod; a native mod is compiled first, and --update-lock (native only) resolves its Cargo.lock again.",
     },
     Command {
         name: "run",

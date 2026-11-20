@@ -23,7 +23,8 @@ signed sums and each slice as the SDK fetch does, and unpacks them into the tool
 `%LOCALAPPDATA%\sunrise-mod` on Windows; `SUNRISE_MOD_CACHE` names another folder. Deleting the folder clears it.
 The Rust is the one `sdk.json` names: `rustup`'s, installed with `--profile minimal` when missing, or the `rustc` on
 `PATH` when it is exactly that version; otherwise `build` stops and says the version and both ways to get it.
-A mod with crates.io dependencies and no `Cargo.lock` gets one; `build --update-lock` resolves again. The compile
+A mod with crates.io dependencies and no `Cargo.lock` gets one; `build --update-lock` resolves again, and is refused for
+a content mod. The compile
 is [`native-build`'s](08-native-build.md), in process, with registry crates approved (the mod's own `Cargo.toml`),
 for the `client` side. It prints `Built <library>` and the build log's path, and exits non-zero with the error on failure.
 

@@ -149,6 +149,12 @@ fn build_command(
     let root = Path::new(".");
     let output = PackageOutput::in_project(root)?;
     let package = Package::read(root)?;
+    // Known from the manifest, before any SDK work.
+    if update_lock && !package.is_native() {
+        return Err(format!(
+            "build --update-lock rewrites a native mod's Cargo.lock; {MANIFEST} has no [native] table"
+        ));
+    }
     if package.is_native() {
         fetched(root)?;
     }
