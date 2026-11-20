@@ -512,26 +512,54 @@ class DynaRoutingTests(unittest.TestCase):
         verify = dict(jobs((ROOT / ".github/workflows/dyna-ci.yml").read_text()))["verify"]
         self.assert_positive_stage_export(verify)
 
-    def test_the_surface_report_runs_after_the_stage_build_on_pull_requests_and_dispatches(self):
+    def test_the_surface_report_runs_beside_the_stage_validation_and_its_own_step_gives_its_result(self):
         from test_ci_runners import jobs
         verify = dict(jobs((ROOT / ".github/workflows/dyna-ci.yml").read_text()))["verify"]
-        name = "- name: Report the mod API surface change\n"
-        self.assertEqual(verify.count(name), 1)
-        step = verify.split(name, 1)[1].split("\n      - ", 1)[0]
-        fields = {}
-        for line in step.splitlines():
-            if ":" in line and not line.lstrip().startswith("#"):
-                key, value = line.strip().split(":", 1)
-                fields[key] = value.strip()
-        self.assertEqual(fields.get("run"), "python3 tools/ci/surface_report.py")
-        self.assertIn("steps.stage.outcome == 'success'", fields.get("if", ""))
-        self.assertIn("github.event_name == 'pull_request' || inputs.pr != ''", fields.get("if", ""))
-        self.assertEqual(fields.get("EVENT"), "${{ github.event_name }}")
-        self.assertEqual(fields.get("PR"), "${{ inputs.pr }}")
-        self.assertEqual(fields.get("GH_TOKEN"), "${{ github.token }}")
-        self.assertNotIn("continue-on-error", fields)
-        # It needs the tool the stage build puts in SUNRISE_STAGE_TOOL.
-        self.assertLess(verify.index("- name: Build the source stage generator (test profile)"), verify.index(name))
+        start, collect = "- name: Start the mod API surface report\n", "- name: Report the mod API surface change\n"
+        validate = "- name: Validate prebuilt source stage and listed slots\n"
+        self.assertEqual((verify.count(start), verify.count(collect)), (1, 1))
+        # It needs the tool the stage build puts in SUNRISE_STAGE_TOOL, and runs while the validation does.
+        self.assertLess(verify.index("- name: Build the source stage generator (test profile)"), verify.index(start))
+        self.assertLess(verify.index(start), verify.index(validate))
+        self.assertLess(verify.index(validate), verify.index(collect))
+
+        def step(name):
+            text = verify.split(name, 1)[1].split("\n      - ", 1)[0]
+            fields = {line.strip().split(":", 1)[0]: line.strip().split(":", 1)[1].strip()
+                      for line in text.splitlines() if ":" in line and not line.lstrip().startswith("#")}
+            return fields, textwrap.dedent(text.split("        run: |\n", 1)[1])
+
+        started, start_script = step(start)
+        self.assertIn("steps.stage.outcome == 'success'", started["if"])
+        self.assertIn("github.event_name == 'pull_request' || inputs.pr != ''", started["if"])
+        self.assertEqual((started["EVENT"], started["PR"], started["GH_TOKEN"]),
+                         ("${{ github.event_name }}", "${{ inputs.pr }}", "${{ github.token }}"))
+        collected, collect_script = step(collect)
+        self.assertEqual(collected["id"], "report_the_mod_api_surface_change")
+        self.assertIn("steps.surface_started.outcome == 'success'", collected["if"])
+        for fields in (started, collected):
+            self.assertNotIn("continue-on-error", fields)
+        # The started report outlives its step; the collecting step prints its log, adds its summary and exits
+        # with its status.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "tools/ci").mkdir(parents=True)
+            (root / "tools/ci/surface_report.py").write_text(
+                "import os, sys, time\ntime.sleep(1)\nprint('Surface: report', os.environ['EVENT'])\n"
+                "open(os.environ['GITHUB_STEP_SUMMARY'], 'a').write('### Mod API surface\\n')\nsys.exit(3)\n")
+            summary = root / "summary.md"
+            env = dict(os.environ, RUNNER_TEMP=str(root / "temp"), EVENT="pull_request",
+                       GITHUB_STEP_SUMMARY=str(root / "start-summary.md"))
+            (root / "temp").mkdir()
+            begun = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", start_script], cwd=root, env=env,
+                                   capture_output=True, text=True, timeout=30)
+            self.assertEqual(begun.returncode, 0, begun.stderr)
+            ended = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", collect_script], cwd=root,
+                                   env=dict(env, GITHUB_STEP_SUMMARY=str(summary)), capture_output=True, text=True,
+                                   timeout=60)
+            self.assertEqual(ended.returncode, 3)
+            self.assertIn("Surface: report pull_request", ended.stdout)
+            self.assertEqual(summary.read_text(), "### Mod API surface\n")
 
     def test_positive_stage_guard_rejects_commented_command_noop_and_ignored_failure(self):
         from test_ci_runners import jobs

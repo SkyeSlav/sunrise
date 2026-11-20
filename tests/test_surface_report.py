@@ -66,7 +66,7 @@ class ReportTests(unittest.TestCase):
     """report() against a stub sunrise-stage whose behaviour each test sets."""
 
     def run_report(self, base_export=0, diff_exit=0, gate_on=False, head_export=0, diff_err="",
-                   with_internals=False):
+                   with_internals=False, own_export=None):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
             tool = work / "sunrise-stage"
@@ -82,21 +82,49 @@ echo "Surface: report"; [ -z "{diff_err}" ] && [ {diff_exit} != 0 ] && echo "bre
 exit {diff_exit}
 """)
             tool.chmod(0o755)
+            # The base's own tool, when a test gives one: it exports with `own_export` as its exit status.
+            own = None
+            if own_export is not None:
+                own_tool = work / "own-stage"
+                own_tool.write_text(f"""#!/bin/bash
+echo "own $@" >> {work}/calls
+[ {own_export} = 0 ] || {{ echo 'sunrise-stage surface: base.rs: older form' >&2; exit 1; }}
+echo '{{}}' > "$3"
+""")
+                own_tool.chmod(0o755)
+                own = lambda: str(own_tool)  # noqa: E731
             (work / "base").mkdir()
             code, text = surface_report.report(str(tool), work / "base", work / "head", work, gate_on,
-                                               with_internals=with_internals)
+                                               with_internals=with_internals, own_base_tool=own)
             return code, text, (work / "calls").read_text()
 
-    def test_a_base_the_head_tool_cannot_read_passes_with_one_line(self):
-        code, text, calls = self.run_report(base_export=1)
+    def test_a_base_the_head_tool_cannot_read_is_exported_by_the_bases_own_tool(self):
+        code, text, calls = self.run_report(base_export=1, own_export=0)
         self.assertEqual(code, 0)
-        self.assertEqual(text, "No surface report: the head's sunrise-stage cannot read the base tree "
-                               "(sunrise-stage surface: unknown key `access`).\n")
-        self.assertNotIn("surface-diff", calls)
+        self.assertTrue(text.startswith("The base was exported by its own sunrise-stage: the head's sunrise-stage "
+                                        "cannot read the base tree (sunrise-stage surface: unknown key `access`).\n"),
+                        text)
+        self.assertIn("Surface: report\n", text)
+        own = [call for call in calls.splitlines() if call.startswith("own ")]
+        self.assertEqual(len(own), 1)
+        self.assertIn("--without-calls", own[0])
+        self.assertIn("surface-diff", calls)
 
-    def test_a_base_surface_of_another_schema_passes_with_one_line(self):
+    def test_a_base_neither_tool_can_read_fails_naming_both(self):
+        code, text, calls = self.run_report(base_export=1, own_export=1)
+        self.assertEqual(code, 1)
+        self.assertEqual(text, "No surface report: the head's sunrise-stage cannot read the base tree "
+                               "(sunrise-stage surface: unknown key `access`), nor can the base's own "
+                               "(sunrise-stage surface: base.rs: older form).\n")
+        self.assertNotIn("surface-diff", calls)
+        # With no base tool to fall back on (a local comparison of two trees), the unreadable base fails too.
+        code, text, _ = self.run_report(base_export=1)
+        self.assertEqual(code, 1)
+        self.assertTrue(text.startswith("No surface report: the head's sunrise-stage cannot read the base tree"), text)
+
+    def test_a_base_surface_of_another_schema_fails_with_one_line(self):
         code, text, _ = self.run_report(diff_exit=2, diff_err="surface schema 1, this tool reads 2")
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1)
         self.assertTrue(text.startswith("No surface report: the head's sunrise-stage cannot read the base surface "), text)
         self.assertIn("surface schema 1, this tool reads 2", text)
 

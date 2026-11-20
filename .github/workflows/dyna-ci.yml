@@ -687,22 +687,42 @@ jobs:
           with open(os.environ["GITHUB_ENV"], "a") as environment:
               environment.write(f"SUNRISE_STAGE_TOOL={executable}\n")
           PY
-      - name: Report the mod API surface change
-        id: report_the_mod_api_surface_change
+      - name: Start the mod API surface report
+        id: surface_started
         # What this pull request changes in what mods can name, in the job summary: the head's sunrise-stage exports
         # the merge base and this tree, then classifies the diff (tools/ci/surface_report.py). It fails when this
-        # tree cannot be exported, for a stale or unreadable new change note, and, with tools/ci/surface.toml's
-        # gate on, for a breaking change no new note declares.
+        # tree cannot be exported, when the base cannot be read by this tree's tool or its own, for a stale or
+        # unreadable new change note, and, with tools/ci/surface.toml's gate on, for a breaking change no new note
+        # declares. It runs beside the stage validation below; "Report the mod API surface change" waits for it
+        # and gives its result.
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && (needs.changes.outputs.rust_required != 'false' && (github.event_name == 'pull_request' || inputs.pr != '')) && steps.stage.outcome == 'success' }}
         env:
           EVENT: ${{ github.event_name }}
           PR: ${{ inputs.pr }}
           GH_TOKEN: ${{ github.token }}
-        run: python3 tools/ci/surface_report.py
+        run: |
+          surface="$RUNNER_TEMP/surface-report"
+          mkdir -p "$surface"
+          # The exit status is written last, by rename, so the waiting step never reads a partial one. The report
+          # holds none of this step's output streams, so the step ends at once and the report outlives it.
+          (status=0
+           GITHUB_STEP_SUMMARY="$surface/summary.md" python3 tools/ci/surface_report.py > "$surface/log" 2>&1 || status=$?
+           echo "$status" > "$surface/status.part" && mv "$surface/status.part" "$surface/status") \
+            > /dev/null 2>&1 < /dev/null &
       - name: Validate prebuilt source stage and listed slots
         id: validate_prebuilt_source_stage_and_listed_slots
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && (needs.changes.outputs.rust_required != 'false') && steps.stage.outcome == 'success' }}
         run: python3 tools/ci/test_stage_catalog.py -v
+      - name: Report the mod API surface change
+        id: report_the_mod_api_surface_change
+        if: ${{ !cancelled() && steps.surface_started.outcome == 'success' }}
+        timeout-minutes: 15
+        run: |
+          surface="$RUNNER_TEMP/surface-report"
+          until [ -f "$surface/status" ]; do sleep 2; done
+          cat "$surface/log"
+          if [ -f "$surface/summary.md" ]; then cat "$surface/summary.md" >> "$GITHUB_STEP_SUMMARY"; fi
+          exit "$(cat "$surface/status")"
       - name: Test Rust documentation examples
         id: test_rust_documentation_examples
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && (needs.changes.outputs.rust_required != 'false') }}

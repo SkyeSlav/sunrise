@@ -82,6 +82,8 @@ removals and changes, and names removed or changed items, subject to its length 
 only when:
 
 - the head's tree cannot be exported;
+- the base can be read neither by the head's `sunrise-stage` nor by the base's own (which the report builds when the
+  head's cannot read it), or the base's own writes a surface the head's cannot compare;
 - a change note cannot be read, or names an item that did not change;
 - a breaking change has no change note: every breaking record the report lists, members included (a removed field is
   its own line), must be named by a note the pull request adds. Conditional, additive and advisory changes need none.
