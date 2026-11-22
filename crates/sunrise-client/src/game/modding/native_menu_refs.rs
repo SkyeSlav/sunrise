@@ -127,7 +127,11 @@ impl Game<'_> {
     }
 
     pub(super) fn menu_slot_boxes(&self, menu: MenuRef) -> Option<Vec<Option<[f32; 4]>>> {
-        if self.screen != super::Screen::Inventory || !self.screen_hooks_open() {
+        if !matches!(
+            self.screen,
+            super::Screen::Inventory | super::Screen::Creative
+        ) || !self.screen_hooks_open()
+        {
             return None;
         }
         let name = self.native_client_menu_name(menu)?;
@@ -881,6 +885,238 @@ mod tests {
                 Some(vec![])
             );
         });
+    }
+
+    fn creative_tab(game: &mut Game<'_>, pick: impl Fn(&sunrise_client::creative::Tab) -> bool) {
+        let tab = game.creative_screen.tabs.iter().position(pick).unwrap();
+        game.creative_screen.select(tab);
+    }
+
+    /// A hidden window's offscreen renderer over a joined level with the player's body in it,
+    /// so the public screen reads have a window to lay the screen out in. The event loop
+    /// returned holds the window.
+    fn offscreen_window(game: &mut Game<'_>) -> winit::event_loop::EventLoop<()> {
+        let mut builder = winit::event_loop::EventLoop::builder();
+        #[cfg(target_os = "linux")]
+        {
+            use winit::platform::x11::EventLoopBuilderExtX11;
+            builder.with_x11().with_any_thread(true);
+        }
+        let event_loop = builder.build().unwrap();
+        #[allow(deprecated)]
+        let window = Arc::new(
+            event_loop
+                .create_window(
+                    winit::window::Window::default_attributes()
+                        .with_visible(false)
+                        .with_inner_size(winit::dpi::PhysicalSize::new(320, 240)),
+                )
+                .unwrap(),
+        );
+        game.options.offscreen = true;
+        game.renderer = Some(game.new_renderer(window).unwrap());
+        let remote = game.remote.as_mut().unwrap();
+        remote.level_load.finish();
+        let mut body = sunrise_client::motion::PlayerMotion::new(
+            game.motion,
+            sunrise_core::geometry::Vec3::ZERO,
+        )
+        .unwrap();
+        body.entity_id = remote.entity_id;
+        game.player = Some(body);
+        event_loop
+    }
+
+    fn window_batch(game: &Game<'_>) -> super::super::HudBatch {
+        let config = &game.renderer.as_ref().unwrap().config;
+        super::super::HudBatch::new(
+            [config.width, config.height],
+            game.settings.gui_scale_inputs(),
+        )
+    }
+
+    /// The creative screen's boxes, read through `MenuRef::slot_boxes`, are `InventoryMenu`'s
+    /// 46 slots where `CreativeModeInventoryScreen.selectTab` puts them, and each box's centre
+    /// hovers its slot.
+    #[test]
+    #[ignore = "daily"]
+    fn creative_boxes_follow_the_selected_tab() {
+        crate::game::in_own_process(
+            "game::native_menu_refs::tests::creative_boxes_follow_the_selected_tab",
+            || {
+                with_panel(0, |game, _| {
+                    let _window = offscreen_window(game);
+                    game.creative = true;
+                    game.screen = super::super::Screen::Creative;
+                    game.refresh_creative_tabs();
+                    let batch = window_batch(game);
+                    let (ox, oy) = Game::creative_origin(&batch);
+                    // Menu index, game slot, position on the inventory tab, shown on item tabs.
+                    let expected = |index: usize| -> Option<(usize, (f32, f32), bool)> {
+                        let row = |i: usize| (9.0 + (i % 9) as f32 * 18.0, (i / 9) as f32 * 18.0);
+                        match index {
+                            5..=8 => {
+                                let i = index - 5;
+                                let at =
+                                    (54.0 + (i / 2) as f32 * 54.0, 6.0 + (i % 2) as f32 * 27.0);
+                                Some((500 + i, at, false))
+                            }
+                            9..=35 => {
+                                let (x, y) = row(index - 9);
+                                Some((index, (x, 54.0 + y), false))
+                            }
+                            36..=44 => Some((index - 36, (row(index - 36).0, 112.0), true)),
+                            45 => Some((504, (35.0, 20.0), false)),
+                            _ => None,
+                        }
+                    };
+                    for tab in ["inventory", "items", "search"] {
+                        creative_tab(game, |t| match tab {
+                            "inventory" => t.inventory,
+                            "items" => !t.inventory && !t.search && !t.items.is_empty(),
+                            _ => t.search,
+                        });
+                        let host: &dyn mod_api::ClientHost = &*game;
+                        let menu = host.local_player().unwrap().container_menu(host).unwrap();
+                        let boxes = menu.slot_boxes(host).unwrap();
+                        assert_eq!(boxes.len(), 46, "{tab}");
+                        for (index, found) in boxes.into_iter().enumerate() {
+                            let want = expected(index)
+                                .filter(|&(_, _, item_tab)| tab == "inventory" || item_tab);
+                            assert_eq!(
+                                found,
+                                want.map(|(_, (x, y), _)| [ox + x, oy + y, 16.0, 16.0]),
+                                "{tab} slot {index}"
+                            );
+                            if let Some((slot, (x, y), _)) = want {
+                                assert_eq!(
+                                    game.slot_at(&batch, ox + x + 8.0, oy + y + 8.0),
+                                    Some(slot),
+                                    "{tab} slot {index}"
+                                );
+                            }
+                        }
+                    }
+                })
+            },
+        );
+    }
+
+    /// `screen_hovered_stack` gives a mod the hovered slot's whole stack, components included,
+    /// on the inventory screen and on both kinds of creative tab, where a catalog slot shows
+    /// the scrolled list; nothing over an empty slot, the trash slot or the world.
+    #[test]
+    #[ignore = "daily"]
+    fn the_hovered_stack_keeps_its_components() {
+        crate::game::in_own_process(
+            "game::native_menu_refs::tests::the_hovered_stack_keeps_its_components",
+            || {
+                use mod_api::{Tag, prelude::ScreensClientHost};
+                use sunrise_client::creative::Creative;
+                use sunrise_core::nbt::JavaString;
+
+                fn component<'s>(stack: &'s mod_api::ItemStack, id: &str) -> Option<&'s Tag> {
+                    stack.components()?.as_nbt().get(&JavaString::from(id))
+                }
+                let key = |id| mod_api::__private::item_key(id).unwrap();
+                let is_sword = |stack: Option<mod_api::ItemStack>| {
+                    let stack = stack.expect("the sword");
+                    assert_eq!(stack.item(), key("minecraft:diamond_sword"));
+                    assert_eq!(stack.count(), 1);
+                    assert_eq!(stack.damage_component(), Some(5));
+                    assert_eq!(
+                        component(&stack, "minecraft:enchantments"),
+                        Some(&Tag::compound([("minecraft:sharpness", Tag::Int(3))]))
+                    );
+                    assert_eq!(
+                        component(&stack, "minecraft:custom_name"),
+                        Some(&Tag::String("Blade".into()))
+                    );
+                };
+                let is_potion = |stack: Option<mod_api::ItemStack>| {
+                    let stack = stack.expect("the potion");
+                    assert_eq!(stack.item(), key("minecraft:potion"));
+                    assert_eq!(stack.count(), 1);
+                    assert_eq!(
+                        component(&stack, "minecraft:potion_contents"),
+                        Some(&Tag::compound([(
+                            "potion",
+                            Tag::String("minecraft:strong_healing".into())
+                        )]))
+                    );
+                };
+                let is_stone = |stack: Option<mod_api::ItemStack>| {
+                    let stack = stack.expect("the stone");
+                    assert_eq!(stack.item(), key("minecraft:stone"));
+                    assert_eq!(stack.count(), 17);
+                    assert!(stack.components().is_none());
+                };
+                with_panel(0, |game, _| {
+                    let _window = offscreen_window(game);
+                    let batch = window_batch(game);
+                    let hover = |game: &mut Game<'_>, slot: usize| {
+                        let (ox, oy) = game.inventory_origin(&batch);
+                        let (x, y) = game.slot_position(slot);
+                        game.cursor = (ox + x + 8.0, oy + y + 8.0);
+                        ScreensClientHost::screen_hovered_stack(&*game)
+                    };
+                    let sword = game
+                        .item_from_snbt(r#"{id:"minecraft:diamond_sword",count:1,components:{"minecraft:damage":5,"minecraft:enchantments":{"minecraft:sharpness":3},"minecraft:custom_name":"Blade"}}"#)
+                        .unwrap();
+                    let potion = game
+                        .item_from_snbt(r#"{id:"minecraft:potion",count:1,components:{"minecraft:potion_contents":{potion:"minecraft:strong_healing"}}}"#)
+                        .unwrap();
+                    game.inventory[0] = Some(sword.clone());
+                    game.inventory[9] = Some(potion.clone());
+                    game.inventory[10] = Some(ItemStack::new("minecraft:stone", 17));
+                    game.inventory[11] = None;
+                    game.armor[0] = Some(sword.clone());
+
+                    game.screen = super::super::Screen::Inventory;
+                    is_potion(hover(game, 9));
+                    is_stone(hover(game, 10));
+                    assert_eq!(hover(game, 11), None);
+                    game.screen = super::super::Screen::Playing;
+                    assert_eq!(hover(game, 9), None);
+
+                    game.creative = true;
+                    game.screen = super::super::Screen::Creative;
+                    game.refresh_creative_tabs();
+                    creative_tab(game, |t| t.inventory);
+                    is_potion(hover(game, 9));
+                    is_sword(hover(game, 500));
+                    assert_eq!(hover(game, 11), None);
+                    let (ox, oy) = game.inventory_origin(&batch);
+                    let (tx, ty) = Creative::TRASH_POSITION;
+                    game.cursor = (ox + tx + 8.0, oy + ty + 8.0);
+                    assert_eq!(ScreensClientHost::screen_hovered_stack(&*game), None);
+
+                    // Seven rows: scrolled to the bottom, the first shown row is the third.
+                    creative_tab(game, |t| !t.inventory && !t.search && !t.items.is_empty());
+                    let tab = game.creative_screen.selected_index();
+                    let mut items = vec![ItemStack::new("minecraft:stone", 17); 63];
+                    items[0] = sword.clone();
+                    items[1].count = 0;
+                    items[18] = potion;
+                    game.creative_screen.tabs[tab].items = items;
+                    game.creative_screen.forget_items();
+                    is_sword(hover(game, Creative::DISPLAY));
+                    assert_eq!(hover(game, Creative::DISPLAY + 1), None);
+                    is_stone(hover(game, Creative::DISPLAY + 2));
+                    is_sword(hover(game, 0));
+                    game.creative_screen.scroll = 1.0;
+                    is_potion(hover(game, Creative::DISPLAY));
+
+                    creative_tab(game, |t| t.search);
+                    let first = game.creative_screen.items(&game.pack.names)[0].clone();
+                    assert_eq!(
+                        hover(game, Creative::DISPLAY),
+                        Some(first.try_into_api().unwrap())
+                    );
+                    is_sword(hover(game, 0));
+                });
+            },
+        );
     }
 
     #[test]

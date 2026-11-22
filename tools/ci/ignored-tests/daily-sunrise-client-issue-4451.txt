@@ -1544,7 +1544,7 @@ sunrise-client game::native_hooks::server_tick_rate_changed::server_tick_rate_ch
 sunrise-client game::native_hooks::tests::declared_types_create_tick_and_reload_through_game lib daily resources
 sunrise-client game::native_hooks::tests::generated_fire_matches_dispatch lib daily resources
 sunrise-client game::native_hooks::tests::mod_sign_constructor_prioritizes_templates_over_suffixes lib daily resources
-sunrise-client game::native_hooks::tests::no_item_is_hovered_without_a_window lib daily resources
+sunrise-client game::native_hooks::tests::no_stack_is_hovered_without_a_window lib daily child-process
 sunrise-client game::native_hooks::tick_target_millis::tick_target_millis_tests::a_client_mod_sets_how_long_a_client_tick_lasts lib daily resources
 sunrise-client game::native_hooks::trident_family_tests::accepted_player_and_mob_tridents_keep_type_entities_position_and_full_weapon lib daily resources
 sunrise-client game::native_hooks::trident_family_tests::actual_arrows_still_bounce_off_powered_wither_and_closed_shulker lib daily resources
