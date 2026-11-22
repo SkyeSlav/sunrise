@@ -1,4 +1,3 @@
-#![cfg(test)]
 //! Post-placement notices through the actual player and dispenser block-item paths.
 use crate::game::native_entity_refs::tests::{bind_local_player, run_fresh_cases, with_game_at};
 use crate::game::{Game, GuestUse, Hit};

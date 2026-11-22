@@ -159,8 +159,20 @@ jobs:
           CARGO_PROFILE_DEV_OPT_LEVEL: '3'
         run: |
           export CARGO_TARGET_DIR="$PWD/.local/parity-target"
-          exec > "$PARITY_LOG_DIR/game-probes.log" 2>&1
-          scripts=(tools/test_*_parity.py)
+          exec 3>&1 > "$PARITY_LOG_DIR/game-probes.log" 2>&1
+          # This share's harnesses, from the one plan (a shard NAME#N is NAME's script); a run with no plan scans all.
+          plan="$RUNNER_TEMP/plan/bucket-${BUCKET:-0}.json"
+          if [ -f "$plan" ]; then
+            listed=$(python3 -c 'import json, sys
+          for name in sorted({entry.split("#")[0] for entry in json.load(open(sys.argv[1]))}): print(f"tools/test_{name}_parity.py")' "$plan") || {
+              echo "::error::Could not read the game-probe plan for this parity share." >&3
+              exit 1
+            }
+            scripts=($listed)
+          else
+            scripts=(tools/test_*_parity.py)
+          fi
+          [ ${#scripts[@]} -gt 0 ] || exit 0
           if grep -q "'--example', 'client_probe'" "${scripts[@]}"; then
             cargo build --profile fast -p sunrise-client-lib --example client_probe
           fi
@@ -170,9 +182,8 @@ jobs:
           if grep -Eq "[\"']sunrise-game[\"'], [\"']--bin[\"'], [\"']sunrise-client[\"']" "${scripts[@]}"; then
             cargo build --profile fast -p sunrise-game --bin sunrise-client
           fi
-          # Every package's lib tests a harness runs as `cargo test -p <package> --lib` (default features, the dev
-          # profile as parity.py sets it), one at a time and before any oracle starts; a harness's own feature set
-          # or profile still compiles in its run. One rustc of up to 12 GiB each, which a 16 GiB runner killed
+          # Warm the lib-test variants the harnesses request one at a time before any oracle starts.
+          # One rustc of up to 12 GiB each, which a 16 GiB runner killed
           # beside the harnesses (signal 9: mount_control and damage_catalog on main, 2026-11-16). A package left
           # to the harness compiles inside the harness's own time limit (dragon_contacts gives cargo 240 s, and
           # its tests moved to sunrise-gameplay in 7127d19eae).
@@ -181,6 +192,12 @@ jobs:
           for package in $packages; do
             cargo test --locked --no-run -p "$package" --lib
           done
+          # Some client harnesses request the vanilla binary. The flags may span lines in Python.
+          client_test="[\"']test[\"'],[[:space:]]+([\"']--locked[\"'],[[:space:]]+)?[\"']-p[\"'],[[:space:]]+[\"']sunrise-client[\"'],[[:space:]]+"
+          vanilla_lib="([\"']--no-default-features[\"'],[[:space:]]+[\"']--lib[\"']|[\"']--lib[\"'],[[:space:]]+[\"']--no-default-features[\"'])"
+          if grep -zqE "$client_test$vanilla_lib" "${scripts[@]}"; then
+            cargo test --locked --no-run -p sunrise-client --lib --no-default-features
+          fi
       - name: Build parity probes
         id: probes
         run: |

@@ -354,6 +354,9 @@ pub struct Guest {
     /// What the player's client last said about the age of its copy of the collider
     /// (`sunrise:carry_age`): the collider and the ticks. Used by the next report only.
     pub carry_hint: Option<(u32, u8)>,
+    /// `ServerPlayer.requestedDebugSubscriptions`: the `debug_subscription` registry ids the
+    /// client asked for, kept whoever the player is (the permission check comes when they are read).
+    pub debug_subscriptions: Vec<i32>,
     /// The tick a mod last displaced the player and how many ticks in a row it has (a development
     /// build warns at 20; a release build never reads it).
     pub displaced_streak: (u64, u32),
@@ -870,6 +873,7 @@ impl Guest {
             collision_exclusions: Default::default(),
             on_collider: None,
             carry_hint: None,
+            debug_subscriptions: Vec::new(),
             displaced_streak: (0, 0),
             carry_correction: None,
             carry_commit: None,

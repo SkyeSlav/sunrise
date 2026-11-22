@@ -777,7 +777,7 @@ sunrise-client game::item_entities::escape_tests::an_item_escapes_a_block_at_its
 sunrise-client game::item_entities::thrown_items_tests::a_burning_items_sound_is_not_drawn_from_the_levels_random lib daily resources
 sunrise-client game::item_entities::thrown_items_tests::a_client_pickup_sound_takes_the_listeners_random lib daily resources
 sunrise-client game::item_entities::thrown_items_tests::a_death_scatter_takes_the_throwers_random_not_the_levels lib daily resources
-sunrise-client game::item_entities::thrown_items_tests::a_pickup_pitch_is_not_drawn_from_the_levels_random lib daily resources
+sunrise-client game::item_entities::thrown_items_tests::a_pickup_pitch_is_not_drawn_from_the_levels_random lib daily child-process
 sunrise-client game::item_entities::thrown_items_tests::a_thrown_item_takes_the_throwers_random_not_the_levels lib daily resources
 sunrise-client game::item_interact_mob_tests::actual_item_interact_mob_fallback_priority_and_filters lib daily resources
 sunrise-client game::item_particle_send_tests::stack_particle_crosses_server_packet_and_resolves_apple lib daily resources

@@ -706,7 +706,15 @@ impl Game<'_> {
         }
     }
 
+    /// The client level's particle sources and the engine's tick, in one go.
     pub(super) fn tick_particles(&mut self) {
+        self.tick_particle_sources();
+        self.tick_particle_engine();
+    }
+
+    /// What adds particles in `Minecraft.tick` and the level's ambient: `animateTick`, the rain,
+    /// the vignette and fog, before the block entities tick.
+    pub(in crate::game) fn tick_particle_sources(&mut self) {
         // A client mod's `clear_particles`, before this tick adds any.
         self.apply_mod_particle_clear();
         self.update_animation_inputs();
@@ -906,7 +914,8 @@ impl Game<'_> {
                     }
                 }
             }
-            if let Some(r) = &self.renderer {
+            // A client of a server ticks its campfires with the other block entities.
+            if let Some(r) = self.renderer.as_ref().filter(|_| self.remote.is_none()) {
                 campfire_particles(
                     self.res.animate(),
                     &mut self.particles,
@@ -921,6 +930,12 @@ impl Game<'_> {
             laps.lap("tp_rain_campfire");
             break;
         }
+    }
+
+    /// `ParticleEngine.tick` (and the pickups and sounds it raises): in `Minecraft.tick` after
+    /// `Level.tickBlockEntities`, so a particle a block entity just added ages with the rest.
+    pub(in crate::game) fn tick_particle_engine(&mut self) {
+        let mut laps = sunrise_client::spans::laps();
         let world = &self.world;
         let facts = self.res.facts();
         // SpellParticle.isCloseToScopingPlayer: the eye of a local player looking

@@ -3394,11 +3394,11 @@ fn restock_if_due(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         .uuid
         .zip(super::villager::ext(m))
         .map_or(0, |(uuid, ext)| ext.gossips.reputation(uuid));
+    let interval = m.ambient_interval();
     for step in catch_up.into_iter().chain(restock) {
-        let pitch = (player.paying && m.ambient_timer > -60).then(|| {
-            m.ambient_timer = -80;
-            m.voice_pitch()
-        });
+        let pitch = (player.paying
+            && crate::merchant::reset_trade_update_clock(&mut m.ambient_timer, interval))
+        .then(|| m.voice_pitch());
         events.push(MobEvent::VillagerRestockStep(RestockNotice {
             mob: m.id,
             step,

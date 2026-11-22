@@ -200,6 +200,7 @@ impl Game<'_> {
             return true;
         };
         let local = who.as_ref().is_some_and(|who| who.local);
+        let pre_start = out.len();
         let mut canceled = false;
         if let Some(who) = player_pre {
             self.mod_entity_draw(mob, local, partial, camera, light, out, |render, draw| {
@@ -220,6 +221,9 @@ impl Game<'_> {
             }
         }
         if !canceled {
+            if out.len() != pre_start {
+                frame_draw.mark_pre_vertices(pre_start);
+            }
             return true;
         }
         let id = render_id(mob.id, local, self.own_entity_id());

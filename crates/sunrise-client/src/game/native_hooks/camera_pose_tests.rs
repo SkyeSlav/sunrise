@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 /// A mod's camera replaces vanilla's value by value; one that isn't finite keeps vanilla's.
 #[test]
 fn a_mod_camera_replaces_each_finite_value() {

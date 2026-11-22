@@ -934,7 +934,8 @@ impl Game<'_> {
             session.selection_hint = session
                 .selection_hint
                 .min(session.offers.len().saturating_sub(1));
-            let sound_time = std::mem::replace(&mut session.ambient_sound_time, -80);
+            // Suppress feedback even if the declared interval wraps the reply threshold.
+            let sound_time = std::mem::replace(&mut session.ambient_sound_time, i32::MIN);
             menu.merchant_update(env);
             if let Some(session) = menu.merchant.as_mut() {
                 session.ambient_sound_time = sound_time;

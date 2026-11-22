@@ -169,10 +169,14 @@ pub enum Kind {
     Engine,
     /// `cargo-sunrise-mod` for one computer: its `native-build` compiles native mods as the launcher does.
     Tool,
+    /// What the player folder holds besides the game program (`xtask package`'s companion
+    /// programs, exporters, prepare sources and licences), so the `runtime` slice's game runs
+    /// installed from the SDK alone.
+    Programs,
 }
 
 impl Kind {
-    const ALL: [Kind; 7] = [
+    const ALL: [Kind; 8] = [
         Kind::Surface,
         Kind::BuildData,
         Kind::ApiSource,
@@ -180,7 +184,13 @@ impl Kind {
         Kind::Api,
         Kind::Engine,
         Kind::Tool,
+        Kind::Programs,
     ];
+
+    /// The kind `sdk.json` writes as `name`, if this reader knows it.
+    fn named(name: &str) -> Option<Kind> {
+        Kind::ALL.into_iter().find(|kind| kind.name() == name)
+    }
 
     /// The name `sdk.json` writes.
     pub fn name(self) -> &'static str {
@@ -192,17 +202,24 @@ impl Kind {
             Kind::Api => "api",
             Kind::Engine => "engine",
             Kind::Tool => "tool",
+            Kind::Programs => "programs",
         }
     }
 
     /// Whether its assets exist once per target.
     pub fn per_target(self) -> bool {
-        matches!(self, Kind::Runtime | Kind::Api | Kind::Engine | Kind::Tool)
+        matches!(
+            self,
+            Kind::Runtime | Kind::Api | Kind::Engine | Kind::Tool | Kind::Programs
+        )
     }
 
     /// Whether its assets also exist once per side: the tool serves both.
     pub fn per_side(self) -> bool {
-        matches!(self, Kind::Runtime | Kind::Api | Kind::Engine)
+        matches!(
+            self,
+            Kind::Runtime | Kind::Api | Kind::Engine | Kind::Programs
+        )
     }
 }
 
@@ -235,7 +252,7 @@ impl Asset {
 
     /// The kind, codec, target and side an asset's file name states:
     /// `surface.json`, `build-data.tar.xz`, `api-source.tar.xz`, `tool-<target>.tar.xz` and
-    /// `<runtime|api|engine>-<target>[-server].tar.xz`, where a target is made of `a-z`, `0-9`,
+    /// `<runtime|api|engine|programs>-<target>[-server].tar.xz`, where a target is made of `a-z`, `0-9`,
     /// `_` and `-` only. `None` for any other name, so a name this accepts is a plain file name.
     pub fn parts_of(name: &str) -> Option<(Kind, Codec, Option<String>, Option<Side>)> {
         if name == "surface.json" {
@@ -273,6 +290,7 @@ impl Asset {
 /// The files each route needs: the one list the packager, `developer-install`, the launcher and
 /// the mod tool read (`sdk/inputs.json`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "WrittenInputs")]
 pub struct Inputs {
     pub routes: BTreeMap<String, Route>,
     /// How to make each listed file, by its name.
@@ -283,6 +301,64 @@ pub struct Inputs {
     /// slice's target. The packager refuses a package whose slices miss one.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub members: BTreeMap<String, Vec<String>>,
+    /// Routes left out because they need an asset kind this reader does not know, with that kind:
+    /// a newer SDK's route, refused only when it is asked for.
+    #[serde(skip)]
+    pub unknown: BTreeMap<String, String>,
+}
+
+/// The input list as written, before each route's kinds are checked.
+#[derive(Deserialize)]
+struct WrittenInputs {
+    routes: BTreeMap<String, WrittenRoute>,
+    how: BTreeMap<String, String>,
+    #[serde(default)]
+    members: BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Deserialize)]
+struct WrittenRoute {
+    #[serde(default)]
+    program: Vec<String>,
+    #[serde(default)]
+    checkout: Vec<String>,
+    #[serde(default)]
+    sdk: Vec<String>,
+}
+
+impl From<WrittenInputs> for Inputs {
+    fn from(written: WrittenInputs) -> Self {
+        let mut routes = BTreeMap::new();
+        let mut unknown = BTreeMap::new();
+        for (name, route) in written.routes {
+            let sdk: Result<Vec<Kind>, String> = route
+                .sdk
+                .into_iter()
+                .map(|kind| Kind::named(&kind).ok_or(kind))
+                .collect();
+            match sdk {
+                Ok(sdk) => {
+                    routes.insert(
+                        name,
+                        Route {
+                            program: route.program,
+                            checkout: route.checkout,
+                            sdk,
+                        },
+                    );
+                }
+                Err(kind) => {
+                    unknown.insert(name, kind);
+                }
+            }
+        }
+        Inputs {
+            routes,
+            how: written.how,
+            members: written.members,
+            unknown,
+        }
+    }
 }
 
 /// What one route needs.
@@ -309,6 +385,12 @@ impl Inputs {
     /// The route named `name`. The list may come from a downloaded `sdk.json`, so an unknown
     /// name is a refusal.
     pub fn route(&self, name: &str) -> Result<&Route, Refusal> {
+        if let Some(kind) = self.unknown.get(name) {
+            return Err(Refusal::Kind {
+                asset: name.to_owned(),
+                kind: kind.clone(),
+            });
+        }
         self.routes
             .get(name)
             .ok_or_else(|| Refusal::Route(name.to_owned()))
@@ -402,7 +484,7 @@ pub enum Refusal {
     PackageFormat(u64),
     /// The pinned horizon-mixins revision is not a full commit sha.
     MixinsRev(String),
-    /// An asset names a kind this reader does not know.
+    /// A route asks for an asset kind this reader does not know (`asset` is the route's name).
     Kind { asset: String, kind: String },
     /// An asset names a codec this reader does not know.
     Codec { asset: String, codec: String },
@@ -462,7 +544,10 @@ impl fmt::Display for Refusal {
                 f,
                 "{INDEX}'s mixins revision {rev:?} is not a full commit sha (40 lowercase hex digits)"
             ),
-            Self::Kind { asset, kind } => write!(f, "{asset}: unknown asset kind {kind:?}"),
+            Self::Kind { asset, kind } => write!(
+                f,
+                "the SDK's {asset} route needs asset kind {kind:?}, which this program doesn't know. Update it to use this SDK"
+            ),
             Self::Codec { asset, codec } => write!(f, "{asset}: unknown codec {codec:?}"),
             Self::AssetName(asset) => write!(f, "{asset:?} is not a valid SDK asset name"),
             Self::Missing(assets) => write!(f, "missing SDK assets: {}", assets.join(", ")),
@@ -682,7 +767,8 @@ impl Index {
     }
 
     /// Read `sdk.json` for build `commit`: its schema, build, package format and every asset's
-    /// kind, codec and name, and the mixins revision, are checked here, once.
+    /// codec and name, and the mixins revision, are checked here, once. An asset of a kind this
+    /// reader does not know is left out.
     pub fn read(bytes: &[u8], commit: &str) -> Result<Index, Refusal> {
         Self::read_with_format(bytes, commit, Some(u64::from(PACKAGE_FORMAT)))
     }
@@ -715,13 +801,11 @@ impl Index {
         }
         let mut assets = BTreeMap::new();
         for (name, asset) in written.assets {
-            let kind = Kind::ALL
-                .into_iter()
-                .find(|kind| kind.name() == asset.kind)
-                .ok_or_else(|| Refusal::Kind {
-                    asset: name.clone(),
-                    kind: asset.kind.clone(),
-                })?;
+            // A kind added after this reader is a newer SDK's: left out, and refused only by a
+            // route that asks for it ([`Inputs::route`]), so older launchers keep reading the rest.
+            let Some(kind) = Kind::named(&asset.kind) else {
+                continue;
+            };
             let codec = match asset.codec.as_str() {
                 "none" => Codec::None,
                 "xz" => Codec::Xz,

@@ -20,4 +20,4 @@ sunrise-client game::creatures::pending_birth_tests::turtle_hatching_spawns_its_
 sunrise-client game::creatures::pending_birth_tests::a_token_kept_from_one_listener_is_expired_in_the_next lib daily game-boot
 sunrise-client game::creatures::pending_birth_tests::credit_goes_to_the_player_only_when_the_baby_is_accepted lib daily game-boot
 sunrise-client game::creatures::pending_birth_tests::a_waiting_baby_publishes_its_uuid_only_when_it_joins lib daily game-boot
-sunrise-client game::creatures::pending_birth_matrix_tests::native_pending_children_shared_matrix lib daily game-boot
+sunrise-client game::creatures::pending_birth_matrix_tests::native_pending_children_shared_matrix lib daily child-process

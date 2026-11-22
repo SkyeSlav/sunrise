@@ -198,13 +198,24 @@ struct PlayerMoveState {
 /// reads from the current write; other operations retain their typed refusal.
 struct LiveSectionHost(Option<SectionWriter>);
 
-mod_api::impl_host_areas!(LiveSectionHost);
+mod_api::impl_host_areas!(LiveSectionHost, except(datafix));
 mod_api::impl_server_host_areas!(LiveSectionHost);
 mod_api::impl_client_host_areas!(LiveSectionHost, except(client_render, menus, services));
 mod_api::impl_backend_areas!(
     LiveSectionHost,
     partial(entity_position, entity_on_ground, entity_velocity)
 );
+
+impl mod_api::prelude::DatafixHost for LiveSectionHost {
+    fn upgrade_nbt(
+        &self,
+        kind: mod_api::NbtDataType,
+        data_version: i32,
+        nbt: mod_api::Compound,
+    ) -> Result<mod_api::Compound, mod_api::NbtUpgradeError> {
+        super::Game::upgrade_nbt(kind, data_version, nbt)
+    }
+}
 
 impl mod_api::prelude::ClientRenderClientHost for LiveSectionHost {
     fn biome_tint(

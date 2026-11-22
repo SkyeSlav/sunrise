@@ -898,7 +898,7 @@ Online5277 since 2026-10-27, levzzz5154 since 2026-10-28) and for Ludovic, with 
 - **Where.** On the first line of a comment on the issue or pull request (`.github/workflows/triage-command.yml`,
   `tools/ci/triage_command.py`). The workflow answers with one comment, `🤖 Triage: <action>, on behalf of @login`,
   linking the comment that asked; a refusal answers too. Claims are their own workflow
-  (`.github/workflows/claim-command.yml`, `tools/ci/claim_command.py`), open to everyone for their own claim.
+  (`.github/workflows/fork-claim.yml`, `tools/ci/claim_command.py`), open to everyone for their own claim.
 - **Refused.** Any label with `release` in its name (`release-now`, `release-blocker`, `skip-release`) and
   `full-parity`; anything on Ludovic's own issues and pull requests; a merged pull request; a locked thread; more
   than 60 actions per reviewer in 24 hours (counted from the workflow's own comments).

@@ -2,7 +2,7 @@ use super::tests::{MOD_MENU, mod_menu_guest, sent};
 use crate::game::{
     Game,
     api_values::{self, TryIntoApi},
-    native_entity_refs::tests::with_game,
+    native_entity_refs::tests::{run_fresh_cases, with_game},
 };
 use mod_api::{
     Flow, Hand, Hooks, HostTransaction, ItemPlace, ItemResource, MenuClickedEvent, MenuClosedEvent,
@@ -568,6 +568,13 @@ fn owned_click_prediction_applies_caps_and_the_server_corrects_an_override() {
 #[test]
 #[ignore = "daily"]
 fn closing_discards_owned_slots_unless_the_listener_returns_their_contents() {
+    if run_fresh_cases(
+        "game::native_menus::owned_slots_tests::closing_discards_owned_slots_unless_the_listener_returns_their_contents",
+        "SUNRISE_OWNED_MENU_CLOSE_CASE",
+        &["close"],
+    ) {
+        return;
+    }
     for return_contents in [false, true] {
         with_owned_menu(return_contents, |game, _rx, key| {
             let (window, menu) = open(game, key);
@@ -604,6 +611,19 @@ fn closing_discards_owned_slots_unless_the_listener_returns_their_contents() {
                     vec![]
                 }
             );
+            if return_contents {
+                // GiveCommand.giveItem: a fully fitting give leaves only the one-tick fake item.
+                let [fake] = game.dropped.as_ref() else {
+                    panic!("expected only the fake pickup, not the contents of the closed menu");
+                };
+                assert_eq!(fake.stack, ItemStack::new("minecraft:stick", 1));
+                assert_eq!((fake.pickup_delay, fake.age), (32767, 5999));
+                game.load_ticking_neighbourhood(0, 0);
+                game.update_chunk_tickets();
+                assert!(game.entity_ticking_area()(0, 0));
+                game.ticked_entities_through = game.next_entity;
+                game.tick_items();
+            }
             assert!(game.dropped.is_empty());
             let (_, reopened) = open(game, key);
             assert_eq!(reopened.slot(game, 1), Some(None));

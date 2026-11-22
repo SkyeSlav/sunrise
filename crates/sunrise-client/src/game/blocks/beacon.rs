@@ -210,24 +210,15 @@ impl Game<'_> {
             self.native_beacon_state_change(self.dim.id(), [key.0, key.1, key.2], current > 0);
         }
     }
-    /// `ClientLevel.tickBlockEntities` for beacons: a server's chunk data
+    /// `ClientLevel.tickBlockEntities` for the beacon at `key`: a server's chunk data
     /// carries no beam sections, so the client builds them too; effects,
     /// sounds and the advancement stay with the server.
-    pub(super) fn client_tick_beacons(&mut self) {
-        let keys: Vec<_> = self
-            .world
-            .block_entities
-            .iter()
-            .filter_map(|(k, e)| matches!(e, BlockEntity::Beacon(_)).then_some(*k))
-            .collect();
-        for key in keys {
-            let Some((lease, BlockEntity::Beacon(mut b))) = self.world.block_entities.take(&key)
-            else {
-                continue;
-            };
-            self.tick_beacon(key, &mut b, true);
-            self.world.block_entities.put(lease, BlockEntity::Beacon(b));
-        }
+    pub(super) fn client_tick_beacon(&mut self, key: (i32, i32, i32)) {
+        let Some((lease, BlockEntity::Beacon(mut b))) = self.world.block_entities.take(&key) else {
+            return;
+        };
+        self.tick_beacon(key, &mut b, true);
+        self.world.block_entities.put(lease, BlockEntity::Beacon(b));
     }
     fn tick_beacon(&mut self, (x, y, z): (i32, i32, i32), b: &mut Beacon, client: bool) {
         let mut check = if b.last_check_y < y {

@@ -1116,6 +1116,7 @@ mod tests {
             pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
             polygons: Vec::new(),
             children: Vec::new(),
+            layer: None,
         };
         let kind = MobType {
             shadow: None,

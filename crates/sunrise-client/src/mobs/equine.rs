@@ -223,7 +223,7 @@ pub fn register(m: &mut Mob) {
         g.add(
             9,
             RandomStand {
-                next: -stand_interval,
+                next: stand_interval.wrapping_neg(),
             },
         );
     }
@@ -633,9 +633,10 @@ impl Goal for RandomStand {
         0
     }
     fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
-        self.next += 1;
+        // `nextStand++` and `-getAmbientStandInterval()`, in int arithmetic.
+        self.next = self.next.wrapping_add(1);
         if self.next > 0 && m.random.next_int_bound(1000).unwrap_or(1000) < self.next {
-            self.next = -m.kind.ambient_interval;
+            self.next = m.kind.ambient_interval.wrapping_neg();
             return !immobile(m) && m.random.next_int_bound(10).unwrap_or(1) == 0;
         }
         false

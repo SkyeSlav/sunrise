@@ -31,6 +31,8 @@ SUNRISE_CLIENT = [
     "docs/api/launch-reference.md", "docs/sunrise-ctl-commands.md", "docs/modding/examples/src/worldgen.rs",
     "docs/parity/block-entity-client-ticks.jsonl", "docs/parity/random-chance-seeded.jsonl",
     "research-lock.json", "tests/fixture_support/item_resource_properties.rs", "tests/fixtures",
+    # mobs::render's compile_part tests compile the fn-replace-check `lower` fixture's helpers (`include!`).
+    "tools/ci/fn-replace-check/lower/src",
 ]
 # The generator scans these to write the mod API and the host boundary: its own sources, the vocabulary, the
 # engine crates holding hook targets and their manifests.
@@ -46,6 +48,8 @@ READERS = {
     "cargo-sunrise-mod": [
         "Cargo.lock", "crates/sunrise-mod-api", "crates/sunrise-mod-package/src/sdk/fixture.tar.xz",
         "crates/sunrise-mod-package/tests/index", "docs/modding/src/how-to/native-mods.md", "tools/ci/rust-version",
+        # The installed-client daily builds and installs the fn-replace-check `lower` fixture.
+        "tools/ci/fn-replace-check/lower",
     ],
     # The pinned Rust, and the mods library's template its tests render.
     "sunrise-native-build": ["crates/sunrise-client/src/native_mod_entry.rs.template", "tools/ci/rust-version"],

@@ -315,7 +315,9 @@ jobs:
   break-glass:
     needs: [pick, break-glass-umceko, break-glass-aria]
     # Only a run's first attempt's approvals count: a re-run (of failed jobs too) never reuses them.
-    if: needs.pick.outputs.break_glass == 'true' && github.run_attempt == '1'
+    if: >-
+      !cancelled() && needs.pick.outputs.break_glass == 'true' && github.run_attempt == '1' &&
+      needs.break-glass-umceko.result == 'success' && needs.break-glass-aria.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -354,8 +356,12 @@ jobs:
 
   build:
     needs: [pick, exporters]
-    # A break-glass release builds only in its run's first attempt, whose approvals it has.
-    if: needs.pick.outputs.break_glass == 'false' || github.run_attempt == '1'
+    # A break-glass release builds only in its run's first attempt, whose approvals it has. The status check is
+    # explicit: break-glass and its approvals are skipped on every ordinary release, and GitHub's implicit success()
+    # skips a job when any job upstream of it, however far, was skipped.
+    if: >-
+      !cancelled() && needs.exporters.result == 'success' &&
+      (needs.pick.outputs.break_glass == 'false' || github.run_attempt == '1')
     uses: ./.github/workflows/game-build.yml
     with:
       part: game
@@ -368,8 +374,12 @@ jobs:
 
   musl-build:
     needs: [pick, exporters]
-    # A break-glass release builds only in its run's first attempt, whose approvals it has.
-    if: needs.pick.outputs.break_glass == 'false' || github.run_attempt == '1'
+    # A break-glass release builds only in its run's first attempt, whose approvals it has. The status check is
+    # explicit: break-glass and its approvals are skipped on every ordinary release, and GitHub's implicit success()
+    # skips a job when any job upstream of it, however far, was skipped.
+    if: >-
+      !cancelled() && needs.exporters.result == 'success' &&
+      (needs.pick.outputs.break_glass == 'false' || github.run_attempt == '1')
     uses: ./.github/workflows/game-build.yml
     with:
       part: musl

@@ -630,6 +630,37 @@ fn an_offer_edit_after_the_work_step_survives_the_restock() {
 
 #[test]
 #[ignore = "daily"]
+fn a_silent_trade_edit_keeps_the_mob_clock_and_rng_when_the_threshold_wraps() {
+    super::in_own_process(
+        "game::lan_trade_decisions_tests::a_silent_trade_edit_keeps_the_mob_clock_and_rng_when_the_threshold_wraps",
+        || {
+            with_guests(|game| {
+                open(game, 1);
+                let mob = &mut game.mobs[0];
+                Arc::make_mut(&mut mob.kind).ambient_interval = -i32::MAX;
+                mob.ambient_timer = 17;
+                let random = <(u64, Option<f64>)>::from(&mob.random);
+                let rx = record_packets(game);
+
+                assert!(game.lan_trade_edit(12, |session| {
+                    session.offers[0].result = ItemStack::new("minecraft:diamond", 1);
+                }));
+
+                let result = work_screen(game).slots[2].as_ref().unwrap();
+                assert_eq!(result.item.as_ref(), "minecraft:diamond");
+                assert_eq!(game.mobs[0].ambient_timer, 17);
+                assert_eq!(<(u64, Option<f64>)>::from(&game.mobs[0].random), random);
+                assert!(!packets(&rx).iter().any(|packet| matches!(
+                    packet,
+                    Clientbound::Sound(_) | Clientbound::SoundEntity(_)
+                )));
+            });
+        },
+    );
+}
+
+#[test]
+#[ignore = "daily"]
 fn an_unused_offer_stays_unchanged_when_the_villager_starts_work() {
     super::in_own_process(
         "game::lan_trade_decisions_tests::an_unused_offer_stays_unchanged_when_the_villager_starts_work",

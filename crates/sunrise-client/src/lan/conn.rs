@@ -451,6 +451,14 @@ impl PlayerSender {
     pub fn timed_out(&self) -> bool {
         matches!(&self.to, To::Pool(_, watch) if watch.timed_out())
     }
+    /// Whether the connection still accepts new packets.
+    pub(super) fn is_live(&self) -> bool {
+        match &self.to {
+            To::Pool(outbox, _) => outbox.alive(),
+            To::Channel(_) => true,
+            To::Disabled => false,
+        }
+    }
     /// Close the connection now, dropping what is still queued for it.
     pub fn close(&self) {
         self.payload_transport.close();

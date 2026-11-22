@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 use crate::game::native_entity_refs::tests::{bind_local_player, with_game};
 use crate::game::{Game, GuestUse, Hit};
 use mod_api::{

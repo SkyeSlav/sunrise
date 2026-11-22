@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 /// A data packet for an old window leaves the open mod screen alone.
 #[test]
 fn mod_screen_data_is_its_windows_only() {

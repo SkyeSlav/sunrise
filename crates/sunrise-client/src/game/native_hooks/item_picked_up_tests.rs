@@ -1,4 +1,3 @@
-#![cfg(test)]
 use crate::game::Game;
 use mod_api::TriState;
 

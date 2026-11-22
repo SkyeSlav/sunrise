@@ -176,7 +176,7 @@ class AllowTests(unittest.TestCase):
 
     def test_the_commands_workflows_fetch_the_council_file(self):
         # They check out main sparsely: a file left out of the list reads as missing, and the council loses its powers.
-        for name in ("nightly-command", "triage-command", "claim-command"):
+        for name in ("nightly-command", "triage-command", "fork-claim"):
             text = (ROOT / ".github" / "workflows" / f"{name}.yml").read_text()
             checkout = text[text.index("sparse-checkout: |"):text.index("sparse-checkout-cone-mode")]
             self.assertIn(ns.COUNCIL, checkout, name)
@@ -207,7 +207,7 @@ class AllowTests(unittest.TestCase):
 
 class WorkflowIdTests(unittest.TestCase):
     def test_every_command_workflow_passes_the_authors_id(self):
-        for name in ("nightly-command.yml", "triage-command.yml", "claim-command.yml"):
+        for name in ("nightly-command.yml", "triage-command.yml", "fork-claim.yml"):
             text = (ROOT / ".github/workflows" / name).read_text()
             self.assertIn("AUTHOR_ID: ${{ github.event.comment.user.id }}", text, name)
 

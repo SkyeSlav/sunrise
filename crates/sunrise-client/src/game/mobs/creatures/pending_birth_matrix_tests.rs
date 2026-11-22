@@ -2,7 +2,7 @@
 
 use super::pending_birth_tests::{SEED, YAWS, breed_pair, cube, find, near};
 use super::*;
-use crate::game::native_entity_refs::tests::with_game;
+use crate::game::native_entity_refs::tests::{run_fresh_cases, with_game};
 use mod_api::{BabyEntitySpawnEvent, Flow, Hooks, MobSplitEvent, ServerHost};
 
 #[path = "pending_birth_matrix_tests/fixture.rs"]
@@ -23,21 +23,26 @@ impl Hooks for Native {
     }
 }
 
+/// Select the fixture mode without reusing an ID issued to an earlier mob or breeding orb.
+fn next_parent_id(game: &Game<'_>, mode: u32) -> u32 {
+    (game.next_entity + 1).next_multiple_of(10) + mode
+}
+
 /// A size-4 slime whose entity id ends in `mode`, split by the real route.
 fn split(game: &mut Game<'_>, mode: u32) -> Vec<Mob> {
     game.mobs.clear();
     let mut dying = cube(game, "minecraft:slime", 4, SEED);
-    dying.id = 9000 + mode;
+    game.next_entity = next_parent_id(game, mode);
+    dying.id = game.next_entity;
     game.split_cube_children(&mut dying);
     game.mobs.to_vec()
 }
 
 /// Two cows bred by the real route; the parent's id ends in `mode`.
-fn breed(game: &mut Game<'_>, mode: u32) -> (Vec<Mob>, Option<u32>) {
+fn breed(game: &mut Game<'_>, mode: u32) -> (u32, u32, Option<u32>) {
     game.mobs.clear();
-    game.next_entity = 8999 + mode;
-    let (_, _, child) = breed_pair(game, "minecraft:cow");
-    (game.mobs.to_vec(), child)
+    game.next_entity = next_parent_id(game, mode) - 1;
+    breed_pair(game, "minecraft:cow")
 }
 
 fn matrix(mods: mod_api::Mods) {
@@ -77,24 +82,24 @@ fn matrix(mods: mod_api::Mods) {
             assert_eq!(kids[0].yaw, 1.0);
 
             // Breeding: untouched baby.
-            let (_, child) = breed(game, 0);
+            let (_, _, child) = breed(game, 0);
             assert_eq!(find(game, child.unwrap()).extra.age, -24000);
             // Veto, and removing the baby: no child, parents resting.
             for mode in [1, 3] {
-                let (mobs, child) = breed(game, mode);
+                let (parent, partner, child) = breed(game, mode);
                 assert_eq!(child, None, "mode {mode}");
-                assert!(mobs.iter().all(|m| m.extra.age >= 0));
-                assert_eq!(find(game, 9000 + mode).extra.age, 6000);
-                assert_eq!(find(game, 9001 + mode).extra.in_love, 0);
+                assert!(game.mobs.iter().all(|m| m.extra.age >= 0));
+                assert_eq!(find(game, parent).extra.age, 6000);
+                assert_eq!(find(game, partner).extra.in_love, 0);
             }
             // Replace with a pig baby; a second baby reports Capacity (3).
-            let (_, child) = breed(game, 2);
+            let (_, _, child) = breed(game, 2);
             let pig = find(game, child.unwrap());
             assert_eq!(pig.kind.id, "minecraft:pig");
             assert!(pig.extra.age < 0);
             assert_eq!(pig.yaw, 3.0);
             // A grown replacement is Invalid (4); the cow baby stays.
-            let (_, child) = breed(game, 4);
+            let (_, _, child) = breed(game, 4);
             let baby = find(game, child.unwrap());
             assert_eq!(baby.kind.id, "minecraft:cow");
             assert_eq!(baby.yaw, 4.0);
@@ -105,6 +110,13 @@ fn matrix(mods: mod_api::Mods) {
 #[test]
 #[ignore = "daily"]
 fn native_pending_children_shared_matrix() {
+    if run_fresh_cases(
+        "game::creatures::pending_birth_matrix_tests::native_pending_children_shared_matrix",
+        "SUNRISE_PENDING_CHILDREN_MATRIX",
+        &["native"],
+    ) {
+        return;
+    }
     matrix(
         vec![mod_api::ModEntry::new(
             "pending_children_fixture",

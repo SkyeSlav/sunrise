@@ -1,4 +1,3 @@
-#![cfg(test)]
 //! `client_chunk_load` and `client_chunk_unload` through a loopback client (#3425): a chunk
 //! packet adopts a column and tells its load once the blocks are in; every route that frees a
 //! resident column tells its unload once, with its blocks still readable.

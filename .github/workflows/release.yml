@@ -188,7 +188,9 @@ jobs:
   dev-sdk-publish:
     needs: [decide, dev-sdk]
     # Not when sdk-<sha> exists already: then the legs built nothing (output `needed` false).
-    if: inputs.kind == 'dev' && needs.decide.outputs.release == 'true' && needs.dev-sdk.outputs.needed == 'true'
+    if: >-
+      !cancelled() && inputs.kind == 'dev' && needs.decide.outputs.release == 'true' &&
+      needs.dev-sdk.result == 'success' && needs.dev-sdk.outputs.needed == 'true'
     permissions:
       contents: write  # the sdk-<sha> release (its publish job; a dry run writes nothing)
     uses: ./.github/workflows/sdk-publish.yml

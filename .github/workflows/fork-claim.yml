@@ -30,6 +30,7 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
           sparse-checkout: |
+            .github/council.txt
             .github/trusted-reviewers.txt
             tools/ci/nightly_set.py
             tools/ci/claim_command.py
@@ -41,6 +42,10 @@ jobs:
           BODY: ${{ github.event.comment.body }}
           AUTHOR: ${{ github.event.comment.user.login }}
           AUTHOR_ID: ${{ github.event.comment.user.id }}
+          # OWNER, MEMBER or COLLABORATOR: the repository's own people, whom the claim limit doesn't apply to.
+          AUTHOR_ASSOCIATION: ${{ github.event.comment.author_association }}
+          # Trusted contributors the claim limit doesn't apply to: comma-separated logins, set by the maintainers.
+          CLAIM_LIMIT_EXEMPT: ${{ vars.CLAIM_LIMIT_EXEMPT }}
           ISSUE: ${{ github.event.issue.number }}
           COMMENT_ID: ${{ github.event.comment.id }}
           REPO: ${{ github.repository }}
@@ -60,6 +65,7 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
           sparse-checkout: |
+            .github/council.txt
             .github/trusted-reviewers.txt
             tools/ci/nightly_set.py
             tools/ci/claim_command.py

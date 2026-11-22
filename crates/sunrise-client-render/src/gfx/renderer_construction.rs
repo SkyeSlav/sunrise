@@ -2330,6 +2330,7 @@ impl Renderer {
             static_entity_indices,
             static_entity_index_quads,
             entity_batch: EntityBatch::default(),
+            entity_order: entity_skin::OrdinaryOrder::default(),
             entity_skin,
             group,
             fluid_group,

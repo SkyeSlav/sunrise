@@ -268,6 +268,13 @@ impl Game<'_> {
         if !self.world.loaded(x, z) || self.world.set(x, y, z, state).is_err() {
             return None;
         }
+        // LevelChunk.setBlockState drops the old pot only when the block changes;
+        // a new state of the same pot keeps its event-driven wobble.
+        if self.be_anims.pots.contains_key(&pos)
+            && self.res.facts().get(previous).name != self.res.facts().get(state).name
+        {
+            self.be_anims.pots.remove(&pos);
+        }
         if let Some(restored) = restored {
             let RemovedEntity {
                 entity,

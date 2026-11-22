@@ -15,10 +15,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     f32::consts::PI,
 };
-use sunrise_core::{
-    geometry::{Vec3, trig::Mth},
-    random::RandomSource,
-};
+use sunrise_core::geometry::{Vec3, trig::Mth};
 use sunrise_protocol::entity_data::PositionSource;
 
 pub const EMERGE_DURATION: i64 = warden_brain::EMERGE_DURATION as i64;
@@ -483,10 +480,6 @@ fn sound(m: &Mob, name: &'static str, volume: f32, pitch: f32, events: &mut Vec<
         events.push(MobEvent::Sound(name, at(m), volume, pitch));
     }
 }
-/// `LivingEntity.getVoicePitch` for an adult.
-fn voice_pitch(m: &mut Mob) -> f32 {
-    (m.random.next_float() - m.random.next_float()) * 0.2 + 1.0
-}
 fn closer_than(m: &Mob, p: Vec3, horizontal: f64, vertical: f64) -> bool {
     let (dx, dy, dz) = (p.x - m.position.x, p.y - m.position.y, p.z - m.position.z);
     dx * dx + dz * dz < horizontal * horizontal && dy * dy < vertical * vertical
@@ -575,7 +568,7 @@ pub(super) fn increase_anger(
     }
     if play_sound && pose(m) != Pose::Roaring {
         let level = anger_level(m);
-        let pitch = voice_pitch(m);
+        let pitch = m.voice_pitch();
         sound(m, level.listening_sound(), 10.0, pitch, events);
     }
 }
@@ -675,7 +668,7 @@ pub(super) fn do_hurt_target(
         event: 4,
         at: at(m),
     });
-    let pitch = voice_pitch(m);
+    let pitch = m.voice_pitch();
     sound(m, "entity.warden.attack_impact", 10.0, pitch, events);
     warden_brain::mem(m).sonic_boom_cooldown.set_ttl((), 40);
     let mut cx = warden_brain::cx(w, level, events);
@@ -821,7 +814,7 @@ fn receive_vibration(m: &mut Mob, w: &MobWorld, info: Info, events: &mut Vec<Mob
         event: 61,
         at: at(m),
     });
-    let pitch = voice_pitch(m);
+    let pitch = m.voice_pitch();
     sound(m, "entity.warden.tendril_clicks", 5.0, pitch, events);
     let origin = [
         info.pos[0].floor() as i32,
@@ -1043,7 +1036,7 @@ fn heartbeat(m: &mut Mob) -> bool {
 pub fn client_tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
     m.anim.vo = m.anim.v;
     if heartbeat(m) && !m.silent {
-        let pitch = voice_pitch(m);
+        let pitch = m.voice_pitch();
         events.push(MobEvent::LocalSound(
             "entity.warden.heartbeat",
             at(m),

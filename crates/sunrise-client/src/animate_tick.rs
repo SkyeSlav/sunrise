@@ -2092,58 +2092,65 @@ pub fn campfire_particles<'a>(
     cooking: &dyn Fn([i32; 3]) -> [bool; 4],
 ) {
     for &(pos, state) in blocks {
-        if !tables.is_lit_campfire(state) {
+        campfire_particle_tick(tables, engine, ctx.registry, pos, state, cooking(pos));
+    }
+}
+/// `CampfireBlockEntity.particleTick` of the campfire at `pos` in `state`, if it is lit.
+pub fn campfire_particle_tick(
+    tables: &AnimateTables,
+    engine: &mut ParticleEngine,
+    registry: &BlockRegistry,
+    pos: [i32; 3],
+    state: u32,
+    occupied: [bool; 4],
+) {
+    if !tables.is_lit_campfire(state) {
+        return;
+    }
+    let properties = registry.state(BlockStateId(state)).map(|s| &s.properties);
+    let prop = |k: &str| properties.and_then(|p| p.get(k)).map(String::as_str);
+    let signal = prop("signal_fire") == Some("true");
+    // Direction.get2DDataValue: south, west, north, east.
+    let rotation = match prop("facing") {
+        Some("west") => 1,
+        Some("north") => 2,
+        Some("east") => 3,
+        _ => 0,
+    };
+    let r = engine.level_random();
+    if r.next_float() < 0.11 {
+        // `for (int i = 0; i < random.nextInt(2) + 2; i++)`: the iteration
+        // bound is drawn again on every pass, so the loop keeps asking the
+        // random whether to make one more puff.
+        let mut made = 0;
+        loop {
+            let count = next_int(engine.level_random(), 2) + 2;
+            if made >= count {
+                break;
+            }
+            make_campfire_smoke(engine, pos, signal, false);
+            made += 1;
+        }
+    }
+    // The smoke over each cooking item, at the slot's corner of the fire.
+    for (slot, _) in occupied.iter().enumerate().filter(|(_, held)| **held) {
+        if engine.level_random().next_float() >= 0.2 {
             continue;
         }
-        let properties = ctx
-            .registry
-            .state(BlockStateId(state))
-            .map(|s| &s.properties);
-        let prop = |k: &str| properties.and_then(|p| p.get(k)).map(String::as_str);
-        let signal = prop("signal_fire") == Some("true");
-        // Direction.get2DDataValue: south, west, north, east.
-        let rotation = match prop("facing") {
-            Some("west") => 1,
-            Some("north") => 2,
-            Some("east") => 3,
-            _ => 0,
+        // Direction.from2DDataValue((slot + rotation) % 4) and its clockwise side.
+        let (step, clockwise) = match (slot + rotation) % 4 {
+            0 => ([0.0, 1.0], [-1.0, 0.0]),
+            1 => ([-1.0, 0.0], [0.0, -1.0]),
+            2 => ([0.0, -1.0], [1.0, 0.0]),
+            _ => ([1.0, 0.0], [0.0, 1.0]),
         };
-        let r = engine.random();
-        if r.next_float() < 0.11 {
-            // `for (int i = 0; i < random.nextInt(2) + 2; i++)`: the iteration
-            // bound is drawn again on every pass, so the loop keeps asking the
-            // random whether to make one more puff.
-            let mut made = 0;
-            loop {
-                let count = next_int(engine.random(), 2) + 2;
-                if made >= count {
-                    break;
-                }
-                make_campfire_smoke(engine, pos, signal, false);
-                made += 1;
-            }
-        }
-        // The smoke over each cooking item, at the slot's corner of the fire.
-        let occupied = cooking(pos);
-        for (slot, _) in occupied.iter().enumerate().filter(|(_, held)| **held) {
-            if engine.random().next_float() >= 0.2 {
-                continue;
-            }
-            // Direction.from2DDataValue((slot + rotation) % 4) and its clockwise side.
-            let (step, clockwise) = match (slot + rotation) % 4 {
-                0 => ([0.0, 1.0], [-1.0, 0.0]),
-                1 => ([-1.0, 0.0], [0.0, -1.0]),
-                2 => ([0.0, -1.0], [1.0, 0.0]),
-                _ => ([1.0, 0.0], [0.0, 1.0]),
-            };
-            let at = [
-                f64::from(pos[0]) + 0.5 - step[0] * 0.3125 + clockwise[0] * 0.3125,
-                f64::from(pos[1]) + 0.5,
-                f64::from(pos[2]) + 0.5 - step[1] * 0.3125 + clockwise[1] * 0.3125,
-            ];
-            for _ in 0..4 {
-                add(engine, T::Smoke, at, [0.0, 5.0e-4, 0.0]);
-            }
+        let at = [
+            f64::from(pos[0]) + 0.5 - step[0] * 0.3125 + clockwise[0] * 0.3125,
+            f64::from(pos[1]) + 0.5,
+            f64::from(pos[2]) + 0.5 - step[1] * 0.3125 + clockwise[1] * 0.3125,
+        ];
+        for _ in 0..4 {
+            add(engine, T::Smoke, at, [0.0, 5.0e-4, 0.0]);
         }
     }
 }
@@ -2157,7 +2164,7 @@ pub fn make_campfire_smoke(
     signal: bool,
     smoking: bool,
 ) {
-    let r = engine.random();
+    let r = engine.level_random();
     let sign = |r: &mut LegacyRandom| if r.next_boolean() { 1.0 } else { -1.0 };
     let dx = r.next_double() / 3.0;
     let x = f64::from(pos[0]) + 0.5 + dx * sign(r);
@@ -2177,7 +2184,7 @@ pub fn make_campfire_smoke(
         true,
     );
     if smoking {
-        let r = engine.random();
+        let r = engine.level_random();
         let dx = r.next_double() / 4.0 * sign(r);
         let dz = r.next_double() / 4.0 * sign(r);
         let at = [
@@ -2276,11 +2283,26 @@ mod tests {
         assert_eq!(run(0, near), (20, 20), "All");
         assert_eq!(run(2, near), (20, 0), "Minimal");
         assert_eq!(run(0, [100.5, 65.0, 0.5]), (20, 0), "100 blocks away");
-        // Decreased: per puff the cosy smoke's roll, then the plain smoke's.
+        // Decreased: per puff the level random draws the cosy smoke's place, rolls it, draws the
+        // plain smoke's place, then rolls that.
         let mut level = LegacyRandom::new(9);
         let kept = (0..20)
             .filter(|_| {
+                for draw in [0, 1, 0, 0, 0, 1] {
+                    if draw == 0 {
+                        level.next_double();
+                    } else {
+                        level.next_boolean();
+                    }
+                }
                 level.next_int_bound(3).unwrap();
+                for draw in [0, 1, 0, 1] {
+                    if draw == 0 {
+                        level.next_double();
+                    } else {
+                        level.next_boolean();
+                    }
+                }
                 level.next_int_bound(3).unwrap() != 0
             })
             .count();

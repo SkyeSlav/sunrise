@@ -279,6 +279,7 @@ fn bake_model(name: &str, model: &ModelPart) -> std::result::Result<Part, &'stat
             pose,
             polygons,
             children,
+            layer: None,
         })
     }
     bake(name, model, MAX_ARMOR_MODEL_DEPTH)

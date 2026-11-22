@@ -376,7 +376,10 @@ jobs:
   # nightly/26.3 fast-forwarded to the green commit with the sunrise-sunny App's token, which its ruleset lets update it.
   nightly-branch:
     needs: [resolve, green]
-    if: needs.green.result == 'success' && needs.resolve.outputs.branch == 'main'
+    # Explicit status check: legs upstream of green are skipped on an ordinary green run (sdk-publish when sdk-<sha>
+    # exists, parity when not required), and GitHub's implicit success() would skip this job for that.
+    if: >-
+      !cancelled() && needs.green.result == 'success' && needs.resolve.outputs.branch == 'main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
@@ -413,7 +416,9 @@ jobs:
   # SDK and the nightly branch.
   nightly:
     needs: [resolve, green, nightly-branch]
-    if: needs.green.result == 'success' && needs.resolve.outputs.branch == 'main' && needs.nightly-branch.result == 'success'
+    if: >-
+      !cancelled() && needs.green.result == 'success' && needs.resolve.outputs.branch == 'main' &&
+      needs.nightly-branch.result == 'success'
     # GitHub checks what every called job asks for at startup, skipped ones too (tests/test_ci_call_permissions.py).
     permissions:
       # Only because release.yml holds the Dev build’s SDK publish (sdk-publish.yml), which asks for it and never

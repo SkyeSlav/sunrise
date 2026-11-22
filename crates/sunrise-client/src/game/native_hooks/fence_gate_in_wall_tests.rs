@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 use crate::game::native_entity_refs::tests::with_game;
 use mod_api::{BlockPart, FenceGateInWallEvent, Hooks, LevelSide, Registrar};
 use std::sync::Arc;

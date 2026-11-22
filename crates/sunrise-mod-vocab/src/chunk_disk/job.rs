@@ -42,7 +42,11 @@ impl ChunkDiskJob {
 
     /// Run once on the owning chunk worker. Repeated encoding or recovery
     /// reads borrow the cached outcome and cannot invoke listeners again.
-    pub fn run(&self, resources: &dyn WorldgenHost) -> &Result<Compound, ChunkDiskFailure> {
+    pub fn run(
+        &self,
+        resources: &dyn WorldgenHost,
+        upgrade_nbt: fn(NbtDataType, i32, Compound) -> Result<Compound, NbtUpgradeError>,
+    ) -> &Result<Compound, ChunkDiskFailure> {
         self.completed.get_or_init(|| {
             #[cfg(any(test, feature = "testing"))]
             let _scope = TestScope(
@@ -50,7 +54,7 @@ impl ChunkDiskJob {
                 crate::parts::TEST_PARTS.replace(self.parts),
             );
             let mut data = ChunkDiskData::from_nbt(self.captured.clone())?;
-            let context = OwningChunkDisk::new(&self.context, resources);
+            let context = OwningChunkDisk::new(&self.context, resources, upgrade_nbt);
             match self.context.phase {
                 ChunkDiskPhase::Load => native_chunk_data_load(&context, &mut data),
                 ChunkDiskPhase::Save => native_chunk_data_save(&context, &mut data),

@@ -1406,12 +1406,9 @@ impl Renderer {
             oit_on,
         );
         self.entity_batch.append_shadow_only(frame.shadow_only);
-        // The posed models' vertices come first: the ordinary entities' draw takes them in.
-        let posed = if pack_skin {
-            0
-        } else {
-            skin.map_or(0, |s| s.vertices)
-        };
+        let ordinary_skin = skin.filter(|_| !pack_skin);
+        let posed = ordinary_skin.map_or(0, |s| s.vertices);
+        self.entity_order.prepare(entities, ordinary_skin, oit_on);
         let entity_quads = entity_quads + posed / 4;
         let weather_quads = frame.weather.len() as u32 / 4;
         let world_quads = entity_quads
@@ -1564,12 +1561,12 @@ impl Renderer {
                 mapped_at_creation: false,
             });
         }
-        if !all_entities.is_empty() {
+        for (dst, range) in self.entity_order.cpu_uploads(all_entities.len() as u32) {
             self.uploads.buffer(
                 &mut encoder,
                 &self.entity_buffer,
-                u64::from(posed) * std::mem::size_of::<Vertex>() as u64,
-                bytemuck::cast_slice(all_entities),
+                u64::from(dst) * std::mem::size_of::<Vertex>() as u64,
+                bytemuck::cast_slice(&all_entities[range.start as usize..range.end as usize]),
             );
         }
         if pack_entities {
@@ -1617,11 +1614,14 @@ impl Renderer {
                 oit_on,
                 &mut self.prepared_cuts,
             );
+            for cut in &mut self.prepared_cuts {
+                *cut = self.entity_order.prepared_cut(*cut);
+            }
             prepared_model::fill_instance_ranges(
                 entity_quads * 4,
                 &self.prepared_draws,
                 &self.prepared_cuts,
-                posed,
+                0,
                 &mut self.prepared_ranges,
             );
         }
@@ -1649,7 +1649,7 @@ impl Renderer {
                     &mut encoder,
                     skin,
                     &self.entity_buffer,
-                    0,
+                    self.entity_order.posed_jobs(skin),
                     outline_base,
                 );
             }

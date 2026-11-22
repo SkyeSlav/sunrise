@@ -30,6 +30,8 @@ impl Polygon {
 
 /// ModelPart uses a separate normal stack: uniform scaling keeps normal lengths,
 /// while nonuniform scaling requires normalization after the complete part transform.
+/// [`render::compile_part`](super::render::compile_part) gets a part's, to pack its polygons'
+/// normals with ([`Polygon`]'s `vertex_normal`).
 #[derive(Clone, Copy)]
 pub struct ModelNormals {
     pub(super) matrix: glam::Mat3,
@@ -139,8 +141,28 @@ pub struct Part {
     pub pose: [f32; 9],
     pub polygons: Vec<Polygon>,
     pub children: Vec<Part>,
+    /// The model layer the tree was baked from (`minecraft:player#main`), on the root of a
+    /// layer read from `entity-models.json` ([`Part::parse_layer`]); None on its children and
+    /// on a model built another way. [`render::compile_part`](super::render::compile_part)
+    /// and [`render::takes_part`](super::render::takes_part) are asked with it.
+    pub layer: Option<std::sync::Arc<str>>,
 }
 impl Part {
+    /// The model layer `key` (`minecraft:player#main`) of `entity-models.json`, as
+    /// [`Part::parse`] bakes its root, recording the layer on it.
+    pub(super) fn parse_layer(key: &str, v: &Value) -> Self {
+        let mut part = Self::parse("root", v);
+        part.layer = Some(key.into());
+        part
+    }
+    /// The direct child named `name` as a model of its own (`PlayerModel.rightArm` drawn alone),
+    /// keeping the layer this tree was baked from: its parts are asked about and drawn as the
+    /// layer's.
+    pub fn detached_child(&self, name: &str) -> Option<Part> {
+        let mut child = self.children.iter().find(|c| c.name == name)?.clone();
+        child.layer.clone_from(&self.layer);
+        Some(child)
+    }
     /// Marks every polygon as drawn by a back-face-culling render type.
     pub(super) fn set_cull_back(&mut self) {
         for poly in &mut self.polygons {
@@ -220,6 +242,7 @@ impl Part {
             pose: p,
             polygons,
             children,
+            layer: None,
         }
     }
 }

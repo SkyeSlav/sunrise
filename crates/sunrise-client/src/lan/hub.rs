@@ -2526,8 +2526,8 @@ impl Hub {
     }
 
     /// Keeps server-answer packets in a frozen player's inbox (teleport, chunk batch,
-    /// loaded, keep-alive, ping request, tick end, client information) and drops the rest:
-    /// a play `Pong` too, which answers nothing the server sent.
+    /// loaded, keep-alive, ping request, tick end, client information), plus debug
+    /// subscription updates. Drops the rest, including play `Pong`, which answers nothing.
     /// Chat messages and signed commands are dropped, but their last-seen messages
     /// are taken first (`unpackAndApplyLastSeen`). Chat acknowledgements are handled
     /// here in arrival order: the client counts them as acknowledged, and its next
@@ -2559,6 +2559,7 @@ impl Hub {
                 | S::ClientInformation(_)
                 | S::ClientTickEnd(_)
                 | S::KeepAlive(_)
+                | S::DebugSubscriptionRequest(_)
                 | S::PingRequest(_) => {
                     self.guests
                         .update(i, |g| g.inbox.push_back(InboxItem::Packet(packet, credit)));
@@ -4187,6 +4188,7 @@ impl Hub {
                 | S::RecipeBookChangeSettings(_)
                 | S::RecipeBookSeenRecipe(_)
                 | S::ClientTickEnd(_)
+                | S::DebugSubscriptionRequest(_)
                 | S::KeepAlive(_)
                 | S::Pong(_)
                 | S::PingRequest(_) => false,
@@ -4281,6 +4283,11 @@ impl Hub {
                     if p.channel == sunrise_protocol::passage_sync::CROSS_CHANNEL =>
                 {
                     *held = self.passage_leg(i, p, ctx, events);
+                }
+                // handleDebugSubscriptionRequest.
+                S::DebugSubscriptionRequest(p) => {
+                    self.guests
+                        .update(i, |g| g.debug_subscriptions = p.subscriptions);
                 }
                 // handleAcceptPlayerLoad: markClientLoaded.
                 S::PlayerLoaded(_) => {
@@ -5400,6 +5407,7 @@ mod tests {
     mod collision_exclusion_tests;
     mod collision_part_tests;
     mod connection_group_sync_tests;
+    mod debug_subscription_tests;
     mod displace_tests;
     mod effect_meta_tests;
     mod entity_move_check_tests;

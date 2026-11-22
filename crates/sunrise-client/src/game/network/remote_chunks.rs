@@ -86,12 +86,20 @@ impl Game<'_> {
         // A column sent again while it is resident (a bulk edit): only what changed is lit and meshed again.
         let resident = self.world.chunks.contains_key(&(x, z));
         if resident {
+            // LevelChunk.replaceWithPacketData clears the old block entities. Pots keep
+            // their wobble outside the block entity store, so retire it here too.
+            self.be_anims
+                .pots
+                .retain(|[bx, _, bz], _| (*bx >> 4, *bz >> 4) != (x, z));
             sunrise_client::spans::time("replace_remote", || {
                 self.streaming.replace_remote(&mut self.world, chunk)
             });
         } else {
             self.streaming.insert_remote(&mut self.world, chunk);
         }
+        // Before any block entity joins: a state change before the first ticker pass (a campfire
+        // lit) must find which states tick, to join the list at that moment, not at its place.
+        self.ensure_client_ticking_states();
         sunrise_client::spans::time("unload_block_entities", || {
             self.world.block_entities.unload_column((x, z));
         });

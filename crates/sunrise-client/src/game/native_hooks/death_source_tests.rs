@@ -1,5 +1,4 @@
 //! Prepared-resource regressions through real projectile collision, mob AI and server death.
-#![cfg(test)]
 use crate::game::Game;
 use crate::game::api_values::TryIntoApi;
 use crate::game::native_entity_refs::tests::{bind_local_player, with_game};

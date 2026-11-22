@@ -17,6 +17,7 @@ fn kind() -> Arc<MobType> {
         pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
         polygons: Vec::new(),
         children: Vec::new(),
+        layer: None,
     };
     Arc::new(MobType {
         id: "minecraft:cow".into(),

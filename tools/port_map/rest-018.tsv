@@ -58,7 +58,7 @@ ServerGamePacketListenerImpl.handleChangeGameMode	port	crates/sunrise-client/src
 ServerGamePacketListenerImpl.handleLockDifficulty	port	crates/sunrise-client/src/game/network/lan_actions/packets.rs::Game::lan_guest_packet	LockDifficulty arm: permission 2 or more
 ServerGamePacketListenerImpl.handleConfigurationAcknowledged	skip:other		the host never starts a configuration phase mid-play, so there is no acknowledgement to wait for
 ServerGamePacketListenerImpl.handleChunkBatchReceived	port	crates/sunrise-client/src/lan/hub.rs::Hub::process_inbox	ChunkBatchReceived arm: updates the send quota
-ServerGamePacketListenerImpl.handleDebugSubscriptionRequest	skip:debug		F3 debug subscriptions are not implemented by the LAN host
+ServerGamePacketListenerImpl.handleDebugSubscriptionRequest	port	crates/sunrise-client/src/lan/hub.rs::Hub::process_inbox	stores the request on the guest, no action-time reset
 ServerGamePacketListenerImpl.resetPlayerChatState	port	crates/sunrise-client/src/lan/hub/chat.rs::Hub::chat_session_update	gap: minor: the chain swap is immediate and not queued behind pending chat; INITIALIZE_CHAT is broadcast
 ServerGamePacketListenerImpl.handleClientTickEnd	port	crates/sunrise-client/src/lan/hub.rs::Hub::process_inbox	ClientTickEnd arm clears the per-tick movement flag; known movement is the known_moves copy taken at the start of the pass
 ServerGamePacketListenerImpl.handlePlayerKnownMovement	port	crates/sunrise-client/src/lan/hub.rs::Hub::process_inbox	a move that goes far enough resets the action time

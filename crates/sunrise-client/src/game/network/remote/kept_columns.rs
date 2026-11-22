@@ -77,6 +77,9 @@ impl Game<'_> {
             renderer.remove_columns(gone.iter().copied());
         }
         sunrise_client::chunk::free_columns(freed, gone.len());
+        self.be_anims
+            .pots
+            .retain(|[x, _, z], _| !gone.contains(&(*x >> 4, *z >> 4)));
         sunrise_client::spans::time("unload_block_entities", || {
             for &column in gone.iter() {
                 self.world.block_entities.unload_column(column);

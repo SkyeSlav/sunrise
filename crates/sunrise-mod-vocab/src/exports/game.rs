@@ -6,7 +6,7 @@ pub use crate::game::{
     DataMapType, ExperienceOrb, Falling, Heightmap, Hit, MapDecoration, MapInfo, MobRender,
     ModMismatch, ModMismatchResolution, PhantomSpawnResult, PlayerRender, Shake, SleepProblem,
 };
-pub use crate::game::{MAX_TERRAIN_COLUMNS, NbtUpgradeError, TerrainColumn};
+pub use crate::game::{MAX_TERRAIN_COLUMNS, NbtDataType, NbtUpgradeError, TerrainColumn};
 mod __private {
     mod built {
         pub use crate::game::built::{ConfigFile, TerrainColumn};

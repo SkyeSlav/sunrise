@@ -2940,9 +2940,10 @@ fn continue_base_tick(
                 if m.alive() {
                     let roll = m.random.next_int_bound(1000).unwrap_or(999);
                     let t = m.ambient_timer;
-                    m.ambient_timer += 1;
+                    // `ambientSoundTime++` and `-getAmbientSoundInterval()`, in int arithmetic.
+                    m.ambient_timer = m.ambient_timer.wrapping_add(1);
                     if roll < t {
-                        m.ambient_timer = -m.ambient_interval();
+                        m.ambient_timer = m.ambient_interval().wrapping_neg();
                         super::entity_sounds::ambient(m, w, events);
                     }
                 }
@@ -4494,7 +4495,11 @@ pub fn eating_sound(
 pub fn eating_sound_is_bound(species: Species) -> bool {
     matches!(species, Species::Frog | Species::Goat | Species::Sniffer)
 }
+/// `LivingEntity.getSoundVolume`: a content type's declared `sounds.volume`, else its template's.
 pub fn sound_volume(m: &Mob) -> f32 {
+    if let Some(volume) = m.kind.sound_overrides.volume {
+        return volume;
+    }
     match m.species() {
         Species::Ghast => 5.0,
         Species::HappyGhast => super::happy_ghast::volume(m),

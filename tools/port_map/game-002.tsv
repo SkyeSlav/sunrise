@@ -143,4 +143,4 @@ ServerPlayer.removeVehicle	inline	crates/sunrise-client/src/game/network/lan_ent
 ServerPlayer.getKnownSpeed	port	crates/sunrise-client/src/game/items/spear.rs::Game::known_player_movement	a rider's speed is its root vehicle's (mob_speed walks up the mounts); a guest's is the movement it last reported
 ServerPlayer.onEquippedItemBroken	port	crates/sunrise-client/src/game.rs::Game::damage_held	gap: minor: only the held item counts toward the broken statistic; breaking armour is not counted
 ServerPlayer.registerAndUpdateEnderPearlTicket	missing		minor: a thrown ender pearl holds no chunk of its own (no ENDER_PEARL ticket); it is saved only with a chunk that saves, so one in an unloaded chunk is gone
-ServerPlayer.debugSubscriptions	skip:debug		debug subscriptions for the debug screen
+ServerPlayer.debugSubscriptions	port	crates/sunrise-client/src/lan/containers.rs::Hub::tick_time_subscribers	the stored request is read only for an operator

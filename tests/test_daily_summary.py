@@ -947,7 +947,7 @@ class DailyWorkflowTests(unittest.TestCase):
         self.assertIn('git merge-base --is-ancestor "$sha" "refs/remotes/origin/$branch"', step["run"])
         self.assertEqual(jobs["summary"]["steps"][-1]["env"]["DRY_RUN"], "${{ needs.resolve.outputs.dry_run }}")
         self.assertEqual(jobs["nightly"]["if"],
-                         "needs.green.result == 'success' && needs.resolve.outputs.branch == 'main'"
+                         "!cancelled() && needs.green.result == 'success' && needs.resolve.outputs.branch == 'main'"
                          " && needs.nightly-branch.result == 'success'")
         self.assertEqual(self.workflow["concurrency"]["cancel-in-progress"], "false")
         self.assertEqual(jobs["sdk"]["with"]["commit"], "${{ needs.resolve.outputs.commit }}")

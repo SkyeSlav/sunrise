@@ -51,6 +51,7 @@ impl CreditPlan {
 impl KnockbackCredit for CreditLoan<'_> {
     fn accepted_mob_hit(&mut self, mob: &mut Mob) {
         assert_eq!(mob.id as i32, self.plan.victim);
+        let interval = mob.ambient_interval();
         if let Some(hurt) = &mut self.plan.hurt_by
             && std::mem::take(&mut hurt.trade_feedback)
             && let Some(pending) = mob
@@ -62,6 +63,7 @@ impl KnockbackCredit for CreditLoan<'_> {
             // notifyTradeUpdated draws before the victim's own hurt sound or effects.
             pending.trade_pitch = sunrise_client::merchant::trade_update_pitch(
                 &mut mob.ambient_timer,
+                interval,
                 &mut mob.random,
             );
         }

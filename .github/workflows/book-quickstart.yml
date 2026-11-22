@@ -187,6 +187,11 @@ jobs:
         run: >-
           cargo test --locked -p cargo-sunrise-mod --test addon --
           --ignored --exact builds_and_checks_a_native_addon_with_local_and_registry_libraries
+      - name: Installed native rows bend and route a client model
+        if: inputs.own_sdk
+        run: >-
+          cargo test --locked -p cargo-sunrise-mod --test installed_client_draw --
+          --ignored --exact installed_lower_bends_and_routes_a_client_model
       - name: The start pages run with the mod tool alone
         run: python3 tools/book_quickstart.py --tool "${CARGO_TARGET_DIR:-target}/debug/cargo-sunrise-mod"
       - name: Generated native release on this run's Linux SDK

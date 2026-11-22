@@ -1,6 +1,6 @@
 //! Real region-file checks for the chunk worker's attachment boundary.
 use super::*;
-use mod_api::{ChunkDataLoadEvent, ChunkDataSaveEvent, ChunkDiskHost, Hooks};
+use mod_api::{ChunkDataLoadEvent, ChunkDataSaveEvent, ChunkDiskHost, Hooks, NbtDataType};
 use std::sync::atomic::AtomicUsize;
 mod fixture;
 mod writer_stack;
@@ -16,13 +16,29 @@ impl Hooks for Listener {
         self.saves.fetch_add(1, Ordering::Relaxed);
         let names: &[String] = host.registry("minecraft:block").unwrap();
         assert_eq!(names, ["minecraft:stone", "minecraft:dirt"]);
+        check_saved_nbt_upgrade(host);
         fixture::save(event.data);
     }
     fn chunk_data_load(&self, host: &dyn ChunkDiskHost, event: &mut ChunkDataLoadEvent<'_>) {
         self.loads.fetch_add(1, Ordering::Relaxed);
+        check_saved_nbt_upgrade(host);
         fixture::load(host, event.data);
     }
 }
+
+fn check_saved_nbt_upgrade(host: &dyn ChunkDiskHost) {
+    let state =
+        |key: &str, name: &str| Compound::from_iter([(key.into(), Tag::String(name.into()))]);
+    assert_eq!(
+        host.upgrade_nbt(
+            NbtDataType::BlockState,
+            2586,
+            state("Name", "minecraft:grass_path")
+        ),
+        Ok(state("id", "minecraft:dirt_path")),
+    );
+}
+
 pub(super) fn context(save: &SaveDir) {
     use sunrise_world::native_load_context::{DataLoadOrigin, LoadContext, LoadInputs};
     let load = LoadContext::new(

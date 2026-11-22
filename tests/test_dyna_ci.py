@@ -642,11 +642,27 @@ class DynaRoutingTests(unittest.TestCase):
             (tree / "tools" / "test_gameplay_parity.py").write_text(
                 "run(['cargo', 'test', '--locked', '-p', 'sunrise-gameplay', '--lib', 'w'])\n")
             env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-                   "PARITY_LOG_DIR": temporary}
+                   "PARITY_LOG_DIR": temporary, "RUNNER_TEMP": temporary, "BUCKET": "1"}
             subprocess.run(["bash", "-e", "-c", script], cwd=tree, env=env, check=True)
             self.assertEqual(calls.read_text().splitlines(), ["test --locked --no-run -p sunrise-client --lib",
                                                              "test --locked --no-run -p sunrise-client-lib --lib",
                                                              "test --locked --no-run -p sunrise-gameplay --lib"])
+            # A share builds only for the harnesses its plan gives it (a shard named NAME#N), and nothing for none.
+            calls.unlink()
+            (Path(temporary, "plan")).mkdir()
+            Path(temporary, "plan", "bucket-1.json").write_text('["gameplay#2", "fast"]\n')
+            subprocess.run(["bash", "-e", "-c", script], cwd=tree, env=env, check=True)
+            self.assertEqual(calls.read_text().splitlines(), ["test --locked --no-run -p sunrise-gameplay --lib"])
+            calls.unlink()
+            Path(temporary, "plan", "bucket-1.json").write_text("[]\n")
+            subprocess.run(["bash", "-e", "-c", script], cwd=tree, env=env, check=True)
+            self.assertFalse(calls.exists())
+            # A plan it cannot read fails the step with a fixed annotation, not a silent empty build.
+            Path(temporary, "plan", "bucket-1.json").write_text("not json\n")
+            failed = subprocess.run(["bash", "-e", "-c", script], cwd=tree, env=env, capture_output=True, text=True)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertEqual(failed.stdout, "::error::Could not read the game-probe plan for this parity share.\n")
+            self.assertFalse(calls.exists())
 
 class PersistentTargetTests(unittest.TestCase):
     def test_every_job_that_can_build_on_a_self_hosted_runner_keeps_the_source_snapshot_first(self):

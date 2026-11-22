@@ -169,7 +169,7 @@ fn a_game_releases_copy_names_its_build_before_the_build_is_known() {
 #[test]
 fn each_bad_index_is_refused_by_name() {
     let good = json(&index(&[(ENGINE, b"engine")]));
-    let cases: [(&str, fn(&mut serde_json::Value), Refusal); 8] = [
+    let cases: [(&str, fn(&mut serde_json::Value), Refusal); 7] = [
         (
             "unknown schema",
             |v| v["schema"] = 2.into(),
@@ -194,14 +194,6 @@ fn each_bad_index_is_refused_by_name() {
             Refusal::Codec {
                 asset: ENGINE.into(),
                 codec: "zstd".into(),
-            },
-        ),
-        (
-            "unknown kind",
-            |v| v["assets"][ENGINE]["kind"] = "slice".into(),
-            Refusal::Kind {
-                asset: ENGINE.into(),
-                kind: "slice".into(),
             },
         ),
         (
@@ -386,6 +378,15 @@ fn asset_names_state_kind_target_and_side() {
             )),
         ),
         (
+            "programs-x86_64-unknown-linux-gnu-server.tar.xz",
+            Some((
+                Kind::Programs,
+                Codec::Xz,
+                Some("x86_64-unknown-linux-gnu".into()),
+                Some(Side::Server),
+            )),
+        ),
+        (
             "tool-x86_64-pc-windows-gnu.tar.xz",
             Some((
                 Kind::Tool,
@@ -452,6 +453,30 @@ fn the_package_format_reads_with_any_line_ending() {
     assert_eq!(number("6\r\n"), 6);
     assert_eq!(number("16"), 16);
     assert_eq!(PACKAGE_FORMAT, 6);
+}
+
+#[test]
+fn a_newer_sdks_asset_kind_is_left_out_and_refused_only_by_a_route_that_needs_it() {
+    const SYMBOLS: &str = "symbols-x86_64-unknown-linux-gnu.tar.xz";
+    let mut newer = json(&index(&[(ENGINE, b"engine")]));
+    newer["assets"][SYMBOLS] = serde_json::json!({
+        "sha256": sha256_hex(b"symbols"), "size": 7, "kind": "symbols", "codec": "zstd",
+        "target": "x86_64-unknown-linux-gnu", "side": "client",
+    });
+    newer["inputs"]["routes"]["play"] = serde_json::json!({"sdk": ["runtime", "symbols"]});
+    let read = Index::read(newer.to_string().as_bytes(), COMMIT).unwrap();
+    // Everything this reader knows still reads: the engine route and its asset.
+    assert!(read.asset(ENGINE).is_ok());
+    assert!(read.inputs.route("engine").is_ok());
+    // The new kind's asset is not listed, and its route is refused when it is asked for.
+    assert_eq!(read.asset(SYMBOLS), Err(Refusal::Unlisted(SYMBOLS.into())));
+    assert_eq!(
+        read.route_assets("play", "x86_64-unknown-linux-gnu", Side::Client),
+        Err(Refusal::Kind {
+            asset: "play".into(),
+            kind: "symbols".into(),
+        })
+    );
 }
 
 #[test]

@@ -2067,6 +2067,10 @@ fn keep_client_state(old: Option<&BlockEntity>, new: &mut BlockEntity) {
             new.checking.clone_from(&old.checking);
             (new.last_check_y, new.levels) = (old.last_check_y, old.levels);
         }
+        // `eruptionTick` is set once, when the level is set; an update tag leaves it.
+        (Some(BlockEntity::PotentSulfur(old)), BlockEntity::PotentSulfur(new)) => {
+            new.eruption_tick = old.eruption_tick;
+        }
         _ => {}
     }
 }

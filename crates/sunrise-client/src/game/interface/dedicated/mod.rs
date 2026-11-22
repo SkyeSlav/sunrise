@@ -221,6 +221,18 @@ fn overload_warning(behind: Duration, tick: Duration) -> String {
     )
 }
 
+/// `TpsDebugDimensions`: the full tick (the time between tick ends, as measured), the tick
+/// method, the scheduled tasks (the wait minus its idle time) and the idle time.
+fn tick_time_sample(full: Duration, method: Duration, wait: Duration, idle: Duration) -> [i64; 4] {
+    let nanos = |d: Duration| d.as_nanos() as i64;
+    [
+        nanos(full),
+        nanos(method),
+        nanos(wait.saturating_sub(idle)),
+        nanos(idle),
+    ]
+}
+
 /// `ServerGamePacketListenerImpl.tick`'s idle kick: a player whose last action is more than
 /// `minutes` (`player-idle-timeout`, none when 0 or less) behind, counted here in ticks, is kicked,
 /// unless the End poem is showing (`ServerPlayer.wonGame`): its client sends no action until it
@@ -1285,6 +1297,10 @@ impl Game<'_> {
         );
         let _stop_watchdog = StopWatchdog(watchdog.clone());
         let mut overload_warned: Option<Instant> = None;
+        // `isTickTimeLoggingEnabled`: read at the end of a tick, so the first sample goes out the
+        // tick after a subscriber appears. `lastTickNanos` is when the last wait ended.
+        let mut tick_sampling = false;
+        let mut last_tick_end = Instant::now();
         // `/stop`, or a stop signal (the shutdown hook's `halt`): either way the players and levels are
         // saved below, after the wait `[transfer]` may make (transfer.rs).
         while !self.stop_now(&state) {
@@ -1364,13 +1380,13 @@ impl Game<'_> {
                     None => self.tick_server_spans(paused, detail),
                 }
             }));
-            match ticked {
+            let tick_method = match ticked {
                 Ok(result) => result?,
                 Err(payload) => {
                     crashed = Some(panic_message(payload.as_ref()));
                     break;
                 }
-            }
+            };
             if state.report.as_ref().is_some_and(report::Recording::done) {
                 self.finish_perf_capture(&mut state, StopReason::Normal);
             }
@@ -1389,9 +1405,19 @@ impl Game<'_> {
             // `PlayerList.tick` reads `MinecraftServer.playerIdleTimeout`
             // every tick, so `/setidletimeout` changes it while the server runs.
             let idle_timeout = state.lists.lock().unwrap().player_idle_timeout;
+            let kick_start = Instant::now();
             if idle_timeout > 0 {
                 self.kick_idle(idle_timeout);
             }
+            // `tickServer` ends with the player ticking: the tick method is the level tick and
+            // this, not the console or the capture work around them.
+            let method = tick_method + kick_start.elapsed();
+            // `ServerDebugSubscribers`, once per tick after the players ticked and before the
+            // wait: this tick's recipients and whether the next tick measures.
+            let recipients = self
+                .lan
+                .as_ref()
+                .map_or_else(Vec::new, |h| h.hub.tick_time_subscribers());
             // MinecraftServer.tickServer records each tick's time, for /tick query (and the status).
             self.clock.record(tick_start.elapsed());
             state.perf.tick(
@@ -1405,7 +1431,12 @@ impl Game<'_> {
             state.ticked(Instant::now());
             // MinecraftServer.runServer: a server more than a second's ticks
             // behind skips them and says so, at most every 15 seconds.
-            if let Some(behind) = self.wait_for_next_server_tick(&mut next, paused)
+            let wait_start = Instant::now();
+            let (behind, idle) = self.wait_for_next_server_tick(&mut next, paused);
+            // `MinecraftServer.finishMeasuringTaskExecutionTime` ends the wait phase
+            // before any reporting; `logFullTickTime` keeps the entire tick-to-tick span.
+            let tick_end = Instant::now();
+            if let Some(behind) = behind
                 && overload_warned.is_none_or(|at| at.elapsed() >= OVERLOAD_WARNING_INTERVAL)
             {
                 overload_warned = Some(Instant::now());
@@ -1414,6 +1445,25 @@ impl Game<'_> {
                     &overload_warning(behind, self.clock.tick_duration()),
                 );
             }
+            if tick_sampling && let Some(host) = self.lan.as_ref() {
+                host.hub.send_to_each(
+                    &recipients,
+                    &sunrise_protocol::packets::play::Clientbound::DebugSample(
+                        sunrise_protocol::packets::play::DebugSample {
+                            sample: tick_time_sample(
+                                tick_end - last_tick_end,
+                                method,
+                                tick_end - wait_start,
+                                idle,
+                            )
+                            .to_vec(),
+                            kind: sunrise_protocol::packets::play::DEBUG_SAMPLE_TICK_TIME,
+                        },
+                    ),
+                );
+            }
+            last_tick_end = tick_end;
+            tick_sampling = !recipients.is_empty();
         }
         if let Some(watchdog) = &watchdog {
             watchdog.running.store(false, Ordering::Relaxed);
@@ -2578,6 +2628,22 @@ mod tests {
         process::{Command, Stdio},
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    /// `TpsDebugDimensions` order from controlled inputs: the full tick is passed through
+    /// (never clamped to the method), the scheduled tasks are the wait minus its idle time.
+    #[test]
+    fn a_tick_time_sample_holds_full_method_scheduled_and_idle() {
+        use std::time::Duration as D;
+        let ms = |n| D::from_millis(n);
+        assert_eq!(
+            super::tick_time_sample(ms(50), ms(12), ms(35), ms(30)),
+            [50_000_000, 12_000_000, 5_000_000, 30_000_000]
+        );
+        assert_eq!(
+            super::tick_time_sample(ms(40), ms(45), ms(0), ms(0)),
+            [40_000_000, 45_000_000, 0, 0]
+        );
+    }
 
     /// A console line runs in the world spawn's level whichever level a server tick left in place.
     #[test]

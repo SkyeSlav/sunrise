@@ -1461,6 +1461,11 @@ impl ParticleEngine {
         self.rects.push(self.atlas.get(name).map(|&(rect, _)| rect));
         (self.names.len() - 1) as u32
     }
+    /// The particles added since the engine's last tick ended (`ParticleEngine.particlesToAdd`):
+    /// in the engine from the end of its next tick.
+    pub fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
     pub fn len(&self) -> usize {
         self.particles.len() + self.groups.iter().map(|g| g.particles.len()).sum::<usize>()
     }

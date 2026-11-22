@@ -4,8 +4,9 @@ pub trait Hooks {
     /// Whether block `block`'s block entity ticks on the client
     /// (`EntityBlock.getTicker` asked with the client level): set `ticks` when
     /// it is yours, and `block_entity_client_tick` runs for it once per
-    /// client tick. Asked once for each mod block, for all of its states,
-    /// the first time a client level ticks with a part that has a client tick.
+    /// client tick. Asked once for each mod block, for all of its states, when the client level
+    /// initializes its ticker table (before the first column's block entities or the first ticker
+    /// pass), if a part has a client tick.
     /// Set `ticks` to true to make it tick, and never clear a value an earlier mod or mixin set.
     #[hook(
         target = "sunrise_client::game::native_hooks::block_entity_client_tick::Game<'_>::native_block_entity_client_ticks",

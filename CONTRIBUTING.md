@@ -207,7 +207,7 @@ claimed whole: claim one of the issues a tracker lists, or open one for the part
 A claim with no open pull request linking the issue (`Fixes #123` in the description, or a draft) is released after
 5 days, with a comment: open a draft early. Agents claim the same way.
 
-You can hold at most 5 claimed issues that no open pull request of yours links. A sixth `/claim` is refused with a
+You can hold at most 10 claimed issues that no open pull request of yours links. An eleventh `/claim` is refused with a
 comment that gives the count; opening a pull request for one of them, or `/unclaim` on one, frees a slot. The
 repository's collaborators, and the trusted contributors listed in the repository variable `CLAIM_LIMIT_EXEMPT`, are
 not limited.

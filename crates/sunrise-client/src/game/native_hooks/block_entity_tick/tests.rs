@@ -434,7 +434,7 @@ fn check_edit_then_replace(commit: bool, observer: Option<ModEntry>) {
                 })
                 .unwrap();
             let host = scope.host();
-            assert_eq!(player.give_stack(host, stack), Ok(None));
+            player.set_inventory_slot(host, 0, Some(stack)).unwrap();
             // The child keeps the row it removed; the parent has the earlier snapshot.
             host.transaction(|host, _| {
                 assert_eq!(

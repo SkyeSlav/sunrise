@@ -119,17 +119,39 @@ pub struct ColumnBlocks {
     /// column's top block (`base - 1`); `0` where the column is not loaded.
     pub water_colors: Vec<u32>,
 }
-/// Why `upgrade_block_entity_nbt` or `upgrade_entity_nbt` gave no upgraded value. Depth is counted as the data is
-/// encoded (the root compound at 0): the compound the NBT writer puts around an element of a mixed list is a level
-/// of its own. There is no size refusal.
+/// The vanilla data type of the root compound passed to `Host::upgrade_nbt`.
+// exhaustive: only these vanilla root types are exposed by the standalone upgrader.
+// no wire: selects an in-process data fixer, not a field of the saved data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NbtDataType {
+    /// `References.ITEM_STACK`: one item stack, including its saved components.
+    ItemStack,
+    /// `References.BLOCK_STATE`: one block name and its saved state properties.
+    BlockState,
+    /// `References.BLOCK_ENTITY`: one block entity, including its saved contents.
+    BlockEntity,
+    /// `References.ENTITY`: one entity, not its riding tree.
+    Entity,
+    /// `References.ENTITY_TREE`: an entity and the riders or passengers saved with it.
+    EntityTree,
+}
+
+/// Why `Host::upgrade_nbt` returned no upgraded value. Depth is counted as the data is
+/// encoded (the root compound at 0): the compound the NBT writer puts around an element
+/// of a mixed list is a level of its own. There is no size refusal.
 // no wire: returned locally by the NBT upgrade API, not encoded with the NBT.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum NbtUpgradeError {
-    /// The data version is below zero. Refused before any fix runs.
-    NegativeVersion(i32),
     /// The data version is newer than the game's: the fixes only go forward. Refused before any fix runs.
     FutureVersion(i32),
+    /// The chain has no source schema for that data version.
+    UnsupportedVersion(i32),
+    /// The compound lacks the selected type's readable `id` (or `Name` for a block state),
+    /// or the fixers cannot read it. This is not a registry check.
+    MalformedCompound,
+    /// The legacy fixers' tables could not be read from the prepared game resources.
+    LegacyTablesUnavailable,
     /// The data given has a list or compound 512 levels deep or more, the depth cap of every NBT read. Refused
     /// before any fix runs.
     TooDeep,
@@ -141,8 +163,12 @@ pub enum NbtUpgradeError {
 impl std::fmt::Display for NbtUpgradeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NegativeVersion(v) => write!(f, "data version {v} is negative"),
             Self::FutureVersion(v) => write!(f, "data version {v} is newer than the game's"),
+            Self::UnsupportedVersion(v) => write!(f, "no data fixer schema for version {v}"),
+            Self::MalformedCompound => f.write_str("malformed saved compound"),
+            Self::LegacyTablesUnavailable => {
+                f.write_str("could not load the legacy datafix tables")
+            }
             Self::TooDeep => f.write_str("the data nests 512 levels deep or more"),
             Self::UpgradedTooDeep => f.write_str("the upgraded data nests 512 levels deep or more"),
         }

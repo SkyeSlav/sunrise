@@ -191,11 +191,13 @@ server hook told after the chunk's block entities; a client is told of the block
 
 What a running machine does on the client alone (a looping hum, smoke from its chimney, a part eased between
 two server updates) hangs off its client tick, vanilla's client `BlockEntityTicker`. A `BlockEntityPart` opts
-its type in with `block_entity_client_ticks`, asked once for each of its blocks, and is then told
-`block_entity_client_tick` once per client tick for each copy this client holds, while the level runs (not
-paused or frozen), in vanilla's ticker order. A loaded copy ticks whether or not it is drawn: hidden behind a
-wall, out of view or beyond `block_entity_view_distance`, where `block_entity_submit` is not called. It is
-never called on a server, and a type that doesn't opt in costs nothing.
+its type in with `block_entity_client_ticks`, asked once for each of its blocks when the client level
+initializes its ticker table (before the first column's block entities or the first ticker pass). Each copy
+this client holds gets `block_entity_client_tick` once per client tick while the level runs (not paused or
+frozen), in vanilla's ticker order: a chunk's initial tickers join in packet order, and a state change that
+adds a ticker joins it when enabled. A loaded copy ticks whether or not it is drawn: hidden behind a wall,
+out of view or beyond `block_entity_view_distance`, where `block_entity_submit` is not called. It is never
+called on a server, and a type that doesn't opt in costs nothing.
 
 The event carries `event.subject: BlockEntityClientScope<'_>`: call `event.subject.with_view(|view| ...)`
 to read the resident copy's handle, position, level, block state, data slots, item slots and merged NBT

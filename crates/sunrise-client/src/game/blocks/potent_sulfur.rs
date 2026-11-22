@@ -458,26 +458,18 @@ impl Game<'_> {
                             GEYSER_CONTINUOUS_ACTIVE
                         };
                         let at = source.map(|c| f64::from(c) + 0.5);
-                        // playLocalSound: guests play their own.
-                        self.audio.play_unshared(sound, Some(at), 1.0, 1.0);
+                        // playLocalSound: the seed is the level random's next long; a host's
+                        // guests play their own.
+                        let seed = self.particles.level_random().next_long();
+                        if self.remote.is_some() {
+                            self.audio.play_seeded(sound, Some(at), 1.0, 1.0, seed);
+                        } else {
+                            self.audio.play_unshared(sound, Some(at), 1.0, 1.0);
+                        }
                     }
                 }
                 self.launch_local_player_ticker(pos);
             }
-        }
-    }
-
-    /// `ClientLevel.tickBlockEntities` for the potent sulfur of a server's
-    /// level: every one the client knows ticks.
-    pub(super) fn tick_remote_potent_sulfur(&mut self) {
-        let keys: Vec<Pos> = self
-            .world
-            .block_entities
-            .iter()
-            .filter_map(|(k, e)| matches!(e, BlockEntity::PotentSulfur(_)).then_some(*k))
-            .collect();
-        for key in keys {
-            self.client_tick_potent_sulfur(key);
         }
     }
 

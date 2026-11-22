@@ -726,6 +726,7 @@ mod tests {
             pose: [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
             polygons: Vec::new(),
             children,
+            layer: None,
         }
     }
     fn pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {

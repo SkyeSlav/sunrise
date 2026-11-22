@@ -16,6 +16,7 @@ use crate::{
 use std::{
     collections::{BinaryHeap, HashSet, VecDeque},
     sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, TryLockError, atomic::Ordering},
+    time::{Duration, Instant},
 };
 use sunrise_core::biome::BiomeZoom;
 use sunrise_threads::jobs::{Class, PerWorker, Rank, Registration, Source};
@@ -456,15 +457,25 @@ impl Mailbox {
     fn try_recv(&self) -> Option<Done> {
         self.try_lock()?.pop_front()
     }
-    fn wait(&self, timeout: std::time::Duration) -> MutexGuard<'_, VecDeque<Done>> {
+    fn wait(
+        &self,
+        timeout: Duration,
+        mut now: impl FnMut() -> Instant,
+    ) -> (MutexGuard<'_, VecDeque<Done>>, Duration) {
         let done = self.done.lock().unwrap();
-        self.arrived
+        if !done.is_empty() || timeout.is_zero() {
+            return (done, Duration::ZERO);
+        }
+        // With the queue locked and empty, time only the condition-variable wait.
+        let start = now();
+        let (done, _) = self
+            .arrived
             .wait_timeout_while(done, timeout, |done| done.is_empty())
-            .unwrap()
-            .0
+            .unwrap();
+        (done, now() - start)
     }
-    fn recv_timeout(&self, timeout: std::time::Duration) -> Option<Done> {
-        self.wait(timeout).pop_front()
+    fn recv_timeout(&self, timeout: Duration) -> Option<Done> {
+        self.wait(timeout, Instant::now).0.pop_front()
     }
 }
 /// [`Streaming::proto_census`].
@@ -3223,9 +3234,9 @@ impl Streaming {
         counts
     }
     /// Wait up to `timeout` for a worker to finish a job, leaving the result
-    /// queued for the next update or synchronous save.
-    pub fn wait(&mut self, timeout: std::time::Duration) {
-        drop(self.shared.done.wait(timeout));
+    /// queued. Return time parked on the worker mailbox, zero if work was ready.
+    pub fn wait(&mut self, timeout: Duration) -> Duration {
+        self.shared.done.wait(timeout, Instant::now).1
     }
 }
 /// `ChunkTrackingView.isInViewDistance`: whether the column (x, z) is drawn
@@ -4293,6 +4304,25 @@ mod tests {
         assert!(world.chunks.is_ticking_ready((4, 4)));
         Arc::make_mut(world.chunks.get_mut(&(4, 4)).unwrap()).lit = false;
         assert!(!world.chunks.is_ticking_ready((4, 4)));
+    }
+
+    #[test]
+    fn waiting_for_a_chunk_worker_counts_only_the_park() {
+        let mailbox = Mailbox::default();
+        mailbox.send(Done::Saved(Vec::new()));
+        let (mut done, idle) = mailbox.wait(Duration::from_secs(1), || {
+            panic!("a queued result does not park")
+        });
+        assert_eq!(idle, Duration::ZERO);
+        assert!(matches!(done.pop_front(), Some(Done::Saved(_))));
+        drop(done);
+
+        let start = Instant::now();
+        let mut times = [start, start + Duration::from_millis(7)].into_iter();
+        let (done, idle) = mailbox.wait(Duration::from_nanos(1), || times.next().unwrap());
+        assert!(done.is_empty());
+        assert_eq!(idle, Duration::from_millis(7));
+        assert!(times.next().is_none());
     }
 
     #[test]

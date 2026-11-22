@@ -221,6 +221,7 @@ pub struct Renderer {
     pub(crate) static_entity_indices: wgpu::Buffer,
     pub(crate) static_entity_index_quads: u32,
     pub(crate) entity_batch: EntityBatch,
+    pub(crate) entity_order: entity_skin::OrdinaryOrder,
     /// Ordinary entity models posed on the GPU; `None` without compute shaders.
     pub(crate) entity_skin: Option<entity_skin::EntitySkin>,
     pub(crate) group: wgpu::BindGroup,

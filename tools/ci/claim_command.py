@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Anyone claims an issue before working on it (CONTRIBUTING.md "Claim before you start").
 
-    claim_command.py command               one comment (claim-command.yml): assigns or unassigns, answers in the thread
+    claim_command.py command               one comment (fork-claim.yml): assigns or unassigns, answers in the thread
     claim_command.py release [--dry-run]   the daily run: releases the claims older than 5 days with no open pull request
 
 A comment on an issue, on its first line:
@@ -19,8 +19,8 @@ answer: a pull request (claim the issue it fixes), a closed or locked issue, an 
 open pull request by someone else already closes (`Fixes`, `Closes` or `Resolves #N`, or the sidebar's link).
 A success answers with a 👍 on the comment; the assignment shows in the thread, and the issue's `help wanted` label
 becomes `claimed` (and back when its last holder unclaims).
-A contributor holds at most 5 claimed issues without an open pull request of theirs that links one: a `/claim`
-past that is refused with the count (owner, 2026-11-10). Claims already over the limit stay. The repository's owner,
+A contributor holds at most 10 claimed issues without an open pull request of theirs that links one: a `/claim`
+past that is refused with the count (owner, 2026-11-10; 10 since 2026-11-22). Claims already over the limit stay. The repository's owner,
 members and collaborators (the comment's author association), the trusted reviewers and the logins in the repository
 variable `CLAIM_LIMIT_EXEMPT` (comma-separated) are not limited.
 A claim made here is released after 5 days unless an open pull request links the issue (`Fixes #N`, a mention, or the
@@ -52,7 +52,7 @@ KIRA_LABEL = "in progress"
 # Issues nobody claims whole (ari, 2026-11-02): a tracker lists other issues, a proposal waits for a decision.
 UNCLAIMABLE = ("tracker", "proposal", "not claimable")
 # Claimed issues a contributor may hold with no open pull request of theirs linking them (owner, 2026-11-10).
-LIMIT = 5
+LIMIT = 10
 # Author associations GitHub gives the repository's own people: they are not limited.
 STAFF = ("OWNER", "MEMBER", "COLLABORATOR")
 

@@ -43,8 +43,11 @@ fn read(entries: &Compound) -> i32 {
 }
 fn run(job: &ChunkDiskJob) -> Result<Compound, ChunkDiskFailure> {
     let reader = TestReader::default();
-    job.run(&OwningWorldgen::new(&reader, &|_, _, _| None))
-        .clone()
+    job.run(
+        &OwningWorldgen::new(&reader, &|_, _, _| None),
+        |_, _, nbt| Ok(nbt),
+    )
+    .clone()
 }
 struct Listener {
     calls: Arc<AtomicUsize>,
@@ -87,7 +90,8 @@ fn host_borrows_the_captured_context() {
     let captured = context(ChunkDiskPhase::Save);
     let reader = TestReader::default();
     let resources = OwningWorldgen::new(&reader, &|_, _, _| None);
-    let host: &dyn ChunkDiskHost = &OwningChunkDisk::new(&captured, &resources);
+    let host: &dyn ChunkDiskHost =
+        &OwningChunkDisk::new(&captured, &resources, |_, _, nbt| Ok(nbt));
     assert!(std::ptr::eq(host.job(), &captured));
 }
 

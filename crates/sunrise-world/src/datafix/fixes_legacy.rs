@@ -150,7 +150,7 @@ fn item_ids(cx: &mut Cx) {
         let new = match s.get("id") {
             Some(Tag::String(id)) => namespaced(&id.to_string_lossy()),
             Some(other) => match as_number(other) {
-                Some(n) => lookup_int(t::tables().item_ids, n.int_value())
+                Some(n) => lookup_int(t::item_ids(), n.int_value())
                     .unwrap_or("minecraft:air")
                     .to_owned(),
                 None => return,
@@ -174,7 +174,7 @@ fn item_potions(cx: &mut Cx) {
                 && !matches!(tag.get("Potion"), Some(Tag::String(_)))
             {
                 let potion =
-                    lookup_int(t::tables().item_potions, damage & 127).unwrap_or("minecraft:water");
+                    lookup_int(t::item_potions(), damage & 127).unwrap_or("minecraft:water");
                 set(tag, "Potion", string(potion));
                 if damage & 16384 == 16384 {
                     set(s, "id", string("minecraft:splash_potion"));
@@ -196,7 +196,7 @@ fn spawn_egg_entities(cx: &mut Cx) {
         |id| id == "minecraft:spawn_egg",
         |s| {
             let damage = i32::from(as_short(s.get("Damage"), 0));
-            if let Some(entity) = lookup_int(t::tables().spawn_egg_entities, damage & 0xFF) {
+            if let Some(entity) = lookup_int(t::spawn_egg_entities(), damage & 0xFF) {
                 // The entity tree is typed only if its id is one of the schema's.
                 let typed = s
                     .get("tag")
@@ -612,7 +612,7 @@ fn block_entity_ids(cx: &mut Cx) {
     cx.each(Ty::ItemStack, |s| items::add_names_at(s, k));
     cx.each(Ty::BlockEntity, |be| {
         if let Some(id) = as_str(be.get("id"))
-            && let Some(new) = lookup_str(t::tables().block_entity_ids, &id)
+            && let Some(new) = lookup_str(t::block_entity_ids(), &id)
         {
             set(be, "id", string(new));
         }
@@ -625,7 +625,7 @@ fn entity_ids(cx: &mut Cx) {
     cx.each(Ty::ItemStack, |s| items::add_names_at(s, k));
     cx.each(Ty::Entity, |e| {
         if let Some(id) = as_str(e.get("id"))
-            && let Some(new) = lookup_str(t::tables().entity_ids, &id)
+            && let Some(new) = lookup_str(t::entity_ids(), &id)
         {
             set(e, "id", string(new));
         }

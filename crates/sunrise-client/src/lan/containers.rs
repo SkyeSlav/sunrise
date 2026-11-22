@@ -86,6 +86,32 @@ impl PreparedClick {
 }
 
 impl Hub {
+    /// `RemoteSampleLogger.useSample`: a tick-time sample to every player who asked for
+    /// `dedicated_server_tick_time` (registry id 0) and passes
+    /// `ServerDebugSubscribers.hasRequiredPermissions` (`PlayerList.isOp`, any level).
+    pub fn tick_time_subscribers(&self) -> Vec<u32> {
+        self.guests
+            .iter()
+            .filter(|g| {
+                g.participates_online()
+                    && g.joined()
+                    && !g.disconnect_pending
+                    && g.debug_subscriptions.contains(&0)
+                    && self.ops.contains_key(&g.uuid)
+                    && g.sender.is_live()
+            })
+            .map(|g| g.conn)
+            .collect()
+    }
+
+    /// One packet to each snapshotted connection, encoded once.
+    pub fn send_to_each(&self, conns: &[u32], packet: &C) {
+        let body = packet.encode();
+        for g in conns.iter().filter_map(|c| self.guest(*c)) {
+            g.sender.send(body.clone());
+        }
+    }
+
     pub fn send_to(&self, conn: u32, packet: &C) {
         if let Some(g) = self.guest(conn) {
             if let C::RemoveEntities(p) = packet {

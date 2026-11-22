@@ -1,4 +1,3 @@
-#![cfg(test)]
 //! `animate_tick`: a pick of `ClientLevel.animateTick`'s sampling whose block has a part
 //! answering it calls that part inside the pick (after the block's own effects, before its
 //! fluid's, the next pick and the rain), with the level's random itself: the part's draws and

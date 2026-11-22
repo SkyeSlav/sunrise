@@ -55,27 +55,25 @@ At most `MAX_TERRAIN_COLUMNS` (4,096) columns are accepted per call. Use the hoo
 
 Mods only receive `TerrainColumn`; it is non-exhaustive and constructed by the game.
 
-#### Upgrading saved block entities and entities
+#### Upgrading one saved compound
 
-Data a mod reads from an older source (a schematic, a structure file, an old world's region) carries the
-`DataVersion` it was saved at. `host.upgrade_block_entity_nbt(data_version, nbt)` and
-`host.upgrade_entity_nbt(data_version, nbt)` run the game's own datafixes on one such value, the ones the chunk
-loader runs on a block entity of a chunk of that version and the entity chunk loader on an entity (its passengers
-included), up to the game's `DataVersion`. Both are server-side and pure: they read nothing from the level and change
-nothing in it.
+When a mod imports a schematic, quest book or other saved data, pass the compound and the
+`DataVersion` of its source to `host.upgrade_nbt(kind, data_version, nbt)`. This runs the game's
+own data fixers through the current data version. The method is available on both sides and
+needs no world. It does not stamp a `DataVersion` or run fixes for an enclosing chunk or file.
 
-- Data at exactly the game's version comes back unchanged, and so does a block entity whose `id` its version
-  doesn't know (as a chunk keeps one) and data the fixes can't read. Version 0 is a valid source.
-- The fixes that need a whole chunk don't run: those that look at the blocks around a block entity, and the one that
-  removes bed block entities.
-- `Err` is an `NbtUpgradeError`. Depth counts as the data is encoded: the root
-  compound is at 0, and the compound the NBT writer puts around each element of a mixed list is a level of its
-  own, so that element sits two levels below its list.
-  - Refused before any fix runs, on the data you gave: `NegativeVersion`; `FutureVersion`, a version newer than the
-    game's (the fixes only go forward); `TooDeep`, a list or compound 512 levels deep or more, the depth cap of
-    every NBT read.
-  - Refused after the fixes, on the upgraded data: `UpgradedTooDeep`. The data you gave was within the cap, but a
-    fix made it deeper (1.9's `Riding` to `Passengers` doubles a chain's depth) past what any NBT read, the game's
-    own included, could take back. Nothing is returned, so split or trim the data at its source.
-- There is no size limit and no node cap, as saved data has none: nothing a world the game accepts could carry is
-  refused for its size.
+Choose an `NbtDataType` for what the compound represents: `ItemStack`, `BlockState`,
+`BlockEntity`, `Entity` or `EntityTree`. For example, an importer can upgrade a saved stack
+with `host.upgrade_nbt(NbtDataType::ItemStack, source_version, stack_nbt)?` before decoding it
+with `ItemStack::from_nbt`. For entities, choose `EntityTree` if the root's riders or
+passengers should also be upgraded; `Entity` does not fix the root's riding tree. Vanilla's
+standalone entity and block-entity fixers can retain old root keys alongside the upgraded fields.
+
+Unknown mod IDs are preserved, though generic format changes like the item-stack count and
+components still apply. A well-formed compound from the current game version is unchanged.
+
+`NbtUpgradeError` distinguishes a future source version, a version without a source schema,
+a malformed compound (for example, one missing its `id`, called `Name` on block states before
+DataVersion 5006), and legacy tables that a fix needed but could not read. `TooDeep` and `UpgradedTooDeep` distinguish
+input and output past vanilla's NBT read depth. This counts the root at level zero and includes
+wrapper compounds when a mixed list is encoded. The upgrade has no size or node cap.

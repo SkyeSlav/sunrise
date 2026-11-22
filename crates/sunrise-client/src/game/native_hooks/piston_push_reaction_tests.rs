@@ -1,4 +1,3 @@
-#![cfg(test)]
 use crate::game::{
     execution_role::ExecutionRole,
     native_entity_refs::tests::{run_fresh_cases, with_game_role},
