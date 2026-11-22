@@ -90,7 +90,8 @@ def version_meta(version):
         return json.loads(path.read_text())
     except (OSError, ValueError):
         # Missing, or unreadable from an older run's cut-short write: fetched again.
-        manifest = json.load(urllib.request.urlopen(MANIFEST))
+        manifest_path = os.environ.get('SUNRISE_DATAFIX_MANIFEST')
+        manifest = json.loads(Path(manifest_path).read_text()) if manifest_path else json.load(urllib.request.urlopen(MANIFEST))
         entry = next(v for v in manifest['versions'] if v['id'] == version)
         fetch(path, entry['url'], entry['sha1'], f'{version}: version metadata')
         return json.loads(path.read_text())

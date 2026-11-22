@@ -191,6 +191,18 @@ jobs:
           cargo build --release -p sunrise-core --example biome_zoom_fixture
           cargo build --release -p sunrise-world --bin sunrise-world --example world_probe
           cargo build --release -p sunrise-world --example world_probe
+      # Keep complete legacy datafix seed inputs in $DYNA_CI_KEEP/datafix-seeds/<key> so each share
+      # copies immutable inputs instead of regenerating 41 legacy servers inside the 40-minute harness cap.
+      # Without DYNA_CI_KEEP, the harness generates into its private root as before.
+      - name: Prepare datafix seed worlds from keep
+        run: |
+          [ -n "${DYNA_CI_KEEP:-}" ] || exit 0
+          plan="$RUNNER_TEMP/plan/bucket-${BUCKET:-0}.json"
+          if [ -f "$plan" ] && ! grep -Eq '"datafix(#|")' "$plan"; then
+            exit 0
+          fi
+          export SUNRISE_DATAFIX_SEED_KEEP="$DYNA_CI_KEEP/datafix-seeds"
+          python3 tools/datafix_seeds.py > "$PARITY_LOG_DIR/datafix-seeds.log" 2>&1
       - name: Run every automatic harness
         env:
           PARITY_HOSTS: ''
@@ -206,7 +218,10 @@ jobs:
           fi
           # The repository's keep on this CI host outlives the slot: oracle runs on byte-identical inputs replay
           # from it (tools/parity_shim.py). Without it every oracle runs, as before.
-          if [ -n "${DYNA_CI_KEEP:-}" ]; then export PARITY_ORACLE_KEEP="$DYNA_CI_KEEP/oracles"; fi
+          if [ -n "${DYNA_CI_KEEP:-}" ]; then
+            export PARITY_ORACLE_KEEP="$DYNA_CI_KEEP/oracles"
+            export SUNRISE_DATAFIX_SEED_KEEP="$DYNA_CI_KEEP/datafix-seeds"
+          fi
           status=0
           python3 tools/parity.py "${args[@]}" --selection-file "$PARITY_LOG_DIR/selection.json" \
             > "$log" 2>&1 || status=$?
