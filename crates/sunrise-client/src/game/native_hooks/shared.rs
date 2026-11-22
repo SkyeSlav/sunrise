@@ -4231,37 +4231,43 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn no_stack_is_hovered_without_a_window() {
-        use super::super::{Audio, Game, Options, Progress, Settings, load_resources};
+        crate::game::in_own_process(
+            "game::native_hooks::tests::no_stack_is_hovered_without_a_window",
+            || {
+                use super::super::{Audio, Game, Options, Progress, Settings, load_resources};
 
-        let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
-        let settings = Settings::default();
-        let loaded = load_resources(
-            sunrise_assets::resource_source::ResourceRoot::directory(root.clone()),
-            Vec::new(),
-            None,
-            &root,
-            &settings,
-            std::time::Instant::now(),
-            false,
-            crate::game::execution_role::ExecutionRole::IntegratedServer,
-            &Progress::new(),
-            &mut |_, _| unreachable!("no menu handoff"),
-        )
-        .unwrap();
-        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
-        options.resources = root.clone();
-        let game = Game::new(
-            &loaded.resources,
-            loaded.pack,
-            loaded.gui.unwrap(),
-            options,
-            settings,
-            Audio::silent(&sunrise_assets::resource_source::ResourceSource::directory(
-                root.to_path_buf(),
-            )),
-            None,
-        )
-        .unwrap();
-        assert_eq!(game.screen_hovered_stack(), None);
+                let root =
+                    std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
+                let settings = Settings::default();
+                let loaded = load_resources(
+                    sunrise_assets::resource_source::ResourceRoot::directory(root.clone()),
+                    Vec::new(),
+                    None,
+                    &root,
+                    &settings,
+                    std::time::Instant::now(),
+                    false,
+                    crate::game::execution_role::ExecutionRole::IntegratedServer,
+                    &Progress::new(),
+                    &mut |_, _| unreachable!("no menu handoff"),
+                )
+                .unwrap();
+                let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+                options.resources = root.clone();
+                let game = Game::new(
+                    &loaded.resources,
+                    loaded.pack,
+                    loaded.gui.unwrap(),
+                    options,
+                    settings,
+                    Audio::silent(&sunrise_assets::resource_source::ResourceSource::directory(
+                        root.to_path_buf(),
+                    )),
+                    None,
+                )
+                .unwrap();
+                assert_eq!(game.screen_hovered_stack(), None);
+            },
+        );
     }
 }
