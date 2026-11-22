@@ -1058,26 +1058,24 @@ impl Game<'_> {
             });
         }
     }
+    /// `ChatScreen.removed` after another screen interrupted chat.
+    pub(super) fn remove_interrupted_chat_screen(&mut self) {
+        if self.screen == Screen::Chat {
+            return;
+        }
+        if let Some(chat) = self.ui.chat_screen.take() {
+            self.keep_chat_draft(chat.value(), ChatExit::Interrupted);
+            self.ui.chat_draft_shown = false;
+            self.ui.chat.reset_scroll();
+        }
+        self.ui.in_bed_chat = false;
+    }
+
     /// `Gui.tick`: a sleeper gets `InBedChatScreen`; when the player has
     /// woken (`onPlayerWokeUp`) it closes, or turns into the plain chat
     /// screen if something was typed.
     pub(super) fn tick_in_bed_chat(&mut self) {
-        // Another screen took over the open chat (death, a container the
-        // server opened): `ChatScreen.removed` runs with the INTERRUPTED reason.
-        if self.screen != Screen::Chat && self.ui.chat_screen.is_some() {
-            let text = self
-                .ui
-                .chat_screen
-                .as_ref()
-                .map_or_else(String::new, |s| s.value().to_owned());
-            self.keep_chat_draft(&text, ChatExit::Interrupted);
-            self.ui.chat_draft_shown = false;
-            self.ui.chat_screen = None;
-            self.ui.chat.reset_scroll();
-        }
-        if self.screen != Screen::Chat {
-            self.ui.in_bed_chat = false;
-        }
+        self.remove_interrupted_chat_screen();
         if self.ui.in_bed_chat {
             if self.sleeping.is_none() {
                 self.ui.in_bed_chat = false;

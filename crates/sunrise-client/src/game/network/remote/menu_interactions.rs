@@ -628,6 +628,52 @@ impl Game<'_> {
         }
         self.send(S::ContainerClose(play::ContainerClose { container }));
     }
+    /// `Gui.setScreen(null)` after the server closes the container. Remove
+    /// the screen without invoking its user-facing `onClose` action.
+    pub(super) fn close_screen_to_level(&mut self) -> Result<()> {
+        self.reset_inventory_clicks();
+        let (has_level, show_death_screen) = self
+            .remote
+            .as_ref()
+            .map_or((false, false), |r| (r.has_level(), r.show_death_screen));
+        let dead = self
+            .player
+            .as_ref()
+            .is_some_and(|player| player.health.health() <= 0.0);
+        let screen = if has_level && dead && show_death_screen {
+            Screen::Dead
+        } else {
+            Screen::Playing
+        };
+        self.set_screen_replacing_overlay(screen, |game| {
+            game.close_dialogs();
+            game.book = None;
+            game.sign_edit = None;
+            game.link_prompt = None;
+            game.command_prompt = None;
+            game.code_of_conduct = None;
+            game.server_packs.prompt = None;
+            game.pause_focus = None;
+            if screen == Screen::Dead && game.screen != Screen::Dead {
+                game.ui.death_time = 0;
+                game.ui.death_confirm = None;
+            }
+        });
+        if !has_level {
+            let title = self
+                .new_title(std::env::current_dir()?.join("saves"))
+                .with_user(|| self.options.player_name());
+            self.show_title(title);
+        } else if dead && screen == Screen::Playing {
+            self.respawn_player()?;
+        }
+        self.remove_interrupted_chat_screen();
+        self.capture(
+            self.screen == Screen::Playing && self.title.is_none() && !self.screen_over_playing(),
+        );
+        Ok(())
+    }
+
     pub(in crate::game) fn remote_close_local(&mut self) {
         // `Gui.setScreen` clears the focus of the screen it takes down: the
         // container's keyboard focus must not outlive it (a Tab bound to the

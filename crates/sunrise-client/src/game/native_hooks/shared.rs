@@ -167,6 +167,25 @@ impl Game<'_> {
     /// before it applies: what a screen's own `onClose` does only when it really
     /// closes (a container screen's close packet).
     pub(super) fn set_screen_with(&mut self, screen: Screen, before: impl FnOnce(&mut Self)) {
+        self.replace_screen_with(screen, None, before);
+    }
+
+    /// Replace the actual receiver, even if it is an overlay over `Playing`.
+    /// Clear the overlay in `before`, only once the normal hooks allow the change.
+    pub(super) fn set_screen_replacing_overlay(
+        &mut self,
+        screen: Screen,
+        before: impl FnOnce(&mut Self),
+    ) {
+        self.replace_screen_with(screen, self.observed_overlay_now(), before);
+    }
+
+    fn replace_screen_with(
+        &mut self,
+        screen: Screen,
+        overlay: Option<&'static str>,
+        before: impl FnOnce(&mut Self),
+    ) {
         let opening_native =
             screen == Screen::Inventory && self.active_native_screen().is_some_and(|s| !s.shown);
         let new_menu_gen = (screen == Screen::Inventory)
@@ -180,7 +199,7 @@ impl Game<'_> {
                 .as_ref()
                 .and_then(|o| o.menu_generation)
                 != new_menu_gen;
-        if self.screen == screen {
+        if self.screen == screen && overlay.is_none() {
             if opening_native || menu_replaced {
                 self.apply_screen_with_mod_book(screen, None);
             }
@@ -191,8 +210,17 @@ impl Game<'_> {
         if self.screen_hooks_heard() {
             let decision = {
                 let current = self.screen_change_view(self.screen);
+                let overlay_view = overlay.map(|id| screen_view_with_id(&current, id));
                 let new = self.screen_change_view(screen);
-                self.decide_screen(&current, &new, self.screen != Screen::Playing)
+                self.screen_decision_with(
+                    self.screen_change(
+                        overlay_view.as_ref().unwrap_or(&current),
+                        &new,
+                        true,
+                        overlay.is_some() || self.screen != Screen::Playing,
+                    ),
+                    overlay.is_some(),
+                )
             };
             match decision {
                 ScreenDecision::Keep => {
@@ -218,7 +246,7 @@ impl Game<'_> {
                 ScreenDecision::Open => {}
             }
         }
-        if self.screen == screen && owner.is_none() {
+        if self.screen == screen && owner.is_none() && overlay.is_none() {
             return;
         }
         before(self);

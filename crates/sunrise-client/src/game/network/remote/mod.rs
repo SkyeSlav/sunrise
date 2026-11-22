@@ -1308,21 +1308,10 @@ impl Game<'_> {
             C::PlaceGhostRecipe(p) => self.remote_ghost_recipe(p),
             C::MerchantOffers(p) => self.remote_merchant_offers(p),
             C::ContainerClose(_) => {
-                // `LocalPlayer.clientSideCloseContainer` sets the screen to
-                // null, including dialogs and WaitingForResponseScreen. This
-                // differs from clearDialog, which restores the parent screen.
-                let dialog = self.dialog_open();
-                if dialog {
-                    self.close_dialogs();
-                    self.ui.chat_screen = None;
-                    self.book = None;
-                    self.sign_edit = None;
-                }
-                if !self.remote_lectern_closed() && (self.screen == Screen::Inventory || dialog) {
-                    self.remote_close_local();
-                    self.set_screen(Screen::Playing);
-                    self.capture(true);
-                }
+                // LocalPlayer.clientSideCloseContainer: restore the inventory
+                // menu before closing the current screen, without an onClose echo.
+                self.remote_close_local();
+                self.close_screen_to_level()?;
             }
             C::TagQuery(p) => self.answer_tag_query(p.transaction, p.tag),
             C::Unknown(id, data)
