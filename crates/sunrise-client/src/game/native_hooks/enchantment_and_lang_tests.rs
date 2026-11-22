@@ -1,21 +1,67 @@
 #[test]
 #[ignore = "daily"]
 fn enchantment_registry_returns_records_and_unknown_cost() {
-    super::super::native_entity_refs::tests::with_game(|game| {
-        let all = game.enchantments();
-        let sharpness = all.iter().find(|e| e.id == "minecraft:sharpness").unwrap();
-        assert_eq!((sharpness.max_level, sharpness.curse), (5, false));
-        let binding = all
-            .iter()
-            .find(|e| e.id == "minecraft:binding_curse")
-            .unwrap();
-        assert!(binding.curse);
-        assert!(
-            game.enchantment_min_cost("minecraft:sharpness", 1)
-                .is_some()
-        );
-        assert_eq!(game.enchantment_min_cost("missing:unknown", 1), None);
-    });
+    crate::game::in_own_process(
+        "game::native_hooks::enchantment_and_lang_tests::enchantment_registry_returns_records_and_unknown_cost",
+        || {
+            super::super::native_entity_refs::tests::with_game(|game| {
+                let all = game.enchantments();
+                let facts = |id| {
+                    let e = all.iter().find(|e| e.id == id).unwrap();
+                    (e.max_level, e.weight, e.anvil_cost, e.curse)
+                };
+                // data/minecraft/enchantment/*.json of 26.3.
+                assert_eq!(facts("minecraft:sharpness"), (5, 10, 1, false));
+                assert_eq!(facts("minecraft:binding_curse"), (1, 1, 8, true));
+                assert_eq!(facts("minecraft:mending"), (1, 2, 4, false));
+                assert!(
+                    game.enchantment_min_cost("minecraft:sharpness", 1)
+                        .is_some()
+                );
+                assert_eq!(game.enchantment_min_cost("missing:unknown", 1), None);
+            });
+        },
+    );
+}
+
+/// On a server, the reads answer from the registry it synced
+/// (`ClientboundRegistryDataPacket`), which holds a data pack's enchantments.
+#[test]
+#[ignore = "daily"]
+fn a_servers_synced_enchantment_reaches_the_registry_reads() {
+    crate::game::in_own_process(
+        "game::native_hooks::enchantment_and_lang_tests::a_servers_synced_enchantment_reaches_the_registry_reads",
+        || {
+            super::super::native_entity_refs::tests::with_client_game(|game| {
+                let (client, _server) = sunrise_protocol::connection::Pipe::pair();
+                game.connect_local(client, "SyncedEnchantment").unwrap();
+                let definition = serde_json::json!({
+                    "description": "Drill", "supported_items": "minecraft:diamond_pickaxe",
+                    "weight": 7, "max_level": 3, "min_cost": {"base": 4, "per_level_above_first": 0},
+                    "max_cost": {"base": 9, "per_level_above_first": 0}, "anvil_cost": 6,
+                    "slots": ["mainhand"], "effects": {}
+                });
+                let synced = game
+                    .stations()
+                    .enchantments
+                    .with_entries([("fixture:drill", &definition)])
+                    .unwrap()
+                    .unwrap();
+                game.remote.as_mut().unwrap().enchantments = Some(std::sync::Arc::new(synced));
+
+                let drill = game
+                    .enchantments()
+                    .into_iter()
+                    .find(|e| e.id == "fixture:drill")
+                    .expect("the synced enchantment is listed");
+                assert_eq!(
+                    (drill.max_level, drill.weight, drill.anvil_cost, drill.curse),
+                    (3, 7, 6, false)
+                );
+                assert_eq!(game.enchantment_min_cost("fixture:drill", 1), Some(4));
+            });
+        },
+    );
 }
 
 #[test]

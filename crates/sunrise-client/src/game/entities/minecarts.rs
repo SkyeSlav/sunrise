@@ -186,7 +186,7 @@ pub(super) struct Minecart {
     /// The synched `DATA_ID_COMMAND_NAME` and `DATA_ID_LAST_OUTPUT`, which
     /// follow the command block only at `onUpdated`.
     pub synced_command: String,
-    pub synced_output: String,
+    pub synced_output: Option<sunrise_core::nbt::Tag>,
     /// `AbstractMinecart.customDisplayBlockState` (`DisplayState`): the block
     /// state's NBT form, resolved against the registry where it draws.
     pub custom_display: Option<sunrise_core::nbt::Tag>,
@@ -537,7 +537,7 @@ impl Minecart {
             // A fresh `BaseSpawner`, as `MinecartSpawner`'s constructor makes.
             spawner: (kind == CartKind::Spawner).then(Default::default),
             synced_command: String::new(),
-            synced_output: String::new(),
+            synced_output: None,
             custom_display: None,
             custom_offset: None,
             random: random_source::entity(),
@@ -2468,6 +2468,115 @@ impl Game<'_> {
     /// The seed vanilla picks a block state model's weighted alternatives with outside the
     /// world (`BlockModelResolver.MODEL_SEED`).
     pub(super) const BLOCK_MODEL_SEED: i64 = 42;
+    /// `BlockModelResolver.update` + `BlockModelRenderState.submit`: combines external light
+    /// with the block state's own light component-wise (`emissiveRendering` gives full sky+block
+    /// light `(15, 15)`, otherwise `(0, state.getLightEmission())`).
+    pub(super) fn block_display_light(&self, state: BlockStateId, external_light: u32) -> u32 {
+        let emissive = self.pack.assets.registry.state(state).is_some_and(|st| {
+            let name = st.name.strip_prefix("minecraft:").unwrap_or(&st.name);
+            name == "magma_block"
+                || (matches!(name, "sculk_sensor" | "calibrated_sculk_sensor")
+                    && st.properties.get("sculk_sensor_phase").map(String::as_str)
+                        == Some("active"))
+        });
+        let (block_sky, block_em) = if emissive {
+            (15 * 16, 15 * 16)
+        } else {
+            (0, u32::from(self.res.facts().get(state).emission) * 16)
+        };
+        let sky = (external_light & 0xFF).max(block_sky);
+        let block = ((external_light >> 8) & 0xFF).max(block_em);
+        sky | (block << 8)
+    }
+    /// `BlockModelRenderState` / `BlockDisplayRenderer`: baked block-state faces with back-face
+    /// culling (`SHADED_CULL_W`), one resolved sheet (`translucentBlockItemSheet` if any face is
+    /// translucent, else `cutoutBlockItemSheet`), component-wise light max, JOML vertex transform,
+    /// and reusable slot scratch. Returns whether the model routed to the translucent sheet.
+    pub(super) fn block_display_model_vertices(
+        &self,
+        state: BlockStateId,
+        seed: i64,
+        pose: sunrise_client::camera::joml::Mat4,
+        light: u32,
+        slots: &mut Vec<u32>,
+        out: &mut Vec<Vertex>,
+    ) -> bool {
+        if self
+            .pack
+            .render
+            .model_catalog
+            .slots_seeded(state, seed, slots)
+            .is_err()
+        {
+            return false;
+        }
+        let effective_light = self.block_display_light(state, light);
+        let has_translucency = slots.iter().any(|&slot| {
+            self.pack
+                .render
+                .model_catalog
+                .baked_model(slot)
+                .faces
+                .iter()
+                .any(|face| {
+                    let Some(name) = self.pack.layer_names.get(&face.layer) else {
+                        return false;
+                    };
+                    if !self.gui.atlas.sprites.contains_key(name) {
+                        return false;
+                    }
+                    face.translucent
+                        || self.gui.atlas.translucent.contains(name)
+                        || face.quad.render_type
+                            == Some(sunrise_assets::bake::RenderType::Translucent)
+                })
+        });
+        let layer = if has_translucency {
+            sunrise_client::gfx::TRANSLUCENT_ITEM_OVERLAY
+        } else {
+            0
+        };
+        let tint = self.default_block_tint(state);
+        let mut normals = sunrise_client::item_render::FaceNormals::new(pose.to_glam());
+        for &slot in slots.iter() {
+            let model = self.pack.render.model_catalog.baked_model(slot);
+            for face in &model.faces {
+                let Some(name) = self.pack.layer_names.get(&face.layer) else {
+                    continue;
+                };
+                let Some(sprite) = self.gui.atlas.sprites.get(name) else {
+                    continue;
+                };
+                let quad = PreparedModelFace::new(&face.quad, *sprite);
+                let mut color = u32::MAX;
+                if let Some(t) = tint(quad.tint_index) {
+                    color = sunrise_client::hud_layout::multiply(
+                        color,
+                        sunrise_client::mobs::render::abgr(t),
+                    );
+                }
+                let n = normals
+                    .face(quad.facing)
+                    .to_array()
+                    .map(|v| (v.clamp(-1.0, 1.0) * 127.0) as i8);
+                let normal = [n[0], n[1], n[2], sunrise_client::mesher::SHADED_CULL_W];
+                let quad_light = (effective_light & 0xFF)
+                    | ((effective_light >> 8) & 0xFF).max(u32::from(quad.light_emission) * 16) << 8;
+                for k in 0..4 {
+                    out.push(Vertex {
+                        normal,
+                        pos: pose.transform_position(quad.positions[k]),
+                        uv: quad.uv[k],
+                        layer,
+                        color,
+                        light: quad_light,
+                        glint_uv: [0.0, 0.0],
+                    });
+                }
+            }
+        }
+        has_translucency
+    }
     /// Baked block-state faces with default block tints and terrain shade or diffuse lighting.
     pub(super) fn block_model_vertices(
         &self,
@@ -2999,7 +3108,7 @@ impl Minecart {
                 c.synced_command.clone_from(&c.command.command);
                 c.command.set_command(&c.synced_command);
             }
-            c.synced_output = c.command.last_output_string();
+            c.sync_command_output();
         }
         // MinecartSpawner.readAdditionalSaveData: BaseSpawner.load.
         if kind == CartKind::Spawner {

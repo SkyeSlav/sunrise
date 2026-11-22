@@ -433,7 +433,6 @@ impl Game<'_> {
             }
             self.move_pushed_body(
                 lid.mover(),
-                lid.shulker(),
                 target,
                 body,
                 movement,
@@ -474,15 +473,7 @@ impl Game<'_> {
             }
             let no_physics = self.pushed_no_physics(target);
             if !self.lid_spares(lid, root, target, no_physics) {
-                self.move_pushed_body(
-                    lid.mover(),
-                    lid.shulker(),
-                    target,
-                    body,
-                    movement,
-                    no_physics,
-                    &mut None,
-                );
+                self.move_pushed_body(lid.mover(), target, body, movement, no_physics, &mut None);
             }
         }
     }
@@ -603,13 +594,12 @@ impl Game<'_> {
         }
     }
 
-    /// `Entity.move(mover, movement)` for one body: a lid's push (`shulker` is the shulker whose
-    /// lid it is, if one) or a mod's `move_by`. The collision scan stops it at the blocks, the
-    /// world border and the entities it collides with, it steps up and its ground flag follows.
+    /// `Entity.move(mover, movement)` for a lid's push or a mod's `move_by`.
+    /// The collision scan stops the body at the blocks, border and other bodies;
+    /// it steps up and its ground flag follows.
     fn move_pushed_body(
         &mut self,
         mover: MoverType,
-        shulker: Option<u32>,
         target: MoveWho,
         body: Body,
         movement: Vec3,
@@ -622,7 +612,7 @@ impl Game<'_> {
         }
         // Armor stands arm their gate in their own collided shove.
         if let MoveWho::Entity(EntityHandle::ArmorStand(i)) = target {
-            self.shoves_armor_stand(i, mover, shulker, movement, stand_grid);
+            self.shoves_armor_stand(i, mover, movement, stand_grid);
             return;
         }
         let Some(selected) = self.stable_push_target(target) else {
@@ -766,7 +756,7 @@ impl Game<'_> {
                 EntityHandle::ArmorStand(i) => Some(self.armor_stands[i].velocity),
                 _ => None,
             };
-            self.move_pushed_body(cause, None, target, body, movement, false, &mut None);
+            self.move_pushed_body(cause, target, body, movement, false, &mut None);
             if let Some(velocity) = stand
                 && let Some(MoveWho::Entity(EntityHandle::ArmorStand(i))) =
                     self.resolve_push_target(selected)

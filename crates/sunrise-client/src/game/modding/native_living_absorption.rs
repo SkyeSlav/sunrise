@@ -204,18 +204,20 @@ mod tests {
             assert!(mob.set_absorption(game, 2.0));
             let events = game.player.as_ref().unwrap().events.len();
             game.mobs[0].needs_sync = false;
-            let abort = game.transaction_open();
-            assert!(player.set_absorption(game, 9.0));
-            assert!(mob.set_absorption(game, 4.0));
-            game.transaction_close(&abort, false);
+            game.storage_scope(|game, _| {
+                assert!(player.set_absorption(game, 9.0));
+                assert!(mob.set_absorption(game, 4.0));
+                ((), false)
+            });
             assert_eq!(player.absorption(game), Some(5.0));
             assert_eq!(mob.absorption(game), Some(2.0));
             assert_eq!(game.player.as_ref().unwrap().events.len(), events);
             assert!(!game.mobs[0].needs_sync);
-            let commit = game.transaction_open();
-            assert!(player.set_absorption(game, 9.0));
-            assert!(mob.set_absorption(game, 4.0));
-            game.transaction_close(&commit, true);
+            game.storage_scope(|game, _| {
+                assert!(player.set_absorption(game, 9.0));
+                assert!(mob.set_absorption(game, 4.0));
+                ((), true)
+            });
             assert_eq!(player.absorption(game), Some(9.0));
             assert_eq!(mob.absorption(game), Some(4.0));
             assert!(game.mobs[0].needs_sync);

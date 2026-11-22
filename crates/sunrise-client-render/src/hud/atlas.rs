@@ -1,5 +1,26 @@
 use super::*;
 
+/// Border padding policy recorded for a packed sprite at atlas build time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AtlasBorder {
+    /// No border padding allocated around the sprite; uploads must stay inside `(x, y, w, h)`.
+    None,
+    /// 1-texel clamp-to-edge padding (`TextureAtlas` / `SpriteContents.AnimationState.drawToAtlas`).
+    Clamp,
+    /// 1-texel wrap-edge padding for repeating blurred sprites.
+    Wrap,
+}
+
+/// Exact integer placement and border policy of an animated sprite inside `HudAtlas`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AnimatedPlacement {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+    pub border: AtlasBorder,
+}
+
 pub struct HudAtlas {
     pub(super) pictures: std::sync::Mutex<pictures::Cache>,
     /// Identity of this packed atlas, used to invalidate cached model UV data
@@ -42,6 +63,8 @@ pub struct HudAtlas {
     /// and the mcmeta-driven frame list, re-uploaded into the rect as the
     /// frames turn (vanilla's stitched atlas animates all of these).
     pub sprite_animations: Vec<(Rect, crate::sprites::SpriteAnimation)>,
+    /// Exact integer placement and border policy for each entry in `sprite_animations`.
+    pub sprite_animation_placements: Vec<AnimatedPlacement>,
     /// The default font (bitmap sheets in this atlas, unifont rasterized on demand).
     pub font: crate::font::Font,
     /// `misc/enchanted_glint_item` as its own image: vanilla's `GlintSampler`
@@ -127,6 +150,24 @@ pub(super) const REGISTERED_KEY: &str = "#registered:";
 /// `MissingTextureAtlasSprite`: what a sprite the atlas lacks draws as.
 pub const MISSING_SPRITE: &str = "sunrise/missing";
 
+/// `SpecialGlyphs.MISSING`: 5x8 opaque white border around a transparent interior.
+pub(super) const MISSING_GLYPH_SPRITE: &str = "sunrise/missing_glyph";
+
+pub(super) fn missing_glyph_rgba() -> Vec<u8> {
+    let mut rgba = Vec::with_capacity(5 * 8 * 4);
+    for y in 0..8u32 {
+        for x in 0..5u32 {
+            let edge = x == 0 || x == 4 || y == 0 || y == 7;
+            rgba.extend_from_slice(if edge {
+                &[255, 255, 255, 255]
+            } else {
+                &[0, 0, 0, 0]
+            });
+        }
+    }
+    rgba
+}
+
 /// The used width of each Standard Galactic letter (A-Z, a-z) in the
 /// `font/ascii_sga` sheet: one past its last column with a texel that isn't
 /// transparent.
@@ -207,6 +248,20 @@ pub fn dump_atlas(
 }
 
 impl HudAtlas {
+    /// Builds the `HudRenderer::sprite_animations` entries from packed animations and placements.
+    pub fn renderer_animations(
+        &self,
+    ) -> Vec<(
+        AnimatedPlacement,
+        crate::sprites::SpriteAnimation,
+        (usize, usize, u32),
+    )> {
+        self.sprite_animation_placements
+            .iter()
+            .zip(&self.sprite_animations)
+            .map(|(&placement, (_, animation))| (placement, animation.clone(), (usize::MAX, 0, 0)))
+            .collect()
+    }
     /// `TextureAtlas.dumpContents` for this atlas: `dir` is `screenshots/debug`,
     /// the folder `TextureUtil.getDebugTexturePath` names.
     pub fn dump_contents(&self, dir: &Path, name: &str) -> std::io::Result<PathBuf> {
@@ -499,6 +554,7 @@ impl HudAtlas {
             translucent: HashSet::new(),
             flags: HashMap::new(),
             sprite_animations: Vec::new(),
+            sprite_animation_placements: Vec::new(),
             font: crate::font::Font::metrics(root),
             glint: (Vec::new(), 1, 1),
             glint_armor: (Vec::new(), 1, 1),
@@ -527,12 +583,20 @@ impl HudAtlas {
     pub fn boot() -> Self {
         let (width, height) = (1024, 1024);
         let text_rows = 512;
-        let glyph_top = text_rows + 4;
+        let glyph_top = text_rows + 9;
         let mut pixels = vec![0u8; (width * height * 4) as usize];
         // The white sprite the fills and the font's underline pass sample.
         for row in 0..4 {
             let at = ((text_rows + row) * width * 4) as usize;
             pixels[at..at + 16].fill(255);
+        }
+        // `SpecialGlyphs.MISSING` (5x8 outline) at (5, text_rows), leaving a 1-texel
+        // transparent gutter around it before the run-time glyph region at `glyph_top`.
+        let missing_glyph = missing_glyph_rgba();
+        for row in 0..8u32 {
+            let src = (row * 5 * 4) as usize;
+            let dst = (((text_rows + row) * width + 5) * 4) as usize;
+            pixels[dst..dst + 20].copy_from_slice(&missing_glyph[src..src + 20]);
         }
         let rect = |u0: u32, v0: u32, u1: u32, v1: u32, w: u32, h: u32| Rect {
             u0: u0 as f32 / width as f32,
@@ -545,7 +609,11 @@ impl HudAtlas {
         let mut sprites = HashMap::new();
         sprites.insert(
             "sunrise/white".into(),
-            rect(0, text_rows, 4, glyph_top, 4, 4),
+            rect(0, text_rows, 4, text_rows + 4, 4, 4),
+        );
+        sprites.insert(
+            MISSING_GLYPH_SPRITE.into(),
+            rect(5, text_rows, 10, text_rows + 8, 5, 8),
         );
         sprites.insert(
             "sunrise/ui-text".into(),
@@ -579,6 +647,7 @@ impl HudAtlas {
             object_skins: HashMap::new(),
             object_skins_revision: Self::next_revision(),
             sprite_animations: Vec::new(),
+            sprite_animation_placements: Vec::new(),
             glint: (vec![0; 4], 1, 1),
             glint_armor: (vec![0; 4], 1, 1),
             white,

@@ -136,6 +136,9 @@ pub struct Frame<'a> {
     pub distance: f32,
     /// Full-detail terrain distance in blocks; distant LODs bypass the cave graph.
     pub detail_distance: f32,
+    /// Loaded full-detail streaming distance in blocks for shadow caster selection, separate from
+    /// the effective eye distance (`detail_distance`); defaults to `detail_distance` when `None`.
+    pub shadow_distance: Option<f32>,
     /// `Camera.depthFar`: the far plane (`crate::camera::depth_far`).
     pub depth_far: f32,
     pub underwater: bool,

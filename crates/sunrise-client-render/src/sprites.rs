@@ -778,8 +778,8 @@ impl Sprites {
                 Self::decode_file(&self.source, &file, name).ok()
             }
             generated => {
-                let image = crate::atlas_sources::generate(generated, &|texture| {
-                    let file = crate::atlas_sources::texture_resource(texture, "textures");
+                let image = crate::atlas_sources::generate(generated, &|texture, directory| {
+                    let file = crate::atlas_sources::texture_resource(texture, directory);
                     read_rgba(&self.source, &file).ok()
                 })?;
                 Self::decode_image(name, None, image).ok()
@@ -2100,8 +2100,18 @@ mod tests {
         };
         // Two columns of key colours, recoloured to the target palette's two colours.
         write("block/base.png", 2, 1, &[10, 20, 30, 255, 40, 50, 60, 255]);
-        write("trim/key.png", 2, 1, &[10, 20, 30, 255, 40, 50, 60, 255]);
-        write("trim/red.png", 2, 1, &[200, 0, 0, 255, 0, 200, 0, 255]);
+        write(
+            "palettes/trim/key.png",
+            2,
+            1,
+            &[10, 20, 30, 255, 40, 50, 60, 255],
+        );
+        write(
+            "palettes/trim/red.png",
+            2,
+            1,
+            &[200, 0, 0, 255, 0, 200, 0, 255],
+        );
         let atlases = root.join("assets/minecraft/atlases");
         fs::create_dir_all(&atlases).unwrap();
         fs::write(

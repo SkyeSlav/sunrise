@@ -9,7 +9,7 @@ use super::tracking;
 use std::sync::Arc;
 use sunrise_protocol::{
     buf::pack_degrees,
-    entity_data::{Particle, Value, serializer},
+    entity_data::{Value, serializer},
     general_entity,
     item::Stack,
     packets::configuration::CustomPayload,
@@ -34,6 +34,19 @@ pub fn changed_attributes(
         })
         .cloned()
         .collect()
+}
+
+/// `Avatar.defineSynchedData`: pair with only a non-default main arm,
+/// and send the default again when the arm changes back to right.
+pub fn avatar_main_arm_meta(
+    main_hand_left: bool,
+    meta: &mut Vec<(u8, i32, Value)>,
+    defaults: &mut Vec<(u8, i32, Value)>,
+) {
+    if main_hand_left {
+        meta.push((15, serializer::HUMANOID_ARM, Value::Id(0)));
+    }
+    defaults.push((15, serializer::HUMANOID_ARM, Value::Id(1)));
 }
 
 /// What the game says about one entity this tick.
@@ -1157,7 +1170,7 @@ fn names_mod_particle(packet: &play::Clientbound) -> bool {
         return false;
     };
     (data.values.iter()).any(|(_, _, value)| match value {
-        Value::Particles(list) => list.iter().any(Particle::sunrise_only),
+        Value::Particles(list) => list.has_sunrise_only(),
         Value::Particle(p) => p.sunrise_only(),
         _ => false,
     })

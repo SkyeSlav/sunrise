@@ -337,7 +337,7 @@ impl Game<'_> {
             if !self.consume_mapping_click(name) {
                 continue;
             }
-            if self.spectator() {
+            if self.own_player_is_spectator() {
                 self.spectator_hotbar_key(slot as i32);
                 continue;
             }
@@ -360,7 +360,7 @@ impl Game<'_> {
         let range = self
             .held()
             .and_then(|stack| self.attack_range_component(stack));
-        range.is_none_or(|r| attack_range_contains(&r, distance, self.creative))
+        range.is_none_or(|r| attack_range_contains(&r, distance, self.own_player_is_creative()))
     }
     /// `LocalPlayer.raycastHitResult`'s item (`getActiveItem`: the one in
     /// use, else the main hand's) `attack_range` component.
@@ -394,7 +394,7 @@ impl Game<'_> {
     pub(super) fn client_pick_entity_reach(&self, direction: [f64; 3]) -> f64 {
         self.active_attack_range()
             .map_or(self.entity_reach, |range| {
-                (f64::from(attack_reach(&range, self.creative).1)
+                (f64::from(attack_reach(&range, self.own_player_is_creative()).1)
                     + self.known_player_movement().dot(v3(direction)).max(0.0))
                 .max(self.entity_reach)
             })
@@ -411,7 +411,7 @@ impl Game<'_> {
                 v3(super::view_vector(self.yaw, self.pitch)),
             ),
         };
-        let reach = attack_reach(range, self.creative);
+        let reach = attack_reach(range, self.own_player_is_creative());
         let camera = self.remote_camera_id();
         // AttackRange uses getManyEntityHitResult, which does not exclude
         // entities sharing the camera's root vehicle.
@@ -503,7 +503,10 @@ impl Game<'_> {
                     }
                 }
             }
-            while !using && self.spectator() && self.consume_mapping_click("key.spectatorHotbar") {
+            while !using
+                && self.own_player_is_spectator()
+                && self.consume_mapping_click("key.spectatorHotbar")
+            {
                 self.spectator_action_key();
             }
             self.release_tick_targets();
@@ -858,10 +861,9 @@ impl Game<'_> {
             {
                 return None;
             }
-            if self
-                .active_attack_range()
-                .is_some_and(|range| !attack_range_contains(&range, distance, self.creative))
-            {
+            if self.active_attack_range().is_some_and(|range| {
+                !attack_range_contains(&range, distance, self.own_player_is_creative())
+            }) {
                 return None;
             }
             return Some(true);
@@ -882,7 +884,7 @@ impl Game<'_> {
         let spear = range.as_ref().and_then(|r| {
             let eye = self.eye_position()?;
             let look = super::view_vector(self.yaw, self.pitch);
-            let reach = attack_reach(r, self.creative);
+            let reach = attack_reach(r, self.own_player_is_creative());
             let boxes = self.hittable_mob_boxes();
             let clip = |from: Vec3, to: Vec3| {
                 let length = from.distance_squared(to).sqrt();
@@ -907,7 +909,7 @@ impl Game<'_> {
         }
         // Hud.extractCrosshair: with an attack range, the hit must be in it.
         if let Some(range) = &range
-            && !attack_range_contains(range, living, self.creative)
+            && !attack_range_contains(range, living, self.own_player_is_creative())
         {
             return None;
         }
@@ -1129,7 +1131,7 @@ impl HandWorld for GameHands<'_, '_> {
         self.game.res.facts().get(state).name.ends_with("air")
     }
     fn creative(&self) -> bool {
-        self.game.creative
+        !self.game.has_miss_time()
     }
     fn spectator(&self) -> bool {
         self.game.spectator()

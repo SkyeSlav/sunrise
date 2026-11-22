@@ -351,7 +351,7 @@ fn glyphs_of_a_label_refused_for_capacity_still_upload() {
         let atlas = &mut game.gui.atlas;
         atlas.font = sunrise_client::font::Font::load(
             &source,
-            &Default::default(),
+            &atlas.sprites,
             &[],
             (atlas.width, atlas.height),
             (atlas.height / 2, atlas.height / 2),

@@ -52,7 +52,7 @@ impl Game<'_> {
             let Some(living) = self.entity(entity).and_then(|e| self.living(e)) else {
                 return;
             };
-            mod_api::run_transaction(self, |game, _| {
+            self.storage_transaction(|game, _| {
                 let mut cancel = false;
                 game.native_farmland_trample(living, pos, state, distance, &mut cancel);
                 let valid =

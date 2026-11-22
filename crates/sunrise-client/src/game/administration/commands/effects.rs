@@ -180,8 +180,7 @@ impl Game<'_> {
         self.feedback(message);
         Ok(tracker.total)
     }
-    /// `EnchantCommand.enchant` (mobs hold bare item ids, so only the player's
-    /// main hand item can carry the enchantment).
+    /// `EnchantCommand.enchant`. The mob branch only reports errors; it does not apply enchantments.
     pub(super) fn cmd_enchant(&mut self, ctx: &Context) -> R<i32> {
         let Some(Arg::Resource(id)) = ctx.get("enchantment").cloned() else {
             return Ok(0);
@@ -225,30 +224,29 @@ impl Game<'_> {
                         }
                         tracker.track(t, true);
                     } else if single {
-                        // getHoverName().getString(): the custom or item name, no brackets.
+                        // getHoverName().getString(): the resolved name, no brackets.
                         return Err(err(
                             "commands.enchant.failed.incompatible",
-                            &[&stack
-                                .custom_name()
-                                .unwrap_or_else(|| self.pack.names.item(&stack.item).to_string())],
+                            &[&self.stack_hover_name(&stack)],
                         ));
                     }
                 }
                 Target::Mob(mob) => {
-                    let held = self
-                        .mobs
-                        .iter()
-                        .find(|m| m.id == mob)
-                        .and_then(|m| m.extra.main_hand_id().map(str::to_owned));
                     if single {
+                        let held = self
+                            .mobs
+                            .iter()
+                            .find(|m| m.id == mob)
+                            .and_then(|m| m.extra.main_hand_stack());
                         return Err(match held {
                             None => err(
                                 "commands.enchant.failed.itemless",
                                 &[&self.target_name(t).plain()],
                             ),
-                            Some(item) => err(
+                            // getMainHandItem().getHoverName().getString().
+                            Some(stack) => err(
                                 "commands.enchant.failed.incompatible",
-                                &[&self.pack.names.item(&item)],
+                                &[&self.stack_hover_name(stack)],
                             ),
                         });
                     }

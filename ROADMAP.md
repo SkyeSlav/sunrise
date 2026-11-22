@@ -718,7 +718,7 @@ A native Sunrise for Windows on ARM computers, such as Snapdragon laptops.
 
 <details><summary>Technical</summary>
 
-Releases are x64 for Windows and Linux and arm64 for macOS. Needs an aarch64-pc-windows-msvc build in the release workflow and a machine to test on.
+Releases are x64 for Windows and Linux and arm64 for macOS, the SDK's three platforms. Windows ARM64 returns only with its own SDK ([https://github.com/sunrise-org/sunrise/issues/4556](https://github.com/sunrise-org/sunrise/issues/4556)): a game build, the SDK's slices and a machine to test on.
 
 More: [docs/release-flow.md](docs/release-flow.md)
 
@@ -742,7 +742,7 @@ Builds of the game and the launcher for Macs with an Intel processor.
 
 <details><summary>Technical</summary>
 
-x86_64 game and launcher builds, picked per processor ([#1171](https://github.com/horizon-rust/horizon/issues/1171)). Before it ships it needs a run on a real Intel Mac: Rosetta on Apple Silicon only proves the CPU code. Requests: [#1161](https://github.com/horizon-rust/horizon/issues/1161), [#1792](https://github.com/horizon-rust/horizon/issues/1792).
+x86_64 game builds return only with their own SDK ([https://github.com/sunrise-org/sunrise/issues/4556](https://github.com/sunrise-org/sunrise/issues/4556)), and need a run on a real Intel Mac: Rosetta on Apple Silicon only proves the CPU code. Requests: [#1161](https://github.com/horizon-rust/horizon/issues/1161), [#1792](https://github.com/horizon-rust/horizon/issues/1792).
 
 </details>
 

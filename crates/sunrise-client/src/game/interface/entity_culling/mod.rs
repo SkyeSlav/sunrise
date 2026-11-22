@@ -184,13 +184,35 @@ impl Game<'_> {
     }
 }
 
+/// `Options.getEffectiveRenderDistance`: client setting capped by positive server view distance.
+pub(in crate::game) fn effective_render_distance_for(
+    client_render_distance: i32,
+    server_view_distance: Option<i32>,
+) -> i32 {
+    match server_view_distance {
+        Some(server) if server > 0 => client_render_distance.min(server),
+        _ => client_render_distance,
+    }
+}
+
+/// Client chunk streaming cache radius (`server_view_distance + 1` capped by client setting).
+pub(in crate::game) fn streaming_radius_for(
+    client_render_distance: i32,
+    server_view_distance: Option<i32>,
+) -> i32 {
+    match server_view_distance {
+        Some(server) => client_render_distance.min(server.saturating_add(1)).max(2),
+        None => client_render_distance,
+    }
+}
+
 impl Game<'_> {
     /// Options.getEffectiveRenderDistance: the client setting, capped by the server's view distance.
     pub(super) fn effective_render_distance(&self) -> i32 {
-        match &self.remote {
-            Some(r) => self.settings.render_distance.min(r.view_distance),
-            None => self.settings.render_distance,
-        }
+        effective_render_distance_for(
+            self.settings.render_distance,
+            self.remote.as_ref().map(|r| r.view_distance),
+        )
     }
     /// Entity.setViewScale: entity distance times the render distance's boost (1 at 8 chunks, 2.5 at 20+).
     pub(super) fn view_scale(&self) -> f64 {
@@ -202,6 +224,21 @@ impl Game<'_> {
 }
 
 impl Game<'_> {
+    /// `LevelRenderer.isSectionCompiledAndVisible(BlockPos)`: entities outside build height
+    /// always render; inside build height they wait for a compiled section past the fade gate.
+    pub(in crate::game) fn entity_section_visible(
+        &self,
+        position: glam::DVec3,
+        now: std::time::Instant,
+    ) -> bool {
+        let block = position.floor().as_ivec3().to_array();
+        if !self.world.shape.contains_y(block[1]) {
+            return true;
+        }
+        self.renderer.as_ref().is_none_or(|renderer| {
+            renderer.entity_section_visible(block, self.settings.chunk_fade as f32, now)
+        })
+    }
     /// EntityRenderer.shouldRender: the entity within `range` blocks of the
     /// camera, measured from its current `position`, and its culling box
     /// (`lo`..`hi`, interpolated, in world space) grown by 0.5 in the view.
@@ -266,10 +303,12 @@ impl Game<'_> {
             self.occlusion.async_failed = false;
             return;
         }
-        let at = camera.to_array().map(|v| v.floor() as i32);
-        self.occlusion.section_camera = at[1]
-            .checked_sub(self.world.bottom_y())
-            .map(|y| (at[0] >> 4, y >> 4, at[2] >> 4));
+        let at = camera.to_array().map(sunrise_core::mth::floor);
+        self.occlusion.section_camera = Some((
+            at[0] >> 4,
+            (at[1] >> 4) - (self.world.bottom_y() >> 4),
+            at[2] >> 4,
+        ));
         let camera_facts = self.res.facts().get(self.world.block(at[0], at[1], at[2]));
         if opaque(camera_facts) {
             self.occlusion.sync_culler = None;
@@ -410,5 +449,30 @@ mod precheck_envelope_tests {
             checked > 1_000,
             "insufficient real model coverage: {checked}"
         );
+    }
+
+    #[test]
+    fn effective_render_distance_tracks_login_radius_updates_and_local_settings() {
+        use super::{effective_render_distance_for, streaming_radius_for};
+
+        // Login with client=12, server chunk_radius=6: effective is 6, streaming keeps +1 buffer (7).
+        assert_eq!(effective_render_distance_for(12, Some(6)), 6);
+        assert_eq!(streaming_radius_for(12, Some(6)), 7);
+
+        // Live SetChunkCacheRadius changes: lower to 4, raise to 10, zero falls back to client.
+        assert_eq!(effective_render_distance_for(12, Some(4)), 4);
+        assert_eq!(streaming_radius_for(12, Some(4)), 5);
+        assert_eq!(effective_render_distance_for(12, Some(10)), 10);
+        assert_eq!(effective_render_distance_for(12, Some(0)), 12);
+
+        // Local settings changes while connected to server=6: lowering wins, raising stays capped.
+        assert_eq!(effective_render_distance_for(3, Some(6)), 3);
+        assert_eq!(streaming_radius_for(3, Some(6)), 3);
+        assert_eq!(effective_render_distance_for(16, Some(6)), 6);
+        assert_eq!(streaming_radius_for(16, Some(6)), 7);
+
+        // Without a remote server, effective and streaming match local client render distance.
+        assert_eq!(effective_render_distance_for(12, None), 12);
+        assert_eq!(streaming_radius_for(12, None), 12);
     }
 }

@@ -1,4 +1,5 @@
 //! Play state packets: world, entities, player state, inventory and chat.
+pub use super::configuration::PostEffects;
 use crate::{
     Error, Result,
     buf::{
@@ -523,11 +524,6 @@ packet!(
         target: [f64; 3] => Vec3d,
         entity: Option<LookAtEntity> => Opt<LookAtEntity>,
     }
-);
-packet!(
-    /// ClientboundPostEffectsPacket: the `post_effect` chains (ids) the player's
-    /// screen runs, in order (`ServerPlayer.postEffects`).
-    PostEffects { effects: Vec<String> => List<Ident> }
 );
 packet!(PlayerRotation { yaw: f32 => Float, relative_yaw: bool => Bool, pitch: f32 => Float, relative_pitch: bool => Bool });
 packet!(RemoveEntities { ids: Vec<i32> => List<VarInt> });

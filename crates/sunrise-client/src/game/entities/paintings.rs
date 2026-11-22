@@ -78,6 +78,7 @@ impl Game<'_> {
             pos,
             facing,
             variant: Arc::from(""),
+            asset: None,
             width: 1,
             height: 1,
             check_interval: 0,
@@ -126,6 +127,7 @@ impl Game<'_> {
             pos,
             facing,
             variant: Arc::from(""),
+            asset: None,
             width: 1,
             height: 1,
             check_interval: 0,
@@ -430,10 +432,14 @@ impl Game<'_> {
             let Some(back) = sprites.get("painting/back").copied() else {
                 continue;
             };
-            let Some(v) = self.painting_variants.get(&p.variant) else {
-                continue;
+            let asset = match p.asset.as_deref() {
+                Some(asset) => asset,
+                None => match self.painting_variants.get(&p.variant) {
+                    Some(v) => v.asset.as_str(),
+                    None => continue,
+                },
             };
-            let Some(front) = sprites.get(&format!("painting/{}", v.asset)).copied() else {
+            let Some(front) = sprites.get(&format!("painting/{asset}")).copied() else {
                 continue;
             };
             let (lo, hi) = p.bounds();
@@ -577,6 +583,7 @@ mod tests {
             pos: [0, 0, 0],
             facing: 0,
             variant: Arc::from("minecraft:kebab"),
+            asset: None,
             width: 1,
             height: 1,
             check_interval: 0,

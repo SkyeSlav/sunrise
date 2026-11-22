@@ -159,6 +159,7 @@ fn default_components_reader_baseline() -> client::Result<()> {
                     client::item_render::Foil::None => "none",
                     client::item_render::Foil::Standard => "standard",
                     client::item_render::Foil::Special => "special",
+                    client::item_render::Foil::GlintOnly => "glint_only",
                 },
                 "light_emission": q.light_emission,
                 "cull_back": q.cull_back,

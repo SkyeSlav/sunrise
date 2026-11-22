@@ -291,6 +291,7 @@ fn a_painting_keeps_its_saved_pitch_and_takes_its_yaw_from_the_facing() {
             pos,
             facing,
             variant: variant.unwrap().into(),
+            asset: None,
             width: 1,
             height: 1,
             check_interval: 0,

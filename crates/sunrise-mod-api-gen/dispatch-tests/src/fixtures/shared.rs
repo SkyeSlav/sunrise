@@ -62,18 +62,108 @@ enum Flow {
     Cancel,
 }
 trait Host {}
-trait ServerHost: Host {}
+trait ServerHost: Host {
+    fn transaction_refusal(
+        &mut self,
+    ) -> Option<item::transaction::TransactionError<core::convert::Infallible>> {
+        None
+    }
+}
 trait ClientHost: Host {}
+
+mod client {
+    pub(super) mod tooltip_components {
+        pub(in crate::tests) fn retain_gather_tooltip_payloads(
+            _: &'static str,
+            _: &[super::super::TooltipElement],
+        ) {
+        }
+        pub(in crate::tests) fn invoke_tooltip_image<P: ?Sized, R>(
+            part: &&P,
+            call: impl FnOnce(&P) -> Option<R>,
+        ) -> Option<R> {
+            let disabled = super::super::DISABLED_BLOCK_PART.get();
+            if disabled == Some(std::ptr::from_ref(*part).cast())
+                || super::super::runtime::poisoned(super::super::HookId::TooltipImage, "part")
+            {
+                return None;
+            }
+            super::super::runtime::invoke(
+                super::super::HookId::TooltipImage,
+                "tooltip_image",
+                "part",
+                || call(*part),
+            )
+            .flatten()
+        }
+    }
+}
 
 mod item {
     pub(super) mod transaction {
-        // The game exercises the actual journal; these fixtures have no world state.
-        pub(in crate::tests) fn run_transaction<H: super::super::ServerHost + ?Sized, T, E>(
-            host: &mut H,
-            call: impl FnOnce(&mut H, &()) -> Result<T, E>,
-        ) -> Result<T, E> {
-            call(host, &())
+        use super::super::ServerHost;
+
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub(in crate::tests) enum TransactionError<E> {
+            Aborted(E),
+            Unavailable,
+            InvalidContext,
+            CommitRefused,
         }
+
+        // The game exercises the actual journal; these fixtures have no world state.
+        pub(in crate::tests) trait HostTransaction {
+            fn transaction<T, E>(
+                &mut self,
+                call: impl FnOnce(&mut dyn ServerHost, &()) -> Result<T, E>,
+            ) -> Result<T, TransactionError<E>>;
+        }
+        impl HostTransaction for dyn ServerHost + '_ {
+            fn transaction<T, E>(
+                &mut self,
+                call: impl FnOnce(&mut dyn ServerHost, &()) -> Result<T, E>,
+            ) -> Result<T, TransactionError<E>> {
+                match self.transaction_refusal() {
+                    None => call(self, &()).map_err(TransactionError::Aborted),
+                    Some(TransactionError::Unavailable) => Err(TransactionError::Unavailable),
+                    Some(TransactionError::InvalidContext) => Err(TransactionError::InvalidContext),
+                    Some(TransactionError::CommitRefused) => {
+                        call(self, &()).map_err(TransactionError::Aborted)?;
+                        Err(TransactionError::CommitRefused)
+                    }
+                    Some(TransactionError::Aborted(never)) => match never {},
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn transaction_fixture_distinguishes_admission_and_settlement_refusal() {
+    use core::convert::Infallible;
+    use item::transaction::{HostTransaction, TransactionError};
+
+    struct RefusingHost(Option<TransactionError<Infallible>>);
+    impl Host for RefusingHost {}
+    impl ServerHost for RefusingHost {
+        fn transaction_refusal(&mut self) -> Option<TransactionError<Infallible>> {
+            self.0.take()
+        }
+    }
+
+    for (refusal, ran) in [
+        (TransactionError::Unavailable, false),
+        (TransactionError::InvalidContext, false),
+        (TransactionError::CommitRefused, true),
+    ] {
+        let mut host = RefusingHost(Some(refusal));
+        let mut called = false;
+        let result = (&mut host as &mut dyn ServerHost).transaction(|_, _| {
+            called = true;
+            Ok::<_, Infallible>(())
+        });
+        assert_eq!(result, Err(refusal));
+        assert_eq!(called, ran);
     }
 }
 

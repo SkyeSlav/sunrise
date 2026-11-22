@@ -1162,9 +1162,11 @@ before applying the stack limit.
 
 The query has no Host and may run for a slot that is never written. Seed a filter from the
 accepted write, not from the query. Default `ITEMS` and `STORAGE` writes to these slots emit
-`contents_changed` once per backing block on commit. During `menu_quick_move`, the notice waits
-for source settlement and only runs if the original backing container is still there. A write to
-the same block from its active notice still applies without a second notice. If your provider
+`contents_changed` once per backing block on commit. During a handled `menu_quick_move`, the notice
+waits for the clicked source to settle and only runs if the original backing container is still there.
+If the hook declines or its reply is refused, its tentative writes emit no notice. Ordinary click routing,
+if it runs, can still emit notices for its own writes. A write to the same block from its active notice
+still applies without a second notice. If your provider
 writes directly to storage it owns, issue `set_changed` explicitly or seed the filter in the
 provider. Menu clicks and quick-move still use the declared rules and `menu_slot_rules`
 (vanilla's `Slot.mayPlace`); they do not ask the block entity part.

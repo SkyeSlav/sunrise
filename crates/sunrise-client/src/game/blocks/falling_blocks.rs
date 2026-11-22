@@ -92,36 +92,61 @@ impl Game<'_> {
             .ui
             .rules
             .bool_at(sunrise_client::gamerules::vanilla::ENTITY_DROPS);
-        let _save_lease = sunrise_client::join_seq::visibility::PassLease::enter();
-        let mut f = self.falling.extract(self.falling[i].join).unwrap();
-        let original = f.clone();
+        // Like boats, tick an unbound state clone while the resident owner keeps
+        // its slot. Extracting and reinserting every airborne block shifts the
+        // whole list tail twice per entity, making a sand-filled cobweb O(n^2).
+        let mut f = self.falling[i].clone();
+        let from = f.position;
         let (id, join) = (f.id, f.join);
-        let step = self.fall_step(&mut f, entity_drops, entities);
-        // Its move is filed at once, also for one that lands or drops.
-        if step.is_ok() {
-            let (from, to) = (original.position, f.position);
-            self.entity_section_step(id, [from.x, from.y, from.z], [to.x, to.y, to.z]);
-        }
-        match step {
-            Ok(FallStep::Falling) => {
+        self.with_entity_held_out(id, |game| {
+            let step = game.fall_step(&mut f, entity_drops, entities)?;
+            // Its move is filed at once, also for one that lands or drops.
+            let to = f.position;
+            game.entity_section_step(id, [from.x, from.y, from.z], [to.x, to.y, to.z]);
+            if matches!(step, FallStep::Falling) {
                 let state = f.state;
-                self.falling.put_back(i.min(self.falling.len()), f);
-                self.note_falling_tick(id, join, state);
+                if !game
+                    .persist
+                    .removals
+                    .contains(&super::commands::Target::Falling(id))
+                    && game.falling.store_back(i, f)
+                {
+                    game.note_falling_tick(id, join, state);
+                }
                 return Ok(());
             }
-            Ok(FallStep::Gone) => {}
-            Ok(FallStep::Dropped(at)) => self.drop_falling_block(f.state, at),
-            Ok(FallStep::Landed(pos)) => self.finish_falling_block(f, pos),
-            Err(error) => {
-                sunrise_client::join_seq::store_back(&mut f, original);
-                self.falling.put_back(i.min(self.falling.len()), f);
-                return Err(error);
+            if game.ordered.defer_landings {
+                // Only other falling blocks run before compaction, and their
+                // collision search excludes falling blocks. Finish this entity
+                // now so subsequent falls see its placed block.
+                game.ordered.landed.insert(join);
+                game.finish_falling_step(step, f);
+                return Ok(());
             }
+            // Only terminal owners leave storage. Carry the original lifetime
+            // into the final state until placement, drops or travel finish.
+            let Some(mut owner) = game.falling.extract(join) else {
+                return Ok(());
+            };
+            sunrise_client::join_seq::store_back(&mut owner, f);
+            game.finish_falling_step(step, owner);
+            game.falling.retire_extracted(id, join);
+            Ok(())
+        })
+    }
+    /// The terminal work of a falling block's tick: nothing for one gone, its item for one
+    /// that dropped, the placed block for one that landed.
+    fn finish_falling_step(&mut self, step: FallStep, owner: FallingBlock) {
+        match step {
+            FallStep::Gone => {}
+            FallStep::Dropped(at) => self.drop_falling_block(owner.state, at),
+            FallStep::Landed(pos) => {
+                let sample = sunrise_client::spans::SpanTotal::start();
+                self.finish_falling_block(owner, pos);
+                self.ordered.landing_time.add(sample);
+            }
+            FallStep::Falling => unreachable!(),
         }
-        // Gone, dropped and landed owners have completed their terminal work;
-        // unlike a continuing fall, they will never be put back into the list.
-        self.falling.retire_extracted(id, join);
-        Ok(())
     }
     /// One `FallingBlockEntity.tick` move of `f`.
     pub(super) fn fall_step(

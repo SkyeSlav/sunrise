@@ -42,6 +42,7 @@ fn with_hanging_in(game: &mut super::Game<'_>) {
         pos: [4, 70, 6],
         facing: 0,
         variant: "minecraft:kebab".into(),
+        asset: None,
         width: 1,
         height: 1,
         check_interval: 0,

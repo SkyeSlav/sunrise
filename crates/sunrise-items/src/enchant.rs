@@ -150,8 +150,10 @@ impl Cost {
             per_level: per_level.unwrap_or(0),
         }
     }
+    /// `Enchantment.Cost.calculate`: arithmetic wraps like Java `int`.
     pub fn calculate(self, level: u32) -> i32 {
-        self.base + self.per_level * (level as i32 - 1)
+        self.base
+            .wrapping_add(self.per_level.wrapping_mul((level as i32).wrapping_sub(1)))
     }
 }
 #[derive(Clone, Debug)]
@@ -2140,6 +2142,15 @@ pub mod tests {
             .calculate(5),
             45
         );
+    }
+
+    #[test]
+    fn enchantment_cost_wraps_like_java_int() {
+        let cost = Cost {
+            base: i32::MAX,
+            per_level: 1,
+        };
+        assert_eq!(cost.calculate(2), i32::MIN);
     }
 
     #[test]

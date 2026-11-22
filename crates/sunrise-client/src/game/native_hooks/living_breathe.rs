@@ -53,7 +53,7 @@ impl Game<'_> {
     ) -> Option<sunrise_client::breathing::Breath> {
         let mut breath = vanilla;
         let failures = mod_api::runtime::isolated_failures();
-        let answered: Result<(), ()> = mod_api::run_transaction(self, |game, _| {
+        let answered: Result<(), ()> = self.storage_transaction(|game, _| {
             game.native_living_breathe(
                 living,
                 &mut breath.can_breathe,

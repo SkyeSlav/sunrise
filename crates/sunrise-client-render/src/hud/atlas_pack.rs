@@ -344,6 +344,7 @@ impl HudAtlas {
             }
         }
         images.push(("sunrise/white".into(), 4, 4, vec![255; 64]));
+        images.push((MISSING_GLYPH_SPRITE.into(), 5, 8, missing_glyph_rgba()));
         // The controller's art, unless a pack brought its own (walked above, as a mod's GUI
         // textures are).
         for image in crate::pad_glyph::images().chain(crate::mark_sprite::image()) {
@@ -367,31 +368,53 @@ impl HudAtlas {
                 })
                 .collect();
             images.push((MISSING_SPRITE.into(), 16, 16, missing));
-        }
-        // Blurred sprites are sampled linearly in the atlas (screen.wgsl): a
-        // border wrapped from their own edges keeps the filter off their
-        // neighbours, as repeat addressing of their own texture would.
-        let mut bordered = std::collections::HashSet::new();
-        for image in &mut images {
-            if flags.get(&image.0).is_some_and(|f: &TextureFlags| f.blur) {
-                *image = wrap_border(image);
-                bordered.insert(image.0.clone());
-            }
-        }
-        if full {
             let (width, height, rgba) =
                 decode_bytes(include_bytes!("../jei_recipes/config_button.png"))?;
             images.push(("sunrise/recipes/settings".to_owned(), width, height, rgba));
+        }
+        // Blurred sprites wrap their opposite edges so linear filtering repeats cleanly;
+        // every other non-font packed sprite gets a 1-texel clamp-to-edge border matching
+        // vanilla 26.3's `Stitcher` padding + `ANIMATE_SPRITE_BLIT` `CLAMP_TO_EDGE` so
+        // boundary samples never land on the transparent atlas gutter and discard.
+        let should_clamp_pad = |name: &str| {
+            if name == "sunrise/white" || name == MISSING_GLYPH_SPRITE {
+                return false;
+            }
+            let bare = name
+                .strip_prefix(GUI_KEY)
+                .or_else(|| name.strip_prefix(REGISTERED_KEY))
+                .unwrap_or(name);
+            let path = bare.split_once(':').map_or(bare, |(_, p)| p);
+            !path.starts_with("font/")
+        };
+        let mut blur_bordered = std::collections::HashSet::new();
+        let mut clamp_bordered = std::collections::HashSet::new();
+        let mut sprite_borders: HashMap<String, AtlasBorder> = HashMap::new();
+        for image in &mut images {
+            if image.3.is_empty() || image.1 == 0 || image.2 == 0 {
+                continue;
+            }
+            let f = flags.get(&image.0).copied();
+            if f.is_some_and(|f| f.blur && !f.clamp) {
+                *image = wrap_border(image);
+                blur_bordered.insert(image.0.clone());
+                sprite_borders.insert(image.0.clone(), AtlasBorder::Wrap);
+            } else if f.is_some_and(|f| f.blur) || should_clamp_pad(&image.0) {
+                *image = clamp_border(image);
+                clamp_bordered.insert(image.0.clone());
+                sprite_borders.insert(image.0.clone(), AtlasBorder::Clamp);
+            }
         }
         images.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)));
         let (width, placements, glyph_region) =
             Self::layout_leaving_out(&mut images, &mut animated, &cit_names, MAX_ATLAS_SIZE)
                 .or_else(|error| -> Result<_> {
-                    let models = reducible_model_sprites(root, &images, &bordered);
-                    let layout = Self::layout_reducing_models(
+                    let models = reducible_model_sprites(root, &images, &blur_bordered);
+                    let layout = Self::layout_reducing_models_with_borders(
                         &mut images,
                         &mut gui_sizes,
                         &models,
+                        &clamp_bordered,
                         MAX_ATLAS_SIZE,
                     )?;
                     log::warn!(
@@ -404,6 +427,7 @@ impl HudAtlas {
         let height = (glyph_region + GLYPH_ROWS).next_multiple_of(1024);
         let mut pixels = vec![0u8; (width * height * 4) as usize];
         let mut sprites = HashMap::new();
+        let mut placed_sprites: HashMap<String, AnimatedPlacement> = HashMap::new();
         let mut translucent = HashSet::new();
         for ((name, w, h, data), (px, py)) in images.iter().zip(placements) {
             if data
@@ -421,8 +445,22 @@ impl HudAtlas {
                     pixels[dst..dst + (w * 4) as usize].copy_from_slice(src);
                 }
             }
-            let b = u32::from(bordered.contains(name));
+            let border = sprite_borders
+                .get(name)
+                .copied()
+                .unwrap_or(AtlasBorder::None);
+            let b = u32::from(border != AtlasBorder::None);
             let (px, py, w, h) = (px + b, py + b, w - 2 * b, h - 2 * b);
+            placed_sprites.insert(
+                name.clone(),
+                AnimatedPlacement {
+                    x: px,
+                    y: py,
+                    w,
+                    h,
+                    border,
+                },
+            );
             let (gw, gh) = gui_sizes.get(name).copied().unwrap_or((w, h));
             sprites.insert(
                 name.clone(),
@@ -441,9 +479,13 @@ impl HudAtlas {
         // animation's frame(0) overwrites its atlas rect before drawing.
         let mut loaded = crate::sprites::Sprites::new(root.clone());
         let mut sprite_animations = Vec::new();
+        let mut sprite_animation_placements = Vec::new();
         animated.sort();
         for name in animated {
             let Some(rect) = sprites.get(&name).copied() else {
+                continue;
+            };
+            let Some(placement) = placed_sprites.get(&name).copied() else {
                 continue;
             };
             // A registered atlas's sprite is named by its public name under its key.
@@ -473,17 +515,27 @@ impl HudAtlas {
             else {
                 continue;
             };
-            let (tw, th) = rect.texels((width, height));
+            let (tw, th) = (placement.w, placement.h);
             let image = animation.resized_pixels(animation.frame(0), tw, th);
-            let x = (rect.u0 * width as f32).round() as usize;
-            let y = (rect.v0 * height as f32).round() as usize;
+            let x = placement.x as usize;
+            let y = placement.y as usize;
             let row_bytes = tw as usize * 4;
             for row in 0..th as usize {
                 let dst = ((y + row) * width as usize + x) * 4;
                 let src = row * row_bytes;
                 pixels[dst..dst + row_bytes].copy_from_slice(&image[src..src + row_bytes]);
             }
+            match placement.border {
+                AtlasBorder::None => {}
+                AtlasBorder::Clamp => {
+                    write_atlas_border(&mut pixels, width, placement.x, placement.y, tw, th, false);
+                }
+                AtlasBorder::Wrap => {
+                    write_atlas_border(&mut pixels, width, placement.x, placement.y, tw, th, true);
+                }
+            }
             sprite_animations.push((rect, animation));
+            sprite_animation_placements.push(placement);
         }
         // Each mapped texture's maps at its size in the atlas, paged.
         let material_maps = if maps.is_empty() {
@@ -571,6 +623,7 @@ impl HudAtlas {
             translucent,
             flags,
             sprite_animations,
+            sprite_animation_placements,
             glint,
             glint_armor,
             text_shaders: Default::default(),

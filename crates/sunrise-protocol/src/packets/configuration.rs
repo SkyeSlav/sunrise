@@ -5,6 +5,7 @@ use crate::{
     buf::{
         Bool, Byte, Codec, Ident, Int, List, Long, Nbt, Opt, Reader, Str, StrN, UByte, Uuid, VarInt,
     },
+    entity_data::humanoid_arm_id,
     packet, packet_enum,
     packets::Empty,
 };
@@ -45,6 +46,11 @@ packet!(
 packet!(KnownPack { namespace: String => Str, id: String => Str, version: String => Str });
 packet!(SelectKnownPacks { packs: Vec<KnownPack> => List<KnownPack> });
 packet!(CodeOfConduct { text: String => Str });
+packet!(
+    /// ClientboundPostEffectsPacket: the `post_effect` chains (ids) the player's
+    /// screen runs, in order (`ServerPlayer.postEffects`).
+    PostEffects { effects: Vec<String> => List<Ident> }
+);
 
 /// ServerLinks.UntrustedEntry's `type` (Either<KnownLinkType, Component>): a
 /// known link's id, or a custom label component.
@@ -131,6 +137,7 @@ packet_enum!(Clientbound, crate::ids::configuration::clientbound {
     RegistryData(RegistryData) = REGISTRY_DATA,
     ResourcePackPop(ResourcePackPop) = RESOURCE_PACK_POP,
     ResourcePackPush(ResourcePackPush) = RESOURCE_PACK_PUSH,
+    PostEffects(PostEffects) = POST_EFFECTS,
     StoreCookie(StoreCookie) = STORE_COOKIE,
     Transfer(Transfer) = TRANSFER,
     UpdateEnabledFeatures(UpdateEnabledFeatures) = UPDATE_ENABLED_FEATURES,
@@ -183,7 +190,7 @@ impl Codec<ClientInformation> for ClientInformation {
             chat_visibility: VarInt::read(r)?,
             chat_colors: Bool::read(r)?,
             model_customisation: UByte::read(r)?,
-            main_hand: VarInt::read(r)?,
+            main_hand: humanoid_arm_id(VarInt::read(r)?),
             text_filtering: Bool::read(r)?,
             allows_listing: Bool::read(r)?,
             particle_status: VarInt::read(r)?,
@@ -410,5 +417,45 @@ mod tests {
         let mut w = Writer::new();
         ClickPayload::write(&Some(Tag::Byte(1)), &mut w);
         assert_eq!(w.data, [2, 1, 1]);
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn configuration_decodes_post_effects_packet_26_3() {
+        let dir = std::env::var("SUNRISE_NETWORK_WITNESS_DIR").expect(
+            "SUNRISE_NETWORK_WITNESS_DIR must be set (run via tools/test_network_parity.py)",
+        );
+        let path = std::path::Path::new(&dir).join("post_effects.json");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+        let witness: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let hex = |s: &str| -> Vec<u8> {
+            (0..s.len() / 2)
+                .map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap())
+                .collect()
+        };
+        let wire = &witness["wire"];
+        let config_id = wire["config_packet_id"].as_i64().unwrap() as i32;
+        assert_eq!(
+            config_id,
+            crate::ids::configuration::clientbound::POST_EFFECTS
+        );
+        for key in ["config_empty_hex", "config_two_hex"] {
+            let raw = hex(wire[key].as_str().unwrap());
+            let mut r = Reader::new(&raw);
+            let id = r.varint().unwrap();
+            assert_eq!(id, config_id, "{key}");
+            let body = r.rest();
+            let packet = Clientbound::decode(id, body).unwrap();
+            assert!(
+                !matches!(packet, Clientbound::Unknown(..)),
+                "{key}: post_effects decoded as Unknown: {packet:?}"
+            );
+            assert_eq!(packet.encode(), raw, "{key}: wire round-trip");
+        }
+        assert!(
+            Clientbound::decode(config_id, &[1]).is_err(),
+            "truncated post_effects list must fail decode"
+        );
     }
 }

@@ -936,32 +936,24 @@ impl Game<'_> {
             && self.panel.search.as_ref().is_some_and(|s| s.focused)
     }
     /// A key press while the search box has focus.
-    pub(super) fn mod_browser_key(&mut self, event: &winit::event::KeyEvent) {
-        use winit::keyboard::PhysicalKey;
-        let shortcut = self.edit_shortcut(event);
-        let ctrl = self.has_control_down();
-        let shift = self.has_shift_down();
-        let types_text = self.types_text();
+    pub(super) fn mod_browser_key(
+        &mut self,
+        key: winit::keyboard::KeyCode,
+        shortcut: Option<sunrise_client::clipboard::EditShortcut>,
+    ) -> bool {
+        let (ctrl, shift) = (self.has_control_down(), self.has_shift_down());
         let Some(search) = self.panel.search.as_mut() else {
-            return;
+            return false;
         };
-        if let Some(shortcut) = shortcut {
+        let handled = if let Some(shortcut) = shortcut {
             search.shortcut(shortcut, &mut self.clipboard);
+            true
         } else {
-            let handled = match event.physical_key {
-                PhysicalKey::Code(code) => search.key(code, ctrl, shift),
-                _ => false,
-            };
-            if !handled
-                && types_text
-                && let Some(text) = &event.text
-            {
-                let text: String = text.chars().filter(|c| !c.is_control()).collect();
-                search.insert_text(&text);
-            }
-        }
+            search.key(key, ctrl, shift)
+        };
         search.reset_blink();
         self.browser_searched();
+        handled
     }
     /// Text typed (or one backspace) into the search box (`sunrise-ctl type`).
     pub(super) fn mod_browser_text(&mut self, text: Option<&str>, backspace: bool) {

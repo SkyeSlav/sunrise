@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """Anyone claims an issue before working on it (CONTRIBUTING.md "Claim before you start").
 
+    claim_command.py detect                whether a comment holds a command, as `command=true|false` in $GITHUB_OUTPUT
     claim_command.py command               one comment (fork-claim.yml): assigns or unassigns, answers in the thread
     claim_command.py release [--dry-run]   the daily run: releases the claims older than 5 days with no open pull request
 
-A comment on an issue, on its first line:
+A comment on an issue, on any line (alone, or after `🤖 Agent:`):
 
     /claim             assigns the commenter (GitHub lets an issue's commenters be assigned, no role needed)
     /unclaim           unassigns the commenter
     /unclaim @login    the repository owner, the council and trusted reviewers release someone else's claim
 
 Trailing command punctuation is allowed. `/claim` ignores explanatory text; `/unclaim` targets the commenter
-unless the entire remainder of that first line is a login.
+unless the entire remainder of that line is a login.
 
 An assigned issue is taken, and so is one claimed on Discord (Kira's `in progress` label). Trackers and proposals
 (labels `tracker`, `proposal`, `not claimable`, set by maintainers) are never claimed whole. Refused with a one-line
@@ -356,6 +357,14 @@ def run(api, cmd: Command, actor: ns.Actor, number: int, reviewers: ns.Reviewers
     return f"{PREFIX}released @{real}'s claim, on behalf of @{login}. `/claim` takes it."
 
 
+def detect() -> int:
+    """fork-claim's first job: only a comment holding a command reaches the job that joins the issue's concurrency
+    group, where a newer pending run would cancel an older one."""
+    with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+        out.write(f"command={'true' if parse(os.environ['BODY']) else 'false'}\n")
+    return 0
+
+
 def command() -> int:
     body, login = os.environ["BODY"], os.environ["AUTHOR"]
     number, repo, comment_id = int(os.environ["ISSUE"]), os.environ["REPO"], int(os.environ["COMMENT_ID"])
@@ -428,6 +437,8 @@ def release(api, now: datetime, dry_run: bool) -> list[tuple[int, str]]:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["detect"]:
+        sys.exit(detect())
     if sys.argv[1:] == ["command"]:
         sys.exit(command())
     if sys.argv[1:2] == ["release"] and sys.argv[2:] in ([], ["--dry-run"]):

@@ -1036,6 +1036,7 @@ mod tests {
                     pos: [0; 3],
                     facing: 0,
                     variant: "minecraft:kebab".into(),
+                    asset: None,
                     width: 1,
                     height: 1,
                     check_interval: 0,

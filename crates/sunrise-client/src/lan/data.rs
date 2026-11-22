@@ -980,7 +980,7 @@ impl SyncData {
         let mut meta = vec![(
             10,
             entity_data::serializer::PARTICLES,
-            entity_data::Value::Particles(particles),
+            entity_data::Value::Particles(particles.into()),
         )];
         if all_ambient {
             meta.push((

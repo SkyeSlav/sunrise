@@ -173,7 +173,7 @@ impl Game<'_> {
             if rest.count == 0 {
                 return;
             }
-            self.spawn_dispensed(pos, facing, rest, 6);
+            self.spawn_dispensed(pos, facing, rest);
             self.crafter_crafted_notice(pos, facing, recipe);
             return;
         }
@@ -190,7 +190,7 @@ impl Game<'_> {
         if rest.count == 0 {
             return;
         }
-        self.spawn_dispensed(pos, facing, rest, 6);
+        self.spawn_dispensed(pos, facing, rest);
         self.crafter_crafted_notice(pos, facing, recipe);
     }
     /// The trigger and the sound and particle events after an ejected result.

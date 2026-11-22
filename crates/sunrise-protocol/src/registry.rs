@@ -73,6 +73,17 @@ impl crate::item::Names for SyncedNames<'_> {
             })
             .map(str::to_owned)
     }
+
+    fn registry_entry(&self, registry: &str, id: i32) -> Option<(&str, Option<&Tag>)> {
+        self.dynamic.entry(registry, id)
+    }
+
+    fn contains_entry(&self, registry: &str, name: &str) -> bool {
+        self.builtin
+            .get(registry)
+            .is_some_and(|ids| ids.id(name).is_some())
+            || self.dynamic.has_entry(registry, name)
+    }
 }
 
 impl SyncedNames<'_> {
@@ -208,6 +219,14 @@ impl crate::item::Names for Dynamic {
             None => builtin_name(id).map(|_| Kind::Builtin(id)),
         }
     }
+
+    fn registry_entry(&self, registry: &str, id: i32) -> Option<(&str, Option<&Tag>)> {
+        self.entry(registry, id)
+    }
+
+    fn contains_entry(&self, registry: &str, name: &str) -> bool {
+        self.has_entry(registry, name)
+    }
 }
 
 impl Dynamic {
@@ -307,6 +326,18 @@ impl Dynamic {
             .get(registry)?
             .get(i)
             .map(|(n, _)| n.as_str())
+    }
+    pub fn entry(&self, registry: &str, id: i32) -> Option<(&str, Option<&Tag>)> {
+        let i = usize::try_from(id).ok()?;
+        self.registries
+            .get(registry)?
+            .get(i)
+            .map(|(n, tag)| (n.as_str(), tag.as_ref()))
+    }
+    pub fn has_entry(&self, registry: &str, name: &str) -> bool {
+        self.registries
+            .get(registry)
+            .is_some_and(|entries| entries.iter().any(|(n, _)| n == name))
     }
     /// The id of an entry by name, the reverse of `name`. A registry has one
     /// entry per id, so the first match is the only one.

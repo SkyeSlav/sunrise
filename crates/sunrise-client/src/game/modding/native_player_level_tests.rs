@@ -115,7 +115,7 @@ fn a_give_to_a_player_in_another_level_drops_overflow_there() {
                         player: u128::from(conn),
                         slot: 0,
                     };
-                    Ok::<_, ()>(slot.insert(host, tx, &resource, 1))
+                    slot.insert(host, tx, &resource, 1)
                 })
                 .unwrap();
             assert_eq!(taken, 0, "{case}: a full slot takes nothing");
@@ -138,7 +138,11 @@ fn a_give_to_a_player_in_another_level_drops_overflow_there() {
                     let aborted = host.transaction(|host, _| {
                         Err::<(), _>(player.give_stack(host, three.clone()))
                     });
-                    assert_eq!(aborted, Err(Ok(None)), "{case}: abort");
+                    assert_eq!(
+                        aborted,
+                        Err(mod_api::TransactionError::Aborted(Ok(None))),
+                        "{case}: abort"
+                    );
                     assert_eq!(diamonds(game, conn), 63, "{case}: inventory restored");
                     assert_eq!(
                         dropped(game),
@@ -391,7 +395,13 @@ fn a_give_command_in_a_transaction_for_a_borrowed_player_lands_in_their_level() 
                     })
                 })
                 .unwrap();
-            assert!(ran.unwrap_or_else(|ok| ok), "{case}");
+            assert!(
+                ran.unwrap_or_else(|err| match err {
+                    mod_api::TransactionError::Aborted(ok) => ok,
+                    other => panic!("unexpected transaction error: {other:?}"),
+                }),
+                "{case}"
+            );
             assert_eq!(game.dim, Dim::Overworld, "{case}");
             assert_eq!(diamonds(game, 13), 0, "{case}: the inventory is full");
             if commit {

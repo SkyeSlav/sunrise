@@ -9,7 +9,7 @@ use sunrise_client::mobs::leash::Holder;
 use sunrise_client::particles::{ParticleOptions, ParticleType};
 use sunrise_core::geometry::Vec3;
 use sunrise_core::random::RandomSource;
-use sunrise_protocol::entity_data::Value;
+use sunrise_protocol::entity_data::{PaintingHolder, Value};
 
 /// `Mth.rotLerp(alpha, from, to)`: `from` turned `alpha` of the way to `to` by
 /// the shorter arc (`wrapDegrees` of the difference).
@@ -73,7 +73,8 @@ impl Game<'_> {
         } {
             self.text_displays.insert(
                 id as i32,
-                super::text_displays::RemoteTextDisplay::new(shows, position, yaw),
+                super::text_displays::RemoteTextDisplay::new(shows, position, yaw)
+                    .with_pitch(pitch),
             );
         } else if kind == "minecraft:ominous_item_spawner" {
             self.add_remote_ominous_item_spawner(id, position);
@@ -136,10 +137,10 @@ impl Game<'_> {
         } else if kind == "minecraft:painting" {
             // The variant comes with the entity data; until then the
             // registry's first one (VariantUtils.getAny).
-            let (variant, width, height) = self
+            let (variant, asset, width, height) = self
                 .remote_painting_variant(0)
-                .map_or((Arc::from("minecraft:kebab"), 1, 1), |v| {
-                    (v.id, v.width, v.height)
+                .map_or((Arc::from("minecraft:kebab"), None, 1, 1), |v| {
+                    (v.id, Some(Arc::from(v.asset)), v.width, v.height)
                 });
             // Direction 3D data value (north 2, south 3, west 4, east 5) to 2D.
             let facing = match data {
@@ -155,6 +156,7 @@ impl Game<'_> {
                 pos: block,
                 facing,
                 variant,
+                asset,
                 width,
                 height,
                 check_interval: 0,
@@ -166,10 +168,14 @@ impl Game<'_> {
         true
     }
 
-    /// A `painting_variant` by its network id, from the server's registry.
+    /// A `painting_variant` by its network id, preferring the synced registry entry over local resources.
     fn remote_painting_variant(&self, id: i32) -> Option<super::paintings::Variant> {
         let r = self.remote.as_ref()?;
-        let name = r.registries.name("minecraft:painting_variant", id)?;
+        let (name, tag) = r.registries.entry("minecraft:painting_variant", id)?;
+        if let Some(tag) = tag {
+            let json = sunrise_client::scoreboard::tag_to_json(tag);
+            return super::paintings::Variant::decode(name, &json).ok();
+        }
         self.painting_variants.get(name).cloned()
     }
 
@@ -230,12 +236,20 @@ impl Game<'_> {
                 {
                     p.facing = facing;
                 }
-                // Painting.DATA_PAINTING_VARIANT_ID: a registry holder (id + 1).
-                if let (9, Value::Id(holder)) = (index, value)
-                    && let Some(v) = self.remote_painting_variant(holder - 1)
+                // Painting.DATA_PAINTING_VARIANT_ID: holder already resolved during packet decode.
+                if let (9, Value::PaintingVariant(holder)) = (index, value)
                     && let Some(p) = self.paintings.iter_mut().find(|p| p.id == id)
                 {
-                    p.variant = v.id;
+                    let (variant_name, v) = match holder {
+                        PaintingHolder::Reference { name, variant, .. } => {
+                            (Arc::from(name.as_str()), variant)
+                        }
+                        PaintingHolder::Direct(v) => (Arc::from(v.asset_id.as_str()), v),
+                    };
+                    p.variant = variant_name;
+                    p.asset = Some(Arc::from(
+                        v.asset_id.strip_prefix("minecraft:").unwrap_or(&v.asset_id),
+                    ));
                     p.width = v.width;
                     p.height = v.height;
                 }
@@ -555,7 +569,7 @@ impl Game<'_> {
     }
 
     pub(super) fn remove_remote_object(&mut self, id: u32) {
-        self.text_displays.remove(&(id as i32));
+        self.text_displays.shift_remove(&(id as i32));
         self.interactions.remove(&(id as i32));
         self.ominous_spawners.retain(|s| s.id != id);
         self.remote_knots.remove(&id);

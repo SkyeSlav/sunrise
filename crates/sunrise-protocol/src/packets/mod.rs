@@ -62,15 +62,17 @@ macro_rules! packet_enum {
                 use $ids as ids;
                 let packet = match id {
                     $(ids::$id => Self::$variant(<$crate::packet_codec!($ty $(, $codec)?) as $crate::buf::Codec<$ty>>::read(&mut r)?),)*
-                    _ => return Ok(Self::Unknown(id, r.rest().to_vec())),
+                    _ if usize::try_from(id).ok().is_some_and(|i| i < ids::NAMES.len()) => {
+                        return Ok(Self::Unknown(id, r.rest().to_vec()));
+                    }
+                    _ => return Err($crate::Error::unknown_packet_id(id)),
                 };
                 if r.remaining() != 0 {
-                    return Err($crate::Error::new(format!(
-                        "packet {} ({}) was larger than expected: {} extra bytes",
+                    return Err($crate::Error::packet_extra_bytes(
                         id,
                         stringify!($name),
-                        r.remaining()
-                    )));
+                        r.remaining(),
+                    ));
                 }
                 Ok(packet)
             }

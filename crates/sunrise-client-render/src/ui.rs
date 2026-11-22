@@ -63,20 +63,63 @@ fn sub(r: Rect, size: [f32; 2], [x, y, w, h]: [f32; 4]) -> Rect {
 /// units) repeated over `dst` from its top left, the last row and column cut.
 fn tile(batch: &mut HudBatch, r: Rect, size: [f32; 2], src: [f32; 4], dst: [f32; 4], color: u32) {
     let [sx, sy, sw, sh] = src;
-    let [dx, dy, dw, dh] = dst;
-    if sw <= 0.0 || sh <= 0.0 || dw <= 0.0 || dh <= 0.0 {
+    let [dx, dy, dw, dh] = dst.map(f64::from);
+    let [tw, th] = [sw as f64, sh as f64];
+    if ![dx, dy, dw, dh, tw, th].into_iter().all(f64::is_finite)
+        || tw <= 0.0
+        || th <= 0.0
+        || dw <= 0.0
+        || dh <= 0.0
+    {
         return;
     }
-    let mut y = 0.0;
-    while y < dh {
-        let h = sh.min(dh - y);
-        let mut x = 0.0;
-        while x < dw {
-            let w = sw.min(dw - x);
-            batch.rect_uv(dx + x, dy + y, w, h, sub(r, size, [sx, sy, w, h]), color);
-            x += sw;
+    // HudBatch has no retained scissor stack: its painters clip their ranges
+    // after extraction. Start with the viewport, walking only intersecting tiles.
+    let right = (dx + dw).min(batch.width as f64);
+    let bottom = (dy + dh).min(batch.height as f64);
+    if right <= dx.max(0.0) || bottom <= dy.max(0.0) {
+        return;
+    }
+    // Anchor the first tile to the original destination, not the clipped edge.
+    let first = |origin: f64, step| {
+        if origin < 0.0 {
+            -(-origin).rem_euclid(step)
+        } else {
+            origin
         }
-        y += sh;
+    };
+    let left = first(dx, tw);
+    let mut y = first(dy, th);
+    while y < bottom {
+        let top = y.max(0.0);
+        let next_y = y + th;
+        let h = (next_y.min(bottom) - top) as f32;
+        let mut x = left;
+        while x < right {
+            let start = x.max(0.0);
+            let next_x = x + tw;
+            let w = (next_x.min(right) - start) as f32;
+            batch.rect_uv(
+                start as f32,
+                top as f32,
+                w,
+                h,
+                sub(
+                    r,
+                    size,
+                    [sx + (start - x) as f32, sy + (top - y) as f32, w, h],
+                ),
+                color,
+            );
+            if next_x == x {
+                break;
+            }
+            x = next_x;
+        }
+        if next_y == y {
+            break;
+        }
+        y = next_y;
     }
 }
 /// `GuiGraphicsExtractor.blitSprite`: a sprite over `w` × `h` as its `gui.scaling` says: the
@@ -519,8 +562,26 @@ pub fn button_as(
     sprites: Option<&ButtonSprites>,
     narration: impl FnOnce([f32; 4]) -> crate::widgets::Narratable,
 ) {
+    button_focused_as(
+        batch, atlas, rect, label, active, hover, false, sprites, narration,
+    );
+}
+
+/// A button whose focus highlights its art but whose cursor depends only on pointer hover.
+#[allow(clippy::too_many_arguments)]
+pub fn button_focused_as(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    rect: [f32; 4],
+    label: &Text,
+    active: bool,
+    hover: bool,
+    focused: bool,
+    sprites: Option<&ButtonSprites>,
+    narration: impl FnOnce([f32; 4]) -> crate::widgets::Narratable,
+) {
     button_with_room(
-        batch, atlas, rect, label, active, hover, false, 0.0, sprites, narration,
+        batch, atlas, rect, label, active, hover, focused, 0.0, sprites, narration,
     );
 }
 /// An options button whose focus highlights it without changing the mouse cursor.
@@ -892,8 +953,8 @@ impl Scroll {
     }
     /// `mouseDragged` while held: above or below the list jumps to an end,
     /// otherwise the thumb follows the pointer.
-    pub fn drag(&mut self, y: f32, top: f32, bottom: f32, content: f32) {
-        let Some(last) = self.held else { return };
+    pub fn drag(&mut self, y: f32, top: f32, bottom: f32, content: f32) -> bool {
+        let Some(last) = self.held else { return false };
         let max = Self::max(top, bottom, content);
         if y < top {
             self.amount = 0.0;
@@ -906,6 +967,7 @@ impl Scroll {
         }
         self.clamp(top, bottom, content);
         self.held = Some(y);
+        true
     }
     /// `onRelease`.
     pub fn release(&mut self) {
@@ -1282,10 +1344,12 @@ impl Caret {
         atlas: &HudAtlas,
         (id, value, max): (crate::clipboard::FieldId, &mut String, usize),
         x: f32,
-    ) {
+    ) -> bool {
         if self.held && self.last_click.is_some_and(|(_, field)| field == id) {
             self.edit(id, value, max, |edit| edit.drag_to(atlas, x));
+            return true;
         }
+        false
     }
     /// The button was released: drags no longer select.
     pub fn release(&mut self) -> bool {
@@ -1645,34 +1709,7 @@ impl EditBox {
     }
     /// Draw the field; `format` styles the visible text (command colouring).
     pub fn draw(&mut self, batch: &mut HudBatch, atlas: &HudAtlas, format: Option<&Text>) {
-        let caret = self.cursor_visible();
-        self.draw_with_caret(batch, atlas, format, caret);
-    }
-    /// The first character shown (`EditBox.displayPos`): a field kept outside the box (a
-    /// mod's) hands back the scroll its last draw answered.
-    pub fn set_scroll(&mut self, first: usize) {
-        self.display = first.min(char_len(&self.value));
-    }
-    /// After a draw: the first character shown and the GUI x of each shown character
-    /// boundary, from the start of the shown text to its end.
-    pub fn shown_edges(&self, atlas: &HudAtlas) -> (usize, Vec<f32>) {
-        let rest: String = self.value.chars().skip(self.display).collect();
-        let shown = atlas.font.fit(&rest, self.inner_width());
-        let edges = (0..=shown)
-            .map(|n| self.text_x() + atlas.font.width(&rest.chars().take(n).collect::<String>()))
-            .collect();
-        (self.display, edges)
-    }
-    /// [`Self::draw`] with the caret's blink decided by the caller: `caret` shows it (when it
-    /// is in view) for a field whose blink a mod keeps.
-    pub fn draw_with_caret(
-        &mut self,
-        batch: &mut HudBatch,
-        atlas: &HudAtlas,
-        format: Option<&Text>,
-        caret: bool,
-    ) {
-        self.draw_skinned_caret(batch, atlas, format, caret, None);
+        self.draw_with_skin(batch, atlas, format, None);
     }
     /// Draw with a custom nine-slice background and the field's own caret blink.
     pub fn draw_with_skin(
@@ -1937,6 +1974,36 @@ mod tests {
     }
 
     #[test]
+    fn oversized_tiled_nine_slice_extracts_only_visible_tiles_in_phase() {
+        let mut batch = HudBatch::scratch([8, 5]);
+        let sprite = Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 0.75,
+            v1: 0.5,
+            w: 3,
+            h: 2,
+        };
+        draw_nine_slice(
+            &mut batch,
+            sprite,
+            NineSlice {
+                width: 3,
+                height: 2,
+                border: [0; 4],
+                stretch_inner: false,
+            },
+            [-536_870_912.0, 1.0, i32::MAX as f32, 6.0],
+            u32::MAX,
+        );
+        let tiles = quads(&batch);
+        assert_eq!(tiles.len(), 8);
+        assert_eq!(tiles[0], ([0.0, 1.0, 1.0, 3.0], [0.5, 0.0, 0.75, 0.5]));
+        assert_eq!(tiles[1], ([1.0, 1.0, 4.0, 3.0], [0.0, 0.0, 0.75, 0.5]));
+        assert_eq!(tiles[7], ([7.0, 3.0, 8.0, 5.0], [0.0, 0.0, 0.25, 0.5]));
+    }
+
+    #[test]
     fn button_art_selects_the_state_then_its_fallbacks() {
         let mut atlas = atlas();
         let scaling = Some(NineSlice {
@@ -2086,12 +2153,32 @@ mod tests {
             u32::MAX,
         );
         // Twelve missing glyphs advance 72 px. At time zero the 58 px overrun is fully
-        // scrolled, so glyph 10 starts at x = 10 - 58 + 5 + 9*6, y = (20 + 40 - 9) / 2 + 1 + 10.
-        // Its 5×1 top stroke is fully visible; other quads extend past the clip.
+        // scrolled, so glyph 10 starts at x = 10 - 58 + 5 + 9*6 = 11, y = (20 + 40 - 9) / 2 + 1 + 10 = 36.
+        // Its 5×8 SpecialGlyphs.MISSING quad extends to y = 44, so the unshifted clip
+        // [10, 20, 24, 40] cuts its bottom to y = 40 (4/8 of its height visible) and its
+        // shadow at (12, 37) to [12, 37, 17, 40].
+        let missing = atlas.font.missing_rect().expect("missing glyph sprite");
+        let drawn = quads(&batch);
+        let glyph10 = drawn
+            .iter()
+            .find(|(rect, _)| *rect == [11.0, 36.0, 16.0, 40.0])
+            .expect("offset glyph 10 clipped at unshifted bottom y=40");
+        assert_quad(
+            *glyph10,
+            (
+                [11.0, 36.0, 16.0, 40.0],
+                [
+                    missing.u0,
+                    missing.v0,
+                    missing.u1,
+                    missing.v0 + (missing.v1 - missing.v0) * 4.0 / 8.0,
+                ],
+            ),
+        );
         assert!(
-            quads(&batch)
+            drawn
                 .iter()
-                .any(|(rect, _)| *rect == [11.0, 36.0, 16.0, 37.0])
+                .any(|(rect, _)| *rect == [12.0, 37.0, 17.0, 40.0])
         );
         assert!(
             batch.vertices.iter().all(|v| {

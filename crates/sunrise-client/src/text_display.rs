@@ -72,41 +72,83 @@ impl Default for TextDisplayData {
     }
 }
 
+/// `org.joml.Quaternionf.slerp(Quaternionfc, float, Quaternionf)` without unit-length assertion.
+fn joml_slerp(from: [f32; 4], to: [f32; 4], alpha: f32) -> [f32; 4] {
+    let cosom = from[0] * to[0] + (from[1] * to[1] + (from[2] * to[2] + from[3] * to[3]));
+    let abs_cosom = cosom.abs();
+    let (scale0, mut scale1) = if 1.0 - abs_cosom > 1.0e-6 {
+        let sin_sqr = (-abs_cosom) * abs_cosom + 1.0;
+        let sinom = 1.0 / (f64::from(sin_sqr).sqrt() as f32);
+        let omega =
+            sunrise_core::jmath::atan2(f64::from(sin_sqr * sinom), f64::from(abs_cosom)) as f32;
+        (
+            crate::camera::joml::sin((1.0 - alpha) * omega) * sinom,
+            crate::camera::joml::sin(alpha * omega) * sinom,
+        )
+    } else {
+        (1.0 - alpha, alpha)
+    };
+    if cosom < 0.0 {
+        scale1 = -scale1;
+    }
+    std::array::from_fn(|i| scale0 * from[i] + scale1 * to[i])
+}
+
 impl TextDisplayData {
-    /// DisplayRenderer's billboard orientation followed by Transformation's T*L*S*R.
-    pub fn matrix(&self, entity: [f32; 2], camera: [f32; 2]) -> glam::Mat4 {
+    /// DisplayRenderer's camera-relative pose: translate, billboard orientation, then T*L*S*R.
+    pub fn pose(
+        &self,
+        offset: [f32; 3],
+        entity: [f32; 2],
+        camera: [f32; 2],
+    ) -> crate::camera::joml::Mat4 {
+        use crate::camera::joml::{Mat4, Quat};
+        const DEG_TO_RAD: f32 = 0.017_453_292;
         let [yaw, pitch] = match self.billboard {
             1 => [camera[0] - 180.0, entity[1]],
             2 => [entity[0], -camera[1]],
             3 => [camera[0] - 180.0, -camera[1]],
             _ => entity,
         };
-        let orientation = glam::Quat::from_euler(
-            glam::EulerRot::YXZ,
-            -yaw * 0.017_453_292,
-            pitch * 0.017_453_292,
-            0.0,
+        let orientation = Quat::rotation_yxz(-DEG_TO_RAD * yaw, DEG_TO_RAD * pitch, 0.0);
+        let mut pose = Mat4::IDENTITY;
+        pose.translate(offset[0], offset[1], offset[2]);
+        pose.rotate(orientation);
+        let mut tx = Mat4::IDENTITY;
+        tx.translation(
+            self.translation[0],
+            self.translation[1],
+            self.translation[2],
         );
-        glam::Mat4::from_quat(orientation)
-            * glam::Mat4::from_translation(self.translation.into())
-            * glam::Mat4::from_quat(glam::Quat::from_array(self.left_rotation))
-            * glam::Mat4::from_scale(self.scale.into())
-            * glam::Mat4::from_quat(glam::Quat::from_array(self.right_rotation))
+        let quat = |q: [f32; 4]| Quat {
+            x: q[0],
+            y: q[1],
+            z: q[2],
+            w: q[3],
+        };
+        tx.rotate(quat(self.left_rotation));
+        tx.scale(self.scale[0], self.scale[1], self.scale[2]);
+        tx.rotate(quat(self.right_rotation));
+        pose.mul_affine(&tx)
+    }
+
+    /// DisplayRenderer's billboard orientation followed by Transformation's T*L*S*R.
+    pub fn matrix(&self, entity: [f32; 2], camera: [f32; 2]) -> glam::Mat4 {
+        self.pose([0.0; 3], entity, camera).to_glam()
     }
 
     pub fn blend(&self, from: &Self, t: f32) -> Self {
         let mut out = self.clone();
-        for i in 0..3 {
-            out.translation[i] =
-                from.translation[i] + t * (self.translation[i] - from.translation[i]);
-            out.scale[i] = from.scale[i] + t * (self.scale[i] - from.scale[i]);
+        // Display$TransformationInterpolator.get: returns the target transform verbatim at t >= 1.
+        if t < 1.0 {
+            for i in 0..3 {
+                out.translation[i] =
+                    from.translation[i] + t * (self.translation[i] - from.translation[i]);
+                out.scale[i] = from.scale[i] + t * (self.scale[i] - from.scale[i]);
+            }
+            out.left_rotation = joml_slerp(from.left_rotation, self.left_rotation, t);
+            out.right_rotation = joml_slerp(from.right_rotation, self.right_rotation, t);
         }
-        out.left_rotation = glam::Quat::from_array(from.left_rotation)
-            .slerp(glam::Quat::from_array(self.left_rotation), t)
-            .to_array();
-        out.right_rotation = glam::Quat::from_array(from.right_rotation)
-            .slerp(glam::Quat::from_array(self.right_rotation), t)
-            .to_array();
         // Display$LinearFloatInterpolator: Mth.lerp(t, previous, current).
         out.shadow_radius = from.shadow_radius + t * (self.shadow_radius - from.shadow_radius);
         out.shadow_strength =
@@ -124,6 +166,32 @@ impl TextDisplayData {
     }
 }
 
+/// `java.lang.Math.min(double, double)`: NaN propagates and `-0.0 < +0.0`.
+fn java_min_f64(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else if a == 0.0 && b == 0.0 {
+        f64::from_bits(a.to_bits() | b.to_bits())
+    } else if a <= b {
+        a
+    } else {
+        b
+    }
+}
+
+/// `java.lang.Math.max(double, double)`: NaN propagates and `+0.0 > -0.0`.
+fn java_max_f64(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else if a == 0.0 && b == 0.0 {
+        f64::from_bits(a.to_bits() & b.to_bits())
+    } else if a >= b {
+        a
+    } else {
+        b
+    }
+}
+
 /// `Display.updateCulling`: either edge at 0 sets `noCulling`, so the renderer
 /// skips the frustum box (`DisplayRenderer.affectedByCulling`).
 pub fn no_culling(width: f32, height: f32) -> bool {
@@ -132,13 +200,24 @@ pub fn no_culling(width: f32, height: f32) -> bool {
 
 /// `Display.updateCulling` / `getInterpolatedBoundingBox` at an interpolated
 /// origin: the AABB from `(x − width/2, y, z − width/2)` to
-/// `(x + width/2, y + height, z + width/2)`.
+/// `(x + width/2, y + height, z + width/2)`, normalized like `new AABB(...)`.
 pub fn culling_box(origin: glam::DVec3, width: f32, height: f32) -> (glam::DVec3, glam::DVec3) {
-    let half = f64::from(width) * 0.5;
+    let half = f64::from(width / 2.0);
     let tall = f64::from(height);
+    let (x0, x1) = (origin.x - half, origin.x + half);
+    let (y0, y1) = (origin.y, origin.y + tall);
+    let (z0, z1) = (origin.z - half, origin.z + half);
     (
-        glam::DVec3::new(origin.x - half, origin.y, origin.z - half),
-        glam::DVec3::new(origin.x + half, origin.y + tall, origin.z + half),
+        glam::DVec3::new(
+            java_min_f64(x0, x1),
+            java_min_f64(y0, y1),
+            java_min_f64(z0, z1),
+        ),
+        glam::DVec3::new(
+            java_max_f64(x0, x1),
+            java_max_f64(y0, y1),
+            java_max_f64(z0, z1),
+        ),
     )
 }
 
@@ -402,87 +481,183 @@ impl Lines {
     pub fn height(&self) -> f32 {
         self.lines.len() as f32 * 10.0 - 1.0
     }
-    /// `submitInner`'s pose for the text, after the display's own: half a
-    /// turn about y, the mirrored 0.025 scale and `translate(1 - width / 2,
-    /// -height, 0)`.
+    /// Apply `TextDisplayRenderer.submitInner`'s pose steps in JOML order.
+    pub fn apply_pose(&self, pose: &mut crate::camera::joml::Mat4) {
+        pose.rotate_y(std::f32::consts::PI);
+        pose.scale(-0.025, -0.025, -0.025);
+        pose.translate(1.0 - self.width / 2.0, -self.height(), 0.0);
+    }
+    /// `submitInner`'s pose for the text, after the display's own.
     pub fn pose(&self) -> glam::Mat4 {
-        glam::Mat4::from_rotation_y(std::f32::consts::PI)
-            * glam::Mat4::from_scale(glam::Vec3::splat(-0.025))
-            * glam::Mat4::from_translation(glam::Vec3::new(
-                1.0 - self.width / 2.0,
-                -self.height(),
-                0.0,
-            ))
+        let mut pose = crate::camera::joml::Mat4::IDENTITY;
+        self.apply_pose(&mut pose);
+        pose.to_glam()
     }
 }
 
 /// Local geometry, independent of the display's interpolated world pose.
+/// Line wrapping (`lines`) depends only on text, line width, font epoch and bidi,
+/// while quad paint (`batch`) refreshes in place when color/flags/atlas/skins change.
 pub struct CachedQuads {
-    key: (Arc<Text>, i32, i32, i8, u8, u32, u64, u64, bool),
-    /// Drawn differently every frame: obfuscated (`§k`) glyphs, legacy codes
-    /// included, or an inline object (a head whose skin arrives later).
-    animated: bool,
+    layout_key: (Arc<Text>, i32, u64, bool),
+    paint_key: (i32, i8, u8, u32, u64, u64),
+    /// True when the text contains obfuscated (`§k`) glyphs that randomize every frame.
+    obfuscated: bool,
+    /// True when the text contains an inline object (head/sprite) sensitive to `object_skins_revision`.
+    has_inline_object: bool,
     pub lines: Lines,
     pub batch: crate::hud::HudBatch,
+    /// Prefix vertex count in `batch.vertices` belonging to `StandaloneBackground` (0 or 6).
+    pub bg_vertices: usize,
     bounds: (glam::Vec3, glam::Vec3),
 }
 
 impl CachedQuads {
+    fn layout_matches(&self, d: &TextDisplayData, epoch: u64) -> bool {
+        self.layout_key
+            == (
+                d.text.clone(),
+                d.line_width,
+                epoch,
+                crate::lang::bidirectional(),
+            )
+    }
+
     pub fn matches(&self, d: &TextDisplayData, background: u32, epoch: u64, revision: u64) -> bool {
-        !self.animated
-            && self.key
+        !self.obfuscated
+            && self.layout_matches(d, epoch)
+            && (
+                self.paint_key.0,
+                self.paint_key.1,
+                self.paint_key.2,
+                self.paint_key.3,
+                self.paint_key.4,
+            ) == (d.background, d.opacity, d.flags, background, revision)
+    }
+
+    pub fn matches_atlas(
+        &self,
+        atlas: &crate::hud::HudAtlas,
+        d: &TextDisplayData,
+        background: u32,
+    ) -> bool {
+        let skins = if self.has_inline_object {
+            atlas.object_skins_revision
+        } else {
+            self.paint_key.5
+        };
+        !self.obfuscated
+            && self.layout_matches(d, atlas.font.epoch())
+            && self.paint_key
                 == (
-                    d.text.clone(),
-                    d.line_width,
                     d.background,
                     d.opacity,
                     d.flags,
                     background,
-                    epoch,
-                    revision,
-                    crate::lang::bidirectional(),
+                    atlas.revision,
+                    skins,
                 )
     }
 
     pub fn new(atlas: &crate::hud::HudAtlas, d: &TextDisplayData, background: u32) -> Self {
         let lines = Lines::split(&atlas.font, &d.text, d.line_width);
         let mut batch = crate::hud::HudBatch::scratch([1, 1]);
-        draw(&mut batch, atlas, d, &lines, background);
-        let mut lo = glam::Vec3::splat(f32::INFINITY);
-        let mut hi = glam::Vec3::splat(f32::NEG_INFINITY);
-        for v in &batch.vertices {
-            let p = glam::Vec3::new(v.pos[0], v.pos[1], v.depth);
-            lo = lo.min(p);
-            hi = hi.max(p);
-        }
-        let animated = d
-            .text
-            .resolved()
-            .spans
-            .iter()
-            .any(|s| s.style.obfuscated == Some(true) || s.style.inline_object.is_some());
+        let bg_vertices = draw_inner(&mut batch, atlas, d, &lines, background);
+        let bounds = batch_bounds(&batch.vertices);
+        let (obfuscated, has_inline_object) = scan_dynamic(&d.text);
         Self {
-            key: (
+            layout_key: (
                 d.text.clone(),
                 d.line_width,
+                atlas.font.epoch(),
+                crate::lang::bidirectional(),
+            ),
+            paint_key: (
                 d.background,
                 d.opacity,
                 d.flags,
                 background,
-                atlas.font.epoch(),
                 atlas.revision,
-                crate::lang::bidirectional(),
+                atlas.object_skins_revision,
             ),
-            animated,
+            obfuscated,
+            has_inline_object,
             lines,
             batch,
-            bounds: (lo, hi),
+            bg_vertices,
+            bounds,
+        }
+    }
+
+    /// Refresh only what changed: rewrap `lines` only on layout changes, and rebuild
+    /// `batch` in place (reusing its vertex buffer) on paint, atlas, skin or obfuscation changes.
+    pub fn update(&mut self, atlas: &crate::hud::HudAtlas, d: &TextDisplayData, background: u32) {
+        let epoch = atlas.font.epoch();
+        let layout_changed = !self.layout_matches(d, epoch);
+        if layout_changed {
+            self.lines = Lines::split(&atlas.font, &d.text, d.line_width);
+            let (obfuscated, has_inline_object) = scan_dynamic(&d.text);
+            self.obfuscated = obfuscated;
+            self.has_inline_object = has_inline_object;
+            self.layout_key = (
+                d.text.clone(),
+                d.line_width,
+                epoch,
+                crate::lang::bidirectional(),
+            );
+        }
+        let skins = if self.has_inline_object {
+            atlas.object_skins_revision
+        } else {
+            self.paint_key.5
+        };
+        let next_paint = (
+            d.background,
+            d.opacity,
+            d.flags,
+            background,
+            atlas.revision,
+            skins,
+        );
+        if layout_changed || self.obfuscated || self.paint_key != next_paint {
+            self.batch.vertices.clear();
+            self.batch.patches.clear();
+            self.batch.inline_profiles.clear();
+            self.bg_vertices = draw_inner(&mut self.batch, atlas, d, &self.lines, background);
+            self.bounds = batch_bounds(&self.batch.vertices);
+            self.paint_key = next_paint;
         }
     }
 
     pub fn transformed_bounds(&self, matrix: glam::Mat4) -> (glam::Vec3, glam::Vec3) {
         transformed_bounds(self.bounds, matrix)
     }
+}
+
+fn scan_dynamic(text: &Text) -> (bool, bool) {
+    let resolved = text.resolved();
+    let mut obfuscated = false;
+    let mut has_inline_object = false;
+    for span in &resolved.spans {
+        if span.style.obfuscated == Some(true) {
+            obfuscated = true;
+        }
+        if span.style.inline_object.is_some() {
+            has_inline_object = true;
+        }
+    }
+    (obfuscated, has_inline_object)
+}
+
+fn batch_bounds(vertices: &[crate::hud::HudVertex]) -> (glam::Vec3, glam::Vec3) {
+    let mut lo = glam::Vec3::splat(f32::INFINITY);
+    let mut hi = glam::Vec3::splat(f32::NEG_INFINITY);
+    for v in vertices {
+        let p = glam::Vec3::new(v.pos[0], v.pos[1], v.depth);
+        lo = lo.min(p);
+        hi = hi.max(p);
+    }
+    (lo, hi)
 }
 
 fn transformed_bounds(
@@ -521,6 +696,16 @@ pub fn draw(
     lines: &Lines,
     default_background: u32,
 ) {
+    draw_inner(batch, atlas, d, lines, default_background);
+}
+
+fn draw_inner(
+    batch: &mut crate::hud::HudBatch,
+    atlas: &crate::hud::HudAtlas,
+    d: &TextDisplayData,
+    lines: &Lines,
+    default_background: u32,
+) -> usize {
     use crate::hud::rgba;
     let (width, height) = (lines.width, lines.height());
     let bg = if d.flags & 4 != 0 {
@@ -528,6 +713,7 @@ pub fn draw(
     } else {
         d.background as u32
     };
+    let mut bg_vertices = 0;
     if bg != 0 {
         let start = batch.vertices.len();
         batch.fill(
@@ -547,6 +733,7 @@ pub fn draw(
         for v in &mut batch.vertices[start..] {
             v.depth = -0.01;
         }
+        bg_vertices = batch.vertices.len() - start;
     }
     let align = d.align();
     for (i, (line, line_width)) in lines.lines.iter().enumerate() {
@@ -564,6 +751,7 @@ pub fn draw(
             d.flags & 1 != 0,
         );
     }
+    bg_vertices
 }
 
 #[cfg(test)]
@@ -736,5 +924,239 @@ mod tests {
         assert_eq!((half.shadow_radius, half.shadow_strength), (1.0, 0.625));
         assert_eq!(shown.blend(&from, 0.0).shadow_radius, 0.0);
         assert_eq!(shown.blend(&from, 1.0).shadow_strength, 0.25);
+    }
+
+    fn display_parity_witness() -> serde_json::Value {
+        let path = std::env::var("SUNRISE_DISPLAY_PARITY_WITNESS").expect(
+            "SUNRISE_DISPLAY_PARITY_WITNESS must be set (run via tools/test_displays_parity.py)",
+        );
+        let text =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+        let witness: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(witness["meta"]["game_version"], "26.3");
+        witness
+    }
+
+    fn hex_u32(v: &serde_json::Value) -> u32 {
+        u32::from_str_radix(v.as_str().unwrap(), 16).unwrap()
+    }
+
+    fn hex_u64(v: &serde_json::Value) -> u64 {
+        u64::from_str_radix(v.as_str().unwrap(), 16).unwrap()
+    }
+
+    fn hex_u32_vec(v: &serde_json::Value) -> Vec<u32> {
+        v.as_array().unwrap().iter().map(hex_u32).collect()
+    }
+
+    fn hex_u64_vec(v: &serde_json::Value) -> Vec<u64> {
+        v.as_array().unwrap().iter().map(hex_u64).collect()
+    }
+
+    #[test]
+    #[ignore = "run by tools/test_displays_parity.py"]
+    fn non_unit_quaternion_blend_and_matrix_match_vanilla_26_3_bits() {
+        let witness = display_parity_witness();
+        let case = &witness["non_unit_quat_and_blend"];
+        let from = TextDisplayData {
+            left_rotation: [0.0, 2.0, 0.0, 0.0],
+            right_rotation: [1.0, 1.0, 1.0, 1.0],
+            ..Default::default()
+        };
+        let to = TextDisplayData {
+            translation: [1.0, 2.0, 3.0],
+            left_rotation: [0.0, 0.0, 2.0, 0.0],
+            right_rotation: [0.0, 1.0, 0.0, 1.0],
+            ..Default::default()
+        };
+        let at_1 = to.blend(&from, 1.0);
+        assert_eq!(
+            at_1.left_rotation.map(f32::to_bits).to_vec(),
+            hex_u32_vec(&case["at_1_left_rot_bits"])
+        );
+        assert_eq!(
+            at_1.right_rotation.map(f32::to_bits).to_vec(),
+            hex_u32_vec(&case["at_1_right_rot_bits"])
+        );
+        assert_eq!(
+            at_1.matrix([0.0, 0.0], [0.0, 0.0])
+                .to_cols_array()
+                .map(f32::to_bits)
+                .to_vec(),
+            hex_u32_vec(&case["at_1_matrix_bits"])
+        );
+        let at_half = to.blend(&from, 0.5);
+        assert_eq!(
+            at_half.left_rotation.map(f32::to_bits).to_vec(),
+            hex_u32_vec(&case["at_half_left_rot_bits"])
+        );
+        assert_eq!(
+            at_half.right_rotation.map(f32::to_bits).to_vec(),
+            hex_u32_vec(&case["at_half_right_rot_bits"])
+        );
+        assert_eq!(
+            at_half
+                .matrix([0.0, 0.0], [0.0, 0.0])
+                .to_cols_array()
+                .map(f32::to_bits)
+                .to_vec(),
+            hex_u32_vec(&case["at_half_matrix_bits"])
+        );
+    }
+
+    #[test]
+    #[ignore = "run by tools/test_displays_parity.py"]
+    fn negative_width_or_height_culling_box_matches_vanilla_26_3_bits() {
+        let witness = display_parity_witness();
+        let case = &witness["live_culling_and_no_culling"];
+        let origin = glam::DVec3::new(0.5, 301.62, 0.5);
+        assert_eq!(
+            !no_culling(2.0, 3.0),
+            case["after_wh_affected_by_culling"].as_bool().unwrap()
+        );
+        let (lo, hi) = culling_box(origin, 2.0, 3.0);
+        assert_eq!(
+            vec![
+                lo.x.to_bits(),
+                lo.y.to_bits(),
+                lo.z.to_bits(),
+                hi.x.to_bits(),
+                hi.y.to_bits(),
+                hi.z.to_bits(),
+            ],
+            hex_u64_vec(&case["wh_culling_box_bits"])
+        );
+        assert_eq!(
+            !no_culling(-2.0, -3.0),
+            case["neg_wh_affected_by_culling"].as_bool().unwrap()
+        );
+        let (lo, hi) = culling_box(origin, -2.0, -3.0);
+        assert_eq!(
+            vec![
+                lo.x.to_bits(),
+                lo.y.to_bits(),
+                lo.z.to_bits(),
+                hi.x.to_bits(),
+                hi.y.to_bits(),
+                hi.z.to_bits(),
+            ],
+            hex_u64_vec(&case["neg_wh_culling_box_bits"])
+        );
+    }
+
+    #[test]
+    #[ignore = "run by tools/test_displays_parity.py"]
+    fn billboard_matrix_matches_vanilla_26_3_bits() {
+        let witness = display_parity_witness();
+        let cases = witness["billboard_camera_angles"]["cases"]
+            .as_array()
+            .unwrap();
+        assert_eq!(cases.len(), 16);
+        for case in cases {
+            let d = TextDisplayData {
+                billboard: case["billboard"].as_u64().unwrap() as u8,
+                translation: [-1.395, 0.3885, -4.2],
+                scale: [0.525, 0.525, 0.525],
+                left_rotation: [0.0, 1.0, 0.0, 0.0],
+                ..Default::default()
+            };
+            let entity = [
+                f32::from_bits(hex_u32(&case["entity_yRot_bits"])),
+                f32::from_bits(hex_u32(&case["entity_xRot_bits"])),
+            ];
+            let camera = [
+                f32::from_bits(hex_u32(&case["camera_yRot_bits"])),
+                f32::from_bits(hex_u32(&case["camera_xRot_bits"])),
+            ];
+            let got = d
+                .matrix(entity, camera)
+                .to_cols_array()
+                .map(f32::to_bits)
+                .to_vec();
+            assert_eq!(
+                got,
+                hex_u32_vec(&case["pose_bits"]),
+                "case {} billboard {}",
+                case["name"],
+                case["billboard"]
+            );
+        }
+    }
+
+    #[test]
+    fn blend_at_one_preserves_exact_large_translation_and_culling_halves_in_f32() {
+        let from = TextDisplayData {
+            translation: [33_554_432.0, 0.0, 0.0],
+            ..Default::default()
+        };
+        let to = TextDisplayData {
+            translation: [1.0, 0.0, 0.0],
+            ..Default::default()
+        };
+        assert_eq!(to.blend(&from, 1.0).translation[0], 1.0);
+
+        let (lo, hi) = culling_box(glam::DVec3::ZERO, f32::from_bits(1), 1.0);
+        assert_eq!((lo.x, hi.x, lo.z, hi.z), (0.0, 0.0, 0.0, 0.0));
+        let (ilo, ihi) = culling_box(glam::DVec3::ZERO, f32::INFINITY, 1.0);
+        assert_eq!((ilo.x, ihi.x), (f64::NEG_INFINITY, f64::INFINITY));
+    }
+
+    #[test]
+    fn joml_pose_keeps_exact_affine_rounding_for_large_translation_and_rotation() {
+        let angle = (-45.0_f32).to_radians();
+        let d = TextDisplayData {
+            translation: [16_777_216.0, 0.0, 0.0],
+            left_rotation: [0.0, 0.0, (angle * 0.5).sin(), (angle * 0.5).cos()],
+            ..Default::default()
+        };
+        let pose = d.pose([0.0; 3], [0.0; 2], [0.0; 2]);
+        let pt = pose.transform_position([1.0, 1.0, 0.0]);
+        assert_eq!(pt[0].to_bits(), 16_777_216.0_f32.to_bits());
+    }
+
+    #[test]
+    fn cached_quads_reuses_layout_on_paint_change_and_static_inline_head() {
+        let atlas = crate::hud::HudAtlas::boot();
+        let mut d = TextDisplayData {
+            text: std::sync::Arc::new(crate::text::Text::literal("Hello world")),
+            background: 0x4000_0000,
+            opacity: -1,
+            ..Default::default()
+        };
+        let mut cache = CachedQuads::new(&atlas, &d, 0);
+        let lines_ptr = cache.lines.lines.as_ptr();
+        let lines_len = cache.lines.lines.len();
+
+        // Changing opacity/background repaints without rebuilding line layout.
+        d.background = 0x8011_2233u32.cast_signed();
+        d.opacity = 128u8 as i8;
+        assert!(!cache.matches(&d, 0, atlas.font.epoch(), atlas.revision));
+        cache.update(&atlas, &d, 0);
+        assert_eq!(cache.lines.lines.as_ptr(), lines_ptr);
+        assert_eq!(cache.lines.lines.len(), lines_len);
+        assert!(cache.matches(&d, 0, atlas.font.epoch(), atlas.revision));
+
+        // Static inline player head stays cached across frames while atlas & skin revisions match.
+        let head = crate::entity_nbt::name_text(&sunrise_core::nbt::Tag::Compound(
+            [
+                (
+                    "object".into(),
+                    sunrise_core::nbt::Tag::String("player".into()),
+                ),
+                (
+                    "player".into(),
+                    sunrise_core::nbt::Tag::String("Alex".into()),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        ));
+        d.text = std::sync::Arc::new(head);
+        cache.update(&atlas, &d, 0);
+        assert!(!cache.obfuscated);
+        assert!(cache.has_inline_object);
+        assert!(cache.matches_atlas(&atlas, &d, 0));
+        assert!(cache.matches(&d, 0, atlas.font.epoch(), atlas.revision));
+        assert!(!cache.matches(&d, 0, atlas.font.epoch(), atlas.revision + 1));
     }
 }

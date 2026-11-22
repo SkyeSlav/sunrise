@@ -1,10 +1,10 @@
 //! Every item and recipe the game knows, made once for the mods that read
 //! them through `native_recipes`, and the recipe book's known displays; placing a
-//! recipe and creative gifts. The recipes are the window's own data — the
+//! recipe and creative gives. The recipes are the window's own data — the
 //! content root's — with the server's recipes of the types its native mods
 //! had it send (`sunrise:recipe_content`) in their place, while the known
 //! displays follow the server's book as the recipe book does.
-use super::api_values::TryIntoApi;
+use super::api_values::{TryIntoApi, TryIntoEngine};
 use super::{
     Game,
     native_hooks::{
@@ -12,7 +12,7 @@ use super::{
         NativeRecipeStack as RecipeStack, NativeRecipes as Recipes,
     },
 };
-use mod_api::{LevelRef, RecipeInput, RecipeLookupError, RecipeMatch};
+use mod_api::{CreativeGiveError, LevelRef, RecipeInput, RecipeLookupError, RecipeMatch};
 use std::{collections::HashMap, sync::Arc};
 use sunrise_client::{
     crafting::{Ingredient, qualified},
@@ -302,21 +302,6 @@ impl Game<'_> {
             .find(|category| category.recipe_type == kind)
             .cloned()
     }
-    /// `give`: `count` of `item`, refused outside a world, unless
-    /// creative and for an item the game doesn't have.
-    pub(super) fn recipe_give(&mut self, item: &str, count: u32) -> Result<(), String> {
-        if self.player.is_none() || self.res.rest.get().is_none() {
-            return Err("not in a world".into());
-        }
-        if !self.creative {
-            return Err("only in creative mode".into());
-        }
-        if self.res.items().get(item).is_none() {
-            return Err(format!("no item {item}"));
-        }
-        self.mod_give(item, count.clamp(1, 99), "");
-        Ok(())
-    }
     /// `place_recipe`: refused as `recipes.place` refuses it.
     pub(super) fn recipe_place(&mut self, book_id: i32, all: bool) -> Result<(), String> {
         if !self.mod_recipe_screen() {
@@ -330,27 +315,40 @@ impl Game<'_> {
         self.mod_place_recipe(book_id, all);
         Ok(())
     }
-    /// `recipes.give`: a creative player takes the stack as from the
-    /// creative inventory; a server hears it as `SetCreativeModeSlot`
-    /// through the inventory's sync, and refuses it unless creative.
-    pub(super) fn mod_give(&mut self, item: &str, count: u32, components: &str) {
-        let Some(max) = self.items().get(item).map(|i| i.max_stack) else {
-            return;
-        };
-        if !self.creative {
-            return;
+    /// `give_stack`: `Inventory.add` of `stack` for a creative player, components kept and up
+    /// to the stack's own maximum, then `MultiPlayerGameMode.handleCreativeModeItemAdd` for
+    /// every slot it changed, sent now: the end of the tick's sync skips creative slots while
+    /// a server menu is open. What did not fit comes back and is not dropped.
+    pub(super) fn creative_give_stack(
+        &mut self,
+        stack: &mod_api::ItemStack,
+    ) -> Result<Option<mod_api::ItemStack>, CreativeGiveError> {
+        if self.is_logical_server() || self.player.is_none() || self.res.rest.get().is_none() {
+            return Err(CreativeGiveError::Unavailable);
         }
-        let (damage, extra) = sunrise_client::item_data::command_components(components)
-            .map_or((0, None), |tag| {
-                sunrise_client::item_data::decode_components(Some(&tag))
-            });
-        let _ = self.add_stack_to_inventory(ItemStack {
-            item: item.into(),
-            // One stack at most, as the creative inventory hands out.
-            count: count.min(max),
-            damage,
-            extra,
-        });
+        if !self.creative {
+            return Err(CreativeGiveError::NotCreative);
+        }
+        let mut stack = stack.try_into_engine(self.items())?;
+        let max = self.stack_max_size(&stack);
+        let inventory = self.inventory[..36].to_vec();
+        let offhand = self.offhand.clone();
+        self.insert_stack_up_to(&mut stack, max);
+        for i in 0..36 {
+            if self.inventory[i] != inventory[i] {
+                self.remote_creative_slot_add(i);
+            }
+        }
+        if self.offhand != offhand {
+            self.remote_creative_slot_add(36);
+        }
+        if stack.count == 0 {
+            return Ok(None);
+        }
+        stack
+            .try_into_api()
+            .map(Some)
+            .map_err(|error| error.into_write_error().into())
     }
     /// The tables, made on the first call; none while the world resources
     /// they come from are still loading behind the title on a slow start.

@@ -263,10 +263,12 @@ fn default_items_insert_checks_admission_and_overrides_the_declared_rule() {
         use super::super::api_values::TryIntoApi;
         let resource = ItemResource::of(&stack.try_into_api().unwrap());
         assert_eq!(
-            mod_api::run_transaction(game, |host, tx| {
+            game.storage_transaction(|host, tx| {
                 let first = handler.insert(host, tx, &resource, 2).map_err(|_| ())?;
                 // Slot 1's declared OnlyWhenEmpty would refuse this subsequent insert.
-                let second = handler.insert_at(host, tx, 1, &resource, 1);
+                let second = handler
+                    .insert_at(host, tx, 1, &resource, 1)
+                    .map_err(|_| ())?;
                 Ok::<_, ()>((first, second))
             }),
             Ok((2, 1))
@@ -291,8 +293,8 @@ fn refusing_a_capability_insert_does_not_journal_the_slot() {
         let resource =
             ItemResource::of(&ItemStack::new("minecraft:stone", 1).try_into_api().unwrap());
         let before = (target(game).revision(), game.transactions.writes());
-        let aborted = mod_api::run_transaction(game, |game, tx| {
-            assert_eq!(handler.insert_at(game, tx, 0, &resource, 1), 0);
+        let aborted = game.storage_transaction(|game, tx| {
+            assert_eq!(handler.insert_at(game, tx, 0, &resource, 1), Ok(0));
             assert_eq!(game.journal_kept(), (0, 0));
             Err::<(), ()>(())
         });
@@ -331,9 +333,9 @@ fn admission_checks_the_offer_before_clamping_to_room() {
             .capability(game, &STORAGE, at, Some(Direction::Up))
             .unwrap();
         assert_eq!(
-            mod_api::run_transaction(game, |game, tx| {
-                let indexed = items.insert_at(game, tx, 2, &resource, 2);
-                let by_kind = storage.insert(game, tx, &resource, 2);
+            game.storage_transaction(|game, tx| {
+                let indexed = items.insert_at(game, tx, 2, &resource, 2).map_err(|_| ())?;
+                let by_kind = storage.insert(game, tx, &resource, 2).map_err(|_| ())?;
                 Ok::<_, ()>((indexed, by_kind))
             }),
             Ok((0, 0))
@@ -361,7 +363,7 @@ fn transfer_to_filtered_container(game: &mut Game<'_>, resource: &ItemResource, 
         .unwrap();
     assert_eq!(to.space_for(game, resource), Ok(amount));
     assert_eq!(
-        mod_api::run_transaction(game, |game, tx| {
+        game.storage_transaction(|game, tx| {
             mod_api::transfer(game, &from, &to, resource, amount, tx)
         }),
         Ok(amount)
@@ -438,9 +440,7 @@ fn storage_rechecks_the_entity_after_an_accepted_write_in_the_same_attempt() {
         let resource =
             ItemResource::of(&ItemStack::new("minecraft:stone", 1).try_into_api().unwrap());
         assert_eq!(
-            mod_api::run_transaction(game, |host, tx| Ok::<_, ()>(
-                handler.insert(host, tx, &resource, 65)
-            )),
+            game.storage_transaction(|host, tx| handler.insert(host, tx, &resource, 65)),
             Ok(64)
         );
         // Slot 2 would take the remainder if the query still saw slot 1 empty.

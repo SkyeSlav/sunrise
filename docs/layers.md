@@ -308,7 +308,7 @@ context for HUD and chat overlays, a settings page) comes with that type's platf
 that belongs to one subsystem (an input source, the compositor) lives in the engine crate that owns it, with the
 same shape: registered before the game runs, read-only after.
 
-**What players get.** The release builds (`game-build.yml`, so the nightly and the release; `tools/ci/build-musl.sh`)
+**What players get.** The release builds (`game-build.yml`, so the nightly and the release)
 build `sunrise-official` and ship it as `sunrise-client`, the name the launcher and players know. The fixed client
 executable in the prebuilt SDK links the same official layer and calls `sunrise_official::register()` before starting
 with native mods. The dedicated server build (`sunrise-engine`)

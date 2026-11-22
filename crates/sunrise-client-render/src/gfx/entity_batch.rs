@@ -15,14 +15,27 @@ use super::Vertex;
 /// (translucent, emissive, eyes and breeze wind entity models). Off, the tag is
 /// ignored and they stay in the first one, in their order.
 /// Sorted still-fluid geometry follows, then the two native world-canvas text materials,
-/// NORMAL and POLYGON_OFFSET. Material storage order is independent of their draw stages.
-const MATERIALS: usize = 17;
+/// NORMAL and POLYGON_OFFSET, the four native terrain model materials, banner patterns,
+/// glint-only overlays, and solid `POLYGON_OFFSET` text (`SubmitNodeCollection.canRenderAsSolid`).
+/// Material storage order is independent of their draw stages.
+const MATERIALS: usize = 20;
+/// Opaque `Font.DisplayMode.POLYGON_OFFSET` text (`SubmitNodeCollection.canRenderAsSolid`).
+pub const TEXT_POLYGON_OFFSET_SOLID_OVERLAY: u32 = 50;
+const _: () = assert!(
+    TEXT_POLYGON_OFFSET_SOLID_OVERLAY != super::EXPLICIT_PARTICLE_OVERLAY
+        && TEXT_POLYGON_OFFSET_SOLID_OVERLAY != GLINT_ONLY_OVERLAY
+        && TEXT_POLYGON_OFFSET_SOLID_OVERLAY != BANNER_PATTERN_OVERLAY
+);
 pub const TERRAIN_MODEL_SOLID_OVERLAY: u32 = 42;
 pub const TERRAIN_MODEL_CUTOUT_OVERLAY: u32 = 43;
 pub const TERRAIN_MODEL_CUTOUT_MIPPED_OVERLAY: u32 = 44;
 /// `RenderTypes.translucentMovingBlock`: a translucent block drawn outside the terrain, from the
 /// terrain sprite arrays; alpha blended, depth written, quads sorted far to near.
 pub const TERRAIN_MODEL_TRANSLUCENT_OVERLAY: u32 = 46;
+/// `RenderTypes.patternedShieldGlint`: equal-depth, no-depth-write glint-only overlay pass.
+pub const GLINT_ONLY_OVERLAY: u32 = 48;
+/// `RenderTypes.bannerPattern`: translucent-blended, no-depth-write, no-alpha-cutout pattern pass.
+pub const BANNER_PATTERN_OVERLAY: u32 = 49;
 /// The overlay of a resource pack's Polytone custom particle drawn additively
 /// (`additive_translucent`): fog tints its colour as vanilla's particle shader does, which the
 /// other additive geometry does not take.
@@ -45,6 +58,11 @@ pub const FLUID_OVERLAY: u32 = 41;
 /// (`RenderTypes.entityTranslucent`, `entityTranslucentEmissive`, `eyes`,
 /// `breezeWind`). Only the improved transparency path reads it.
 pub const OIT_ENTITY: u32 = 1 << 24;
+/// A 1-bit parity flag toggled between consecutive strictly ordered draws in the
+/// translucent block/item bucket (`FeatureRenderDispatcher.PhaseSubmitGrouper`)
+/// so classic upload sorting never mixes quads across feature or render-type boundaries.
+/// Stripped when writing `EntityBatch::combined`.
+pub const TRANSLUCENT_DRAW_FLIP: u32 = 1 << 25;
 /// `RenderPipelines.DRAGON_RAYS`: untextured colour, additive with depth writes.
 pub const DRAGON_RAYS_OVERLAY: u32 = 37;
 /// `RenderPipelines.ENTITY_CUTOUT_DISSOLVE` (the dying dragon): a pixel is dropped where the
@@ -127,6 +145,9 @@ fn material(layer: u32, oit: bool) -> usize {
         TERRAIN_MODEL_CUTOUT_OVERLAY => return 14,
         TERRAIN_MODEL_CUTOUT_MIPPED_OVERLAY => return 15,
         TERRAIN_MODEL_TRANSLUCENT_OVERLAY => return 16,
+        BANNER_PATTERN_OVERLAY => return 17,
+        GLINT_ONLY_OVERLAY => return 18,
+        TEXT_POLYGON_OFFSET_SOLID_OVERLAY => return 19,
         _ => {}
     }
     if layer & 0xffff == FLUID_OVERLAY {
@@ -173,6 +194,37 @@ struct QuadSort {
     quads: Vec<[Vertex; 4]>,
 }
 
+/// `MeshData.decodeQuadCentroids` + `VertexSorting.DISTANCE_TO_ORIGIN`:
+/// JOML `Vector3f(0, 0, 0).distanceSquared(mid)` using JOML's right-to-left unfused `Math.fma`.
+#[inline]
+fn quad_distance_sq(q: &[Vertex; 4]) -> f32 {
+    let dx = 0.0 - (q[0].pos[0] + q[2].pos[0]) * 0.5;
+    let dy = 0.0 - (q[0].pos[1] + q[2].pos[1]) * 0.5;
+    let dz = 0.0 - (q[0].pos[2] + q[2].pos[2]) * 0.5;
+    dx * dx + (dy * dy + dz * dz)
+}
+
+/// Sort `quads` in place far to near by `quad_distance_sq`, preserving arrival order on ties.
+fn sort_quads_in_place(sort: &mut QuadSort, quads: &mut [[Vertex; 4]]) {
+    if quads.len() <= 1 {
+        return;
+    }
+    sort.keys.clear();
+    sort.keys.extend(
+        quads
+            .iter()
+            .enumerate()
+            .map(|(i, q)| (quad_distance_sq(q), i as u32)),
+    );
+    sort.keys
+        .sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+    sort.quads.clear();
+    sort.quads.extend_from_slice(quads);
+    for (quad, &(_, from)) in quads.iter_mut().zip(&sort.keys) {
+        *quad = sort.quads[from as usize];
+    }
+}
+
 /// `runs` of `entities` appended to `combined`, their quads far to near, quads at one distance
 /// in the order they came: the order a stable sort gives, by an in-place unstable one on
 /// (distance, original index).
@@ -187,20 +239,48 @@ fn append_sorted(
         combined.extend_from_slice(&entities[first * 4..(first + count) * 4]);
     }
     let quads = combined[start..].as_chunks_mut::<4>().0;
-    sort.keys.clear();
-    sort.keys.extend(quads.iter().enumerate().map(|(i, q)| {
-        let distance = (0..3)
-            .map(|axis| ((q[0].pos[axis] + q[2].pos[axis]) * 0.5).powi(2))
-            .sum::<f32>();
-        (distance, i as u32)
-    }));
-    sort.keys
-        .sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
-    sort.quads.clear();
-    sort.quads.extend_from_slice(quads);
-    for (quad, &(_, from)) in quads.iter_mut().zip(&sort.keys) {
-        *quad = sort.quads[from as usize];
+    sort_quads_in_place(sort, quads);
+}
+
+/// `runs` of strictly ordered draws appended to `combined`, preserving draw order across runs
+/// and sorting quads only within each draw (`RenderTypeFeatureRenderer.Group.getOrAddDraw`),
+/// stripping `TRANSLUCENT_DRAW_FLIP` from the output vertices.
+fn append_sorted_per_run(
+    sort: &mut QuadSort,
+    combined: &mut Vec<Vertex>,
+    entities: &[Vertex],
+    runs: &[(usize, usize)],
+    sort_each: bool,
+) {
+    for &(first, count) in runs {
+        let start = combined.len();
+        combined.extend(
+            entities[first * 4..(first + count) * 4]
+                .iter()
+                .map(|v| Vertex {
+                    layer: v.layer & !TRANSLUCENT_DRAW_FLIP,
+                    ..*v
+                }),
+        );
+        if sort_each {
+            let quads = combined[start..].as_chunks_mut::<4>().0;
+            sort_quads_in_place(sort, quads);
+        }
     }
+}
+
+/// Draw-run key for `EntityBatch`: breaks runs across distinct materials, and inside material 8
+/// (`TRANSLUCENT_ITEM_OVERLAY` / `TRANSLUCENT_GLINT_ITEM_OVERLAY`) breaks runs across foil vs
+/// non-foil render types and `TRANSLUCENT_DRAW_FLIP` feature-group boundaries.
+#[inline]
+fn run_key(layer: u32, oit: bool) -> (usize, u32) {
+    let kind = material(layer, oit);
+    let draw = if kind == 8 {
+        layer & (0xffff | TRANSLUCENT_DRAW_FLIP)
+    } else {
+        0
+    };
+    (kind, draw)
 }
 
 impl EntityBatch {
@@ -224,10 +304,11 @@ impl EntityBatch {
         let mut counts = [0usize; MATERIALS];
         let mut start = 0;
         while start < quads.len() {
-            let kind = material(quads[start][0].layer, oit);
+            let key = run_key(quads[start][0].layer, oit);
+            let kind = key.0;
             let end = quads[start + 1..]
                 .iter()
-                .position(|quad| material(quad[0].layer, oit) != kind)
+                .position(|quad| run_key(quad[0].layer, oit) != key)
                 .map_or(quads.len(), |n| start + 1 + n);
             self.runs[kind].push((start, end - start));
             counts[kind] += end - start;
@@ -237,10 +318,19 @@ impl EntityBatch {
         self.combined.clear();
         self.combined
             .reserve(entity_vertices + additive.len() + hand.len() + see_through.len());
-        for runs in &self.runs[..10] {
-            for &(first, count) in runs {
-                self.combined
-                    .extend_from_slice(&entities[first * 4..(first + count) * 4]);
+        for (kind, runs) in self.runs[..10].iter().enumerate() {
+            // Classic mode sorts `RenderTypes.TEXT_POLYGON_OFFSET` (1) and each translucent
+            // block/item draw (8) far to near on upload (`VertexSorting.DISTANCE_TO_ORIGIN`),
+            // while keeping feature and foil/non-foil draw boundaries in material 8 intact.
+            if kind == 8 {
+                append_sorted_per_run(&mut self.sort, &mut self.combined, entities, runs, !oit);
+            } else if !oit && kind == 1 {
+                append_sorted(&mut self.sort, &mut self.combined, entities, runs);
+            } else {
+                for &(first, count) in runs {
+                    self.combined
+                        .extend_from_slice(&entities[first * 4..(first + count) * 4]);
+                }
             }
         }
         // `RenderTypes.eyes` is blended like the other entities, not added: with
@@ -275,6 +365,22 @@ impl EntityBatch {
         }
         // Native translucent models sort their quads far to near, as `sortOnUpload` does.
         append_sorted(&mut self.sort, &mut self.combined, entities, &self.runs[16]);
+        // `RenderTypes.bannerPattern` and `RenderTypes.patternedShieldGlint` keep submission order.
+        for runs in &self.runs[17..19] {
+            for &(first, count) in runs {
+                self.combined
+                    .extend_from_slice(&entities[first * 4..(first + count) * 4]);
+            }
+        }
+        // Opaque `TEXT_POLYGON_OFFSET` text writes depth in the solid pass; classic sorts on upload.
+        if !oit {
+            append_sorted(&mut self.sort, &mut self.combined, entities, &self.runs[19]);
+        } else {
+            for &(first, count) in &self.runs[19] {
+                self.combined
+                    .extend_from_slice(&entities[first * 4..(first + count) * 4]);
+            }
+        }
         if self.moved_additive == 0 {
             self.combined.extend_from_slice(additive);
         } else {
@@ -349,6 +455,7 @@ mod tests {
             0u32,
             SHADOW_OVERLAY,
             TEXT_POLYGON_OFFSET_OVERLAY,
+            TEXT_POLYGON_OFFSET_SOLID_OVERLAY,
             11,
             12,
             OIT_ENTITY,
@@ -360,6 +467,8 @@ mod tests {
             ENERGY_SWIRL_OVERLAY,
             WATER_MASK_OVERLAY,
             TRANSLUCENT_PARTICLE_OVERLAY,
+            BANNER_PATTERN_OVERLAY,
+            GLINT_ONLY_OVERLAY,
             7,
         ];
         let mut state = 0x1234_5678u32;
@@ -500,7 +609,10 @@ mod tests {
             &quad(0, 12.0),
             true,
         );
-        assert_eq!(counts, [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 2, 1, 1, 0]);
+        assert_eq!(
+            counts,
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 2, 1, 1, 0, 0, 0, 0]
+        );
         let xs: Vec<_> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
         assert_eq!(
             xs,
@@ -573,7 +685,7 @@ mod tests {
         let mut batch = EntityBatch::default();
         assert_eq!(
             batch.update(&entities, &additive, &quad(0, 9.0), &quad(0, 10.0), true),
-            [1, 1, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 1, 0, 0, 0, 0]
+            [1, 1, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0]
         );
         let positions: Vec<_> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
         assert_eq!(
@@ -593,6 +705,7 @@ mod tests {
         let mut combined = Vec::with_capacity(entities.len() + additive.len() + hand.len());
         let mut counts = [0; MATERIALS];
         for (i, layer) in [0, 35, 11, 12, 13, 34, 14, 15].into_iter().enumerate() {
+            let start = combined.len();
             for quad in entities.as_chunks::<4>().0 {
                 let material = match quad[0].layer {
                     35 => 35,
@@ -608,6 +721,12 @@ mod tests {
                     combined.extend_from_slice(quad);
                     counts[i] += 1;
                 }
+            }
+            if layer == 35 {
+                combined[start..]
+                    .as_chunks_mut::<4>()
+                    .0
+                    .sort_by(|a, b| quad_distance_sq(b).total_cmp(&quad_distance_sq(a)));
             }
         }
         combined.extend_from_slice(additive);
@@ -650,11 +769,136 @@ mod tests {
 
     #[test]
     fn a_tier_in_the_high_bits_keeps_the_material() {
-        for layer in [0u32, 11, 12, 15, 32, 33, 35, OIT_ENTITY] {
+        for layer in [
+            0u32,
+            11,
+            12,
+            15,
+            32,
+            33,
+            35,
+            TEXT_POLYGON_OFFSET_SOLID_OVERLAY,
+            BANNER_PATTERN_OVERLAY,
+            GLINT_ONLY_OVERLAY,
+            OIT_ENTITY,
+        ] {
             for oit in [false, true] {
                 assert_eq!(material(layer | 4 << 16, oit), material(layer, oit));
             }
         }
+    }
+
+    #[test]
+    fn solid_polygon_offset_text_sorts_in_classic_and_stays_outside_oit() {
+        let quad = |layer: u32, z: f32, id: u32| {
+            [Vertex {
+                layer,
+                pos: [0.0, 0.0, z],
+                color: id,
+                ..geometry(1, false)[0]
+            }; 4]
+        };
+        let entities: Vec<Vertex> = [
+            (TEXT_POLYGON_OFFSET_SOLID_OVERLAY, 2.0, 1),
+            (TEXT_POLYGON_OFFSET_SOLID_OVERLAY | OIT_ENTITY, 9.0, 2),
+            (TEXT_POLYGON_OFFSET_SOLID_OVERLAY, 4.0, 3),
+        ]
+        .into_iter()
+        .flat_map(|(layer, z, id)| quad(layer, z, id))
+        .collect();
+        let mut batch = EntityBatch::default();
+        for (oit, want) in [(false, [2, 3, 1]), (true, [1, 2, 3])] {
+            let counts = batch.update(&entities, &[], &[], &[], oit);
+            assert_eq!(counts[19], 3);
+            assert_eq!(counts[9], 0);
+            let ids: Vec<u32> = batch.combined.iter().step_by(4).map(|v| v.color).collect();
+            assert_eq!(ids, want);
+        }
+    }
+
+    #[test]
+    fn banner_pattern_and_glint_only_quads_stay_in_order_and_skip_oit() {
+        let quad = |layer: u32, x: f32| {
+            [Vertex {
+                layer,
+                pos: [x, 0.0, 0.0],
+                ..geometry(1, false)[0]
+            }; 4]
+        };
+        let entities: Vec<_> = [
+            (0, 1.0),
+            (BANNER_PATTERN_OVERLAY | OIT_ENTITY, 2.0),
+            (GLINT_ONLY_OVERLAY | OIT_ENTITY, 3.0),
+            (0, 4.0),
+            (BANNER_PATTERN_OVERLAY, 5.0),
+            (GLINT_ONLY_OVERLAY, 6.0),
+        ]
+        .into_iter()
+        .flat_map(|(layer, x)| quad(layer, x))
+        .collect();
+        for oit in [false, true] {
+            let mut batch = EntityBatch::default();
+            let counts = batch.update(&entities, &[], &[], &[], oit);
+            assert_eq!((counts[0], counts[9], counts[17], counts[18]), (2, 0, 2, 2));
+            let xs: Vec<_> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
+            assert_eq!(xs, [1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
+        }
+    }
+
+    #[test]
+    fn vertex_sorting_distance_breaks_4096_tie_and_keeps_translucent_draw_boundaries() {
+        let quad = |layer: u32, pos: [f32; 3], id: u32| {
+            [Vertex {
+                layer,
+                pos,
+                color: id,
+                ..geometry(1, false)[0]
+            }; 4]
+        };
+        // (4096, 1, 1) has JOML distanceSquared = 4096^2 + (1 + 1) = 16777218 > 16777216.
+        let tie_test: Vec<Vertex> = [
+            (TEXT_POLYGON_OFFSET_OVERLAY, [4096.0, 0.0, 0.0], 1),
+            (TEXT_POLYGON_OFFSET_OVERLAY, [4096.0, 1.0, 1.0], 2),
+        ]
+        .into_iter()
+        .flat_map(|(layer, pos, id)| quad(layer, pos, id))
+        .collect();
+        let mut batch = EntityBatch::default();
+        batch.update(&tie_test, &[], &[], &[], false);
+        let ids: Vec<u32> = batch.combined.iter().step_by(4).map(|v| v.color).collect();
+        assert_eq!(ids, [2, 1]);
+
+        // Foil/non-foil boundaries and TRANSLUCENT_DRAW_FLIP keep submits separate while
+        // still sorting quads inside each draw in classic mode.
+        let mixed: Vec<Vertex> = [
+            (TRANSLUCENT_ITEM_OVERLAY, [0.0, 0.0, 1.0], 10),
+            (TRANSLUCENT_ITEM_OVERLAY, [0.0, 0.0, 5.0], 11),
+            (TRANSLUCENT_GLINT_ITEM_OVERLAY, [0.0, 0.0, 2.0], 20),
+            (TRANSLUCENT_GLINT_ITEM_OVERLAY, [0.0, 0.0, 8.0], 21),
+            (
+                TRANSLUCENT_ITEM_OVERLAY | TRANSLUCENT_DRAW_FLIP,
+                [0.0, 0.0, 3.0],
+                30,
+            ),
+            (
+                TRANSLUCENT_ITEM_OVERLAY | TRANSLUCENT_DRAW_FLIP,
+                [0.0, 0.0, 6.0],
+                31,
+            ),
+        ]
+        .into_iter()
+        .flat_map(|(layer, pos, id)| quad(layer, pos, id))
+        .collect();
+        let counts = batch.update(&mixed, &[], &[], &[], false);
+        assert_eq!(counts[8], 6);
+        let ids: Vec<u32> = batch.combined.iter().step_by(4).map(|v| v.color).collect();
+        assert_eq!(ids, [11, 10, 21, 20, 31, 30]);
+        assert!(
+            batch
+                .combined
+                .iter()
+                .all(|v| v.layer & TRANSLUCENT_DRAW_FLIP == 0)
+        );
     }
 
     #[test]
@@ -680,12 +924,18 @@ mod tests {
         let mut batch = EntityBatch::default();
         // Off: the tag changes nothing, the quads keep their place.
         let counts = batch.update(&entities, &[], &[], &[], false);
-        assert_eq!(counts, [4, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            counts,
+            [4, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
         let xs: Vec<f32> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
         assert_eq!(xs, [0.0, 1.0, 2.0, 4.0, 3.0]);
         // On: the tagged quads come last, in order.
         let counts = batch.update(&entities, &[], &[], &[], true);
-        assert_eq!(counts, [2, 0, 0, 0, 0, 0, 1, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            counts,
+            [2, 0, 0, 0, 0, 0, 1, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
         let xs: Vec<f32> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
         assert_eq!(xs, [0.0, 2.0, 3.0, 1.0, 4.0]);
     }
@@ -720,6 +970,83 @@ mod tests {
         assert_eq!(batch.combined[4].layer, OIT_ENTITY | 3 << 16);
         assert_eq!(batch.combined[4].normal, [0; 4]);
         assert_eq!(batch.combined[8].layer, 2);
+    }
+
+    fn display_parity_witness() -> serde_json::Value {
+        let path = std::env::var("SUNRISE_DISPLAY_PARITY_WITNESS").expect(
+            "SUNRISE_DISPLAY_PARITY_WITNESS must be set (run via tools/test_displays_parity.py)",
+        );
+        let text =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+        let witness: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(witness["meta"]["game_version"], "26.3");
+        witness
+    }
+
+    fn witness_sort_quads(layer: u32) -> Vec<Vertex> {
+        let centroids: [[f32; 3]; 5] = [
+            [0.0, 0.0, 4.20025],
+            [0.0, 0.0, 4.89025],
+            [3.0, 4.0, 0.0],
+            [4.0, 3.0, 0.0],
+            [0.0, 0.0, 4.85080],
+        ];
+        centroids
+            .into_iter()
+            .enumerate()
+            .flat_map(|(id, c)| {
+                [Vertex {
+                    layer,
+                    pos: c,
+                    color: id as u32,
+                    ..geometry(1, false)[0]
+                }; 4]
+            })
+            .collect()
+    }
+
+    #[test]
+    #[ignore = "run by tools/test_displays_parity.py"]
+    fn classic_polygon_offset_text_quads_sort_far_to_near_like_vanilla_26_3() {
+        let witness = display_parity_witness();
+        let section = &witness["text_submit_phases_and_sorting"];
+        assert_eq!(
+            section["pipelines"]["rt_text_polygon_offset_sort_on_upload"],
+            true
+        );
+        let expected: Vec<u32> = section["vertex_sorting_distance_to_origin_order"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap() as u32)
+            .collect();
+        let entities = witness_sort_quads(TEXT_POLYGON_OFFSET_OVERLAY);
+        let mut batch = EntityBatch::default();
+        batch.update(&entities, &[], &[], &[], false);
+        let got: Vec<u32> = batch.combined.iter().step_by(4).map(|v| v.color).collect();
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    #[ignore = "run by tools/test_displays_parity.py"]
+    fn classic_translucent_item_quads_sort_far_to_near_like_vanilla_26_3() {
+        let witness = display_parity_witness();
+        assert_eq!(
+            witness["block_display_render_type_and_cull"]["translucent_sort_on_upload"],
+            true
+        );
+        let expected: Vec<u32> =
+            witness["text_submit_phases_and_sorting"]["vertex_sorting_distance_to_origin_order"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_u64().unwrap() as u32)
+                .collect();
+        let entities = witness_sort_quads(TRANSLUCENT_ITEM_OVERLAY);
+        let mut batch = EntityBatch::default();
+        batch.update(&entities, &[], &[], &[], false);
+        let got: Vec<u32> = batch.combined.iter().step_by(4).map(|v| v.color).collect();
+        assert_eq!(got, expected);
     }
 
     #[test]

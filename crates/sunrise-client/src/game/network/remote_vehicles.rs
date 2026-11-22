@@ -1041,7 +1041,11 @@ fn mount_move(m: &Mob, at: PosRot) -> S {
 }
 
 /// Avatar's VEHICLE attachment scales independently of the vehicle's seat.
-fn generic_player_seat(at: glam::DVec3, before: glam::DVec3, scale: f32) -> (Vec3, Vec3) {
+pub(super) fn generic_player_seat(
+    at: glam::DVec3,
+    before: glam::DVec3,
+    scale: f32,
+) -> (Vec3, Vec3) {
     let offset = 0.6 * f64::from(scale);
     (
         Vec3::new(at.x, at.y - offset, at.z),

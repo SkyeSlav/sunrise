@@ -42,6 +42,19 @@ pub(super) enum InvalidBundle {
     TooManyPackets,
 }
 
+impl std::fmt::Display for InvalidBundle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Terminal => {
+                "io.netty.handler.codec.DecoderException: Terminal message received in bundle"
+            }
+            Self::TooManyPackets => {
+                "io.netty.handler.codec.DecoderException: java.lang.IllegalStateException: Too many packets in a bundle"
+            }
+        })
+    }
+}
+
 impl PlayBundle {
     pub(super) fn assembling(&self) -> bool {
         self.0.is_some()

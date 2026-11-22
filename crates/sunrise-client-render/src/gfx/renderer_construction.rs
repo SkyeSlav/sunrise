@@ -1433,6 +1433,45 @@ impl Renderer {
             alpha_blend,
             false,
         );
+        // `RenderPipelines.BANNER_PATTERN`: blended without depth writes or alpha cutout.
+        let banner_pattern_pipeline = entity_pipeline_with(EntityPipelineOptions {
+            label: "Banner pattern",
+            cull_mode: None,
+            depth_write: false,
+            compare: wgpu::CompareFunction::GreaterEqual,
+            bias: entity_bias,
+            blend: alpha_blend,
+            clouds: false,
+            vertex: "vs_entity",
+            fragment: "fs_banner_pattern",
+            write_mask: wgpu::ColorWrites::ALL,
+        });
+        // `RenderPipelines.GLINT`: equal depth against the entity pass, no depth writes,
+        // `BlendFunction.GLINT` RGB addition (squared in `fs_glint`), dst alpha untouched.
+        let glint_blend = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
+        let glint_only_pipeline = entity_pipeline_with(EntityPipelineOptions {
+            label: "Glint overlay",
+            cull_mode: None,
+            depth_write: false,
+            compare: wgpu::CompareFunction::Equal,
+            bias: entity_bias,
+            blend: glint_blend,
+            clouds: false,
+            vertex: "vs_entity",
+            fragment: "fs_glint",
+            write_mask: wgpu::ColorWrites::ALL,
+        });
         let particle_pipelines = particle_draws::ParticlePipelines::new(entity_pipeline_with);
         // The hand as `entity_pipeline` draws it, in the overlays' format.
         let overlay_hand = (overlay_format != frame_format || linear_light).then(|| {
@@ -1454,6 +1493,51 @@ impl Renderer {
                 clouds: false,
                 vertex: "vs_entity",
                 fragment: "fs_entity",
+                write_mask: wgpu::ColorWrites::ALL,
+            })
+        });
+        let overlay_hand_banner_pattern =
+            (overlay_format != frame_format || linear_light).then(|| {
+                entity_pipeline_factory(
+                    &kept,
+                    &entity_layout,
+                    &cloud_layout,
+                    &entity_shader,
+                    &entity_vertex,
+                    overlay_format,
+                    false,
+                )(EntityPipelineOptions {
+                    label: "First-person hand banner pattern",
+                    cull_mode: None,
+                    depth_write: false,
+                    compare: wgpu::CompareFunction::GreaterEqual,
+                    bias: entity_bias,
+                    blend: alpha_blend,
+                    clouds: false,
+                    vertex: "vs_entity",
+                    fragment: "fs_banner_pattern",
+                    write_mask: wgpu::ColorWrites::ALL,
+                })
+            });
+        let overlay_hand_glint = (overlay_format != frame_format || linear_light).then(|| {
+            entity_pipeline_factory(
+                &kept,
+                &entity_layout,
+                &cloud_layout,
+                &entity_shader,
+                &entity_vertex,
+                overlay_format,
+                false,
+            )(EntityPipelineOptions {
+                label: "First-person hand glint",
+                cull_mode: None,
+                depth_write: false,
+                compare: wgpu::CompareFunction::Equal,
+                bias: entity_bias,
+                blend: glint_blend,
+                clouds: false,
+                vertex: "vs_entity",
+                fragment: "fs_glint",
                 write_mask: wgpu::ColorWrites::ALL,
             })
         });
@@ -2251,6 +2335,8 @@ impl Renderer {
             debug_crosshair,
             overlay_crosshair,
             overlay_hand,
+            overlay_hand_banner_pattern,
+            overlay_hand_glint,
             debug_line_buffer,
             debug_line_capacity: 4096,
             crosshair_group,
@@ -2262,6 +2348,8 @@ impl Renderer {
             world_views: views,
             world_view_side: max_side,
             entity_pipeline,
+            banner_pattern_pipeline,
+            glint_only_pipeline,
             particle_pipelines,
             explicit_opaque_particles: Default::default(),
             explicit_translucent_particles: Default::default(),

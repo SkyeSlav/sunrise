@@ -712,3 +712,69 @@ fn retained_effects_rebind_on_reconfiguration_and_refusals_do_not_block_clicks()
         });
     });
 }
+
+#[test]
+#[ignore = "daily"]
+fn client_menu_kind_names_the_server_menu_type() {
+    crate::game::in_own_process(
+        "game::remote::tests::client_menu_tests::client_menu_kind_names_the_server_menu_type",
+        || {
+            use crate::game::native_entity_refs::tests::with_game;
+            use sunrise_core::nbt::Tag;
+            use sunrise_protocol::packets::play::{self, Clientbound as C};
+
+            with_game(|game| {
+                let (_reader, _writer) = connect_menu_test(game);
+                spawn_menu_test(game);
+                let live = |game: &super::Game<'_>| {
+                    game.local_player()
+                        .and_then(|player| game.player_container_menu(player))
+                        .unwrap()
+                };
+                // InventoryMenu has no MenuType.
+                let mut old = live(game);
+                assert_eq!(old.kind(game), Some(None));
+                for (window, id) in [
+                    (1, "minecraft:furnace"),
+                    (2, "minecraft:blast_furnace"),
+                    (3, "minecraft:smoker"),
+                    (4, "minecraft:brewing_stand"),
+                    (5, "minecraft:stonecutter"),
+                    (6, "minecraft:smithing"),
+                    (7, "minecraft:generic_9x3"),
+                ] {
+                    let menu = game
+                        .remote
+                        .as_ref()
+                        .unwrap()
+                        .builtin
+                        .get("minecraft:menu")
+                        .unwrap()
+                        .id(id)
+                        .unwrap();
+                    game.handle_packet(C::OpenScreen(play::OpenScreen {
+                        container: window,
+                        menu,
+                        title: Tag::String(id.into()),
+                    }))
+                    .unwrap();
+                    let open = live(game);
+                    assert_eq!(open.kind(game), Some(Some(id.to_owned())), "{id}");
+                    // ScreenView.menu reads the same open menu name.
+                    assert_eq!(game.remote_menu_type(), Some(id));
+                    assert_eq!(old.kind(game), None, "the replaced menu's handle is stale");
+                    old = open;
+                }
+                game.handle_packet(C::ContainerClose(play::ContainerClose { container: 7 }))
+                    .unwrap();
+                assert_eq!(old.kind(game), None, "a closed menu's handle is stale");
+                // HorseInventoryMenu is opened by MountScreenOpen, which names no MenuType.
+                game.remote_set_menu(
+                    Some((8, format!("{}3", crate::game::remote::MOUNT_MENU))),
+                    None,
+                );
+                assert_eq!(live(game).kind(game), Some(None));
+            });
+        },
+    );
+}

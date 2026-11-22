@@ -44,9 +44,9 @@ use mod_api::{
     EntityRenderers, GameRuleActor, GuiLayerRegistrar, HandDrawContext, HandRender, InsideEffects,
     InteractionAttempt, InteractionKey, ItemEntityRef, LifecycleContext, LivingRef, LoadConditions,
     NoteBlockChange, ParticleProviders, PathComputationType, Placement, PlayerRef,
-    PoiTypeExtensions, RecipeBookCategory, ScreenId, ScreenOpening, ScreenTarget, ScreenshotImage,
-    ServerReloadListeners, ServerTickPhase, SpecialModelRenderers, TicketController, ToolUse,
-    VillagerProfessions, WorldPhase,
+    PoiTypeExtensions, RecipeBookCategory, ScreenId, ScreenOpening, ScreenTarget, ScreenWidgets,
+    ScreenshotImage, ServerReloadListeners, ServerTickPhase, SpecialModelRenderers,
+    TicketController, ToolUse, VillagerProfessions, WorldPhase,
 };
 use mod_api::{
     ActiveEffect, AttachmentStore, BlockClick, BlockUpdateFlags, BonemealSource, ChunkRef,
@@ -467,6 +467,7 @@ mod register_block_tint_sources;
 mod register_cauldron_fluid_content;
 mod register_cauldron_interaction;
 mod register_client_item_extensions;
+mod register_client_tooltip_component_factories;
 mod register_color_resolvers;
 mod register_configuration_tasks;
 mod register_debug_entries;
@@ -525,7 +526,7 @@ mod runtime_environment;
 mod screen_chars;
 mod screen_closing;
 mod screen_exclusion_areas;
-mod screen_hovered_item;
+mod screen_hovered_stack;
 mod screen_init_post;
 mod screen_input_post;
 #[cfg(test)]

@@ -1,0 +1,41 @@
+//! Refusals when a client mod gives the creative player a stack.
+
+/// Why [`give_stack`](crate::prelude::ItemsClientHost::give_stack) gave nothing. Every
+/// refusal leaves the inventory as it was.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub enum CreativeGiveError {
+    /// No client world is open, its resources are not loaded yet, or the host has no game
+    /// backend.
+    Unavailable,
+    /// The local player is not in creative mode.
+    NotCreative,
+    /// The game's item boundary refused the stack: an unknown item, a count above its
+    /// effective stack limit, or invalid components.
+    Stack(crate::StackWriteError),
+}
+
+impl std::fmt::Display for CreativeGiveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unavailable => f.write_str("no client world is open"),
+            Self::NotCreative => f.write_str("the player is not in creative mode"),
+            Self::Stack(error) => write!(f, "invalid stack: {error:?}"),
+        }
+    }
+}
+
+impl std::error::Error for CreativeGiveError {}
+
+impl From<crate::StackWriteError> for CreativeGiveError {
+    fn from(error: crate::StackWriteError) -> Self {
+        Self::Stack(error)
+    }
+}
+
+impl crate::NoBackend for CreativeGiveError {
+    fn no_backend() -> Self {
+        Self::Unavailable
+    }
+}

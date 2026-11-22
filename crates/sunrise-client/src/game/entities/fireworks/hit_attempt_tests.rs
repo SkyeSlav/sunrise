@@ -101,7 +101,7 @@ fn remaining_hit_callers_observe_refusals_and_zero_damage() {
                 game.player.as_mut().unwrap().client_loaded = loaded;
                 let mut rocket = Rocket::remote(900, Vec3::ZERO, Vec3::ZERO);
                 rocket.attached = attached;
-                rocket.explosions.push(FireworkExplosion::default());
+                std::sync::Arc::make_mut(&mut rocket.explosions).push(FireworkExplosion::default());
                 game.explode_rocket(&rocket);
                 check(
                     expected,
@@ -125,7 +125,7 @@ fn remaining_hit_callers_observe_refusals_and_zero_damage() {
             corpse.health = 0.0;
             game.mobs.push(corpse);
             let mut rocket = Rocket::remote(902, Vec3::ZERO, Vec3::ZERO);
-            rocket.explosions.push(FireworkExplosion::default());
+            std::sync::Arc::make_mut(&mut rocket.explosions).push(FireworkExplosion::default());
             game.explode_rocket(&rocket);
             check(
                 1,
@@ -257,7 +257,7 @@ fn remaining_hit_callers_observe_refusals_and_zero_damage() {
                     })
                     .unwrap();
                 let mut rocket = Rocket::remote(901, Vec3::ZERO, Vec3::ZERO);
-                rocket.explosions.push(FireworkExplosion::default());
+                std::sync::Arc::make_mut(&mut rocket.explosions).push(FireworkExplosion::default());
                 game.explode_rocket(&rocket);
                 check(
                     1,

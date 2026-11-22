@@ -541,7 +541,11 @@ fn a_canceled_entity_draws_no_name_tag() {
         let tag = |game: &mut Game<'_>| {
             mob_frame(game);
             let (mut out, mut see_through) = (Vec::new(), Vec::new());
-            game.name_tag_geometry(CAMERA, 1.0, &mut out, &mut see_through);
+            let mut collector = std::mem::take(&mut game.see_through_collector);
+            collector.clear();
+            game.name_tag_geometry(CAMERA, 1.0, &mut out, &mut collector);
+            collector.flush(&mut see_through);
+            game.see_through_collector = collector;
             out.len() + see_through.len()
         };
         assert!(tag(game) > 0, "a named zombie's tag");

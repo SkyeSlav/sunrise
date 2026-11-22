@@ -318,7 +318,11 @@ fn run_isolated() {
                     Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 0.5)).unwrap());
                 const PLAYER: u128 = 0x0000_0001_0000_0002_0000_0003_0000_0004;
                 native_entity_refs::tests::bind_local_player(game, 71, PLAYER);
-                game.set_mode_id(0);
+                if client {
+                    game.set_local_mode(sunrise_client::command::args::GameMode::Survival);
+                } else {
+                    game.set_mode_id(0);
+                }
                 game.selected = 0;
                 game.screen = Screen::Playing;
                 game.world

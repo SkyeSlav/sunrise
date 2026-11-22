@@ -12,6 +12,13 @@ pub use crate::chunk::block_entity::{
 use crate::items::ItemStack;
 use std::collections::HashMap;
 
+/// The number of engine slots backed by a mod container's declaration.
+pub fn mod_container_slot_count(container: &ModContainer) -> usize {
+    container
+        .slots
+        .min(usize::from(sunrise_mod_package::content::MAX_MENU_SLOTS))
+}
+
 /// Apply a mod container's typed insertion rule to the engine's item-stack representation.
 pub fn mod_container_insert_allowed(
     rule: ModContainerInsertRule,

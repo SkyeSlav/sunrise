@@ -619,7 +619,10 @@ fn special_material_batches_preserve_quad_order_and_offsets() {
     let mut batch = super::EntityBatch::default();
     let counts = batch.update(&entities, &quad(3, 5), &quad(0, 6), &quad(0, 8), false);
     let vertices = &batch.combined;
-    assert_eq!(counts, [4, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(
+        counts,
+        [4, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    );
     assert_eq!(
         vertices
             .as_chunks::<4>()

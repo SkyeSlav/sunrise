@@ -11,8 +11,7 @@ use sunrise_client::{
     text::Text,
     ui::{self, EditBox, Scroll},
 };
-use winit::event::{ElementState, KeyEvent};
-use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::keyboard::KeyCode;
 
 /// `HeaderAndFooterLayout(this, 61, 33)`.
 const HEADER: f32 = 61.0;
@@ -437,17 +436,22 @@ impl Game<'_> {
         true
     }
     /// The mouse wheel over the list (`scrollRate`: half a row).
-    pub(super) fn debug_options_scroll(&mut self, delta: f32) {
+    pub(super) fn debug_options_scroll(&mut self, delta: f32) -> bool {
         let (_, h) = self.gui_size();
-        if let Some(s) = &mut self.debug_options {
+        let scroll = self.pad_stick_scroll()
+            || self.pad_step_scroll()
+            || (HEADER..h - FOOTER).contains(&self.cursor.1);
+        if scroll && let Some(s) = &mut self.debug_options {
             let content =
                 content_height(rows(&self.registered_debug_entries, &s.search.value).len());
             s.scroll
                 .wheel(delta, ITEM / 2.0, HEADER, h - FOOTER, content);
+            return true;
         }
+        false
     }
     /// The pointer moved while the list's scrollbar is held.
-    pub(super) fn debug_options_drag(&mut self) {
+    pub(super) fn debug_options_drag(&mut self) -> bool {
         let (_, h) = self.gui_size();
         let y = self.cursor.1;
         if let Some(s) = &mut self.debug_options
@@ -456,7 +460,9 @@ impl Game<'_> {
             let content =
                 content_height(rows(&self.registered_debug_entries, &s.search.value).len());
             s.scroll.drag(y, HEADER, h - FOOTER, content);
+            return true;
         }
+        false
     }
     /// The button came up: the scrollbar lets go.
     pub(super) fn debug_options_release(&mut self) -> bool {
@@ -467,34 +473,25 @@ impl Game<'_> {
         })
     }
     /// A key the debug keys left: Escape closes, the rest edits the search.
-    pub(super) fn debug_options_key(&mut self, event: &KeyEvent) {
-        if event.state != ElementState::Pressed {
-            return;
-        }
-        let PhysicalKey::Code(key) = event.physical_key else {
-            return;
-        };
+    pub(super) fn debug_options_key(
+        &mut self,
+        key: KeyCode,
+        shortcut: Option<sunrise_client::clipboard::EditShortcut>,
+    ) -> bool {
         if key == KeyCode::Escape {
             self.close_debug_options();
-            return;
+            return true;
         }
-        let shortcut = self.edit_shortcut(event);
         let ctrl = self.has_control_down_with_quirk();
         let shift = self.has_shift_down();
-        let types_text = self.types_text();
-        let Some(s) = &mut self.debug_options else {
-            return;
+        let Some(s) = self.debug_options.as_mut().filter(|s| s.search.focused) else {
+            return false;
         };
-        if !s.search.focused {
-            return;
-        }
         if let Some(shortcut) = shortcut {
             s.search.shortcut(shortcut, &mut self.clipboard);
-        } else if !s.search.key(key, ctrl, shift)
-            && types_text
-            && let Some(text) = event.text.as_deref()
-        {
-            self.debug_options_type(text);
+            true
+        } else {
+            s.search.key(key, ctrl, shift)
         }
     }
     /// One character off the search box, for the controller's on-screen keyboard.

@@ -3634,8 +3634,8 @@ mod tests {
         // mask, draws depth only): the glint must not be one of them.
         use crate::gfx::{
             ENERGY_SWIRL_OVERLAY, SHADOW_OVERLAY, TEXT_POLYGON_OFFSET_OVERLAY,
-            TRANSLUCENT_GLINT_ITEM_OVERLAY, TRANSLUCENT_ITEM_OVERLAY, TRANSLUCENT_PARTICLE_OVERLAY,
-            WATER_MASK_OVERLAY,
+            TEXT_POLYGON_OFFSET_SOLID_OVERLAY, TRANSLUCENT_GLINT_ITEM_OVERLAY,
+            TRANSLUCENT_ITEM_OVERLAY, TRANSLUCENT_PARTICLE_OVERLAY, WATER_MASK_OVERLAY,
         };
         assert!(
             ![
@@ -3646,6 +3646,7 @@ mod tests {
                 TRANSLUCENT_GLINT_ITEM_OVERLAY,
                 ENERGY_SWIRL_OVERLAY,
                 TEXT_POLYGON_OFFSET_OVERLAY,
+                TEXT_POLYGON_OFFSET_SOLID_OVERLAY,
             ]
             .contains(&ARMOR_GLINT)
         );

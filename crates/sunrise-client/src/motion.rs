@@ -425,8 +425,10 @@ pub struct PlayerMotion {
     pub mobility_restricted: bool,
     /// Abilities.invulnerable (creative): only damage bypassing invulnerability hurts.
     pub invulnerable: bool,
-    /// Spectator mode: no physics, always flying (`Player.tick`).
+    /// `Player.isSpectator()` (`PlayerInfo` on remote clients): controls `noPhysics` and ground clearing.
     pub spectator: bool,
+    /// `MultiPlayerGameMode.isSpectator()` on remote clients; matches `spectator` on a server.
+    pub local_spectator: bool,
     pub flying: bool,
     /// Client-side `Abilities.flyingSpeed`, adjusted by the spectator scroll wheel.
     pub flying_speed: f32,
@@ -1165,8 +1167,11 @@ impl MotionWorld<'_, '_, '_> {
         let was_jumping = std::mem::replace(&mut self.player.was_jumping, jumping);
         let flying_before = self.player.flying;
         if self.player.spectator {
-            self.player.flying = true;
             self.player.ground.on_ground = false;
+        }
+        // LocalPlayer.aiStep forces flight for a local spectator only when may_fly is set.
+        if self.player.may_fly && self.player.local_spectator {
+            self.player.flying = true;
         } else if self.player.may_fly && !was_jumping && jumping && !self.player.was_auto_jump {
             // `LocalPlayer.aiStep`: mayfly gates the flight toggle, not the
             // flying state independently supplied by the server's abilities.
@@ -1273,7 +1278,7 @@ impl MotionWorld<'_, '_, '_> {
         }
         if self.player.flying {
             self.player.fall_distance = 0.0;
-            if self.player.ground.on_ground && !self.player.spectator {
+            if self.player.ground.on_ground && !self.player.local_spectator {
                 self.player.flying = false;
             }
         }
@@ -4489,6 +4494,8 @@ mod tests {
             let start = Vec3::new(20.5, 12.0, 20.5);
             let mut player = PlayerMotion::new(resources, start).unwrap();
             player.spectator = true;
+            player.local_spectator = true;
+            player.may_fly = true;
             player.flying_speed = crate::mouse::spectator_flying_speed(player.flying_speed, steps);
             MotionWorld {
                 side: crate::motion::dry_side(),
@@ -4540,6 +4547,8 @@ mod tests {
             }
             let mut player = PlayerMotion::new(resources, Vec3::new(20.5, 12.0, 20.5)).unwrap();
             player.spectator = spectator;
+            player.local_spectator = spectator;
+            player.may_fly = spectator;
             player.flying = spectator;
             player.velocity = Vec3::new(0.4, 0.1, 0.4);
             let keys = crate::sprint::Keys {
@@ -4605,6 +4614,7 @@ mod tests {
                 player.health.food.timer = 79;
                 player.invulnerable = true;
                 player.spectator = spectator;
+                player.local_spectator = spectator;
                 for _ in 0..160 {
                     player.cause_food_exhaustion(0.2);
                     player
@@ -4645,6 +4655,7 @@ mod tests {
                 player.health.food.exhaustion = 0.0;
                 player.invulnerable = false;
                 player.spectator = false;
+                player.local_spectator = false;
                 player.cause_food_exhaustion(0.2);
                 assert_eq!(player.health.food.exhaustion, 0.2);
                 player.health.food.exhaustion = 5.0;
@@ -5040,6 +5051,7 @@ mod tests {
             let mut scene = World::test_scene(assets, render, 2).unwrap();
             let mut player = PlayerMotion::new(resources, Vec3::new(20.5, 20.0, 20.5)).unwrap();
             player.spectator = spectator;
+            player.local_spectator = spectator;
             let mut w = MotionWorld {
                 side: crate::motion::dry_side(),
                 tag_items: None,
@@ -5967,6 +5979,7 @@ mod tests {
         assert!(!w.player.swimming);
         w.player.flying = false;
         w.player.spectator = true;
+        w.player.local_spectator = true;
         w.scene.set(20, 4, 20, water).unwrap();
         w.fluid_base_tick().unwrap();
         assert!(

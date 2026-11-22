@@ -2086,22 +2086,25 @@ pub(in crate::game) mod tests {
             let initial = (player.health(game), mob.health(game));
             let dirty = game.player.as_ref().unwrap().health.data.is_dirty();
             let events = game.player.as_ref().unwrap().events.len();
-            let outer = game.transaction_open();
-            assert!(player.set_health(game, 12.0));
-            assert!(mob.set_health(game, 8.0));
-            let inner = game.transaction_open();
-            assert!(player.set_health(game, 0.0));
-            assert!(mob.set_health(game, 0.0));
-            game.transaction_close(&inner, false);
-            assert_eq!(
-                (player.health(game), mob.health(game)),
-                (Some(12.0), Some(8.0))
-            );
-            let inner = game.transaction_open();
-            assert!(player.set_health(game, 0.0));
-            assert!(mob.set_health(game, 0.0));
-            game.transaction_close(&inner, true);
-            game.transaction_close(&outer, false);
+            game.storage_scope(|game, _| {
+                assert!(player.set_health(game, 12.0));
+                assert!(mob.set_health(game, 8.0));
+                game.storage_scope(|game, _| {
+                    assert!(player.set_health(game, 0.0));
+                    assert!(mob.set_health(game, 0.0));
+                    ((), false)
+                });
+                assert_eq!(
+                    (player.health(game), mob.health(game)),
+                    (Some(12.0), Some(8.0))
+                );
+                game.storage_scope(|game, _| {
+                    assert!(player.set_health(game, 0.0));
+                    assert!(mob.set_health(game, 0.0));
+                    ((), true)
+                });
+                ((), false)
+            });
             assert_eq!((player.health(game), mob.health(game)), initial);
             assert_eq!(game.player.as_ref().unwrap().health.data.is_dirty(), dirty);
             assert_eq!(game.player.as_ref().unwrap().events.len(), events);
@@ -2109,18 +2112,20 @@ pub(in crate::game) mod tests {
             assert!(!game.player.as_ref().unwrap().health.dead);
             assert!(!game.mobs[0].removed);
             game.mobs[0].needs_sync = true;
-            let abort = game.transaction_open();
-            assert!(mob.set_health(game, 0.0));
-            game.transaction_close(&abort, false);
+            game.storage_scope(|game, _| {
+                assert!(mob.set_health(game, 0.0));
+                ((), false)
+            });
             assert_eq!(mob.health(game), initial.1);
             assert!(
                 game.mobs[0].needs_sync,
                 "abort preserves preexisting sync dirtiness"
             );
-            let commit = game.transaction_open();
-            assert!(player.set_health(game, 0.0));
-            assert!(mob.set_health(game, 0.0));
-            game.transaction_close(&commit, true);
+            game.storage_scope(|game, _| {
+                assert!(player.set_health(game, 0.0));
+                assert!(mob.set_health(game, 0.0));
+                ((), true)
+            });
             assert_eq!(
                 (player.health(game), mob.health(game)),
                 (Some(0.0), Some(0.0))
@@ -2137,17 +2142,20 @@ pub(in crate::game) mod tests {
             let guest = game.player(12).unwrap();
             let living = LivingRef::new(guest.entity());
             let before = living.health(game).unwrap();
-            let tx = game.transaction_open();
-            assert!(living.set_health(game, before - 2.0));
-            let inner = game.transaction_open();
-            assert!(living.set_health(game, 0.0));
-            assert_eq!(living.health(game), Some(0.0));
-            game.transaction_close(&inner, false);
-            assert_eq!(living.health(game), Some(before - 2.0));
-            let inner = game.transaction_open();
-            assert!(living.set_health(game, 0.0));
-            game.transaction_close(&inner, true);
-            game.transaction_close(&tx, false);
+            game.storage_scope(|game, _| {
+                assert!(living.set_health(game, before - 2.0));
+                game.storage_scope(|game, _| {
+                    assert!(living.set_health(game, 0.0));
+                    assert_eq!(living.health(game), Some(0.0));
+                    ((), false)
+                });
+                assert_eq!(living.health(game), Some(before - 2.0));
+                game.storage_scope(|game, _| {
+                    assert!(living.set_health(game, 0.0));
+                    ((), true)
+                });
+                ((), false)
+            });
             assert_eq!(living.health(game), Some(before));
         });
     }

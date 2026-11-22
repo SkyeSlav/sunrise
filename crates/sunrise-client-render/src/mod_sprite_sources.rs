@@ -605,7 +605,8 @@ mod tests {
             ["srctest:item/apple", "srctest:new"],
             "the mod's, but not what a later built-in source took back"
         );
-        let generated = crate::atlas_sources::generate(&listed.sprites["srctest:new"], &|_| None);
+        let generated =
+            crate::atlas_sources::generate(&listed.sprites["srctest:new"], &|_, _| None);
         assert_eq!(
             generated,
             Some((1, 2, vec![9; 8])),

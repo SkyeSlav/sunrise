@@ -30,7 +30,7 @@ use sunrise_client::{
         self, NetConfig,
         chunks::ChunkEncoder,
         data::{BIOME_REGISTRY, SyncData},
-        entity::{EntityState, States},
+        entity::{EntityState, States, avatar_main_arm_meta},
         hub::{HostEvent, Hub, HubConfig, TickCtx, stuck_meta},
         playerdata,
     },
@@ -39,7 +39,7 @@ use sunrise_client::{
     world::World,
 };
 use sunrise_protocol::{
-    entity_data::{Value, serializer},
+    entity_data::{Particles, Value, serializer},
     packets::play::{self, Clientbound as C},
 };
 use sunrise_world::block_collision::BlockCollisionRegistry;
@@ -387,7 +387,11 @@ pub(super) fn mob_meta(
         Some(modified) => meta.extend_from_slice(&modified.meta),
         None => meta.extend(hub.effect_meta(mob_effects(m))),
     }
-    defaults.push((10, serializer::PARTICLES, Value::Particles(Vec::new())));
+    defaults.push((
+        10,
+        serializer::PARTICLES,
+        Value::Particles(Particles::new()),
+    ));
     defaults.push((11, serializer::BOOLEAN, Value::Bool(false)));
     // LivingEntity.DATA_ARROW_COUNT_ID and DATA_STINGER_COUNT_ID.
     stuck_meta(
@@ -784,9 +788,11 @@ pub(super) fn mob_meta(
             }
             defaults.push((18, serializer::BOOLEAN, Value::Bool(false)));
         }
-        // Mannequin.DATA_PROFILE, DATA_IMMOVABLE and DATA_DESCRIPTION (after Avatar's two):
-        // `updateDescription` keeps the last as a component, or none when hidden.
+        // Mannequin inherits Avatar's main arm. Its own DATA_PROFILE, DATA_IMMOVABLE
+        // and DATA_DESCRIPTION follow the Avatar entries; `updateDescription`
+        // keeps the last as a component, or none when hidden.
         "minecraft:mannequin" => {
+            avatar_main_arm_meta(e.main_hand_left, meta, defaults);
             if let Some(profile) = &m.profile {
                 meta.push((
                     17,
@@ -2298,27 +2304,35 @@ impl Game<'_> {
                         let mut host = self.lan.take()?;
                         self.cleanup_fake_player(&mut host, &guest);
                         self.lan = Some(host);
-                        self.native_guest_left(&guest);
+                        if self.announce_guest_left(&guest) {
+                            self.native_player_logged_out(guest.uuid, &guest.name);
+                        }
                         continue;
                     }
-                    // The menu they had open closes, in the level they were in
-                    // (`ServerPlayer.disconnect` -> `doCloseContainer`).
+                    // Close the guest's menu in their level before `player_logged_out`.
                     if guest.placed {
                         let back = self.dim;
                         let theirs = super::Dim::from_id(&guest.dimension);
                         if self.enter_level(theirs).is_ok() {
                             let conn = guest.conn;
                             let host = self.lan.as_mut()?;
-                            let at = host.hub.guests.len();
                             let carrier = guest.entity_id as u32;
+                            let asleep = guest.bed.is_some();
                             host.hub.guests.push(*guest);
                             // A player logging out carries no mob a mod seated on it.
                             self.eject_player_riders(Some(carrier));
+                            // ServerPlayer.disconnect: stopSleepInBed(true, false).
+                            if asleep && let Some(gi) = self.guest_index(conn) {
+                                self.wake_guest(gi, true, false);
+                            }
                             self.guest_disconnected(conn);
                             let Some(host) = self.lan.as_mut() else {
                                 unreachable!("LanHost dropped inside a tick; closes are deferred")
                             };
-                            assert_eq!(host.hub.guests[at].conn, conn);
+                            let at =
+                                host.hub.guests.connection_index(conn).expect(
+                                    "a leaving player stays listed while their menu closes",
+                                );
                             *guest = host.hub.guests.remove(at);
                         }
                         if let Err(e) = self.enter_level(back) {
@@ -2326,6 +2340,9 @@ impl Game<'_> {
                         }
                     }
                     self.lan_crafting_left(&mut guest);
+                    // PlayerList.remove: the mods hear the leave first, then the
+                    // statistic, the vehicle and the save follow.
+                    let mut guest = self.native_guest_left(guest);
                     if guest.joined() {
                         self.award_leave_game(guest.conn, guest.uuid, &guest.name);
                     }
@@ -2336,7 +2353,6 @@ impl Game<'_> {
                     host.play.remove(&guest.conn);
                     host.forget_menus(guest.conn);
                     self.clear_guest_book_connection(guest.conn);
-                    self.native_guest_left(&guest);
                     // PlayerList.remove after the logout: what it tracked stops (removePairing).
                     for e in guest.tracker.take_events() {
                         self.tell_tracking(guest.uuid, &guest.name, &e);
@@ -2799,9 +2815,10 @@ impl Game<'_> {
             // An entity that left the level since the last tick (a snowball
             // that hit) is dropped by the tracker below: its event goes out
             // first, as `Level.broadcastEntityEvent` precedes the discard.
-            let (gone, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.lan_entity_events)
-                .into_iter()
-                .partition(|(id, ..)| !entities.iter().any(|e| e.id == *id));
+            let (gone, later) = partition_lan_entity_events(
+                std::mem::take(&mut self.lan_entity_events),
+                entities.iter().map(|entity| entity.id),
+            );
             self.lan_entity_events = later;
             for (id, event) in gone {
                 host.hub.entity_event(id, event);
@@ -3612,6 +3629,42 @@ pub(super) fn living_flags(using: Option<(usize, u32)>, spinning: bool) -> i8 {
         | if spinning { 4 } else { 0 }
 }
 
+/// Tracker updates go between the two groups. Partition preserves the
+/// enqueue order within each group.
+fn partition_lan_entity_events(
+    events: Vec<(i32, i8)>,
+    mut live_ids: impl Iterator<Item = i32>,
+) -> (Vec<(i32, i8)>, Vec<(i32, i8)>) {
+    match events.as_slice() {
+        [] => (Vec::new(), Vec::new()),
+        [(id, _)] if live_ids.any(|live| live == *id) => (Vec::new(), events),
+        [_] => (events, Vec::new()),
+        _ => {
+            let present: sunrise_core::fast_hash::FxHashSet<_> = live_ids.collect();
+            events
+                .into_iter()
+                .partition(|(id, _)| !present.contains(id))
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn entity_event_partition_keeps_delivery_order() {
+    let live = [1, 3, 5];
+    let events = [(2, 17), (1, 18), (2, 19), (5, 20), (4, 21)];
+    for batch in [events.as_slice(), &events[..1], &events[1..2], &[]] {
+        let expected = batch
+            .iter()
+            .copied()
+            .partition(|(id, _)| !live.contains(id));
+        assert_eq!(
+            partition_lan_entity_events(batch.to_vec(), live.into_iter()),
+            expected
+        );
+    }
+}
+
 #[cfg(test)]
 use level_event_targets::level_event_except;
 
@@ -3629,11 +3682,7 @@ pub(in crate::game) fn client_info(
         },
         chat_colors: i.chat_colors,
         model_customisation: i.model_customisation,
-        main_hand: if i.main_hand == 1 {
-            mod_api::MainHand::Right
-        } else {
-            mod_api::MainHand::Left
-        },
+        main_hand: main_hand(i.main_hand),
         text_filtering: i.text_filtering,
         allows_listing: i.allows_listing,
         particle_status: match i.particle_status.rem_euclid(3) {
@@ -3641,6 +3690,16 @@ pub(in crate::game) fn client_info(
             1 => mod_api::ParticleStatus::Decreased,
             _ => mod_api::ParticleStatus::Minimal,
         },
+    }
+}
+
+/// `HumanoidArm.BY_ID`: 1 is the right arm, and every other id the left (0, and the id an
+/// unknown one reads as).
+pub(in crate::game) fn main_hand(id: i32) -> mod_api::MainHand {
+    if id == 1 {
+        mod_api::MainHand::Right
+    } else {
+        mod_api::MainHand::Left
     }
 }
 
@@ -4992,7 +5051,7 @@ mod tests {
                 (meta.iter())
                     .filter_map(|(index, _, value)| match value {
                         Value::Particles(list) if *index == 10 => {
-                            Some((10, list.iter().map(named).collect::<Vec<_>>()))
+                            Some((10, list.iter().map(|p| named(&p)).collect::<Vec<_>>()))
                         }
                         Value::Bool(ambient) if *index == 11 => {
                             assert!(*ambient);
@@ -5740,11 +5799,11 @@ mod merchant_packet_tests {
                     );
                 };
                 if self.abort {
-                    let aborted: Result<(), ()> = host.transaction(|host, _| {
+                    let aborted = host.transaction(|host, _| {
                         open(host);
-                        Err(())
+                        Err::<(), _>(())
                     });
-                    assert_eq!(aborted, Err(()));
+                    assert_eq!(aborted, Err(mod_api::TransactionError::Aborted(())));
                 } else {
                     open(host);
                 }

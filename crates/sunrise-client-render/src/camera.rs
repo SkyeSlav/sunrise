@@ -95,7 +95,7 @@ pub mod joml {
 
     /// `Math.sin(float)`: `java.lang.Math.sin` narrowed.
     pub fn sin(rad: f32) -> f32 {
-        f64::from(rad).sin() as f32
+        sunrise_core::jmath::sin(f64::from(rad)) as f32
     }
     /// `Math.cosFromSin(float, float)`.
     pub fn cos_from_sin(sin: f32, angle: f32) -> f32 {
@@ -455,6 +455,26 @@ pub mod joml {
         pub fn affine(m: glam::Mat4) -> Self {
             Self {
                 m: m.to_cols_array(),
+                properties: AFFINE,
+            }
+        }
+        /// `Matrix4f.mulAffine(Matrix4fc, Matrix4f)` in JOML's unfused right-to-left order.
+        pub fn mul_affine(&self, b: &Self) -> Self {
+            let mut out = [0.0f32; 16];
+            for col in 0..3 {
+                for row in 0..3 {
+                    out[col * 4 + row] = self.get(0, row) * b.get(col, 0)
+                        + (self.get(1, row) * b.get(col, 1) + self.get(2, row) * b.get(col, 2));
+                }
+            }
+            for row in 0..3 {
+                out[12 + row] = self.get(0, row) * b.get(3, 0)
+                    + (self.get(1, row) * b.get(3, 1)
+                        + (self.get(2, row) * b.get(3, 2) + self.get(3, row)));
+            }
+            out[15] = 1.0;
+            Self {
+                m: out,
                 properties: AFFINE,
             }
         }

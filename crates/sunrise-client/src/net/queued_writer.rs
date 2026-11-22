@@ -2,7 +2,7 @@
 //! while a large reply waits for the peer to drain its socket or memory pipe.
 use mod_api::{PayloadFrameStage, PayloadId, PayloadSendError, SendPacketError};
 use std::sync::{
-    Arc, Mutex, Weak,
+    Arc, Condvar, Mutex, Weak,
     atomic::{AtomicBool, Ordering},
 };
 use sunrise_mod_runtime::byte_channel::{self, Permit, ReserveError, Sender, TrySendError};
@@ -43,6 +43,7 @@ pub(crate) struct Inner {
     alive: Arc<AtomicBool>,
     retired: AtomicBool,
     terminal: Arc<AtomicBool>,
+    done: Arc<(Mutex<bool>, Condvar)>,
     phase: Mutex<(u64, Phase)>,
 }
 impl std::ops::Deref for QueuedWriter {
@@ -186,6 +187,8 @@ impl QueuedWriter {
         let running = alive.clone();
         let terminal = Arc::new(AtomicBool::new(false));
         let closing = terminal.clone();
+        let done = Arc::new((Mutex::new(false), Condvar::new()));
+        let finished = done.clone();
         let droppable: Arc<std::sync::OnceLock<Arc<crate::raw_payloads::droppable::Queue>>> =
             Arc::default();
         let droppable_woken = Arc::new(AtomicBool::new(false));
@@ -245,6 +248,9 @@ impl QueuedWriter {
                     running.store(false, Ordering::Release);
                     writer.shutdown();
                 }
+                let (lock, cvar) = &*finished;
+                *lock.lock().unwrap() = true;
+                cvar.notify_all();
                 writer
             })
             .map_err(|error| Error::new(format!("cannot start client writer: {error}")))?;
@@ -257,6 +263,7 @@ impl QueuedWriter {
             worker: Mutex::new(Some(worker)),
             retired: AtomicBool::new(false),
             terminal,
+            done,
             framing,
             closer,
             alive,
@@ -355,6 +362,38 @@ impl QueuedWriter {
         }
         self.terminal.store(true, Ordering::Release);
         sender.take();
+    }
+
+    /// Stop accepting writes, drain preceding replies, and wait for the transport shutdown to complete.
+    pub(crate) fn close_and_wait(&self) {
+        self.close_after_pending();
+        let (lock, cvar) = &*self.done;
+        let mut done = lock.lock().unwrap();
+        if !*done {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while !*done {
+                let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now())
+                else {
+                    break;
+                };
+                let (guard, timeout) = cvar.wait_timeout(done, remaining).unwrap();
+                done = guard;
+                if timeout.timed_out() {
+                    break;
+                }
+            }
+        }
+        let finished = *done;
+        drop(done);
+        self.alive.store(false, Ordering::Release);
+        if !finished {
+            // A stalled peer can block `write_all`; close the transport to unblock the worker.
+            self.closer.close();
+        }
+        if let Some(worker) = self.worker.lock().unwrap().take() {
+            let _ = worker.join();
+        }
+        self.closer.close();
     }
 
     fn seal_droppable(&self) -> bool {

@@ -74,7 +74,7 @@ impl Game<'_> {
         };
         let now = Instant::now();
         // A freeze lasts ticks: how long one takes now, for `check_freeze`.
-        let period = arrivals::tick_period(self.clock.tick_duration(), state.tps());
+        let period = arrivals::tick_period(self.clock.tick_duration(), state.transfer_tps());
         match &mut transfers.stop_wait {
             None => {
                 transfers.stopping = true;

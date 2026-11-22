@@ -131,6 +131,7 @@ mod tests {
             pos,
             facing,
             variant: variant.unwrap().into(),
+            asset: None,
             width: 1,
             height: 1,
             check_interval: 0,

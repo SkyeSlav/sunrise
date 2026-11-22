@@ -253,7 +253,7 @@ impl Game<'_> {
     /// transaction. A panic aborts the row's writes without unbalancing the pass.
     fn dispatch_general_tick(&mut self, kind: &str, epoch: mod_api::WorldEpoch, id: u32) {
         let failures = mod_api::runtime::isolated_failures();
-        let _ = mod_api::run_transaction(self, |game, _| {
+        let _ = self.storage_transaction(|game, _| {
             game.tick_general_row_scoped(kind, EntityRef::new(epoch, id));
             if mod_api::runtime::isolated_failures() == failures {
                 Ok(())

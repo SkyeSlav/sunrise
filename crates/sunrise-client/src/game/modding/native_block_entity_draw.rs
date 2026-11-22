@@ -290,6 +290,23 @@ fn in_frustum(frustum: Option<&impl Cull>, origin: Vec3, bounds: [f32; 6]) -> bo
     frustum.is_none_or(|f| f.intersects(min, max))
 }
 
+/// Whether a mod block entity with `bounds` is visible in the eye pass: global renderers
+/// (infinite bounds or `shouldRenderOffScreen`) bypass the eye-section filter, while ordinary
+/// renderers follow the same eye-visible section check as built-in block entities.
+fn mod_block_entity_visible(
+    frustum: Option<&impl Cull>,
+    origin: Vec3,
+    bounds: [f32; 6],
+    eye_visible: bool,
+    off_screen: bool,
+) -> bool {
+    let is_global = off_screen || bounds.iter().any(|b| !b.is_finite());
+    if !is_global && !eye_visible {
+        return false;
+    }
+    in_frustum(frustum, origin, bounds)
+}
+
 /// One mod block entity's frame, as `submit` gets it: the render state's
 /// partial tick, game time and light, and the pose stack the helpers draw
 /// under (`native_draw_quad`, `native_draw_cube`, `native_draw_block`).
@@ -1168,15 +1185,14 @@ impl Game<'_> {
             })
         })
     }
-    /// `native_block_entity_submit` for each of `blocks` (in drawn sections,
-    /// drawn by no vanilla renderer) whose block entity is a mod's, closer than
-    /// `BlockEntityRenderer.getViewDistance` to the camera (`shouldRender`)
-    /// and with its bounds (`native_block_entity_render_bounding_box`) in the
-    /// frustum. Entity occlusion culling is for ordinary entities; block
-    /// entities use these renderer-provided bounds instead.
+    /// `native_block_entity_submit` for each of `blocks` (paired with whether its section is
+    /// eye-visible, drawn by no vanilla renderer) whose block entity is a mod's, closer than
+    /// `BlockEntityRenderer.getViewDistance` to the camera (`shouldRender`) and with its bounds
+    /// (`native_block_entity_render_bounding_box`) in the frustum. Ordinary (non-global)
+    /// renderers require an eye-visible section, matching built-in block entities.
     pub(super) fn mod_block_entity_geometry<'a>(
         &self,
-        blocks: impl Iterator<Item = &'a ([i32; 3], u32)>,
+        blocks: impl Iterator<Item = (&'a ([i32; 3], u32), bool)>,
         camera: DVec3,
         partial: f32,
         out: &mut Vec<Vertex>,
@@ -1212,7 +1228,7 @@ impl Game<'_> {
         kept.sweep(now);
         let distances = self.view_distances();
         let light_at = |b: [i32; 3]| self.world.light(b[0], b[1], b[2]);
-        for &(pos, state) in blocks {
+        for (&(pos, state), eye_visible) in blocks {
             let corner = DVec3::new(f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2]));
             // Vec3.closerThan: strictly closer.
             let distance = distances.of(state);
@@ -1256,7 +1272,13 @@ impl Game<'_> {
                     bounds
                 },
                 |bounds, start| {
-                    if !in_frustum(self.view_frustum.as_ref(), origin, bounds) {
+                    if !mod_block_entity_visible(
+                        self.view_frustum.as_ref(),
+                        origin,
+                        bounds,
+                        eye_visible,
+                        self.block_entity_reach(state).off_screen(),
+                    ) {
                         return false;
                     }
                     self.mark_block_entity(start, state);
@@ -3704,5 +3726,121 @@ mod tests {
         kept.sweep(200);
         assert!(!kept.entries.contains_key(&gone));
         assert!(kept.get(seen, KEY, m, 200).is_some());
+    }
+
+    /// Ordinary (non-global) native block entities go through the same eye-section filter as
+    /// built-in chests: from Y=111 looking down at render distance 2, Y=60 is excluded (fresh
+    /// and cached), the inclusive edge Y=64 submits geometry, and global renderers at Y=60 stay.
+    #[test]
+    fn ordinary_native_block_entities_follow_eye_visible_sections() {
+        use std::cell::Cell;
+        use sunrise_client::gfx::{Frustum, JoinedFrusta, section_in_eye_view};
+
+        let min_y = -64;
+        let sections = 24;
+        let rd = 2;
+        let camera = DVec3::new(8.5, 111.0, 8.5);
+        let proj = Mat4::perspective_rh(70.0_f32.to_radians(), 16.0 / 9.0, 192.0, 0.05);
+        let view = sunrise_client::camera::view_matrix(0.0, 90.0);
+        let frustum = JoinedFrusta::from(Frustum::from_view_projection(proj * view));
+
+        let eye_visible = |pos: [i32; 3], cam: DVec3, view: &JoinedFrusta| {
+            let key = (pos[0] >> 4, (pos[1] >> 4) - (min_y >> 4), pos[2] >> 4);
+            section_in_eye_view(key, cam, min_y, sections, rd, Some(view), |_| true)
+        };
+
+        let outside_pos = [8, 60, 8];
+        let edge_pos = [8, 64, 8];
+        assert!(
+            !eye_visible(outside_pos, camera, &frustum),
+            "Y=60 is outside the vertical band from Y=111 at distance 2"
+        );
+        assert!(
+            eye_visible(edge_pos, camera, &frustum),
+            "Y=64 lies on the inclusive bottom edge of the band"
+        );
+
+        let mut kept = KeptGeometry::default();
+        let revision = machine();
+        let mut draw = draw();
+        let submits = Cell::new(0);
+        let render_at = |kept: &mut KeptGeometry,
+                         draw: &mut BlockEntityDraw,
+                         pos: [i32; 3],
+                         cam: DVec3,
+                         bounds: [f32; 6]| {
+            draw.vertices.clear();
+            let corner = DVec3::from_array(pos.map(f64::from));
+            let origin = (corner - cam).as_vec3();
+            let in_eye = eye_visible(pos, cam, &frustum);
+            kept.render(
+                pos,
+                KEY,
+                revision,
+                draw,
+                origin,
+                &LevelLight {
+                    origin: corner,
+                    light_at: &|_| 0xF0,
+                },
+                || bounds,
+                |b, _| mod_block_entity_visible(Some(&frustum), origin, b, in_eye, false),
+                |draw| {
+                    submits.set(submits.get() + 1);
+                    draw.keep();
+                    draw.quad(LIGHT_QUAD, [[0.0; 2]; 4], sprite(), 0xFFFFFF);
+                },
+            );
+            draw.vertices.len()
+        };
+
+        // Non-global renderer at Y=60 never submits geometry from Y=111 looking down at rd=2.
+        assert_eq!(
+            render_at(&mut kept, &mut draw, outside_pos, camera, DEFAULT_BOUNDS),
+            0
+        );
+        assert_eq!(submits.get(), 0);
+
+        // Even after caching geometry while the camera was near Y=60, Y=111 at rd=2 hides it.
+        let near_camera = DVec3::new(8.5, 65.0, 8.5);
+        assert_eq!(
+            render_at(
+                &mut kept,
+                &mut draw,
+                outside_pos,
+                near_camera,
+                DEFAULT_BOUNDS
+            ),
+            4
+        );
+        assert_eq!(submits.get(), 1);
+        assert_eq!(
+            render_at(&mut kept, &mut draw, outside_pos, camera, DEFAULT_BOUNDS),
+            0
+        );
+        assert_eq!(submits.get(), 1);
+
+        // Non-global renderer at the inclusive edge Y=64 still submits geometry.
+        assert_eq!(
+            render_at(&mut kept, &mut draw, edge_pos, camera, DEFAULT_BOUNDS),
+            4
+        );
+        assert_eq!(submits.get(), 2);
+
+        // Global renderer (infinite bounds) at Y=60 bypasses the eye-section filter.
+        let global_pos = [9, 60, 8];
+        let infinite = [
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::INFINITY,
+        ];
+        assert_eq!(
+            render_at(&mut kept, &mut draw, global_pos, camera, infinite),
+            4
+        );
+        assert_eq!(submits.get(), 3);
     }
 }

@@ -57,6 +57,16 @@ impl Game<'_> {
         let (_, _, start) = self.experience_display;
         start != 0 && start + 100 > self.visual_ticks()
     }
+    /// `Hud.nextContextualInfoState`: jump bar reads `LocalPlayer.jumpableVehicle`, not `getCameraPlayer`.
+    pub(in crate::game) fn contextual_bar(&self) -> sunrise_client::locator_bar::ContextualBar {
+        sunrise_client::locator_bar::ContextualBar::next(
+            self.waypoints.has_waypoints(),
+            self.jumpable_mount(),
+            self.mount_jumping(),
+            self.can_hurt_player(),
+            self.experience_recent(),
+        )
+    }
     /// The local player's UUID, as servers know it.
     pub(super) fn own_uuid(&self) -> u128 {
         match &self.remote {

@@ -200,7 +200,7 @@ impl Hooks for Observer {
             let slot = player.selected_slot(host).unwrap();
             let resource = ItemResource::of(event.click.stack.unwrap());
             host.transaction(|host, tx| {
-                assert_eq!(items.extract_at(host, tx, slot, &resource, 1), 1);
+                assert_eq!(items.extract_at(host, tx, slot, &resource, 1), Ok(1));
                 Ok::<_, ()>(())
             })
             .unwrap();
@@ -306,7 +306,11 @@ fn with_interaction_game_at(
             None
         };
         game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 3.5)).unwrap());
-        game.set_mode_id(1);
+        if client {
+            game.set_local_mode(sunrise_client::command::args::GameMode::Creative);
+        } else {
+            game.set_mode_id(1);
+        }
         game.world
             .chunks
             .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
@@ -400,7 +404,11 @@ fn right_click_block_forced_item_use_reaches_empty_hand_on_both_sides() {
                 );
                 // TRUE bypasses the stack/cooldown gate, not adventure's
                 // placement predicate (which an empty hand cannot satisfy).
-                game.set_mode_id(2);
+                if client {
+                    game.set_local_mode(sunrise_client::command::args::GameMode::Adventure);
+                } else {
+                    game.set_mode_id(2);
+                }
                 *observer.0.lock().unwrap() = Controls {
                     use_block: TriState::False,
                     use_item: TriState::True,
@@ -629,7 +637,11 @@ fn phase_events_replace_the_behaviour_before_its_part_on_both_sides() {
                 assert!(observer.0.lock().unwrap().steps.is_empty());
 
                 // ItemStack.useOn passes before Item.useOn in adventure mode.
-                game.set_mode_id(2);
+                if client {
+                    game.set_local_mode(sunrise_client::command::args::GameMode::Adventure);
+                } else {
+                    game.set_mode_id(2);
+                }
                 *observer.0.lock().unwrap() = Controls {
                     use_block: TriState::False,
                     ..Controls::default()
@@ -656,7 +668,11 @@ fn phase_events_replace_the_behaviour_before_its_part_on_both_sides() {
                     observer.0.lock().unwrap().steps,
                     [Step::Phase(UsePhase::ItemAfterBlock, side)]
                 );
-                game.set_mode_id(1);
+                if client {
+                    game.set_local_mode(sunrise_client::command::args::GameMode::Creative);
+                } else {
+                    game.set_mode_id(1);
+                }
 
                 // In 26.3 dousing is CampfireBlock.useItemOn, not Item.useOn:
                 // a canceled BLOCK cannot predict it or reach ITEM_AFTER_BLOCK.
@@ -734,7 +750,11 @@ fn canceled_item_results_keep_the_stack_wrappers_side_effects() {
         };
         for client in [false, true] {
             with_interaction_game(client, |game| {
-                game.set_mode_id(0);
+                if client {
+                    game.set_local_mode(sunrise_client::command::args::GameMode::Survival);
+                } else {
+                    game.set_mode_id(0);
+                }
                 let stone = game
                     .pack
                     .assets
@@ -828,7 +848,7 @@ fn a_spectator_fires_right_click_block_on_the_client_and_its_cancel_answers() {
     crate::game::api_values::install_parts(&mods).unwrap();
     mod_platform::testing::with_mods(mods, || {
         with_interaction_game(true, |game| {
-            game.set_mode_id(3);
+            game.set_local_mode(sunrise_client::command::args::GameMode::Spectator);
             assert!(game.spectator());
             let stone = game
                 .pack
@@ -880,7 +900,7 @@ fn a_spectators_passing_block_click_skips_item_use_for_both_hands() {
     crate::game::api_values::install_parts(&mods).unwrap();
     mod_platform::testing::with_mods(mods, || {
         with_interaction_game(true, |game| {
-            game.set_mode_id(3);
+            game.set_local_mode(sunrise_client::command::args::GameMode::Spectator);
             assert!(game.spectator());
             game.offhand = Some(ItemStack::new("minecraft:shield", 1));
             let stone = game
@@ -1848,7 +1868,11 @@ fn a_placed_powder_snow_bucket_leaves_a_bucket_in_hand_on_both_sides() {
     mod_platform::testing::with_mods(Vec::new().into(), || {
         for client in [false, true] {
             with_interaction_game(client, |game| {
-                game.set_mode_id(0);
+                if client {
+                    game.set_local_mode(sunrise_client::command::args::GameMode::Survival);
+                } else {
+                    game.set_mode_id(0);
+                }
                 let stone = game
                     .pack
                     .assets

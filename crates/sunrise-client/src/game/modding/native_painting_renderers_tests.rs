@@ -103,6 +103,7 @@ fn hanging(id: u32) -> Painting {
         pos: [0, 64, 0],
         facing: FACING,
         variant: Arc::from("minecraft:kebab"),
+        asset: None,
         width: WIDTH,
         height: HEIGHT,
         check_interval: 0,

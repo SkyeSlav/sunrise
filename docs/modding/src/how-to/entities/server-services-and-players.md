@@ -217,6 +217,12 @@ read the distances in chunks; `host.server_set_view_distance(d)` and
 dedicated server and return `false` otherwise. `server.properties` is not
 written.
 
+`host.server_is_published()` is `MinecraftServer.isPublished`: always true on a
+dedicated server, and on a single-player world's server only while the world is
+open to LAN, so it turns false again when the LAN closes (`/unpublish`). A rule
+meant for multiplayer only reads it when it applies, not once at start: no hook
+fires when a world is opened to LAN.
+
 `host.tick_rate_is_frozen()` is `TickRateManager.isFrozen` (`/tick freeze`): `Some(true)` while the server's
 ticking is frozen, `None` on a client. A frozen server still runs the ticks `/tick step` asks for, so
 `server_tick_start`'s `world_running` can be true while it is frozen; read this to tell a frozen server from a
@@ -322,7 +328,9 @@ wait for the outermost commit.
 local player's supported open menu, or the inventory menu when none is open; every other
 player returns `None`. `MenuRef::slot_count`, `slot` and `carried` read the client's view:
 server slot updates plus local prediction, not server authority. A menu ref becomes stale
-when that menu closes or another opens. The server retains its supported-menu restrictions.
+when that menu closes or another opens. `MenuRef::kind` returns `Some(Some(id))` for a supported
+registry-backed menu, `Some(None)` for the player's inventory menu or a mount's inventory on the client,
+and `None` for a stale, foreign or unavailable handle. The server retains its supported-menu restrictions.
 
 ## Local player reads on a client
 
@@ -337,6 +345,7 @@ kept body:
 | `on_ground` | The local player's own predicted flag; for another kept entity, its client copy's flag. |
 | `is_in_water` | The local player's own fluid state, or a kept entity's last client update. |
 | `is_swimming` | The local player's swimming flag, not the pose (crawling can share that pose). `None` for other players and other entity kinds. |
+| `main_arm` | `LivingEntity.getMainArm` for every living entity the client tracks, as the server last sent it: another player's or a mannequin's main hand, a mob's left-handed flag; the local player's own Main Hand option. `None` for an entity that isn't living. |
 
 Client reads are views, not server authority. Inventory access here is read-only;
 inventory and movement writes still require a server host.

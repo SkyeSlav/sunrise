@@ -45,10 +45,7 @@ impl Game<'_> {
                 .as_ref()
                 .map(|r| r.display_reading())
                 .unwrap_or_default(),
-            (
-                self.settings.file.int("textureFiltering"),
-                self.settings.file.int("maxAnisotropyBit"),
-            ),
+            self.settings.texture_atlas_settings(),
         )
         .and_then(|(renderer, clouds)| {
             clouds?;
@@ -140,8 +137,12 @@ impl Game<'_> {
         // LocalPlayer.refreshChatAbilities: the chat shows what the Chat option allows.
         let abilities = self.chat_abilities();
         self.ui.chat.set_abilities(&self.gui.atlas.font, abilities);
-        let render_distance_changed = self.streaming.radius != self.settings.render_distance;
-        self.streaming.radius = self.settings.render_distance;
+        let streaming_target = crate::game::entity_culling::streaming_radius_for(
+            self.settings.render_distance,
+            self.remote.as_ref().map(|r| r.view_distance),
+        );
+        let render_distance_changed = self.streaming.radius != streaming_target;
+        self.streaming.radius = streaming_target;
         // Options.renderDistance, biomeBlendRadius, ambientOcclusion,
         // cutoutLeaves, Opaque Ice and the leaf-culling mode:
         // LevelExtractor.allChanged when they change.

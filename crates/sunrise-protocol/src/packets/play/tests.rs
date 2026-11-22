@@ -1132,6 +1132,11 @@ fn unknown_packets_keep_their_payload() {
         Clientbound::Unknown(crate::ids::play::clientbound::DEBUG_EVENT, vec![1, 2, 3])
     );
     assert_eq!(p.encode()[1..], [1, 2, 3]);
+    let unregistered = crate::ids::play::clientbound::NAMES.len() as i32;
+    for bad_id in [-1, unregistered, 9999] {
+        let err = Clientbound::decode(bad_id, &[]).unwrap_err();
+        assert!(err.is_unknown_packet_id(), "id {bad_id}: {err:?}");
+    }
 }
 
 #[test]

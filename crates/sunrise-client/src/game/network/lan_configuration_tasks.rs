@@ -22,19 +22,20 @@ impl Game<'_> {
         session: &Arc<Session>,
         callback: impl FnOnce(&mut Self) -> Result<Option<usize>, String>,
     ) -> bool {
-        let seal = self.transaction_open();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(self)))
-            .unwrap_or_else(|_| Err("Configuration task callback panicked".into()));
+        let (result, commit) = self.storage_scope(|game, _| {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(game)))
+                .unwrap_or_else(|_| Err("Configuration task callback panicked".into()));
+            let commit =
+                result.is_ok() && !session.closed() && !matches!(session.result(), Some(Err(_)));
+            ((result, commit), commit)
+        });
         let ordinal = match result {
             Ok(ordinal) => ordinal,
             Err(reason) => {
-                self.transaction_close(&seal, false);
                 session.fail(reason);
                 return false;
             }
         };
-        let commit = !session.closed() && !matches!(session.result(), Some(Err(_)));
-        self.transaction_close(&seal, commit);
         if commit && let Some(ordinal) = ordinal {
             session.finish_current(ordinal);
         }

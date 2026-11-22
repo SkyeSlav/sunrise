@@ -9,14 +9,39 @@ on:
 permissions:
   contents: read
 jobs:
-  command:
+  # Only comments that mention a command start a runner. claim_command.py's parse then decides, on any line
+  # (`🤖 Agent:` on the first line, `/claim` on the next), outside the issue's concurrency group: a comment that only
+  # mentions a claim must not join it, where a newer pending run cancels an older one, a real claim's included.
+  detect:
     if: >-
       github.repository == 'sunrise-org/sunrise' && github.event_name == 'issue_comment' &&
       github.event.comment.user.type != 'Bot' && (
-      startsWith(github.event.comment.body, '/claim') ||
-      startsWith(github.event.comment.body, '/unclaim') ||
-      startsWith(github.event.comment.body, '🤖 Agent: /claim') ||
-      startsWith(github.event.comment.body, '🤖 Agent: /unclaim'))
+      contains(github.event.comment.body, '/claim') ||
+      contains(github.event.comment.body, '/unclaim'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      command: ${{ steps.parse.outputs.command }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/council.txt
+            tools/ci/nightly_set.py
+            tools/ci/claim_command.py
+          sparse-checkout-cone-mode: false
+      - name: Find the command
+        id: parse
+        env:
+          BODY: ${{ github.event.comment.body }}
+        run: python3 tools/ci/claim_command.py detect
+  command:
+    needs: detect
+    if: needs.detect.outputs.command == 'true'
     concurrency:
       group: claim-${{ github.event.issue.number }}
     runs-on: ubuntu-latest

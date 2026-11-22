@@ -461,7 +461,7 @@ fn a_newer_sdks_asset_kind_is_left_out_and_refused_only_by_a_route_that_needs_it
     let mut newer = json(&index(&[(ENGINE, b"engine")]));
     newer["assets"][SYMBOLS] = serde_json::json!({
         "sha256": sha256_hex(b"symbols"), "size": 7, "kind": "symbols", "codec": "zstd",
-        "target": "x86_64-unknown-linux-gnu", "side": "client",
+        "target": "x86_64-unknown-linux-gnu", "side": "both", "debug": true,
     });
     newer["inputs"]["routes"]["play"] = serde_json::json!({"sdk": ["runtime", "symbols"]});
     let read = Index::read(newer.to_string().as_bytes(), COMMIT).unwrap();
@@ -473,10 +473,18 @@ fn a_newer_sdks_asset_kind_is_left_out_and_refused_only_by_a_route_that_needs_it
     assert_eq!(
         read.route_assets("play", "x86_64-unknown-linux-gnu", Side::Client),
         Err(Refusal::Kind {
-            asset: "play".into(),
+            route: "play".into(),
             kind: "symbols".into(),
         })
     );
+}
+
+#[test]
+#[should_panic(expected = "route play names asset kind \"symbols\"")]
+fn the_bundled_input_list_refuses_a_route_naming_an_unknown_kind() {
+    let mut list = serde_json::to_value(inputs()).unwrap();
+    list["routes"]["play"] = serde_json::json!({"sdk": ["runtime", "symbols"]});
+    bundled(&list.to_string());
 }
 
 #[test]

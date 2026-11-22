@@ -211,7 +211,7 @@ impl Game<'_> {
         &mut self,
         camera: glam::DVec3,
         out: &mut Vec<Vertex>,
-        see_through: &mut Vec<Vertex>,
+        see_through: &mut super::text_displays::SeeThroughCollector,
     ) {
         use sunrise_client::gizmos as g;
         // `GameTestBlockHighlightRenderer.emitGizmos`: expired highlights go,
@@ -271,16 +271,21 @@ impl Game<'_> {
             }
             // `Gizmos.billboardText(..).setAlwaysOnTop()`: white, centred,
             // without a background.
+            let o = glam::DVec3::from_array(text_at) - camera;
+            let st_start = see_through.start();
             patches.extend(self.name_tag_quads(
-                glam::DVec3::from_array(text_at) - camera,
+                o,
                 &[(Text::literal(text), 0.0)],
                 0xFF,
                 false,
                 2,
                 0,
                 g::billboard_text_unit(g::ERROR_MARKER_TEXT_SCALE),
-                see_through,
+                see_through.buffer_mut(),
             ));
+            let dist_sq =
+                super::text_displays::submit_distance_sq(o.x as f32, o.y as f32, o.z as f32);
+            see_through.finish(st_start, dist_sq);
         }
         self.map_patches.extend(patches);
     }

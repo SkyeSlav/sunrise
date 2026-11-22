@@ -62,25 +62,31 @@ pub struct MenuKey(pub(crate) u32);
 // exhaustive: only the load-owned table creates keys
 pub struct EnchantmentKey(pub(crate) u32);
 
-/// The registry facts a recipe viewer needs for an enchantment.
+/// The registry facts a client mod reads for an enchantment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
 pub struct EnchantmentInfo {
     /// Registry name, including namespace.
     pub id: String,
-    /// Largest supported level.
+    /// Largest supported level (`Enchantment.getMaxLevel`).
     pub max_level: u32,
-    /// Whether the enchantment is in the curse tag.
+    /// Selection weight (`Enchantment.getWeight`, 1 to 1024).
+    pub weight: u32,
+    /// Base anvil combination cost (`Enchantment.getAnvilCost`).
+    pub anvil_cost: u32,
+    /// Whether the enchantment is in the curse tag (`#minecraft:curse`).
     pub curse: bool,
 }
 
 impl EnchantmentInfo {
     /// Construct registry facts for an enchantment.
-    pub fn new(id: String, max_level: u32, curse: bool) -> Self {
+    pub fn new(id: String, max_level: u32, weight: u32, anvil_cost: u32, curse: bool) -> Self {
         Self {
             id,
             max_level,
+            weight,
+            anvil_cost,
             curse,
         }
     }
@@ -105,8 +111,9 @@ pub struct ArmorHurt {
 }
 
 // no wire: type alias inherits the Wire policy of its tuple or Result target.
-/// A dispenser hook's answer: the slot's remainder (None empties it) and the
-/// level event to play, `CLICK` (1000), `FAIL` (1001) or 0 for none.
+/// A dispenser hook's answer: the detached remainder (None empties the slot)
+/// and the level event to play, `CLICK` (1000), `FAIL` (1001) or 0 for none.
+/// The remainder keeps its count until the final slot write applies its placement limit.
 pub type Dispensed = (Option<ItemStack>, i32);
 
 // no wire: borrowed call-scoped view; transport uses owned snapshots.

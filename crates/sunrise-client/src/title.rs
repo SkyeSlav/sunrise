@@ -1308,7 +1308,7 @@ impl Title {
         Some((row as usize, (x - left - 2.0, y - content_y)))
     }
     /// The pointer moved with the button held (`mouseDragged`).
-    pub fn drag(&mut self, cursor: (f32, f32), size: (f32, f32)) {
+    pub fn drag(&mut self, cursor: (f32, f32), size: (f32, f32)) -> bool {
         if let Some(rules) = self.rules.get_mut() {
             return rules.drag(cursor.1, size.1.ceil());
         }
@@ -1319,22 +1319,22 @@ impl Title {
             return screen.drag(cursor.1, size);
         }
         if let Mode::CreateFlat { flat, .. } = &mut self.mode {
-            flat::drag(flat, cursor, size);
-            return;
+            return flat::drag(flat, cursor, size);
         }
         if let Mode::CreateBuffet { buffet, .. } = &mut self.mode {
-            buffet::drag(buffet, cursor, size);
-            return;
+            return buffet::drag(buffet, cursor, size);
         }
-        if self.drag_missing_mods(cursor, size) {
-            return;
+        if matches!(self.mode, Mode::MissingMods { .. }) {
+            return self.drag_missing_mods(cursor, size);
         }
         if let Mode::Select { worlds, .. } = &self.mode {
             let (top, bottom, _, content) = self.world_list(worlds, size);
             let mut scroll = self.scroll.get();
-            scroll.drag(cursor.1, top, bottom, content);
+            let handled = scroll.drag(cursor.1, top, bottom, content);
             self.scroll.set(scroll);
+            return handled;
         }
+        false
     }
     /// The button was released (`onRelease`).
     pub fn release(&mut self) -> bool {
@@ -1359,30 +1359,25 @@ impl Title {
         scroll.release();
         handled
     }
-    /// Mouse wheel over the classic world and server lists, or cycle buttons. Returns true if a button was cycled.
+    /// Mouse wheel over the classic world and server lists, or cycle buttons. Returns true if a child accepted it.
     pub fn scroll_worlds(&mut self, delta: f32, cursor: (f32, f32), size: (f32, f32)) -> bool {
         if let Some(rules) = self.rules.get_mut() {
-            rules.wheel(delta, size.1.ceil());
-            return false;
+            return rules.wheel_at(delta, cursor.1, size.1.ceil());
         }
         if let Mode::Multiplayer(screen) = &mut self.mode {
-            screen.wheel(delta, cursor, size);
-            return false;
+            return screen.wheel(delta, cursor, size);
         }
         if let Mode::Realms(screen) = &mut self.mode {
-            screen.wheel(delta, cursor, size);
-            return false;
+            return screen.wheel(delta, cursor, size);
         }
         if let Mode::CreateFlat { flat, .. } = &mut self.mode {
-            flat::wheel(flat, delta, cursor, size);
-            return false;
+            return flat::wheel(flat, delta, cursor, size);
         }
         if let Mode::CreateBuffet { buffet, .. } = &mut self.mode {
-            buffet::wheel(buffet, delta, cursor, size);
-            return false;
+            return buffet::wheel(buffet, delta, cursor, size);
         }
-        if self.wheel_missing_mods(delta, size) {
-            return false;
+        if matches!(self.mode, Mode::MissingMods { .. }) {
+            return self.wheel_missing_mods(delta, cursor.1, size);
         }
         // CycleButton.mouseScrolled reads only the vertical wheel.
         if let Mode::Create {
@@ -1422,7 +1417,7 @@ impl Title {
         let mut scroll = self.scroll.get();
         scroll.wheel(delta, ROW_HEIGHT / 2.0, top, bottom, content);
         self.scroll.set(scroll);
-        false
+        true
     }
     pub fn failed(&mut self, error: impl std::fmt::Display) {
         let return_to = Box::new(self.mode.clone());
@@ -3004,7 +2999,8 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         }
     }
     /// A left press after `click` focused a field: the cursor goes under the
-    /// pointer (`EditBox.onClick`).
+    /// pointer (`EditBox.onClick`). Returns `true` when the click hit the
+    /// focused field.
     pub fn press_field(
         &mut self,
         atlas: &HudAtlas,
@@ -3029,13 +3025,14 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         false
     }
     /// The pointer moved with the button held (`EditBox.onDrag`).
-    pub fn drag_field(&mut self, atlas: &HudAtlas, x: f32) {
+    pub fn drag_field(&mut self, atlas: &HudAtlas, x: f32) -> bool {
         if self.rules.get_mut().is_some() {
-            return;
+            return false;
         }
         if let Some(field) = caret_field(&mut self.mode, self.search_focused, &mut self.search) {
-            self.caret.get_mut().drag(atlas, field, x);
+            return self.caret.get_mut().drag(atlas, field, x);
         }
+        false
     }
     /// The button was released: drags stop selecting.
     pub fn release_field(&mut self) -> bool {

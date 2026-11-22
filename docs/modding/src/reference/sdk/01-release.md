@@ -54,7 +54,8 @@ it came from, and refuse it by name at the first step that fails:
 1. `SHA256SUMS` carries Sunrise's signature for the tag `sdk-<build id>`. That signature never passes for a game
    release, and a game release's never passes for an SDK.
 2. `sdk.json` is the file those sums list, names this build, has a schema and package format the reader knows, and
-   lists only assets of known kinds and codecs under plain file names.
+   lists its assets under plain file names with codecs the reader knows. An asset of a kind the reader doesn't know
+   (a newer SDK's) is left out, and a route that needs one is refused by name only when it is used.
 3. Every other file has the size and SHA-256 `sdk.json` gives, checked before it is decoded. An archive unpacks into
    a temporary folder, renamed into place only when every entry unpacked, and is refused past an unpacked size
    limit or for any entry that is not a plain file or folder inside it.

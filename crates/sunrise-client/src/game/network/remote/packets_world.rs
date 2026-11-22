@@ -186,11 +186,7 @@ impl Game<'_> {
             // START_RAINING, STOP_RAINING, RAIN_LEVEL_CHANGE and THUNDER_LEVEL_CHANGE.
             event @ (1 | 2 | 7 | 8) => self.world.weather.game_event(event, p.param),
             3 => {
-                self.set_mode_id(p.rounded_param());
-                let mode = self.mode_id();
-                if let Some(r) = self.remote.as_mut() {
-                    r.game_mode = mode;
-                }
+                self.set_local_mode(crate::game::game_mode::mode_from_id(p.rounded_param()));
                 if self.spectator() {
                     self.reset_client_item_use();
                 }

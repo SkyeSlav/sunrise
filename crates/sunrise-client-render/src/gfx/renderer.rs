@@ -123,6 +123,8 @@ pub struct Renderer {
     /// frame's.
     pub(crate) overlay_crosshair: Option<wgpu::RenderPipeline>,
     pub(crate) overlay_hand: Option<wgpu::RenderPipeline>,
+    pub(crate) overlay_hand_banner_pattern: Option<wgpu::RenderPipeline>,
+    pub(crate) overlay_hand_glint: Option<wgpu::RenderPipeline>,
     pub(crate) debug_line_buffer: wgpu::Buffer,
     pub(crate) debug_line_capacity: u64,
     /// The terrain resources with the debug crosshair's projection
@@ -139,6 +141,10 @@ pub struct Renderer {
     pub(crate) world_views: world_views::Kept,
     pub(crate) world_view_side: u32,
     pub(crate) entity_pipeline: wgpu::RenderPipeline,
+    /// `RenderPipelines.BANNER_PATTERN` (`RenderTypes.bannerPattern`): blended no-depth-write patterns.
+    pub(crate) banner_pattern_pipeline: wgpu::RenderPipeline,
+    /// `RenderPipelines.GLINT` (`RenderTypes.patternedShieldGlint`): equal-depth glint-only pass.
+    pub(crate) glint_only_pipeline: wgpu::RenderPipeline,
     pub(super) particle_pipelines: particle_draws::ParticlePipelines,
     pub(super) explicit_opaque_particles: particle_draws::ParticleDraws,
     pub(super) explicit_translucent_particles: particle_draws::ParticleDraws,

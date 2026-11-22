@@ -1,7 +1,7 @@
 //! Observable host query semantics through real holder writes and transaction journals.
 use super::*;
 use crate::game::native_entity_refs::tests::with_game;
-use mod_api::{AttachmentQueries, AttachmentQueriesMut, AttachmentType, HostTransaction};
+use mod_api::{AttachmentQueries, AttachmentQueriesMut, AttachmentType};
 use sunrise_client::chunk::Chunk;
 
 static VALUE: AttachmentType<u32> = AttachmentType {
@@ -100,7 +100,7 @@ fn query_writes_join_transaction_journal_without_implicit_commit() {
         VALUE.set(game, Holder::Chunk([2, 3]), 10).unwrap();
         let batch = game.query_mut(&VALUE).unwrap();
         let row = batch.iter().try_next().unwrap().unwrap();
-        let aborted: Result<(), ()> = game.transaction(|host, _| {
+        let aborted: Result<(), ()> = game.storage_transaction(|host, _| {
             row.set(host, 11).unwrap();
             assert_eq!(values(host), [11]);
             let current = host.query_mut(&VALUE).unwrap();
@@ -121,7 +121,7 @@ fn query_writes_join_transaction_journal_without_implicit_commit() {
                 .unwrap(),
             10
         );
-        let committed: Result<(), ()> = game.transaction(|host, _| {
+        let committed: Result<(), ()> = game.storage_transaction(|host, _| {
             let current = host.query_mut(&VALUE).unwrap();
             current
                 .iter()
@@ -155,57 +155,57 @@ fn rolled_back_attachment_queries_cannot_read_or_write_a_resident_holder() {
         let before_row = before.iter().try_next().unwrap().unwrap();
         let scoped_holder = before_row.holder();
 
-        // Use the raw seal so the test can keep an iterator and both kinds of row,
-        // as well as their batches, alive across rollback.
-        let seal = game.transaction_open();
-        VALUE.set(game, holder, 11).unwrap();
-        let reader = game.query(&VALUE).unwrap();
-        let writer = game.query_mut(&VALUE).unwrap();
-        let mut retained_iter = reader.iter();
-        let read_row = retained_iter.try_next().unwrap().unwrap();
-        let write_row = writer.iter().try_next().unwrap().unwrap();
-        assert_eq!(
-            read_row.with_value(Default::default(), |value| {
-                game.transaction_close(&seal, false);
-                *value
-            }),
-            Err(OutsideTransaction)
-        );
-        let mut foreign = sunrise_mod_runtime::attachments::AttachmentQueryScopes::default();
-        foreign.enter();
-        assert_eq!(
-            write_row.with_value(
-                mod_api::__private::game::attachment_read_scope(&foreign),
-                |value| {
-                    game.transaction_close(&seal, false);
-                    *value
-                },
-            ),
-            Err(OutsideTransaction)
-        );
-        let host: &dyn mod_api::ServerHost = game;
-        let scope = host.attachment_read_scope().unwrap();
-        assert_eq!(read_row.with_value(scope, |value| *value), Ok(11));
-        assert_eq!(write_row.with_value(scope, |value| *value), Ok(11));
-        assert_eq!(reader.get(scope, scoped_holder), Ok(Some(11)));
-        assert_eq!(
-            reader.get(
-                mod_api::__private::game::attachment_read_scope(&foreign),
-                scoped_holder,
-            ),
-            Err(OutsideTransaction)
-        );
-        let child = game.transaction_open();
-        assert_eq!(
-            read_row.with_value(game.attachment_frame_borrow(), |value| *value),
-            Err(OutsideTransaction)
-        );
-        game.transaction_close(&child, false);
-        assert_eq!(
-            read_row.with_value(game.attachment_frame_borrow(), |value| *value),
-            Ok(11)
-        );
-        game.transaction_close(&seal, false);
+        let reader = std::cell::OnceCell::new();
+        let writer = std::cell::OnceCell::new();
+        let (mut retained_iter, read_row, write_row) = game.storage_scope(|game, _| {
+            VALUE.set(game, holder, 11).unwrap();
+            let reader = reader.get_or_init(|| game.query(&VALUE).unwrap());
+            let writer = writer.get_or_init(|| game.query_mut(&VALUE).unwrap());
+            let mut retained_iter = reader.iter();
+            let read_row = retained_iter.try_next().unwrap().unwrap();
+            let write_row = writer.iter().try_next().unwrap().unwrap();
+            assert_eq!(
+                read_row.with_value(Default::default(), |value| {
+                    panic!("backend-less scope read ran: {value}")
+                }),
+                Err(OutsideTransaction)
+            );
+            let mut foreign = sunrise_mod_runtime::attachments::AttachmentQueryScopes::default();
+            foreign.enter();
+            assert_eq!(
+                write_row.with_value(
+                    mod_api::__private::game::attachment_read_scope(&foreign),
+                    |value| { panic!("foreign scope read ran: {value}") },
+                ),
+                Err(OutsideTransaction)
+            );
+            let host: &dyn mod_api::ServerHost = game;
+            let scope = host.attachment_read_scope().unwrap();
+            assert_eq!(read_row.with_value(scope, |value| *value), Ok(11));
+            assert_eq!(write_row.with_value(scope, |value| *value), Ok(11));
+            assert_eq!(reader.get(scope, scoped_holder), Ok(Some(11)));
+            assert_eq!(
+                reader.get(
+                    mod_api::__private::game::attachment_read_scope(&foreign),
+                    scoped_holder,
+                ),
+                Err(OutsideTransaction)
+            );
+            game.storage_scope(|game, _| {
+                assert_eq!(
+                    read_row.with_value(game.attachment_frame_borrow(), |value| *value),
+                    Err(OutsideTransaction)
+                );
+                ((), false)
+            });
+            assert_eq!(
+                read_row.with_value(game.attachment_frame_borrow(), |value| *value),
+                Ok(11)
+            );
+            ((retained_iter, read_row, write_row), false)
+        });
+        let reader = reader.get().unwrap();
+        let writer = writer.get().unwrap();
 
         assert_eq!(values(game), [10]);
         assert_eq!(

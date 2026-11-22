@@ -48,22 +48,23 @@ fn current_dimension_capture_and_foreign_residency_validation() {
             .set(&mut b_attachments, Holder::Entity(313), 8)
             .unwrap();
         b_attachments.bind_index(&game.attachment_indexes[&game.dim], b);
-        let seal = game.transaction_open();
-        let (_, value, valid_b) = capture(game)
-            .into_iter()
-            .find(|(holder, _, _)| *holder == b)
-            .unwrap();
-        assert_eq!(value, 8);
-        let host: &dyn mod_api::ServerHost = game;
-        assert_eq!(host.attachment_validate_write(valid_b.clone()), Ok(()));
-        game.dim = Dim::Nether;
-        let host: &dyn mod_api::ServerHost = game;
-        assert_eq!(
-            host.attachment_validate_write(valid_b.clone()),
-            Err(AttachmentRowError::StaleHolder)
-        );
-        game.dim = Dim::Overworld;
-        game.transaction_close(&seal, false);
+        let valid_b = game.storage_scope(|game, _| {
+            let (_, value, valid_b) = capture(game)
+                .into_iter()
+                .find(|(holder, _, _)| *holder == b)
+                .unwrap();
+            assert_eq!(value, 8);
+            let host: &dyn mod_api::ServerHost = game;
+            assert_eq!(host.attachment_validate_write(valid_b.clone()), Ok(()));
+            game.dim = Dim::Nether;
+            let host: &dyn mod_api::ServerHost = game;
+            assert_eq!(
+                host.attachment_validate_write(valid_b.clone()),
+                Err(AttachmentRowError::StaleHolder)
+            );
+            game.dim = Dim::Overworld;
+            (valid_b, false)
+        });
 
         let foreign = Arc::new(Mutex::new(AttachmentIndex::default()));
         let mut foreign_map = Attachments::default();

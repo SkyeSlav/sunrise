@@ -323,10 +323,22 @@ class ConcurrentClaimTests(unittest.TestCase):
             def held_issues(self, login):
                 return next(self.counts)
 
+        racing = Racing()
         with self.assertRaisesRegex(cc.Refused, "at the same moment"):
-            do("/claim", Racing())
-        text, api = do("/claim", Fake(held=[held(n) for n in range(10, 19)]))  # the recount sees 9 + this one: kept
+            do("/claim", racing)
+        self.assertEqual([c[:3] for c in racing.calls if c[0] in ("assign", "unassign")],
+                         [("assign", 5, "newcomer"), ("unassign", 5, "newcomer")])
+
+        class Tenth(Fake):
+            """9 held at the first count; the recount sees those and this claim, exactly the limit: kept."""
+            counts = iter([[held(n) for n in range(10, 19)], [held(n) for n in range(10, 19)] + [held(5)]])
+
+            def held_issues(self, login):
+                return next(self.counts)
+
+        text, api = do("/claim", Tenth())
         self.assertIsNone(text)
+        self.assertNotIn(("unassign", 5, "newcomer"), api.calls)
 
 
     def test_a_failed_recount_undoes_the_claim(self):
@@ -475,10 +487,11 @@ class WorkflowTests(unittest.TestCase):
     def test_workflow_is_safe(self):
         text = (ROOT / ".github/workflows/fork-claim.yml").read_text()
         run_lines = [l.strip() for l in text.splitlines() if l.strip().startswith("run:")]
-        self.assertEqual(run_lines, ["run: python3 tools/fork/claim.py command",
+        self.assertEqual(run_lines, ["run: python3 tools/ci/claim_command.py detect",
+                                     "run: python3 tools/fork/claim.py command",
                                      "run: python3 tools/fork/claim.py release"])
-        self.assertEqual(text.count("persist-credentials: false"), 2)
-        self.assertEqual(text.count("ref: ${{ github.event.repository.default_branch }}"), 2)
+        self.assertEqual(text.count("persist-credentials: false"), 3)
+        self.assertEqual(text.count("ref: ${{ github.event.repository.default_branch }}"), 3)
         self.assertNotIn("pull_request_target", text)
         self.assertNotIn("contents: write", text)
         self.assertNotIn("pull-requests: write", text)
@@ -486,14 +499,42 @@ class WorkflowTests(unittest.TestCase):
             if "github.event.comment" in line and "run:" in line:
                 self.fail(f"comment data in a shell line: {line}")
 
+    def test_a_command_on_a_later_line_starts_the_job(self):
+        # The job's condition is the first filter: one that only looks at the start of the comment skips the job, and
+        # parse never sees `🤖 Agent:\n/claim` (#4474, 2026-11-22).
+        text = (ROOT / ".github/workflows/fork-claim.yml").read_text()
+        condition = text.split("  detect:\n", 1)[1].split("    runs-on:", 1)[0]
+        self.assertNotIn("startsWith(github.event.comment.body", condition)
+        for command in ("/claim", "/unclaim"):
+            self.assertIn(f"contains(github.event.comment.body, '{command}')", condition)
+        self.assertEqual(cc.parse("🤖 Agent:\n/claim"), cc.Command("claim"))
+
+    def test_only_a_comment_holding_a_command_joins_the_issues_concurrency_group(self):
+        # A newer pending run in a group cancels the older one: a comment that only mentions /claim must not displace a
+        # real claim waiting on the same issue, so the job in the group runs only on detect's answer.
+        text = (ROOT / ".github/workflows/fork-claim.yml").read_text()
+        detect = text.split("  detect:\n", 1)[1].split("\n  command:\n", 1)[0]
+        command = text.split("\n  command:\n", 1)[1].split("\n  release:\n", 1)[0]
+        self.assertNotIn("concurrency:", detect)
+        self.assertIn("    needs: detect\n    if: needs.detect.outputs.command == 'true'\n", command)
+        self.assertIn("    concurrency:\n      group: claim-${{ github.event.issue.number }}\n", command)
+        import os
+        import tempfile
+        from unittest import mock
+        for body, found in (("🤖 Agent:\n/claim", "true"), ("thanks\n  /unclaim @Some-One", "true"),
+                            ("the /claim limit is 10 now", "false")):
+            with tempfile.NamedTemporaryFile("r", suffix=".out") as out:
+                with mock.patch.dict(os.environ, {"BODY": body, "GITHUB_OUTPUT": out.name}):
+                    cc.detect()
+                self.assertEqual(out.read(), f"command={found}\n", body)
+
     def test_the_command_gets_what_exempts_the_repositorys_own_people_from_the_limit(self):
         # Without them the script reads every commenter as association NONE with no exempt logins, and refuses an org
         # member's sixth claim (#4463, 2026-11-22).
-        from test_ci_concurrency import yaml
-        jobs = yaml.load((ROOT / ".github/workflows/fork-claim.yml").read_text(), Loader=yaml.BaseLoader)["jobs"]
-        step = next(step for step in jobs["command"]["steps"] if step.get("name") == "Run the command")
-        self.assertEqual(step["env"]["AUTHOR_ASSOCIATION"], "${{ github.event.comment.author_association }}")
-        self.assertEqual(step["env"]["CLAIM_LIMIT_EXEMPT"], "${{ vars.CLAIM_LIMIT_EXEMPT }}")
+        text = (ROOT / ".github/workflows/fork-claim.yml").read_text()
+        step = text.split("      - name: Run the command\n", 1)[1].split("\n      - ", 1)[0]
+        self.assertIn("          AUTHOR_ASSOCIATION: ${{ github.event.comment.author_association }}\n", step)
+        self.assertIn("          CLAIM_LIMIT_EXEMPT: ${{ vars.CLAIM_LIMIT_EXEMPT }}\n", step)
 
 
 if __name__ == "__main__":

@@ -57,7 +57,7 @@ impl Game<'_> {
             self.tick_explicit_knots();
             self.tick_summoned_eyes();
             self.ordered_before(ordered_tick::Batch::ArmorStands)?;
-            sunrise_client::spans::time("tick_armor_stands", || self.tick_armor_stands())?;
+            sunrise_client::spans::time("tick_armor_stands", || self.begin_armor_stand_ticks())?;
             sunrise_client::spans::time("tick_cushions", || self.tick_cushions());
             // ServerLevel.tick: the arrivals of this server tick are in the level
             // (`addDuringTeleport`), and each vehicle handles its portal as its

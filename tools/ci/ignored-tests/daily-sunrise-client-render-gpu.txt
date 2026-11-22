@@ -275,5 +275,8 @@ sunrise-client-render post_chain::tests::a_chain_naming_an_unknown_shader_fails_
 sunrise-client-render post_chain::tests::a_chain_runs_its_own_glsl lib daily gpu
 sunrise-client-render post_chain::tests::a_pass_reads_the_frame_depth_as_it_is lib daily gpu
 sunrise-client-render post_chain::tests::a_preloaded_archive_chain_arrives_compiled lib daily gpu
+sunrise-client-render post_chain::tests::failed_effect_recovers_on_resource_reload lib daily gpu
+sunrise-client-render post_chain::tests::inactive_persistent_targets_retire_without_dropping_compiled_chain lib daily gpu
+sunrise-client-render post_chain::tests::repeated_effects_run_in_order lib daily gpu
 sunrise-client-render post_chain::tests::vanilla_chains_load lib daily gpu
 sunrise-client-render post_chain::tests::vanilla_chains_run lib daily gpu

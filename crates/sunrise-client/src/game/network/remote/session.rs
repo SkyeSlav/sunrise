@@ -200,7 +200,6 @@ impl Game<'_> {
         // A new LocalPlayer has no effects: the server sends what it has
         // (ClientboundUpdateMobEffectPacket on placement).
         self.potions = Default::default();
-        self.set_mode_id(0);
         self.experience = Experience {
             level: 0,
             progress: 0.0,
@@ -275,6 +274,7 @@ impl Game<'_> {
             joined: false,
             reconfiguring: None,
             logged_in: false,
+            has_logical_player: false,
             entity_id: 0,
             local_entity_silent: false,
             camera: None,
@@ -308,7 +308,7 @@ impl Game<'_> {
             was_shared_flags: 0,
             was_living_flags: 0,
             last_recorded_pose: None,
-            abilities: None,
+            abilities: sunrise_client::lan::abilities::PlayerAbilities::default(),
             respawn_velocity: None,
             loaded_sent: false,
             heard_level: None,
@@ -366,6 +366,8 @@ impl Game<'_> {
             custom_completions: Default::default(),
             players: HashMap::new(),
             tab_players: HashMap::new(),
+            tab_game_modes: HashMap::new(),
+            own_player_info: std::cell::OnceCell::new(),
             skin_textures: HashMap::new(),
             own_profile: OwnProfile::Idle,
             skins: HashMap::new(),
@@ -375,6 +377,7 @@ impl Game<'_> {
             online_mode: false,
             levels: Vec::new(),
             level_players: HashMap::new(),
+            level_player_infos: HashMap::new(),
             level_player_names: HashMap::new(),
             level_player_textures: HashMap::new(),
             glowing: Default::default(),
@@ -410,6 +413,7 @@ impl Game<'_> {
             server_links: Vec::new(),
             debug_query: Default::default(),
         });
+        self.set_local_mode_with_previous(sunrise_client::command::args::GameMode::Survival, None);
         // The level's TickRateManager follows the server's ticking packets.
         self.clock = sunrise_client::clock::FixedStep::client();
         // The player's advancements and statistics are the server's.
@@ -486,7 +490,6 @@ impl Game<'_> {
         self.carried = None;
         self.using = None;
 
-        self.set_mode_id(0);
         self.experience = Experience {
             level: 0,
             progress: 0.0,
@@ -537,6 +540,7 @@ impl Game<'_> {
             joined: false,
             reconfiguring: None,
             logged_in: true,
+            has_logical_player: false,
             logged_out: false,
             local_entity_silent: false,
             entity_id: 0,
@@ -571,7 +575,7 @@ impl Game<'_> {
             was_living_flags: 0,
             last_recorded_pose: None,
             carried: std::cell::Cell::new(None),
-            abilities: None,
+            abilities: sunrise_client::lan::abilities::PlayerAbilities::default(),
             respawn_velocity: None,
             loaded_sent: false,
             heard_level: None,
@@ -629,6 +633,8 @@ impl Game<'_> {
             custom_completions: Default::default(),
             players: HashMap::new(),
             tab_players: HashMap::new(),
+            tab_game_modes: HashMap::new(),
+            own_player_info: std::cell::OnceCell::new(),
             skin_textures: HashMap::new(),
             own_profile: OwnProfile::Idle,
             skins: HashMap::new(),
@@ -638,6 +644,7 @@ impl Game<'_> {
             online_mode: false,
             levels: Vec::new(),
             level_players: HashMap::new(),
+            level_player_infos: HashMap::new(),
             level_player_names: HashMap::new(),
             level_player_textures: HashMap::new(),
             glowing: Default::default(),
@@ -673,6 +680,7 @@ impl Game<'_> {
             server_links: Vec::new(),
             debug_query: Default::default(),
         });
+        self.set_local_mode_with_previous(sunrise_client::command::args::GameMode::Survival, None);
         self.clock = sunrise_client::clock::FixedStep::client();
         self.adv = Default::default();
         self.stats = Default::default();
@@ -775,6 +783,8 @@ impl Game<'_> {
         self.streaming.paused = true;
         self.reset_client_world(0);
         self.remove_local_player_body();
+        self.post_effects.clear();
+        self.clear_spectated_entity_post_effect();
         // The vehicle went with the level: an id kept here would seat the
         // next login on an entity that is not there.
         self.riding = None;
@@ -859,7 +869,22 @@ impl Game<'_> {
         if !same {
             self.forget_all_remote_columns();
         }
+        let adjust_mode = if matches!(
+            entry,
+            RemoteDimensionEntry::Respawn | RemoteDimensionEntry::DeathRespawn
+        ) {
+            self.mode
+        } else {
+            sunrise_client::command::args::GameMode::Survival
+        };
+        let mode = crate::game::game_mode::mode_from_id(spawn.game_type);
+        let previous = spawn
+            .previous_game_type
+            .map(crate::game::game_mode::mode_from_id);
+        let body_flight = self.player.as_ref().map(|p| (p.flying, p.flying_speed));
         let r = self.remote.as_mut().unwrap();
+        let new_logical_player =
+            !matches!(entry, RemoteDimensionEntry::Login) || !r.has_logical_player;
         if !same {
             r.collider_shove_start = None;
         }
@@ -877,7 +902,15 @@ impl Game<'_> {
         r.level = spawn.dimension.clone();
         r.level_key = mod_api::__private::dimension_key(&spawn.dimension);
         r.hashed_seed = spawn.seed;
-        r.game_mode = spawn.game_type;
+        if new_logical_player {
+            r.abilities = sunrise_client::lan::abilities::PlayerAbilities::default();
+            r.own_player_info = std::cell::OnceCell::new();
+        } else if let Some((flying, flying_speed)) = body_flight {
+            r.sync_body_flight(flying, flying_speed);
+        }
+        r.has_logical_player = true;
+        // handleLogin/handleRespawn run adjustPlayer(newPlayer) before setLocalMode.
+        r.abilities.update_for_mode(adjust_mode.id());
         r.flat = spawn.flat;
         r.loaded_sent = false;
         // A replacement LevelLoadingScreen starts its bar from nothing (the
@@ -895,7 +928,7 @@ impl Game<'_> {
         self.ambience.moodiness = 0.0;
         r.position_sender = Default::default();
         r.predictions.clear();
-        self.set_mode_id(spawn.game_type);
+        self.set_local_mode_with_previous(mode, previous);
         self.dim = Dim::from_id(&spawn.dimension);
         self.build_level_environments();
         // ClientPacketListener.handleLogin / handleRespawn: the server's
@@ -950,6 +983,7 @@ impl Game<'_> {
                 // The entity ids are the old world's; the new dimension's
                 // player entities re-map to their profiles on AddEntity.
                 r.level_players.clear();
+                r.level_player_infos.clear();
                 r.level_player_names.clear();
                 r.level_player_textures.clear();
                 // A new ClientLevel: a new chunk storage, centred on 0, 0.
@@ -987,10 +1021,14 @@ impl Game<'_> {
             .detach_tracking_target(TrackingTarget::LocalPlayer, || {
                 player.map(player_tracking_body)
             });
-        self.drop_remote_player();
-        // handleLogin / handleRespawn: ClientLevel.addEntity admits the local player
-        // now, before the position packet creates its motion body.
-        self.resident_entities.local_player.renew();
+        if new_logical_player {
+            self.drop_remote_player();
+            // handleLogin / handleRespawn: ClientLevel.addEntity admits the local player
+            // now, before the position packet creates its motion body.
+            self.resident_entities.local_player.renew();
+        } else {
+            self.retain_remote_player_on_login();
+        }
         // handleLogin / handleRespawn: LocalPlayer.setPortalCooldown, so a
         // player who arrives standing in a portal gets no overlay from it.
         self.portals.player.cooldown = spawn.portal_cooldown;
@@ -1014,5 +1052,38 @@ impl Game<'_> {
         {
             r.level_load.set_transition_screen(presentation);
         }
+    }
+
+    /// `ClientPacketListener.handleLogin` when `Minecraft.player != null`: retain the live player, run `resetPos`, rebind residency, and reset input.
+    fn retain_remote_player_on_login(&mut self) {
+        self.reset_client_item_use();
+        self.hook.discard();
+        if let Some(r) = self.remote.as_mut() {
+            r.respawn_velocity = None;
+        }
+        let retained_max_health = self.player.as_mut().map(|player| {
+            let _ = player.set_pose(sunrise_client::pose::Pose::Standing);
+            player.velocity = Vec3::ZERO;
+            player.pitch = 0.0;
+            let max_health = player
+                .attribute("minecraft:max_health")
+                .ok()
+                .map(|v| v as f32);
+            if let Some(max) = max_health {
+                let _ = player.set_health(max, false);
+            }
+            max_health
+        });
+        if let Some(max_health) = retained_max_health {
+            self.pitch = 0.0;
+            if let Some(max) = max_health
+                && let Some(r) = self.remote.as_mut()
+            {
+                r.health.0 = max;
+            }
+            self.ui.death_time = 0;
+            self.input_player_replaced();
+        }
+        self.bind_local_player_residency();
     }
 }

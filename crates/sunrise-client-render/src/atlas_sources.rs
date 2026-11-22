@@ -287,7 +287,7 @@ pub fn texture_path(root: &Path, texture: &str, directory: &str) -> PathBuf {
 pub fn texture_resource(texture: &str, directory: &str) -> String {
     // No file can have a NUL in its name, so this one is never there.
     const NOWHERE: &str = "assets/minecraft/textures/sunrise/\0refused.png";
-    if texture.starts_with("sunrise_cit:") {
+    if directory == "textures" && texture.starts_with("sunrise_cit:") {
         return crate::cit_assets::resource(texture, "png").unwrap_or_else(|| NOWHERE.to_owned());
     }
     let (namespace, path) = texture.split_once(':').unwrap_or(("minecraft", texture));
@@ -490,8 +490,11 @@ fn argb(rgba: &[u8]) -> Vec<u32> {
         .collect()
 }
 /// The pixels of a generated sprite (`Region`, `Paletted` or a mod's `Pixels`);
-/// `None` for a plain file, which loads as itself.
-pub fn generate(origin: &SpriteOrigin, load: &dyn Fn(&str) -> Option<Image>) -> Option<Image> {
+/// `None` for a plain file, which loads as itself. `load` takes `(id, directory)`.
+pub fn generate(
+    origin: &SpriteOrigin,
+    load: &dyn Fn(&str, &str) -> Option<Image>,
+) -> Option<Image> {
     match origin {
         SpriteOrigin::File(_) => None,
         SpriteOrigin::Pixels(image) => Some(image.clone()),
@@ -501,7 +504,7 @@ pub fn generate(origin: &SpriteOrigin, load: &dyn Fn(&str) -> Option<Image>) -> 
             divisor_x,
             divisor_y,
         } => {
-            let (w, h, pixels) = load(texture)?;
+            let (w, h, pixels) = load(texture, "textures")?;
             let x_scale = f64::from(w) / divisor_x;
             let y_scale = f64::from(h) / divisor_y;
             // A float-to-integer cast saturates (NaN is 0), so every value here is in range.
@@ -547,9 +550,10 @@ pub fn generate(origin: &SpriteOrigin, load: &dyn Fn(&str) -> Option<Image>) -> 
             palette_key,
             palette,
         } => {
-            let (w, h, pixels) = load(texture)?;
-            let (_, _, key) = load(palette_key)?;
-            let (_, _, target) = load(palette)?;
+            let (w, h, pixels) = load(texture, "textures")?;
+            // `Palette.ID_CONVERTER` resolves palettes under `textures/palettes/`.
+            let (_, _, key) = load(palette_key, "textures/palettes")?;
+            let (_, _, target) = load(palette, "textures/palettes")?;
             let mut mapped = argb(&pixels);
             let key = argb(&key);
             let target = argb(&target);
@@ -826,13 +830,13 @@ pub fn finish_origin(
     source: &crate::resource_source::ResourceSource,
     origin: &SpriteOrigin,
 ) -> Option<Material> {
-    let decode = |texture: &str| {
-        crate::hud::decode_resource(source, &texture_resource(texture, "textures")).ok()
+    let decode = |texture: &str, directory: &str| {
+        crate::hud::decode_resource(source, &texture_resource(texture, directory)).ok()
     };
     match origin {
         SpriteOrigin::File(texture) => {
             let resource = texture_resource(texture, "textures");
-            let image = decode(texture)?;
+            let image = decode(texture, "textures")?;
             let mcmeta = source.read_to_string(&format!("{resource}.mcmeta")).ok();
             let animation = crate::hud::animation_of(mcmeta.as_deref());
             frames_fit((image.0, image.1), animation.as_ref()).then_some(Material {
@@ -1092,7 +1096,7 @@ mod tests {
     #[test]
     fn unstitch_cuts_by_divisor() {
         let pixels: Vec<u8> = (0..16u8).flat_map(|i| [i, i, i, 255]).collect();
-        let load = |_: &str| Some((4u32, 4u32, pixels.clone()));
+        let load = |_: &str, _: &str| Some((4u32, 4u32, pixels.clone()));
         let origin = SpriteOrigin::Region {
             texture: "t".into(),
             region: Region {
@@ -1112,10 +1116,31 @@ mod tests {
         assert_eq!(out[8], 14);
     }
 
+    #[test]
+    fn paletted_permutations_load_palettes_from_textures_palettes() {
+        let origin = SpriteOrigin::Paletted {
+            texture: "minecraft:trims/items/boots_trim".into(),
+            palette_key: "minecraft:trim_base".into(),
+            palette: "minecraft:trim/quartz".into(),
+        };
+        let load = |id: &str, dir: &str| match (id, dir) {
+            ("minecraft:trims/items/boots_trim", "textures") => Some((1, 1, vec![10, 20, 30, 255])),
+            ("minecraft:trim_base", "textures/palettes") => Some((1, 1, vec![10, 20, 30, 255])),
+            ("minecraft:trim/quartz", "textures/palettes") => {
+                Some((1, 1, vec![220, 210, 200, 255]))
+            }
+            _ => None,
+        };
+        assert_eq!(
+            generate(&origin, &load),
+            Some((1, 1, vec![220, 210, 200, 255]))
+        );
+    }
+
     /// An unstitch region over a 4x4 texture with divisors 1: the region's numbers are pixels.
     fn region_of(x: f64, y: f64, width: f64, height: f64) -> Option<Image> {
         let pixels: Vec<u8> = (0..16u8).flat_map(|i| [i, i, i, 255]).collect();
-        let load = |_: &str| Some((4u32, 4u32, pixels.clone()));
+        let load = |_: &str, _: &str| Some((4u32, 4u32, pixels.clone()));
         let origin = SpriteOrigin::Region {
             texture: "t".into(),
             region: Region {

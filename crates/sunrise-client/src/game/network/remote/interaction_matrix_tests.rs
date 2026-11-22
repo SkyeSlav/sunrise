@@ -264,10 +264,8 @@ fn matrix(mods: mod_api::Mods) {
                         } else {
                             (other, held)
                         };
-                        game.clear_device_keys();
-                        if case.sneak {
-                            game.insert_device_key(winit::keyboard::KeyCode::ShiftLeft);
-                        }
+                        // Each case supplies the logical sneak state of the acting player.
+                        game.set_mapping_held("key.sneak", case.sneak);
                         if let Some(remote) = game.remote.as_mut() {
                             remote.last_input = if case.sneak {
                                 super::super::SHIFT_INPUT

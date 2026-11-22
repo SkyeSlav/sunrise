@@ -196,8 +196,9 @@ transaction boundary:
   listener can refill a crafting grid and the next iteration sees it). A panicking listener is contained and disabled
   for `menu_slot_take` for the rest of the session, and the click aborts its enclosing transaction (undoing both the
   click and the listener's writes) before resending the menu.
-- **Handled `menu_quick_move` shift-clicks**: `menu_quick_move` applies its remainder to the resident container slot
-  and publishes `BlockEntity.setChanged` before calling `menu_slot_take`, with no enclosing click transaction. Wrap
+- **Handled `menu_quick_move` shift-clicks**: `menu_quick_move` settles its remainder to the actual clicked source:
+  the resident or linked container slot, the player's inventory slot, or the stored crafting result. It publishes
+  any resulting `BlockEntity.setChanged` notices before calling `menu_slot_take`, with no enclosing click transaction. Wrap
   writes that must commit or abort together in `event.subject.transaction(...)`. A panicking listener is contained and
   disabled for `menu_slot_take` for the rest of the session; any open `event.subject.transaction(...)` aborts, live
   writes made outside a transaction survive (and still publish container updates), and the earlier quick-move
@@ -208,7 +209,7 @@ Nothing is asked when no mod listens.
 ## Crafted-by processing for held stacks
 
 After delivering an item into a menu slot or onto the cursor, server-side code can use the
-held `place`, the caller's transaction `tx`, and the actual crafted count `amount` (`i32`):
+held `place`, the caller's innermost `&TransactionContext` (`tx`), and the actual crafted count `amount` (`i32`):
 
 ```rust,ignore
 place.on_crafted_by(host, tx, amount)?;
@@ -273,7 +274,9 @@ including the inventory when no container is open. `MenuRef::slot_count`, `slot`
 read on either side; `slot` and `carried` return an outer `None` when the handle or slot is
 unavailable and `Some(None)` for an empty slot. Each read checks the world epoch and menu generation,
 so a handle cannot read a replacement, reopened or respawned menu. These methods do not click or
-change slots.
+change slots. `MenuRef::kind` returns `Some(Some(id))` for a supported registry-backed menu,
+`Some(None)` for the player's inventory menu or a mount's inventory on the client, and `None` for a stale,
+foreign or unavailable handle.
 
 Server hooks can also read the acting player's supported menu through
 `player.container_menu(host)`. Inventory, equipment, cursor and ender contents come from
@@ -328,12 +331,14 @@ reads and writes nothing. `menu.cursor()` is that menu's cursor (`ItemPlace::Pla
 `forPlayerCursor`), which reaches nothing once the menu is gone, so a kept cursor never reaches the next menu's. The player's screen follows with the tick's container sync.
 
 ```rust,ignore
+use mod_api::{HostTransaction, TransactionError};
+
 // Put four of the menu's offered emeralds into slot 0 of the open chest, or nothing.
 let (slot, cursor) = (ItemPlace::MenuSlot { menu, slot: 0 }, menu.cursor());
-host.transaction(|host, tx| {
-    let took = cursor.extract(host, tx, &emerald, 4);
-    if took == 4 && slot.insert(host, tx, &emerald, 4) == 4 { Ok(()) } else { Err(()) }
-})
+let moved: Result<(), TransactionError<()>> = host.transaction(|host, tx| {
+    let took = cursor.extract(host, tx, &emerald, 4).map_err(|_| ())?;
+    if took == 4 && slot.insert(host, tx, &emerald, 4) == Ok(4) { Ok(()) } else { Err(()) }
+});
 ```
 
 `menu_clicked` (contract version 2) runs as one action: what a listener writes through the `Host` stays when it
@@ -379,8 +384,8 @@ transaction is sent with the next tick's container sync, one `ContainerSetSlot` 
 if let Some(menu) = host.menu(uuid, window) {
     let slot = ItemPlace::MenuSlot { menu, slot: 4 };
     let _ = host.transaction(|host, tx| {
-        slot.extract(host, tx, &shown, 64);
-        if slot.insert(host, tx, &next, 1) == 1 { Ok(()) } else { Err(()) }
+        let _ = slot.extract(host, tx, &shown, 64).map_err(|_| ())?;
+        if slot.insert(host, tx, &next, 1) == Ok(1) { Ok(()) } else { Err(()) }
     });
 }
 ```
@@ -521,3 +526,8 @@ or outside a world. Creative returns the underlying inventory menu's 46 slots,
 never creative tab wrappers; read the screen type to distinguish them.
 The answer is stable for one open menu. Cache it: each read builds one Vec
 from the layout table and content declaration, with one allocation.
+
+On the Creative screen, `menu.slot_boxes(host)` keeps the player's inventory menu order, not
+Creative's visible order: crafting `0..=4`, armor `5..=8`, main inventory `9..=35`, hotbar `36..=44`,
+and offhand `45`. A hidden index is `None`. The inventory tab hides crafting; item and Search
+tabs show only the hotbar. Creative catalog slots and the trash slot have no entries.

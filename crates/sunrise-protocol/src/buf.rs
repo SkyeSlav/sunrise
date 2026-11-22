@@ -73,6 +73,17 @@ impl<'a> Reader<'a> {
     ) -> Option<&'a crate::item::consume_effects::AdmissionLookup<'a>> {
         self.names?.consume_effect_admissions()
     }
+    pub(crate) fn registry_entry(
+        &self,
+        registry: &str,
+        id: i32,
+    ) -> Option<(&'a str, Option<&'a Tag>)> {
+        self.names?.registry_entry(registry, id)
+    }
+    pub(crate) fn contains_registry_entry(&self, registry: &str, name: &str) -> bool {
+        self.names
+            .is_some_and(|names| names.contains_entry(registry, name))
+    }
 
     pub fn subreader(&mut self, size: usize) -> Result<Self> {
         Ok(Self {

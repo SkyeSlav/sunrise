@@ -889,10 +889,13 @@ pub mod tests {
             fn host(&mut self) -> &mut dyn ServerHost {
                 unreachable!()
             }
-            fn transaction(
+            fn with_transaction_scope(
                 &mut self,
-                _: &mut dyn FnMut(&mut dyn BlockEntityAccess, &Transaction) -> bool,
-            ) {
+                _: &mut dyn for<'loan> FnMut(
+                    &'loan mut dyn BlockEntityAccess,
+                    &'loan mod_vocab::TransactionContext,
+                ) -> bool,
+            ) -> Result<bool, mod_vocab::TransactionScopeError> {
                 unreachable!()
             }
         }

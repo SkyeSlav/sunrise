@@ -148,8 +148,8 @@ fn stage_sprite(
         files.insert(path.to_owned(), Resource::file(source.clone(), file));
         return true;
     }
-    let load = |texture: &str| {
-        let file = atlas_sources::texture_resource(texture, "textures");
+    let load = |texture: &str, directory: &str| {
+        let file = atlas_sources::texture_resource(texture, directory);
         sunrise_client::hud::decode_bytes(&source.read(&file).ok()?).ok()
     };
     let Some(png) = atlas_sources::generate(origin, &load).and_then(encode) else {

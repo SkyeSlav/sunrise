@@ -734,6 +734,15 @@ impl StateModels {
         })?;
         Ok(models)
     }
+    /// Seeded model choices stored as slot indices so caller scratch can outlive the catalog.
+    pub fn slots_seeded(&self, state: BlockStateId, seed: i64, out: &mut Vec<u32>) -> Result<()> {
+        out.clear();
+        self.each_seeded(state, seed, |slot| out.push(slot))
+    }
+    /// The baked model at a slot returned by [`Self::slots_seeded`].
+    pub fn baked_model(&self, slot: u32) -> &BakedModel {
+        &self.baked[slot as usize].1
+    }
     /// The models a block draws at `position`, into `out` (cleared first):
     /// `collect` for the mesher, which reuses one list for every block.
     pub fn models_at<'a>(

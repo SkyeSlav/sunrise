@@ -240,14 +240,14 @@ class NightlyBuildPathTests(unittest.TestCase):
                 results = self.run_kind(kind)
                 for job in ("break-glass-umceko", "break-glass-aria", "break-glass"):
                     self.assertEqual(results[job], "skipped")
-                for job in ("exporters", "build", "musl-build", "complete", "sign", "publish", "musl-attach"):
+                for job in ("exporters", "build", "complete", "sign", "publish"):
                     self.assertEqual(results[job], "success", job)
                 self.assertEqual(results["full-daily"], "success" if kind == "stable" else "skipped")
 
     def test_a_dev_build_of_the_dylib_game_alone_builds_no_game_and_still_signs_and_publishes(self):
         outputs = {"pick": {"build": "true", "publish": "true", "break_glass": "false"}}
         results = simulate(self.workflow, {"kind": "dev", "dry_run": False, "issue": "", "dylib_only": True}, outputs)
-        for job in ("exporters", "build", "musl-build", "complete", "musl-attach"):
+        for job in ("exporters", "build", "complete"):
             self.assertEqual(results[job], "skipped", job)
         for job in ("sign", "publish"):
             self.assertEqual(results[job], "success", job)
@@ -257,7 +257,7 @@ class NightlyBuildPathTests(unittest.TestCase):
         for job in ("break-glass-umceko", "break-glass-aria", "break-glass", "build", "sign", "publish"):
             self.assertEqual(results[job], "success", job)
         retry = self.run_kind("stable", break_glass="true", attempt="2")
-        for job in ("break-glass", "exporters", "build", "musl-build", "sign", "publish"):
+        for job in ("break-glass", "exporters", "build", "sign", "publish"):
             self.assertEqual(retry[job], "skipped", job)
 
 

@@ -49,18 +49,21 @@ impl mod_api::Interaction for Syrup {
                     BlockUpdateFlags::NEIGHBORS | BlockUpdateFlags::CLIENTS,
                 )
                 .map_err(|_| ())?;
-            if hand.exchange(host, tx, &resource, 1) != 1 {
+            if hand.exchange(host, tx, &resource, 1) != Ok(1) {
                 return Err(());
             }
             let fluid = mod_api::__private::fluid_key("minecraft:water").unwrap();
-            assert!(input.level.play_fluid_effects(
-                host,
-                input.pos,
-                fluid,
-                false,
-                Some(input.player),
-                tx,
-            ));
+            assert_eq!(
+                input.level.play_fluid_effects(
+                    host,
+                    input.pos,
+                    fluid,
+                    false,
+                    Some(input.player),
+                    tx,
+                ),
+                Ok(true)
+            );
             Ok(())
         })
         .unwrap();
@@ -439,12 +442,13 @@ fn cauldron_outer_abort_discards_effects_and_drops() {
         for slot in game.inventory.iter_mut().skip(1) {
             *slot = Some(ItemStack::new("minecraft:stone", 64));
         }
-        let seal = game.transaction_open();
-        assert_eq!(game.use_on_cauldron(POS).unwrap(), Outcome::Success);
-        assert_eq!(events(), 0);
-        assert!(game.creatures.lan_sounds.is_empty());
-        assert!(game.audio.capture.as_ref().unwrap().is_empty());
-        game.transaction_close(&seal, false);
+        game.storage_scope(|game, _| {
+            assert_eq!(game.use_on_cauldron(POS).unwrap(), Outcome::Success);
+            assert_eq!(events(), 0);
+            assert!(game.creatures.lan_sounds.is_empty());
+            assert!(game.audio.capture.as_ref().unwrap().is_empty());
+            ((), false)
+        });
         unchanged(game, seen);
         assert_eq!(events(), 0);
         assert!(game.creatures.lan_sounds.is_empty());
@@ -1684,7 +1688,7 @@ fn cauldron_packet_pass_resumes_item_use_once_without_client_prediction() {
         };
         assert!(read_uses(game).is_empty());
         game.remote.as_mut().unwrap().joined = true;
-        game.set_mode_id(0);
+        game.set_local_mode(sunrise_client::command::args::GameMode::Survival);
         setup(game, "minecraft:cauldron", None, item, 1);
         let aim = (35.0, -12.0);
         (game.yaw, game.pitch) = aim;

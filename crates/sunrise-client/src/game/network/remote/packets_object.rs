@@ -21,8 +21,11 @@ impl Game<'_> {
             r.ticked_before_player.remove(&(p.id as u32));
             // A new entity looks its PlayerInfo up afresh.
             r.level_player_textures.remove(&p.id);
+            r.level_player_infos.remove(&p.id);
             if kind == "minecraft:player" {
                 r.level_players.insert(p.id, p.uuid);
+                r.level_player_infos
+                    .insert(p.id, std::cell::OnceCell::new());
                 // createEntityFromPacket: the player takes the profile of its list entry.
                 match r.players.get(&p.uuid) {
                     Some(name) => r.level_player_names.insert(p.id, name.clone()),
@@ -77,6 +80,7 @@ impl Game<'_> {
                 }
                 r.level_player_names.remove(&id);
                 r.level_player_textures.remove(&id);
+                r.level_player_infos.remove(&id);
                 r.attachments.remove(&Holder::Entity(id as u32));
                 Self::forget_remote_general(r, id);
             }
@@ -329,6 +333,11 @@ impl Game<'_> {
                 t.position = position;
             }
             self.teleport_driven_vehicle(position, rotation, delta, p.on_ground);
+            return Ok(());
+        }
+        if self.text_displays.contains_key(&p.id) {
+            self.teleport_remote_text_display(p.id, p.position, p.yaw, p.pitch, p.relatives);
+            self.entity_section_moved_id(p.id as u32);
             return Ok(());
         }
         let base = self

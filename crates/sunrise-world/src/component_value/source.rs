@@ -779,6 +779,7 @@ fn resolvable(t: &Tag, f: impl Fn(&Tag) -> Result<Value>) -> Result<Value> {
 struct Source<'a> {
     upgraded: bool,
     is_native: fn(&str) -> bool,
+    has_item: Option<&'a dyn Fn(&str) -> bool>,
     effects: Option<EffectProjection<'a>>,
     deferred_template: bool,
 }
@@ -786,6 +787,7 @@ impl Source<'_> {
     const SAVED: Self = Self {
         upgraded: false,
         is_native: |_| false,
+        has_item: None,
         effects: None,
         deferred_template: false,
     };
@@ -817,6 +819,11 @@ fn template_tag(t: &Tag, source: Source) -> Result<Template> {
         if item == "minecraft:air" {
             return Err("air is not a template item".into());
         }
+        if let Some(has_item) = source.has_item
+            && !has_item(&item)
+        {
+            return Err(format!("unknown item {item}"));
+        }
         return Ok(Template {
             item,
             count: 1,
@@ -826,6 +833,11 @@ fn template_tag(t: &Tag, source: Source) -> Result<Template> {
     let item = identifier(&string(t.get("id").ok_or("missing template item")?)?)?;
     if item == "minecraft:air" {
         return Err("air is not a template item".into());
+    }
+    if let Some(has_item) = source.has_item
+        && !has_item(&item)
+    {
+        return Err(format!("unknown item {item}"));
     }
     let count = t
         .get("count")
@@ -915,6 +927,21 @@ fn predicate(t: &Tag, source: Source) -> Result<Value> {
 /// Decode the built-in component codec and remove its Java defaults.
 pub fn from_component_tag(id: &str, t: &Tag) -> Result<Value> {
     from_component_tag_with(id, t, |_| false)
+}
+/// Decode the built-in component codec while checking item template IDs against a registry.
+pub fn from_component_tag_with_items(
+    id: &str,
+    t: &Tag,
+    has_item: &dyn Fn(&str) -> bool,
+) -> Result<Value> {
+    component_tag(
+        &identifier(id)?,
+        t,
+        Source {
+            has_item: Some(has_item),
+            ..Source::SAVED
+        },
+    )
 }
 /// Project a live component, reusing its admitted effects and reporting any effects
 /// newly materialized from deferred templates to the caller.

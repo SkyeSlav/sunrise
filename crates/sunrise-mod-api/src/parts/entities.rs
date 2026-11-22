@@ -80,21 +80,33 @@ pub mod tests {
         fn capacity(&self, _: &mut dyn ServerHost) -> u32 {
             1000
         }
-        fn insert(&self, host: &mut dyn ServerHost, _: &Transaction, amount: u32) -> u32 {
+        fn insert(
+            &self,
+            host: &mut dyn ServerHost,
+            tx: &TransactionContext,
+            amount: u32,
+        ) -> Result<u32, TransactionError<Overanswered>> {
+            assert!(host.transaction_matches(Some(tx)));
             let held = self.amount(host);
             let moved = amount.min(1000 - held);
             ROBOT_ENERGY
                 .set(host, Holder::Entity(self.0.id()), held + moved)
                 .unwrap();
-            moved
+            Ok(moved)
         }
-        fn extract(&self, host: &mut dyn ServerHost, _: &Transaction, amount: u32) -> u32 {
+        fn extract(
+            &self,
+            host: &mut dyn ServerHost,
+            tx: &TransactionContext,
+            amount: u32,
+        ) -> Result<u32, TransactionError<Overanswered>> {
+            assert!(host.transaction_matches(Some(tx)));
             let held = self.amount(host);
             let moved = amount.min(held);
             ROBOT_ENERGY
                 .set(host, Holder::Entity(self.0.id()), held - moved)
                 .unwrap();
-            moved
+            Ok(moved)
         }
     }
 
@@ -140,11 +152,12 @@ pub mod tests {
         fn insert_at(
             &self,
             host: &mut dyn ServerHost,
-            _: &Transaction,
+            tx: &TransactionContext,
             index: usize,
             resource: &FluidResource,
             amount: u32,
-        ) -> u32 {
+        ) -> Result<u32, TransactionError<Overanswered>> {
+            assert!(host.transaction_matches(Some(tx)));
             let held = self.amount(host, index);
             let moved = amount.min(
                 self.capacity(host, index, Some(resource))
@@ -153,16 +166,17 @@ pub mod tests {
             ROBOT_FLUID
                 .set(host, Holder::Entity(self.0.id()), held + moved)
                 .unwrap();
-            moved
+            Ok(moved)
         }
         fn extract_at(
             &self,
             host: &mut dyn ServerHost,
-            _: &Transaction,
+            tx: &TransactionContext,
             index: usize,
             resource: &FluidResource,
             amount: u32,
-        ) -> u32 {
+        ) -> Result<u32, TransactionError<Overanswered>> {
+            assert!(host.transaction_matches(Some(tx)));
             let held = self.amount(host, index);
             let moved = if self.capacity(host, index, Some(resource)) > 0 {
                 amount.min(held)
@@ -172,7 +186,7 @@ pub mod tests {
             ROBOT_FLUID
                 .set(host, Holder::Entity(self.0.id()), held - moved)
                 .unwrap();
-            moved
+            Ok(moved)
         }
     }
 }

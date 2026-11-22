@@ -52,6 +52,9 @@ pub(super) fn initialize(resources: &MotionResources, guest: &mut Guest) -> bool
         return false;
     };
     let mut motion = motion;
+    let spectator = guest.spectator();
+    motion.spectator = spectator;
+    motion.local_spectator = spectator;
     if let Some(tick_count) = guest.carried_tick_count.take() {
         motion.health.tick_count = tick_count;
     }

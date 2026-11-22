@@ -161,7 +161,7 @@ impl Game<'_> {
             {
                 self.native_left_click_empty();
             }
-            if !self.creative {
+            if self.has_miss_time() {
                 self.clicks.miss_time = 10;
             }
             self.reset_attack_strength();

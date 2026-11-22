@@ -103,13 +103,15 @@ impl Game<'_> {
         let mut draws = self
             .spectator_gui
             .hotbar(w, h, now, &|slot| labels[slot].clone(), font);
-        draws.extend(self.spectator_gui.action(
-            w,
-            h,
-            now,
-            font,
-            self.settings.text_background(0.0),
-        ));
+        if self.own_player_is_spectator() {
+            draws.extend(self.spectator_gui.action(
+                w,
+                h,
+                now,
+                font,
+                self.settings.text_background(0.0),
+            ));
+        }
         hud_layout::paint(batch, &self.gui.atlas, &draws);
     }
 }

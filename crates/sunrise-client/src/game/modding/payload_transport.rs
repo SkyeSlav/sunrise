@@ -4,6 +4,7 @@ use mod_api::{
     __private::game::CallbackFailure, ConfigurationTaskError, HandlerThread, IPayloadContext,
     Identifier, PayloadAccepted, PayloadBytes, PayloadContextError, PayloadDirection, PayloadId,
     PayloadProtocol, PayloadSendError, PayloadWork, PayloadWorkStatus, PlayerRef, Text,
+    TransactionContext, TransactionScopeError, TransactionUnavailable,
 };
 use std::sync::Arc;
 use sunrise_client::raw_payloads::{Body, Endpoint, Incoming, Prepared, Side, connection::Epoch};
@@ -94,35 +95,37 @@ impl Game<'_> {
         if !incoming.epoch.active() {
             return;
         }
-        let seal = self.transaction_open();
-        let mut context = MainContext {
-            game: self,
-            epoch: &incoming.epoch,
-            endpoint: endpoint.clone(),
-            receiver: &incoming.receiver,
-            disconnect: None,
-            failure: None,
-        };
-        let result = match incoming.body {
-            Body::Payload(bytes) if incoming.receiver.thread == HandlerThread::Main => {
-                incoming.receiver.handle(bytes, &mut context)
-            }
-            Body::Payload(_) => Err(CallbackFailure::Refused(
-                "payload was not dispatched on its declared network executor".into(),
-            )),
-            Body::Work(work) => incoming.receiver.run_work(work.as_ref(), &mut context),
-        };
-        let reason = context.disconnect.take();
-        let failure = match result {
-            Err(error @ (CallbackFailure::Panicked | CallbackFailure::Poisoned)) => Some(error),
-            result => context.failure.take().or_else(|| result.err()),
-        };
-        context.game.transaction_close(&seal, failure.is_none());
+        let (failure, reason) = self.storage_scope(|game, _| {
+            let mut context = MainContext {
+                game,
+                epoch: &incoming.epoch,
+                endpoint: endpoint.clone(),
+                receiver: &incoming.receiver,
+                disconnect: None,
+                failure: None,
+            };
+            let result = match incoming.body {
+                Body::Payload(bytes) if incoming.receiver.thread == HandlerThread::Main => {
+                    incoming.receiver.handle(bytes, &mut context)
+                }
+                Body::Payload(_) => Err(CallbackFailure::Refused(
+                    "payload was not dispatched on its declared network executor".into(),
+                )),
+                Body::Work(work) => incoming.receiver.run_work(work.as_ref(), &mut context),
+            };
+            let failure = match result {
+                Err(error @ (CallbackFailure::Panicked | CallbackFailure::Poisoned)) => Some(error),
+                result => context.failure.take().or_else(|| result.err()),
+            };
+            let reason = context.disconnect.take();
+            let commit = failure.is_none();
+            ((failure, reason), commit)
+        });
         if matches!(
             failure,
             Some(CallbackFailure::Panicked | CallbackFailure::Poisoned)
         ) {
-            // The shared boundary already reported the panic; keep the epoch alive.
+            // The shared boundary reported the panic. Do not disconnect the peer.
             return;
         }
         if let Some(CallbackFailure::Refused(error)) = failure.as_ref().filter(|_| incoming.raw) {
@@ -266,7 +269,7 @@ impl IPayloadContext for MainContext<'_, '_> {
         if !self.epoch.active() || self.disconnect.is_some() {
             return Err(PayloadContextError::Disconnected);
         }
-        let receiver = self.receiver.clone();
+        let receiver = self.receiver;
         if let Err(error) = receiver.run_work(work.as_ref(), self) {
             // Preserve the first panic even if the caller catches or overwrites its
             // error by attempting more work on the now-disabled callback.
@@ -279,6 +282,62 @@ impl IPayloadContext for MainContext<'_, '_> {
             return Err(PayloadContextError::Disconnected);
         }
         Ok(PayloadWorkStatus::Complete)
+    }
+    fn with_current_transaction_scope(
+        &mut self,
+        callback: &mut dyn for<'loan> FnMut(
+            &'loan mut dyn IPayloadContext,
+            &'loan TransactionContext,
+        ),
+    ) -> Result<(), TransactionUnavailable> {
+        if !self.epoch.active() || self.disconnect.is_some() || self.endpoint.side() != Side::Server
+        {
+            return Err(TransactionUnavailable);
+        }
+        let frame = self
+            .game
+            .current_storage_frame()
+            .ok_or(TransactionUnavailable)?;
+        frame.lend(|tx| callback(self, tx));
+        Ok(())
+    }
+
+    fn with_transaction_scope(
+        &mut self,
+        callback: &mut dyn for<'loan> FnMut(
+            &'loan mut dyn IPayloadContext,
+            &'loan TransactionContext,
+        ) -> bool,
+    ) -> Result<bool, TransactionScopeError> {
+        if !self.epoch.active() || self.disconnect.is_some() || self.endpoint.side() != Side::Server
+        {
+            return Err(TransactionScopeError::Unavailable);
+        }
+        let epoch = self.epoch;
+        let endpoint = self.endpoint.clone();
+        let receiver = self.receiver;
+        let settled = self.game.scoped_storage(|game, tx| {
+            let mut inner = MainContext {
+                game,
+                epoch,
+                endpoint,
+                receiver,
+                disconnect: None,
+                failure: None,
+            };
+            callback(&mut inner, tx).then_some((inner.disconnect, inner.failure))
+        })?;
+        if let Some((disconnect, failure)) = settled {
+            if let Some(reason) = disconnect {
+                self.disconnect = Some(reason);
+            }
+            if let Some(error) = failure {
+                self.failure = Some(error);
+            }
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 }
 #[cfg(test)]
@@ -305,3 +364,6 @@ mod tests;
 #[cfg(test)]
 #[path = "payload_transport/typed_tests.rs"]
 mod typed_tests;
+#[cfg(test)]
+#[path = "payload_transport/work_panic_tests.rs"]
+mod work_panic_tests;

@@ -103,6 +103,7 @@ pub(in crate::game) use chat::{ChatTrust, Decoration};
 use chat_received::QueuedChat;
 pub(in crate::game) mod client_level_tick;
 mod effect;
+mod entity_data_schema;
 mod entity_section_steps;
 mod inventory;
 mod item_use;
@@ -206,7 +207,7 @@ impl ChunkGenerator for NoTerrain {
 /// A server entity the client tracks (position as last sent).
 pub(super) struct Tracked {
     kind: String,
-    position: [f64; 3],
+    pub(in crate::game) position: [f64; 3],
     /// `Entity.getPositionCodec`'s base: the position the server last
     /// reported (AddEntity, MoveEntity, EntityPositionSync), which a move
     /// packet's delta counts from. A TeleportEntity moves the entity but not
@@ -355,6 +356,9 @@ pub(super) struct Remote {
     /// `handleLogin` ran: vanilla's `Minecraft.player` exists from then on,
     /// while here the player is made at the first teleport.
     pub(super) logged_in: bool,
+    /// Whether a logical `LocalPlayer` already exists on this connection (retained across
+    /// a second `Login`, replaced on `Respawn`, cleared on reconfiguration).
+    pub(super) has_logical_player: bool,
     status: String,
     pub(super) entity_id: i32,
     local_entity_silent: bool,
@@ -432,10 +436,8 @@ pub(super) struct Remote {
     was_shared_flags: u8,
     was_living_flags: u8,
     last_recorded_pose: Option<crate::pose::Pose>,
-    /// The last ClientboundPlayerAbilitiesPacket. Vanilla's LocalPlayer
-    /// holds its abilities from the login on; here the player is made at
-    /// the first teleport, which takes them then.
-    abilities: Option<play::PlayerAbilities>,
+    /// Live `LocalPlayer.abilities`, mutated in arrival order by `CHANGE_GAME_MODE` and `PlayerAbilities`.
+    abilities: sunrise_client::lan::abilities::PlayerAbilities,
     /// The old player's motion, from a Respawn with KEEP_ENTITY_DATA
     /// (`handleRespawn`: `newPlayer.setDeltaMovement(oldPlayer.getDeltaMovement())`),
     /// for the player made at the next teleport: a portal's teleport adds to it.
@@ -559,6 +561,11 @@ pub(super) struct Remote {
     players: HashMap<u128, String>,
     /// `ClientPacketListener.playerInfoMap` as player-list entries, and which of them are listed.
     tab_players: HashMap<u128, sunrise_client::tab_list::TabPlayer>,
+    /// Live `PlayerInfo.gameMode` cell per active tab entry; `PlayerInfoRemove` drops the map
+    /// slot while leaving any entity's cached `Arc` untouched (`AbstractClientPlayer.playerInfo`).
+    tab_game_modes: HashMap<u128, Arc<std::sync::atomic::AtomicI32>>,
+    /// First resolved `PlayerInfo` game mode cell of the current `LocalPlayer` entity.
+    own_player_info: std::cell::OnceCell<Arc<std::sync::atomic::AtomicI32>>,
     /// Each listed profile's unpacked `textures` property.
     skin_textures: HashMap<u128, sunrise_client::skins::Textures>,
     /// Active skin and cape from the services profile when the server sent none.
@@ -575,6 +582,8 @@ pub(super) struct Remote {
     pub(super) levels: Vec<String>,
     /// Player entities in the level: entity id to profile UUID.
     pub(super) level_players: HashMap<i32, u128>,
+    /// First resolved `PlayerInfo` game mode cell per remote `AbstractClientPlayer` entity.
+    level_player_infos: HashMap<i32, std::cell::OnceCell<Arc<std::sync::atomic::AtomicI32>>>,
     /// The profile name each player entity was created with (`RemotePlayer.getGameProfile`): it outlives the
     /// player-list entry, which servers remove to hide their NPCs from the list.
     level_player_names: HashMap<i32, String>,
@@ -664,7 +673,7 @@ const BACKLOG_LIMIT: Duration = Duration::from_millis(50);
 const TICK_DECODE_WAIT: Duration = Duration::from_millis(250);
 /// The open menu name of a server's horse inventory, then its chest's
 /// columns (the packet names no `MenuType`).
-const MOUNT_MENU: &str = "sunrise:mount";
+pub(in crate::game) const MOUNT_MENU: &str = "sunrise:mount";
 /// ServerboundPlayerInputPacket's shift bit.
 const SHIFT_INPUT: u8 = 1 << 5;
 
@@ -1179,7 +1188,7 @@ impl Game<'_> {
             C::PlayerRotation(p) => self.remote_rotation(&p),
             C::PlayerLookAt(p) => self.remote_look_at(&p),
             // ClientCommonPacketListenerImpl.handlePostEffects.
-            C::PostEffects(p) => self.post_effects = p.effects,
+            C::PostEffects(p) => self.apply_post_effects_packet(p)?,
             C::SetCamera(p) => self.remote_set_camera(p.camera_id),
             C::LevelChunkWithLight(p) => self.remote_chunk(&p, None),
             C::LightUpdate(p) => self.remote_light_update(&p),
@@ -1257,7 +1266,7 @@ impl Game<'_> {
             C::MoveVehicle(p) => self.apply_move_vehicle_packet(p),
             C::MoveMinecartAlongTrack(p) => self.remote_move_minecart(p),
             C::RotateHead(p) => self.apply_rotate_head_packet(p),
-            C::SetEntityData(p) => self.apply_set_entity_data_packet(p),
+            C::SetEntityData(p) => self.apply_set_entity_data_packet(p)?,
             C::SetEquipment(p) => self.apply_set_equipment_packet(p),
             C::TakeItemEntity(p) => self.apply_take_item_entity_packet(p),
             C::SetEntityMotion(p) => self.apply_set_entity_motion_packet(p)?,
@@ -1377,11 +1386,10 @@ impl Game<'_> {
                 }
             }
             C::SetChunkCacheRadius(p) => {
-                self.streaming.radius = self
-                    .settings
-                    .render_distance
-                    .min(p.distance.saturating_add(1))
-                    .max(2);
+                self.streaming.radius = crate::game::entity_culling::streaming_radius_for(
+                    self.settings.render_distance,
+                    Some(p.distance),
+                );
                 if let Some(r) = self.remote.as_mut() {
                     r.view_distance = p.distance;
                     let center = r.chunk_center;
@@ -1476,9 +1484,11 @@ impl Game<'_> {
 
     // tick_remote and tick_remote_player: remote/tick.rs
 
-    /// The last `ClientboundPlayerAbilities` the server sent, on a client.
-    pub(super) fn remote_abilities(&self) -> Option<&play::PlayerAbilities> {
-        self.remote.as_ref()?.abilities.as_ref()
+    /// Live client `Abilities` (`LocalPlayer.abilities`) when connected to a server.
+    pub(super) fn remote_abilities(
+        &self,
+    ) -> Option<&sunrise_client::lan::abilities::PlayerAbilities> {
+        self.remote.as_ref().map(|r| &r.abilities)
     }
 
     // tick_remote_guardian_eyes: remote/tick.rs
@@ -2137,7 +2147,9 @@ impl sunrise_client::interaction_input::InteractionWorld for RemoteInputWorld<'_
         !self.0.mod_mappings_screen_open()
     }
     fn spectator_hotbar(&mut self) {
-        while self.0.spectator() && self.0.consume_mapping_click("key.spectatorHotbar") {
+        while self.0.own_player_is_spectator()
+            && self.0.consume_mapping_click("key.spectatorHotbar")
+        {
             self.0.spectator_action_key();
         }
     }
@@ -2458,6 +2470,9 @@ pub(crate) mod tests {
     }
     mod hanging_entity_age_tests {
         include!("hanging_entity_age_tests.rs");
+    }
+    mod main_hand_tests {
+        include!("main_hand_tests.rs");
     }
     mod menu_click_order_tests {
         include!("menu_click_order_tests.rs");

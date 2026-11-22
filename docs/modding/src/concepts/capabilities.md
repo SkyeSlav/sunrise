@@ -114,8 +114,8 @@ Each method receives the host; the handler holds no borrow of the game.
 | `amount` / `amount_int` | Amount held at an index; `amount_int` caps it at `i32::MAX`. |
 | `capacity` / `capacity_int` | Limit for `Some(&resource)`, or the general limit for `None`. An unknown general limit is `u32::MAX`; `capacity_int` caps the answer at `i32::MAX`. This is not free space or permission to insert. |
 | `is_valid` | Whether the resource is allowed at an index. The default checks for nonzero capacity; override it for separate acceptance rules and enforce those rules in `insert_at`. |
-| `insert_at` / `extract_at` | Move up to the requested amount at one index, using a `&Transaction`. Return the actual amount moved. Insertion can refuse even with nonzero capacity. |
-| `insert` / `extract` | Let the handler choose where to move the resource. The default visits indices in order. Prefer these unless you need to target a specific index. They return `Result<u32, Overanswered>`. |
+| `insert_at` / `extract_at` | Move up to the requested amount at one index, using the innermost `&TransactionContext`. Return `Result<u32, TransactionError<Overanswered>>` with the actual amount moved, or `InvalidContext` if `tx` does not match the innermost open transaction. Insertion can refuse even with nonzero capacity. |
+| `insert` / `extract` | Let the handler choose where to move the resource. The default visits indices in order. Prefer these unless you need to target a specific index. They return `Result<u32, TransactionError<Overanswered>>`. |
 
 Keep handler state in transaction-managed storage such as block entity slots, saved compounds or
 attachments. Your handler can look up and call a neighbour's capability through the host.
@@ -124,23 +124,32 @@ Use `resource_util::move_resources(host, &from, &to, filter, max, Some(tx))` to 
 resources, up to `max`, in source index order. The helper probes an extraction and rolls the probe
 back before asking the destination to insert. A step commits only if the source can then extract
 exactly what went in. An overanswer rolls back the entire helper call, even if you handle the error
-and commit the enclosing transaction. Use `Some(tx)` for the current transaction or `None` to open a
-root transaction; a token for a different transaction, or `None` while one is open, moves nothing.
-Pass capability references to keep their provider names in `Overanswered` errors. For a handler
+and commit the enclosing transaction. Use `Some(tx)` for the innermost transaction or `None` to open a
+root transaction. A foreign or ancestor context, or `None` while a transaction is open, returns
+`TransactionError::InvalidContext`. A scope that could not open returns `Unavailable`;
+a rolled-back commit returns `CommitRefused`. None of these is a successful zero transfer.
+A valid request for zero moves nothing without opening a scope. Each source index is visited
+once, probing the amount still requested. Pass capability references to keep their provider names in
+`TransactionError::Aborted(Overanswered)` errors. For a handler
 you compose directly, pass it as `&dyn ResourceHandler<R>`; the helper does not infer a provider.
 
-`move_resources_stacking` tops up matching destination indices before filling empty ones.
+`move_resources_stacking` tries occupied destination indices before empty ones; the handler decides
+which resources each index accepts.
 `move_first` and `move_first_stacking` move only the first resource the destination accepts,
 including more of the same resource from later source indices, and return which and how much.
 
 `index_of`, `contains`, `is_empty`, `is_full` and `is_valid` query the whole handler. `is_full`
 uses general capacity at empty indices, so an empty, zero-capacity index is already full.
 `comparator_signal` averages the fill over all indices: empty and zero-capacity indices contribute
-zero and overfilled indices contribute at most one. `insert_stacking` tops up matching indices
-before filling empty ones; an overanswer rolls it back and returns `Overanswered`. `extract_first`
-takes the first extractable resource matching a filter. `find_extractable_resource` probes each
-candidate with its full int amount in a separate transaction that always rolls back. These three
-helpers also require the current transaction token, or `None` when opening a root.
+zero and overfilled indices contribute at most one. `insert_stacking` tries occupied indices
+before empty ones; an overanswer rolls it back and returns `TransactionError::Aborted(Overanswered)`. `extract_first`
+takes the first extractable resource matching a filter. `find_extractable_resource` and a
+positive-amount `extract_first` open one rollback scope for the scan. After a resource passes the
+filter, its full int amount is probed. Later candidates see earlier attempts' journaled work;
+all of it rolls back when the scan finishes, before `extract_first` opens its extraction. These three helpers
+follow the same rule for `Some(tx)` and `None`. A scan with no match returns `Ok(None)` only if
+its required scopes opened; an empty handler or a filter that rejects everything still returns
+`Err(TransactionError::Unavailable)` if the host refuses the scope.
 
 Compose handlers from the same module: `CombinedResourceHandler` assigns indices in order and fixes
 its size at construction; `RangedResourceHandler::of` and `of_single_index` return `None` for
@@ -189,9 +198,11 @@ Notifications your extract/insert issues happen immediately and survive abort. T
 `ITEMS` and item `STORAGE` handlers defer a single notice per backing block to root commit
 for vanilla containers and engine-managed mod slots. On the default block `ITEMS` handler, a
 successful `set_max_stack_size` call queues the backing container's change notice at root commit,
-even if no items moved. If a root commit runs during `menu_quick_move`, those implicit notices
-wait until the clicked slot's accepted remainder is in place, or until the hook finishes without one.
-A deferred notice does not run if the original backing container was removed or replaced. A write
+even if no items moved. During `menu_quick_move`, those implicit notices publish only after a
+committed move settles the clicked slot (including when it is emptied), and never after an
+unhandled or refused move. Explicit `BlockEntityRef::set_changed` calls still notify
+immediately and survive abort. A deferred notice does not run if the original backing
+container was removed or replaced. A write
 from an active `contents_changed` callback to its own backing block still applies without queuing
 another notice. Direct writes by mods to their own storage and rollback restores do not
 issue notices. Keep storage in the transaction journal: a handler

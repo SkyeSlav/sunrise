@@ -161,15 +161,12 @@ impl Game<'_> {
             }),
         };
         // The action's savepoint needs a transaction to nest in: the open one, or this one.
-        let seal = self.transaction_open();
-        let outcome = {
-            let mut host = GameHost {
-                game: &mut *self,
-                identity,
-            };
-            decision::run(&mut host, &target, |_, _| Plan, |host| fire(host.game))
-        };
-        self.transaction_close(&seal, matches!(outcome, Ok(Outcome::Applied)));
+        let outcome = self.storage_scope(|game, _| {
+            let mut host = GameHost { game, identity };
+            let outcome = decision::run(&mut host, &target, |_, _| Plan, |host| fire(host.game));
+            let commit = matches!(outcome, Ok(Outcome::Applied));
+            (outcome, commit)
+        });
         match outcome {
             Ok(Outcome::Applied) => true,
             // A cancelled action is the listener's own answer, not a refusal: the caller goes on.
@@ -271,68 +268,70 @@ impl Game<'_> {
         let default_ok = Cell::new(false);
         // `decided_action` gives the hook and router one savepoint. Its outer transaction
         // also has the router's outcome, so a nested refused default rolls the hook back.
-        let seal = self.transaction_open();
-        let decided = self.decided_action(
-            "menu_clicked",
-            route,
-            actor,
-            Epoch::Click(&handled),
-            |game| {
-                let Some(guest) = game.lan.as_ref().and_then(|host| host.hub.guest(conn)) else {
-                    return false;
-                };
-                let live = !guest.dead
-                    && !guest.disconnect_pending
-                    && guest.menu_generation == generation
-                    && guest.menu.as_ref().is_some_and(|m| {
-                        m.window == click.container
-                            && m.state == state
-                            && m.drag == drag
-                            && m.craft == craft
+        let applied = self.storage_scope(|game, _| {
+            let decided = game.decided_action(
+                "menu_clicked",
+                route,
+                actor,
+                Epoch::Click(&handled),
+                |game| {
+                    let Some(guest) = game.lan.as_ref().and_then(|host| host.hub.guest(conn))
+                    else {
+                        return false;
+                    };
+                    let live = !guest.dead
+                        && !guest.disconnect_pending
+                        && guest.menu_generation == generation
+                        && guest.menu.as_ref().is_some_and(|m| {
+                            m.window == click.container
+                                && m.state == state
+                                && m.drag == drag
+                                && m.craft == craft
+                        });
+                    live && (handled.get()
+                        || ((
+                            guest.selected,
+                            guest.game_mode,
+                            guest.creative(),
+                            guest.position,
+                        ) == (selected, mode, creative, pos)
+                            && guest.inventory == inventory
+                            && guest.armor == armor
+                            && guest.offhand == offhand
+                            && guest.carried == carried
+                            && slots.read(&game.world, guest) == items
+                            && blocks
+                                .iter()
+                                .all(|(pos, old)| capture_block(game, guest, *pos) == *old)))
+                },
+                |game| {
+                    game.transactions.last_mut().unwrap().menu_click_active = Some(conn);
+                    let mut skip_default = false;
+                    game.native_menu_clicked(mod_api::__private::MenuClickedCall {
+                        menu: &menu,
+                        uuid,
+                        window: click.container,
+                        slot: i32::from(click.slot),
+                        button: i32::from(click.button),
+                        mode: click.input,
+                        handled: &mut skip_default,
                     });
-                live && (handled.get()
-                    || ((
-                        guest.selected,
-                        guest.game_mode,
-                        guest.creative(),
-                        guest.position,
-                    ) == (selected, mode, creative, pos)
-                        && guest.inventory == inventory
-                        && guest.armor == armor
-                        && guest.offhand == offhand
-                        && guest.carried == carried
-                        && slots.read(&game.world, guest) == items
-                        && blocks
-                            .iter()
-                            .all(|(pos, old)| capture_block(game, guest, *pos) == *old)))
-            },
-            |game| {
-                game.transactions.last_mut().unwrap().menu_click_active = Some(conn);
-                let mut skip_default = false;
-                game.native_menu_clicked(mod_api::__private::MenuClickedCall {
-                    menu: &menu,
-                    uuid,
-                    window: click.container,
-                    slot: i32::from(click.slot),
-                    button: i32::from(click.button),
-                    mode: click.input,
-                    handled: &mut skip_default,
-                });
-                handled.set(skip_default);
-                Reply::Allow
-            },
-            |game| {
-                if handled.get() {
-                    default_ok.set(true);
-                } else {
-                    game.journal_guest_click(conn);
-                    game.journal_menu_click(conn);
-                    default_ok.set(game.lan_default_container_click(conn, click));
-                }
-            },
-        );
-        let applied = decided && default_ok.get();
-        self.transaction_close(&seal, applied);
+                    handled.set(skip_default);
+                    Reply::Allow
+                },
+                |game| {
+                    if handled.get() {
+                        default_ok.set(true);
+                    } else {
+                        game.journal_guest_click(conn);
+                        game.journal_menu_click(conn);
+                        default_ok.set(game.lan_default_container_click(conn, click));
+                    }
+                },
+            );
+            let applied = decided && default_ok.get();
+            (applied, applied)
+        });
         if !applied || handled.get() {
             // The client predicted the unmodified click. Compare neither IDs nor component
             // hashes here: a replacement may leave the same counts with different components.

@@ -3,7 +3,11 @@ use crate::gfx::hud_coverage::{self, Pipeline};
 
 pub struct HudRenderer {
     pub(super) pictures: HashMap<u64, (Arc<pictures::Picture>, wgpu::BindGroup)>,
-    pub sprite_animations: Vec<(Rect, crate::sprites::SpriteAnimation, (usize, usize, u32))>,
+    pub sprite_animations: Vec<(
+        AnimatedPlacement,
+        crate::sprites::SpriteAnimation,
+        (usize, usize, u32),
+    )>,
     /// The shared atlas texture, for run-time glyph uploads.
     pub atlas_texture: Option<wgpu::Texture>,
     pub(super) pipeline: Pipeline,

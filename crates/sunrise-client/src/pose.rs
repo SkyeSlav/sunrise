@@ -318,6 +318,9 @@ impl MotionWorld<'_, '_, '_> {
     }
     /// `LivingEntity.aiStep` travels the rider after its sprint decision.
     pub fn finish_rider_tick(&mut self, direction: [f32; 2]) -> Result<()> {
+        if self.player.may_fly && self.player.local_spectator {
+            self.player.flying = true;
+        }
         self.rider_travel_tick(direction)?;
         self.passenger_sits_up()
     }

@@ -48,7 +48,7 @@ fn a_special_dropped_item_outlines_only_its_committed_world_vertices() {
                     },
                 );
                 game.glint_frame = GlintFrame {
-                    millis: 0.0,
+                    millis: 0,
                     speed: 0.5,
                     alpha: 0.75,
                     sprite: true,

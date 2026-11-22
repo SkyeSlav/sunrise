@@ -23,8 +23,8 @@ const REPO: &str = sunrise_release_sign::REPOSITORY;
 /// The release archives for this computer, most specific first: on Linux the server build (no ALSA or
 /// udev), else the full game (releases before the server build).
 fn assets_for(os: &str, arch: &str, musl: bool) -> &'static [&'static str] {
-    // The musl archive is manually installed; glibc updates would replace this supervisor
-    // with a binary that cannot even start to roll back on a musl system.
+    // No musl archive is published: a musl build is built from source, and a glibc update would replace this
+    // supervisor with a binary that cannot even start to roll back on a musl system.
     if musl {
         return &[];
     }
@@ -34,9 +34,6 @@ fn assets_for(os: &str, arch: &str, musl: bool) -> &'static [&'static str] {
             "sunrise-linux-x86_64.tar.gz",
         ],
         ("macos", "aarch64") => &["sunrise-macos-arm64.zip"],
-        ("macos", "x86_64") => &["sunrise-macos-x64.zip"],
-        // A release without an ARM64 build: the x64 one, which Windows runs under emulation.
-        ("windows", "aarch64") => &["sunrise-windows-arm64.zip", "sunrise-windows-x64.zip"],
         ("windows", "x86_64") => &["sunrise-windows-x64.zip"],
         _ => &[],
     }
@@ -976,8 +973,7 @@ mod tests {
     fn musl_update_refuses_glibc_before_downloading() {
         let release = json!({"tag_name": "nightly", "assets": [
             {"name": "sunrise-server-linux-x86_64.tar.gz", "browser_download_url": "server"},
-            {"name": "sunrise-linux-x86_64.tar.gz", "browser_download_url": "client"},
-            {"name": "sunrise-linux-musl-x86_64.tar.gz", "browser_download_url": "manual"}
+            {"name": "sunrise-linux-x86_64.tar.gz", "browser_download_url": "client"}
         ]});
         let error = pick_for_assets(
             &release,
@@ -990,15 +986,17 @@ mod tests {
     }
 
     #[test]
-    fn windows_updates_choose_the_machine_architecture() {
+    fn updates_choose_only_the_three_published_platforms() {
         assert_eq!(
             assets_for("windows", "x86_64", false),
             &["sunrise-windows-x64.zip"]
         );
         assert_eq!(
-            assets_for("windows", "aarch64", false),
-            &["sunrise-windows-arm64.zip", "sunrise-windows-x64.zip"]
+            assets_for("macos", "aarch64", false),
+            &["sunrise-macos-arm64.zip"]
         );
+        assert!(assets_for("windows", "aarch64", false).is_empty());
+        assert!(assets_for("macos", "x86_64", false).is_empty());
     }
 
     #[cfg(unix)]

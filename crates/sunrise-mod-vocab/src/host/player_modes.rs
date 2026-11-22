@@ -27,22 +27,30 @@ pub trait PlayerModesBackend {
     /// stale or unavailable player.
     fn player_is_secondary_use_active(&self, player: PlayerRef) -> Option<bool>;
     /// Side: both.
-    /// `ServerPlayerGameMode.getGameModeForPlayer`; Paper `HumanEntity#getGameMode`.
-    /// None for stale, offline or unavailable players (including displaced outer players).
+    /// `ServerPlayerGameMode.getGameModeForPlayer` on a server; `AbstractClientPlayer.gameMode`
+    /// (the entity's resolved `PlayerInfo`) on a client. Paper `HumanEntity#getGameMode`.
+    /// None for stale, offline or unavailable players (including displaced outer players), and on
+    /// a client before `ADD_PLAYER` resolves the entity's `PlayerInfo`. Distinct from
+    /// `player_abilities`, which reads `LocalPlayer.abilities`.
     fn player_game_mode(&self, player: PlayerRef) -> Option<GameMode>;
     /// Side: both.
-    /// `Player.isCreative`; Paper `HumanEntity#getGameMode`.
+    /// `Player.isCreative`: `gameMode() == GameType.CREATIVE` (authoritative on a server;
+    /// resolved `PlayerInfo` on a client, false before `ADD_PLAYER`, distinct from
+    /// `player_abilities`' `instabuild`). Paper `HumanEntity#getGameMode`.
     fn player_is_creative(&self, player: PlayerRef) -> Option<bool>;
     /// Side: both.
-    /// `Player.isSpectator`; Paper `HumanEntity#getGameMode`.
+    /// `Player.isSpectator`: `gameMode() == GameType.SPECTATOR` (authoritative on a server;
+    /// resolved `PlayerInfo` on a client, false before `ADD_PLAYER`, distinct from
+    /// `MultiPlayerGameMode` controller state and `player_abilities`). Paper `HumanEntity#getGameMode`.
     fn player_is_spectator(&self, player: PlayerRef) -> Option<bool>;
     /// Side: both.
     /// `Player.mayBuild`; Paper `HumanEntity#getGameMode`.
     fn player_may_build(&self, player: PlayerRef) -> Option<bool>;
     /// Side: both.
     /// `Player.getAbilities`; Paper `Player#getAllowFlight/isFlying/getFlySpeed/getWalkSpeed`.
-    /// On a client, flying is the local body's current prediction; the packet supplies
-    /// the other ability flags and speeds. None for any other player.
+    /// On a client, reads `LocalPlayer.abilities` (flying is the local body's current prediction;
+    /// server ability/mode packets supply the other flags and speeds), independent of
+    /// `PlayerInfo`'s entity mode. None for any other player.
     fn player_abilities(&self, player: PlayerRef) -> Option<PlayerAbilities>;
     /// Side: both.
     /// `IPlayerExtension.mayFly` (NeoForge): whether the player may start flying, by game mode

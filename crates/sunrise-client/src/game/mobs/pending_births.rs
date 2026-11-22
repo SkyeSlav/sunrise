@@ -120,7 +120,7 @@ impl Game<'_> {
             (lent.pending.clone(), lent.hook.clone())
         };
         let run = catch_unwind(AssertUnwindSafe(|| {
-            mod_api::run_transaction(self, |game, _| {
+            self.storage_transaction(|game, _| {
                 let mut cancel = false;
                 let mut frozen = {
                     let _scope = HookScope {

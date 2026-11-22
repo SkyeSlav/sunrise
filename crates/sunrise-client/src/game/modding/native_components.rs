@@ -209,6 +209,14 @@ impl Game<'_> {
     ) -> sunrise_client::text::Text {
         sunrise_client::stations::hover_name_in(&self.loop_context, &self.pack.names, stack)
     }
+    /// `ItemStack.getItemName` as a component: the name a mod item's Part gives the stack, else
+    /// vanilla's, without the custom name or a book's title. The Part is asked at most once.
+    pub(in crate::game) fn stack_item_name_text(
+        &self,
+        stack: &ItemStack,
+    ) -> sunrise_client::text::Text {
+        sunrise_client::stations::item_name_in(&self.loop_context, &self.pack.names, stack)
+    }
     /// `ItemStack.isBarVisible`, `getBarWidth`, `getBarColor`, before client-only hooks.
     pub(in crate::game) fn item_resource_bar(&self, stack: &ItemStack) -> Option<mod_api::ItemBar> {
         use super::api_values::TryIntoApi;

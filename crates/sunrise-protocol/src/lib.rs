@@ -58,17 +58,42 @@ pub enum Direction {
 
 /// A malformed or unsupported packet.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Error(pub String, Option<SizeRefusal>);
+pub struct Error(pub String, Option<ErrorDetail>);
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum SizeRefusal {
+enum ErrorDetail {
     Payload(packets::custom_payload::PayloadTooLarge),
     Frame(frame::FrameTooLarge),
+    UnknownPacketId(i32),
+    ExtraBytes { extra: usize },
 }
 impl Error {
     const TIMED_OUT: &str = "Timed out";
     const END_OF_STREAM: &str = "Connection closed by the server";
     pub fn new(message: impl Into<String>) -> Self {
         Self(message.into(), None)
+    }
+    /// `IdDispatchCodec.decode`: packet id outside the state/direction table.
+    pub fn unknown_packet_id(id: i32) -> Self {
+        Self(
+            format!("Received unknown packet id {id}"),
+            Some(ErrorDetail::UnknownPacketId(id)),
+        )
+    }
+    pub fn is_unknown_packet_id(&self) -> bool {
+        matches!(self.1, Some(ErrorDetail::UnknownPacketId(_)))
+    }
+    /// `PacketDecoder.decode`: unread bytes left after decoding a packet.
+    pub fn packet_extra_bytes(id: i32, packet_name: &str, extra: usize) -> Self {
+        Self(
+            format!("packet {id} ({packet_name}) was larger than expected: {extra} extra bytes"),
+            Some(ErrorDetail::ExtraBytes { extra }),
+        )
+    }
+    pub fn extra_packet_bytes(&self) -> Option<usize> {
+        match self.1 {
+            Some(ErrorDetail::ExtraBytes { extra }) => Some(extra),
+            _ => None,
+        }
     }
     /// A directional custom payload exceeded its body capacity.
     pub fn payload_too_large(id: &str, size: usize, limit: usize) -> Self {
@@ -79,13 +104,13 @@ impl Error {
         };
         Self(
             format!("PayloadTooLarge {{ id: {id}, size: {size}, limit: {limit} }}"),
-            Some(SizeRefusal::Payload(detail)),
+            Some(ErrorDetail::Payload(detail)),
         )
     }
     /// Structured size refusal, retained for callers that expose their own error vocabulary.
     pub fn payload_limit(&self) -> Option<&packets::custom_payload::PayloadTooLarge> {
         match &self.1 {
-            Some(SizeRefusal::Payload(detail)) => Some(detail),
+            Some(ErrorDetail::Payload(detail)) => Some(detail),
             _ => None,
         }
     }
@@ -93,13 +118,13 @@ impl Error {
     pub fn frame_too_large(detail: frame::FrameTooLarge) -> Self {
         Self(
             format!("FrameTooLarge {detail:?}"),
-            Some(SizeRefusal::Frame(detail)),
+            Some(ErrorDetail::Frame(detail)),
         )
     }
     /// Structured whole-packet refusal, before any bytes are written.
     pub fn frame_limit(&self) -> Option<&frame::FrameTooLarge> {
         match &self.1 {
-            Some(SizeRefusal::Frame(detail)) => Some(detail),
+            Some(ErrorDetail::Frame(detail)) => Some(detail),
             _ => None,
         }
     }

@@ -750,7 +750,7 @@ impl Game<'_> {
             DebugAction::Spectate => {
                 if self.player.is_none() || !self.gamemaster() {
                     self.debug_translated("debug.creative_spectator.error");
-                } else if self.mode != GameMode::Spectator {
+                } else if !self.own_player_is_spectator() {
                     self.change_game_mode(GameMode::Spectator);
                 } else {
                     let back = self.previous_mode.unwrap_or(GameMode::Creative);

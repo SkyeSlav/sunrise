@@ -37,7 +37,9 @@ provider; ordinary providers run after it. Within each group, registration order
 applies and the first handler returned wins.
 
 Give, take and count player items through this capability. For example, this
-trade aborts if an offer changes or either recipient lacks room:
+trade aborts if an offer changes or either recipient lacks room. The caller gets
+`TransactionError::Aborted(())` for those failures, or `TransactionError::Unavailable`
+if the scope can't be opened:
 
 ```rust,ignore
 // A trade: each offer is (index, the exact stack it must still hold). A stale offer or no
@@ -50,8 +52,8 @@ host.transaction(|host, tx| {
             let still = from.resource(host, *index).as_ref() == Some(&offered)
                 && from.amount(host, *index) == stack.count();
             if !still
-                || from.extract_at(host, tx, *index, &offered, stack.count()) != stack.count()
-                || to.insert(host, tx, &offered, stack.count()) != stack.count()
+                || from.extract_at(host, tx, *index, &offered, stack.count()) != Ok(stack.count())
+                || to.insert(host, tx, &offered, stack.count()) != Ok(stack.count())
             {
                 return Err(());
             }

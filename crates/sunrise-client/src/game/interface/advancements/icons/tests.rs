@@ -193,7 +193,7 @@ fn advancement_icons_reach_local_and_remote_ui_surfaces() {
         assert_eq!(toast.icon.has_foil(None), !refused);
         toast.slide.portion = 1.0;
         game.glint_frame = sunrise_client::item_render::GlintFrame {
-            millis: 1000.0,
+            millis: 1_000,
             speed: 0.5,
             alpha: 0.75,
             sprite: true,

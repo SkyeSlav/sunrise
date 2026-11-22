@@ -59,7 +59,8 @@ pub struct Index {
     pub content_api: String,
     pub surface: Surface,
     pub mixins: Mixins,
-    /// Every asset of the release but the index itself, by file name.
+    /// Every asset of the release but the index itself, by file name. A reader leaves out an asset
+    /// of a kind it doesn't know (a newer SDK's); a route needing one is refused when it is used.
     pub assets: BTreeMap<String, Asset>,
     /// The files each route needs, named before any work starts ([`inputs`]).
     pub inputs: Inputs,
@@ -378,7 +379,18 @@ pub struct Route {
 
 /// The required inputs of every route.
 pub fn inputs() -> Inputs {
-    serde_json::from_str(include_str!("sdk/inputs.json")).expect("sdk/inputs.json is an input list")
+    bundled(include_str!("sdk/inputs.json"))
+}
+
+/// The input list `text` as this source bundles it. Unlike a downloaded `sdk.json`'s, a route
+/// naming a kind this source doesn't know is a mistake in the list, which the tolerant reading
+/// would otherwise drop from every index written from it: it stops the program, naming both.
+fn bundled(text: &str) -> Inputs {
+    let inputs: Inputs = serde_json::from_str(text).expect("sdk/inputs.json is an input list");
+    if let Some((route, kind)) = inputs.unknown.first_key_value() {
+        panic!("sdk/inputs.json: route {route} names asset kind {kind:?}, which is not a kind");
+    }
+    inputs
 }
 
 impl Inputs {
@@ -387,7 +399,7 @@ impl Inputs {
     pub fn route(&self, name: &str) -> Result<&Route, Refusal> {
         if let Some(kind) = self.unknown.get(name) {
             return Err(Refusal::Kind {
-                asset: name.to_owned(),
+                route: name.to_owned(),
                 kind: kind.clone(),
             });
         }
@@ -484,8 +496,8 @@ pub enum Refusal {
     PackageFormat(u64),
     /// The pinned horizon-mixins revision is not a full commit sha.
     MixinsRev(String),
-    /// A route asks for an asset kind this reader does not know (`asset` is the route's name).
-    Kind { asset: String, kind: String },
+    /// A route asks for an asset kind this reader does not know.
+    Kind { route: String, kind: String },
     /// An asset names a codec this reader does not know.
     Codec { asset: String, codec: String },
     /// An asset's name is not a plain file name, or does not say what the entry claims.
@@ -544,9 +556,9 @@ impl fmt::Display for Refusal {
                 f,
                 "{INDEX}'s mixins revision {rev:?} is not a full commit sha (40 lowercase hex digits)"
             ),
-            Self::Kind { asset, kind } => write!(
+            Self::Kind { route, kind } => write!(
                 f,
-                "the SDK's {asset} route needs asset kind {kind:?}, which this program doesn't know. Update it to use this SDK"
+                "the SDK's {route} route needs asset kind {kind:?}, which this program doesn't know. Update it to use this SDK"
             ),
             Self::Codec { asset, codec } => write!(f, "{asset}: unknown codec {codec:?}"),
             Self::AssetName(asset) => write!(f, "{asset:?} is not a valid SDK asset name"),
@@ -600,7 +612,8 @@ struct Written {
     content_api: String,
     surface: Surface,
     mixins: Mixins,
-    assets: BTreeMap<String, WrittenAsset>,
+    /// Decoded one by one once each kind is known ([`Index::read`]).
+    assets: BTreeMap<String, serde_json::Value>,
     inputs: Inputs,
 }
 
@@ -608,7 +621,6 @@ struct Written {
 struct WrittenAsset {
     sha256: String,
     size: u64,
-    kind: String,
     codec: String,
     #[serde(default)]
     target: Option<String>,
@@ -801,11 +813,15 @@ impl Index {
         }
         let mut assets = BTreeMap::new();
         for (name, asset) in written.assets {
-            // A kind added after this reader is a newer SDK's: left out, and refused only by a
-            // route that asks for it ([`Inputs::route`]), so older launchers keep reading the rest.
-            let Some(kind) = Kind::named(&asset.kind) else {
+            // A kind added after this reader is a newer SDK's: left out before the rest of its
+            // entry is decoded (its fields may be new too), and refused only by a route that asks
+            // for it ([`Inputs::route`]), so older launchers keep reading the rest.
+            let named = asset.get("kind").and_then(serde_json::Value::as_str);
+            let named = named.ok_or_else(|| Refusal::Malformed(format!("{name} names no kind")))?;
+            let Some(kind) = Kind::named(named) else {
                 continue;
             };
+            let asset: WrittenAsset = serde_json::from_value(asset).map_err(malformed)?;
             let codec = match asset.codec.as_str() {
                 "none" => Codec::None,
                 "xz" => Codec::Xz,

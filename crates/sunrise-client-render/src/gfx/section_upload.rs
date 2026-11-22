@@ -1,5 +1,137 @@
 use super::*;
 
+/// Whether section `key` lies in the eye's visible terrain set: within horizontal and vertical
+/// render distance, reached by the bounded occlusion graph, and passing the eye frustum /
+/// outside-height section-tree test (`LevelExtractor.extractVisibleBlockEntities`).
+pub fn section_in_eye_view(
+    key: SectionKey,
+    camera: DVec3,
+    min_y: i32,
+    sections: i32,
+    radius: i32,
+    frustum: Option<&impl Cull>,
+    reachable: impl Fn(SectionKey) -> bool,
+) -> bool {
+    if !crate::streaming::in_view_distance(resident::camera_column(camera), radius, key.0, key.2) {
+        return false;
+    }
+    let Some((lo_y, hi_y)) = resident::vertical_section_range(
+        resident::camera_section_y(camera, min_y),
+        radius,
+        sections,
+    ) else {
+        return false;
+    };
+    if key.1 < lo_y || key.1 > hi_y || !reachable(key) {
+        return false;
+    }
+    let Some(frustum) = frustum else {
+        return true;
+    };
+    let min = resident::origin(key, min_y, camera).as_vec3();
+    let max = min + Vec3::splat(16.0);
+    if let Some(tree) = resident::outside_height_tree(camera, min_y, sections, radius) {
+        let offset = frustum.offset_for_camera_cube(camera, 8);
+        let state = match &offset {
+            Some(offset) => tree.branch_state(key.0, key.2, camera, offset),
+            None => tree.branch_state(key.0, key.2, camera, frustum),
+        };
+        if state == resident::BRANCH_OUTSIDE {
+            return false;
+        }
+        if state == resident::BRANCH_INSIDE {
+            return true;
+        }
+        return match &offset {
+            Some(offset) => offset.intersects(min, max),
+            None => frustum.intersects(min, max),
+        };
+    }
+    frustum.intersects(min, max)
+}
+
+/// Pairs each faded-in section's block entities with whether that section lies in the eye's
+/// visible terrain set (`LevelExtractor.extractVisibleBlockEntities`).
+fn visible_block_entities_in_eye_view<'a>(
+    block_entities: impl Iterator<Item = (&'a SectionKey, &'a [([i32; 3], u32)])> + 'a,
+    camera: DVec3,
+    min_y: i32,
+    sections: i32,
+    frustum: Option<JoinedFrusta>,
+    radius: i32,
+    reachable: impl Fn(SectionKey) -> bool + 'a,
+) -> impl Iterator<Item = (&'a ([i32; 3], u32), bool)> + 'a {
+    block_entities.flat_map(move |(key, blocks)| {
+        let eye_visible = section_in_eye_view(
+            *key,
+            camera,
+            min_y,
+            sections,
+            radius,
+            frustum.as_ref(),
+            &reachable,
+        );
+        blocks.iter().map(move |block| (block, eye_visible))
+    })
+}
+
+/// Filters `block_entities` in range of `camera`, restricting ordinary block entities to
+/// eye-visible sections while keeping global renderers (`is_global`) on their existing path.
+#[allow(clippy::too_many_arguments)]
+fn filter_block_entities_in_range<'a>(
+    block_entities: impl Iterator<Item = (&'a SectionKey, &'a [([i32; 3], u32)])> + 'a,
+    camera: DVec3,
+    min_y: i32,
+    sections: i32,
+    frustum: Option<JoinedFrusta>,
+    radius: i32,
+    reachable: impl Fn(SectionKey) -> bool + 'a,
+    keep_long_range: impl Fn(u32) -> bool + 'a,
+    is_global: impl Fn(u32) -> bool + Copy + 'a,
+) -> impl Iterator<Item = BlockEntityInRange<'a>> + 'a {
+    block_entities
+        .filter_map(move |(key, blocks)| {
+            let eye_visible = section_in_eye_view(
+                *key,
+                camera,
+                min_y,
+                sections,
+                radius,
+                frustum.as_ref(),
+                &reachable,
+            );
+            if !eye_visible && !blocks.iter().any(|(_, state)| is_global(*state)) {
+                return None;
+            }
+            let origin = DVec3::new(
+                (i64::from(key.0) * 16 - 1) as f64,
+                (i64::from(min_y) + i64::from(key.1) * 16 - 1) as f64,
+                (i64::from(key.2) * 16 - 1) as f64,
+            ) - camera;
+            let min = origin.as_vec3();
+            // The last block's expanded bound ends at section_origin + 17.
+            let max = min + Vec3::splat(18.0);
+            let distance_squared = Vec3::ZERO.max(min).min(max).length_squared();
+            let near = distance_squared <= 64.0 * 64.0;
+            let in_range = near
+                || (distance_squared <= 256.0 * 256.0
+                    && blocks.iter().any(|(_, state)| keep_long_range(*state)));
+            in_range.then(|| {
+                let section_inside = frustum.is_some_and(|view| view.contains(min, max));
+                (blocks, eye_visible, section_inside, near)
+            })
+        })
+        .flat_map(move |(blocks, eye_visible, section_inside, near)| {
+            blocks.iter().filter_map(move |block| {
+                (eye_visible || is_global(block.1)).then_some(BlockEntityInRange {
+                    block,
+                    section_inside,
+                    near,
+                })
+            })
+        })
+}
+
 /// A block entity of a section in range of the camera (`Renderer::block_entities_in_range`).
 pub struct BlockEntityInRange<'a> {
     /// Its block and block state.
@@ -467,22 +599,57 @@ impl Renderer {
     pub fn block_entities(&self) -> impl Iterator<Item = &([i32; 3], u32)> {
         self.block_entities.values().flatten()
     }
-    /// `block_entities` of the sections far enough into their fade-in to draw them
-    /// (`LevelExtractor.extractVisibleBlockEntities`: `getVisibility(now, fade) >= 0.3`).
-    pub fn visible_block_entities(
-        &self,
+    /// `block_entities` of sections far enough into their fade-in to draw them
+    /// (`LevelExtractor.extractVisibleBlockEntities`: `getVisibility(now, fade) >= 0.3`),
+    /// paired with whether each block's section is in the eye's visible terrain set.
+    pub fn visible_block_entities<'a>(
+        &'a self,
         fade_seconds: f32,
-    ) -> impl Iterator<Item = &([i32; 3], u32)> {
+        camera: DVec3,
+        frustum: Option<JoinedFrusta>,
+        radius: i32,
+    ) -> impl Iterator<Item = (&'a ([i32; 3], u32), bool)> + 'a {
         let fade = fade_millis(fade_seconds);
         let now = std::time::Instant::now();
         let all = !self.sections_fading_in(fade, now);
-        self.block_entities
-            .iter()
-            .filter(move |(key, _)| {
-                all || chunk_visibility(self.section_elapsed_ms(**key, now), fade)
-                    >= CHUNK_VISIBILITY_THRESHOLD
-            })
-            .flat_map(|(_, blocks)| blocks)
+        let min_y = self.layout.min_y();
+        let sections = self.layout.sections() as i32;
+        let faded = self.block_entities.iter().filter(move |(key, _)| {
+            all || chunk_visibility(self.section_elapsed_ms(**key, now), fade)
+                >= CHUNK_VISIBILITY_THRESHOLD
+        });
+        visible_block_entities_in_eye_view(
+            faded.map(|(k, v)| (k, v.as_slice())),
+            camera,
+            min_y,
+            sections,
+            frustum,
+            radius,
+            move |k| self.occlusion.contains(k),
+        )
+    }
+    /// Whether the section holding block `pos` lies in the eye's visible terrain set
+    /// (`LevelExtractor.extractVisibleBlockEntities`).
+    pub fn block_entity_section_in_eye_view(
+        &self,
+        pos: [i32; 3],
+        camera: DVec3,
+        frustum: Option<&JoinedFrusta>,
+        radius: i32,
+    ) -> bool {
+        let Some(sy) = self.layout.section_index(pos[1]) else {
+            return false;
+        };
+        let key = (pos[0] >> 4, sy as i32, pos[2] >> 4);
+        section_in_eye_view(
+            key,
+            camera,
+            self.layout.min_y(),
+            self.layout.sections() as i32,
+            radius,
+            frustum,
+            |k| self.occlusion.contains(k),
+        )
     }
     /// `LevelRenderer.isSectionCompiledAndVisible`: the entity's section must have finished
     /// its mesh (including empty sections) and reached the same fade threshold as block entities.
@@ -522,56 +689,39 @@ impl Renderer {
                 .newest_lod_fade
                 .is_some_and(|t| now.saturating_duration_since(t) < lod::FADE)
     }
-    /// Block entities of every section in range of `camera`, with whether each block's whole
-    /// section is inside `frustum` and whether that section is `near`. The frustum prunes
-    /// nothing here: the camera's list and a cache warming every nearby section both take
-    /// what they need from one walk, and the camera skips its finer per-block check for
-    /// sections wholly inside. The section bounds include the same one-block margin as that
-    /// check.
+    /// Block entities of every section in range of `camera`, restricting ordinary block entities
+    /// to eye-visible sections (`LevelExtractor.extractVisibleBlockEntities`) while keeping global
+    /// renderers (`is_global`) on their existing path.
     pub fn block_entities_in_range<'a>(
         &'a self,
         fade_seconds: f32,
         camera: DVec3,
         frustum: Option<JoinedFrusta>,
+        radius: i32,
         keep_long_range: impl Fn(u32) -> bool + 'a,
+        is_global: impl Fn(u32) -> bool + Copy + 'a,
     ) -> impl Iterator<Item = BlockEntityInRange<'a>> + 'a {
         let fade = fade_millis(fade_seconds);
         let now = Instant::now();
         // No section uploaded within the fade: all are whole, none is looked up.
         let all = !self.sections_fading_in(fade, now);
         let min_y = self.layout.min_y();
-        self.block_entities
-            .iter()
-            .filter(move |(key, _)| {
-                all || chunk_visibility(self.section_elapsed_ms(**key, now), fade)
-                    >= CHUNK_VISIBILITY_THRESHOLD
-            })
-            .filter_map(move |(key, blocks)| {
-                let origin = DVec3::new(
-                    f64::from(key.0 * 16 - 1),
-                    f64::from(min_y + key.1 * 16 - 1),
-                    f64::from(key.2 * 16 - 1),
-                ) - camera;
-                let min = origin.as_vec3();
-                // The last block's expanded bound ends at section_origin + 17.
-                let max = min + Vec3::splat(18.0);
-                let distance_squared = Vec3::ZERO.max(min).min(max).length_squared();
-                let near = distance_squared <= 64.0 * 64.0;
-                let in_range = near
-                    || (distance_squared <= 256.0 * 256.0
-                        && blocks.iter().any(|(_, state)| keep_long_range(*state)));
-                in_range.then(|| {
-                    let section_inside = frustum.is_some_and(|view| view.contains(min, max));
-                    (blocks, section_inside, near)
-                })
-            })
-            .flat_map(|(blocks, section_inside, near)| {
-                blocks.iter().map(move |block| BlockEntityInRange {
-                    block,
-                    section_inside,
-                    near,
-                })
-            })
+        let sections = self.layout.sections() as i32;
+        let faded = self.block_entities.iter().filter(move |(key, _)| {
+            all || chunk_visibility(self.section_elapsed_ms(**key, now), fade)
+                >= CHUNK_VISIBILITY_THRESHOLD
+        });
+        filter_block_entities_in_range(
+            faded.map(|(k, v)| (k, v.as_slice())),
+            camera,
+            min_y,
+            sections,
+            frustum,
+            radius,
+            move |k| self.occlusion.contains(k),
+            keep_long_range,
+            is_global,
+        )
     }
     /// The block entities of the sections a shader pack's shadow pass drew in the last frame
     /// (`shadow_visible`), within the 64 blocks `block_entities_in_range` keeps.
@@ -593,7 +743,7 @@ impl Renderer {
     pub fn shadow_pass_drew(&self, pos: [i32; 3]) -> bool {
         let key = (
             pos[0] >> 4,
-            (pos[1] - self.layout.min_y()) >> 4,
+            resident::block_to_section_y(pos[1], self.layout.min_y()),
             pos[2] >> 4,
         );
         self.shadow_visible.iter().any(|v| v.key == key)
@@ -688,6 +838,7 @@ impl Renderer {
             self.layout = layout;
             self.occlusion = occlusion::Occlusion::new(layout.min_y(), layout.sections() as i32);
             self.sections.set_min_y(layout.min_y());
+            self.sections.set_sections(layout.sections() as i32);
         }
     }
     /// Lays the sections out as `translucent_split` says for the shader pack that
@@ -951,5 +1102,92 @@ impl Renderer {
         if released.len() >= BULK_REMOVAL_KEYS {
             arena::free_later(released);
         }
+    }
+}
+
+#[cfg(test)]
+mod block_entity_visibility_tests {
+    use super::*;
+    use crate::fast_hash::FxHashMap;
+
+    /// Ordinary block entities follow eye-visible sections (vertical clamp + occlusion + frustum),
+    /// while global renderers (`is_global`) and shadow-pass block entities stay on their own paths.
+    #[test]
+    fn ordinary_block_entities_follow_eye_visible_sections() {
+        // Overworld min_y = -64, 24 sections: camera at Y = 111.0 (world sy = 6, 0-based y = 10),
+        // rd = 2 -> visible vertical band is world sy 4..=8 (0-based y 8..=12, block Y 64..=143).
+        let camera = DVec3::new(8.5, 111.0, 8.5);
+        let min_y = -64;
+        let sections = 24;
+        let rd = 2;
+        const CHEST: u32 = 1;
+        const BEACON: u32 = 2;
+        let outside_key = (0, 7, 0); // world sy = 3, block Y 48..64
+        let edge_key = (0, 8, 0); // world sy = 4, block Y 64..80
+        let mut map: FxHashMap<SectionKey, Vec<([i32; 3], u32)>> = FxHashMap::default();
+        map.insert(outside_key, vec![([8, 60, 8], CHEST), ([9, 60, 8], BEACON)]);
+        map.insert(edge_key, vec![([8, 64, 8], CHEST)]);
+
+        let proj = world_projection(70.0, 16.0 / 9.0, 192.0);
+        let view = crate::camera::view_matrix(0.0, 90.0);
+        let frustum = JoinedFrusta::from(Frustum::from_planes(frustum(proj * view)));
+
+        let mut o = occlusion::Occlusion::new(min_y, sections);
+        for x in -2..=2 {
+            for z in -2..=2 {
+                o.load_column(x, z);
+            }
+        }
+        o.settle(camera, rd, true);
+
+        let mut kept: Vec<([i32; 3], u32)> = filter_block_entities_in_range(
+            map.iter().map(|(k, v)| (k, v.as_slice())),
+            camera,
+            min_y,
+            sections,
+            Some(frustum),
+            rd,
+            |k| o.contains(k),
+            |_| false,
+            |state| state == BEACON,
+        )
+        .map(|entry| *entry.block)
+        .collect();
+        kept.sort_unstable();
+        assert_eq!(
+            kept,
+            vec![([8, 64, 8], CHEST), ([9, 60, 8], BEACON)],
+            "chest at Y=60 excluded, chest at Y=64 included, global beacon at Y=60 kept"
+        );
+
+        let mut mod_flags: Vec<([i32; 3], u32, bool)> = visible_block_entities_in_eye_view(
+            map.iter().map(|(k, v)| (k, v.as_slice())),
+            camera,
+            min_y,
+            sections,
+            Some(frustum),
+            rd,
+            |k| o.contains(k),
+        )
+        .map(|(&(pos, state), eye_visible)| (pos, state, eye_visible))
+        .collect();
+        mod_flags.sort_unstable();
+        assert_eq!(
+            mod_flags,
+            vec![
+                ([8, 60, 8], CHEST, false),
+                ([8, 64, 8], CHEST, true),
+                ([9, 60, 8], BEACON, false),
+            ],
+            "native mod block entity iterator shares the same eye-section filter"
+        );
+
+        // Shadow-pass block entities remain independent of eye vertical clamping.
+        let shadow_kept: Vec<_> =
+            block_entities_within_reach([outside_key, edge_key].into_iter(), &map, camera, min_y)
+                .copied()
+                .collect();
+        assert!(shadow_kept.contains(&([8, 60, 8], CHEST)));
+        assert!(shadow_kept.contains(&([8, 64, 8], CHEST)));
     }
 }

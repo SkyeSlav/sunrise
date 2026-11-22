@@ -573,15 +573,16 @@ fn load_saved_row(server: &mut Game<'_>, position: [f64; 3]) -> u32 {
         .find(|row| row.uuid == uuid)
         .unwrap()
         .id;
-    let tx = server.transaction_open();
-    fixture::FUEL
-        .set(
-            (server as &mut dyn Host).attachments(),
-            Holder::Entity(id),
-            7,
-        )
-        .unwrap();
-    server.transaction_close(&tx, true);
+    server.storage_scope(|server, _| {
+        fixture::FUEL
+            .set(
+                (server as &mut dyn Host).attachments(),
+                Holder::Entity(id),
+                7,
+            )
+            .unwrap();
+        ((), true)
+    });
     id
 }
 
@@ -590,27 +591,27 @@ fn load_saved_row(server: &mut Game<'_>, position: [f64; 3]) -> u32 {
 /// takes, so the row's first tracking snapshot holds the field.
 fn spawn_row(server: &mut Game<'_>, position: [f64; 3]) -> u32 {
     use mod_api::{EntitySpawn, Holder, Host, SpawnBody};
-    let tx = server.transaction_open();
-    let level = (server as &mut dyn Host)
-        .level("minecraft:overworld")
-        .expect("the overworld is in place");
-    let row = level
-        .spawn_entity(
-            server as &mut dyn mod_api::ServerHost,
-            fixture::KIND,
-            position,
-            &EntitySpawn::new(SpawnBody::General),
-        )
-        .expect("the spawn is admitted");
-    fixture::FUEL
-        .set(
-            (server as &mut dyn Host).attachments(),
-            Holder::Entity(row.id()),
-            7,
-        )
-        .unwrap();
-    server.transaction_close(&tx, true);
-    row.id()
+    server.storage_scope(|server, _| {
+        let level = (server as &mut dyn Host)
+            .level("minecraft:overworld")
+            .expect("the overworld is in place");
+        let row = level
+            .spawn_entity(
+                server as &mut dyn mod_api::ServerHost,
+                fixture::KIND,
+                position,
+                &EntitySpawn::new(SpawnBody::General),
+            )
+            .expect("the spawn is admitted");
+        fixture::FUEL
+            .set(
+                (server as &mut dyn Host).attachments(),
+                Holder::Entity(row.id()),
+                7,
+            )
+            .unwrap();
+        (row.id(), true)
+    })
 }
 
 /// Opens an integrated flat world whose window reads the fixture's renderer, has `place` put a row of the fixture's type with fuel 7 on the server above

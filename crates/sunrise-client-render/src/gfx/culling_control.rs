@@ -1,5 +1,10 @@
 use super::*;
 
+/// Section occlusion graph radius in chunks for `distance` in blocks (`ViewArea.getViewDistance`).
+pub(super) fn occlusion_radius(distance: f32) -> i32 {
+    (distance / 16.0) as i32
+}
+
 impl Renderer {
     /// Whether sections are drawn as one index list per frame (`flat`).
     pub fn flat_draws(&self) -> bool {
@@ -236,11 +241,20 @@ impl Renderer {
     pub fn has_section(&self, key: SectionKey) -> bool {
         self.sections.contains(key)
     }
-    /// Bring the cave culling graph up to date for `camera` without waiting:
+    /// Bring the section occlusion graph up to date for `camera` without waiting:
     /// a search this starts runs on its worker while the frame is prepared,
     /// and `render` takes it if it has finished.
-    pub fn start_occlusion(&mut self, camera: DVec3, distance: f32) {
-        self.occlusion.update(camera, (distance / 16.0) as i32 + 2);
+    pub fn start_occlusion(&mut self, camera: DVec3, distance: f32, smart_cull: bool) {
+        self.occlusion
+            .update(camera, occlusion_radius(distance), smart_cull);
+    }
+    /// Marks chunk column `(x, z)` loaded in the section occlusion graph.
+    pub fn load_column(&mut self, x: i32, z: i32) {
+        self.occlusion.load_column(x, z);
+    }
+    /// Synchronizes loaded chunk columns in the section occlusion graph with `chunks`.
+    pub fn sync_loaded_columns(&mut self, chunks: &crate::chunk_map::ChunkMap) {
+        self.occlusion.sync_loaded_columns(chunks);
     }
     /// Whether the camera's current section graph knows this section is
     /// reachable. `None` means the graph cannot safely answer for this camera
@@ -251,5 +265,17 @@ impl Renderer {
         camera_section: SectionKey,
     ) -> Option<bool> {
         self.occlusion.visible_for_camera(key, camera_section)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn occlusion_radius_equals_view_distance_chunks() {
+        for rd in [2, 6, 7, 8, 12, 32] {
+            assert_eq!(occlusion_radius((rd * 16) as f32), rd);
+        }
     }
 }

@@ -3044,27 +3044,17 @@ impl Game<'_> {
     ) {
         self.fire_tooltip(stack, context, lines);
     }
-    /// Client-side image component for this stack's tooltip. Answer its width/height
-    /// in GUI pixels; finite positive dimensions reserve space after text and any
-    /// vanilla bundle component. None keeps the vanilla tooltip unchanged.
-    pub(in crate::game) fn native_tooltip_component(
+    /// `Item.getTooltipImage`: optional tooltip component data for this item stack.
+    /// Answer `Some(TooltipComponent::custom(data))` (or `Some(TooltipComponent::bundle(stack))`)
+    /// to insert a component after the item's name line before
+    /// `render_tooltip_gather_components` runs. Answer `None` to leave the vanilla tooltip
+    /// component unchanged. Client-side.
+    pub(in crate::game) fn native_tooltip_image(
         &self,
         stack: &ItemStack,
-        size: &mut Option<[f32; 2]>,
+        component: &mut Option<mod_api::TooltipComponent>,
     ) {
-        self.fire_tooltip_component(stack, size);
-    }
-    /// Render the measured component at origin, inside the tooltip background.
-    /// Stack is the component's data. Use native_sprite/native_fill/native_text;
-    /// size is the measurement returned by native_tooltip_component this frame.
-    pub(in crate::game) fn native_tooltip_component_draw(
-        &self,
-        stack: &ItemStack,
-        draw: &mut HudBatch,
-        origin: [f32; 2],
-        size: [f32; 2],
-    ) {
-        self.fire_tooltip_component_draw(stack, draw, origin, size);
+        self.fire_tooltip_image(stack, component);
     }
 
     /// The small bar `GuiGraphicsExtractor.itemDecorations` draws under an
@@ -3460,9 +3450,11 @@ impl Game<'_> {
     /// any path: a lost connection, a kick, the server stopping or failing.
     /// Once for each player `native_player_logged_in` told of, and also for a
     /// kicked fake without a preceding login. Silent `remove_fake` sends no logout.
-    /// They've already
-    /// left `native_server_players`, except when the server stops, which tells
-    /// before it saves, with them still listed and able to get a last message.
+    /// The player is still in `native_server_players` when the hook fires. A
+    /// listener's edits persist only on leaves this server saves. A completed proxy
+    /// hand-over or a crash writes no logout save. Only when the server stops can
+    /// a player still get a last message. A kicked fake has already left the list
+    /// and is not saved.
     /// Server-side.
     pub(in crate::game) fn native_player_logged_out(&mut self, player: u128, name: &str) {
         self.fire_player_logged_out(player, name);
@@ -4393,33 +4385,68 @@ impl Game<'_> {
         let [a, r, g, b] = argb.to_be_bytes();
         batch.fill_quad(&self.gui.atlas, points, rgba(r, g, b, a));
     }
-    /// Opens a screen of mod `mod_id`'s own over the world: the screen hooks
-    /// fire over it as over any other, so the mod draws it in
-    /// `native_screen_render_post` and takes its clicks, scroll, keys and
-    /// typing there; the mouse is freed, and Escape closes it. Every mod's own
-    /// screen has the `ScreenView.id` `mod`, so a mod's screen hooks
-    /// check `mod_screen()` is its own before drawing. It doesn't pause
-    /// a single-player game (as the inventory doesn't). True when it is open:
-    /// false while another screen is (or another mod's), over the title
-    /// screen, a book, a sign editor, a dialog or a prompt, while the world
-    /// loads, and anywhere but the window's own client (the server thread, a
-    /// dedicated server). A gamepad can close it (B, Start) but not click on
+    /// Opens a screen of mod `mod_id`'s own through the normal screen-transition
+    /// path (`Gui.setScreen`): `screen_opening` and `screen_closing` fire for the
+    /// transition and `screen_init_post` runs once opened, so the mod mounts
+    /// widgets in `screen_init_post`, draws in `native_screen_render_post`, and
+    /// takes its clicks, scroll, keys, and typing there; the mouse is freed, and
+    /// Escape closes it. Every mod's own screen has the `ScreenView.id` `mod`, so
+    /// a mod's screen hooks check `mod_screen()` is its own before mounting or
+    /// drawing. It doesn't pause a single-player game (as the inventory doesn't).
+    /// Can replace any open vanilla screen, title screen, overlay (book, sign
+    /// editor, dialog, or prompt), or another mod's screen, running the replaced
+    /// screen's close cleanup once hooks allow the transition. Returns `true`
+    /// when `mod_id`'s screen is open, and `false` when cancelled or redirected
+    /// by `screen_opening`, while a world or connection is loading, or without a
+    /// client window (a headless/dedicated server, the server thread, or
+    /// guest-acting contexts). A gamepad can close it (B, Start) but not click on
     /// it: its clicks don't reach the mouse hooks.
     pub(in crate::game) fn mod_screen_open(&mut self, mod_id: &str) -> bool {
-        // What `screen_hooks_open` would refuse over the world: the mod's
-        // screen would be up with no hook to draw or click it.
-        let blocked = self.renderer.is_none() || self.mod_screen_blocked();
-        let owner = self.mod_screen();
-        if let Some(open) = mod_screen_opens(self.screen, blocked, owner, mod_id) {
+        let unavailable = self.renderer.is_none()
+            || self.lan_acting.is_some()
+            || (self.player.is_none() && self.title.is_none())
+            || self.remote_loading();
+        let owner = if self.screen_over_playing() {
+            None
+        } else {
+            self.mod_screen()
+        };
+        if let Some(open) = mod_screen_opens(self.screen, unavailable, owner, mod_id) {
             return open;
         }
-        self.native_mod_screen = Some(mod_id.to_owned());
-        self.set_screen(Screen::Mod);
-        if self.screen != Screen::Mod {
-            // `screen_opening` kept the world.
-            self.native_mod_screen = None;
-            return false;
+        if self.screen_hooks_heard() {
+            let decision = {
+                let current = if self.screen_over_playing() {
+                    self.observed_screen_view()
+                        .unwrap_or_else(|| self.screen_change_view(self.screen))
+                } else if self.screen == Screen::Playing
+                    && let Some(title) = self.title.as_ref()
+                {
+                    let none = self.screen_change_view(Screen::Playing);
+                    screen_view_with_id(&none, title.mode.id())
+                } else {
+                    self.screen_change_view(self.screen)
+                };
+                let new = screen_view_for_mod(&self.screen_change_view(Screen::Mod), mod_id);
+                self.decide_screen_for_mod_open(&current, &new, current.id != "playing")
+            };
+            match decision {
+                ScreenDecision::Keep => return false,
+                ScreenDecision::Vanilla(target) => {
+                    self.close_replaced_screen_for_mod();
+                    self.open_screen_target(target);
+                    return false;
+                }
+                ScreenDecision::ModScreen(other_mod) => {
+                    self.close_replaced_screen_for_mod();
+                    self.apply_screen(Screen::Mod, Some(other_mod));
+                    return self.mod_screen() == Some(mod_id);
+                }
+                ScreenDecision::Open => {}
+            }
         }
+        self.close_replaced_screen_for_mod();
+        self.apply_screen(Screen::Mod, Some(mod_id));
         self.mod_screen() == Some(mod_id)
     }
     /// Closes mod `mod_id`'s own screen, if it is open.
@@ -4643,17 +4670,13 @@ impl Game<'_> {
     pub(in crate::game) fn transfer_recipe(&mut self, book_id: i32) {
         self.transfer_viewer_recipe(book_id);
     }
-    /// Creative mode only: gives the player `count` of `item`
-    /// (`minecraft:diamond`) as taking it from the creative inventory does
-    /// (`ServerboundSetCreativeModeSlot`): the selected slot first, then the
-    /// hotbar, then the inventory. The count is cut to one stack.
-    pub(in crate::game) fn give(
+    /// Creative mode only: `stack` into the player's inventory as `Inventory.add` does, each
+    /// changed slot sent at once (`ServerboundSetCreativeModeSlotPacket`); what did not fit.
+    pub(in crate::game) fn give_stack(
         &mut self,
-        item: mod_api::ItemKey,
-        count: u32,
-    ) -> Result<(), String> {
-        let item = mod_api::__private::item_key_id(item).ok_or("unknown item key")?;
-        self.recipe_give(item, count)
+        stack: &mod_api::ItemStack,
+    ) -> Result<Option<mod_api::ItemStack>, mod_api::CreativeGiveError> {
+        self.creative_give_stack(stack)
     }
 }
 
@@ -4750,6 +4773,10 @@ impl LevelView<'_> {
 #[cfg(test)]
 #[path = "base_tests/screen_open_tests.rs"]
 mod screen_open_tests;
+
+#[cfg(test)]
+#[path = "base_tests/screen_widgets_tests.rs"]
+mod screen_widgets_tests;
 
 #[cfg(test)]
 mod text_tests {

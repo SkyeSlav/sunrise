@@ -292,6 +292,10 @@ pub struct ClientGuiOptions {
     pub text_background_opacity: f32,
     /// Menu background blur radius.
     pub menu_blur: i32,
+    /// How far the camera tilts when the player is hurt, 0 (off) to 1 (`damageTiltStrength`,
+    /// the Damage Tilt accessibility option): the factor of vanilla's own hurt tilt, so a mod's
+    /// camera shake can scale with it as that tilt does.
+    pub damage_tilt_strength: f64,
 }
 
 /// A snapshot of the client's chat preferences.
@@ -991,6 +995,15 @@ pub struct ScreenView<'a> {
     /// `multiplayer`, `add_server`, `direct_connect`…, with no menu, no title
     /// and no slots.
     pub id: &'static str,
+    /// The mod whose own screen this view represents when `id == "mod"`, or
+    /// `None` for vanilla, title, and overlay screens.
+    ///
+    /// Carries the owning mod id of the receiving screen snapshot even if a
+    /// handler closed it or opened another mod's screen before a Post or
+    /// Closing hook ran. Prefer `event.screen.mod_screen` over live
+    /// [`crate::ClientHost::mod_screen`] when identifying the screen an event
+    /// targeted.
+    pub mod_screen: Option<&'a str>,
     /// The type id of the menu the server opened for this screen
     /// (`minecraft:generic_9x3`, `minecraft:furnace`, a mod's own id; a mount's
     /// inventory is `sunrise:mount<n>`). None on a screen without one (the

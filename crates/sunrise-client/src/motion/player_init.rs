@@ -42,6 +42,7 @@ impl PlayerMotion {
             mobility_restricted: false,
             invulnerable: false,
             spectator: false,
+            local_spectator: false,
             flying: false,
             flying_speed: 0.05,
             was_jumping: false,

@@ -45,7 +45,7 @@ impl Hooks for PanicAfterAdmission {
             assert!(self.admitted.load(Ordering::SeqCst));
             // Hook dispatch now contains the panic. The callback's own transaction
             // still has to abort its tentative spawn before dispatch resumes.
-            let _: Result<(), ()> = host.transaction(|host, _| {
+            let _ = host.transaction::<(), ()>(|host, _| {
                 let spawned = host.summon(
                     event.dimension,
                     "minecraft:snowball",
@@ -175,7 +175,7 @@ fn shoot_listener_panic_after_admission_preserves_owned_rows() {
                     .iter()
                     .map(|p| (p.id, p.join))
                     .collect();
-                assert!(game.transaction_current().is_none());
+                assert!(!game.has_open_transaction());
                 // The contained panic cannot retire a live owner or publish the aborted spawn.
                 assert_eq!(restored, before, "panic changed survivor identity or order");
                 let mut table = game.resident_entities.table.borrow_mut();

@@ -119,6 +119,26 @@ impl Game<'_> {
         let id = self.riding?;
         self.mobs.iter().position(|m| m.id == id)
     }
+    /// `Hud.getPlayerVehicleWithHealth`: the living mob ridden by `Hud.getCameraPlayer`.
+    pub(in crate::game) fn camera_player_mount_index(&self) -> Option<usize> {
+        match self.camera_player()? {
+            super::remote_camera::CameraPlayer::Local => self.mount_index(),
+            super::remote_camera::CameraPlayer::Remote(id) => {
+                let mount_id = self
+                    .mobs
+                    .iter()
+                    .find(|m| m.id == id)
+                    .and_then(|m| m.extra.mount)?;
+                self.mobs.iter().position(|m| m.id == mount_id)
+            }
+        }
+    }
+    /// `Hud.extractVehicleHealth`: `(max_hearts, health)` of `camera_player_mount_index`, when positive.
+    pub(in crate::game) fn camera_player_vehicle_health(&self) -> Option<(i32, f32)> {
+        let mob = &self.mobs[self.camera_player_mount_index()?];
+        let hearts = sunrise_client::hud_layout::vehicle_max_hearts(mob.attrs.max_health);
+        (hearts > 0).then_some((hearts, mob.health))
+    }
     /// `Entity.interact` / `Mob.canShearEquipment` / `Mob.attemptToShearEquipment`
     /// / `Mob.shearItem`: the saddle of a `#can_equip_saddle` mob comes off
     /// before its mobInteract can ride it, with the saddle's shearing sound.

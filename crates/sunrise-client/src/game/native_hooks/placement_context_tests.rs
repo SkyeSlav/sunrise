@@ -248,7 +248,7 @@ fn item_parts_rewrite_or_refuse_context_and_control_survival_on_both_sides() {
                 .chunks
                 .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
             game.sync_tick_chunks();
-            game.set_mode_id(0);
+            game.set_local_mode(sunrise_client::command::args::GameMode::Survival);
             let stone = registry.default_state("minecraft:stone").unwrap();
             game.world.set(4, 64, 4, stone).unwrap();
             game.world.set(4, 65, 4, stone).unwrap();
@@ -576,6 +576,8 @@ fn player_and_dispenser_apply_only_the_context_seen_by_the_veto() {
                         ItemStack::new("minecraft:shulker_box", 2),
                     )
                     .unwrap()
+                    .continue_value()
+                    .unwrap()
                     .unwrap();
                 let count = if occupy_target { 2 } else { 1 };
                 assert_eq!(game.held().unwrap().count, count);
@@ -610,6 +612,8 @@ fn player_and_dispenser_apply_only_the_context_seen_by_the_veto() {
                     Direction::East,
                     ItemStack::new("minecraft:shulker_box", 2),
                 )
+                .unwrap()
+                .continue_value()
                 .unwrap()
                 .unwrap();
             assert_eq!(

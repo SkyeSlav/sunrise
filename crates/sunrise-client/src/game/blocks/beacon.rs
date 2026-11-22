@@ -5,7 +5,10 @@
 //! power buttons and payment slot, and the rotating, scrolling beam.
 use super::{
     Game,
-    stations::{INPUT, Kind},
+    stations::{
+        INPUT, Kind,
+        tooltip::{WidgetTooltipPositioner, quantize_tooltip_anchor},
+    },
 };
 use sunrise_client::{
     containers::{Beacon, BlockEntity},
@@ -90,30 +93,28 @@ fn effect_tooltip(e: usize, upgraded: bool) -> Text {
         effect
     }
 }
-/// `BeaconScreen`: every button's tooltip whichever one the cursor is over
-/// (`BeaconPowerButton`'s its effect, `BeaconSpriteScreenButton`'s its label),
-/// hovered whether or not it is active.
-fn hovered_tooltip(
-    local: (f32, f32),
+/// Tooltips exist on both active and inactive beacon buttons. Return the origin of the button
+/// matched by `hit`, for either pointer hover or keyboard focus.
+fn button_tooltip(
     primary: Option<usize>,
     buttons: &[(usize, f32, f32, bool)],
-) -> Option<Text> {
+    hit: impl Fn(f32, f32) -> bool,
+) -> Option<(Text, [f32; 2])> {
     for &(e, x, y, _) in buttons {
-        if inside(local, x, y, 22.0, 22.0) {
-            return Some(effect_tooltip(e, false));
+        if hit(x, y) {
+            return Some((effect_tooltip(e, false), [x, y]));
         }
     }
     if let Some(p) = primary {
         let (x, y) = upgrade_button();
-        if inside(local, x, y, 22.0, 22.0) {
-            return Some(effect_tooltip(p, true));
+        if hit(x, y) {
+            return Some((effect_tooltip(p, true), [x, y]));
         }
     }
-    if inside(local, 164.0, 107.0, 22.0, 22.0) {
-        return Some(Text::translate("gui.done", &[]));
-    }
-    if inside(local, 190.0, 107.0, 22.0, 22.0) {
-        return Some(Text::translate("gui.cancel", &[]));
+    for (x, key) in [(164.0, "gui.done"), (190.0, "gui.cancel")] {
+        if hit(x, 107.0) {
+            return Some((Text::translate(key, &[]), [x, 107.0]));
+        }
     }
     None
 }
@@ -572,7 +573,33 @@ impl Game<'_> {
         }
         let atlas = &self.gui.atlas;
         let buttons = buttons();
-        let tooltip = hovered_tooltip(local, sel[0], &buttons);
+        let anchor = quantize_tooltip_anchor(self.widget_tooltip_cursor());
+        let rect = |x, y| {
+            let [left, top] = quantize_tooltip_anchor((bx + x, by + y));
+            [left, top, 22, 22]
+        };
+        let is_hovered = |[left, top, width, height]: [i32; 4]| {
+            (left..left + width).contains(&anchor[0]) && (top..top + height).contains(&anchor[1])
+        };
+        let focused = if self.key_focus_driving() {
+            self.pad_focus_rect()
+                .map(|rect| rect.map(|value| value as i32))
+        } else {
+            None
+        };
+        // A focused widget's deferred tooltip takes precedence over other widgets' hover tips.
+        let tooltip = focused
+            .and_then(|focus| button_tooltip(sel[0], &buttons, |x, y| rect(x, y) == focus))
+            .or_else(|| button_tooltip(sel[0], &buttons, |x, y| is_hovered(rect(x, y))))
+            .map(|(text, [x, y])| {
+                let bounds = rect(x, y);
+                let positioner = if is_hovered(bounds) {
+                    WidgetTooltipPositioner::Menu(bounds)
+                } else {
+                    WidgetTooltipPositioner::BelowOrAbove(bounds)
+                };
+                (text, positioner)
+            });
         let button =
             |batch: &mut HudBatch, x: f32, y: f32, active: bool, selected: bool, icon: &str| {
                 let hover = inside(local, x, y, 22.0, 22.0);
@@ -647,8 +674,8 @@ impl Game<'_> {
             }
         } else if let Some(stack) = stack_tip {
             self.draw_stack_tooltip(batch, &stack, self.cursor.0, self.cursor.1);
-        } else if let Some(text) = tooltip {
-            self.draw_tooltip_lines(batch, &[(text, u32::MAX)], self.cursor.0, self.cursor.1);
+        } else if let Some((text, positioner)) = tooltip {
+            self.draw_tooltip_lines_positioned(batch, &[(text, u32::MAX)], anchor, &positioner);
         }
         if let Some(tooltip) = browser_tip {
             self.draw_mod_browser_tooltip(batch, tooltip);
@@ -769,29 +796,33 @@ mod tests {
         let name =
             |e: usize| sunrise_client::lang::get(&format!("effect.minecraft.{}", EFFECTS[e].0));
         let buttons = buttons();
+        let hovered_tooltip = |at, primary| {
+            button_tooltip(primary, &buttons, |x, y| inside(at, x, y, 22.0, 22.0))
+                .map(|(text, _)| text)
+        };
         for &(e, x, y, _) in &buttons {
-            let tip = hovered_tooltip(at((x, y)), None, &buttons).unwrap_or_default();
+            let tip = hovered_tooltip(at((x, y)), None).unwrap_or_default();
             assert_eq!(tip.plain(), name(e), "button {e}");
         }
         let upgrade = at(upgrade_button());
-        assert!(hovered_tooltip(upgrade, None, &buttons).is_none());
+        assert!(hovered_tooltip(upgrade, None).is_none());
         assert_eq!(
-            hovered_tooltip(upgrade, Some(0), &buttons).unwrap().plain(),
+            hovered_tooltip(upgrade, Some(0)).unwrap().plain(),
             format!("{} II", name(0))
         );
         assert_eq!(
-            hovered_tooltip(at((164.0, 107.0)), None, &buttons)
+            hovered_tooltip(at((164.0, 107.0)), None)
                 .unwrap_or_default()
                 .plain(),
             sunrise_client::lang::get("gui.done")
         );
         assert_eq!(
-            hovered_tooltip(at((190.0, 107.0)), Some(0), &buttons)
+            hovered_tooltip(at((190.0, 107.0)), Some(0))
                 .unwrap_or_default()
                 .plain(),
             sunrise_client::lang::get("gui.cancel")
         );
-        assert!(hovered_tooltip((0.0, 0.0), Some(0), &buttons).is_none());
+        assert!(hovered_tooltip((0.0, 0.0), Some(0)).is_none());
     }
     #[test]
     fn only_active_beacons_have_beams() {

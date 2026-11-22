@@ -545,22 +545,13 @@ impl Game<'_> {
         let mut answer = None;
         mod_api::dispatch_place_liquid_with(write.pos, state, fluid, &mut answer, |part, event| {
             // For a player bucket this can be the root scope; the fluid
-            // utility already has an outer transaction. `run_transaction`
-            // guarantees rollback if `part.place_liquid` unwinds before the
-            // dispatcher catches the panic.
-            let answer: Result<Option<bool>, Option<bool>> =
-                mod_api::run_transaction(self, |game, _| {
-                    let reply = JournalLevelWrite::new(game, level)
-                        .and_then(|mut host| part.place_liquid(&mut host, event));
-                    if reply == Some(true) {
-                        Ok(reply)
-                    } else {
-                        Err(reply)
-                    }
-                });
-            match answer {
-                Ok(reply) | Err(reply) => reply,
-            }
+            // utility already has an outer transaction. Unwinding aborts this
+            // scope before the owner dispatcher catches a Part panic.
+            self.storage_scope(|game, _| {
+                let reply = JournalLevelWrite::new(game, level)
+                    .and_then(|mut host| part.place_liquid(&mut host, event));
+                (reply, reply == Some(true))
+            })
         });
         answer
     }

@@ -476,7 +476,7 @@ mod tests {
                 Ok(parts.to_vec())
             );
             // A spectating window leaves only its own player out.
-            game.set_mode_id(3);
+            game.set_local_mode(sunrise_client::command::args::GameMode::Spectator);
             assert_eq!(
                 ids(game, [-100.0, -10.0, -100.0], [100.0, 300.0, 100.0]),
                 Ok([vec![15, 20], parts.to_vec()].concat())

@@ -473,6 +473,8 @@ impl Game<'_> {
         // armor, experience and level objectives follow the guest.
         let mut recorded = std::mem::take(&mut host.play.entry(conn).or_default().score_recorded);
         let _ = self.as_guest_at(gi, conn, |g| {
+            // Exercise a panic in a normal borrowed tick, not in player placement.
+            crate::game::dedicated::crash_fixture("guest", || true);
             g.tick_fishing();
             // Player.aiStep's Inventory.tick and doTick's statistics are the body's.
             if body {

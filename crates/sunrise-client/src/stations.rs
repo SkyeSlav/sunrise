@@ -322,6 +322,16 @@ pub fn hover_name_in_reusing(
         previous,
     )
 }
+/// `ItemStack.getItemName` (`Item.getName(ItemStack)`): the name the parts of a mod item give the
+/// stack, asked once with the loop `context`, else the item's own name. Neither the custom name
+/// nor a book's title: `ItemEntity.getName` puts the entity's own custom name before it.
+pub fn item_name_in(
+    context: &LoopContext,
+    names: &crate::creative::Names,
+    stack: &ItemStack,
+) -> crate::text::Text {
+    item_name_text_with(names, stack, |stack| item_name_part(context, stack), None)
+}
 /// Whether `stack` names itself (`ItemStack.getCustomName`): a custom name, or a written book's
 /// non-blank title. `Item.getName` isn't asked then.
 pub fn names_itself(stack: &ItemStack) -> bool {
@@ -360,7 +370,6 @@ fn hover_name_text_with(
     previous: Option<&crate::text::Text>,
 ) -> crate::text::Text {
     use crate::text::Text;
-    let translate = |key: &str| Text::translate_reusing(key, previous);
     let data = stack.data();
     // `ItemStack.getCustomName`: the custom name, else a written book's non-blank title.
     if stack.custom_name().is_some()
@@ -375,6 +384,19 @@ fn hover_name_text_with(
     {
         return Text::literal(title);
     }
+    item_name_text_with(names, stack, part, previous)
+}
+/// `ItemStack.getItemName` (`Item.getName(ItemStack)`): the item's own name, without the custom
+/// name or a book's title, asking the part of a mod item first.
+fn item_name_text_with(
+    names: &crate::creative::Names,
+    stack: &ItemStack,
+    part: impl FnOnce(&ItemStack) -> Option<crate::text::Text>,
+    previous: Option<&crate::text::Text>,
+) -> crate::text::Text {
+    use crate::text::Text;
+    let translate = |key: &str| Text::translate_reusing(key, previous);
+    let data = stack.data();
     // `ItemStack.getItemName`: a mod item's `getName` (its part), asked once.
     if let Some(name) = part(stack) {
         return name;
@@ -435,7 +457,9 @@ fn hover_name_text_with(
     translate(&format!("{prefix}.{namespace}.{}", path.replace('/', ".")))
 }
 /// `ItemStack.getHoverName` as plain text in the current language: the component of
-/// [`hover_name_text`], rendered.
+/// [`hover_name_text`], rendered. Tests only: the game names a stack with [`hover_name_in`], which
+/// asks a mod item's part first.
+#[cfg(test)]
 pub fn hover_name(names: &crate::creative::Names, stack: &ItemStack) -> String {
     hover_name_text(names, stack).plain()
 }

@@ -566,10 +566,7 @@ impl Game<'_> {
                         .as_ref()
                         .map(|r| r.display_reading())
                         .unwrap_or_default(),
-                    (
-                        self.settings.file.int("textureFiltering"),
-                        self.settings.file.int("maxAnisotropyBit"),
-                    ),
+                    self.settings.texture_atlas_settings(),
                 )
                 .and_then(|(renderer, clouds)| {
                     clouds?;

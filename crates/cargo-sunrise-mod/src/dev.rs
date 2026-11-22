@@ -100,7 +100,6 @@ fn computer() -> Result<&'static str, String> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("linux", "x86_64") => Ok("x86_64-unknown-linux-gnu"),
         ("macos", "aarch64") => Ok("aarch64-apple-darwin"),
-        ("macos", "x86_64") => Ok("x86_64-apple-darwin"),
         ("windows", "x86_64") => Ok(sunrise_native_build::rust::WINDOWS_X64_TARGET),
         (os, arch) => Err(format!("the SDK has no slices for {arch} {os}")),
     }

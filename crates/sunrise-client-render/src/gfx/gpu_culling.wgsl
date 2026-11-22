@@ -34,18 +34,18 @@ struct Params {
     near: i32,
     cam_x: i32,
     cam_z: i32,
-    // The tables' first column: x, 0, z, 0.
+    // The tables' first cell: x, y, z, 0.
     first: vec4<i32>,
     // Their entries along x, y and z, and 0.
     cells: vec4<u32>,
     // Each frustum plane's w term, its margin in, then 0, 0.
     w: array<vec4<i32>, 2>,
     // Cave culling's graph (occlusion.rs `Reach`): from x, from z, radius, lowest
-    // section y; its height in sections and the level's; REACH, SKY, EYE,
-    // OCCLUDE and PROBE; where the eye's keys start in `tables`.
+    // section y; its height in sections and outside-height octree branch word offset;
+    // REACH, EYE, OCCLUDE, PROBE, TREE; where the eye's keys start in `tables`.
     reach: vec4<i32>,
     reach_height: i32,
-    reach_sections: i32,
+    tree: u32,
     flags: u32,
     eyes: u32,
     // Occlusion (OCCLUDE): this frame's stamp (never 0), where the boxes to
@@ -124,10 +124,10 @@ const DRAWN2: u32 = 10u;
 // gpu_culling.rs `rounded_box` for a box past what its codes hold: no plane
 // rejects it.
 const UNBOUNDED: u32 = 0x80000000u;
-// In `params.flags`: cave culling's graph is in `params.reach`, and its search
-// reached the box's top layer (the sky band).
+// Packed full 16x16x16 section box (`[0, 0, 0]..[16, 16, 16]` with `CODE_OFFSET = 8`).
+const FULL_SECTION_BOX: u32 = 0x318C2108u;
+// In `params.flags`: cave culling's graph is in `params.reach`.
 const REACH: u32 = 1u;
-const SKY: u32 = 2u;
 // In a section's `a.w`: it fades in or out, and the CPU draws it with its fade.
 const FADING: u32 = 1u;
 // In `params.flags`: solid quads facing away from the eye are left out, its
@@ -146,6 +146,8 @@ const TESTED_WORD: u32 = 10u;
 // In `params.flags`: the frame occludes, and tests every box (cull.rs's probe).
 const OCCLUDE: u32 = 8u;
 const PROBE: u32 = 16u;
+// In `params.flags`: outside-height octree branch decisions are in `tables` from `params.tree`.
+const TREE: u32 = 32u;
 // cull.rs `RETEST` and `BIG`.
 const RETEST: u32 = 8u;
 const BIG: f32 = 0.25;
@@ -203,10 +205,7 @@ fn near(x: i32, z: i32) -> bool {
     return gx * gx + gz * gz < r * r;
 }
 
-// occlusion.rs `Occlusion::contains` (`Graph::contains`): with no graph, or with
-// cave culling off, every section; in the searched box, whether the search
-// reached it; above a clamped box, over its columns and within the level, the
-// sky band (all of it or none); else none. `Reach::contains` on the CPU.
+// occlusion.rs `Occlusion::contains` (`Reach::contains`): true when cave culling is off or cell is reached.
 fn reached(key: vec3<i32>) -> bool {
     if (params.flags & REACH) == 0u {
         return true;
@@ -215,11 +214,8 @@ fn reached(key: vec3<i32>) -> bool {
     let dx = key.x - params.reach.x;
     let dz = key.z - params.reach.y;
     let dy = key.y - params.reach.w;
-    if dx < -r || dx > r || dz < -r || dz > r || dy < 0 {
+    if dx < -r || dx > r || dz < -r || dz > r || dy < 0 || dy >= params.reach_height {
         return false;
-    }
-    if dy >= params.reach_height {
-        return (params.flags & SKY) != 0u && key.y >= 0 && key.y <= params.reach_sections;
     }
     let i = u32(((dz + r) * (2 * r + 1) + dx + r) * params.reach_height + dy);
     return ((reached_cells[i >> 5u] >> (i & 31u)) & 1u) != 0u;
@@ -368,7 +364,21 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
     // The tables hold every column within the distance; a key before their
     // first wraps past their end.
     let c = vec3<u32>(s.key.xyz - params.first.xyz);
-    if page >= params.pages || any(c >= params.cells.xyz) || !in_frustum(c, s.a.z) {
+    if page >= params.pages || any(c >= params.cells.xyz) {
+        return;
+    }
+    var skip_frustum = false;
+    var test_box = s.a.z;
+    if (params.flags & TREE) != 0u {
+        let col = c.z * params.cells.x + c.x;
+        let state = (tables[params.tree + (col >> 4u)] >> ((col & 15u) * 2u)) & 3u;
+        if state == 0u {
+            return;
+        }
+        skip_frustum = state == 2u;
+        test_box = FULL_SECTION_BOX;
+    }
+    if !skip_frustum && !in_frustum(c, test_box) {
         return;
     }
     // Kept, whether or not a quad of it can face the eye.

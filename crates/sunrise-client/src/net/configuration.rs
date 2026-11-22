@@ -17,6 +17,7 @@ struct Registries {
     data: Dynamic,
     dialog_snapshot: Option<Arc<Dynamic>>,
     refusal: Option<String>,
+    packet_error: Option<Reason>,
 }
 
 pub(super) enum Action {
@@ -26,6 +27,7 @@ pub(super) enum Action {
     ConsumeEffectTypes(cfg::RegistryData),
     UpdateTags(cfg::UpdateTags),
     ShowDialog(cfg::ShowDialog),
+    PostEffects(Reason),
 }
 
 impl Configuration {
@@ -41,6 +43,10 @@ impl Configuration {
             action,
         })))
         .map_err(|error| Reason::plain(error.to_string()))
+    }
+
+    pub(super) fn take_packet_error(&self) -> Option<Reason> {
+        self.registries.lock().unwrap().packet_error.take()
     }
 
     fn take_registries(&self) -> Result<Dynamic, String> {
@@ -67,6 +73,9 @@ impl ConfigurationTask {
                 Action::RegistryData(p) | Action::ConsumeEffectTypes(p) => p.owned_heap_bytes(),
                 Action::UpdateTags(p) => p.owned_heap_bytes(),
                 Action::ShowDialog(p) => p.owned_heap_bytes(),
+                Action::PostEffects(r) => {
+                    r.text.capacity().saturating_add(r.key.owned_heap_bytes())
+                }
             }
     }
 
@@ -135,6 +144,19 @@ impl ConfigurationTask {
                     registries: snapshot.clone(),
                 });
             }
+            Action::PostEffects(reason) => {
+                // ClientCommonPacketListenerImpl.handlePostEffects -> onPacketError in listener order.
+                {
+                    let mut registries = self.listener.registries.lock().unwrap();
+                    registries
+                        .packet_error
+                        .get_or_insert_with(|| reason.clone());
+                }
+                if let Some(writer) = self.io.writer.lock().unwrap().as_ref() {
+                    writer.close_after_pending();
+                }
+                return Some(reason.ended(false));
+            }
         };
         if let Some(writer) = self.io.writer.lock().unwrap().as_ref() {
             let _ = writer.send(&reply.encode());
@@ -169,6 +191,13 @@ impl FinishConfiguration {
     }
 
     pub fn acknowledge(self) {
+        if let Some(reason) = self.listener.take_packet_error() {
+            if let Some(writer) = self.writer.lock().unwrap().as_ref() {
+                writer.close_after_pending();
+            }
+            let _ = self.resume.send(Err(reason));
+            return;
+        }
         let result = self.play.and_then(|play| {
             let mut registries = self.listener.take_registries()?;
             crate::datapack_net::finish_transfer()?;

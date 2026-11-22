@@ -169,23 +169,25 @@ fn deferred_award_rewrites_only_after_outer_commit_and_abort_emits_nothing() {
                 .unwrap()
                 .play
                 .insert(12, Default::default());
-            let outer = game.transaction_open();
-            let inner = game.transaction_open();
-            game.defer_effect(DeferredEffect::CustomStat {
-                player: 12,
-                key: "jump",
-                amount: 1,
+            game.storage_scope(|game, _| {
+                game.storage_scope(|game, _| {
+                    game.defer_effect(DeferredEffect::CustomStat {
+                        player: 12,
+                        key: "jump",
+                        amount: 1,
+                    });
+                    ((), true)
+                });
+                assert_eq!(
+                    game.lan.as_ref().unwrap().play[&12]
+                        .stats
+                        .get("custom", "minecraft:jump"),
+                    0
+                );
+                // The listener's decision is taken at root commit, not at queue time.
+                mode.store(5, Ordering::Relaxed);
+                ((), true)
             });
-            game.transaction_close(&inner, true);
-            assert_eq!(
-                game.lan.as_ref().unwrap().play[&12]
-                    .stats
-                    .get("custom", "minecraft:jump"),
-                0
-            );
-            // The listener's decision is taken at root commit, not at queue time.
-            mode.store(5, Ordering::Relaxed);
-            game.transaction_close(&outer, true);
             assert_eq!(
                 game.lan.as_ref().unwrap().play[&12]
                     .stats
@@ -193,28 +195,31 @@ fn deferred_award_rewrites_only_after_outer_commit_and_abort_emits_nothing() {
                 0
             );
             mode.store(0, Ordering::Relaxed);
-            let outer = game.transaction_open();
-            let inner = game.transaction_open();
-            game.defer_effect(DeferredEffect::CustomStat {
-                player: 12,
-                key: "jump",
-                amount: 1,
+            game.storage_scope(|game, _| {
+                game.storage_scope(|game, _| {
+                    game.defer_effect(DeferredEffect::CustomStat {
+                        player: 12,
+                        key: "jump",
+                        amount: 1,
+                    });
+                    ((), true)
+                });
+                ((), false)
             });
-            game.transaction_close(&inner, true);
-            game.transaction_close(&outer, false);
             assert_eq!(
                 game.lan.as_ref().unwrap().play[&12]
                     .stats
                     .get("custom", "minecraft:jump"),
                 0
             );
-            let outer = game.transaction_open();
-            game.defer_effect(DeferredEffect::CustomStat {
-                player: 12,
-                key: "jump",
-                amount: 1,
+            game.storage_scope(|game, _| {
+                game.defer_effect(DeferredEffect::CustomStat {
+                    player: 12,
+                    key: "jump",
+                    amount: 1,
+                });
+                ((), true)
             });
-            game.transaction_close(&outer, true);
             assert_eq!(
                 game.lan.as_ref().unwrap().play[&12]
                     .stats

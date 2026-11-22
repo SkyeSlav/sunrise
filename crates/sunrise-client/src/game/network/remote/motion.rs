@@ -256,7 +256,7 @@ impl Game<'_> {
                         }
                     });
                 }
-            } else {
+            } else if !self.text_displays.contains_key(&id) {
                 // AbstractInterpolationHandler.interpolateTo: without a
                 // rotation, the one it was heading for.
                 let rotation = rotation.or_else(|| r.lerps.get(&id).and_then(|l| l.rotation));
@@ -271,7 +271,14 @@ impl Game<'_> {
             }
         }
         self.turn_remote_object(id, rotation.map(|(yaw, _)| yaw), on_ground);
-        self.move_remote_text_display(id, position, rotation);
+        match packet {
+            MovePacket::PositionSync => {
+                self.position_sync_remote_text_display(id, position, rotation);
+            }
+            MovePacket::Move | MovePacket::Teleport => {
+                self.move_remote_text_display_opt(id, path.is_some().then_some(position), rotation);
+            }
+        }
         self.turn_remote_projectile(id, rotation);
     }
     /// `handleMoveVehicle`'s `getInterpolation().cancel()` for the mount this

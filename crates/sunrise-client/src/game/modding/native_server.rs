@@ -426,7 +426,8 @@ fn register_command_nodes(
 /// The live player body, or a guest record outside a player swap.
 pub(super) enum PlayerRead<'a> {
     Acting {
-        mode: i32,
+        /// Server authoritative mode, or the local player's resolved `PlayerInfo` mode on a client.
+        mode: Option<i32>,
         body: Option<&'a PlayerMotion>,
         /// The player's stored abilities, when it is a server player's turn.
         abilities: Option<PlayerAbilities>,
@@ -445,15 +446,15 @@ impl PlayerRead<'_> {
         }
     }
 
-    fn mode(&self) -> i32 {
+    fn mode(&self) -> Option<i32> {
         match self {
             Self::Acting { mode, .. } => *mode,
-            Self::Guest(guest) => guest.game_mode,
+            Self::Guest(guest) => Some(guest.game_mode),
         }
     }
 
     fn creative(&self) -> bool {
-        self.mode() == 1
+        self.mode() == Some(1)
     }
 
     fn may_build(&self) -> bool {
@@ -462,7 +463,7 @@ impl PlayerRead<'_> {
                 abilities: Some(a), ..
             } => a.may_build,
             Self::Guest(guest) => guest.abilities.may_build,
-            Self::Acting { mode, .. } => *mode < 2,
+            Self::Acting { mode, .. } => mode.is_some_and(|m| m < 2),
         }
     }
 
@@ -499,7 +500,7 @@ impl PlayerRead<'_> {
                     flying_speed: body.flying_speed,
                     ..Default::default()
                 };
-                a.update_for_mode(*mode);
+                a.update_for_mode(mode.unwrap_or(0));
                 a.flying = body.flying;
                 a
             }
@@ -664,12 +665,15 @@ impl Game<'_> {
         host.hub.guests.update(gi, |guest| state.swap(guest));
         let play = host.play.insert(conn, Default::default());
         let menus = host.menus.insert(conn, Default::default());
-        // In a turn, so the setup's stack in hand gives the attack speed the charge is for.
-        let charged = !full_attack_charge
-            || self
-                .as_guest_at(gi, conn, Game::charge_attack_fully)
-                .is_ok();
-        let outcome = if charged {
+        // This body is created with the setup's equipment and never reaches a body tick.
+        // Install its modifiers before the first action or calculation of attack charge.
+        let initialized = self.as_guest_at(gi, conn, |game| {
+            game.put_equipment_modifiers();
+            if full_attack_charge {
+                game.charge_attack_fully();
+            }
+        });
+        let outcome = if initialized.is_ok() {
             self.perform_fake_action(gi, conn, action)
         } else {
             Err(ActionRefused::Busy)
@@ -944,7 +948,7 @@ impl Game<'_> {
         if self.lan_acting_uuid == Some(uuid) && !self.lan_acting_fake {
             return Some((
                 PlayerRead::Acting {
-                    mode: self.mode_id(),
+                    mode: Some(self.mode_id()),
                     body: self.player.as_ref(),
                     abilities: self.acting_abilities,
                     last_death: self.level.last_death.as_ref(),
@@ -955,8 +959,7 @@ impl Game<'_> {
         if let Some(guest) = self.cloning_guest(uuid).or_else(|| {
             self.lan.as_ref().and_then(|host| {
                 host.hub.guests.simulation_iter().find(|guest| {
-                    guest.placed
-                        && guest.participates_online()
+                    host.hub.online(guest)
                         && guest.uuid == uuid
                         && !self.lan_guest_swaps.contains(&guest.conn)
                 })
@@ -975,7 +978,7 @@ impl Game<'_> {
             let body = self.player.as_ref()?;
             return Some((
                 PlayerRead::Acting {
-                    mode: self.mode_id(),
+                    mode: Some(self.mode_id()),
                     body: Some(body),
                     abilities: self.acting_abilities,
                     last_death: self.level.last_death.as_ref(),
@@ -1003,17 +1006,20 @@ impl Game<'_> {
 
     /// `player_handle_read` for the reads that work on both sides. On a
     /// client the local player (`Minecraft.player`) reads its own copy of
-    /// what the server sent (`LocalPlayer`): the game mode, food, abilities,
-    /// hotbar slot and experience. Any other player reads None there: the
-    /// client is not sent their state.
+    /// what the server sent (`LocalPlayer`): the entity's resolved `PlayerInfo`
+    /// game mode (`AbstractClientPlayer.gameMode`, None before `ADD_PLAYER`),
+    /// food, live `Abilities`, hotbar slot and experience. Any other player
+    /// reads None there: the client is not sent their state.
     pub(super) fn player_read_both(&self, player: PlayerRef) -> Option<PlayerRead<'_>> {
         if self.is_logical_server() {
             return self.player_handle_read(player);
         }
         (self.local_player()? == player).then(|| PlayerRead::Acting {
-            mode: self.mode_id(),
+            mode: self
+                .player_info_game_mode()
+                .map(sunrise_client::command::args::GameMode::id),
             body: self.player.as_ref(),
-            abilities: Some(self.client_abilities()),
+            abilities: self.client_abilities(),
             last_death: self.level.last_death.as_ref(),
         })
     }
@@ -1047,22 +1053,14 @@ impl Game<'_> {
         }))
     }
 
-    /// The local player's `Abilities` on a client: what its game mode gives
-    /// (`GameType.updatePlayerAbilities`, `mayBuild` among them), then the
-    /// flags and speeds `ClientPacketListener.handlePlayerAbilities` took, except
-    /// flying, which follows the local body's prediction between packets.
-    fn client_abilities(&self) -> PlayerAbilities {
-        let mut a = PlayerAbilities::default();
-        a.update_for_mode(self.mode_id());
-        if let Some(p) = self.remote_abilities() {
-            a.invulnerable = p.flags & 1 != 0;
-            a.may_fly = p.flags & 4 != 0;
-            a.instabuild = p.flags & 8 != 0;
-            a.flying_speed = p.flying_speed;
-            a.walking_speed = p.walking_speed;
+    /// Reads live `Remote::abilities` with predicted `flying` and `flying_speed` from the body.
+    fn client_abilities(&self) -> Option<PlayerAbilities> {
+        let mut a = *self.remote_abilities()?;
+        if let Some(body) = self.player.as_ref() {
+            a.flying = body.flying;
+            a.flying_speed = body.flying_speed;
         }
-        a.flying = self.player.as_ref().is_some_and(|body| body.flying);
-        a
+        Some(a)
     }
 
     pub(super) fn player_handle_read(&self, player: PlayerRef) -> Option<PlayerRead<'_>> {
@@ -1072,7 +1070,7 @@ impl Game<'_> {
             && self.lan_acting_entity == Some(player.fields().entity.id())
         {
             return Some(PlayerRead::Acting {
-                mode: self.mode_id(),
+                mode: Some(self.mode_id()),
                 body: self.player.as_ref(),
                 abilities: self.acting_abilities,
                 last_death: self.level.last_death.as_ref(),
@@ -1118,13 +1116,14 @@ impl Game<'_> {
         }))
     }
 
-    /// `ServerPlayerGameMode.getGameModeForPlayer`; Paper `HumanEntity#getGameMode`.
-    /// None for stale, offline or unavailable players (including displaced outer players).
+    /// `ServerPlayerGameMode.getGameModeForPlayer` on a server; `AbstractClientPlayer.gameMode`
+    /// (resolved `PlayerInfo`) on a client. None for stale, offline or unavailable players
+    /// (including displaced outer players), and on a client before `ADD_PLAYER` resolves the
+    /// entity's `PlayerInfo`. Distinct from `player_abilities`, which reads `LocalPlayer.abilities`.
     pub(super) fn player_game_mode(&self, player: PlayerRef) -> Option<GameMode> {
-        match self.player_read_both(player)? {
-            PlayerRead::Acting { .. } => Some(self.mode),
-            PlayerRead::Guest(guest) => GameMode::from_id(guest.game_mode),
-        }
+        self.player_read_both(player)?
+            .mode()
+            .and_then(GameMode::from_id)
     }
 
     /// Changes a player's game mode as `ServerPlayer.setGameMode` and
@@ -1275,9 +1274,10 @@ impl Game<'_> {
         (!(ran && dropped)).then_some(copy)
     }
 
-    /// `Player.isSpectator`; Paper `HumanEntity#getGameMode`.
+    /// `Player.isSpectator` (`gameMode() == GameType.SPECTATOR` on a client, authoritative
+    /// `ServerPlayerGameMode` on a server); Paper `HumanEntity#getGameMode`.
     pub(super) fn player_is_spectator(&self, player: PlayerRef) -> Option<bool> {
-        Some(self.player_read_both(player)?.mode() == 3)
+        Some(self.player_read_both(player)?.mode() == Some(3))
     }
 
     /// `Player.mayBuild`; Paper `HumanEntity#getGameMode`.
@@ -2115,7 +2115,7 @@ impl Game<'_> {
             }
         }
         Some(PlayerRead::Acting {
-            mode: self.mode_id(),
+            mode: Some(self.mode_id()),
             body: Some(self.native_live_acting_body()?),
             abilities: self.acting_abilities,
             last_death: self.level.last_death.as_ref(),
@@ -2291,14 +2291,11 @@ impl Game<'_> {
         let origin = self.native_command_origin(self.ui.registries.permission)?;
         // Isolate journaled writes when the caller already has a transaction. An ordinary
         // command is not implicitly transactional, and writes outside the journal stay put.
-        let savepoint = self.transaction_current().map(|_| self.transaction_open());
-        let result = callback.call(|| call(self, &origin, &command));
-        if let Some(seal) = savepoint {
-            self.transaction_close(&seal, result.is_ok());
-        } else if !matches!(result, Ok(Ok(_))) && !self.transactions.is_empty() {
-            // No caller-owned frame existed: every open frame belongs to this invocation.
-            self.abort_open_transactions();
-        }
+        let result = if self.has_open_transaction() {
+            self.storage_transaction(|game, _| callback.call(|| call(game, &origin, &command)))
+        } else {
+            callback.call(|| call(self, &origin, &command))
+        };
         match result {
             Ok(Ok(value)) => Ok(value),
             // Failure text can reach a packet or a saved command block. An
@@ -2718,7 +2715,7 @@ mod tests {
         }
     }
 
-    fn with_command_sources(test: impl FnOnce(&mut Game<'_>)) {
+    pub(super) fn with_command_sources(test: impl FnOnce(&mut Game<'_>)) {
         use sunrise_client::{
             chunk::Chunk, chunk::block_entity::BlockEntity, command_block::CommandBlock,
         };
@@ -2928,7 +2925,7 @@ mod tests {
         let mut guest = player_guest();
         guest.abilities.flying_speed = 0.08;
         let read = PlayerRead::Guest(&guest);
-        assert_eq!(read.mode(), 0);
+        assert_eq!(read.mode(), Some(0));
         assert_eq!(
             read.food(),
             None,
@@ -2952,7 +2949,7 @@ mod tests {
         guest.abilities.update_for_mode(1);
         guest.abilities.flying = true;
         let read = PlayerRead::Guest(&guest);
-        assert_eq!(read.mode(), 1);
+        assert_eq!(read.mode(), Some(1));
         assert_eq!(
             read.abilities(),
             Some(mod_api::PlayerAbilities::from(
@@ -3732,30 +3729,54 @@ mod tests {
                             let refuses = self.0.clone();
                             event.commands.push(mod_api::Command::new(usage).executes(
                                 move |host, _, _| {
+                                    let mutate = |host: &mut dyn mod_api::ServerHost| {
+                                        let level = host.level("minecraft:overworld").unwrap();
+                                        let state = host.block_state_id("minecraft:stone").unwrap();
+                                        if level.set_block(
+                                            host,
+                                            pos,
+                                            state,
+                                            mod_api::BlockUpdateFlags::NONE,
+                                        ) != Ok(true)
+                                        {
+                                            return Err(
+                                                mod_api::Text::literal("block not placed").into()
+                                            );
+                                        }
+                                        if usage == "ordinaryfailure" {
+                                            refuses.fetch_add(1, Ordering::Relaxed);
+                                            return Err(
+                                                mod_api::Text::literal("ordinary failure").into()
+                                            );
+                                        }
+                                        panic!("executor regression panic");
+                                    };
                                     if opens_root {
-                                        let _root = host.transaction_open();
-                                        let _child = host.transaction_open();
-                                    }
-                                    let level = host.level("minecraft:overworld").unwrap();
-                                    let state = host.block_state_id("minecraft:stone").unwrap();
-                                    if level.set_block(
-                                        host,
-                                        pos,
-                                        state,
-                                        mod_api::BlockUpdateFlags::NONE,
-                                    ) != Ok(true)
-                                    {
-                                        return Err(
-                                            mod_api::Text::literal("block not placed").into()
+                                        let res = mod_api::HostTransaction::transaction(
+                                            host,
+                                            |host, _| {
+                                                mod_api::HostTransaction::transaction(
+                                                    host,
+                                                    |host, _| mutate(host),
+                                                )
+                                                .map_err(|e| match e {
+                                                    mod_api::TransactionError::Aborted(msg) => msg,
+                                                    _ => mod_api::Text::literal("tx failed").into(),
+                                                })
+                                            },
                                         );
+                                        match res {
+                                            Ok(()) => Ok(0),
+                                            Err(mod_api::TransactionError::Aborted(msg)) => {
+                                                Err(msg)
+                                            }
+                                            Err(_) => {
+                                                Err(mod_api::Text::literal("tx failed").into())
+                                            }
+                                        }
+                                    } else {
+                                        mutate(host).map(|()| 0)
                                     }
-                                    if usage == "ordinaryfailure" {
-                                        refuses.fetch_add(1, Ordering::Relaxed);
-                                        return Err(
-                                            mod_api::Text::literal("ordinary failure").into()
-                                        );
-                                    }
-                                    panic!("executor regression panic");
                                 },
                             ));
                         }
@@ -3788,21 +3809,23 @@ mod tests {
                             game.build_registries();
                             game.build_native_commands(&[]);
 
-                            let seal = game.transaction_open();
-                            let (failure, outcome) = game.recording_command_outcome(|game| {
-                                game.execute_line("journalboom", game.server_source())
-                            });
-                            assert_eq!(failure.unwrap_err().key, "command.failed");
-                            assert_eq!(outcome, None);
-                            assert_eq!(
-                                game.world.block(JOURNALED[0], JOURNALED[1], JOURNALED[2]),
-                                air
-                            );
-                            assert_eq!(
-                                game.transaction_current().as_ref(),
-                                Some(seal.transaction())
-                            );
-                            game.transaction_close(&seal, true);
+                            game.storage_transaction(|game, outer| {
+                                let (failure, outcome) = game.recording_command_outcome(|game| {
+                                    game.execute_line("journalboom", game.server_source())
+                                });
+                                assert_eq!(failure.unwrap_err().key, "command.failed");
+                                assert_eq!(outcome, None);
+                                assert_eq!(
+                                    game.world.block(JOURNALED[0], JOURNALED[1], JOURNALED[2]),
+                                    air
+                                );
+                                assert!(mod_api::ServerHost::transaction_matches(
+                                    game,
+                                    Some(outer)
+                                ));
+                                Ok::<_, ()>(())
+                            })
+                            .unwrap();
                             let failure = game
                                 .execute_line("plainboom", game.server_source())
                                 .unwrap_err();
@@ -3817,7 +3840,7 @@ mod tests {
                                 .execute_line("rootboom", game.server_source())
                                 .unwrap_err();
                             assert!(failure.unexpected);
-                            assert!(game.transaction_current().is_none());
+                            assert!(!game.has_open_transaction());
                             assert_eq!(
                                 game.world.block(ABANDONED[0], ABANDONED[1], ABANDONED[2]),
                                 air
@@ -3844,7 +3867,7 @@ mod tests {
                                         .plain(),
                                     "ordinary failure"
                                 );
-                                assert!(game.transaction_current().is_none());
+                                assert!(!game.has_open_transaction());
                                 assert_eq!(
                                     game.world.block(REFUSED[0], REFUSED[1], REFUSED[2]),
                                     air
@@ -5365,14 +5388,21 @@ pub(super) mod fake_action_tests {
     #[test]
     #[ignore = "daily"]
     fn scoped_fake_attack_with_full_charge_deals_the_weapons_full_damage() {
+        use super::super::native_entity_refs::tests::{run_fresh_cases, with_game};
         use mod_api::PlayerActionSetup;
-        super::super::native_entity_refs::tests::with_game(|game| {
+        if run_fresh_cases(
+            "game::native_server::fake_action_tests::scoped_fake_attack_with_full_charge_deals_the_weapons_full_damage",
+            "SUNRISE_SCOPED_ATTACK_CASE",
+            &["attack"],
+        ) {
+            return;
+        }
+        with_game(|game| {
             let (player, conn, _) = fake(game, None, 0);
             game.as_guest(conn, |g| g.attack_ticks = 3).unwrap();
             let charged = zombie(game, 5000, [2.0, 64.0, 0.5]);
             // Out of a sweep's reach of the first.
             let uncharged = zombie(game, 5001, [-1.5, 64.0, 0.5]);
-            let full = health(game, 5000);
             let mut attack = |target, full_attack_charge| {
                 let mut setup = PlayerActionSetup::new(
                     Some(crate::game::api_values::test_snapshot(&ItemStack::new(
@@ -5397,11 +5427,19 @@ pub(super) mod fake_action_tests {
             };
             attack(charged, true);
             attack(uncharged, false);
-            // A diamond sword's 7, after a zombie's 2 armour (`getDamageAfterAbsorb`: the armour
-            // left is at least a fifth of it, 0.4).
-            let dealt = 7.0f32 * (1.0 - 0.4 / 25.0);
-            assert!((full - health(game, 5000) - dealt).abs() < 1e-4);
-            assert!(full - health(game, 5001) < dealt / 2.0);
+            // Diamond sword: 7 damage and 4 + (-2.4f32) attack speed. Player.attack samples
+            // the empty ticker at 0.5, then CombatRules applies the zombie's 2 armour.
+            let delay = (1.0 / (4.0 + f64::from(-2.4f32)) * 20.0) as f32;
+            let charge = 0.5f32 / delay;
+            let after_hit = |damage: f32| {
+                let armor = (2.0 - damage / 2.0).max(2.0 * 0.2);
+                20.0 - damage * (1.0 - armor / 25.0)
+            };
+            assert_eq!(health(game, 5000), after_hit(7.0));
+            assert_eq!(
+                health(game, 5001),
+                after_hit(7.0 * (0.2 + charge * charge * 0.8))
+            );
         });
     }
 

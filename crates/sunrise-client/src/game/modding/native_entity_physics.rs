@@ -226,8 +226,10 @@ mod tests {
             crate::game::native_entity_refs::tests::bind_local_player(game, 20, 123);
             let player = game.entity(20).unwrap();
             game.player.as_mut().unwrap().spectator = false;
+            game.player.as_mut().unwrap().local_spectator = false;
             assert_eq!(player.no_physics(game), Some(false));
             game.player.as_mut().unwrap().spectator = true;
+            game.player.as_mut().unwrap().local_spectator = true;
             assert_eq!(player.no_physics(game), Some(true));
 
             let kind = game.res.mob_types().get("minecraft:vex").unwrap().clone();

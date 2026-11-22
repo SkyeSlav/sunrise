@@ -1,8 +1,59 @@
 //! The game's side of the `draw` area (`sunrise-mod-api/src/host/draw.rs`).
-#[cfg(test)]
-use crate::game::api_values::TryIntoApi;
-use crate::game::{Game, api_values::TryIntoEngine};
+use crate::game::{
+    Game,
+    api_values::{TryIntoApi, TryIntoEngine},
+};
 use mod_api::{prelude::*, *};
+
+/// Borrow `minecraft:default` directly or format another font identifier.
+pub(in crate::game) fn font_id_str(id: &mod_api::Identifier) -> std::borrow::Cow<'static, str> {
+    if id.namespace() == "minecraft" && id.path() == "default" {
+        std::borrow::Cow::Borrowed(sunrise_client::font::DEFAULT)
+    } else {
+        std::borrow::Cow::Owned(id.to_string())
+    }
+}
+
+/// Engine font view lent to [`ClientTooltipComponent`] and `render_tooltip_pre`.
+pub(in crate::game) struct EngineTooltipFont<'a> {
+    font: &'a sunrise_client::font::Font,
+    id: &'a Identifier,
+    name: std::borrow::Cow<'static, str>,
+}
+impl<'a> EngineTooltipFont<'a> {
+    pub(in crate::game) fn new(font: &'a sunrise_client::font::Font, id: &'a Identifier) -> Self {
+        Self {
+            font,
+            id,
+            name: font_id_str(id),
+        }
+    }
+
+    pub(in crate::game) fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+impl TooltipFont for EngineTooltipFont<'_> {
+    fn id(&self) -> &Identifier {
+        self.id
+    }
+    fn line_height(&self) -> i32 {
+        9
+    }
+    fn width(&self, text: &Text) -> Result<i32, TextFormError> {
+        let text: crate::text::Text = text.try_into_engine(&())?;
+        Ok(self.font.width_text_with_font(&text, self.name()) as i32)
+    }
+    fn split(&self, text: &Text, max_width: i32) -> Result<Vec<Text>, TextFormError> {
+        let text: crate::text::Text = text.try_into_engine(&())?;
+        self.font
+            .split_formatted_with_font(&text, max_width as f32, self.name())
+            .into_iter()
+            .map(|line| line.try_into_api())
+            .collect()
+    }
+}
 
 /// [`DrawContext`] on the game's `crate::hud::HudBatch`: one per hook call.
 pub(crate) struct GameDrawContext<'a, 'g> {
@@ -10,6 +61,7 @@ pub(crate) struct GameDrawContext<'a, 'g> {
     pub(crate) surface: &'a mut crate::hud::HudBatch,
     /// The call's open clips (`push_clip`), closed when the call returns.
     clips: crate::game::gui_clips::GuiClips,
+    tooltip_font: Option<&'a EngineTooltipFont<'a>>,
 }
 impl<'a, 'g> GameDrawContext<'a, 'g> {
     /// Lend a fresh clip stack and isolate the drawable tail of one listener.
@@ -44,7 +96,15 @@ impl<'a, 'g> GameDrawContext<'a, 'g> {
             game,
             surface,
             clips: Default::default(),
+            tooltip_font: None,
         }
+    }
+    pub(in crate::game) fn with_active_tooltip_font(
+        mut self,
+        font: &'a EngineTooltipFont<'a>,
+    ) -> Self {
+        self.tooltip_font = Some(font);
+        self
     }
 }
 impl Drop for GameDrawContext<'_, '_> {
@@ -86,6 +146,43 @@ impl DrawContext for GameDrawContext<'_, '_> {
     fn text(&mut self, text: &str, at: [f32; 2], argb: u32, shadow: bool) {
         self.game
             .native_text(&mut *self.surface, text, at, argb, shadow)
+    }
+    fn text_with_font(
+        &mut self,
+        font: &Identifier,
+        text: &Text,
+        at: [f32; 2],
+        argb: u32,
+        shadow: bool,
+    ) -> Result<f32, TextFormError> {
+        let text: crate::text::Text = text.try_into_engine(&())?;
+        let [a, r, g, b] = argb.to_be_bytes();
+        if a == 0 {
+            return Ok(0.0);
+        }
+        let formatted;
+        let name: &str = match self.tooltip_font.filter(|active| active.id == font) {
+            Some(active) => active.name(),
+            None => {
+                formatted = font_id_str(font);
+                &formatted
+            }
+        };
+        Ok(self.surface.text_styled_with_font(
+            &self.game.gui.atlas,
+            &text,
+            at,
+            crate::hud::rgba(r, g, b, a),
+            shadow,
+            name,
+        ))
+    }
+    fn with_tooltip_font_raw(&self, font: &Identifier, f: &mut dyn FnMut(&dyn TooltipFont)) {
+        if let Some(active) = self.tooltip_font.filter(|active| active.id == font) {
+            f(active);
+        } else {
+            f(&EngineTooltipFont::new(&self.game.gui.atlas.font, font));
+        }
     }
     fn text_scaled(&mut self, text: &str, at: [f32; 2], scale: f32, argb: u32, shadow: bool) {
         self.game
@@ -183,29 +280,6 @@ impl DrawContext for GameDrawContext<'_, '_> {
         };
         self.game
             .native_gui_draw_item_with(&mut *self.surface, &stack, at, text)
-    }
-    fn widget_button(
-        &mut self,
-        rect: [f32; 4],
-        label: &Text,
-        active: bool,
-        highlighted: bool,
-        sprites: Option<&ButtonSprites>,
-    ) -> Result<(), mod_api::text::TextFormError> {
-        let label = sunrise_client_lib::api_text::to_engine_inprocess(label);
-        self.game.native_widget_button(
-            &mut *self.surface,
-            rect,
-            &label,
-            active,
-            highlighted,
-            sprites,
-        );
-        Ok(())
-    }
-    fn widget_text_field(&mut self, field: &TextFieldView) -> TextFieldLayout {
-        self.game
-            .native_widget_text_field(&mut *self.surface, field)
     }
 }
 /// `Font.lineHeight`: nine GUI pixels a line, before `scale`.
@@ -1121,5 +1195,46 @@ mod tests {
                 Some(mod_api::text::TextClick::ShowDialog(opaque_dialog.clone()))
             );
         }
+    }
+
+    #[test]
+    fn engine_tooltip_font_measures_and_splits_deep_local_text() {
+        let default_json = r#"{"providers":[{"type":"space","advances":{" ":2,"a":3}}]}"#;
+        let alt_json = r#"{"providers":[{"type":"space","advances":{" ":4,"a":8}}]}"#;
+        let source = crate::resource_source::ResourceSource::indexed(BTreeMap::from([
+            (
+                "assets/minecraft/font/default.json".into(),
+                crate::resource_source::Resource::bytes(default_json.as_bytes().to_vec()),
+            ),
+            (
+                "assets/minecraft/font/alt.json".into(),
+                crate::resource_source::Resource::bytes(alt_json.as_bytes().to_vec()),
+            ),
+        ]));
+        let font = crate::font::Font::metrics(&source);
+        let default_id = Identifier::parse("minecraft:default").unwrap();
+        let alt_id = Identifier::parse("minecraft:alt").unwrap();
+
+        let default_tf = EngineTooltipFont::new(&font, &default_id);
+        let alt_tf = EngineTooltipFont::new(&font, &alt_id);
+        assert_eq!(default_tf.id(), &default_id);
+        assert_eq!(alt_tf.id(), &alt_id);
+        assert_eq!(default_tf.line_height(), 9);
+
+        let sample = mod_api::Text::literal("aa aa");
+        assert_eq!(default_tf.width(&sample).unwrap(), 14);
+        assert_eq!(alt_tf.width(&sample).unwrap(), 36);
+        assert_eq!(default_tf.split(&sample, 16).unwrap().len(), 1);
+        assert_eq!(alt_tf.split(&sample, 16).unwrap().len(), 2);
+
+        let mut deep = mod_api::Text::literal("x");
+        for _ in 0..600 {
+            deep = mod_api::Text::literal("").append(deep);
+        }
+        assert_eq!(
+            default_tf.width(&deep),
+            default_tf.width(&mod_api::Text::literal("x"))
+        );
+        assert_eq!(default_tf.split(&deep, 100).unwrap().len(), 1);
     }
 }

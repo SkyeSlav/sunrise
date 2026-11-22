@@ -182,15 +182,16 @@ fn a_code_placement_notifies_only_the_blocks_part_with_its_stack() {
             assert!(probe.0.lock().unwrap().is_empty());
 
             let before = level.block_state(game, ABOVE);
-            let aborted: Result<(), ()> = (game as &mut dyn ServerHost).transaction(|host, _| {
-                assert_eq!(level.set_placed_by(host, POS, Some(&stack)), Ok(true));
-                assert_eq!(
-                    level.block_state(host, ABOVE),
-                    Some(wool.try_into_api().unwrap())
-                );
-                Err(())
-            });
-            assert_eq!(aborted, Err(()));
+            let aborted: Result<(), mod_api::TransactionError<()>> = (game as &mut dyn ServerHost)
+                .transaction(|host, _| {
+                    assert_eq!(level.set_placed_by(host, POS, Some(&stack)), Ok(true));
+                    assert_eq!(
+                        level.block_state(host, ABOVE),
+                        Some(wool.try_into_api().unwrap())
+                    );
+                    Err(())
+                });
+            assert_eq!(aborted, Err(mod_api::TransactionError::Aborted(())));
             assert_eq!(level.block_state(game, ABOVE), before);
             assert_eq!(
                 *probe.0.lock().unwrap(),
@@ -441,35 +442,37 @@ fn a_transaction_refuses_only_a_completing_wither_placement() {
                 Ok(true)
             );
         }
-        let projected: Result<(), ()> = (game as &mut dyn ServerHost).transaction(|host, _| {
-            assert_eq!(
-                level.place_block(host, at, skull.try_into_api().unwrap(), false),
-                Err(LevelWriteError::InTransaction)
-            );
-            assert_eq!(
-                player.place_block(host, level, at, skull.try_into_api().unwrap(), false),
-                Err(PlayerWorldRefusal::InTransaction)
-            );
-            Err(())
-        });
-        assert_eq!(projected, Err(()));
+        let projected: Result<(), mod_api::TransactionError<()>> = (game as &mut dyn ServerHost)
+            .transaction(|host, _| {
+                assert_eq!(
+                    level.place_block(host, at, skull.try_into_api().unwrap(), false),
+                    Err(LevelWriteError::InTransaction)
+                );
+                assert_eq!(
+                    player.place_block(host, level, at, skull.try_into_api().unwrap(), false),
+                    Err(PlayerWorldRefusal::InTransaction)
+                );
+                Err(())
+            });
+        assert_eq!(projected, Err(mod_api::TransactionError::Aborted(())));
         assert_eq!(game.world.block(at[0], at[1], at[2]), air);
         assert_eq!(
             game.level_set_block(level, at, skull, BlockUpdateFlags::NONE),
             Ok(true)
         );
-        let aborted: Result<(), ()> = (game as &mut dyn ServerHost).transaction(|host, _| {
-            assert_eq!(
-                level.set_placed_by(host, at, None),
-                Err(LevelWriteError::InTransaction)
-            );
-            assert_eq!(
-                level.place_block(host, at, skull.try_into_api().unwrap(), false),
-                Ok(false)
-            );
-            Err(())
-        });
-        assert_eq!(aborted, Err(()));
+        let aborted: Result<(), mod_api::TransactionError<()>> = (game as &mut dyn ServerHost)
+            .transaction(|host, _| {
+                assert_eq!(
+                    level.set_placed_by(host, at, None),
+                    Err(LevelWriteError::InTransaction)
+                );
+                assert_eq!(
+                    level.place_block(host, at, skull.try_into_api().unwrap(), false),
+                    Ok(false)
+                );
+                Err(())
+            });
+        assert_eq!(aborted, Err(mod_api::TransactionError::Aborted(())));
         for ([x, y, z], state) in cells {
             assert_eq!(game.world.block(x, y, z), state);
         }

@@ -270,8 +270,8 @@ pub(super) fn atlas_sprites(root: &ResourceSource, packed: &[PackedImage]) -> At
             names[slot].1.push(origin.clone());
         }
     }
-    let load = |texture: &str| {
-        decode_resource(root, &atlas_sources::texture_resource(texture, "textures")).ok()
+    let load = |texture: &str, directory: &str| {
+        decode_resource(root, &atlas_sources::texture_resource(texture, directory)).ok()
     };
     out.extend(
         crate::par::par_map(&names, |(name, origins)| {

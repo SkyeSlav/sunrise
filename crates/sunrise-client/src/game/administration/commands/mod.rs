@@ -158,6 +158,58 @@ sunrise_mod_runtime::impl_attachment_lifetime!(OtherEntity);
 pub(super) fn err(key: &str, args: &[&dyn std::fmt::Display]) -> CommandError {
     CommandError::tr(key, args)
 }
+
+/// Format and validate the failure as the sink sees it, including any timestamp.
+/// Both sinks use the 512-container depth from `NbtAccounter`, even for trusted
+/// SystemChat. The command result is recorded before output.
+fn formatted_command_failure(message: Text, timestamp: Option<Text>) -> Text {
+    use serde_json::Value;
+    use sunrise_core::nbt;
+
+    let format = |message| {
+        let failure = Text::empty().append(message).with_color(text::RED);
+        match &timestamp {
+            Some(prefix) => prefix.clone().append(failure),
+            None => failure,
+        }
+    };
+    let output = format(message);
+    let serializes = || {
+        let component = output.component_view();
+        let mut limits = nbt::Limits::default();
+        // Check before recursing into the component converters. The writer checks
+        // the full tag, including synthetic list wrappers not present in the JSON.
+        let mut pending = vec![(component.as_ref(), 0)];
+        while let Some((node, depth)) = pending.pop() {
+            match node {
+                Value::Object(_) | Value::Array(_) if depth >= limits.max_depth => return false,
+                Value::Object(fields) => pending.extend(fields.values().map(|v| (v, depth + 1))),
+                Value::Array(values) => pending.extend(values.iter().map(|v| (v, depth + 1))),
+                _ => {}
+            }
+        }
+        let tag = if timestamp.is_some() {
+            sunrise_client::scoreboard::component_tag(&component)
+        } else {
+            sunrise_client::lan::data::component_nbt(&component)
+        };
+        if timestamp.is_some() {
+            // The saved component sits under three containers: the chunk root,
+            // the block_entities or Entities list, and the block or cart entry.
+            // NbtAccounter counts those before it reads LastOutput.
+            limits.max_depth = nbt::Limits::saved().max_depth - 3;
+        }
+        // Use the strict writer so overlong strings are refused, not saved empty.
+        // It also counts wrappers introduced when encoding heterogeneous lists.
+        nbt::write_network(&tag, limits).is_ok()
+    };
+    if serializes() {
+        output
+    } else {
+        format(Text::tr("command.failed", &[]))
+    }
+}
+
 /// A natural fence knot is only read by commands here: one that would move
 /// or remove it fails as a whole instead of skipping it, so it never
 /// reports a change it did not make (#13036).
@@ -342,16 +394,19 @@ impl Game<'_> {
         if self.command_source.is_some_and(|s| s.silent) {
             return;
         }
-        let message = Text::empty().append(message).with_color(text::RED);
         if let Some(block) = self.command_source.and_then(|s| s.block) {
-            self.command_block_output(block, message);
+            self.command_block_output(block, |timestamp| {
+                formatted_command_failure(message, Some(timestamp))
+            });
             return;
         }
         if let Some(cart) = self.command_source.and_then(|s| s.cart) {
-            self.cart_command_output(cart, message);
+            self.cart_command_output(cart, |timestamp| {
+                formatted_command_failure(message, Some(timestamp))
+            });
             return;
         }
-        self.system_message(message);
+        self.system_message(formatted_command_failure(message, None));
     }
     /// `sendSuccess(message, false)`: the source is told (when it takes
     /// success feedback), the operators are not.
@@ -555,20 +610,16 @@ impl Game<'_> {
                 None => Text::empty(),
             },
             // ItemEntity.getName: its CustomName, else the stack's item name
-            // (`getItemName`: `minecraft:item_name`, else the item's own).
+            // (`getItemName`: a mod item's Part, else the item's own `getName`).
             Target::Item(id) => {
                 if let Some(c) = self.persist_raw(id).and_then(|r| r.get("CustomName")) {
                     return sunrise_client::scoreboard::comp_text(
                         &sunrise_client::scoreboard::tag_to_json(c),
                     );
                 }
-                let stack = self.dropped.iter().find(|i| i.id == id).map(|i| &i.stack);
-                match stack.and_then(|s| s.item_name()) {
-                    Some(name) => Text::literal(name),
-                    None => {
-                        let item = stack.map(|s| s.item.to_string()).unwrap_or_default();
-                        Text::literal(self.pack.names.display_item(&item))
-                    }
+                match self.dropped.iter().find(|i| i.id == id) {
+                    Some(item) => self.stack_item_name_text(&item.stack),
+                    None => Text::literal(self.pack.names.display_item("")),
                 }
             }
             // FallingBlockEntity.getTypeName: `entity.minecraft.falling_block_type`

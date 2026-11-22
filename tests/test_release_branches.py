@@ -178,8 +178,7 @@ class AuthorizeTests(unittest.TestCase):
             self.assertEqual(outputs["dry_run"], "${{ steps.mode.outputs.publish == 'true' && 'false' || 'true' }}", name)
         build = workflow("nightly-build.yml")["jobs"]
         self.assertEqual(build["pick"]["outputs"]["publish"], "${{ steps.mode.outputs.publish }}")
-        for job in ("sign", "musl-attach"):
-            self.assertEqual(build[job]["environment"], "${{ needs.pick.outputs.publish == 'true' && 'release' || '' }}")
+        self.assertEqual(build["sign"]["environment"], "${{ needs.pick.outputs.publish == 'true' && 'release' || '' }}")
         daily = workflow("daily.yml")["jobs"]
         self.assertEqual(daily["resolve"]["steps"][-1]["env"]["DRY_RUN"], "${{ steps.auth.outputs.dry_run }}")
         for job in ("nightly-branch", "nightly"):

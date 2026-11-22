@@ -6,8 +6,8 @@
 //! attachments).
 use crate::{
     Answer, BlockEntityRef, BlockEntityTypeKey, BlockProviders, BlockState, Direction,
-    ItemResource, LevelHost, LevelRef, Overanswered, ResourceHandler, ServerHost, Transaction,
-    backend_mut_of, backend_of,
+    ItemResource, LevelHost, LevelRef, Overanswered, ResourceHandler, ServerHost,
+    TransactionContext, TransactionError, backend_mut_of, backend_of,
 };
 use std::{fmt::Debug, marker::PhantomData, ops::Deref};
 
@@ -166,7 +166,15 @@ impl<T: ?Sized> Capability<T> {
 
 // Keep a provider's specialised slot-less operations and queries when it is used as a handler.
 impl<R> ResourceHandler<R> for Capability<dyn ResourceHandler<R>> {
-    fn set_max_stack_size(&self, host: &mut dyn ServerHost, tx: &Transaction, limit: u32) -> bool {
+    fn set_max_stack_size(
+        &self,
+        host: &mut dyn ServerHost,
+        tx: &TransactionContext,
+        limit: u32,
+    ) -> Result<bool, TransactionError<()>> {
+        if !host.transaction_matches(Some(tx)) {
+            return Err(TransactionError::InvalidContext);
+        }
         self.handler.set_max_stack_size(host, tx, limit)
     }
 
@@ -201,37 +209,49 @@ impl<R> ResourceHandler<R> for Capability<dyn ResourceHandler<R>> {
     fn insert_at(
         &self,
         host: &mut dyn ServerHost,
-        tx: &Transaction,
+        tx: &TransactionContext,
         index: usize,
         resource: &R,
         amount: u32,
-    ) -> u32 {
-        let answer = self.handler.insert_at(host, tx, index, resource, amount);
-        // Keep the raw answer so the caller knows to abort; this boundary knows whom to warn about.
-        let _ = self.checked(answer, amount, &index);
-        answer
+    ) -> Result<u32, TransactionError<Overanswered>> {
+        if !host.transaction_matches(Some(tx)) {
+            return Err(TransactionError::InvalidContext);
+        }
+        self.check_resource_transfer(
+            self.handler.insert_at(host, tx, index, resource, amount),
+            amount,
+            "insert_at",
+        )
     }
 
     fn extract_at(
         &self,
         host: &mut dyn ServerHost,
-        tx: &Transaction,
+        tx: &TransactionContext,
         index: usize,
         resource: &R,
         amount: u32,
-    ) -> u32 {
-        let answer = self.handler.extract_at(host, tx, index, resource, amount);
-        let _ = self.checked(answer, amount, &index);
-        answer
+    ) -> Result<u32, TransactionError<Overanswered>> {
+        if !host.transaction_matches(Some(tx)) {
+            return Err(TransactionError::InvalidContext);
+        }
+        self.check_resource_transfer(
+            self.handler.extract_at(host, tx, index, resource, amount),
+            amount,
+            "extract_at",
+        )
     }
 
     fn insert(
         &self,
         host: &mut dyn ServerHost,
-        tx: &Transaction,
+        tx: &TransactionContext,
         resource: &R,
         amount: u32,
-    ) -> Result<u32, Overanswered> {
+    ) -> Result<u32, TransactionError<Overanswered>> {
+        if !host.transaction_matches(Some(tx)) {
+            return Err(TransactionError::InvalidContext);
+        }
         self.check_resource_transfer(
             self.handler.insert(host, tx, resource, amount),
             amount,
@@ -242,10 +262,13 @@ impl<R> ResourceHandler<R> for Capability<dyn ResourceHandler<R>> {
     fn extract(
         &self,
         host: &mut dyn ServerHost,
-        tx: &Transaction,
+        tx: &TransactionContext,
         resource: &R,
         amount: u32,
-    ) -> Result<u32, Overanswered> {
+    ) -> Result<u32, TransactionError<Overanswered>> {
+        if !host.transaction_matches(Some(tx)) {
+            return Err(TransactionError::InvalidContext);
+        }
         self.check_resource_transfer(
             self.handler.extract(host, tx, resource, amount),
             amount,
@@ -257,16 +280,28 @@ impl<R> ResourceHandler<R> for Capability<dyn ResourceHandler<R>> {
 impl<R> Capability<dyn ResourceHandler<R>> {
     fn check_resource_transfer(
         &self,
-        answer: Result<u32, Overanswered>,
+        answer: Result<u32, TransactionError<Overanswered>>,
         amount: u32,
         operation: &str,
-    ) -> Result<u32, Overanswered> {
+    ) -> Result<u32, TransactionError<Overanswered>> {
         answer
-            .and_then(|answer| crate::content::resource::checked_transfer(answer, amount))
+            .and_then(|answer| {
+                crate::content::resource::checked_transfer(answer, amount)
+                    .map_err(TransactionError::Aborted)
+            })
             .map_err(|mut error| {
-                if error.owner.is_none() {
-                    crate::block::item_place::warn_broken(self.owner, &operation);
-                    error.owner = Some(self.owner());
+                match &mut error {
+                    TransactionError::InvalidContext
+                    | TransactionError::Unavailable
+                    | TransactionError::CommitRefused => {
+                        let owner = self.owner.unwrap_or("the game");
+                        log::warn!("Resource handler from {owner}: {operation}: {error:?}");
+                    }
+                    TransactionError::Aborted(over) if over.owner.is_none() => {
+                        crate::block::item_place::warn_broken(self.owner, &operation);
+                        over.owner = Some(self.owner());
+                    }
+                    TransactionError::Aborted(_) => {}
                 }
                 error
             })
@@ -308,9 +343,17 @@ pub const ITEMS: CapabilityKey<dyn ResourceHandler<ItemResource>> = CapabilityKe
 /// rules hoppers follow.
 struct GameItems(BlockSide);
 impl ResourceHandler<ItemResource> for GameItems {
-    fn set_max_stack_size(&self, host: &mut dyn ServerHost, tx: &Transaction, limit: u32) -> bool {
-        backend_mut_of(host)
-            .is_some_and(|backend| backend.container_set_stack_limit(self.0, limit, tx))
+    fn set_max_stack_size(
+        &self,
+        host: &mut dyn ServerHost,
+        tx: &TransactionContext,
+        limit: u32,
+    ) -> Result<bool, TransactionError<()>> {
+        if !host.transaction_matches(Some(tx)) {
+            return Err(TransactionError::InvalidContext);
+        }
+        Ok(backend_mut_of(host)
+            .is_some_and(|backend| backend.container_set_stack_limit(self.0, limit, tx)))
     }
 
     fn size(&self, host: &mut dyn ServerHost) -> usize {
@@ -340,40 +383,46 @@ impl ResourceHandler<ItemResource> for GameItems {
     fn insert_at(
         &self,
         host: &mut dyn ServerHost,
-        tx: &Transaction,
+        tx: &TransactionContext,
         index: usize,
         resource: &ItemResource,
         amount: u32,
-    ) -> u32 {
+    ) -> Result<u32, TransactionError<Overanswered>> {
+        if !host.transaction_matches(Some(tx)) {
+            return Err(TransactionError::InvalidContext);
+        }
         if amount == 0 {
-            return 0;
+            return Ok(0);
         }
         let Some(backend) = backend_mut_of(host) else {
-            return 0;
+            return Ok(0);
         };
         let Ok(rest) = backend.container_insert(self.0, index, resource, amount, tx) else {
-            return 0;
+            return Ok(0);
         };
-        amount - rest.map_or(0, |rest| rest.count().min(amount))
+        Ok(amount - rest.map_or(0, |rest| rest.count().min(amount)))
     }
     fn extract_at(
         &self,
         host: &mut dyn ServerHost,
-        tx: &Transaction,
+        tx: &TransactionContext,
         index: usize,
         resource: &ItemResource,
         amount: u32,
-    ) -> u32 {
+    ) -> Result<u32, TransactionError<Overanswered>> {
+        if !host.transaction_matches(Some(tx)) {
+            return Err(TransactionError::InvalidContext);
+        }
         let held = backend_of(&*host).and_then(|backend| backend.container_stack(self.0, index));
         if !held.is_some_and(|held| resource.matches(&held)) {
-            return 0;
+            return Ok(0);
         }
         let Some(backend) = backend_mut_of(host) else {
-            return 0;
+            return Ok(0);
         };
-        backend
+        Ok(backend
             .container_extract(self.0, index, amount, tx)
-            .map_or(0, |out| out.count().min(amount))
+            .map_or(0, |out| out.count().min(amount)))
     }
 }
 

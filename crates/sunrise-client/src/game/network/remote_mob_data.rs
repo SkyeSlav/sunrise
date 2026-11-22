@@ -10,7 +10,7 @@ use sunrise_client::mobs::{
     phantom, raider, sniffer, species::can_be_a_baby, sync, tame, zombie_villager,
 };
 use sunrise_client::particles::{ParticleOptions, ParticleType};
-use sunrise_protocol::entity_data::{Particle, ParticleData, Value};
+use sunrise_protocol::entity_data::{ParticleData, Particles, Value};
 use sunrise_protocol::registry::{Builtin, Dynamic};
 use sunrise_world::registry::BlockStateId;
 
@@ -458,7 +458,7 @@ fn player_poses(m: &mut Mob, values: &[(u8, i32, Value)]) {
 
 /// The options of a synched particle list: an entity effect carries its ARGB
 /// colour, the omens none.
-fn swirls(list: &[Particle], builtin: &Builtin) -> Vec<ParticleOptions> {
+fn swirls(list: &Particles, builtin: &Builtin) -> Vec<ParticleOptions> {
     let channel = |argb: i32, shift: u32| ((argb >> shift) & 255) as f32 / 255.0;
     list.iter()
         .filter_map(|p| {
@@ -467,14 +467,14 @@ fn swirls(list: &[Particle], builtin: &Builtin) -> Vec<ParticleOptions> {
             }
             let name = builtin.get("minecraft:particle_type")?.name(p.id)?;
             let ty = ParticleType::from_name(name)?;
-            Some(match p.data {
+            Some(match &p.data {
                 Some(ParticleData::Color(argb)) => ParticleOptions::colored(
                     ty,
                     [
-                        channel(argb, 16),
-                        channel(argb, 8),
-                        channel(argb, 0),
-                        channel(argb, 24),
+                        channel(*argb, 16),
+                        channel(*argb, 8),
+                        channel(*argb, 0),
+                        channel(*argb, 24),
                     ],
                 ),
                 _ => ParticleOptions::simple(ty),

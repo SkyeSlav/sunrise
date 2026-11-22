@@ -18,7 +18,7 @@ runs a full `verify` of main on GitHub's runners every 6 hours, on any ref by ha
 the label `ci:verify`. Pushes never start it: until 2026-11-18 every push to a fork's pull request ran it, which held
 the organisation's GitHub-hosted runners ahead of the release jobs. The label stays after the run (a fork's run has a
 read-only token, and no fork code ever gets a writing one); remove it and add it again to run `verify` on a newer
-head. A dispatch without `verify` runs only its by-hand jobs (Windows ARM64 and JFR analysis):
+head. A dispatch without `verify` runs only its by-hand job (JFR analysis):
 
 | Job | Runs on | What | Time |
 | --- | --- | --- | --- |
@@ -274,15 +274,16 @@ the notes.
 
 ### Builds
 
+Sunrise builds for three platforms, the SDK's: Linux x86_64 (glibc), Windows x64 and Apple-chip macOS. Musl Linux,
+Intel macOS and Windows ARM64 are not built, released or offered for download; each returns only with its own SDK
+([#4556](https://github.com/sunrise-org/sunrise/issues/4556)).
+
 | Archive | Runs on | Checks |
 | --- | --- | --- |
 | `sunrise-linux-x86_64.tar.gz` | Blacksmith `ubuntu-2204` (GitHub's `ubuntu-22.04` with `BLACKSMITH=off`; an older glibc, so it runs on any recent distribution) | the standard loader and libraries only (`tools/check_imports.py`) |
-| `sunrise-linux-musl-x86_64.tar.gz` | Same Ubuntu runner type as Linux; glibc-hosted Rust cross-compiles to `x86_64-unknown-linux-musl` | musl loader and libraries only, no RPATH/RUNPATH or glibc version requirements (`tools/check_imports.py --musl`), CPU baseline and startup of every packaged program in plain Alpine |
 | `sunrise-server-linux-x86_64.tar.gz` | the same Linux job, after the client archive: `sunrise-server`, `sunrise-prepare` and the game built with `--no-default-features` as `sunrise-engine` (docs/server.md) | as above, and neither `libasound.so.2` nor `libudev.so.1` (`tools/check_imports.py --server`) |
 | `sunrise-windows-x64.zip` | Blacksmith `windows-2025` (GitHub's `windows-latest` with `BLACKSMITH=off`), C runtime linked in | system DLLs only (`tools/check_imports.py`); PE machine is x64 |
-| `sunrise-windows-arm64.zip` | Blacksmith `windows-2025`, cross-built for `aarch64-pc-windows-msvc` (natively on GitHub's `windows-11-vs2026-arm` with `BLACKSMITH=off`), C runtime linked in | system DLLs only (`tools/check_imports.py`); PE machine is ARM64; every program's startup checks from the packaged archive on GitHub's native `windows-11-vs2026-arm` |
 | `sunrise-macos-arm64.zip` | Blacksmith's M4 `macos-15` (GitHub's `macos-15` with `BLACKSMITH=off`) | system libraries only (`otool -L`) and every program's startup checks |
-| `sunrise-macos-x64.zip` | The same machine type, cross-built for `x86_64-apple-darwin` (#1161) | system libraries only (`otool -L`); startup checks of every program from the packaged archive on native Intel (GitHub's `macos-15-intel`, #1602), which the archive must pass to ship |
 
 Each builds `sunrise-client`, `sunrise-ctl`, `sunrise-prepare`, `sunrise-server` and `sunrise-port-pack` in release mode, checks they
 exist, verifies Windows PE architectures, checks the `--help` and `--version` entry points, packages the folder with
@@ -292,40 +293,11 @@ publishes) is `linux-smoke`'s, on Dyna's runner with the prepared files, from th
 
 On Windows, the binaries built by `sunrise-game` and `sunrise-official`, and the SDK's `sunrise_native_game`,
 reserve 8 MiB for the main thread (`/STACK:8388608` with MSVC, `-Wl,--stack,8388608` with GNU). This gives
-startup's by-value `Game` construction more room than the Windows default. The by-hand Windows ARM64 job in
-`checks` (`gh workflow run checks --ref <ref>`) checks `SizeOfStackReserve` in both Cargo game executables built
-from that same ref. The packaging workflow checks the PE architecture, not the stack size, because snapshots can
-package older revisions with a different reservation. Other shipped executables and platforms use their default
+startup's by-value `Game` construction more room than the Windows default. The packaging workflow checks the PE
+architecture, not the stack size, because snapshots can package older revisions with a different reservation. Other shipped executables and platforms use their default
 main stack. The SDK sets the flag when it links the executable; `sunrise-prebuilt.json` does not carry `link_args`.
 Gameplay workers request their own 8 MiB stack; the integrated server honors a larger `RUST_MIN_STACK`. The Linux
 smoke run starts it without that override.
-
-The musl archive is an optional manual download for musl-based Linux desktops; see
-[installation and updates](native-client.md#musl-linux-manual-installation). The launcher still selects the
-standard glibc archive. Nightlies and Dev builds publish without waiting for the musl build. The release notes
-say that the archive follows separately. After publication, `musl-attach` signs and verifies `SHA256SUMS-musl`
-with `SHA256SUMS-musl.sig` for the channel and `SHA256SUMS-musl.v2.sig` for its exact build. It adds those files
-and then the archive without replacing the launcher's `SHA256SUMS` or its signatures. It writes to the release
-`publish` made, addressed by its id, and only while its tag still names the build's commit. GitHub uploads each file
-on its own, so a failed upload can leave the first files attached: a rerun keeps a file already there with the same
-bytes and stops at one with other bytes, or one GitHub holds unfinished, replacing nothing; only an empty
-placeholder of an upload that never began is removed. Build, signing or upload
-failures file a `bug` issue without editing the published release or replacing assets. Dry runs build, sign with a
-throwaway key and verify without publishing assets or filing issues.
-
-[`game-build.yml`](../.github/workflows/game-build.yml) supplies the GCC toolchain and sysroot from a digest-pinned
-Alpine 3.22 image. The musl client and tools keep audio and controllers enabled and link musl dynamically
-(`-C target-feature=-crt-static`) to load graphics and window libraries at runtime. The Ubuntu packer bundles the
-artifacts, then startup checks run in the same Alpine base with only the runtime libraries added. The dedicated
-server archive remains glibc; the bundled musl `sunrise-server` refuses automatic updates to glibc archives.
-
-Musl gameplay parity is not yet validated. On x86-64, `sunrise-core::jmath` uses the platform libm for several
-functions, so musl may round differently from glibc or HotSpot. Values near a simulation threshold could
-therefore change world generation or mob behaviour for the same seed. This build has no musl parity results;
-CLI startup checks do not establish gameplay parity. Before merging the platform support, record a successful
-Nightly dry run and a musl-desktop launch covering the title screen, a new world, sound and a controller.
-
-Building Windows ARM64 locally: [Windows ARM64](windows-arm64.md).
 
 ### Notes
 
@@ -854,11 +826,10 @@ another commit of main: root then runs `gh workflow run release.yml -f kind=nigh
 -f exception="<who, when, why>"` (or `nightly-build.yml` with `base` and `exception`), and the run names the grant in
 a warning. A grant names its commit in full; a blank one is no grant. The commit's SDK, `sdk-<sha>`, is published
 first, as for every Nightly. The gate
-still holds, and an exception never changes the rule (owner, 2026-11-17). A complete published
-`sdk-<sha>` is verified and carried when available; without it, notes say native mods cannot be built for this
-build and no `sdk.json` is signed or published. Linux and Windows x64 are required. macOS and Windows ARM64
-are optional: failed archives are omitted from signed checksums and publication with a warning. The manual
-[musl Linux download](#builds) is built in parallel and attached separately.
+still holds, and an exception never changes the rule (owner, 2026-11-17). Publishing checks that the complete
+`sdk-<sha>` exists (`nightly.py require-sdk`) and carries its `sdk.json`, signed with the build: a build without its
+published SDK is not published. Linux, Windows x64 and Apple-chip macOS are all required: a build missing any of
+them is neither signed nor published.
 
 The upstream Nightly selection machinery below describes Sunrise's picked-PR channel, not Sunrise's selection.
 
@@ -960,8 +931,7 @@ comment on any issue or pull request (`.github/workflows/nightly-command.yml`, `
 - **Jobs.** `pick` assembles the commit and writes the notes: what reached main since the previous Nightly (New and
   Fixed, as a release's notes), then each picked pull request with its title, author and who picked it, the known
   issues and the thanks. `exporters` prepares the shared Java exporter classes once via `game-build.yml`.
-  After that, `build` runs the launcher platform builds and Linux smoke test, and `musl-build` runs in
-  parallel. They use the version `nightly-<date>` and
+  After that, `build` runs the launcher platform builds and Linux smoke test. They use the version `nightly-<date>` and
   `SUNRISE_NIGHTLY="<date> <short sha>"` built in, macOS signed ad hoc. `sign` signs SHA256SUMS for the channel
   (the message says `horizon release nightly`, so a nightly's signature never passes for a release's). `publish`
   checks the signature, the smoke test and that no `release-blocker` is open (as a release; a dry run only warns, so
@@ -972,9 +942,9 @@ comment on any issue or pull request (`.github/workflows/nightly-command.yml`, `
   schedule and `issue_comment` run the default branch; `uses: ./…` takes the caller's commit), never a pull
   request's `.github/`, and a pull request that changes `.github/` or `tools/ci/` is refused. `build` compiles the
   merge with a read-only token that isn't kept in the checkout and no secrets, and signs nothing with Developer ID
-  (`developer_id: false`). `sign` and `musl-attach` pass the key only to main's `tools/ci/sign_release.sh`, which
+  (`developer_id: false`). `sign` passes the key only to main's `tools/ci/sign_release.sh`, which
   hashes the archives with the runner's `sha256sum` and signs with its OpenSSL: it never runs what the build made.
-  `publish` and `musl-attach` verify with the runner's OpenSSL and main's release keys (`nightly.py verify-sums`),
+  `publish` verifies with the runner's OpenSSL and main's release keys (`nightly.py verify-sums`),
   never the archives, and build nothing from the checkout. Nothing a nightly's build leaves reaches a
   release either: `game-build.yml`'s `trusted` input is true only for `release.yml`. An untrusted build's legs
   run on fresh Blacksmith (or GitHub) machines, and its Rust cache has its own key and is never saved. A trusted build doesn't use the machine's

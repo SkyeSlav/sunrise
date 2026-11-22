@@ -376,10 +376,14 @@ impl Game<'_> {
         }
     }
     // remote_send_state: remote/sync.rs
-    /// `MultiPlayerGameMode.handleCreativeModeItemAdd` for inventory slot `i` (0 to 35): the
-    /// stack goes out now and counts as synced. Nothing without a server.
+    /// `MultiPlayerGameMode.handleCreativeModeItemAdd` for inventory slot `i` (0 to 35) or the
+    /// off hand (36): the stack goes out now and counts as synced. Nothing without a server.
     pub(in crate::game) fn remote_creative_slot_add(&mut self, i: usize) {
-        let stack = self.inventory.get(i).cloned().flatten();
+        let stack = if i == 36 {
+            self.offhand.clone()
+        } else {
+            self.inventory.get(i).cloned().flatten()
+        };
         let Some(r) = self.remote.as_mut() else {
             return;
         };

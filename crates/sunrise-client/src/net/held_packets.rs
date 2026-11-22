@@ -91,6 +91,82 @@ impl Session {
 
 #[cfg(feature = "test-payload-probe")]
 impl Session {
+    /// A live play receive loop on a memory pipe: the real network-thread path, with the server's end returned.
+    #[doc(hidden)]
+    pub fn play_loop_probe() -> (Self, Connection) {
+        Self::play_loop_probe_with_registries(Arc::default())
+    }
+
+    /// [`Self::play_loop_probe`] with explicit synchronized registries for packet decode.
+    #[doc(hidden)]
+    pub fn play_loop_probe_with_registries(registries: Arc<Dynamic>) -> (Self, Connection) {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let (client, server) = sunrise_protocol::connection::Pipe::pair();
+        let (mut reader, physical) = Connection::local(client).split();
+        let writer = QueuedWriter::new(physical).unwrap();
+        writer
+            .transition_protocol(sunrise_protocol::payload_negotiation::Phase::Play, &[3])
+            .unwrap();
+        let mut peer = Connection::local(server);
+        peer.reader
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        assert_eq!(peer.recv().unwrap(), (3, vec![]));
+        let mut session = Self::replay("play loop probe");
+        *session.writer.lock().unwrap() = Some(writer);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root =
+            std::env::temp_dir().join(format!("sunrise-play-loop-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("items.json"), "{}").unwrap();
+        let inputs = sunrise_world::native_load_context::LoadInputs::new(
+            Default::default(),
+            root.join("settings"),
+        );
+        let data = sunrise_world::item_defaults::ItemData::load(
+            &root,
+            sunrise_world::native_load_context::LoadContext::new(
+                sunrise_world::native_load_context::DataLoadOrigin::ClientPreload,
+                Arc::new(inputs),
+                [],
+            ),
+        )
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        let (shared, configuring, send) = (
+            session.writer.clone(),
+            session.configuring.clone(),
+            session.payload_events.clone(),
+        );
+        let (far, recorder, cookies, pings) = (
+            session.far.clone(),
+            session.recorder.clone(),
+            session.cookies.clone(),
+            session.pings.clone(),
+        );
+        session.thread = Some(std::thread::spawn(move || {
+            let _ = receive_play(
+                &mut reader,
+                registries,
+                &shared,
+                &configuring,
+                &Arc::new(Language::new()),
+                &send,
+                &cookies,
+                &far,
+                &data,
+                &recorder,
+                &crate::raw_payloads::Transport::empty(),
+                &pings,
+                &Arc::default(),
+            );
+        }));
+        (session, peer)
+    }
+}
+
+#[cfg(feature = "test-payload-probe")]
+impl Session {
     /// Complete a protocol round trip for deterministic hold race tests.
     #[doc(hidden)]
     pub fn packet_hold_rollover(&self) {

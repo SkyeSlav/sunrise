@@ -784,20 +784,18 @@ pub(in crate::game) mod tests {
                 let host: &dyn mod_api::Host = &game;
                 let state = host.block_state_id(BLOCK).unwrap();
                 let air = host.block_state_id("minecraft:air").unwrap();
-                let seal = game.transaction_open();
-                assert_eq!(
-                    level.set_block(&mut game, AT, air, BlockUpdateFlags::NONE),
-                    Ok(true)
-                );
-                assert_eq!(
-                    level.set_block(&mut game, AT, state, BlockUpdateFlags::NONE),
-                    Ok(true)
-                );
-                assert_eq!(
-                    level.set_connection_group(&mut game, AT, Some(730)),
-                    Ok(true)
-                );
-                game.transaction_close(&seal, true);
+                game.storage_scope(|game, _| {
+                    assert_eq!(
+                        level.set_block(game, AT, air, BlockUpdateFlags::NONE),
+                        Ok(true)
+                    );
+                    assert_eq!(
+                        level.set_block(game, AT, state, BlockUpdateFlags::NONE),
+                        Ok(true)
+                    );
+                    assert_eq!(level.set_connection_group(game, AT, Some(730)), Ok(true));
+                    ((), true)
+                });
                 let expected = game.world.block(AT[0], AT[1], AT[2]).0 as i32;
                 game.enter_level(Dim::Overworld).unwrap();
                 game.tick_server(false).unwrap();

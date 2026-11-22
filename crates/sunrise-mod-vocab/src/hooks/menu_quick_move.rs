@@ -27,7 +27,7 @@ pub trait Hooks {
     /// after settlement, only to still-resident holders, and before `menu_slot_take`.
     /// Explicit `BlockEntityRef::set_changed` calls are immediate; a same-block write made
     /// by that notice's callback does not queue another notice.
-    /// A panicking callback loses its writes and outputs and is disabled for this hook.
+    /// A panicking callback loses its journaled writes and outputs and is disabled for this hook.
     /// A later Part can still handle the move; if none does, a quick-move Part panic
     /// causes a resync instead of falling back. A panic contained in a nested hook does
     /// not by itself reject the move.

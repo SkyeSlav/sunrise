@@ -534,7 +534,7 @@ impl PlayerSender {
     pub fn send(&self, body: Vec<u8>) {
         self.send_body(body.into());
     }
-    fn send_body(&self, body: Body) {
+    pub(super) fn send_body(&self, body: Body) {
         if matches!(self.to, To::Disabled) {
             return;
         }

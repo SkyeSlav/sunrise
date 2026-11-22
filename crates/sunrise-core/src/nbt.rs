@@ -543,6 +543,16 @@ impl Limits {
         }
     }
 
+    /// Vanilla `NbtAccounter.unlimitedHeap()`: no effective NBT byte or node quota,
+    /// but at most 512 nested list and compound tags.
+    pub const fn unlimited_heap() -> Self {
+        Self {
+            max_bytes: usize::MAX,
+            max_nodes: usize::MAX,
+            max_depth: 512,
+        }
+    }
+
     /// The prepared per-state block tables (`cached-collision.nbt`,
     /// `block-properties.nbt`, ...): trusted files with a row per block
     /// state, which content mods' states grow past the default caps

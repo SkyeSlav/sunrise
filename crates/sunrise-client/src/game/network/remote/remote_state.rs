@@ -199,6 +199,11 @@ impl Remote {
             true
         })
     }
+    pub(in crate::game) fn set_tracked_position(&mut self, id: i32, position: [f64; 3]) {
+        if let Some(entity) = self.entities.get_mut(&id) {
+            entity.position = position;
+        }
+    }
     /// The kind and last sent position of a tracked server entity.
     pub(in crate::game) fn tracked(&self, id: i32) -> Option<(&str, [f64; 3])> {
         self.entities.get(&id).map(|t| (&*t.kind, t.position))

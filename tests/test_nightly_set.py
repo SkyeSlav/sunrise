@@ -178,8 +178,10 @@ class AllowTests(unittest.TestCase):
         # They check out main sparsely: a file left out of the list reads as missing, and the council loses its powers.
         for name in ("nightly-command", "triage-command", "fork-claim"):
             text = (ROOT / ".github" / "workflows" / f"{name}.yml").read_text()
-            checkout = text[text.index("sparse-checkout: |"):text.index("sparse-checkout-cone-mode")]
-            self.assertIn(ns.COUNCIL, checkout, name)
+            checkouts = [part.split("sparse-checkout-cone-mode", 1)[0] for part in text.split("sparse-checkout: |")[1:]]
+            self.assertTrue(checkouts, name)
+            for checkout in checkouts:  # every job: each one reads nightly_set, which reads the council at import
+                self.assertIn(ns.COUNCIL, checkout, name)
 
     def test_paused_stops_reviewers_not_ludovic(self):
         reviewers = ns.read_reviewers(self.LIST + "paused  # Ludovic, 2026-10-29\n")

@@ -40,19 +40,19 @@ plan are in [server.md](server.md).
 
 ## 1. Install
 
-Linux (x86-64) and macOS (Apple Silicon or Intel):
+Linux (x86-64) and macOS (Apple Silicon):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/sunrise-org/sunrise/main/packaging/server/install.sh | sh
 ```
 
-Windows (x64 or ARM64), in PowerShell:
+Windows x64, in PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/sunrise-org/sunrise/main/packaging/server/install.ps1 | iex
 ```
 
-The script picks the machine's x64 or ARM64 archive, including when PowerShell runs under x64 emulation. It downloads
+The scripts install Linux x86_64, Apple-chip macOS and Windows x64, Sunrise's three platforms. It downloads
 the current Sunrise Nightly from GitHub, or the release `--version <tag>` names (Windows: `-Version <tag>`): a stable
 release's tag, such as `26.3-0.1.0`, puts the server on that stable line, which its updates then follow. It checks it
 against the release's signature with a verifier the script pins (it refuses the install if anything doesn't match),

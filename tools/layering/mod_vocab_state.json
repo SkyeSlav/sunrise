@@ -9,6 +9,11 @@
     "category": "immutable lookup cache",
     "reason": "Three vanilla bucket identifiers resolved once; no live registration or world state."
   },
+  "block/item_place.rs::fresh::NEXT": {
+    "type": "AtomicU64",
+    "category": "monotonic counter",
+    "reason": "Names lent scratch slots without reusing an identity after a transaction or host drops; it stores no stacks or world state."
+  },
   "block/part_state.rs::EDITING": {
     "type": "RefCell<Vec<(AttachmentHolder,&'staticstr,&'staticstr)>>",
     "category": "reentrancy guard",

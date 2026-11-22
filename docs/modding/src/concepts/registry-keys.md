@@ -190,9 +190,9 @@ and use strings, as do labels and tags.
 ## Hot item and block identities
 
 Resolve item and block keys during load and keep them for tick and menu calls.
-`item_burn_time`, `item_compost_chance`, `give`, `enchantment_supports`'s item,
-and GUI `item` / `item_model` take `ItemKey`. `block_item`, `fluid_bucket` and
-`screen_hovered_item` return item keys. `level.block`, `lit_block_name` and
+`item_burn_time`, `item_compost_chance`, `enchantment_supports`'s item,
+and GUI `item` / `item_model` take `ItemKey`. `block_item` and `fluid_bucket`
+return item keys. `level.block`, `lit_block_name` and
 `Hit.block` return block keys; `BlockEntityDrawContext::block` takes one.
 `ItemStack::item()` returns an `ItemKey`, not a name. Request that same key in `Hooks::register`
 when binding a [`ClientItemUseBehavior`](parts/item-and-tag-parts.md#intercept-main-hand-client-input).
@@ -390,6 +390,17 @@ error, never silently clamped. Consuming
 `split(n)` returns `StackSplit { taken, remainder }`, both optional; consuming `shrink(n)`
 returns the remainder or `None`. There is no empty-stack sentinel. Component descriptors
 read and write an optional owned NBT patch; a plain stack has no patch allocation.
+
+On a creative client, `host.give_stack(&stack)` inserts into the local player's inventory,
+keeping the stack's components. It sends every changed slot to the server immediately,
+even when a server menu is open. `Ok(None)` means the whole stack fit; `Ok(Some(remainder))`
+returns what didn't fit. Nothing is dropped. A `CreativeGiveError` leaves the inventory
+unchanged: `Unavailable` means there's no ready client world or game backend, `NotCreative`
+means the local player isn't in creative mode, and `Stack(error)` means the game refused the
+stack (for example, an unknown item, a count above the effective stack limit, or invalid
+components). By contrast, the server's [`PlayerRef::give_stack`](../how-to/entities/server-services-and-players.md#inventory-ender-chest-and-saved-data)
+gives to a server player as `/give` does, normally dropping overflow for that player instead
+of returning it.
 
 `ItemStackView` lends a nonempty stack for read-only inspection. Read `item()`, `count()`,
 `damage()` or `damage_component()` without copying the stack or encoding its components.

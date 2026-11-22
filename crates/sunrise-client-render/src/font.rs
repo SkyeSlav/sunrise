@@ -129,6 +129,10 @@ pub struct Font {
     /// `file` may name any texture, not only one under `textures/font`.
     sheets: HashMap<String, Rect>,
     missing: Glyph,
+    /// Nudged atlas rect of the 5x8 `SpecialGlyphs.MISSING` bitmap (`sunrise/missing_glyph`),
+    /// when packed into the HUD atlas. Kept separate from `missing.rect` so callers inspecting
+    /// `glyph(c).rect.is_none()` still distinguish missing glyphs from provider glyphs.
+    missing_rect: Option<Rect>,
     white: Rect,
     source: ResourceSource,
     /// Atlas size and the reserved dynamic region (y, height).
@@ -675,6 +679,14 @@ impl Font {
         metrics_only: bool,
     ) -> Self {
         let sheets = sprites.clone();
+        let missing_rect = (!metrics_only)
+            .then(|| sprites.get("sunrise/missing_glyph"))
+            .flatten()
+            .map(|r| {
+                let x = (r.u0 * atlas.0 as f32).round() as u32;
+                let y = (r.v0 * atlas.1 as f32).round() as u32;
+                glyph_rect(x, y, r.w, r.h, atlas)
+            });
         let font = Self {
             sheets,
             missing: Glyph {
@@ -686,6 +698,7 @@ impl Font {
                 advance: 6.0,
                 offset: 1.0,
             },
+            missing_rect,
             white,
             source: source.clone(),
             atlas,
@@ -796,7 +809,12 @@ impl Font {
     /// The glyph for a character drawn in `style`'s font (its id is
     /// already complete, see `text::font_id`).
     pub fn glyph_styled(&self, c: char, style: &Style) -> Glyph {
-        self.glyph_of(style.font.as_deref().unwrap_or(DEFAULT), c)
+        self.glyph_styled_with_default(c, style, DEFAULT)
+    }
+    /// The glyph for a character drawn in `style`'s font, using `default_font`
+    /// when `style` names none.
+    pub fn glyph_styled_with_default(&self, c: char, style: &Style, default_font: &str) -> Glyph {
+        self.glyph_of(style.font.as_deref().unwrap_or(default_font), c)
     }
     /// The glyph for a character in the font `id` (`alt` is `minecraft:alt`).
     pub fn glyph_in(&self, id: &str, c: char) -> Glyph {
@@ -991,8 +1009,17 @@ impl Font {
     /// or for a font without any (Force Unicode Font, a TrueType font) its
     /// glyphs below U+0250.
     pub fn random_glyph(&self, style: &Style, advance: f32) -> Glyph {
+        self.random_glyph_with_default(style, advance, DEFAULT)
+    }
+    /// `FontSet.getRandomGlyph` using `default_font` when `style` names none.
+    pub fn random_glyph_with_default(
+        &self,
+        style: &Style,
+        advance: f32,
+        default_font: &str,
+    ) -> Glyph {
         use sunrise_core::random::RandomSource;
-        let id = style.font.as_deref().unwrap_or(DEFAULT);
+        let id = style.font.as_deref().unwrap_or(default_font);
         let width = advance.ceil() as i32;
         let pick = {
             let mut cache = self.cache.borrow_mut();
@@ -1087,10 +1114,13 @@ impl Font {
         std::mem::take(&mut self.cache.borrow_mut().region.pending)
     }
     pub fn advance(&self, c: char, style: &Style) -> f32 {
+        self.advance_with_default(c, style, DEFAULT)
+    }
+    pub fn advance_with_default(&self, c: char, style: &Style, default_font: &str) -> f32 {
         if c == '\u{fffc}' && style.inline_object.is_some() {
             return INLINE_OBJECT_SIZE;
         }
-        let g = self.glyph_styled(c, style);
+        let g = self.glyph_styled_with_default(c, style, default_font);
         g.advance + if style.is_bold() { g.offset } else { 0.0 }
     }
     /// Font.width of plain text (legacy codes are formatting, not glyphs).
@@ -1107,12 +1137,26 @@ impl Font {
     /// Font.width of a component: `§` codes in the spans are formatting,
     /// not glyphs. Right-to-left text is measured as it is drawn, shaped.
     pub fn width_text(&self, t: &Text) -> f32 {
+        self.width_text_with_font(t, DEFAULT)
+    }
+    /// Font.width of a component, using `default_font` for spans without an
+    /// explicit style font.
+    pub fn width_text_with_font(&self, t: &Text, default_font: &str) -> f32 {
         let t = t.resolved();
         crate::bidi::visual(&t)
             .chars()
-            .map(|(c, s)| self.advance(c, s))
+            .map(|(c, s)| self.advance_with_default(c, s, default_font))
             .sum::<f32>()
             .ceil()
+    }
+    /// `Font.width(FormattedText)` on text with legacy codes already resolved,
+    /// before bidi shaping or visual reordering.
+    pub fn width_formatted_with_font(&self, t: &Text, default_font: &str) -> i32 {
+        sunrise_core::mth::ceil_f32(
+            t.chars()
+                .map(|(c, s)| self.advance_with_default(c, s, default_font))
+                .sum(),
+        )
     }
     /// `Font.width(FormattedCharSequence)` of a sequence a component built
     /// with `FormattedCharSequence.forward`: every character is a glyph, a
@@ -1175,6 +1219,15 @@ impl Font {
     /// (`§r` back to no style while measuring), and the part a line breaks in
     /// goes on in the style at the break. Lines keep their codes for drawing.
     pub fn split_formatted(&self, t: &Text, max_width: f32) -> Vec<Text> {
+        self.split_formatted_with_font(t, max_width, DEFAULT)
+    }
+    /// `Font.split` using `default_font` for spans without an explicit style font.
+    pub fn split_formatted_with_font(
+        &self,
+        t: &Text,
+        max_width: f32,
+        default_font: &str,
+    ) -> Vec<Text> {
         let max_width = max_width.max(1.0);
         let mut parts: Vec<(Vec<char>, Span)> = t
             .spans
@@ -1186,7 +1239,9 @@ impl Font {
         let mut out = Vec::new();
         let mut force_new_line = false;
         // One LineBreakFinder per line, over the parts left.
-        while let Some((at, split_style)) = self.line_break(&parts, max_width) {
+        while let Some((at, split_style)) =
+            self.line_break_with_font(&parts, max_width, default_font)
+        {
             let tail = flat[at];
             let new_line = tail == '\n';
             let skip = usize::from(new_line || tail == ' ');
@@ -1208,7 +1263,12 @@ impl Font {
     }
     /// `StringSplitter.LineBreakFinder` fed by `StringDecomposer.iterateFormatted`:
     /// where the parts break (a character index) and the style there.
-    fn line_break(&self, parts: &[(Vec<char>, Span)], max_width: f32) -> Option<(usize, Style)> {
+    fn line_break_with_font(
+        &self,
+        parts: &[(Vec<char>, Span)],
+        max_width: f32,
+        default_font: &str,
+    ) -> Option<(usize, Style)> {
         let (mut width, mut had_visible, mut last_space) = (0.0f32, false, None);
         let mut offset = 0;
         for (contents, part_style) in parts {
@@ -1232,7 +1292,7 @@ impl Font {
                 if c == ' ' {
                     last_space = Some((at, style.clone()));
                 }
-                let advance = self.advance(c, &style);
+                let advance = self.advance_with_default(c, &style, default_font);
                 width += advance;
                 if had_visible && width > max_width {
                     return Some(last_space.unwrap_or((at, style)));
@@ -1336,6 +1396,10 @@ impl Font {
     }
     pub fn white(&self) -> Rect {
         self.white
+    }
+    /// Nudged atlas rect of the 5x8 `SpecialGlyphs.MISSING` bitmap, when available.
+    pub fn missing_rect(&self) -> Option<Rect> {
+        self.missing_rect
     }
 }
 
@@ -2017,5 +2081,45 @@ mod tests {
         let opaque: Vec<bool> = patches[0].rgba.chunks(4).map(|t| t[3] != 0).collect();
         let expected: Vec<bool> = (0..64).map(|i| i % 8 < 3).collect();
         assert_eq!(opaque, expected, "c's cell, row by row");
+    }
+
+    #[test]
+    fn default_font_helpers_measure_and_split_without_overriding_style_font() {
+        let default = br#"{"providers":[{"type":"space","advances":{" ":2,"a":3,"b":4}}]}"#;
+        let wide = br#"{"providers":[{"type":"space","advances":{" ":4,"a":8,"b":9}}]}"#;
+        let root = root(
+            "default-font-override",
+            &[
+                ("assets/minecraft/font/default.json", default),
+                ("assets/minecraft/font/wide.json", wide),
+            ],
+        );
+        let font = load(&root);
+        let _ = std::fs::remove_dir_all(&root);
+
+        let plain = Text::literal("aa aa");
+        assert_eq!(font.width_text(&plain), 14.0);
+        assert_eq!(font.width_text_with_font(&plain, DEFAULT), 14.0);
+        assert_eq!(font.width_text_with_font(&plain, "minecraft:wide"), 36.0);
+
+        // Unstyled spans wrap at 16px on wide (two 16px words) but stay one line on default (14px).
+        assert_eq!(font.split_formatted(&plain, 16.0).len(), 1);
+        assert_eq!(
+            font.split_formatted_with_font(&plain, 16.0, "minecraft:wide")
+                .len(),
+            2
+        );
+
+        // An explicit style font still wins over the replacement default font.
+        let explicit_default = Style {
+            font: Some(DEFAULT.into()),
+            ..Style::default()
+        };
+        let mixed = Text::from_spans(vec![
+            Span::new("a", Style::default()),
+            Span::new("b", explicit_default),
+        ]);
+        // `a` from wide (8) + `b` from explicit minecraft:default (4) = 12.
+        assert_eq!(font.width_text_with_font(&mixed, "minecraft:wide"), 12.0);
     }
 }

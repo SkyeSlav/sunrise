@@ -19,7 +19,7 @@ use mod_api::{
     RandomSource,
     content::crash::{ModCall, enter_native_mod},
 };
-use sunrise_core::geometry::Axis;
+use sunrise_core::geometry::{Axis, Vec3};
 use sunrise_core::random::RandomSource as EngineRandom;
 
 #[cfg(test)]
@@ -524,6 +524,31 @@ impl GoalCxBackend for GoalCx<'_, '_> {
         // own tick (it assigns `jumping` from `jump` there), as the mob jump
         // handle writes it.
         self.m.ai.jump = true;
+    }
+
+    fn delta_movement(&self) -> [f64; 3] {
+        let v = self.m.velocity;
+        [v.x, v.y, v.z]
+    }
+
+    fn set_delta_movement(&mut self, velocity: [f64; 3]) -> bool {
+        // `Entity.setDeltaMovement`: a vector that is not finite is not
+        // stored. No sync is forced: as for vanilla's goals, the tracker
+        // sends the motion on its own schedule.
+        if !velocity.iter().all(|v| v.is_finite()) {
+            return false;
+        }
+        let [x, y, z] = velocity;
+        self.m.velocity = Vec3::new(x, y, z);
+        true
+    }
+
+    fn add_delta_movement(&mut self, delta: [f64; 3]) -> bool {
+        // `Entity.addDeltaMovement`: a delta that is not finite is not
+        // added, and `setDeltaMovement` refuses a sum that overflows.
+        let v = self.m.velocity;
+        let sum = [v.x + delta[0], v.y + delta[1], v.z + delta[2]];
+        delta.iter().all(|d| d.is_finite()) && self.set_delta_movement(sum)
     }
 }
 

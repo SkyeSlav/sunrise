@@ -9,6 +9,7 @@
 //! Ticks lived (`Entity.tickCount`) are read for players, mobs, items, orbs and minecarts.
 use super::{Game, commands::Target};
 use mod_api::EntityRef;
+use sunrise_client::join_seq::residency::table::EntityLookup;
 use sunrise_client::mobs::{Mob, Species, sync};
 use sunrise_client::motion::PlayerMotion;
 use sunrise_client::pose::Pose;
@@ -91,6 +92,42 @@ impl Game<'_> {
             Body::Player(p) => p.shift_key_down,
             _ => false,
         })
+    }
+    /// `LivingEntity.getMainArm`: `Avatar`'s `DATA_PLAYER_MAIN_HAND` (a server sets it from the
+    /// player's `ClientInformation`; a client's own player draws with its Main Hand option, and
+    /// another player is a mob that keeps what the server sent), `Mob`'s left-handed flag and
+    /// `ArmorStand`'s right arm. The dragon's left-handed draw is not kept, so it reads right.
+    /// The mob read uses its resident row without a separate pass over the mob list.
+    pub(super) fn entity_main_arm(&self, entity: EntityRef) -> Option<mod_api::MainHand> {
+        let (target, location) = if self.is_logical_server() {
+            self.native_entity_target_with_location(entity)?
+        } else {
+            let target = self.native_client_entity_target(entity)?;
+            let location = match (target, self.server_resident_entity(entity.id())) {
+                (Target::Mob(_), EntityLookup::Found { location, .. }) => Some(location),
+                _ => None,
+            };
+            (target, location)
+        };
+        let left = match target {
+            Target::Player if !self.is_logical_server() => self.settings.main_hand_left,
+            Target::Player => return self.guest_main_arm(self.lan_acting?),
+            Target::Guest(conn) => return self.guest_main_arm(conn),
+            Target::Mob(_) => self.mobs[self.mobs.locate(location?.join)?].main_arm_left(),
+            Target::Stand(_) | Target::Dragon(_) => false,
+            _ => return None,
+        };
+        Some(if left {
+            mod_api::MainHand::Left
+        } else {
+            mod_api::MainHand::Right
+        })
+    }
+    /// A server's player's main arm, from the Main Hand its client last reported.
+    fn guest_main_arm(&self, conn: u32) -> Option<mod_api::MainHand> {
+        Some(super::lan::main_hand(
+            self.command_guest(conn)?.info.main_hand,
+        ))
     }
     /// Whether the entity crouches (`Entity.isCrouching`: the crouching
     /// pose).
@@ -1822,5 +1859,138 @@ mod tests {
         assert_eq!(max_air(Some(Species::Dolphin)), 4800);
         assert_eq!(max_air(Some(Species::Axolotl)), 6000);
         assert_eq!(max_air(Some(Species::Zombie)), 300);
+    }
+
+    // `EntityRef::main_arm` (`LivingEntity.getMainArm`) on a client and on a server.
+    use super::super::native_entity_refs::tests::{run_fresh_cases, with_client_game};
+    use super::super::native_guest_turn_tests::with_guests;
+    use mod_api::MainHand;
+    use sunrise_protocol::entity_data::{Value, serializer};
+    use sunrise_protocol::packets::play::{self, Clientbound as C};
+
+    /// A client reads every entity it tracks as the server sent it: a mob's left-handed flag
+    /// (`Mob.DATA_MOB_FLAGS_ID`) and another player's main hand (`Avatar.DATA_PLAYER_MAIN_HAND`);
+    /// its own player follows its Main Hand option. An entity that isn't living, and one the
+    /// client doesn't track, has none.
+    #[test]
+    #[ignore = "daily"]
+    fn a_client_reads_the_main_arm_the_server_sent() {
+        if run_fresh_cases(
+            "game::native_entity_state::tests::a_client_reads_the_main_arm_the_server_sent",
+            "SUNRISE_TEST_CLIENT_MAIN_ARM_CASE",
+            &["client"],
+        ) {
+            return;
+        }
+        use super::super::native_client_session::tests::logged_client;
+        use sunrise_client::motion::PlayerMotion;
+        use sunrise_core::geometry::Vec3;
+        mod_platform::testing::with_mods(Default::default(), || {
+            with_client_game(|game| {
+                let _server = logged_client(game);
+                game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
+                let types = game.remote.as_ref().unwrap().builtin.clone();
+                let kind = |name: &str| {
+                    types
+                        .get("minecraft:entity_type")
+                        .unwrap()
+                        .id(name)
+                        .unwrap()
+                };
+                for (id, name) in [
+                    (31, "minecraft:zombie"),
+                    (32, "minecraft:player"),
+                    (33, "minecraft:experience_orb"),
+                ] {
+                    game.handle_packet(C::AddEntity(play::AddEntity {
+                        id,
+                        uuid: 100 + id as u128,
+                        kind: kind(name),
+                        position: [2.0, 64.0, 3.0],
+                        velocity: [0.0; 3],
+                        pitch: 0,
+                        yaw: 0,
+                        head_yaw: 0,
+                        data: 0,
+                    }))
+                    .unwrap();
+                }
+                let (zombie, player, orb) = (
+                    game.entity(31).unwrap(),
+                    game.entity(32).unwrap(),
+                    game.entity(33).unwrap(),
+                );
+                let local = game.local_player().unwrap().entity();
+                let read = |game: &Game<'_>, entity: EntityRef| {
+                    let host: &dyn mod_api::ClientHost = game;
+                    entity.main_arm(host)
+                };
+                assert_eq!(read(game, zombie), Some(MainHand::Right));
+                assert_eq!(read(game, player), Some(MainHand::Right));
+                for left in [true, false] {
+                    // No AI 1, left-handed 2, aggressive 4; HumanoidArm 0 is the left arm.
+                    let flags = if left { 2 | 4 } else { 4 };
+                    game.handle_packet(C::SetEntityData(play::SetEntityData {
+                        id: 31,
+                        values: vec![(15, serializer::BYTE, Value::Byte(flags))],
+                    }))
+                    .unwrap();
+                    game.handle_packet(C::SetEntityData(play::SetEntityData {
+                        id: 32,
+                        values: vec![(15, serializer::HUMANOID_ARM, Value::Id(i32::from(!left)))],
+                    }))
+                    .unwrap();
+                    game.settings.main_hand_left = left;
+                    let arm = if left {
+                        MainHand::Left
+                    } else {
+                        MainHand::Right
+                    };
+                    assert_eq!(read(game, zombie), Some(arm), "the mob");
+                    assert_eq!(read(game, player), Some(arm), "the other player");
+                    assert_eq!(read(game, local), Some(arm), "the local player");
+                }
+                assert_eq!(read(game, orb), None, "not a living entity");
+                assert_eq!(read(game, EntityRef::new(local.epoch(), 99)), None);
+            });
+        });
+    }
+
+    /// A server reads a player's main arm from the Main Hand its client reported, and a mob's
+    /// from its left-handed flag.
+    #[test]
+    #[ignore = "daily"]
+    fn a_server_reads_the_reported_main_hand_and_the_left_handed_flag() {
+        if run_fresh_cases(
+            "game::native_entity_state::tests::a_server_reads_the_reported_main_hand_and_the_left_handed_flag",
+            "SUNRISE_TEST_SERVER_MAIN_ARM_CASE",
+            &["server"],
+        ) {
+            return;
+        }
+        with_guests(|game| {
+            let (a, b) = (game.player(12).unwrap(), game.player(13).unwrap());
+            let host = game.lan.as_mut().unwrap();
+            host.hub.update_guest(12, |g| g.info.main_hand = 0).unwrap();
+            let read = |game: &Game<'_>, entity: EntityRef| {
+                let host: &dyn mod_api::ServerHost = game;
+                entity.main_arm(host)
+            };
+            assert_eq!(read(game, a.entity()), Some(MainHand::Left));
+            assert_eq!(read(game, b.entity()), Some(MainHand::Right));
+            let zombie = game
+                .res
+                .mob_types()
+                .get("minecraft:zombie")
+                .unwrap()
+                .clone();
+            let at = sunrise_core::geometry::Vec3::ZERO;
+            game.mobs
+                .push(sunrise_client::mobs::Mob::new(500, zombie, at, 0.0));
+            let mob = game.entity(500).unwrap();
+            assert_eq!(read(game, mob), Some(MainHand::Right));
+            game.mobs.last_mut().unwrap().extra.left_handed = true;
+            assert_eq!(read(game, mob), Some(MainHand::Left));
+        });
     }
 }
