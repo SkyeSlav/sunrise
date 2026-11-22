@@ -82,7 +82,7 @@ Display.setBrightnessOverride	missing		minor: server side setter; there is no lo
 Display.getBrightnessOverride	inline	crates/sunrise-client/src/game/entities/text_displays.rs::Game::text_display_geometry	the packed sky and block light of the brightness entry (-1 uses the world light)
 Display.calculateInterpolationProgress	port	crates/sunrise-client/src/game/entities/text_displays.rs::RemoteTextDisplay::progress
 Display.updateCulling	port	crates/sunrise-client/src/text_display.rs::culling_box	noCulling when width or height is 0 (`no_culling`); else the width/height AABB
-Display.shouldRenderAtSqrDistance	inline	crates/sunrise-client/src/game/entities/text_displays.rs::Game::display_in_view	view_range * 64 * view scale squared; frustum when width and height are set
+Display.shouldRenderAtSqrDistance	inline	crates/sunrise-client/src/game/entities/text_displays.rs::RemoteTextDisplay::in_range	view_range * 64 * view scale squared; frustum when width and height are set
 Display.getTeamColor	missing		minor: glow_color_override is read but a glowing display gets no coloured outline
 Display.createFreshRenderState	inline	crates/sunrise-client/src/game/entities/text_displays.rs::RemoteTextDisplay::tick	the copy of the synced data when no interpolation runs
 Display.createInterpolatedRenderState	inline	crates/sunrise-client/src/game/entities/text_displays.rs::RemoteTextDisplay::tick	the new start state is the old one blended to the last drawn progress (TextDisplayData::blend)
