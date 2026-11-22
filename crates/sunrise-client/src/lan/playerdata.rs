@@ -3,7 +3,7 @@
 use super::guest::{Guest, SavedBody};
 use crate::{
     items::ItemStack,
-    save::{Level, put, read_dat, uuid_from_tag, uuid_tag, write_dat},
+    save::{Level, put, read_dat, read_doubles, uuid_from_tag, uuid_tag, write_dat},
 };
 use std::{
     path::{Path, PathBuf},
@@ -74,16 +74,51 @@ pub fn with_warden(guest: &mut Guest, tracker: Option<Tag>) -> &mut Guest {
     guest
 }
 
-/// `PlayerDataStorage.load`: a guest's saved state, if they have been here
-/// before. The player's file, else its `.dat_old` (what a save cut off
-/// between its two renames leaves, `write_dat`).
+/// `PlayerDataStorage.load`: the player's file, else its `.dat_old` (what a
+/// save cut off between its two renames leaves).
+fn read_saved(world: &Path, uuid: u128) -> Option<Tag> {
+    let file = path(world, uuid);
+    let mut tag = read_dat(&file).or_else(|| read_dat(&file.with_extension("dat_old")))?;
+    crate::save::adopt_horizon_player(&mut tag);
+    Some(tag)
+}
+
+/// `ServerPlayer.SavedPosition`: each field can be absent independently.
+#[derive(Default)]
+pub struct SavedPosition {
+    pub dimension: Option<String>,
+    pub position: Option<[f64; 3]>,
+    pub rotation: Option<[f32; 2]>,
+}
+
+/// `PrepareSpawnTask.start` reads only the saved position, dimension and rotation.
+pub fn saved_position(world: &Path, uuid: u128, owner: Option<&Level>) -> SavedPosition {
+    let loaded;
+    let tag = if let Some(level) = owner.filter(|l| l.singleplayer_file) {
+        level.player_extra.as_ref()
+    } else {
+        loaded = read_saved(world, uuid);
+        loaded
+            .as_ref()
+            .or_else(|| owner.and_then(|l| l.player_extra.as_ref()))
+    };
+    let Some(tag) = tag else {
+        return SavedPosition::default();
+    };
+    SavedPosition {
+        dimension: match tag.get("Dimension") {
+            Some(Tag::String(id)) => Some(id.to_string_lossy()),
+            _ => None,
+        },
+        position: read_doubles(tag.get("Pos")),
+        rotation: read_doubles::<2>(tag.get("Rotation")).map(|r| r.map(|v| v as f32)),
+    }
+}
+
 pub fn load(guest: &mut Guest, world: &Path) -> bool {
-    let file = path(world, guest.uuid);
-    let Some(mut tag) = read_dat(&file).or_else(|| read_dat(&file.with_extension("dat_old")))
-    else {
+    let Some(tag) = read_saved(world, guest.uuid) else {
         return false;
     };
-    crate::save::adopt_horizon_player(&mut tag);
     let mut level = Level {
         health: 20.0,
         food: 20,

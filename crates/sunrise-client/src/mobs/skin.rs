@@ -939,7 +939,7 @@ mod tests {
             states: Vec::new(),
             placements: Default::default(),
             heightmaps: Default::default(),
-            animations: MobData::load_animations(&root),
+            animations: MobData::load_animations(&root).unwrap(),
             biome_tags: Default::default(),
             villager_hats: Default::default(),
             frame_models: Default::default(),

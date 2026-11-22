@@ -372,7 +372,7 @@ mod precheck_envelope_tests {
             states: Vec::new(),
             placements: Default::default(),
             heightmaps: Default::default(),
-            animations: MobData::load_animations(&root),
+            animations: MobData::load_animations(&root).unwrap(),
             villager_hats: Default::default(),
             frame_models: Default::default(),
             cem: Default::default(),

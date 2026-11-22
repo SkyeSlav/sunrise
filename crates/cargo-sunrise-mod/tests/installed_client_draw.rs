@@ -65,7 +65,7 @@ fn installed_lower_bends_and_routes_a_client_model() {
         r#"
 [[native.mixin]]
 id = "client_draw"
-target = "sunrise_client::game::loading_screen::missing_resources"
+target = "sunrise_client::game::loading_screen::preflight_resources"
 kind = "HEAD"
 helper = "src/mixins/client_draw.rs"
 "#,

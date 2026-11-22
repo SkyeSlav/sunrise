@@ -494,13 +494,18 @@ impl ApplicationHandler for App {
 /// manifest is `sunrise-resources.json`): without them, say where they were
 /// looked for and how to get them, before a window or a loader starts. `get` is
 /// the page a hook sends the player to (`sunrise_hooks::engine::get_the_game`).
-pub(super) fn missing_resources(
+pub(super) fn preflight_resources(
     root: &std::path::Path,
     get: Option<sunrise_hooks::GetTheGame>,
-) -> Option<String> {
-    let shown = std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf());
-    if !root.join("sunrise-resources.json").is_file() {
-        let launcher = get.map_or(String::new(), |get| {
+    dedicated: bool,
+) -> std::result::Result<sunrise_core::prepared_profile::Profile, String> {
+    use sunrise_core::{
+        prepared_profile::{MANIFEST, Manifest, Profile},
+        version::VERSION_ID,
+    };
+
+    if !root.join(MANIFEST).is_file() {
+        let launcher = get.filter(|_| !dedicated).map_or(String::new(), |get| {
             format!(
                 "Sunrise is started from its launcher: download it at {} (Download). It needs \
                  your own Minecraft: Java Edition; the launcher signs you in and prepares the \
@@ -508,43 +513,61 @@ pub(super) fn missing_resources(
                 get.address
             )
         });
-        return Some(format!(
-            "Sunrise's prepared game files are missing: no sunrise-resources.json in {}\n\
-             {launcher}sunrise-prepare --prepare, or pass --resources <folder>",
+        let shown = std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf());
+        let profile = if dedicated {
+            Profile::Server
+        } else {
+            Profile::Full
+        };
+        return Err(format!(
+            "Sunrise's prepared game files are missing: no {MANIFEST} in {}\n\
+             {launcher}{}, or pass --resources <folder>",
             shown.display(),
+            profile.repair(root),
         ));
     }
-    damaged_prepared(root).map(|problem| {
+    let manifest = Manifest::read(root).map_err(|problem| {
         format!(
-            "Sunrise's prepared game files are damaged: {problem} in {}\n\
-             Prepare them again with the launcher, or: sunrise-prepare --prepare",
-            shown.display()
+            "Sunrise's prepared game files at {} are damaged: {problem}",
+            root.display(),
         )
-    })
-}
-
-/// Which top-level prepared file a killed preparation or an interrupted copy
-/// left unusable. The loader parses these before it can start; naming one
-/// beats serde's bare "expected value at line 1 column 1".
-pub(super) fn damaged_prepared(root: &std::path::Path) -> Option<String> {
-    let manifest = root.join("sunrise-resources.json");
-    let bytes = std::fs::read(&manifest).ok()?;
-    if bytes.iter().all(u8::is_ascii_whitespace) {
-        return Some("sunrise-resources.json is empty".into());
+    })?;
+    let profile = manifest.profile();
+    if profile == Profile::Server && !dedicated {
+        return Err(format!(
+            "{} contains server-only game files, not a full client preparation. Run \
+             `sunrise-prepare --prepare --server-jar PATH --output FULL_DIR` with your own \
+             client files, then pass --resources FULL_DIR.",
+            root.display(),
+        ));
     }
-    if serde_json::from_slice::<serde_json::Value>(&bytes).is_err() {
-        return Some("sunrise-resources.json is not valid JSON".into());
+    let mut problems = manifest.version_problems(root, VERSION_ID);
+    if profile == Profile::Server {
+        problems.extend(manifest.server_inventory_problems(root));
     }
-    for entry in std::fs::read_dir(root).ok()?.flatten() {
-        let path = entry.path();
-        if path.extension() != Some(std::ffi::OsStr::new("json")) {
-            continue;
+    // An empty JSON file left by an interrupted export fails with a generic
+    // parse error later. Name the file now, before starting a loader or a window.
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension() == Some(std::ffi::OsStr::new("json"))
+                && std::fs::metadata(&path).is_ok_and(|meta| meta.is_file() && meta.len() == 0)
+            {
+                problems.push(format!("{} is empty", entry.file_name().to_string_lossy()));
+            }
         }
-        if std::fs::metadata(&path).is_ok_and(|meta| meta.len() == 0) {
-            return Some(format!("{} is empty", entry.file_name().to_string_lossy()));
-        }
     }
-    None
+    if problems.is_empty() {
+        Ok(profile)
+    } else {
+        Err(format!(
+            "Sunrise's prepared game files in {} are stale or damaged:\n  {}\n\
+             Prepare them again with `{}`.",
+            root.display(),
+            problems.join("\n  "),
+            profile.repair(root),
+        ))
+    }
 }
 
 /// `Minecraft.<init>`: `startedCleanly` left false means the previous start

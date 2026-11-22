@@ -62,6 +62,10 @@ impl ProtoSnapshot<'_> {
 pub trait ChunkGenerator: Send + Sync + 'static {
     type Worker: Send + 'static;
     fn worker(&self) -> Self::Worker;
+    /// `ChunkGenerator.getSpawnHeight` (specialized by flat generators).
+    fn spawn_height(&self) -> i32 {
+        64
+    }
     /// The persistent wrapper supplies starts from their owning chunk, in every dimension.
     fn set_saved_starts(
         &self,
@@ -553,6 +557,7 @@ pub struct StreamingCommit {
 
 pub struct Streaming {
     shared: Arc<Shared>,
+    spawn_height: i32,
     /// Columns generated and saved as they were left behind: new when they
     /// next arrive, though read from the save (`World::loaded_chunks`).
     dropped_new: FxHashSet<(i32, i32)>,
@@ -1258,6 +1263,7 @@ impl Streaming {
         };
         Self {
             shared,
+            spawn_height: generator.spawn_height(),
             non_air_sections,
             proto_bytes,
             caches,
@@ -1777,6 +1783,11 @@ impl Streaming {
                 && !world.dirty_sections.contains(&upload.key)
                 && self.section_visibility.halo_current(world, upload))
     }
+    /// Spawn height of this level's generator, not the initial world's cached origin.
+    pub fn spawn_height(&self) -> i32 {
+        self.spawn_height
+    }
+
     pub fn is_lit(&self, x: i32, z: i32) -> bool {
         self.lit.contains(&(x, z))
     }
@@ -1810,6 +1821,16 @@ impl Streaming {
         }
         world.set_proto_light_support(key, support);
     }
+    /// `ChunkHolder.isReadyForSaving`: the centre has no generation or save
+    /// work holding it. With no holder, there is also no such work to wait for.
+    pub fn chunk_ready_for_saving(&self, key: (i32, i32)) -> bool {
+        !self.generating.contains(&key)
+            && !self.decorating_finals.contains(&key)
+            && !self.finishing.contains(&key)
+            && !self.lighting.contains_key(&key)
+            && !self.protos.get(&key).is_some_and(Option::is_none)
+    }
+
     /// `ChunkMap.getLatestStatus` for the loading screen's chunk map: the
     /// furthest step this column has reached, `None` before it is asked for.
     pub fn latest_status(

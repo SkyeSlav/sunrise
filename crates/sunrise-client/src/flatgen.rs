@@ -384,6 +384,9 @@ pub fn settings_from_json(
 impl ChunkGenerator for FlatTerrain {
     type Worker = ();
     fn worker(&self) {}
+    fn spawn_height(&self) -> i32 {
+        FlatTerrain::spawn_height(self)
+    }
     /// FlatLevelSource's proto is already its decorated column. Keep a copy
     /// for lighting a finished neighbour outside the kept area, just as the
     /// vanilla pipeline does for FEATURES neighbours.

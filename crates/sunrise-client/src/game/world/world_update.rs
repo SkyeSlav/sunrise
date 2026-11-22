@@ -159,7 +159,29 @@ impl Game<'_> {
             return;
         }
         let areas = self.streaming.extra.len();
+        // The configuration connection is not a guest and owns no player area.
+        // `extra` finishes chunks through radius + 1, even with no players.
+        self.streaming.extra.extend(
+            self.tickets
+                .spawn_areas()
+                .map(|(center, radius)| (center, radius - 1)),
+        );
         let dim = self.dim;
+        if let Some(host) = &self.lan {
+            self.streaming.extra.extend(
+                host.hub
+                    .lan
+                    .configuration_tasks
+                    .loading_spawns(dim.id())
+                    .filter(|&center| !self.tickets.holds_player_spawn(center))
+                    .map(|center| {
+                        (
+                            center,
+                            sunrise_client::ticket_levels::PLAYER_SPAWN_RADIUS - 1,
+                        )
+                    }),
+            );
+        }
         self.streaming.extra.extend(
             self.server_trips
                 .iter()

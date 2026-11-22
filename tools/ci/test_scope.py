@@ -115,6 +115,8 @@ NOT_READS = {
     "sunrise-mod-source": {"Cargo.lock"},
     # shader_fuzz's `..` path parts, in the packs it writes and reads, beside its own seed pack.
     "sunrise-render-shaderpack": {"crates"},
+    # Server init uses the filename as a checkout-root sentinel; only sunrise-prepare reads its contents.
+    "sunrise-server": {"research-lock.json"},
     # Paths inside a staged game source or a test's scratch folder, never this checkout's files.
     "sunrise-native-build": {
         "Cargo.lock", "crates/sunrise-client/Cargo.toml", "crates/sunrise-client/build.rs", "crates/sunrise-client/src",

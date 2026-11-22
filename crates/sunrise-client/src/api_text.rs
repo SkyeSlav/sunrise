@@ -483,6 +483,18 @@ fn event_reserved(kind: &str, key: &str) -> bool {
             _ => false,
         }
 }
+/// `ExtraCodecs.PLAYER_NAME` on a Rust string.
+pub fn valid_profile_name(name: &str) -> bool {
+    name.len() <= 16 && name.bytes().all(|b| (33..127).contains(&b))
+}
+
+/// The UTF-16 length limits of `ExtraCodecs.PROPERTY`.
+pub fn valid_profile_property(name: &str, value: &str, signature: Option<&str>) -> bool {
+    name.encode_utf16().count() <= 64
+        && value.encode_utf16().count() <= 32767
+        && signature.is_none_or(|s| s.encode_utf16().count() <= 1024)
+}
+
 fn profile(
     value: &Value,
     keep_metadata: bool,
@@ -490,7 +502,7 @@ fn profile(
     lenient: bool,
 ) -> Result<TextProfile, Error> {
     fn name(value: &str, validate_codec: bool) -> Result<String, Error> {
-        if validate_codec && (value.len() > 16 || value.bytes().any(|b| b <= 32 || b >= 127)) {
+        if validate_codec && !valid_profile_name(value) {
             return Err(Error::Malformed);
         }
         Ok(value.into())
@@ -583,11 +595,7 @@ fn profile(
                     return Err(Error::Malformed);
                 };
                 let signature = field(record, "signature", lenient)?;
-                if validate_codec
-                    && (name.encode_utf16().count() > 64
-                        || value.encode_utf16().count() > 32767
-                        || signature.is_some_and(|s| s.encode_utf16().count() > 1024))
-                {
+                if validate_codec && !valid_profile_property(name, value, signature) {
                     return Err(Error::Malformed);
                 }
                 let mut property = TextProfileProperty::default();

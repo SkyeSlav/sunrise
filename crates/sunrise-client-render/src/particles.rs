@@ -1217,6 +1217,11 @@ fn below_half_pixel(radius: f64, distance_squared: f64, pixel_focal_length: f32)
 }
 
 impl ParticleEngine {
+    /// Build the particle tables without loading any presentation resources.
+    pub fn without_sprites() -> Self {
+        Self::with_factories(groups::registered())
+    }
+
     pub fn new(
         root: &ResourceSource,
         atlas: &HashMap<String, Rect>,
@@ -1231,7 +1236,13 @@ impl ParticleEngine {
         translucent: &HashSet<String>,
         factories: &[groups::Factory],
     ) -> Self {
-        let mut engine = Self {
+        let mut engine = Self::with_factories(factories);
+        engine.reload(root, atlas, translucent);
+        engine
+    }
+
+    fn with_factories(factories: &[groups::Factory]) -> Self {
+        Self {
             particles: Vec::new(),
             groups: groups::Group::all(factories),
             pending: Vec::new(),
@@ -1270,9 +1281,7 @@ impl ParticleEngine {
             sounds: Vec::new(),
             made: Default::default(),
             item_sprites: HashMap::new(),
-        };
-        engine.reload(root, atlas, translucent);
-        engine
+        }
     }
     /// Where a provider's level view finds the block states, by engine state id: the game's
     /// table, or `None` while it has none, which stops the providers from running so that none

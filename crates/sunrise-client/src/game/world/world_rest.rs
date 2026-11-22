@@ -137,7 +137,8 @@ pub(super) fn load_world_rest(
                 (k, Arc::new(v))
             })
             .collect();
-        let mut mob_data = sunrise_client::mobs::MobData::load(resource_root, facts);
+        let mut mob_data =
+            sunrise_client::mobs::MobData::load(resource_root, facts.states.len(), draws)?;
         // NeoForge keys placements by EntityType, not by the subset backed by MobTypes.
         // Use exactly the registry the spawners will consult, with facts already validated.
         mob_data
@@ -158,6 +159,9 @@ pub(super) fn load_world_rest(
     let load_transformers = || -> Result<_> {
         let _step = startup::step("rest.transformers_models");
         let transformers = sunrise_client::block_transform::Transformers::load(root, registry)?;
+        if !draws {
+            return Ok((transformers, (None, [None, None], [None, None], None)));
+        }
         let player_type = match entity_models {
             Some(document) => perspective::player_type_with_document(root, document),
             None => perspective::player_type(root),

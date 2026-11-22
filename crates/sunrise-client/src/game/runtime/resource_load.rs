@@ -1,7 +1,7 @@
 //! The startup's resource load: the stages the loading screen shows, the
 //! scoped threads each step runs on, and the core, gameplay and pack tables
 //! read from the prepared resources.
-use super::*;
+use super::{resource_tables::PackParts, *};
 
 #[cfg(test)]
 #[path = "incoming_tests/resource_load_scope.rs"]
@@ -686,7 +686,8 @@ pub(super) fn load_resources_for_mods(
     } else {
         client_reload::collect_texture_atlases()
     };
-    let mut resolved = client_reload::stage_texture_atlases(resolved, &texture_atlases);
+    let stage = |root| client_reload::stage_texture_atlases(root, &texture_atlases);
+    let mut resolved = stage(resolved);
     let threads = settings.sunrise.worker_threads();
     // One pool of workers for every level's streaming, the client's and the
     // server thread's (sunrise_threads::jobs), sized before any world opens.
@@ -696,11 +697,13 @@ pub(super) fn load_resources_for_mods(
     // Stage A: the menu bundle (atlas and panorama). With a loading screen it is
     // published at once so the title screen can appear while the world bundle
     // loads; the synchronous launch instead carries it in `Loaded`.
-    // A dedicated server builds only the font (UiResources::server), as the
-    // integrated server's game does: the full atlas and panorama are 144 MB.
+    // A dedicated server has no font metrics or atlas; give its game only
+    // the shared empty UI structures.
     let load_ui = |source: &sunrise_assets::resource_source::ResourceSource| {
         let _step = startup::step("ui.load");
-        if headless {
+        if role.is_dedicated_server() {
+            UiResources::server(&sunrise_assets::resource_source::ResourceSource::default())
+        } else if headless {
             UiResources::server(source)
         } else {
             UiResources::load(source, vanilla_root).map(|ui| {
@@ -792,8 +795,7 @@ pub(super) fn load_resources_for_mods(
             (Err(e), Ok(_), _, None) => return Err(e),
             (Ok(_), Ok(_), Err(e), None) => return Err(e.into()),
         };
-        resolved =
-            client_reload::stage_texture_atlases(recover(&failure, &required)?, &texture_atlases);
+        resolved = stage(recover(&failure, &required)?);
         pack_error = Some(failure);
     };
     // The same prepared gameplay root supplies entity keys and spawner facts,
@@ -862,12 +864,15 @@ pub(super) fn load_resources_for_mods(
     let pack_step = startup::step("pack.assemble");
     let mut pack = PackResources::assemble(
         &resolved,
-        assets.clone(),
-        render,
-        tables,
-        item_renderer,
-        biomes.clone(),
-        Arc::new(light),
+        PackParts {
+            assets: assets.clone(),
+            render,
+            tables,
+            item_renderer,
+            biomes: biomes.clone(),
+            light: Arc::new(light),
+        },
+        !role.is_dedicated_server(),
     )?;
     pack.additional_data = additional_data.into();
     drop(pack_step);
@@ -995,6 +1000,7 @@ pub(super) fn load_resources_for_mods(
                     &resolved,
                     entity_models.as_deref(),
                     pack.render.model_library.as_deref().ok(),
+                    !role.is_dedicated_server(),
                 )
             });
             (game_cpu, textures.map(Step::join))

@@ -21,8 +21,7 @@ The launcher does not create firewall rules or change network-profile settings.
 ## Run from a checkout
 
 Use current stable Rust (1.90+) and JDK 25 (Python 3.11+ only for the development
-harnesses). A checkout never
-downloads the game: resource preparation imports **your own copy** (the 26.3
+harnesses). Full client preparation imports **your own copy** (the 26.3
 client from your official launcher install, and the 26.3 server jar you
 downloaded yourself; see [Build from source](#run-from-a-checkout)),
 verifies it against the pinned checksums, runs vanilla's data generator and small
@@ -35,7 +34,10 @@ incomplete, preparation logs a warning and keeps the placeholders. To import the
 later without rerunning the Java exporters, run `sunrise-prepare panorama` (or
 `cargo run --release -p sunrise-prepare -- panorama` in a checkout). Pass
 `--minecraft-dir PATH` when using a different Minecraft installation.
-Prepared resources are private; never commit them.
+Prepared resources are private; never commit them. For server-only setup, `sunrise-prepare --server` can
+instead fetch Mojang's free `server.jar` and Java runtime from Mojang with SHA-1 checks, without client files.
+See [Host a server](hosting.md#2-prepare-the-game-files). Only the launcher downloads client files, for a
+signed-in account that owns Minecraft.
 
 Preparation is `sunrise-prepare` (`crates/sunrise-prepare`, Rust): it needs no Python, only
 the JDK, for the small exporters that call Mojang's own code. Release folders ship it beside
@@ -65,9 +67,9 @@ A launcher whose files are laid out its own way names them one by one instead of
 with `indexes/` and `objects/`); each replaces only what it names, and every file is still
 checked against `research-lock.json`'s pins. When an earlier import beside `--root` is still
 verified, it is reused and the named files aren't read. Two things no such launcher keeps:
-- **The server jar.** The first `--prepare` needs `--server-jar`. Sunrise never downloads it; a
-  launcher downloads it (the version JSON's `downloads.server`) only for a signed-in account that
-  owns Minecraft: Java Edition, as `sunrise-launcher` does.
+- **The server jar.** The first full `--prepare` needs `--server-jar`. The launcher can download it
+  (the version JSON's `downloads.server`) while preparing a signed-in player's client install. The
+  separate `--server` preparation fetches the pinned jar by SHA-1 for a dedicated server.
 - **Java 25.** `--java-home PATH` names a runtime the launcher manages. The preparer takes the first
   Java of the pinned version from `JAVA_HOME`, the `PATH`, `--java-home`, then the official
   launcher's runtimes.

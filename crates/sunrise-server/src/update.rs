@@ -14,6 +14,7 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
+use sunrise_platform::proxy;
 use sunrise_server_launch::{
     self as launch, Install,
     config::{self, Config},
@@ -247,7 +248,7 @@ pub struct Release {
 /// GitHub's API, or a release asset: the body of `url`.
 fn fetch(url: &str) -> Result<Vec<u8>, String> {
     let mut body = Vec::new();
-    sunrise_proxy::get(
+    proxy::get(
         url,
         &[
             ("Accept", "application/vnd.github+json"),
@@ -566,10 +567,9 @@ pub fn download(install: &Install, release: &Release) -> Result<PathBuf, String>
     let path = folder.join(&release.asset);
     let part = folder.join(format!("{}.part", release.asset));
     let result = (|| {
-        let mut reader =
-            sunrise_proxy::get(&release.url, &[("User-Agent", "sunrise-server")], None)
-                .map_err(|e| format!("downloading {}: {e}", release.asset))?
-                .into_reader();
+        let mut reader = proxy::get(&release.url, &[("User-Agent", "sunrise-server")], None)
+            .map_err(|e| format!("downloading {}: {e}", release.asset))?
+            .into_reader();
         let mut file =
             std::fs::File::create(&part).map_err(|e| format!("{}: {e}", part.display()))?;
         let mut hasher = sha2::Sha256::new();

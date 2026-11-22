@@ -2894,6 +2894,31 @@ mod tests {
         assert_eq!(texts, vec!["minecraft:wind_charge".to_string()]);
     }
 
+    #[test]
+    fn server_sound_commands_complete_from_builtins_without_audio() {
+        let exported = Registries::from_export(&serde_json::json!({
+            "by_registry": {"minecraft:sound_event": {"ids": ["test:sample_sound"]}}
+        }));
+        let mut reg = Registries {
+            permission: 4,
+            ..Default::default()
+        };
+        reg.fill_from_exported(&exported);
+        let tree = sunrise_client::command::vanilla::game_dispatcher();
+        for input in ["playsound test:sample", "stopsound @s master test:sample"] {
+            let parse = tree.parse(input, &reg);
+            let (_, options) = tree.client_suggestions(&parse, input.len(), &reg);
+            assert_eq!(
+                options
+                    .into_iter()
+                    .map(|suggestion| suggestion.text)
+                    .collect::<Vec<_>>(),
+                ["test:sample_sound"],
+                "{input}"
+            );
+        }
+    }
+
     /// `Registries::fill_from_export` and `fill_from_exported` populate
     /// `self.summonable` and `self.entity_types` when present in export JSON,
     /// and sort/dedup properly.

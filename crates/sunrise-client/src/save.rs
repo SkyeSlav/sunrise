@@ -5296,6 +5296,9 @@ impl SaveDir {
 
 impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
     type Worker = G::Worker;
+    fn spawn_height(&self) -> i32 {
+        self.inner.spawn_height()
+    }
     fn worker(&self) -> G::Worker {
         let save = self.save.clone();
         self.inner.set_saved_starts(Arc::new(move |pos| {

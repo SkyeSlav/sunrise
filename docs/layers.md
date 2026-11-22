@@ -691,7 +691,7 @@ Vanilla's endpoints (engine, the same as Java Edition):
 | `textures.minecraft.net` | skins and capes | `skins.rs` |
 | `pc.realms.minecraft.net`, `java.frontend.realms.minecraft-services.net` | Realms | `realms/client.rs` |
 | `aka.ms/…` | vanilla's help links (accessibility, moderation, EULA, Realms terms), opened only on a click | `game/options.rs`, `game/screens.rs`, `ban_notice.rs`, `realms.rs`, `eula.rs` |
-| `libraries.minecraft.net`, `piston-meta.mojang.com`, `resources.download.minecraft.net` | the vanilla jars, libraries and assets | `sunrise-prepare`, launcher |
+| `libraries.minecraft.net`, `piston-meta.mojang.com`, `launchermeta.mojang.com`, `piston-data.mojang.com`, `resources.download.minecraft.net` | vanilla jars, the Java runtime, libraries and assets | `sunrise-prepare`, launcher |
 
 Sunrise's own and third-party addresses (Sunrise layer):
 

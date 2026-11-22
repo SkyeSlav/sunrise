@@ -172,7 +172,7 @@ impl Host {
             streaming: None,
         };
         for event in self.hub.tick(&mut ctx) {
-            if let HostEvent::Joined(conn) = event {
+            if let HostEvent::Joined(conn, _) = event {
                 self.joined.push(conn);
             }
         }
