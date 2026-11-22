@@ -245,8 +245,9 @@ pub struct SpawnerTypeFacts {
     species: Option<Species>,
     allowed_in_peaceful: bool,
     category: Category,
-    half_width: f64,
-    height: f64,
+    dimensions: (f64, f64),
+    spawn_half_width: f64,
+    spawn_height: f64,
 }
 
 impl SpawnerTypeFacts {
@@ -256,8 +257,9 @@ impl SpawnerTypeFacts {
             species: None,
             allowed_in_peaceful: true,
             category: Category::Misc,
-            half_width: width / 2.0,
-            height,
+            dimensions: (width, height),
+            spawn_half_width: width / 2.0,
+            spawn_height: height,
         }
     }
 
@@ -310,8 +312,9 @@ impl SpawnerTypeFacts {
                         .allowed_in_peaceful
                         .unwrap_or_else(|| def.is_none_or(|def| !def.flags(false).not_in_peaceful)),
                     category,
-                    half_width,
-                    height,
+                    dimensions: (f64::from(row.width), f64::from(row.height)),
+                    spawn_half_width: half_width,
+                    spawn_height: height,
                 },
             );
         }
@@ -326,9 +329,14 @@ impl SpawnerTypeFacts {
         }
     }
 
+    /// The type's ordinary width and height, before any pose or size changes.
+    pub fn entity_dimensions(self) -> (f64, f64) {
+        self.dimensions
+    }
+
     /// `EntityType.getSpawnAABB`, with the type's pre-creation extents.
     pub(super) fn spawn_aabb(self, at: [f64; 3]) -> Aabb {
-        spawn_selection::spawn_box_at(at, self.half_width, self.height)
+        spawn_selection::spawn_box_at(at, self.spawn_half_width, self.spawn_height)
     }
 }
 

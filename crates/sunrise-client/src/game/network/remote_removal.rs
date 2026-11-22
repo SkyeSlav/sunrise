@@ -67,6 +67,7 @@ impl Game<'_> {
             self.remove_remote_small_projectiles(id as u32);
             self.persist.uuids.remove(&(id as u32));
             if let Some(r) = self.remote.as_mut() {
+                Self::forget_remote_general(r, id);
                 r.glowing.remove(&id);
                 r.entities.remove(&id);
                 r.passenger_vehicles.remove(&(id as u32));

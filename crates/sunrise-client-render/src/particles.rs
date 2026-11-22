@@ -1801,6 +1801,38 @@ impl ParticleEngine {
             });
         }
     }
+    /// Snapshot the live bodies for the next `tick_tracking`. The game reads
+    /// them from its level before lending the particle engine mutably.
+    pub fn sample_tracking_bodies<F>(
+        &self,
+        mut body: F,
+    ) -> impl FnMut(TrackingTarget) -> Option<TrackingBody> + use<F> + 'static
+    where
+        F: FnMut(TrackingTarget) -> Option<TrackingBody>,
+    {
+        let samples: smallvec::SmallVec<[_; 8]> = self
+            .emitters
+            .iter()
+            .filter_map(|emitter| emitter.target)
+            .map(|target| (target, body(target)))
+            .collect();
+        let mut samples = samples.into_iter();
+        move |target| {
+            let (sampled, body) = samples.next()?;
+            debug_assert!(
+                sampled == target,
+                "tracking targets changed before their tick"
+            );
+            body
+        }
+    }
+
+    pub fn has_tracking_target(&self, target: TrackingTarget) -> bool {
+        self.emitters
+            .iter()
+            .any(|emitter| emitter.target == Some(target))
+    }
+
     /// Vanilla keeps the old entity reference until the emitter expires. Keep
     /// its final body if it leaves the level, even when the id is paired again.
     pub fn detach_tracking_target(

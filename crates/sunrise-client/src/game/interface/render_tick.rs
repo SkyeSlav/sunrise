@@ -683,16 +683,15 @@ impl Game<'_> {
             settle_rain_fog(&mut self.fog, rain, sky_light, rains);
         }
     }
-    pub(super) fn remote_tracking_body(
-        &mut self,
-        id: i32,
-    ) -> Option<(TrackingTarget, TrackingBody)> {
+    pub(super) fn remote_tracking_body(&self, id: i32) -> Option<(TrackingTarget, TrackingBody)> {
         if self.remote.as_ref().is_some_and(|r| r.entity_id == id) {
             let player = self.player.as_ref()?;
             return Some((TrackingTarget::LocalPlayer, player_tracking_body(player)));
         }
-        let mob = self.mob_index.get(&self.mobs, id as u32)?;
-        Some((TrackingTarget::Entity(id), mob_tracking_body(mob)))
+        Some((
+            TrackingTarget::Entity(id),
+            self.remote_entity_tracking_body(id)?,
+        ))
     }
 
     /// `Hud.updateVignetteBrightness`, from the local player's eye: `Gui.tick` runs it on every tick
@@ -974,30 +973,32 @@ impl Game<'_> {
             self.particles
                 .polytone_entity(&level, "minecraft:player", feet);
         }
-        let player = self.player.as_ref();
-        let mobs = &self.mobs;
-        let mob_index = &mut self.mob_index;
-        let lan = self.lan.as_ref();
-        let dimension = self.dim.id();
-        self.particles.tick_tracking(&level, |target| match target {
-            TrackingTarget::LocalPlayer => player.map(player_tracking_body),
-            TrackingTarget::Entity(id) => {
-                if let Some(guest) = lan.and_then(|host| {
-                    host.hub
-                        .guests
-                        .iter()
-                        .find(|guest| guest.entity_id == id && guest.dimension == dimension)
-                }) {
-                    let dimensions = guest.dimensions();
-                    return Some(TrackingBody {
-                        feet: guest.position,
-                        width: f64::from(dimensions.width),
-                        height: f64::from(dimensions.height),
-                    });
-                }
-                mob_index.get(mobs, id as u32).map(mob_tracking_body)
-            }
-        });
+        let bodies =
+            self.particles
+                .sample_tracking_bodies(|target| match target {
+                    TrackingTarget::LocalPlayer => self.player.as_ref().map(player_tracking_body),
+                    TrackingTarget::Entity(id) => {
+                        if self.remote.is_some() {
+                            return self.remote_entity_tracking_body(id);
+                        }
+                        if let Some(guest) = self.lan.as_ref().and_then(|host| {
+                            host.hub.guests.iter().find(|guest| {
+                                guest.entity_id == id && guest.dimension == self.dim.id()
+                            })
+                        }) {
+                            let dimensions = guest.dimensions();
+                            return Some(TrackingBody {
+                                feet: guest.position,
+                                width: f64::from(dimensions.width),
+                                height: f64::from(dimensions.height),
+                            });
+                        }
+                        self.mob_index
+                            .find_ref(&self.mobs, id as u32)
+                            .map(|i| mob_tracking_body(&self.mobs[i]))
+                    }
+                });
+        self.particles.tick_tracking(&level, bodies);
         laps.lap("tp_engine");
         self.tick_pickups();
         laps.lap("tp_pickups");

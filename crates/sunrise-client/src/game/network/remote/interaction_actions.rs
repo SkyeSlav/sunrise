@@ -258,13 +258,15 @@ impl Game<'_> {
     /// hit (`CRIT`) or magic critical hit (`ENCHANTED_HIT`) emitter.
     pub(super) fn remote_animate(&mut self, id: i32, action: u8) {
         use sunrise_client::particles::{ParticleOptions, ParticleType};
-        let Some((target, body)) = self.remote_tracking_body(id) else {
-            return;
-        };
         let particle = match action {
             // Player.stopSleepInBed.
             0 => {
-                if target == TrackingTarget::LocalPlayer {
+                if self.player.is_some()
+                    && self
+                        .remote
+                        .as_ref()
+                        .is_some_and(|remote| remote.entity_id == id)
+                {
                     self.sleeping = None;
                     self.sleep_timer = 100;
                 }
@@ -273,6 +275,9 @@ impl Game<'_> {
             1 => ParticleType::Crit,
             2 => ParticleType::EnchantedHit,
             _ => return,
+        };
+        let Some((target, body)) = self.remote_tracking_body(id) else {
+            return;
         };
         self.particles
             .tracking_emitter(ParticleOptions::simple(particle), target, body);

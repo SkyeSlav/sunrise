@@ -1764,7 +1764,7 @@ impl Game<'_> {
 /// that another player cast: drawn where the server puts it, its line
 /// running to that player's hand.
 pub(super) struct RemoteHook {
-    id: u32,
+    pub(super) id: u32,
     uuid: [i32; 4],
     pub(super) owner: u32,
     pub(super) owner_fishing: bool,

@@ -1,4 +1,5 @@
 use super::*;
+use sunrise_client::particles::TrackingBody;
 
 impl Game<'_> {
     /// `recreateFromPacket`: yRot and xRot from the packet, the body and head
@@ -84,12 +85,80 @@ impl Game<'_> {
         }
     }
 
-    pub(in crate::game) fn detach_remote_tracking_entity(&mut self, id: i32) {
-        let mobs = &self.mobs;
-        let index = &mut self.mob_index;
-        self.particles
-            .detach_tracking_target(TrackingTarget::Entity(id), || {
-                index.get(mobs, id as u32).map(mob_tracking_body)
+    /// The current entity position and dimensions used by `TrackingEmitter.tick`.
+    /// Read body copies rather than the network position of an interpolated entity.
+    pub(in crate::game) fn remote_entity_tracking_body(&self, id: i32) -> Option<TrackingBody> {
+        let remote = self.remote.as_ref()?;
+        if let Some(row) = remote.general.rows.get(&id) {
+            let size = row.bounds().size();
+            return Some(TrackingBody {
+                feet: row.position,
+                width: size.x,
+                height: size.y,
             });
+        }
+        let (kind, last_position) = remote.tracked(id)?;
+        let eid = id as u32;
+        // The dragon's render and motion body is separate from its mob row.
+        if kind != "minecraft:ender_dragon"
+            && (kind == "minecraft:player" || self.res.mob_types().contains_key(kind))
+            && let Some(i) = self.mob_index.find_ref(&self.mobs, eid)
+        {
+            return Some(mob_tracking_body(&self.mobs[i]));
+        }
+        if let Some(entity) = self.interactions.get(&id) {
+            let Vec3 { x, y, z } = entity.position;
+            return Some(TrackingBody {
+                feet: [x, y, z],
+                width: f64::from(entity.width),
+                height: f64::from(entity.height),
+            });
+        }
+        let (mut width, mut height) = self.res.rest().spawner_types.get(kind)?.entity_dimensions();
+        let feet = match kind {
+            "minecraft:ender_dragon" => {
+                let dragon = self.dragon.as_ref().filter(|dragon| dragon.id == eid)?;
+                let Vec3 { x, y, z } = dragon.position;
+                [x, y, z]
+            }
+            "minecraft:armor_stand" => {
+                let stand = self.armor_stands.iter().find(|stand| stand.id == eid)?;
+                (width, height) = super::super::entity::armor_stand_size(stand);
+                let Vec3 { x, y, z } = stand.position;
+                [x, y, z]
+            }
+            "minecraft:area_effect_cloud" => {
+                let cloud = self.breath_clouds.iter().find(|cloud| cloud.id == eid)?;
+                width = f64::from(cloud.radius * 2.0);
+                cloud.at
+            }
+            "minecraft:fishing_bobber" => {
+                let hook = self.remote_hooks.iter().find(|hook| hook.id == eid)?;
+                let Vec3 { x, y, z } = hook.position;
+                [x, y, z]
+            }
+            _ => self
+                .text_displays
+                .get(&id)
+                .map(|display| display.position().to_array())
+                .or_else(|| {
+                    self.level_entity(id)
+                        .and_then(|target| self.target_position(target))
+                })
+                .unwrap_or(last_position),
+        };
+        Some(TrackingBody {
+            feet,
+            width,
+            height,
+        })
+    }
+
+    pub(in crate::game) fn detach_remote_tracking_entity(&mut self, id: i32) {
+        let target = TrackingTarget::Entity(id);
+        if self.particles.has_tracking_target(target) {
+            let last_body = self.remote_entity_tracking_body(id);
+            self.particles.detach_tracking_target(target, || last_body);
+        }
     }
 }

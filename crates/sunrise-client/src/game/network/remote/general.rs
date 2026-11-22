@@ -220,7 +220,7 @@ impl Game<'_> {
     }
 
     /// The server removed general row `id` from the window.
-    pub(super) fn forget_remote_general(r: &mut Remote, id: i32) {
+    pub(in crate::game) fn forget_remote_general(r: &mut Remote, id: i32) {
         r.general.rows.shift_remove(&id);
     }
 }

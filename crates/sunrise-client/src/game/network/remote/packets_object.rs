@@ -95,7 +95,6 @@ impl Game<'_> {
                 r.level_player_textures.remove(&id);
                 r.level_player_infos.remove(&id);
                 r.attachments.remove(&Holder::Entity(id as u32));
-                Self::forget_remote_general(r, id);
             }
         }
         self.remove_entities(&p.ids);
