@@ -525,7 +525,7 @@ mod runtime_environment;
 mod screen_chars;
 mod screen_closing;
 mod screen_exclusion_areas;
-mod screen_hovered_item;
+mod screen_hovered_stack;
 mod screen_init_post;
 mod screen_input_post;
 #[cfg(test)]

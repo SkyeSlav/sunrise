@@ -126,9 +126,14 @@ pub trait MenusBackend {
 #[sunrise_mod_api_macros::host_area]
 pub trait MenusClientBackend {
     /// Side: client.
-    /// The open inventory screen's slot boxes in menu slot order
+    /// The open inventory or creative screen's slot boxes in menu slot order
     /// (`AbstractContainerScreen.leftPos`/`topPos` plus each `Slot.x`/`Slot.y`, 16x16). A box
     /// is `[x, y, width, height]` in GUI pixels, with `None` for a hidden slot.
+    /// The creative screen gives the player's `InventoryMenu` (46 slots) where
+    /// `CreativeModeInventoryScreen.selectTab` places them: on the inventory tab,
+    /// armor `5..=8`, main `9..=35`, hotbar `36..=44` and offhand `45` have boxes and
+    /// the crafting slots `0..=4` are `None`; on an item or search tab only the
+    /// hotbar `36..=44` has boxes.
     /// Returns `None` for a stale menu, another screen, or an inventory covered
     /// by the recipe book. The boxes follow the actual layout, including GUI
     /// scale and the recipe book's horizontal offset.

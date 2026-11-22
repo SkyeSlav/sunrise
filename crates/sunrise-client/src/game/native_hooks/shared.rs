@@ -4230,7 +4230,7 @@ mod tests {
     /// With no window to lay a screen out in there is no slot under the pointer.
     #[test]
     #[ignore = "daily"]
-    fn no_item_is_hovered_without_a_window() {
+    fn no_stack_is_hovered_without_a_window() {
         use super::super::{Audio, Game, Options, Progress, Settings, load_resources};
 
         let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
@@ -4262,6 +4262,6 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(game.screen_hovered_item(), None);
+        assert_eq!(game.screen_hovered_stack(), None);
     }
 }

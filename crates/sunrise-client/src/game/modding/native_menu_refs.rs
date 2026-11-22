@@ -127,7 +127,11 @@ impl Game<'_> {
     }
 
     pub(super) fn menu_slot_boxes(&self, menu: MenuRef) -> Option<Vec<Option<[f32; 4]>>> {
-        if self.screen != super::Screen::Inventory || !self.screen_hooks_open() {
+        if !matches!(
+            self.screen,
+            super::Screen::Inventory | super::Screen::Creative
+        ) || !self.screen_hooks_open()
+        {
             return None;
         }
         let name = self.native_client_menu_name(menu)?;
@@ -880,6 +884,142 @@ mod tests {
                 game.inventory_menu_slot_boxes(1, PANEL, &batch),
                 Some(vec![])
             );
+        });
+    }
+
+    fn creative_tab(game: &mut Game<'_>, pick: impl Fn(&sunrise_client::creative::Tab) -> bool) {
+        let tab = game.creative_screen.tabs.iter().position(pick).unwrap();
+        game.creative_screen.select(tab);
+    }
+
+    /// The creative screen's boxes are `InventoryMenu`'s 46 slots where
+    /// `CreativeModeInventoryScreen.selectTab` puts them, and each box's centre hovers its slot.
+    #[test]
+    #[ignore = "daily"]
+    fn creative_boxes_follow_the_selected_tab() {
+        with_game(|game| {
+            game.creative = true;
+            game.screen = super::super::Screen::Creative;
+            game.refresh_creative_tabs();
+            let batch = super::super::HudBatch::new([800, 600], game.settings.gui_scale_inputs());
+            let (ox, oy) = Game::creative_origin(&batch);
+            // Menu index, game slot, position on the inventory tab, shown on item tabs.
+            let expected = |index: usize| -> Option<(usize, (f32, f32), bool)> {
+                let row = |i: usize| (9.0 + (i % 9) as f32 * 18.0, (i / 9) as f32 * 18.0);
+                match index {
+                    5..=8 => {
+                        let i = index - 5;
+                        let at = (54.0 + (i / 2) as f32 * 54.0, 6.0 + (i % 2) as f32 * 27.0);
+                        Some((500 + i, at, false))
+                    }
+                    9..=35 => {
+                        let (x, y) = row(index - 9);
+                        Some((index, (x, 54.0 + y), false))
+                    }
+                    36..=44 => Some((index - 36, (row(index - 36).0, 112.0), true)),
+                    45 => Some((504, (35.0, 20.0), false)),
+                    _ => None,
+                }
+            };
+            for tab in ["inventory", "items", "search"] {
+                creative_tab(game, |t| match tab {
+                    "inventory" => t.inventory,
+                    "items" => !t.inventory && !t.search && !t.items.is_empty(),
+                    _ => t.search,
+                });
+                let boxes = game
+                    .inventory_menu_slot_boxes(0, "inventory", &batch)
+                    .unwrap();
+                assert_eq!(boxes.len(), 46, "{tab}");
+                for (index, found) in boxes.into_iter().enumerate() {
+                    let want =
+                        expected(index).filter(|&(_, _, item_tab)| tab == "inventory" || item_tab);
+                    assert_eq!(
+                        found,
+                        want.map(|(_, (x, y), _)| [ox + x, oy + y, 16.0, 16.0]),
+                        "{tab} slot {index}"
+                    );
+                    if let Some((slot, (x, y), _)) = want {
+                        assert_eq!(
+                            game.slot_at(&batch, ox + x + 8.0, oy + y + 8.0),
+                            Some(slot),
+                            "{tab} slot {index}"
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    /// The hovered stack is the slot's whole stack, components included, on the inventory
+    /// screen and on both kinds of creative tab, where a catalog slot shows the scrolled list.
+    #[test]
+    #[ignore = "daily"]
+    fn the_hovered_stack_keeps_its_components() {
+        use sunrise_client::creative::Creative;
+
+        with_game(|game| {
+            let sword = game
+                .item_from_snbt(r#"{id:"minecraft:diamond_sword",count:1,components:{"minecraft:damage":5,"minecraft:enchantments":{"minecraft:sharpness":3},"minecraft:custom_name":"Blade"}}"#)
+                .unwrap();
+            let potion = game
+                .item_from_snbt(r#"{id:"minecraft:potion",count:1,components:{"minecraft:potion_contents":{potion:"minecraft:strong_healing"}}}"#)
+                .unwrap();
+            let batch = super::super::HudBatch::new([800, 600], game.settings.gui_scale_inputs());
+            let hover = |game: &Game<'_>, slot: usize| {
+                let (ox, oy) = game.inventory_origin(&batch);
+                let (x, y) = game.slot_position(slot);
+                game.hovered_stack_at(&batch, ox + x + 8.0, oy + y + 8.0)
+            };
+            game.inventory[0] = Some(sword.clone());
+            game.inventory[9] = Some(potion.clone());
+            game.armor[0] = Some(sword.clone());
+            game.inventory[10] = None;
+
+            game.screen = super::super::Screen::Inventory;
+            assert_eq!(hover(game, 9), Some(potion.clone()));
+            assert_eq!(hover(game, 10), None);
+            game.screen = super::super::Screen::Playing;
+            assert_eq!(hover(game, 9), None);
+
+            game.creative = true;
+            game.screen = super::super::Screen::Creative;
+            game.refresh_creative_tabs();
+            creative_tab(game, |t| t.inventory);
+            assert_eq!(hover(game, 9), Some(potion.clone()));
+            assert_eq!(hover(game, 500), Some(sword.clone()));
+            assert_eq!(hover(game, 10), None);
+            let (ox, oy) = game.inventory_origin(&batch);
+            let (tx, ty) = Creative::TRASH_POSITION;
+            assert_eq!(
+                game.hovered_stack_at(&batch, ox + tx + 8.0, oy + ty + 8.0),
+                None
+            );
+
+            // Seven rows: scrolled to the bottom the first shown row is the third.
+            creative_tab(game, |t| !t.inventory && !t.search && !t.items.is_empty());
+            let tab = game.creative_screen.selected_index();
+            let mut items = vec![ItemStack::new("minecraft:stone", 1); 63];
+            items[0] = sword.clone();
+            items[1].count = 0;
+            items[18] = potion.clone();
+            game.creative_screen.tabs[tab].items = items;
+            game.creative_screen.forget_items();
+            assert_eq!(hover(game, Creative::DISPLAY), Some(sword.clone()));
+            assert_eq!(hover(game, Creative::DISPLAY + 1), None);
+            assert_eq!(hover(game, 0), Some(sword.clone()));
+            game.creative_screen.scroll = 1.0;
+            assert_eq!(hover(game, Creative::DISPLAY), Some(potion.clone()));
+
+            creative_tab(game, |t| t.search);
+            let first = game
+                .creative_screen
+                .items(&game.pack.names)
+                .first()
+                .cloned();
+            assert!(first.is_some());
+            assert_eq!(hover(game, Creative::DISPLAY), first);
+            assert_eq!(hover(game, 0), Some(sword));
         });
     }
 

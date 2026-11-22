@@ -28,9 +28,11 @@ pub trait ScreensClientHost {
     /// no screen up.
     fn screen_exclusion(&self) -> Vec<[f32; 4]>;
     /// Side: client.
-    /// The id of the item in the slot under the pointer on the open container screen
-    /// (`AbstractContainerScreen.getHoveredSlot().getItem()`), None over no slot or an empty one.
-    fn screen_hovered_item(&self) -> Option<ItemKey>;
+    /// The full stack in the slot under the pointer on the open container or creative screen
+    /// (`AbstractContainerScreen.getHoveredSlot().getItem()`), including creative catalog
+    /// display slots; `None` over no slot, an empty slot, or with no container or creative
+    /// screen open.
+    fn screen_hovered_stack(&self) -> Option<ItemStack>;
     /// Side: client.
     /// Where the shown mod menu screen for `menu` puts backing slot `slot` from the next
     /// frame (`Slot.x`, `Slot.y` in GUI pixels from the screen's top left, the item's top left
