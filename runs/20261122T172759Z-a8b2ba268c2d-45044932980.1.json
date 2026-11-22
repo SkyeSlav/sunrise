@@ -1,0 +1,457 @@
+{
+ "schema": 1,
+ "commit": "a8b2ba268c2d14089ce23618567bd357e6216494",
+ "date": "2026-11-22T17:27:59Z",
+ "run": "45044932980.1",
+ "host": "dyna-medium",
+ "cpu": "AMD EPYC 7413 24-Core Processor",
+ "kernel": "7.0.0-42-generic",
+ "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+ "valgrind": "valgrind-3.22.0",
+ "workloads": {
+  "chunk.load": {
+   "operations": 100,
+   "checksum": "1af586516fd46289"
+  },
+  "chunk.save": {
+   "operations": 100,
+   "checksum": "62b6ec5eee346818"
+  },
+  "command.selector_nearest_128": {
+   "operations": 200,
+   "checksum": "c36f3ae29d76033b"
+  },
+  "command.selector_type_128": {
+   "operations": 200,
+   "checksum": "c36f3ae29d76033b"
+  },
+  "mod.attachment.read": {
+   "operations": 12800,
+   "checksum": "d84c0c58762c367d"
+  },
+  "mod.attachment.write": {
+   "operations": 12800,
+   "checksum": "85f3ced136c2da78"
+  },
+  "mod.hook.fanout.entity_tick.1": {
+   "operations": 100000,
+   "checksum": "8aa9e43177a5e1c2"
+  },
+  "mod.hook.fanout.entity_tick.10": {
+   "operations": 100000,
+   "checksum": "a7bb3342ce1c941f"
+  },
+  "mod.hook.fanout.entity_tick.100": {
+   "operations": 100000,
+   "checksum": "94ef0cec558415d3"
+  },
+  "mod.hook.fanout.entity_tick.1000": {
+   "operations": 100000,
+   "checksum": "122857f63d0e522a"
+  },
+  "mod.hook.fanout.server_started.1": {
+   "operations": 100000,
+   "checksum": "8aa9e43177a5e1c2"
+  },
+  "mod.hook.fanout.server_started.10": {
+   "operations": 100000,
+   "checksum": "a7bb3342ce1c941f"
+  },
+  "mod.hook.fanout.server_started.100": {
+   "operations": 100000,
+   "checksum": "94ef0cec558415d3"
+  },
+  "mod.hook.fanout.server_started.1000": {
+   "operations": 100000,
+   "checksum": "122857f63d0e522a"
+  },
+  "mod.hook.native_listener": {
+   "operations": 100000,
+   "checksum": "bd60acb658c79e45"
+  },
+  "mod.hook.no_listener": {
+   "operations": 100000,
+   "checksum": "bd60acb658c79e45"
+  },
+  "server.tick.empty": {
+   "operations": 200,
+   "checksum": "76be999e3e25b2a0"
+  },
+  "server.tick.hoppers_128": {
+   "operations": 12800,
+   "checksum": "456df5eaa07257a3"
+  },
+  "server.tick.hoppers_2048": {
+   "operations": 40960,
+   "checksum": "08d0d6bc7a267427"
+  },
+  "server.tick.mobs_128": {
+   "operations": 12800,
+   "checksum": "dbaf35d9ea89d3d9"
+  },
+  "server.tick.mobs_2048": {
+   "operations": 40960,
+   "checksum": "115f428ede53b5c1"
+  }
+ },
+ "metrics": {
+  "chunk.load.allocations": [
+   1211.24,
+   1211.2,
+   1213.1
+  ],
+  "chunk.load.instructions": [
+   660537.72,
+   661127.95,
+   661488.39
+  ],
+  "chunk.load.wall_ns": [
+   77107.76,
+   80023.18,
+   77189.47,
+   78615.32,
+   81350.03
+  ],
+  "chunk.save.allocations": [
+   1670.6,
+   1669.2,
+   1669.28
+  ],
+  "chunk.save.instructions": [
+   2623638.22,
+   2616841.4,
+   2618565.34
+  ],
+  "chunk.save.wall_ns": [
+   234221.2,
+   232101.72,
+   227031.92,
+   232351.82,
+   236226.98
+  ],
+  "command.selector_nearest_128.allocations": [
+   486.31,
+   486.21,
+   486.15
+  ],
+  "command.selector_nearest_128.instructions": [
+   315354.19,
+   315333.375,
+   314745.29
+  ],
+  "command.selector_nearest_128.wall_ns": [
+   46390.74,
+   46954.065,
+   39812.935,
+   40971.025,
+   47911.155
+  ],
+  "command.selector_type_128.allocations": [
+   25670.16,
+   25670.24,
+   25670.37
+  ],
+  "command.selector_type_128.instructions": [
+   8684513.06,
+   8697215.29,
+   8762539.56
+  ],
+  "command.selector_type_128.wall_ns": [
+   1393182.54,
+   1313050.26,
+   1284978.495,
+   1379791.66,
+   1452517.15
+  ],
+  "mod.attachment.read.allocations": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "mod.attachment.read.instructions": [
+   1398.056015625,
+   1398.056015625,
+   1398.056015625
+  ],
+  "mod.attachment.read.wall_ns": [
+   142.448671875,
+   142.33140625,
+   142.3446875,
+   143.857265625,
+   143.301015625
+  ],
+  "mod.attachment.write.allocations": [
+   6.0,
+   6.0025,
+   6.0
+  ],
+  "mod.attachment.write.instructions": [
+   6274.92890625,
+   6287.17296875,
+   6284.48171875
+  ],
+  "mod.attachment.write.wall_ns": [
+   659.255859375,
+   656.211953125,
+   650.937578125,
+   673.009609375,
+   694.453359375
+  ],
+  "mod.hook.fanout.entity_tick.1.allocations": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "mod.hook.fanout.entity_tick.1.instructions": [
+   407.00016,
+   407.00016,
+   407.00016
+  ],
+  "mod.hook.fanout.entity_tick.1.wall_ns": [
+   27.6675,
+   27.6672,
+   27.716,
+   27.93141,
+   27.7905
+  ],
+  "mod.hook.fanout.entity_tick.10.allocations": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "mod.hook.fanout.entity_tick.10.instructions": [
+   2351.00016,
+   2351.00016,
+   2351.00016
+  ],
+  "mod.hook.fanout.entity_tick.10.wall_ns": [
+   176.85913,
+   176.32141,
+   175.99689,
+   176.2218,
+   178.04858
+  ],
+  "mod.hook.fanout.entity_tick.100.allocations": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "mod.hook.fanout.entity_tick.100.instructions": [
+   21791.00016,
+   21791.00869,
+   21791.00016
+  ],
+  "mod.hook.fanout.entity_tick.100.wall_ns": [
+   1634.20642,
+   1664.36822,
+   1645.46996,
+   1637.81666,
+   1735.85116
+  ],
+  "mod.hook.fanout.entity_tick.1000.allocations": [
+   1e-05,
+   1e-05,
+   1e-05
+  ],
+  "mod.hook.fanout.entity_tick.1000.instructions": [
+   216191.07718,
+   216191.81419,
+   216191.78085
+  ],
+  "mod.hook.fanout.entity_tick.1000.wall_ns": [
+   16291.11408,
+   16533.76341,
+   16897.83718,
+   16316.40287,
+   16391.75877
+  ],
+  "mod.hook.fanout.server_started.1.allocations": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "mod.hook.fanout.server_started.1.instructions": [
+   348.00009,
+   348.00009,
+   348.00009
+  ],
+  "mod.hook.fanout.server_started.1.wall_ns": [
+   23.90445,
+   23.84075,
+   23.87425,
+   23.85275,
+   23.84285
+  ],
+  "mod.hook.fanout.server_started.10.allocations": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "mod.hook.fanout.server_started.10.instructions": [
+   2157.00009,
+   2157.00009,
+   2157.00009
+  ],
+  "mod.hook.fanout.server_started.10.wall_ns": [
+   177.14024,
+   178.22549,
+   177.78796,
+   178.11858,
+   197.33084
+  ],
+  "mod.hook.fanout.server_started.100.allocations": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "mod.hook.fanout.server_started.100.instructions": [
+   20247.00009,
+   20247.12674,
+   20247.00009
+  ],
+  "mod.hook.fanout.server_started.100.wall_ns": [
+   1707.99735,
+   1724.11939,
+   1697.64604,
+   1704.35371,
+   1746.09356
+  ],
+  "mod.hook.fanout.server_started.1000.allocations": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "mod.hook.fanout.server_started.1000.instructions": [
+   201147.74679,
+   201147.06038,
+   201147.11218
+  ],
+  "mod.hook.fanout.server_started.1000.wall_ns": [
+   16803.64604,
+   17227.91748,
+   17024.10279,
+   16991.5104,
+   17033.21876
+  ],
+  "mod.hook.native_listener.allocations": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "mod.hook.native_listener.instructions": [
+   394.00017,
+   394.00017,
+   394.00017
+  ],
+  "mod.hook.native_listener.wall_ns": [
+   27.03467,
+   29.05866,
+   27.02858,
+   26.91937,
+   26.99467
+  ],
+  "mod.hook.no_listener.allocations": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "mod.hook.no_listener.instructions": [
+   66.00017,
+   66.00017,
+   66.00017
+  ],
+  "mod.hook.no_listener.wall_ns": [
+   4.06266,
+   4.03706,
+   4.12686,
+   4.12517,
+   4.00086
+  ],
+  "server.tick.empty.allocations": [
+   86.0,
+   86.0,
+   86.0
+  ],
+  "server.tick.empty.instructions": [
+   118750.355,
+   119104.025,
+   118712.39
+  ],
+  "server.tick.empty.wall_ns": [
+   19033.255,
+   19141.71,
+   19669.685,
+   20015.695,
+   19047.16
+  ],
+  "server.tick.hoppers_128.allocations": [
+   1.991953125,
+   1.991953125,
+   1.991953125
+  ],
+  "server.tick.hoppers_128.instructions": [
+   4306.097578125,
+   4304.770390625,
+   4305.621484375
+  ],
+  "server.tick.hoppers_128.wall_ns": [
+   780.677890625,
+   516.210390625,
+   515.656484375,
+   517.410390625,
+   509.304609375
+  ],
+  "server.tick.hoppers_2048.allocations": [
+   1.1420166015625,
+   1.1420166015625,
+   1.1420166015625
+  ],
+  "server.tick.hoppers_2048.instructions": [
+   3104.7799560546873,
+   3106.9652587890623,
+   3105.6465576171877
+  ],
+  "server.tick.hoppers_2048.wall_ns": [
+   339.1721435546875,
+   342.66279296875,
+   334.1309326171875,
+   338.9995361328125,
+   354.7970703125
+  ],
+  "server.tick.mobs_128.allocations": [
+   7.994296875,
+   7.994296875,
+   7.994296875
+  ],
+  "server.tick.mobs_128.instructions": [
+   49160.26875,
+   49204.97390625,
+   49163.556953125
+  ],
+  "server.tick.mobs_128.wall_ns": [
+   6994.4246875,
+   6263.876953125,
+   6387.213828125,
+   7251.313828125,
+   6420.140234375
+  ],
+  "server.tick.mobs_2048.allocations": [
+   8.36630859375,
+   8.36630859375,
+   8.36630859375
+  ],
+  "server.tick.mobs_2048.instructions": [
+   48083.81750488281,
+   48082.096020507815,
+   48031.94533691406
+  ],
+  "server.tick.mobs_2048.wall_ns": [
+   6816.074243164063,
+   7138.3690185546875,
+   6806.137060546875,
+   6750.019116210938,
+   7285.033032226563
+  ]
+ },
+ "notes": []
+}
