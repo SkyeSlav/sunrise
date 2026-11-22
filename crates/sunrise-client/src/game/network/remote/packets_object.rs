@@ -1,9 +1,8 @@
 use super::*;
 
 impl Game<'_> {
-    /// `C::AddEntity`: its arms of `apply_packet`, guard and order kept.
+    /// `C::AddEntity`: admit the entity before replacing an old ID.
     pub(super) fn apply_add_entity_packet(&mut self, p: play::AddEntity) {
-        self.audio.remove_sound_entity(p.id as u32);
         let kind = self
             .remote
             .as_ref()
@@ -14,6 +13,20 @@ impl Game<'_> {
                     .map(str::to_owned)
             })
             .unwrap_or_default();
+        // `createEntityFromPacket`: an unlisted PlayerInfo still supplies its profile.
+        if kind == "minecraft:player"
+            && !self
+                .remote
+                .as_ref()
+                .is_some_and(|r| r.tab_players.contains_key(&p.uuid))
+        {
+            log::warn!(
+                "Server attempted to add a player before PlayerInfo ({:032x})",
+                p.uuid
+            );
+            return;
+        }
+        self.audio.remove_sound_entity(p.id as u32);
         let rotation = [p.yaw, p.pitch, p.head_yaw].map(sunrise_protocol::buf::unpack_degrees);
         if let Some(r) = self.remote.as_mut() {
             // ClientLevel.addEntity: an id it holds already is removed
