@@ -180,6 +180,14 @@ factory and capture only the owned values the callbacks need.
 To draw a sprite from synchronized menu data, see
 [Draw a progress bar and a fuel gauge](menu-gauges.md).
 
+## Reading the hovered stack
+
+In a client screen hook, `host.screen_hovered_stack()` reads the full stack under the pointer,
+including its count and components. It reads container slots and Creative catalog slots, including
+Search results. It returns `None` when no container or Creative screen is open, the screen isn't
+ready, or the pointer is over no slot, an empty slot or the Creative trash. If you only need the
+item key, call `ItemStack::item()` on the returned stack.
+
 ## What a screen draws beside its panel
 
 `ScreenView::rect` is a container screen's panel (vanilla's `leftPos`, `topPos`, `imageWidth`, `imageHeight`).

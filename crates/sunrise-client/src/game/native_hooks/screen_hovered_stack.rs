@@ -32,10 +32,7 @@ impl Game<'_> {
         }
         let slot = self.slot_at(batch, x, y)?;
         if self.creative_tab_open() && slot >= Creative::DISPLAY {
-            let first = self.creative_screen.first_row(&self.pack.names);
-            return self
-                .creative_screen
-                .shown(&self.pack.names, first * 9 + slot - Creative::DISPLAY);
+            return self.creative_display_stack(slot);
         }
         self.slot_view(slot).filter(|stack| stack.count > 0)
     }

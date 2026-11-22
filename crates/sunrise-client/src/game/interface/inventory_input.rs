@@ -30,15 +30,9 @@ impl Game<'_> {
         let batch = HudBatch::new(size, self.settings.gui_scale_inputs());
         let hover = match self.slot_at(&batch, self.cursor.0, self.cursor.1) {
             None => Hover::Nothing,
-            Some(slot) if slot >= Creative::DISPLAY => {
-                let first = self.creative_screen.first_row(&self.pack.names);
-                Hover::Display {
-                    filled: self
-                        .creative_screen
-                        .shown(&self.pack.names, first * 9 + slot - Creative::DISPLAY)
-                        .is_some(),
-                }
-            }
+            Some(slot) if slot >= Creative::DISPLAY => Hover::Display {
+                filled: self.creative_display_stack(slot).is_some(),
+            },
             Some(_) => Hover::Slot,
         };
         search_key_swaps(numeric, true, hover, self.carried.is_some()) && self.inventory_hotkey(key)

@@ -9,6 +9,13 @@ impl Game<'_> {
     pub(super) fn creative_tab_open(&self) -> bool {
         self.screen == Screen::Creative && !self.creative_screen.tab().inventory
     }
+    /// The stack at a resolved display slot on the active item tab, accounting for scroll.
+    pub(super) fn creative_display_stack(&self, slot: usize) -> Option<ItemStack> {
+        let names = &self.pack.names;
+        let cell = slot - Creative::DISPLAY;
+        let first_row = self.creative_screen.first_row(names);
+        self.creative_screen.shown(names, first_row * 9 + cell)
+    }
     pub(super) fn creative_origin(batch: &HudBatch) -> (f32, f32) {
         batch.centered_origin(Creative::WIDTH, Creative::HEIGHT)
     }

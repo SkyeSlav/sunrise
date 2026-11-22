@@ -1107,12 +1107,17 @@ mod tests {
                     game.creative_screen.scroll = 1.0;
                     is_potion(hover(game, Creative::DISPLAY));
 
-                    creative_tab(game, |t| t.search);
-                    let first = game.creative_screen.items(&game.pack.names)[0].clone();
-                    assert_eq!(
-                        hover(game, Creative::DISPLAY),
-                        Some(first.try_into_api().unwrap())
-                    );
+                    game.creative_screen = Creative::from_json(&serde_json::json!({
+                        "schema": 4, "item_features": {}, "potion_features": {}, "tabs": [{
+                            "id": "minecraft:search", "type": "SEARCH", "title": "Search Items",
+                            "build": [], "search_metadata": [{
+                                "stack": r#"{id:"minecraft:stone",count:17}"#,
+                                "ungrouped": true
+                            }]
+                        }]
+                    }))
+                    .unwrap();
+                    is_stone(hover(game, Creative::DISPLAY));
                     is_sword(hover(game, 0));
                 });
             },
