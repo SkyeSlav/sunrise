@@ -2475,6 +2475,9 @@ pub(crate) mod tests {
     mod menu_title_tests {
         include!("menu_title_tests.rs");
     }
+    mod packet_listener_ae_tests {
+        include!("packet_listener_ae_tests.rs");
+    }
     mod movement_snap_tests {
         include!("movement_snap_tests.rs");
     }

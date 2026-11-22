@@ -1,0 +1,5 @@
+# Clientbound packet dispatch uses a prepared game and isolated registries.
+sunrise-client game::remote::tests::packet_listener_ae_tests::add_player_requires_info_before_replacing_a_tracked_entity lib daily child-process
+sunrise-client game::remote::tests::packet_listener_ae_tests::explosion_validates_impulse_and_result_without_suppressing_effects lib daily child-process
+sunrise-client game::remote::tests::packet_listener_ae_tests::hit_emitters_follow_vehicles_and_finish_at_the_removed_body lib daily child-process
+sunrise-client game::remote::tests::packet_listener_ae_tests::server_close_restores_inventory_under_chat_without_echo lib daily child-process
