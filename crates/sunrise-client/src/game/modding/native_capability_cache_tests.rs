@@ -4,7 +4,7 @@
 use super::Dim;
 use mod_api::{
     BlockCapabilityCache, CapabilityKey, Hooks, HostTransaction, ITEMS, ItemResource, Registrar,
-    ResourceHandler, ServerHost, Transaction,
+    ResourceHandler, ServerHost, TransactionContext,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -40,22 +40,22 @@ impl ResourceHandler<ItemResource> for Empty {
     fn insert_at(
         &self,
         _: &mut dyn ServerHost,
-        _: &Transaction,
+        _: &TransactionContext,
         _: usize,
         _: &ItemResource,
         _: u32,
-    ) -> u32 {
-        0
+    ) -> Result<u32, mod_api::TransactionError<mod_api::Overanswered>> {
+        Ok(0)
     }
     fn extract_at(
         &self,
         _: &mut dyn ServerHost,
-        _: &Transaction,
+        _: &TransactionContext,
         _: usize,
         _: &ItemResource,
         _: u32,
-    ) -> u32 {
-        0
+    ) -> Result<u32, mod_api::TransactionError<mod_api::Overanswered>> {
+        Ok(0)
     }
 }
 
@@ -417,7 +417,7 @@ fn moves_through_kept_handlers_conserve_every_item_when_some_abort() {
                 });
                 match result {
                     Ok(n) => moved += n,
-                    Err(n) if n > 0 => aborted += 1,
+                    Err(mod_api::TransactionError::Aborted(n)) if n > 0 => aborted += 1,
                     Err(_) => {}
                 }
                 assert_eq!(count(game), before, "round {round}");

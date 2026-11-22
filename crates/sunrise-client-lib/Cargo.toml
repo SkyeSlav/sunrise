@@ -114,6 +114,8 @@ test-menu-validity = []
 test-payload-probe = []
 # Isolated server-publication slots for resource-backed game fixtures only.
 test-publication-scope = []
+# Thread-local tooltip component factories for isolated game unit tests only.
+test-tooltip-factories = []
 # Non-consuming residency journal observation for game fixtures only.
 test-residency-observer = []
 # A level side with no weather, tags or block entities, for tests and probes that never read them.

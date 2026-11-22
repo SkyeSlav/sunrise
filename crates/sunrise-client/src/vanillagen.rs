@@ -954,6 +954,9 @@ pub fn shared_data_with(
 }
 impl ChunkGenerator for VanillaTerrain {
     type Worker = GeneratorWorker;
+    fn spawn_height(&self) -> i32 {
+        self.generator.flat_spawn_height().unwrap_or(64)
+    }
     fn set_saved_starts(
         &self,
         source: Arc<sunrise_world::worldgen::generator::SavedStructureStarts>,

@@ -1851,6 +1851,7 @@ trait SeededPipeline: Send + Sync {
     /// Empty the caches that only spare work ([`OverworldGenerator::release_caches`]).
     fn release_caches(&self) {}
     fn sea_level(&self) -> i32;
+    fn flat_spawn_height(&self) -> Option<i32>;
     /// `NoiseGeneratorSettings.disableMobGeneration`, which
     /// `NoiseBasedChunkGenerator.spawnOriginalMobs` reads.
     fn disable_mob_generation(&self) -> bool;
@@ -1998,6 +1999,11 @@ where
             start_chunks,
             start_lists,
         }
+    }
+    fn flat_spawn_height(&self) -> Option<i32> {
+        self.flat
+            .as_ref()
+            .map(|flat| flat.min_y + flat.states.len() as i32)
     }
     fn sea_level(&self) -> i32 {
         self.settings.sea_level

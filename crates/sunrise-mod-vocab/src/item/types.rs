@@ -111,8 +111,9 @@ pub struct ArmorHurt {
 }
 
 // no wire: type alias inherits the Wire policy of its tuple or Result target.
-/// A dispenser hook's answer: the slot's remainder (None empties it) and the
-/// level event to play, `CLICK` (1000), `FAIL` (1001) or 0 for none.
+/// A dispenser hook's answer: the detached remainder (None empties the slot)
+/// and the level event to play, `CLICK` (1000), `FAIL` (1001) or 0 for none.
+/// The remainder keeps its count until the final slot write applies its placement limit.
 pub type Dispensed = (Option<ItemStack>, i32);
 
 // no wire: borrowed call-scoped view; transport uses owned snapshots.

@@ -701,7 +701,7 @@ impl Game<'_> {
         // The options open over the title screen too: they come first, as
         // for the keyboard's Escape.
         if self.screen == Screen::Options {
-            return self.options_key(KeyCode::Escape, None);
+            return self.options_key(KeyCode::Escape, None).map(|_| ());
         }
         // A mod's screen in front of the title takes the Escape itself.
         if self.title_input_active()

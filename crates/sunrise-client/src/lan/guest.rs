@@ -199,6 +199,10 @@ pub struct Guest {
     pub center_sent: Option<(i32, i32)>,
     /// Why the connection closed (the console's "lost connection").
     pub left_reason: String,
+    /// The connections listed ahead of this player when the hub took them out of its list
+    /// (`Hub::remove_guest`): the game lists them again in that place while the mods hear them
+    /// leave.
+    pub listed_behind: Vec<u32>,
     /// A validated movement report the mods have not ruled on yet (`player_move`).
     pub pending_move: Option<super::hub::PendingMove>,
     /// A disconnect was started ([`Guest::begin_disconnect`]); the connection closes when the
@@ -798,6 +802,7 @@ impl Guest {
             last_reported: (position, [0.0, 0.0]),
             center_sent: None,
             left_reason: String::new(),
+            listed_behind: Vec::new(),
             pending_move: None,
             disconnect_pending: false,
             uuid: j.uuid,

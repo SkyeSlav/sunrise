@@ -15,7 +15,7 @@ use sunrise_client::{
     widgets::{self, Narratable, join_for_narration},
 };
 use sunrise_protocol::packets::play::{self, Serverbound as S};
-use winit::{event::KeyEvent, keyboard::PhysicalKey};
+use winit::keyboard::KeyCode;
 
 pub(super) struct WorldOptions {
     remote: bool,
@@ -1124,29 +1124,29 @@ impl Game<'_> {
     }
 
     /// The mouse wheel over the screen (ScrollableLayout, 10 pixels a step).
-    pub(super) fn world_options_scroll(&mut self, delta: f32) {
+    pub(super) fn world_options_scroll(&mut self, delta: f32) -> bool {
         let (w, h) = self.gui_size();
         let stick_scroll = self.pad_stick_scroll();
         match self.world_options.as_mut() {
             Some(o) if o.view == View::Options => {
-                let hit_btn = o.hit(self.cursor, (w, h)).or(o.focused_button);
+                let hit_btn = o.hit(self.cursor, (w, h));
                 if let Some(btn) = hit_btn.filter(|_| !stick_scroll) {
                     let step = if delta > 0.0 { -1 } else { 1 };
                     match btn {
                         Button::DefaultMode => {
                             o.default_mode = (o.default_mode + step).rem_euclid(4);
                             self.audio.play_button_click();
-                            return;
+                            return true;
                         }
                         Button::PersonalMode => {
                             o.personal_mode = (o.personal_mode + step).rem_euclid(4);
                             self.audio.play_button_click();
-                            return;
+                            return true;
                         }
                         Button::Difficulty => {
                             o.difficulty = ((o.difficulty as i32 + step).rem_euclid(4)) as u8;
                             self.audio.play_button_click();
-                            return;
+                            return true;
                         }
                         Button::Cheats => {
                             o.cheats = !o.cheats;
@@ -1155,48 +1155,55 @@ impl Game<'_> {
                                 o.personal_mode = o.default_mode;
                             }
                             self.audio.play_button_click();
-                            return;
+                            return true;
                         }
                         Button::Lan => {
                             o.lan = !o.lan;
                             o.port.focused = false;
                             self.audio.play_button_click();
-                            return;
+                            return true;
                         }
                         Button::CommandAccess => {
                             o.guest_commands = !o.guest_commands;
                             self.audio.play_button_click();
-                            return;
+                            return true;
                         }
                         Button::Force => {
                             o.force = !o.force;
                             self.audio.play_button_click();
-                            return;
+                            return true;
                         }
                         _ => {}
                     }
                 }
-                o.scroll = (o.scroll - delta * 10.0).clamp(0.0, o.scroll_limit(h));
+                if stick_scroll || (HEADER..h - FOOTER).contains(&self.cursor.1) {
+                    o.scroll = (o.scroll - delta * 10.0).clamp(0.0, o.scroll_limit(h));
+                    return true;
+                }
             }
             Some(o) => {
-                if let Some(rules) = o.rules.as_mut() {
-                    rules.wheel(delta, h);
-                }
+                return o
+                    .rules
+                    .as_mut()
+                    .is_some_and(|rules| rules.wheel_at(delta, self.cursor.1, h));
             }
             None => {}
         }
+        false
     }
 
     /// The pointer moved while a list's scrollbar is held: the game rules'
     /// list follows it (AbstractSelectionList.mouseDragged).
-    pub(super) fn world_options_drag(&mut self) {
+    pub(super) fn world_options_drag(&mut self) -> bool {
         let h = self.gui_size().1;
         if let Some(o) = self.world_options.as_mut()
             && o.view == View::GameRules
             && let Some(rules) = o.rules.as_mut()
         {
             rules.drag(self.cursor.1, h);
+            return true;
         }
+        false
     }
 
     /// The button came up: a held scrollbar lets go (onRelease).
@@ -1352,42 +1359,27 @@ impl Game<'_> {
         self.system_message(message);
     }
 
-    pub(super) fn world_options_key(&mut self, event: &KeyEvent) {
-        if event.state != winit::event::ElementState::Pressed {
-            return;
-        }
-        let PhysicalKey::Code(key) = event.physical_key else {
-            return;
-        };
+    pub(super) fn world_options_key(
+        &mut self,
+        key: KeyCode,
+        shortcut: Option<sunrise_client::clipboard::EditShortcut>,
+    ) -> bool {
         let ctrl = self.has_control_down_with_quirk();
-        let shortcut = self.edit_shortcut(event);
-        let types_text = self.types_text();
         let shift = self.has_shift_down();
         let (w, h) = self.gui_size();
         let chat_vis = self.settings.chat_visibility;
         let Some(o) = self.world_options.as_mut() else {
-            return;
+            return false;
         };
         if let Some(rules) = o.rules.as_mut().filter(|r| r.typing()) {
-            match shortcut {
-                Some(shortcut) => rules.edit(|b| {
+            let mut handled = true;
+            rules.edit(|b| match shortcut {
+                Some(shortcut) => {
                     b.shortcut(shortcut, &mut self.clipboard);
-                }),
-                None => {
-                    let mut handled = false;
-                    rules.edit(|b| handled = b.key(key, ctrl, false));
-                    // Only a key with text types: a `None` text is a
-                    // backspace to `world_options_text`, which is the
-                    // control socket's `\b`, not a key's.
-                    if !handled
-                        && types_text
-                        && let Some(text) = event.text.as_deref()
-                    {
-                        self.world_options_text(Some(text));
-                    }
                 }
-            }
-            return;
+                None => handled = b.key(key, ctrl, false),
+            });
+            return handled;
         }
         if o.view == View::LockQuestion {
             match key {
@@ -1418,15 +1410,17 @@ impl Game<'_> {
                     let yes = o.popup_focus == Some(0);
                     let mut o = self.world_options.take().unwrap();
                     if yes {
-                        return self.apply_and_close_world_options(o);
+                        self.apply_and_close_world_options(o);
+                        return true;
                     } else {
                         o.view = View::Options;
                         self.world_options = Some(o);
                     }
+                    return true;
                 }
                 _ => {}
             }
-            return;
+            return false;
         }
         if o.view == View::Restrictions {
             let r = Restrictions::new(&self.gui.atlas.font, chat_vis, (w, h));
@@ -1467,13 +1461,14 @@ impl Game<'_> {
                         self.open_options_at(false, sunrise_client::options_ui::Page::Chat);
                         self.options_to_world_options = true;
                     }
+                    return true;
                 }
                 _ => {}
             }
-            return;
+            return false;
         }
         if o.view != View::Options {
-            return;
+            return false;
         }
         if o.port.focused {
             if key == winit::keyboard::KeyCode::Tab {
@@ -1483,21 +1478,13 @@ impl Game<'_> {
                 } else {
                     o.focused_button = Some(Button::CommandAccess);
                 }
-                return;
+                return false;
             }
             if let Some(shortcut) = shortcut {
                 o.port.shortcut(shortcut, &mut self.clipboard);
-                return;
+                return true;
             }
-            // Only a key with text types (a `None` is a backspace to
-            // `world_options_text`, the control socket's `\b`).
-            if !o.port.key(key, ctrl, false)
-                && types_text
-                && let Some(text) = event.text.as_deref()
-            {
-                self.world_options_text(Some(text));
-            }
-            return;
+            return o.port.key(key, ctrl, false);
         }
         let visible = o.visible_buttons(w);
         let footer = WorldOptions::footer(w, h);
@@ -1508,7 +1495,7 @@ impl Game<'_> {
             .chain(footer.iter().filter(|b| o.active(b.0)).map(|b| b.0))
             .collect();
         if active_buttons.is_empty() {
-            return;
+            return false;
         }
         match key {
             winit::keyboard::KeyCode::Tab => {
@@ -1519,12 +1506,12 @@ impl Game<'_> {
                             if !reverse && cur == Button::Lan {
                                 o.port.focused = true;
                                 o.focused_button = None;
-                                return;
+                                return false;
                             }
                             if reverse && cur == Button::CommandAccess {
                                 o.port.focused = true;
                                 o.focused_button = None;
-                                return;
+                                return false;
                             }
                         }
                         if let Some(pos) = active_buttons.iter().position(|&b| b == cur) {
@@ -1639,18 +1626,23 @@ impl Game<'_> {
                         Button::Cancel => {
                             self.world_options = Some(o);
                             self.close_world_options();
-                            return;
+                            return true;
                         }
                         Button::Apply if o.locked != o.initial.locked => {
                             o.view = View::LockQuestion
                         }
-                        Button::Apply => return self.apply_and_close_world_options(o),
+                        Button::Apply => {
+                            self.apply_and_close_world_options(o);
+                            return true;
+                        }
                     }
                     self.world_options = Some(o);
+                    return true;
                 }
             }
             _ => {}
         }
+        false
     }
     /// Whether a World Options text box has focus (the port or a game rule box).
     pub(super) fn world_options_typing(&self) -> bool {

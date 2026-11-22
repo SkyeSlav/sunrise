@@ -3137,14 +3137,96 @@ impl OptionsUi {
         right: bool,
     ) -> (Vec<Event>, bool) {
         self.capture_video_atlas(s);
-        let (events, handled) =
-            self.click_unrevised(s, atlas, x, y, size, framebuffer, drag, right);
+        if drag {
+            let (handled, events) = self.drag(s, atlas, (x, y), size, framebuffer, right);
+            return (events, handled);
+        }
+        let (events, handled) = self.click_unrevised(s, atlas, x, y, size, framebuffer, right);
         // A click that changed nothing the layout reads (an empty spot, a
         // focus move) keeps the built layout.
         if !events.is_empty() {
             self.relayout();
         }
         (events, handled)
+    }
+    /// A held pointer moved. The boolean is the receiving child's response,
+    /// independent of whether it emitted an option event.
+    pub fn drag(
+        &mut self,
+        s: &mut Settings,
+        atlas: &HudAtlas,
+        (x, y): (f32, f32),
+        size: (f32, f32),
+        framebuffer: [i32; 2],
+        right: bool,
+    ) -> (bool, Vec<Event>) {
+        self.capture_video_atlas(s);
+        if self.resource_error.is_some() {
+            return (false, Vec::new());
+        }
+        match self.page() {
+            Page::Studio | Page::ControllerRadialName => return (false, Vec::new()),
+            _ => {}
+        }
+        if self.page() == Page::HdrCalibration
+            && let Some(calibration) = &mut self.calibration
+        {
+            let handled = !right
+                && calibration.click(&atlas.font, (x, y), size, true)
+                    != crate::hdr_calibration::Outcome::Nothing;
+            return (handled, Vec::new());
+        }
+        self.framebuffer = framebuffer;
+        if self.shell().is_some() {
+            self.shell_framebuffers();
+            if let Some(shell) = self.shell_mut() {
+                let (handled, outputs) = shell.drag(s, (x, y), size);
+                let events = self.shell_events(s, outputs);
+                if !events.is_empty() {
+                    self.relayout();
+                }
+                return (handled, events);
+            }
+        }
+        match self.page() {
+            Page::Mods => return (self.mods_page(s, size).drag(f64::from(y)), Vec::new()),
+            Page::Packs => return (self.packs(atlas, size).drag(f64::from(y)), Vec::new()),
+            _ => {}
+        }
+        let layout = self.built_layout(s, size.0, size.1);
+        let (widgets, top, bottom, content) = layout.parts();
+        self.size = size;
+        let mut events = Vec::new();
+        if let Some(previous_y) = self.scrollbar_drag_y {
+            if let Some((_, thumb)) = ui::scrollbar_thumb(top, bottom, content, self.scroll) {
+                let max = content - (bottom - top);
+                self.scroll = if y < top {
+                    0.0
+                } else if y > bottom {
+                    max
+                } else {
+                    self.scroll + (y - previous_y) * max / (bottom - top - thumb)
+                };
+                self.clamp_scroll(top, bottom, content);
+                self.scrollbar_drag_y = Some(y);
+                return (true, events);
+            } else {
+                self.scrollbar_drag_y = None;
+            }
+            return (false, events);
+        }
+        if let Some(opt) = self.dragging
+            && let Some(wd) = widgets
+                .iter()
+                .find(|wd| matches!(&wd.kind, WKind::Slider { opt: o, .. } if *o == opt))
+        {
+            let v = ui::slider_value(wd.x, wd.w, x);
+            self.slider_value = Some((opt, v as f32, Instant::now()));
+            drag_slider(opt, s, v, &mut events);
+            self.relayout();
+            return (true, events);
+        }
+        (false, events)
     }
     /// `click` without the layout revision: the events it answered with say
     /// whether the layout's inputs moved.
@@ -3156,21 +3238,17 @@ impl OptionsUi {
         y: f32,
         size: (f32, f32),
         framebuffer: [i32; 2],
-        drag: bool,
         right: bool,
     ) -> (Vec<Event>, bool) {
         if self.resource_error.is_some() {
-            if !drag
-                && !right
-                && ui::hovered((x, y), size.0 / 2.0 - 100.0, size.1 - 28.0, 200.0, 20.0)
-            {
+            if !right && ui::hovered((x, y), size.0 / 2.0 - 100.0, size.1 - 28.0, 200.0, 20.0) {
                 self.resource_error = None;
                 return (vec![Event::ButtonClick], true);
             }
             return (Vec::new(), false);
         }
         if self.page() == Page::Studio {
-            if right || drag {
+            if right {
                 return (Vec::new(), false);
             }
             use crate::studio_ui::StudioAction;
@@ -3196,22 +3274,22 @@ impl OptionsUi {
             if right {
                 return (Vec::new(), false);
             }
-            let outcome = c.click(&atlas.font, (x, y), size, drag);
+            let outcome = c.click(&atlas.font, (x, y), size, false);
             return (
                 self.calibration_outcome(s, outcome),
                 outcome != crate::hdr_calibration::Outcome::Nothing,
             );
         }
         if self.page() == Page::ControllerRadialName {
-            return self.click_radial_name(s, atlas, (x, y), size, drag || right);
+            return self.click_radial_name(s, atlas, (x, y), size, right);
         }
         if self.shell().is_some() {
             // Waiting on a controller button: a click cancels the wait.
-            if !drag && self.selected_pad_action.take().is_some() {
+            if self.selected_pad_action.take().is_some() {
                 return (Vec::new(), true);
             }
             // Waiting on a key: a mouse button binds, as on Key Binds.
-            if self.selected_key.is_some() && !drag {
+            if self.selected_key.is_some() {
                 let button = if right {
                     winit::event::MouseButton::Right
                 } else {
@@ -3223,16 +3301,12 @@ impl OptionsUi {
             self.framebuffer = framebuffer;
             self.shell_framebuffers();
             let (outputs, handled) = self.shell_mut().map_or((Vec::new(), false), |shell| {
-                shell.click_with_outcome(s, (x, y), size, drag, right, shift)
+                shell.click_with_outcome(s, (x, y), size, false, right, shift)
             });
             return (self.shell_events(s, outputs), handled);
         }
         if self.page() == Page::Mods {
             let mut events = Vec::new();
-            if drag {
-                self.mods_page(s, size).drag(y as f64);
-                return (events, false);
-            }
             if right {
                 return (events, false);
             }
@@ -3262,10 +3336,6 @@ impl OptionsUi {
         }
         if self.page() == Page::Packs {
             let mut events = Vec::new();
-            if drag {
-                self.packs(atlas, size).drag(y as f64);
-                return (events, false);
-            }
             if right {
                 return (events, false);
             }
@@ -3299,12 +3369,10 @@ impl OptionsUi {
         self.size = size;
         self.framebuffer = framebuffer;
         let mut events = Vec::new();
-        if !drag
-            && matches!(
-                self.page(),
-                Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser
-            )
-        {
+        if matches!(
+            self.page(),
+            Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser
+        ) {
             let search = &mut self.settings_search;
             search.focused = ui::hovered((x, y), search.x, search.y, search.width, search.height);
             if search.focused {
@@ -3317,7 +3385,7 @@ impl OptionsUi {
                 return (events, true);
             }
         }
-        if !drag && self.page() == Page::Language {
+        if self.page() == Page::Language {
             let search = &mut self.language_search;
             search.focused = ui::hovered((x, y), search.x, search.y, search.width, search.height);
             if search.focused {
@@ -3328,35 +3396,6 @@ impl OptionsUi {
                 self.scroll = 0.0;
                 return (events, true);
             }
-        }
-        if drag {
-            if let Some(previous_y) = self.scrollbar_drag_y {
-                if let Some((_, thumb)) = ui::scrollbar_thumb(top, bottom, content, self.scroll) {
-                    let max = content - (bottom - top);
-                    self.scroll = if y < top {
-                        0.0
-                    } else if y > bottom {
-                        max
-                    } else {
-                        self.scroll + (y - previous_y) * max / (bottom - top - thumb)
-                    };
-                    self.clamp_scroll(top, bottom, content);
-                    self.scrollbar_drag_y = Some(y);
-                } else {
-                    self.scrollbar_drag_y = None;
-                }
-                return (events, false);
-            }
-            if let Some(opt) = self.dragging
-                && let Some(wd) = widgets
-                    .iter()
-                    .find(|wd| matches!(&wd.kind, WKind::Slider { opt: o, .. } if *o == opt))
-            {
-                let v = ui::slider_value(wd.x, wd.w, x);
-                self.slider_value = Some((opt, v as f32, Instant::now()));
-                drag_slider(opt, s, v, &mut events);
-            }
-            return (events, false);
         }
         // Key Binds: a mouse button pressed while waiting binds it.
         if self.selected_key.is_some() {
@@ -3634,12 +3673,24 @@ impl OptionsUi {
         framebuffer: [i32; 2],
         amount: f32,
     ) -> Vec<Event> {
+        self.wheel_input(s, size, cursor, framebuffer, amount).1
+    }
+
+    /// Whether the hovered child consumed the wheel, independently of settings events.
+    pub fn wheel_input(
+        &mut self,
+        s: &mut Settings,
+        size: (f32, f32),
+        cursor: (f32, f32),
+        framebuffer: [i32; 2],
+        amount: f32,
+    ) -> (bool, Vec<Event>) {
         self.capture_video_atlas(s);
-        let events = self.wheel_unrevised(s, size, cursor, framebuffer, amount);
+        let (handled, events) = self.wheel_unrevised(s, size, cursor, framebuffer, amount);
         if !events.is_empty() {
             self.relayout();
         }
-        events
+        (handled, events)
     }
     /// `wheel` without the layout revision: a scroll bumps it in `scroll`, and
     /// the events of a setting's step say whether its label moved.
@@ -3650,27 +3701,37 @@ impl OptionsUi {
         cursor: (f32, f32),
         framebuffer: [i32; 2],
         amount: f32,
-    ) -> Vec<Event> {
+    ) -> (bool, Vec<Event>) {
         self.size = size;
         self.framebuffer = framebuffer;
         if self.resource_error.is_some() {
-            return Vec::new();
+            return (false, Vec::new());
         }
         self.shell_framebuffers();
         if let Some(shell) = self.shell_mut() {
-            let outputs = shell.wheel(s, size, cursor, amount);
-            return self.shell_events(s, outputs);
+            let (handled, outputs) = shell.wheel(s, size, cursor, amount);
+            return (handled, self.shell_events(s, outputs));
         }
         if self.page() == Page::Studio {
             self.studio.wheel(amount);
-            return Vec::new();
+            return (true, Vec::new());
         }
         let plain = self.resource_error.is_none()
             && !(self.pack_screen.is_some() && self.stack.last() == Some(&Page::Packs))
             && self.stack.last() != Some(&Page::Mods);
         if !plain {
-            self.scroll_at(s, size, cursor, amount);
-            return Vec::new();
+            let handled = match self.page() {
+                Page::Packs => self
+                    .pack_screen
+                    .as_mut()
+                    .is_some_and(|p| p.scroll(cursor.0.into(), cursor.1.into(), amount.into())),
+                Page::Mods => self
+                    .mods_screen
+                    .as_mut()
+                    .is_some_and(|p| p.scroll(cursor.0.into(), cursor.1.into(), amount.into())),
+                _ => false,
+            };
+            return (handled, Vec::new());
         }
         let extra = s.extras.wheel_cycles_settings;
         // The extra: a keyboard-focused slider or cycle button intercepts the
@@ -3688,13 +3749,13 @@ impl OptionsUi {
                         .iter()
                         .find(|wd| matches!(&wd.kind, WKind::Slider { opt: o, .. } if *o == opt))
                         .map_or(150.0, |wd| wd.w);
-                    return self.step_slider_option(s, opt, amount > 0.0, width);
+                    return (true, self.step_slider_option(s, opt, amount > 0.0, width));
                 }
                 Some(FocusId::Cycle(opt)) => {
                     let opt = *opt;
                     let mut events = vec![Event::ButtonClick];
                     events.extend(self.cycle_option(s, opt, amount > 0.0, framebuffer));
-                    return events;
+                    return (true, events);
                 }
                 _ => {}
             }
@@ -3725,17 +3786,21 @@ impl OptionsUi {
         });
         match hovered {
             Some(HoveredControl::Cycle(opt)) if amount != 0.0 => {
-                self.cycle_option(s, opt, amount > 0.0, framebuffer)
+                (true, self.cycle_option(s, opt, amount > 0.0, framebuffer))
             }
             Some(HoveredControl::Extra(item)) if amount != 0.0 => {
                 item.cycle(&mut s.extras, amount > 0.0);
-                vec![Event::Changed]
+                (true, vec![Event::Changed])
             }
-            Some(_) => Vec::new(),
-            None => {
-                self.scroll_at(s, size, cursor, amount);
-                Vec::new()
+            Some(_) => (false, Vec::new()),
+            None if cursor.1 >= top
+                && cursor.1 < bottom
+                && widgets.iter().any(|widget| widget.list) =>
+            {
+                self.scroll(s, size, amount);
+                (true, Vec::new())
             }
+            None => (false, Vec::new()),
         }
     }
     /// The mouse wheel at the cursor.
@@ -3759,7 +3824,7 @@ impl OptionsUi {
         }
         match &mut self.pack_screen {
             Some(p) if self.stack.last() == Some(&Page::Packs) => {
-                p.scroll(cursor.0 as f64, cursor.1 as f64, amount as f64)
+                p.scroll(cursor.0 as f64, cursor.1 as f64, amount as f64);
             }
             _ => self.scroll(s, size, amount),
         }
@@ -4116,12 +4181,24 @@ impl OptionsUi {
         text: Option<&str>,
         shift: bool,
     ) -> Vec<Event> {
+        self.key_input(s, atlas, key, text, shift).1
+    }
+
+    /// A physical key's handled result, independent of settings events.
+    pub fn key_input(
+        &mut self,
+        s: &mut Settings,
+        atlas: &HudAtlas,
+        key: winit::keyboard::KeyCode,
+        text: Option<&str>,
+        shift: bool,
+    ) -> (bool, Vec<Event>) {
         self.capture_video_atlas(s);
-        let events = self.key_modifiers_unrevised(s, atlas, key, text, shift);
+        let (handled, events) = self.key_modifiers_unrevised(s, atlas, key, text, shift);
         if !events.is_empty() {
             self.relayout();
         }
-        events
+        (handled, events)
     }
     /// `key_modifiers` without the layout revision: search text and the keys
     /// that change a setting bump it themselves, and the events of the rest
@@ -4133,19 +4210,23 @@ impl OptionsUi {
         key: winit::keyboard::KeyCode,
         text: Option<&str>,
         shift: bool,
-    ) -> Vec<Event> {
+    ) -> (bool, Vec<Event>) {
         use winit::keyboard::KeyCode as K;
         if self.page() == Page::HdrCalibration
             && let Some(c) = &mut self.calibration
         {
             let outcome = c.key(key);
-            return self.calibration_outcome(s, outcome);
+            return (
+                !matches!(outcome, crate::hdr_calibration::Outcome::Nothing),
+                self.calibration_outcome(s, outcome),
+            );
         }
         if self.resource_error.is_some() {
-            if matches!(key, K::Escape | K::Enter | K::NumpadEnter) {
+            let handled = matches!(key, K::Escape | K::Enter | K::NumpadEnter);
+            if handled {
                 self.resource_error = None;
             }
-            return Vec::new();
+            return (handled, Vec::new());
         }
         if self.page() == Page::Packs
             && let Some(p) = &mut self.pack_screen
@@ -4155,11 +4236,11 @@ impl OptionsUi {
                 // ConfirmScreen.keyPressed: Escape answers no.
                 K::Escape if p.confirming() => {
                     p.cancel_confirm(&m);
-                    return Vec::new();
+                    return (true, Vec::new());
                 }
                 K::Backspace => {
                     p.erase(&m, 1);
-                    return Vec::new();
+                    return (true, Vec::new());
                 }
                 _ => {}
             }
@@ -4171,15 +4252,15 @@ impl OptionsUi {
             match key {
                 K::Backspace => {
                     p.erase(&m, 1);
-                    return Vec::new();
+                    return (true, Vec::new());
                 }
                 K::ArrowUp => {
                     p.step(-1);
-                    return Vec::new();
+                    return (true, Vec::new());
                 }
                 K::ArrowDown => {
                     p.step(1);
-                    return Vec::new();
+                    return (true, Vec::new());
                 }
                 _ => {}
             }
@@ -4189,7 +4270,7 @@ impl OptionsUi {
             if key == K::Escape {
                 s.controller.bind(action, None);
             }
-            return vec![Event::Changed];
+            return (true, vec![Event::Changed]);
         }
         if self.selected_key.is_some() {
             // KeyBindsScreen.keyPressed: Escape unbinds.
@@ -4205,7 +4286,7 @@ impl OptionsUi {
                 )
             {
                 self.pending_mod_key = Some(key);
-                return Vec::new();
+                return (true, Vec::new());
             }
             let value = if key == K::Escape {
                 "key.keyboard.unknown".to_owned()
@@ -4214,10 +4295,11 @@ impl OptionsUi {
                     .unwrap_or("key.keyboard.unknown")
                     .to_owned()
             };
-            return self.bind_key(s, value);
+            return (true, self.bind_key(s, value));
         }
         if self.page() == Page::ControllerRadialName {
-            return self.radial_name_key(s, key, text);
+            let events = self.radial_name_key(s, key, text);
+            return (!events.is_empty(), events);
         }
 
         // The size it was drawn at; before the first draw, one its keys can lay out at.
@@ -4229,11 +4311,12 @@ impl OptionsUi {
         self.shell_framebuffers();
         if let Some(shell) = self.shell_mut() {
             let outputs = shell.key(s, key, text, shift, gui);
-            return self.shell_events(s, outputs);
+            let events = self.shell_events(s, outputs);
+            return (key == K::Escape || !events.is_empty(), events);
         }
 
         if key == K::Escape {
-            return self.back(s);
+            return (true, self.back(s));
         }
 
         // Search field text entry when search box is focused
@@ -4244,9 +4327,8 @@ impl OptionsUi {
                 } else {
                     &mut self.settings_search
                 };
-                if !search.key(key, false, shift)
-                    && let Some(t) = text
-                {
+                let handled = search.key(key, false, shift);
+                if !handled && let Some(t) = text {
                     let typed: String = t.chars().filter(|c| !c.is_control()).collect();
                     if !typed.is_empty() {
                         search.insert_text(&typed);
@@ -4254,12 +4336,11 @@ impl OptionsUi {
                 }
                 self.scroll = 0.0;
                 self.relayout();
-                return Vec::new();
+                return (handled, Vec::new());
             }
         } else if self.page() == Page::Language && self.focus.is_none() {
-            if !self.language_search.key(key, false, shift)
-                && let Some(t) = text
-            {
+            let handled = self.language_search.key(key, false, shift);
+            if !handled && let Some(t) = text {
                 let typed: String = t.chars().filter(|c| !c.is_control()).collect();
                 if !typed.is_empty() {
                     self.language_search.insert_text(&typed);
@@ -4267,10 +4348,12 @@ impl OptionsUi {
             }
             self.scroll = 0.0;
             self.relayout();
+            if handled {
+                return (true, Vec::new());
+            }
         } else if self.settings_search_active() && self.focus.is_none() {
-            if !self.settings_search.key(key, false, shift)
-                && let Some(t) = text
-            {
+            let handled = self.settings_search.key(key, false, shift);
+            if !handled && let Some(t) = text {
                 let typed: String = t.chars().filter(|c| !c.is_control()).collect();
                 if !typed.is_empty() {
                     self.settings_search.insert_text(&typed);
@@ -4278,6 +4361,9 @@ impl OptionsUi {
             }
             self.scroll = 0.0;
             self.relayout();
+            if handled {
+                return (true, Vec::new());
+            }
         }
 
         // Gather focusables on the current page
@@ -4308,7 +4394,7 @@ impl OptionsUi {
             }
         }
         if focusables.is_empty() {
-            return Vec::new();
+            return (false, Vec::new());
         }
 
         // 1. Tab / Shift+Tab navigation
@@ -4345,7 +4431,7 @@ impl OptionsUi {
                 }
                 self.clamp_scroll(top, bottom, content);
             }
-            return Vec::new();
+            return (false, Vec::new());
         }
 
         // 2. Left / Right Arrow keys
@@ -4359,7 +4445,7 @@ impl OptionsUi {
                     .iter()
                     .find(|wd| matches!(wd.kind, WKind::Slider { opt: o, .. } if o == opt))
                     .map_or(150.0, |wd| wd.w);
-                return self.step_slider_option(s, opt, forward, width);
+                return (true, self.step_slider_option(s, opt, forward, width));
             }
             // Otherwise, navigate horizontally using 2D focus stepping
             if let Some(fid) = &self.focus {
@@ -4391,7 +4477,7 @@ impl OptionsUi {
                 self.focus_from_keyboard = true;
                 self.can_change_value = false;
             }
-            return Vec::new();
+            return (false, Vec::new());
         }
 
         // 3. Up / Down Arrow keys
@@ -4432,7 +4518,7 @@ impl OptionsUi {
                 self.focus_from_keyboard = true;
                 self.can_change_value = false;
             }
-            return Vec::new();
+            return (false, Vec::new());
         }
 
         // 4. Enter / Space selection keys
@@ -4440,12 +4526,12 @@ impl OptionsUi {
             match &self.focus {
                 Some(FocusId::Slider(_)) => {
                     self.can_change_value = !self.can_change_value;
-                    return Vec::new();
+                    return (true, Vec::new());
                 }
                 Some(FocusId::Cycle(opt)) => {
                     let mut events = vec![Event::ButtonClick];
                     events.extend(self.cycle_option(s, *opt, shift, self.framebuffer));
-                    return events;
+                    return (true, events);
                 }
                 Some(FocusId::Act(act)) => {
                     let mut events = vec![Event::ButtonClick];
@@ -4560,7 +4646,7 @@ impl OptionsUi {
                         Act::ExportRepro => events.push(Event::ExportRepro),
                         Act::None => {}
                     }
-                    return events;
+                    return (true, events);
                 }
                 Some(FocusId::Lang(code)) => {
                     // `LanguageSelectionList.Entry.keyPressed`: the selection
@@ -4570,12 +4656,12 @@ impl OptionsUi {
                     let mut events = vec![Event::ButtonClick];
                     self.language_choice = Some(code.clone());
                     events.extend(self.back(s));
-                    return events;
+                    return (true, events);
                 }
                 _ => {}
             }
         }
-        Vec::new()
+        (false, Vec::new())
     }
 }
 
@@ -6690,12 +6776,13 @@ mod tests {
         ui.show(Page::Extras);
         // Too short for the page.
         let short = (480.0, 180.0);
-        ui.wheel(&mut s, short, (0.0, 0.0), [960, 360], -1.0);
+        let inside = (240.0, 90.0);
+        ui.wheel(&mut s, short, inside, [960, 360], -1.0);
         let one = ui.extras.scroll_amount();
         assert!(one > 0.0);
-        ui.scroll_at(&s, short, (0.0, 0.0), -1.0);
+        ui.scroll_at(&s, short, inside, -1.0);
         assert_eq!(ui.extras.scroll_amount(), 2.0 * one);
-        ui.scroll_at(&s, short, (0.0, 0.0), 2.0);
+        ui.scroll_at(&s, short, inside, 2.0);
         assert_eq!(ui.extras.scroll_amount(), 0.0);
     }
 
@@ -7839,6 +7926,28 @@ mod tests {
         assert_eq!(ui.page(), Page::Main);
         assert_eq!(ui.focus, None);
         assert!(!ui.settings_search.focused);
+    }
+
+    #[test]
+    fn wheel_result_distinguishes_blank_background_from_a_control() {
+        let mut ui = OptionsUi::default();
+        let mut settings = Settings::default();
+        let gui = (480.0, 600.0);
+        assert!(
+            !ui.wheel_input(&mut settings, gui, (3.0, 3.0), [480, 600], 1.0)
+                .0
+        );
+        ui.show(Page::Extras);
+        settings.extras.wheel_cycles_settings = true;
+        let cursor = ui
+            .extras
+            .point_at(&settings, gui, ExtraRow::Item(crate::extras::Item::Sort));
+        assert!(!settings.extras.sort);
+        assert!(
+            ui.wheel_input(&mut settings, gui, cursor, [480, 600], 1.0)
+                .0
+        );
+        assert!(settings.extras.sort);
     }
 
     #[test]

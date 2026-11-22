@@ -233,11 +233,10 @@ mod tests {
             &self,
             _: &dyn mod_api::ClientHost,
             event: &mut ScreenCharTypedPostEvent<'_>,
-        ) -> mod_api::Flow {
+        ) {
             if event.screen.id == "world_preset_editor" {
                 self.char_post.lock().unwrap().push(event.c);
             }
-            mod_api::Flow::Continue
         }
         fn screen_key_pressed_post(
             &self,
@@ -592,6 +591,7 @@ mod tests {
                                 state: ElementState::Pressed,
                                 repeat: false,
                                 text: None,
+                                shortcut: None,
                             },
                             |_| false,
                         );
@@ -640,8 +640,15 @@ mod tests {
                             "minecraft:the_nether".into()
                         ))
                     );
-                    game.preset_editor_key_pressed(&NoopLoop, KeyCode::Space, false)
-                        .unwrap();
+                    game.dispatch_screen_key(
+                        &NoopLoop,
+                        KeyCode::Space,
+                        true,
+                        false,
+                        None,
+                        sunrise_client::held::Source::Keyboard,
+                    )
+                    .unwrap();
                     game.screen_chars_typed(Some("z"));
                     assert_eq!(typed.lock().unwrap().as_str(), "éΩz");
                     assert_eq!(*key_post.lock().unwrap(), ["key.keyboard.q"]);
@@ -789,7 +796,7 @@ mod tests {
                     assert_eq!(press(game, left, Some(2000)), [Pre(0, false)]);
                     assert_eq!(game.title.as_ref().unwrap().mode.id(), PRESET);
                     mouse.lock().unwrap().cancel_press = false;
-                    assert!(game.key_focus_key(&NoopLoop, KeyCode::Tab));
+                    assert_eq!(game.key_focus_key(&NoopLoop, KeyCode::Tab), Some(false));
                     assert_eq!(game.pad.menu.focus.map(|t| t.rect), Some(target.rect));
                     game.pad_clear_focus();
                     game.cursor = (20.0, 30.0);

@@ -803,13 +803,17 @@ impl Game<'_> {
         }
         handled
     }
-    pub(super) fn stats_scroll(&mut self, amount: f32) {
+    pub(super) fn stats_scroll(&mut self, amount: f32) -> bool {
         let (row_h, _) = self.stats_rows();
         let h = self.gui_size().1;
+        if !(TAB_H..h - FOOTER).contains(&self.cursor.1) {
+            return false;
+        }
         let content = self.stats_content();
         self.stats_ui
             .scroll
             .wheel(amount, row_h / 2.0, TAB_H, h - FOOTER, content);
+        true
     }
     /// A press on the statistics list's scrollbar holds it
     /// (`AbstractSelectionList.updateScrolling`).
@@ -822,15 +826,16 @@ impl Game<'_> {
             .press(self.cursor, Self::stats_bar(w), TAB_H, h - FOOTER, content)
     }
     /// The pointer moved while the scrollbar is held.
-    pub(super) fn stats_drag(&mut self) {
+    pub(super) fn stats_drag(&mut self) -> bool {
         if !self.stats_ui.scroll.held() {
-            return;
+            return false;
         }
         let h = self.gui_size().1;
         let content = self.stats_content();
         self.stats_ui
             .scroll
             .drag(self.cursor.1, TAB_H, h - FOOTER, content);
+        true
     }
     /// The button came up: the scrollbar lets go.
     pub(super) fn stats_release(&mut self) -> bool {

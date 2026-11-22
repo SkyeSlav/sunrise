@@ -36,6 +36,19 @@ pub fn changed_attributes(
         .collect()
 }
 
+/// `Avatar.defineSynchedData`: pair with only a non-default main arm,
+/// and send the default again when the arm changes back to right.
+pub fn avatar_main_arm_meta(
+    main_hand_left: bool,
+    meta: &mut Vec<(u8, i32, Value)>,
+    defaults: &mut Vec<(u8, i32, Value)>,
+) {
+    if main_hand_left {
+        meta.push((15, serializer::HUMANOID_ARM, Value::Id(0)));
+    }
+    defaults.push((15, serializer::HUMANOID_ARM, Value::Id(1)));
+}
+
 /// What the game says about one entity this tick.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EntityState {

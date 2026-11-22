@@ -1985,35 +1985,44 @@ impl ChatScreen {
         shift: bool,
         ctrl: bool,
     ) -> ChatAction {
+        self.key_input(m, c, history, key, shift, ctrl).1
+    }
+    /// The screen's key result, separate from actions the game must apply.
+    pub fn key_input(
+        &mut self,
+        m: &Measure,
+        c: &Commands,
+        history: &[String],
+        key: winit::keyboard::KeyCode,
+        shift: bool,
+        ctrl: bool,
+    ) -> (bool, ChatAction) {
         use winit::keyboard::KeyCode as K;
         if self.suggestions_key(m, c, key, shift) {
-            return ChatAction::None;
+            return (true, ChatAction::None);
         }
-        // ChatScreen.keyPressed: while the box holds an unedited draft, the
-        // first Backspace clears all of it rather than one character.
+        // An unedited draft is cleared all at once.
         if self.is_draft && key == K::Backspace {
             self.input.set_value(m, "");
             self.is_draft = false;
             self.edited(m, c);
-            return ChatAction::None;
+            return (true, ChatAction::None);
         }
         match key {
-            K::Escape => return ChatAction::Close,
+            K::Escape => return (true, ChatAction::Close),
             K::Enter | K::NumpadEnter => {
-                // ChatScreen.keyPressed: without `hasAllowedInput` the input
-                // stays, unsent, and the screen stays open.
-                if !self.abilities.allows(&self.input.value) {
-                    return ChatAction::None;
-                }
-                return ChatAction::Submit(self.normalized());
+                let action = if self.abilities.allows(&self.input.value) {
+                    ChatAction::Submit(self.normalized())
+                } else {
+                    ChatAction::None
+                };
+                return (true, action);
             }
             K::ArrowUp => self.move_in_history(m, c, history, -1),
             K::ArrowDown => self.move_in_history(m, c, history, 1),
-            _ => {
-                self.field_key(m, c, key, shift, ctrl);
-            }
+            _ => return (self.field_key(m, c, key, shift, ctrl), ChatAction::None),
         }
-        ChatAction::None
+        (true, ChatAction::None)
     }
     /// The input box's own keys (`EditBox.keyPressed`), the suggestions
     /// following an edit: whether the box took the key.

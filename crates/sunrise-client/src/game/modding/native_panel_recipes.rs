@@ -647,15 +647,9 @@ impl Game<'_> {
                 sunrise_client::text::Text::literal(warning.clone()).resolve_legacy(),
                 rgba(255, 100, 100, 255),
             )];
-            let (x, y, w, h) = Self::tooltip_geometry(
-                &self.gui.atlas,
-                &lines,
-                cursor,
-                (batch.width, batch.height),
-                [0.0; 2],
-            );
-            sunrise_client::widgets::record(&warning, [x, y, w, h], false);
-            self.draw_tooltip_lines(batch, &lines, cursor.0, cursor.1);
+            if let Some(rect) = self.draw_tooltip_lines(batch, &lines, cursor.0, cursor.1) {
+                sunrise_client::widgets::record(&warning, rect, false);
+            }
         }
     }
 

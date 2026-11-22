@@ -2147,59 +2147,61 @@ mod tests {
                 (rng.next_gaussian().to_bits(), rng.next_long())
             };
 
-            let outer = game.transaction_open();
-            game.add_objective(
-                "outer_discarded",
-                "dummy",
-                Text::literal("Outer"),
-                ObjectiveRenderType::Integer,
-            )
-            .unwrap();
-            {
-                let mut writer = JournalLevelWrite::new(game, active).unwrap();
-                let host: &mut dyn mod_api::LevelWriteHost = &mut writer;
+            let advanced = game.storage_scope(|game, _| {
+                game.add_objective(
+                    "outer_discarded",
+                    "dummy",
+                    Text::literal("Outer"),
+                    ObjectiveRenderType::Integer,
+                )
+                .unwrap();
+                {
+                    let mut writer = JournalLevelWrite::new(game, active).unwrap();
+                    let host: &mut dyn mod_api::LevelWriteHost = &mut writer;
+                    assert_eq!(
+                        host.with_random(draw),
+                        Some((
+                            expected_active.next_gaussian().to_bits(),
+                            expected_active.next_long()
+                        )),
+                    );
+                }
+
+                let advanced = game.storage_scope(|game, _| {
+                    game.add_objective(
+                        "child_discarded",
+                        "dummy",
+                        Text::literal("Child"),
+                        ObjectiveRenderType::Integer,
+                    )
+                    .unwrap();
+                    for (level, expected) in [
+                        (active, &mut expected_active),
+                        (parked, &mut expected_parked),
+                    ] {
+                        assert_eq!(
+                            level.with_random(game, draw),
+                            Some((expected.next_gaussian().to_bits(), expected.next_long()))
+                        );
+                    }
+                    let advanced = [
+                        level_random_state(&expected_active),
+                        level_random_state(&expected_parked),
+                    ];
+                    assert_eq!(states(game), advanced);
+
+                    (advanced, false)
+                });
+                assert!(game.objective("child_discarded").is_none());
+                assert!(game.objective("outer_discarded").is_some());
                 assert_eq!(
-                    host.with_random(draw),
-                    Some((
-                        expected_active.next_gaussian().to_bits(),
-                        expected_active.next_long()
-                    )),
+                    states(game),
+                    advanced,
+                    "child abort rolls back journaled state without rewinding active or parked RNG"
                 );
-            }
 
-            let child = game.transaction_open();
-            game.add_objective(
-                "child_discarded",
-                "dummy",
-                Text::literal("Child"),
-                ObjectiveRenderType::Integer,
-            )
-            .unwrap();
-            for (level, expected) in [
-                (active, &mut expected_active),
-                (parked, &mut expected_parked),
-            ] {
-                assert_eq!(
-                    level.with_random(game, draw),
-                    Some((expected.next_gaussian().to_bits(), expected.next_long())),
-                );
-            }
-            let advanced = [
-                level_random_state(&expected_active),
-                level_random_state(&expected_parked),
-            ];
-            assert_eq!(states(game), advanced);
-
-            game.transaction_close(&child, false);
-            assert!(game.objective("child_discarded").is_none());
-            assert!(game.objective("outer_discarded").is_some());
-            assert_eq!(
-                states(game),
-                advanced,
-                "child abort rolls back journaled state without rewinding active or parked RNG"
-            );
-
-            game.transaction_close(&outer, false);
+                (advanced, false)
+            });
             assert!(game.objective("outer_discarded").is_none());
             assert_eq!(
                 states(game),

@@ -49,18 +49,21 @@ impl mod_api::Interaction for Syrup {
                     BlockUpdateFlags::NEIGHBORS | BlockUpdateFlags::CLIENTS,
                 )
                 .map_err(|_| ())?;
-            if hand.exchange(host, tx, &resource, 1) != 1 {
+            if hand.exchange(host, tx, &resource, 1) != Ok(1) {
                 return Err(());
             }
             let fluid = mod_api::__private::fluid_key("minecraft:water").unwrap();
-            assert!(input.level.play_fluid_effects(
-                host,
-                input.pos,
-                fluid,
-                false,
-                Some(input.player),
-                tx,
-            ));
+            assert_eq!(
+                input.level.play_fluid_effects(
+                    host,
+                    input.pos,
+                    fluid,
+                    false,
+                    Some(input.player),
+                    tx,
+                ),
+                Ok(true)
+            );
             Ok(())
         })
         .unwrap();
@@ -439,12 +442,13 @@ fn cauldron_outer_abort_discards_effects_and_drops() {
         for slot in game.inventory.iter_mut().skip(1) {
             *slot = Some(ItemStack::new("minecraft:stone", 64));
         }
-        let seal = game.transaction_open();
-        assert_eq!(game.use_on_cauldron(POS).unwrap(), Outcome::Success);
-        assert_eq!(events(), 0);
-        assert!(game.creatures.lan_sounds.is_empty());
-        assert!(game.audio.capture.as_ref().unwrap().is_empty());
-        game.transaction_close(&seal, false);
+        game.storage_scope(|game, _| {
+            assert_eq!(game.use_on_cauldron(POS).unwrap(), Outcome::Success);
+            assert_eq!(events(), 0);
+            assert!(game.creatures.lan_sounds.is_empty());
+            assert!(game.audio.capture.as_ref().unwrap().is_empty());
+            ((), false)
+        });
         unchanged(game, seen);
         assert_eq!(events(), 0);
         assert!(game.creatures.lan_sounds.is_empty());

@@ -1144,6 +1144,19 @@ impl ItemStack {
         }
         info.is_some_and(|info| info.components.iter().any(|c| c == id))
     }
+    /// `ItemInstance.getMaxStackSize`: an override, the prototype component, or 1 if absent.
+    /// Returns the raw value for range validation, or `None` for a malformed legacy patch.
+    pub fn effective_max_stack_size(&self, info: Option<&ItemInfo>) -> Option<i64> {
+        const MAX_STACK_SIZE: &str = "minecraft:max_stack_size";
+        match self.data().and_then(|data| data.other(MAX_STACK_SIZE)) {
+            Some(Tag::Int(size)) => Some(i64::from(*size)),
+            Some(_) => None,
+            None if self.carries_component(info, MAX_STACK_SIZE) => {
+                info.map(|info| i64::from(info.max_stack))
+            }
+            None => Some(1),
+        }
+    }
     /// Effective villager food nutrition, including a stack's override or removal.
     pub fn villager_food(&self, info: Option<&ItemInfo>) -> Option<i32> {
         if let Some(data) = self.data() {

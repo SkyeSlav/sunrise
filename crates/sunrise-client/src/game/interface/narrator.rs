@@ -262,6 +262,9 @@ impl Game<'_> {
     /// the creative search (focused as a widget, not as the screen's focus)
     /// do not.
     pub(super) fn edit_box_focused(&mut self) -> bool {
+        if self.mounted_widget_captures_input() {
+            return true;
+        }
         if self.dialog_open() {
             return self.dialog_typing();
         }

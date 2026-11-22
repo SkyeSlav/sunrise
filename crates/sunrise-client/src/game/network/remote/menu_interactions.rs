@@ -187,156 +187,143 @@ impl Game<'_> {
             }
         }
 
-        let seal = self.transaction_open();
         let saved_craft_grid = self.craft_grid.clone();
         let saved_craft_result = self.remote.as_ref().and_then(|r| r.craft_result.clone());
         let tracks_craft_result = matches!(
             self.remote_menu().1.as_str(),
             "inventory" | "minecraft:crafting"
         );
-        let mut all_predicted: Vec<Predicted> = Vec::with_capacity(clicks.len());
-        let mut threw = false;
+        let outcome = self.storage_scope(|game, _| {
+            let mut all_predicted: Vec<Predicted> = Vec::with_capacity(clicks.len());
+            let mut threw = false;
 
-        for gesture in gestures {
-            let mut found = None;
-            let mut engine_threw = false;
-            let modeled = self.menu_session(|menu, env, _| {
-                let (last, prefix) = gesture.split_last()?;
-                for &(slot, button, input) in prefix {
-                    if menu.click(env, i32::from(slot), button, input).is_err() {
-                        engine_threw = true;
-                        return Some(false);
+            for gesture in gestures {
+                let mut found = None;
+                let mut engine_threw = false;
+                let modeled = game.menu_session(|menu, env, _| {
+                    let (last, prefix) = gesture.split_last()?;
+                    for &(slot, button, input) in prefix {
+                        if menu.click(env, i32::from(slot), button, input).is_err() {
+                            engine_threw = true;
+                            return Some(false);
+                        }
                     }
+                    found = menu.stacked_click(env, i32::from(last.0), last.1, last.2);
+                    Some(false)
+                });
+                if !modeled || engine_threw {
+                    return (Err(None), false);
                 }
-                found = menu.stacked_click(env, i32::from(last.0), last.1, last.2);
-                Some(false)
-            });
-            if !modeled || engine_threw {
-                self.transaction_close(&seal, false);
-                self.craft_grid = saved_craft_grid;
-                if let Some(r) = self.remote.as_mut() {
-                    r.craft_result = saved_craft_result;
-                }
-                return None;
-            }
 
-            if let Some(frozen) = found.filter(|f| Self::stacked_listens_for_side(false, f)) {
-                let (carried, resolved_slot, primary) =
-                    (frozen.carried.clone(), frozen.slot, frozen.primary);
-                let mut step_result: Option<(Vec<Predicted>, bool)> = None;
-                let pickup = self.stacked_pickup(
-                    local_pickup_id(),
-                    frozen.clone(),
-                    move |game| (game.carried == carried).then(|| frozen.clone()),
-                    |game, carried, clicked| {
-                        let mut took = false;
-                        let _ = game.menu_session(|menu, env, _| {
-                            if let Some((_, prefix)) = gesture.split_last() {
-                                for &(slot, button, input) in prefix {
-                                    if menu.click(env, i32::from(slot), button, input).is_err() {
-                                        return Some(false);
+                if let Some(frozen) = found.filter(|f| Self::stacked_listens_for_side(false, f)) {
+                    let (carried, resolved_slot, primary) =
+                        (frozen.carried.clone(), frozen.slot, frozen.primary);
+                    let mut step_result: Option<(Vec<Predicted>, bool)> = None;
+                    let pickup = game.stacked_pickup(
+                        local_pickup_id(),
+                        frozen.clone(),
+                        move |game| (game.carried == carried).then(|| frozen.clone()),
+                        |game, carried, clicked| {
+                            let mut took = false;
+                            let _ = game.menu_session(|menu, env, _| {
+                                if let Some((_, prefix)) = gesture.split_last() {
+                                    for &(slot, button, input) in prefix {
+                                        if menu.click(env, i32::from(slot), button, input).is_err()
+                                        {
+                                            return Some(false);
+                                        }
                                     }
                                 }
+                                took = menu.probe_carried_vanilla_override(
+                                    env,
+                                    resolved_slot,
+                                    primary,
+                                    carried,
+                                    clicked,
+                                );
+                                Some(false)
+                            });
+                            took
+                        },
+                        |game, answer| {
+                            let player = game.native_acting_id();
+                            game.journal_player(player);
+                            if let Some(key) = game.container {
+                                game.journal_block_entity(key);
                             }
-                            took = menu.probe_carried_vanilla_override(
-                                env,
-                                resolved_slot,
-                                primary,
-                                carried,
-                                clicked,
-                            );
-                            Some(false)
-                        });
-                        took
-                    },
-                    |game, answer| {
-                        let player = game.native_acting_id();
-                        game.journal_player(player);
-                        if let Some(key) = game.container {
-                            game.journal_block_entity(key);
-                        }
-                        game.menu_session_with_game(|_, m, env, _| {
-                            let Some(predicted) = predict_clicks_with(m, env, gesture, answer)
-                            else {
-                                return Some(false);
-                            };
-                            step_result = Some(predicted);
-                            Some(true)
-                        });
-                    },
-                );
-                if pickup == Pickup::Refused {
-                    self.transaction_close(&seal, false);
-                    self.craft_grid = saved_craft_grid;
-                    if let Some(r) = self.remote.as_mut() {
-                        r.craft_result = saved_craft_result;
+                            game.menu_session_with_game(|_, m, env, _| {
+                                let Some(predicted) = predict_clicks_with(m, env, gesture, answer)
+                                else {
+                                    return Some(false);
+                                };
+                                step_result = Some(predicted);
+                                Some(true)
+                            });
+                        },
+                    );
+                    if pickup == Pickup::Refused {
+                        return (Err(Some(false)), false);
                     }
-                    return Some(false);
-                }
-                let Some((predicted, dropped)) = step_result else {
-                    self.transaction_close(&seal, false);
-                    self.craft_grid = saved_craft_grid;
-                    if let Some(r) = self.remote.as_mut() {
-                        r.craft_result = saved_craft_result;
-                    }
-                    return None;
-                };
-                if tracks_craft_result && let Some(r) = self.remote.as_mut() {
-                    for (.., changed, _) in &predicted {
-                        if let Some((_, result)) = changed.iter().find(|(slot, _)| *slot == 0) {
-                            r.craft_result = result.clone();
-                        }
-                    }
-                }
-                all_predicted.extend(predicted);
-                threw |= dropped;
-            } else {
-                let player = self.native_acting_id();
-                self.journal_player(player);
-                if let Some(key) = self.container {
-                    self.journal_block_entity(key);
-                }
-                let mut step_result: Option<(Vec<Predicted>, bool)> = None;
-                let modeled = self.menu_session_with_game(|_, m, env, _| {
-                    let Some(predicted) = predict_clicks(m, env, gesture) else {
-                        return Some(false);
+                    let Some((predicted, dropped)) = step_result else {
+                        return (Err(None), false);
                     };
-                    step_result = Some(predicted);
-                    Some(true)
-                });
-                let Some((predicted, dropped)) = step_result.filter(|_| modeled) else {
-                    self.transaction_close(&seal, false);
-                    self.craft_grid = saved_craft_grid;
-                    if let Some(r) = self.remote.as_mut() {
-                        r.craft_result = saved_craft_result;
-                    }
-                    return None;
-                };
-                if tracks_craft_result && let Some(r) = self.remote.as_mut() {
-                    for (.., changed, _) in &predicted {
-                        if let Some((_, result)) = changed.iter().find(|(slot, _)| *slot == 0) {
-                            r.craft_result = result.clone();
+                    if tracks_craft_result && let Some(r) = game.remote.as_mut() {
+                        for (.., changed, _) in &predicted {
+                            if let Some((_, result)) = changed.iter().find(|(slot, _)| *slot == 0) {
+                                r.craft_result = result.clone();
+                            }
                         }
                     }
+                    all_predicted.extend(predicted);
+                    threw |= dropped;
+                } else {
+                    let player = game.native_acting_id();
+                    game.journal_player(player);
+                    if let Some(key) = game.container {
+                        game.journal_block_entity(key);
+                    }
+                    let mut step_result: Option<(Vec<Predicted>, bool)> = None;
+                    let modeled = game.menu_session_with_game(|_, m, env, _| {
+                        let Some(predicted) = predict_clicks(m, env, gesture) else {
+                            return Some(false);
+                        };
+                        step_result = Some(predicted);
+                        Some(true)
+                    });
+                    let Some((predicted, dropped)) = step_result.filter(|_| modeled) else {
+                        return (Err(None), false);
+                    };
+                    if tracks_craft_result && let Some(r) = game.remote.as_mut() {
+                        for (.., changed, _) in &predicted {
+                            if let Some((_, result)) = changed.iter().find(|(slot, _)| *slot == 0) {
+                                r.craft_result = result.clone();
+                            }
+                        }
+                    }
+                    all_predicted.extend(predicted);
+                    threw |= dropped;
                 }
-                all_predicted.extend(predicted);
-                threw |= dropped;
             }
-        }
 
-        let packets = match self.prepare_clicks(container, &all_predicted) {
-            Ok(packets) => packets,
-            Err(error) => {
-                log::warn!("Refused menu click: {error}");
-                self.transaction_close(&seal, false);
+            let packets = match game.prepare_clicks(container, &all_predicted) {
+                Ok(packets) => packets,
+                Err(error) => {
+                    log::warn!("Refused menu click: {error}");
+                    return (Err(Some(false)), false);
+                }
+            };
+            (Ok((all_predicted, packets, threw)), true)
+        });
+        let (all_predicted, packets, threw) = match outcome {
+            Ok(ready) => ready,
+            Err(early) => {
                 self.craft_grid = saved_craft_grid;
                 if let Some(r) = self.remote.as_mut() {
                     r.craft_result = saved_craft_result;
                 }
-                return Some(false);
+                return early;
             }
         };
-        self.transaction_close(&seal, true);
         self.send_clicks(&all_predicted, packets);
         if threw {
             self.swing_hand(Hand::Main, SwingAnimation::DEFAULT);

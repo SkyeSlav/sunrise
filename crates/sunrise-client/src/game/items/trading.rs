@@ -743,13 +743,13 @@ impl Game<'_> {
             .collect()
     }
     /// `MerchantScreen.mouseDragged`: the held scroller follows the cursor.
-    pub(super) fn merchant_drag(&mut self) {
+    pub(super) fn merchant_drag(&mut self) -> bool {
         let Some(size) = self
             .renderer
             .as_ref()
             .map(|r| [r.config.width, r.config.height])
         else {
-            return;
+            return false;
         };
         let (_, oy) = self.inventory_origin(&HudBatch::new(size, self.settings.gui_scale_inputs()));
         let y = self.cursor.1 - oy;
@@ -757,16 +757,20 @@ impl Game<'_> {
             && m.dragging
         {
             m.scroll = drag_scroll(y, m.session.offers.len());
+            return true;
         }
+        false
     }
-    pub(super) fn merchant_scroll(&mut self, d: f32) {
+    pub(super) fn merchant_scroll(&mut self, d: f32) -> bool {
         let Some(m) = self.station.as_mut().and_then(|s| s.merchant.as_mut()) else {
-            return;
+            return false;
         };
         if m.session.offers.len() > 7 {
             let max = m.session.offers.len() - 7;
             m.scroll = scrolled(m.scroll, max, d);
+            return true;
         }
+        false
     }
     /// `MerchantScreen` rendering.
     pub(super) fn draw_merchant(&mut self, batch: &mut HudBatch) -> bool {
@@ -890,7 +894,7 @@ impl Game<'_> {
             );
         }
         // Offer buttons.
-        let mut tooltip: Option<ItemStack> = None;
+        let mut offer_tooltip: Option<ItemStack> = None;
         for (row, (index, offer)) in offers.iter().enumerate().skip(scroll).take(7).enumerate() {
             let (bx, by) = (ox + SHIFT + 5.0, oy + 18.0 + 20.0 * row as f32);
             let hover = local.0 >= 5.0 + SHIFT
@@ -961,9 +965,9 @@ impl Game<'_> {
                 y + 3.0,
             );
             self.draw_item(batch, &offer.result, ox + SHIFT + 73.0, y);
-            if hover && self.carried.is_none() {
+            if hover {
                 let rel = local.0 - (5.0 + SHIFT);
-                tooltip = if rel < 20.0 {
+                offer_tooltip = if rel < 20.0 {
                     Some(cost_a)
                 } else if rel > 30.0 && rel < 50.0 {
                     offer.cost_b()
@@ -984,11 +988,6 @@ impl Game<'_> {
             self.draw_slot_item(batch, drag.as_ref(), i, &stack, ox + sx, oy + sy);
         }
         self.draw_hovered_slot_highlight(batch, true, ox, oy);
-        if let Some(slot) = self.slot_at(batch, self.cursor.0, self.cursor.1)
-            && tooltip.is_none()
-        {
-            tooltip = self.slot_mut(slot).clone();
-        }
         // An out-of-stock trade: "the villager needs to restock" over the
         // result (isHovering(186, 35, 22, 21), canRestock).
         let deprecated = progress
@@ -997,14 +996,20 @@ impl Game<'_> {
             && local.0 < 186.0 + SHIFT + 22.0 + 1.0
             && local.1 >= 35.0 - 1.0
             && local.1 < 35.0 + 21.0 + 1.0;
+        let slot_tooltip = if !deprecated && offer_tooltip.is_none() {
+            self.slot_at(batch, self.cursor.0, self.cursor.1)
+                .and_then(|slot| self.slot_mut(slot).clone())
+        } else {
+            None
+        };
         let browser_tip = self.draw_mod_browser(batch);
         self.draw_screen_phase(batch, sunrise_client::screen_draw::RenderPhase::Foreground);
         if self.carried.is_some() {
             self.draw_carried(batch);
-            if let Some(stack) = tooltip.filter(|s| self.tooltip_with_carried(s)) {
-                self.draw_stack_tooltip(batch, &stack, self.cursor.0, self.cursor.1);
-            }
-        } else if deprecated {
+        }
+        // MerchantScreen.extractContents offers the restock message and trade preview before
+        // AbstractContainerScreen.extractTooltip. Only the actual slot checks the carried item.
+        if deprecated {
             let text = sunrise_client::lang::get_or(
                 "merchant.deprecated",
                 "Villagers restock up to two times per day.",
@@ -1012,7 +1017,9 @@ impl Game<'_> {
             let lines: Vec<(String, u32)> =
                 text.split('\n').map(|l| (l.to_owned(), u32::MAX)).collect();
             self.draw_tooltip_lines(batch, &lines, self.cursor.0, self.cursor.1);
-        } else if let Some(stack) = tooltip {
+        } else if let Some(stack) =
+            offer_tooltip.or_else(|| slot_tooltip.filter(|s| self.tooltip_with_carried(s)))
+        {
             self.draw_stack_tooltip(batch, &stack, self.cursor.0, self.cursor.1);
         }
         if let Some(tooltip) = browser_tip {

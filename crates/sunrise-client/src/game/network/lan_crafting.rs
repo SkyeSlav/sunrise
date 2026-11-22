@@ -780,7 +780,6 @@ impl Game<'_> {
                 }
                 return Some(applied);
             }
-            // The listener can leave live edits even when it doesn't handle the click.
             // Refresh the already-admitted menu without asking the pickup rule again.
             if !refresh(self, &mut menu) {
                 self.reply_menu_click(conn, ClickReply::Resend(p.container));
@@ -889,81 +888,83 @@ impl Game<'_> {
             let original = menu.snapshot();
             let uuid = host.hub.guests[gi].uuid;
             let offhand_before = host.hub.guests[gi].offhand.clone();
-            let applied = mod_api::run_transaction(self, |game, _| {
-                game.journal_guest_click(conn);
-                game.guest_menu_action(
-                    gi,
-                    &mut menu,
-                    Some(click),
-                    Some(&prepare),
-                    |game, menu, stacked| {
-                        let (mut previous, mut rest) =
-                            game.guest_menu_edit(gi, menu, stacked, |menu, env| {
-                                if !pickup_checked {
-                                    prepare(menu, env);
-                                }
-                                menu.track_takes(true);
-                                let before = menu.container_items();
-                                let rest = if pickup_checked {
-                                    menu.start_checked_quick_move(env, click.0, click.1)
+            let applied = self
+                .storage_transaction(|game, _| {
+                    game.journal_guest_click(conn);
+                    game.guest_menu_action(
+                        gi,
+                        &mut menu,
+                        Some(click),
+                        Some(&prepare),
+                        |game, menu, stacked| {
+                            let (mut previous, mut rest) =
+                                game.guest_menu_edit(gi, menu, stacked, |menu, env| {
+                                    if !pickup_checked {
+                                        prepare(menu, env);
+                                    }
+                                    menu.track_takes(true);
+                                    let before = menu.container_items();
+                                    let rest = if pickup_checked {
+                                        menu.start_checked_quick_move(env, click.0, click.1)
+                                    } else {
+                                        menu.start_click(env, click.0, click.1, click.2)
+                                    };
+                                    (before, rest)
+                                })?;
+                            if rest.is_err() {
+                                return None;
+                            }
+                            loop {
+                                let after = menu.container_items();
+                                write_back(game, menu, after != previous);
+                                let menu_live = if let Some(take) = menu.take_notice() {
+                                    if game.as_guest(conn, |game| {
+                                        game.mod_menu_slot_take(pos, uuid, &menu_id, &take)
+                                    }) != Some(true)
+                                    {
+                                        return None;
+                                    }
+                                    refresh(game, menu)
                                 } else {
-                                    menu.start_click(env, click.0, click.1, click.2)
+                                    true
                                 };
-                                (before, rest)
-                            })?;
-                        if rest.is_err() {
-                            return None;
-                        }
-                        loop {
-                            let after = menu.container_items();
-                            write_back(game, menu, after != previous);
-                            let menu_live = if let Some(take) = menu.take_notice() {
-                                if game.as_guest(conn, |game| {
-                                    game.mod_menu_slot_take(pos, uuid, &menu_id, &take)
-                                }) != Some(true)
-                                {
-                                    return None;
-                                }
-                                refresh(game, menu)
-                            } else {
-                                true
-                            };
-                            let Some(step) = rest.ok()? else {
-                                break;
-                            };
-                            let step = if menu_live {
-                                // Listener edits are now the step's inputs. Don't overwrite them.
-                                previous = menu.container_items();
-                                step
-                            } else {
-                                let Some(owed) = step.after_menu_closed() else {
+                                let Some(step) = rest.ok()? else {
                                     break;
                                 };
-                                // Losing the block queues a close, so the admitted cursor is
-                                // still live here. Never settle this write on a different window.
-                                game.lan.as_ref()?.hub.guest(conn).filter(|g| live(g))?;
-                                owed
-                            };
-                            let next = game.guest_menu_edit(gi, menu, stacked, |menu, env| {
-                                menu.resume_click(env, step)
-                            })?;
-                            if !menu_live {
-                                // Only the player-side write was owed. Don't write back the menu.
-                                break;
+                                let step = if menu_live {
+                                    // Listener edits are now the step's inputs. Don't overwrite them.
+                                    previous = menu.container_items();
+                                    step
+                                } else {
+                                    let Some(owed) = step.after_menu_closed() else {
+                                        break;
+                                    };
+                                    // Losing the block queues a close, so the admitted cursor is
+                                    // still live here. Never settle this write on a different window.
+                                    game.lan.as_ref()?.hub.guest(conn).filter(|g| live(g))?;
+                                    owed
+                                };
+                                let next =
+                                    game.guest_menu_edit(gi, menu, stacked, |menu, env| {
+                                        menu.resume_click(env, step)
+                                    })?;
+                                if !menu_live {
+                                    // Only the player-side write was owed. Don't write back the menu.
+                                    break;
+                                }
+                                rest = Ok(next);
                             }
-                            rest = Ok(next);
-                        }
-                        menu.track_takes(false);
-                        game.after_commit(After::GuestMenu(
-                            conn,
-                            Box::new(GuestMenuEffects::take(menu)),
-                        ));
-                        Some(())
-                    },
-                )
-                .ok_or(())
-            })
-            .is_ok();
+                            menu.track_takes(false);
+                            game.after_commit(After::GuestMenu(
+                                conn,
+                                Box::new(GuestMenuEffects::take(menu)),
+                            ));
+                            Some(())
+                        },
+                    )
+                    .ok_or(())
+                })
+                .is_ok();
             if applied && refresh(self, &mut menu) {
                 self.lan_mod_craft_settle(gi, pos, &mut menu);
             }

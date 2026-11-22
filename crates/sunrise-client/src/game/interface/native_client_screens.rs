@@ -79,7 +79,7 @@ impl Game<'_> {
         }
         if self.dialog_open() {
             let before = self.dialog_screen_key();
-            if let Err(e) = self.dialog_key(KeyCode::Escape, None, None) {
+            if let Err(e) = self.dialog_key(KeyCode::Escape, None) {
                 log::warn!("Sunrise: closing the dialog: {e:#}");
             }
             return Some(!self.dialog_open() || self.dialog_screen_key() != before);

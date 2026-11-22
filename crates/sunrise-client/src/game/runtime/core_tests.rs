@@ -934,20 +934,6 @@ fn a_dialog_releases_held_keys_like_a_screen() {
     toggles.screen_closed(options);
     assert!(toggles.is_down(SNEAK));
 }
-/// A key bound to key.pickItem clones over a container screen, as the
-/// middle button does; a key bound to attack or use does nothing there (#5378).
-#[test]
-fn a_key_bound_to_pick_block_clones_behind_a_container_screen() {
-    assert!(container_key_clones(MouseButton::Middle, KeyAction::Press));
-    assert!(container_key_clones(MouseButton::Middle, KeyAction::Repeat));
-    assert!(!container_key_clones(
-        MouseButton::Middle,
-        KeyAction::Release
-    ));
-    for button in [MouseButton::Left, MouseButton::Right] {
-        assert!(!container_key_clones(button, KeyAction::Press));
-    }
-}
 #[test]
 fn sleep_fade_lasts_ten_ticks_after_waking() {
     let alpha = |timer| match hud_overlays::sleep_overlay(320, 240, timer).first() {

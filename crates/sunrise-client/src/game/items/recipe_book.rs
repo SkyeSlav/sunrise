@@ -311,13 +311,15 @@ impl Game<'_> {
             && self.recipe_ui.search.as_ref().is_some_and(|s| s.focused)
     }
     /// `keyChat` focuses the search box.
-    pub(super) fn recipe_focus_search(&mut self) {
+    pub(super) fn recipe_focus_search(&mut self) -> bool {
         if (self.mod_book_open() || self.active_book().is_some_and(|b| self.book_open(b)))
             && let Some(s) = self.recipe_ui.search.as_mut()
         {
             s.focused = true;
             s.reset_blink();
+            return true;
         }
+        false
     }
     /// Text typed (or one backspace) into the search box.
     pub(super) fn recipe_text(&mut self, text: Option<&str>, backspace: bool) {
@@ -337,30 +339,22 @@ impl Game<'_> {
         }
     }
     /// A key press while the search box has focus.
-    pub(super) fn recipe_key(&mut self, event: &winit::event::KeyEvent) {
-        use winit::keyboard::PhysicalKey;
-        if let Some(shortcut) = self.edit_shortcut(event) {
+    pub(super) fn recipe_key(
+        &mut self,
+        key: winit::keyboard::KeyCode,
+        shortcut: Option<sunrise_client::clipboard::EditShortcut>,
+    ) -> bool {
+        if let Some(shortcut) = shortcut {
             self.recipe_shortcut(shortcut);
-            return;
+            return true;
         }
-        let ctrl = self.has_control_down();
-        let shift = self.has_shift_down();
-        let types_text = self.types_text();
+        let (ctrl, shift) = (self.has_control_down(), self.has_shift_down());
         let Some(search) = self.recipe_ui.search.as_mut() else {
-            return;
+            return false;
         };
-        let handled = match event.physical_key {
-            PhysicalKey::Code(code) => search.key(code, ctrl, shift),
-            _ => false,
-        };
-        if !handled
-            && types_text
-            && let Some(text) = &event.text
-        {
-            let text: String = text.chars().filter(|c| !c.is_control()).collect();
-            search.insert_text(&text);
-        }
+        let handled = search.key(key, ctrl, shift);
         search.reset_blink();
+        handled
     }
 
     /// `RecipeToast.addOrUpdate` for each display of the recipes just
@@ -1047,18 +1041,20 @@ impl Game<'_> {
     }
     /// `RecipeBookComponent.mouseDragged`: while the search box is focused a
     /// drag moves its selection end to the pointer (`EditBox.onDrag`).
-    pub(super) fn recipe_book_drag(&mut self) {
+    pub(super) fn recipe_book_drag(&mut self) -> bool {
         if !self.recipe_ui.search_drag
             || !(self.mod_book_open() || self.active_book().is_some_and(|b| self.book_open(b)))
         {
-            return;
+            return false;
         }
         let x = self.cursor.0;
         if let Some(search) = self.recipe_ui.search.as_mut()
             && search.focused
         {
             search.drag_to(&self.gui.atlas, x);
+            return true;
         }
+        false
     }
     /// A mouse button let go: a drag no longer selects in the search box.
     pub(super) fn recipe_book_release(&mut self) -> bool {

@@ -42,9 +42,7 @@ use super::{
     Dim, Game, InteractTarget,
     entity_culling::EntityCullDecision,
     native_mob_draw::PlayerRender,
-    native_projectiles::{
-        Impact, ImpactTransaction, PendingImpact, ProjectileHit, projectile_impact_event,
-    },
+    native_projectiles::{Impact, PendingImpact, ProjectileHit, projectile_impact_event},
     view_vector,
 };
 use mod_api::{EquipmentSlot, LootDrops, SoundSource};
@@ -5146,7 +5144,7 @@ impl Game<'_> {
         let mut flags = keep_flags.into_iter();
         projectiles.retain(|_| flags.next().unwrap());
         let hears_impact = !impacts.is_empty();
-        let scope = ImpactTransaction::new(self, hears_impact);
+        let scope = self.storage_scope_guard(hears_impact);
         let game = &mut *scope.game;
         let pending = if hears_impact {
             game.native_settle_impacts(
@@ -5220,6 +5218,7 @@ impl Game<'_> {
         self.native_tick_post_batch(round);
         flushed
     }
+
     fn apply_projectile_hits(
         &mut self,
         hits: Vec<ProjectileHit>,
@@ -5744,7 +5743,7 @@ impl Game<'_> {
         };
         let dimension = self.dim;
         let failures = mod_api::runtime::isolated_failures();
-        let _: std::result::Result<(), ()> = mod_api::run_transaction(self, |game, _| {
+        let _: std::result::Result<(), ()> = self.storage_transaction(|game, _| {
             let (mut target, _, cancel) =
                 game.native_pearl_teleport(owner, pearl.id, from, pearl.previous, 0.0, hit);
             if mod_api::runtime::isolated_failures() != failures {

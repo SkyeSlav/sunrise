@@ -35,6 +35,14 @@ pub trait EntityStanceBackend {
     /// `crouching`, `swimming`, `sleeping`, a warden's `roaring`... Kinds
     /// with no pose stand.
     fn entity_pose(&self, entity: EntityRef) -> Option<&'static str>;
+    /// Side: both.
+    /// The arm the entity's main hand is on (`LivingEntity.getMainArm`): a player's or a
+    /// mannequin's main hand (`Avatar.DATA_PLAYER_MAIN_HAND`; on a server, the Main Hand the
+    /// player's client reported), a mob's left-handed flag, the right arm for an armor stand.
+    /// On a client, every entity it tracks, as the server last sent it, and the local player's
+    /// own Main Hand option. Sunrise keeps no left-handed flag for the ender dragon, which reads
+    /// right. None for an entity that isn't living and for a stale handle.
+    fn entity_main_arm(&self, entity: EntityRef) -> Option<MainHand>;
 }
 /// The handles' writes of the `entity_stance` area, implemented by the game and reached through [`BackendMut`].
 // hidden: a handle's backend, reached through `Backend`; mods call the handle, never this trait

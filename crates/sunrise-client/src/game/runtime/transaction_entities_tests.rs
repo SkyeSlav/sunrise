@@ -8,7 +8,7 @@ use std::sync::{
 
 use mod_api::{
     AttachmentType, EntityConstructingEvent, EntityJoinLevelEvent, EntityLeaveLevelEvent,
-    EntityRef, Flow, Hooks, HostSide, RemovalReason, ServerHost,
+    EntityRef, Flow, Hooks, HostSide, HostTransaction, RemovalReason, ServerHost,
 };
 use sunrise_client::{chunk::Chunk, items::ItemStack, mobs::StoredEffect};
 use sunrise_core::nbt::{Tag, parse_snbt};
@@ -101,18 +101,28 @@ impl Hooks for Observer {
         };
         if answers.is_some() {
             let removes = ON_JOIN.lock().unwrap().2.take();
-            let seal = removes.map(|_| host.transaction_open());
-            let spawned = host.summon(
-                "minecraft:overworld",
-                "minecraft:pig",
-                [1.5, 70.0, 1.5],
-                Default::default(),
-            );
-            ON_JOIN.lock().unwrap().1.extend(spawned);
-            if let (Some(entity), Some(seal)) = (removes, seal) {
-                entity.remove(host, RemovalReason::Discarded);
-                *PENDING.lock().unwrap() = Some(entity);
-                host.transaction_close(&seal, true);
+            if let Some(entity) = removes {
+                host.transaction(|host, _| {
+                    let spawned = host.summon(
+                        "minecraft:overworld",
+                        "minecraft:pig",
+                        [1.5, 70.0, 1.5],
+                        Default::default(),
+                    );
+                    ON_JOIN.lock().unwrap().1.extend(spawned);
+                    entity.remove(host, RemovalReason::Discarded);
+                    *PENDING.lock().unwrap() = Some(entity);
+                    Ok::<_, ()>(())
+                })
+                .unwrap();
+            } else {
+                let spawned = host.summon(
+                    "minecraft:overworld",
+                    "minecraft:pig",
+                    [1.5, 70.0, 1.5],
+                    Default::default(),
+                );
+                ON_JOIN.lock().unwrap().1.extend(spawned);
             }
         }
         let stage = NEST.load(Ordering::SeqCst);
@@ -127,11 +137,13 @@ impl Hooks for Observer {
             // Its listener commits a nether transaction of its own that spawned a cow.
             (2, "minecraft:zombie") => {
                 NEST.store(3, Ordering::SeqCst);
-                let seal = host.transaction_open();
-                host.commands().run_command(
-                    "execute in minecraft:the_nether run summon minecraft:cow 1.5 70 1.5",
-                );
-                host.transaction_close(&seal, true);
+                host.transaction(|host, _| {
+                    host.commands().run_command(
+                        "execute in minecraft:the_nether run summon minecraft:cow 1.5 70 1.5",
+                    );
+                    Ok::<_, ()>(())
+                })
+                .unwrap();
             }
             // The cow's join is told while that commit runs: a command in the overworld
             // spawns a chicken, which A's commit still holds.
@@ -207,12 +219,13 @@ fn a_spawn_then_abort_leaves_no_entity_map_or_hook() {
         "game::transaction_entities_tests::a_spawn_then_abort_leaves_no_entity_map_or_hook";
     with_observer(NAME, |game| {
         let (mobs, next) = (game.mobs.len(), game.next_entity);
-        let seal = game.transaction_open();
-        let pig = summon(game, "minecraft:pig", "{}").unwrap();
-        assert!(game.entity(pig).is_some(), "in the level inside the action");
-        assert_eq!(MARK.get(game, Holder::Entity(pig)), Ok(1));
-        assert_eq!(heard().constructed, [pig], "constructed at the spawn call");
-        game.transaction_close(&seal, false);
+        let pig = game.storage_scope(|game, _| {
+            let pig = summon(game, "minecraft:pig", "{}").unwrap();
+            assert!(game.entity(pig).is_some(), "in the level inside the action");
+            assert_eq!(MARK.get(game, Holder::Entity(pig)), Ok(1));
+            assert_eq!(heard().constructed, [pig], "constructed at the spawn call");
+            (pig, false)
+        });
 
         assert_eq!(game.entity(pig), None);
         assert_eq!(game.mobs.len(), mobs);
@@ -235,25 +248,27 @@ fn a_mob_removed_in_a_transaction_leaves_once_at_the_root_commit() {
         assert_eq!(heard().joined, [pig]);
 
         // A removal the transaction takes back never leaves.
-        let seal = game.transaction_open();
-        assert!(game.entity_discard(game.entity(pig).unwrap()));
-        assert!(
-            heard().left.is_empty(),
-            "the leave waits for the root commit"
-        );
-        game.transaction_close(&seal, false);
+        game.storage_scope(|game, _| {
+            assert!(game.entity_discard(game.entity(pig).unwrap()));
+            assert!(
+                heard().left.is_empty(),
+                "the leave waits for the root commit"
+            );
+            ((), false)
+        });
         assert!(game.entity(pig).is_some(), "the abort brings it back");
         game.native_leaves_flush();
         assert!(heard().left.is_empty(), "an aborted removal is never told");
 
         // A committed one leaves at the root commit, and once.
-        let seal = game.transaction_open();
-        assert!(game.entity_discard(game.entity(pig).unwrap()));
-        assert!(
-            heard().left.is_empty(),
-            "the leave waits for the root commit"
-        );
-        game.transaction_close(&seal, true);
+        game.storage_scope(|game, _| {
+            assert!(game.entity_discard(game.entity(pig).unwrap()));
+            assert!(
+                heard().left.is_empty(),
+                "the leave waits for the root commit"
+            );
+            ((), true)
+        });
         assert_eq!(game.entity(pig), None);
         assert_eq!(heard().left, [pig], "told at the root commit");
         game.native_leaves_flush();
@@ -269,11 +284,12 @@ fn a_mob_removed_in_a_transaction_leaves_once_at_the_root_commit() {
 fn a_spawn_joins_at_the_root_commit() {
     const NAME: &str = "game::transaction_entities_tests::a_spawn_joins_at_the_root_commit";
     with_observer(NAME, |game| {
-        let seal = game.transaction_open();
-        let pig = summon(game, "minecraft:pig", "{}").unwrap();
-        game.native_joins_flush(false, 0);
-        assert!(heard().joined.is_empty(), "the join waits");
-        game.transaction_close(&seal, true);
+        let pig = game.storage_scope(|game, _| {
+            let pig = summon(game, "minecraft:pig", "{}").unwrap();
+            game.native_joins_flush(false, 0);
+            assert!(heard().joined.is_empty(), "the join waits");
+            (pig, true)
+        });
         assert_eq!(heard().joined, [pig]);
         assert!(game.entity(pig).is_some());
         assert_eq!(MARK.get(game, Holder::Entity(pig)), Ok(1));
@@ -293,10 +309,12 @@ fn a_join_cancelled_at_commit_leaves_a_stale_handle() {
         );
         heard();
         let sheep_before = game.mobs.len();
-        let seal = game.transaction_open();
-        let sheep = summon(game, "minecraft:sheep", "{}").expect("the handle comes back at once");
-        assert!(game.entity(sheep).is_some());
-        game.transaction_close(&seal, true);
+        let sheep = game.storage_scope(|game, _| {
+            let sheep =
+                summon(game, "minecraft:sheep", "{}").expect("the handle comes back at once");
+            assert!(game.entity(sheep).is_some());
+            (sheep, true)
+        });
         assert_eq!(game.entity(sheep), None);
         assert_eq!(game.mobs.len(), sheep_before);
         game.native_leaves_flush();
@@ -331,11 +349,13 @@ fn a_thrown_spawn_joins_at_the_call_or_the_root_commit() {
         let egg = thrown(game, "minecraft:egg").unwrap();
         assert_eq!(heard().joined, [egg.id()]);
 
-        let seal = game.transaction_open();
-        let held = thrown(game, "minecraft:egg").unwrap();
-        let kept_out = thrown(game, "minecraft:snowball").expect("the handle comes back at once");
-        assert!(heard().joined.is_empty(), "the joins wait");
-        game.transaction_close(&seal, true);
+        let (held, kept_out) = game.storage_scope(|game, _| {
+            let held = thrown(game, "minecraft:egg").unwrap();
+            let kept_out =
+                thrown(game, "minecraft:snowball").expect("the handle comes back at once");
+            assert!(heard().joined.is_empty(), "the joins wait");
+            ((held, kept_out), true)
+        });
         assert_eq!(heard().joined, [held.id(), kept_out.id()]);
         assert!(game.entity(held.id()).is_some());
         assert_eq!(game.entity(kept_out.id()), None);
@@ -376,26 +396,27 @@ fn a_removal_then_abort_keeps_the_row_map_and_rider() {
         let pig = game.entity(pig).unwrap();
         MARK.set(game, Holder::Entity(boat.id()), 7).unwrap();
         heard();
-        let seal = game.transaction_open();
-        assert!(game.entity_discard(boat));
-        assert!(game.entity_remove(pig, RemovalReason::Killed));
-        assert_eq!(game.entity(boat.id()), None, "stale at once");
-        assert_eq!(game.entity(pig.id()), None);
-        assert!(!game.entity_discard(boat), "not removed twice");
-        assert!(
-            game.boats.iter().any(|b| b.id == boat.id()),
-            "the row stays"
-        );
-        let mount = |game: &Game<'_>| {
-            game.mobs
-                .iter()
-                .find(|m| m.id == cow.id())
-                .unwrap()
-                .extra
-                .mount
-        };
-        assert_eq!(mount(game), Some(boat.id()), "the rider stays on");
-        game.transaction_close(&seal, false);
+        game.storage_scope(|game, _| {
+            assert!(game.entity_discard(boat));
+            assert!(game.entity_remove(pig, RemovalReason::Killed));
+            assert_eq!(game.entity(boat.id()), None, "stale at once");
+            assert_eq!(game.entity(pig.id()), None);
+            assert!(!game.entity_discard(boat), "not removed twice");
+            assert!(
+                game.boats.iter().any(|b| b.id == boat.id()),
+                "the row stays"
+            );
+            let mount = |game: &Game<'_>| {
+                game.mobs
+                    .iter()
+                    .find(|m| m.id == cow.id())
+                    .unwrap()
+                    .extra
+                    .mount
+            };
+            assert_eq!(mount(game), Some(boat.id()), "the rider stays on");
+            ((), false)
+        });
 
         assert_eq!(game.entity(boat.id()), Some(boat));
         assert_eq!(game.entity(pig.id()), Some(pig));
@@ -414,9 +435,10 @@ fn a_removal_then_commit_runs_each_effect_once() {
         "game::transaction_entities_tests::a_removal_then_commit_runs_each_effect_once";
     with_observer(NAME, |game| {
         let (boat, cow) = boat_with_rider(game);
-        let seal = game.transaction_open();
-        assert!(game.entity_discard(boat));
-        game.transaction_close(&seal, true);
+        game.storage_scope(|game, _| {
+            assert!(game.entity_discard(boat));
+            ((), true)
+        });
 
         assert_eq!(game.entity(boat.id()), None);
         assert_eq!(game.entity_vehicle(cow), None, "the rider got off");
@@ -443,10 +465,11 @@ fn a_killed_mobs_oozing_spawns_only_at_commit() {
             game.mobs.iter().filter(|m| m.species() == slime).count()
         };
         let zombie = game.entity(zombie).unwrap();
-        let seal = game.transaction_open();
-        assert!(game.entity_remove(zombie, RemovalReason::Killed));
-        assert_eq!(slimes(game), 0);
-        game.transaction_close(&seal, true);
+        game.storage_scope(|game, _| {
+            assert!(game.entity_remove(zombie, RemovalReason::Killed));
+            assert_eq!(slimes(game), 0);
+            ((), true)
+        });
         assert_eq!(slimes(game), 2);
         assert!(game.mobs.iter().any(|m| m.id == zombie.id() && m.removed));
     });
@@ -459,13 +482,15 @@ fn a_nested_commit_goes_with_its_parents_abort() {
         "game::transaction_entities_tests::a_nested_commit_goes_with_its_parents_abort";
     with_observer(NAME, |game| {
         let (boat, cow) = boat_with_rider(game);
-        let outer = game.transaction_open();
-        let inner = game.transaction_open();
-        let pig = summon(game, "minecraft:pig", "{}").unwrap();
-        assert!(game.entity_discard(boat));
-        game.transaction_close(&inner, true);
-        assert!(game.entity(pig).is_some());
-        game.transaction_close(&outer, false);
+        let pig = game.storage_scope(|game, _| {
+            let pig = game.storage_scope(|game, _| {
+                let pig = summon(game, "minecraft:pig", "{}").unwrap();
+                assert!(game.entity_discard(boat));
+                (pig, true)
+            });
+            assert!(game.entity(pig).is_some());
+            (pig, false)
+        });
 
         assert_eq!(game.entity(pig), None);
         assert_eq!(game.entity(boat.id()), Some(boat));
@@ -482,15 +507,17 @@ fn a_nested_abort_takes_back_only_its_own() {
     const NAME: &str = "game::transaction_entities_tests::a_nested_abort_takes_back_only_its_own";
     with_observer(NAME, |game| {
         let (boat, cow) = boat_with_rider(game);
-        let outer = game.transaction_open();
-        let kept = summon(game, "minecraft:pig", "{}").unwrap();
-        let inner = game.transaction_open();
-        let dropped = summon(game, "minecraft:pig", "{}").unwrap();
-        assert!(game.entity_discard(boat));
-        game.transaction_close(&inner, false);
-        assert_eq!(game.entity(dropped), None);
-        assert_eq!(game.entity(boat.id()), Some(boat));
-        game.transaction_close(&outer, true);
+        let (kept, dropped) = game.storage_scope(|game, _| {
+            let kept = summon(game, "minecraft:pig", "{}").unwrap();
+            let dropped = game.storage_scope(|game, _| {
+                let dropped = summon(game, "minecraft:pig", "{}").unwrap();
+                assert!(game.entity_discard(boat));
+                (dropped, false)
+            });
+            assert_eq!(game.entity(dropped), None);
+            assert_eq!(game.entity(boat.id()), Some(boat));
+            ((kept, dropped), true)
+        });
 
         assert!(game.entity(kept).is_some());
         assert_eq!(game.entity_vehicle(cow), Some(boat));
@@ -514,13 +541,14 @@ fn a_spawned_then_removed_entity_never_joins_or_leaves() {
     const NAME: &str =
         "game::transaction_entities_tests::a_spawned_then_removed_entity_never_joins_or_leaves";
     with_observer(NAME, |game| {
-        let seal = game.transaction_open();
-        let boat = summon(game, "minecraft:oak_boat", "{}").unwrap();
-        let pig = summon(game, "minecraft:pig", "{}").unwrap();
-        let kept = summon(game, "minecraft:pig", "{}").unwrap();
-        assert!(game.entity_discard(game.entity(boat).unwrap()));
-        assert!(game.entity_discard(game.entity(pig).unwrap()));
-        game.transaction_close(&seal, true);
+        let kept = game.storage_scope(|game, _| {
+            let boat = summon(game, "minecraft:oak_boat", "{}").unwrap();
+            let pig = summon(game, "minecraft:pig", "{}").unwrap();
+            let kept = summon(game, "minecraft:pig", "{}").unwrap();
+            assert!(game.entity_discard(game.entity(boat).unwrap()));
+            assert!(game.entity_discard(game.entity(pig).unwrap()));
+            (kept, true)
+        });
         game.native_leaves_flush();
         game.native_joins_flush(false, 0);
         let heard = heard();
@@ -536,14 +564,15 @@ fn another_writer_sees_the_spawn_and_its_writes_roll_back() {
         "game::transaction_entities_tests::another_writer_sees_the_spawn_and_its_writes_roll_back";
     with_observer(NAME, |game| {
         let witness = summon(game, "minecraft:cow", "{}").unwrap();
-        let seal = game.transaction_open();
-        let pig = summon(game, "minecraft:pig", "{}").unwrap();
-        // A second mod, lent the host inside the same action.
-        let host: &mut dyn ServerHost = game;
-        assert!(host.entity(pig).is_some(), "it sees the spawn");
-        MARK.set(host, Holder::Entity(pig), 5).unwrap();
-        MARK.set(host, Holder::Entity(witness), 5).unwrap();
-        game.transaction_close(&seal, false);
+        let pig = game.storage_scope(|game, _| {
+            let pig = summon(game, "minecraft:pig", "{}").unwrap();
+            // A second mod, lent the host inside the same action.
+            let host: &mut dyn ServerHost = game;
+            assert!(host.entity(pig).is_some(), "it sees the spawn");
+            MARK.set(host, Holder::Entity(pig), 5).unwrap();
+            MARK.set(host, Holder::Entity(witness), 5).unwrap();
+            (pig, false)
+        });
 
         assert_eq!(game.entity(pig), None);
         assert!(!game.entity_attachments.contains_key(&pig));
@@ -556,10 +585,11 @@ fn another_writer_sees_the_spawn_and_its_writes_roll_back() {
 fn ids_never_go_back_and_a_stale_handle_names_no_later_entity() {
     const NAME: &str = "game::transaction_entities_tests::ids_never_go_back_and_a_stale_handle_names_no_later_entity";
     with_observer(NAME, |game| {
-        let seal = game.transaction_open();
-        let aborted = summon(game, "minecraft:pig", "{}").unwrap();
-        let handle = game.entity(aborted).unwrap();
-        game.transaction_close(&seal, false);
+        let (aborted, handle) = game.storage_scope(|game, _| {
+            let aborted = summon(game, "minecraft:pig", "{}").unwrap();
+            let handle = game.entity(aborted).unwrap();
+            ((aborted, handle), false)
+        });
         let next = summon(game, "minecraft:pig", "{}").unwrap();
         assert_eq!(next, aborted + 1);
         assert!(game.next_entity >= next);
@@ -584,21 +614,22 @@ fn late_id_kinds_spawned_then_aborted_are_removed() {
             ]
         };
         let before = counts(game);
-        let seal = game.transaction_open();
-        for (kind, nbt) in [
-            ("minecraft:tnt", "{fuse:80s}"),
-            (
-                "minecraft:falling_block",
-                "{BlockState:{Name:\"minecraft:sand\"},Time:1}",
-            ),
-            ("minecraft:firework_rocket", "{LifeTime:20}"),
-            ("minecraft:trident", "{}"),
-            ("minecraft:arrow", "{}"),
-        ] {
-            summon(game, kind, nbt).unwrap();
-        }
-        assert_eq!(counts(game), before.map(|n| n + 1));
-        game.transaction_close(&seal, false);
+        game.storage_scope(|game, _| {
+            for (kind, nbt) in [
+                ("minecraft:tnt", "{fuse:80s}"),
+                (
+                    "minecraft:falling_block",
+                    "{BlockState:{Name:\"minecraft:sand\"},Time:1}",
+                ),
+                ("minecraft:firework_rocket", "{LifeTime:20}"),
+                ("minecraft:trident", "{}"),
+                ("minecraft:arrow", "{}"),
+            ] {
+                summon(game, kind, nbt).unwrap();
+            }
+            assert_eq!(counts(game), before.map(|n| n + 1));
+            ((), false)
+        });
         assert_eq!(counts(game), before);
         game.native_joins_flush(false, 0);
         assert!(heard().joined.is_empty());
@@ -626,18 +657,19 @@ fn a_traveller_arriving_inside_an_aborted_action_stays() {
                 .filter(|d| &*d.stack.item == "minecraft:diamond")
                 .count()
         };
-        let seal = game.transaction_open();
-        // As `/execute in the_nether run tp …` does from inside the action.
-        game.enter_level(Dim::Nether).unwrap();
-        assert!(game.teleport_to_level(
-            Target::Item(item.unwrap()),
-            Dim::Overworld,
-            [1.5, 70.0, 1.5],
-            None
-        ));
-        game.enter_level(Dim::Overworld).unwrap();
-        assert_eq!(diamonds(game), 1, "arrived in the action's level");
-        game.transaction_close(&seal, false);
+        game.storage_scope(|game, _| {
+            // As `/execute in the_nether run tp …` does from inside the action.
+            game.enter_level(Dim::Nether).unwrap();
+            assert!(game.teleport_to_level(
+                Target::Item(item.unwrap()),
+                Dim::Overworld,
+                [1.5, 70.0, 1.5],
+                None
+            ));
+            game.enter_level(Dim::Overworld).unwrap();
+            assert_eq!(diamonds(game), 1, "arrived in the action's level");
+            ((), false)
+        });
         assert_eq!(diamonds(game), 1, "not taken out with the spawns");
     });
 }
@@ -655,12 +687,14 @@ fn an_aborted_spawn_is_in_no_tracking_pass() {
             game.lan_entities(&mut states, false, 0, None);
             states.as_slice().iter().any(|e| e.id == id as i32)
         };
-        let seal = game.transaction_open();
-        let aborted = summon(game, "minecraft:pig", "{}").unwrap();
-        game.transaction_close(&seal, false);
-        let seal = game.transaction_open();
-        let committed = summon(game, "minecraft:pig", "{}").unwrap();
-        game.transaction_close(&seal, true);
+        let aborted = game.storage_scope(|game, _| {
+            let aborted = summon(game, "minecraft:pig", "{}").unwrap();
+            (aborted, false)
+        });
+        let committed = game.storage_scope(|game, _| {
+            let committed = summon(game, "minecraft:pig", "{}").unwrap();
+            (committed, true)
+        });
         assert!(!tracked(game, aborted));
         assert!(tracked(game, committed));
     });
@@ -813,9 +847,10 @@ fn an_aborted_spawn_puts_back_the_raw_record_it_wrote_over() {
         // Crystals are kept as raw records by kind and position: a second one at the same place
         // writes over the first's.
         let own = summon(game, "minecraft:end_crystal", r#"{Tags:["own"]}"#).unwrap();
-        let seal = game.transaction_open();
-        summon(game, "minecraft:end_crystal", r#"{Tags:["aborted"]}"#).unwrap();
-        game.transaction_close(&seal, false);
+        game.storage_scope(|game, _| {
+            summon(game, "minecraft:end_crystal", r#"{Tags:["aborted"]}"#).unwrap();
+            ((), false)
+        });
 
         assert!(game.entity(own).is_some());
         let saved = game.entity_chunks(&std::collections::HashSet::from([(0, 0)]), false);
@@ -834,12 +869,13 @@ fn an_aborted_spawn_puts_back_the_raw_record_it_wrote_over() {
 fn a_held_join_keeps_loaded_from_disk() {
     const NAME: &str = "game::transaction_entities_tests::a_held_join_keeps_loaded_from_disk";
     with_observer(NAME, |game| {
-        let seal = game.transaction_open();
-        let fresh = summon(game, "minecraft:pig", "{}").unwrap();
-        let (saved, _) = parse_snbt(r#"{id:"minecraft:cow",Pos:[1.5d,70.0d,1.5d]}"#).unwrap();
-        game.spawn_loaded_entity((0, 0), saved, None);
-        assert!(heard().joined.is_empty(), "both joins wait");
-        game.transaction_close(&seal, true);
+        let fresh = game.storage_scope(|game, _| {
+            let fresh = summon(game, "minecraft:pig", "{}").unwrap();
+            let (saved, _) = parse_snbt(r#"{id:"minecraft:cow",Pos:[1.5d,70.0d,1.5d]}"#).unwrap();
+            game.spawn_loaded_entity((0, 0), saved, None);
+            assert!(heard().joined.is_empty(), "both joins wait");
+            (fresh, true)
+        });
 
         let heard = heard();
         assert_eq!(heard.joined.len(), 2);
@@ -862,10 +898,11 @@ fn commit_tells_the_joins_before_the_effects_of_the_removals() {
         (game.mobs[at].extra.effects).push(StoredEffect::new("minecraft:oozing", 600, 0));
         let zombie = game.entity(zombie).unwrap();
         heard();
-        let seal = game.transaction_open();
-        assert!(game.entity_remove(zombie, RemovalReason::Killed));
-        let pig = summon(game, "minecraft:pig", "{}").unwrap();
-        game.transaction_close(&seal, true);
+        let pig = game.storage_scope(|game, _| {
+            assert!(game.entity_remove(zombie, RemovalReason::Killed));
+            let pig = summon(game, "minecraft:pig", "{}").unwrap();
+            (pig, true)
+        });
 
         let heard = heard();
         assert_eq!(
@@ -888,24 +925,26 @@ fn a_pending_boat_removal_is_hidden_from_selectors_until_it_commits() {
         let target = Target::Boat(boat);
         assert!(game.level_candidates(false).contains(&target));
 
-        let seal = game.transaction_open();
-        assert!(game.entity_discard(handle));
-        assert_eq!(game.entity(boat), None, "the handle is stale");
-        assert!(
-            !game.level_candidates(false).contains(&target),
-            "selectors do not find it"
-        );
-        assert!(!game.global_selector_candidates(false).contains(&target));
-        game.transaction_close(&seal, false);
+        game.storage_scope(|game, _| {
+            assert!(game.entity_discard(handle));
+            assert_eq!(game.entity(boat), None, "the handle is stale");
+            assert!(
+                !game.level_candidates(false).contains(&target),
+                "selectors do not find it"
+            );
+            assert!(!game.global_selector_candidates(false).contains(&target));
+            ((), false)
+        });
         assert_eq!(game.entity(boat), Some(handle));
         assert!(
             game.level_candidates(false).contains(&target),
             "an abort brings it back"
         );
 
-        let seal = game.transaction_open();
-        assert!(game.entity_discard(handle));
-        game.transaction_close(&seal, true);
+        game.storage_scope(|game, _| {
+            assert!(game.entity_discard(handle));
+            ((), true)
+        });
         assert_eq!(game.entity(boat), None);
         assert!(
             !game.level_candidates(false).contains(&target),
@@ -919,12 +958,13 @@ fn a_pending_boat_removal_is_hidden_from_selectors_until_it_commits() {
 fn a_spawn_a_join_listener_makes_during_the_commit_joins_once_after_it() {
     const NAME: &str = "game::transaction_entities_tests::a_spawn_a_join_listener_makes_during_the_commit_joins_once_after_it";
     with_observer(NAME, |game| {
-        let seal = game.transaction_open();
-        let a = summon(game, "minecraft:pig", "{}").unwrap();
-        let b = summon(game, "minecraft:pig", "{}").unwrap();
-        assert!(game.entity_discard(game.entity(b).unwrap()));
-        ON_JOIN.lock().unwrap().0 = Some(a);
-        game.transaction_close(&seal, true);
+        let (a, b) = game.storage_scope(|game, _| {
+            let a = summon(game, "minecraft:pig", "{}").unwrap();
+            let b = summon(game, "minecraft:pig", "{}").unwrap();
+            assert!(game.entity_discard(game.entity(b).unwrap()));
+            ON_JOIN.lock().unwrap().0 = Some(a);
+            ((a, b), true)
+        });
 
         let spawned = ON_JOIN.lock().unwrap().1.clone();
         let [c] = spawned[..] else {
@@ -955,18 +995,19 @@ fn a_transaction_covers_its_own_level_and_another_levels_spawn_is_told_at_once()
             .chunks
             .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
         game.enter_level(Dim::Overworld).unwrap();
-        let seal = game.transaction_open();
-        // As `/execute in the_nether run summon …` does from inside the action.
-        game.enter_level(Dim::Nether).unwrap();
-        let pig = summon(game, "minecraft:pig", "{}").unwrap();
-        assert_eq!(heard().joined, [pig], "the nether's spawn is told at once");
-        assert!(game.entity(pig).is_some());
-        assert!(game.entity_discard(game.entity(pig).unwrap()));
-        assert_eq!(game.entity(pig), None, "and its removal happens at once");
-        assert_eq!(heard().left, [pig]);
-        let kept = summon(game, "minecraft:cow", "{}").unwrap();
-        game.enter_level(Dim::Overworld).unwrap();
-        game.transaction_close(&seal, false);
+        let kept = game.storage_scope(|game, _| {
+            // As `/execute in the_nether run summon …` does from inside the action.
+            game.enter_level(Dim::Nether).unwrap();
+            let pig = summon(game, "minecraft:pig", "{}").unwrap();
+            assert_eq!(heard().joined, [pig], "the nether's spawn is told at once");
+            assert!(game.entity(pig).is_some());
+            assert!(game.entity_discard(game.entity(pig).unwrap()));
+            assert_eq!(game.entity(pig), None, "and its removal happens at once");
+            assert_eq!(heard().left, [pig]);
+            let kept = summon(game, "minecraft:cow", "{}").unwrap();
+            game.enter_level(Dim::Overworld).unwrap();
+            (kept, false)
+        });
 
         game.enter_level(Dim::Nether).unwrap();
         assert!(
@@ -982,23 +1023,25 @@ fn a_transaction_covers_its_own_level_and_another_levels_spawn_is_told_at_once()
 fn a_level_holds_its_spawns_for_its_own_transaction_under_another_levels() {
     const NAME: &str = "game::transaction_entities_tests::a_level_holds_its_spawns_for_its_own_transaction_under_another_levels";
     with_observer(NAME, |game| {
-        let overworld = game.transaction_open();
-        // As a command run `in` the nether that opens a transaction of its own does.
-        game.enter_level(Dim::Nether).unwrap();
-        let nether = game.transaction_open();
-        game.enter_level(Dim::Overworld).unwrap();
-        // The nether's transaction is the innermost; the overworld's still holds this spawn.
-        let pig = summon(game, "minecraft:pig", "{}").unwrap();
-        assert!(game.entity(pig).is_some());
-        assert!(
-            heard().joined.is_empty(),
-            "held for the overworld's transaction"
-        );
-        game.enter_level(Dim::Nether).unwrap();
-        game.transaction_close(&nether, true);
-        game.enter_level(Dim::Overworld).unwrap();
-        assert!(heard().joined.is_empty(), "still held");
-        game.transaction_close(&overworld, false);
+        let pig = game.storage_scope(|game, _| {
+            // As a command run `in` the nether that opens a transaction of its own does.
+            game.enter_level(Dim::Nether).unwrap();
+            let pig = game.storage_scope(|game, _| {
+                game.enter_level(Dim::Overworld).unwrap();
+                // The nether's transaction is the innermost; the overworld's still holds this spawn.
+                let pig = summon(game, "minecraft:pig", "{}").unwrap();
+                assert!(game.entity(pig).is_some());
+                assert!(
+                    heard().joined.is_empty(),
+                    "held for the overworld's transaction"
+                );
+                game.enter_level(Dim::Nether).unwrap();
+                (pig, true)
+            });
+            game.enter_level(Dim::Overworld).unwrap();
+            assert!(heard().joined.is_empty(), "still held");
+            (pig, false)
+        });
 
         assert_eq!(
             game.entity(pig),
@@ -1019,15 +1062,16 @@ fn a_nested_commit_from_a_join_listener_tells_its_join_before_its_removal() {
         let d = summon(game, "minecraft:oak_boat", "{}").unwrap();
         game.native_joins_flush(false, 0);
         heard();
-        let seal = game.transaction_open();
-        let a = summon(game, "minecraft:pig", "{}").unwrap();
-        // a's join listener commits a transaction of its own that spawns c and removes d.
-        {
-            let mut on_join = ON_JOIN.lock().unwrap();
-            on_join.0 = Some(a);
-            on_join.2 = game.entity(d);
-        }
-        game.transaction_close(&seal, true);
+        let a = game.storage_scope(|game, _| {
+            let a = summon(game, "minecraft:pig", "{}").unwrap();
+            // a's join listener commits a transaction of its own that spawns c and removes d.
+            {
+                let mut on_join = ON_JOIN.lock().unwrap();
+                on_join.0 = Some(a);
+                on_join.2 = game.entity(d);
+            }
+            (a, true)
+        });
 
         let c = ON_JOIN.lock().unwrap().1[0];
         assert_eq!(
@@ -1063,12 +1107,13 @@ fn a_level_commit_told_inside_another_levels_commit_keeps_its_own_batch() {
             .chunks
             .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
         game.enter_level(Dim::Overworld).unwrap();
-        let seal = game.transaction_open();
-        let a = summon(game, "minecraft:pig", "{}").unwrap();
-        let b = summon(game, "minecraft:pig", "{}").unwrap();
-        assert!(game.entity_discard(game.entity(b).unwrap()));
-        NEST.store(1, Ordering::SeqCst);
-        game.transaction_close(&seal, true);
+        let (a, b) = game.storage_scope(|game, _| {
+            let a = summon(game, "minecraft:pig", "{}").unwrap();
+            let b = summon(game, "minecraft:pig", "{}").unwrap();
+            assert!(game.entity_discard(game.entity(b).unwrap()));
+            NEST.store(1, Ordering::SeqCst);
+            ((a, b), true)
+        });
 
         let told = heard();
         assert_eq!(NEST.load(Ordering::SeqCst), 0, "the script ran to its end");
@@ -1102,12 +1147,18 @@ fn a_block_break_at_the_commit_never_announces_a_mob_the_transaction_removed() {
         let level = game.level(game.dim.id()).unwrap();
         let water = mod_api::__private::fluid_key("minecraft:water").unwrap();
         let items = game.dropped.len();
-        let seal = game.transaction_open();
-        let pig = summon(game, "minecraft:pig", "{}").unwrap();
-        assert!(game.entity_discard(game.entity(pig).unwrap()));
-        assert!(game.level_place_fluid(level, at, water, None, false, seal.transaction()));
-        assert_eq!(game.dropped.len(), items, "the drop waits for the commit");
-        game.transaction_close(&seal, true);
+        let pig = game
+            .storage_transaction(|game, tx| {
+                let pig = summon(game, "minecraft:pig", "{}").unwrap();
+                assert!(game.entity_discard(game.entity(pig).unwrap()));
+                assert_eq!(
+                    game.level_place_fluid(level, at, water, None, false, tx),
+                    Ok(true)
+                );
+                assert_eq!(game.dropped.len(), items, "the drop waits for the commit");
+                Ok::<_, ()>(pig)
+            })
+            .unwrap();
         assert_eq!(game.dropped.len(), items + 1, "the broken poppy dropped");
         let told = heard();
         assert!(
@@ -1167,17 +1218,18 @@ fn a_parked_levels_pending_removal_is_hidden_from_another_level_until_it_aborts(
         // pending removal or not.
         assert!(MARK.get(game, Holder::Entity(boat)).is_err());
         game.enter_level(Dim::Overworld).unwrap();
-        let seal = game.transaction_open();
-        assert!(game.entity_discard(game.entity(boat).unwrap()));
-        game.enter_level(Dim::Nether).unwrap();
-        assert!(
-            matches!(game.server_resident_entity(boat), EntityLookup::Missing),
-            "the parked level's boat reads as gone while its removal is pending"
-        );
-        assert!(!game.resident_source_target_visible(mod_api::DimensionKey::OVERWORLD, target));
-        assert!(MARK.get(game, Holder::Entity(boat)).is_err());
-        game.enter_level(Dim::Overworld).unwrap();
-        game.transaction_close(&seal, false);
+        game.storage_scope(|game, _| {
+            assert!(game.entity_discard(game.entity(boat).unwrap()));
+            game.enter_level(Dim::Nether).unwrap();
+            assert!(
+                matches!(game.server_resident_entity(boat), EntityLookup::Missing),
+                "the parked level's boat reads as gone while its removal is pending"
+            );
+            assert!(!game.resident_source_target_visible(mod_api::DimensionKey::OVERWORLD, target));
+            assert!(MARK.get(game, Holder::Entity(boat)).is_err());
+            game.enter_level(Dim::Overworld).unwrap();
+            ((), false)
+        });
         game.enter_level(Dim::Nether).unwrap();
         assert!(
             matches!(
@@ -1202,20 +1254,21 @@ fn a_parked_levels_pending_removal_is_hidden_from_another_level_until_it_aborts(
 fn each_spawn_in_a_transaction_is_constructed_at_its_own_call_and_joins_at_the_commit() {
     const NAME: &str = "game::transaction_entities_tests::each_spawn_in_a_transaction_is_constructed_at_its_own_call_and_joins_at_the_commit";
     with_observer(NAME, |game| {
-        let seal = game.transaction_open();
-        let a = summon(game, "minecraft:pig", "{}").unwrap();
-        let told = heard();
-        assert_eq!(told.constructed, [a], "a is constructed at its call");
-        assert!(told.joined.is_empty(), "and its join is held");
-        let b = summon(game, "minecraft:pig", "{}").unwrap();
-        let told = heard();
-        assert_eq!(
-            told.constructed,
-            [b],
-            "b is constructed at its call, once and alone"
-        );
-        assert!(told.joined.is_empty(), "and its join is held");
-        game.transaction_close(&seal, true);
+        let (a, b) = game.storage_scope(|game, _| {
+            let a = summon(game, "minecraft:pig", "{}").unwrap();
+            let told = heard();
+            assert_eq!(told.constructed, [a], "a is constructed at its call");
+            assert!(told.joined.is_empty(), "and its join is held");
+            let b = summon(game, "minecraft:pig", "{}").unwrap();
+            let told = heard();
+            assert_eq!(
+                told.constructed,
+                [b],
+                "b is constructed at its call, once and alone"
+            );
+            assert!(told.joined.is_empty(), "and its join is held");
+            ((a, b), true)
+        });
         let told = heard();
         assert_eq!(told.joined, [a, b], "both join at the commit, in order");
         assert!(told.constructed.is_empty(), "nothing is constructed twice");

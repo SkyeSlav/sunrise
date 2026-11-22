@@ -74,8 +74,9 @@ string.
 
 During pack discovery and initial reload registration, before language
 resources have loaded, `text_string` still resolves literals, fallbacks and
-translation keys directly without language overrides (`text_from_json` and
-`text_from_legacy` still return `TextFormError::Unavailable` there).
+translation keys directly without language overrides. During startup pack discovery,
+the other [text conversions](../entities/server-services-and-players.md#text-conversions)
+return `TextFormError::Unavailable` instead.
 
 A missing key uses its component fallback, or the key itself without a
 fallback. On a dedicated server, a pack language file may also supply an

@@ -200,7 +200,7 @@ impl Hooks for Observer {
             let slot = player.selected_slot(host).unwrap();
             let resource = ItemResource::of(event.click.stack.unwrap());
             host.transaction(|host, tx| {
-                assert_eq!(items.extract_at(host, tx, slot, &resource, 1), 1);
+                assert_eq!(items.extract_at(host, tx, slot, &resource, 1), Ok(1));
                 Ok::<_, ()>(())
             })
             .unwrap();

@@ -977,12 +977,14 @@ if (ownPoses && p instanceof net.minecraft.network.protocol.game.ClientboundSetE
                             syncs++;
                             replyLock.notifyAll();
                         }
-                    } else if (advancements && p instanceof ClientboundSystemChatPacket c
+                    } else if ((advancements || listSyncs) && p instanceof ClientboundSystemChatPacket c
                         && c.content().getContents() instanceof net.minecraft.network.chat.contents.TranslatableContents t
                         && t.getKey().equals("commands.list.players")) {
                         synchronized (replyLock) {
-                            record("adv-receipt " + net.minecraft.network.chat.ComponentSerialization.CODEC.encodeStart(
-                                ParityData.access.createSerializationContext(com.mojang.serialization.JsonOps.INSTANCE), c.content()).getOrThrow());
+                            if (advancements) {
+                                record("adv-receipt " + net.minecraft.network.chat.ComponentSerialization.CODEC.encodeStart(
+                                    ParityData.access.createSerializationContext(com.mojang.serialization.JsonOps.INSTANCE), c.content()).getOrThrow());
+                            }
                             listReplies++;
                             replyLock.notifyAll();
                         }

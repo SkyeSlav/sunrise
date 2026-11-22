@@ -151,7 +151,6 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn chunk_residency_uses_the_owning_level_through_cow_and_swaps() {
-        use mod_api::HostTransaction;
         use sunrise_client::chunk::{Chunk, ChunkExtras};
         use sunrise_mod_runtime::attachments::{AttachmentError, AttachmentType, Holder};
         static VALUE: AttachmentType<i32> = AttachmentType {
@@ -198,7 +197,7 @@ mod tests {
                 .unwrap();
             let current = overworld.lock().unwrap().snapshot(&key);
             assert_eq!(current[0].entry.read(&VALUE), Ok(&13));
-            let aborted: Result<(), AttachmentError> = game.transaction(|host, _| {
+            let aborted: Result<(), AttachmentError> = game.storage_transaction(|host, _| {
                 VALUE.set(host, Holder::Chunk([2, 3]), 14)?;
                 let tentative = overworld.lock().unwrap().snapshot(&key);
                 assert_eq!(tentative[0].entry.read(&VALUE), Ok(&14));

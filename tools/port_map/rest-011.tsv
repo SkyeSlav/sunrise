@@ -110,7 +110,7 @@ TextColor.named	skip:data		named colour table (COLORS)
 TextColor.formatValue	port	crates/sunrise-client-core/src/text.rs::style_json	a colour is written as its name or #RRGGBB
 TextColor.equals	skip:java		value equality
 TextColor.hashCode	skip:java		hashing
-TextColor.fromLegacyFormat	port	crates/sunrise-client-core/src/text.rs::named_color	looked up by name: formatting names are the colour names
+TextColor.fromLegacyFormat	port	crates/sunrise-core/src/text.rs::named_color	looked up by name: formatting names are the colour names
 TextColor.parseColor	port	crates/sunrise-client-core/src/component.rs::object_style	gap: minor: no range check on #hex; vanilla rejects values above #FFFFFF
 KeybindContents.getNestedComponent	port	crates/sunrise-client-core/src/key_display.rs::display_name	the key's display text
 KeybindContents.visit	port	crates/sunrise-client-core/src/key_display.rs::display_name	visits the nested key text

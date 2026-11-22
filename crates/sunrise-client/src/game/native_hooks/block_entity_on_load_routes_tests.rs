@@ -387,7 +387,7 @@ mod tests {
                     sunrise_client::items::ItemStack::new("test:box_shulker_box", 1),
                 )
                 .unwrap();
-            assert!(left.is_none());
+            assert_eq!(left.continue_value(), Some(None));
             assert!(matches!(
                 game.world.block_entities.get(&(1, 64, 1)),
                 Some(BlockEntity::Mod(_))

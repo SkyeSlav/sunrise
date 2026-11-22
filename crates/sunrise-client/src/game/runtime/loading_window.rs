@@ -314,6 +314,7 @@ pub(super) fn start_game<'a>(
             ),
             entity_models.as_deref(),
             pack.render.model_library.as_deref().ok(),
+            !options.execution_role.is_dedicated_server(),
         )?),
     };
     let mut initial = None;

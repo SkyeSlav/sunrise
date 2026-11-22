@@ -240,7 +240,7 @@ class NightlyBuildPathTests(unittest.TestCase):
                 results = self.run_kind(kind)
                 for job in ("break-glass-umceko", "break-glass-aria", "break-glass"):
                     self.assertEqual(results[job], "skipped")
-                for job in ("exporters", "build", "musl-build", "complete", "sign", "publish", "musl-attach"):
+                for job in ("exporters", "build", "complete", "sign", "publish"):
                     self.assertEqual(results[job], "success", job)
                 self.assertEqual(results["full-daily"], "success" if kind == "stable" else "skipped")
 
@@ -249,7 +249,7 @@ class NightlyBuildPathTests(unittest.TestCase):
         for job in ("break-glass-umceko", "break-glass-aria", "break-glass", "build", "sign", "publish"):
             self.assertEqual(results[job], "success", job)
         retry = self.run_kind("stable", break_glass="true", attempt="2")
-        for job in ("break-glass", "exporters", "build", "musl-build", "sign", "publish"):
+        for job in ("break-glass", "exporters", "build", "sign", "publish"):
             self.assertEqual(retry[job], "skipped", job)
 
 

@@ -1483,6 +1483,7 @@ impl Game<'_> {
             sunrise_client::spans::time("dedicated_streaming", || {
                 self.update_dedicated_streaming();
             });
+            self.tick_spawn_tickets(running == Some(true), true);
             sunrise_client::spans::time("update_world", || self.update_world());
             let tick_span = sunrise_client::spans::guard("level_tick");
             // This level's moving colliders, solid to its movers for this tick only.
@@ -1554,9 +1555,9 @@ impl Game<'_> {
                 }
             }
         }
-        // The levels only `Loaded` areas name: streamed and sent, never ticked.
+        // Levels held only by loading tickets: stream them without running the world tick.
         if result.is_ok() {
-            result = self.run_view_passes(&order);
+            result = self.run_view_passes(&order, running == Some(true));
         }
         if let Some(&first) = order.first()
             && self.dim != first
@@ -1730,6 +1731,28 @@ impl Game<'_> {
         dims
     }
 
+    /// A loading-only ticket needs chunk work, not an active simulation.
+    pub(super) fn has_spawn_tickets(&self, dim: Dim) -> bool {
+        if self.lan.as_ref().is_some_and(|host| {
+            host.hub
+                .lan
+                .configuration_tasks
+                .loading_spawns(dim.id())
+                .next()
+                .is_some()
+        }) {
+            return true;
+        }
+        if dim == self.dim {
+            self.tickets.spawn_areas().next().is_some()
+        } else {
+            self.levels
+                .parked
+                .get(&dim)
+                .is_some_and(|p| p.tickets.spawn_areas().next().is_some())
+        }
+    }
+
     /// The portal tickets of `dim`'s level (`placePortalTicket`, or saved).
     pub(super) fn portal_tickets_in(&self, dim: Dim) -> &[PortalTicket] {
         if dim == self.dim {
@@ -1768,7 +1791,11 @@ impl Game<'_> {
     fn active_levels(&self) -> Vec<Dim> {
         let mut active = self.levels_to_tick();
         // A level a viewed area names, ticked or not, or one a client still holds chunks of.
-        active.extend(Dim::all().into_iter().filter(|d| self.needs_view_pass(*d)));
+        active.extend(
+            Dim::all()
+                .into_iter()
+                .filter(|d| self.needs_view_pass(*d) || self.has_spawn_tickets(*d)),
+        );
         // A vehicle waiting there for its rider's arrival in another level.
         active.extend(
             self.levels

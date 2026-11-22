@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Instant};
 
 use mod_api::{
     BlockEntityPart, BlockEntityTickEvent, BlockEntityTicksEvent, BlockPart, BlocksEvent, Hooks,
-    Host, HostTransaction, Registrar, ServerHost,
+    Host, HostTransaction, Registrar, ServerHost, TransactionError,
 };
 use sunrise_client::{
     chunk::Chunk,
@@ -21,7 +21,7 @@ impl BlockEntityPart for Ticker {
             let level = host.level("minecraft:overworld").unwrap();
             let sink = host.block_entity(level, [0, 63, 0]).unwrap();
             let value = sink.data_slots(host).unwrap()[0];
-            let result: Result<(), ()> = host.transaction(|host, _| {
+            let result: Result<(), TransactionError<()>> = host.transaction(|host, _| {
                 assert!(sink.set_data_slot(host, 0, value + 1).unwrap());
                 Ok(())
             });
@@ -204,15 +204,17 @@ fn data_slot_sizing_after_creation_and_load_joins_the_existing_journal() {
                 "no-op sends no Changed notice"
             );
             assert_eq!(entity.data_slots(game), Some(vec![0]));
-            let aborted: Result<(), ()> = (game as &mut dyn ServerHost).transaction(|host, _| {
-                assert_eq!(entity.set_data_slots(host, vec![30, 40]), Ok(true));
-                host.transaction(|host, _| {
-                    assert!(entity.set_data_slot(host, 0, 50).unwrap());
-                    Ok(())
-                })?;
-                Err(())
-            });
-            assert_eq!(aborted, Err(()));
+            let aborted: Result<(), TransactionError<()>> = (game as &mut dyn ServerHost)
+                .transaction(|host, _| {
+                    assert_eq!(entity.set_data_slots(host, vec![30, 40]), Ok(true));
+                    host.transaction(|host, _| {
+                        assert!(entity.set_data_slot(host, 0, 50).unwrap());
+                        Ok::<_, ()>(())
+                    })
+                    .unwrap();
+                    Err(())
+                });
+            assert_eq!(aborted, Err(TransactionError::Aborted(())));
             assert_eq!(entity.data_slots(game), Some(vec![0]));
             assert!(game.transactions.is_empty());
             assert_eq!(entity.set_data_slots(game, vec![0; 256]), Ok(true));

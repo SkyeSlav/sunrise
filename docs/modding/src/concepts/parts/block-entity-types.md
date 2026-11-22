@@ -118,8 +118,9 @@ let done = Press::edit_state(event.subject.host(), entity, |_, progress| {
 
 - `Press::state(host, entity)` and `state_existing` read a snapshot through `&dyn Host` and never
   insert the default. `edit_state` takes `&mut dyn ServerHost` and runs in a nested transaction
-  of its own. The closure gets a copy and the host, and no store borrow is held while it runs. The
-  result is stored when the closure returns.
+  of its own. `PartStateError::Unavailable` means the host could not open the transaction and
+  the closure did not run. The closure gets a copy and the host, and no store borrow is held
+  while it runs. The result is stored when the closure returns.
 - Every call checks the handle first. A handle from another level gives `PartStateError::OtherLevel`.
   A removed, replaced or unloaded block entity gives `Stale`. After a reload the saved value is read
   under the new handle.

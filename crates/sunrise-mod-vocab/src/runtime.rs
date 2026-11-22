@@ -64,6 +64,9 @@ pub type Mods = Arc<[ModEntry]>;
 type NamedPoison =
     std::collections::HashMap<(usize, &'static str), std::collections::BTreeSet<Identifier>>;
 
+type PoisonKey = (&'static str, Option<usize>);
+type PoisonSets = Box<[Option<std::collections::HashSet<PoisonKey>>]>;
+
 pub(crate) struct Installed {
     pub(crate) mods: Mods,
     pub(crate) by_id: std::collections::HashMap<&'static str, usize>,
@@ -80,10 +83,10 @@ pub(crate) struct Installed {
     mod_id_owners: std::collections::HashMap<&'static str, usize>,
     content_owners: OnceLock<std::collections::HashMap<Box<str>, Option<usize>>>,
     disabled_count: std::sync::atomic::AtomicUsize,
-    /// Per-hook sets of mods whose listener panicked and is disabled for that
-    /// hook for the rest of the session. Filled only on a panic; `poison_free`
-    /// answers through one atomic load, so a dispatch with no poison pays nothing.
-    poisons: std::sync::Mutex<Option<Box<[Option<std::collections::HashSet<&'static str>>]>>>,
+    /// Per-hook sets of callbacks disabled after a panic. Most are keyed by mod; an item
+    /// tooltip image provider also has its registration's order within that mod.
+    /// `poison_free` answers through one atomic load before a session's first panic.
+    poisons: std::sync::Mutex<Option<PoisonSets>>,
     poison_free: std::sync::atomic::AtomicBool,
     /// Session poison for named callbacks rebuilt with resources or a connection.
     named_poison: std::sync::Mutex<NamedPoison>,
@@ -262,6 +265,7 @@ pub fn isolated_failures() -> u64 {
 #[derive(Clone, Copy)]
 pub(crate) enum Callback {
     Hook(generated::HookId),
+    TooltipImage(usize),
     DamageReduction,
     Registration,
 }
@@ -276,9 +280,18 @@ impl Callback {
     fn index(self) -> usize {
         match self {
             Self::Hook(hook) => hook as usize,
+            Self::TooltipImage(_) => HookId::TooltipImage as usize,
             Self::DamageReduction => generated::HOOK_COUNT,
             Self::Registration => generated::HOOK_COUNT + 1,
         }
+    }
+
+    fn poison_key(self, id: &'static str) -> PoisonKey {
+        let registration = match self {
+            Self::TooltipImage(order) => Some(order),
+            _ => None,
+        };
+        (id, registration)
     }
 }
 
@@ -289,22 +302,24 @@ impl Callback {
 fn poison(callback: Callback, id: &'static str) -> bool {
     let (entered, trapped) = LISTENER_SERIAL.get();
     LISTENER_SERIAL.set((entered, trapped.wrapping_add(1)));
-    let Some(installed) = installed() else {
-        return true;
-    };
+    installed().is_none_or(|installed| poison_installed(installed, callback, id))
+}
+
+fn poison_installed(installed: &Installed, callback: Callback, id: &'static str) -> bool {
     let mut poisons = installed.poisons.lock().unwrap_or_else(|e| e.into_inner());
     let sets = poisons
         .get_or_insert_with(|| std::vec![None; generated::HOOK_COUNT + 2].into_boxed_slice());
     let first = sets[callback.index()]
         .get_or_insert_with(std::collections::HashSet::new)
-        .insert(id);
+        .insert(callback.poison_key(id));
     installed
         .poison_free
         .store(false, std::sync::atomic::Ordering::Release);
     first
 }
 
-fn is_poisoned(installed: &Installed, callback: impl Into<Callback>, id: &str) -> bool {
+fn is_poisoned(installed: &Installed, callback: impl Into<Callback>, id: &'static str) -> bool {
+    let callback = callback.into();
     // One atomic load on the usual path: the sets only fill on a panic.
     !installed
         .poison_free
@@ -314,13 +329,55 @@ fn is_poisoned(installed: &Installed, callback: impl Into<Callback>, id: &str) -
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
-            .and_then(|poisons| poisons[callback.into().index()].as_ref())
-            .is_some_and(|poisoned| poisoned.contains(id))
+            .and_then(|poisons| poisons[callback.index()].as_ref())
+            .is_some_and(|poisoned| poisoned.contains(&callback.poison_key(id)))
 }
 
 /// Whether `id`'s listener of `hook` is poisoned for the session.
-pub(crate) fn poisoned(hook: impl Into<Callback>, id: &str) -> bool {
+pub(crate) fn poisoned(hook: impl Into<Callback>, id: &'static str) -> bool {
     installed().is_some_and(|installed| is_poisoned(installed, hook, id))
+}
+
+/// The dispatcher that published a retained tooltip payload. Carry its original installed
+/// state so the final release can suppress that producer even outside the callback's scope.
+#[derive(Clone, Copy)]
+pub(crate) struct TooltipProducer {
+    installed: Option<&'static Installed>,
+    callback: Callback,
+    pub(crate) mod_id: &'static str,
+}
+
+impl TooltipProducer {
+    pub(crate) fn new(callback: impl Into<Callback>, mod_id: &'static str) -> Self {
+        Self {
+            installed: installed(),
+            callback: callback.into(),
+            mod_id,
+        }
+    }
+
+    pub(crate) fn dispose<T>(self, payload: T) {
+        let _guard = mark_mod(self.mod_id, "data_drop");
+        // A retained object's destructor may run during another listener's callback. Poison
+        // its publisher without reporting that the *current* listener failed.
+        let _ = contain_callback(
+            || drop(payload),
+            |panic| {
+                if self
+                    .installed
+                    .is_none_or(|installed| poison_installed(installed, self.callback, self.mod_id))
+                {
+                    log_and_queue_named_panic(
+                        self.installed,
+                        "data_drop",
+                        self.mod_id,
+                        None,
+                        panic,
+                    );
+                }
+            },
+        );
+    }
 }
 
 /// Record a mod callback panic under the unified dispatch failure rule.

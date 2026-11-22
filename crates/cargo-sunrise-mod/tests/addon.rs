@@ -252,12 +252,19 @@ impl mod_api::Hooks for Addon {
         None
     );
 
-    // `run` also carries the dependencies beside the SDK's executable. Registration needs only
-    // the marker and the registries table and exits before a world opens.
+    // `run` also carries the dependencies beside the SDK's executable. Registration only needs
+    // a current full-profile marker and the registries table; it exits before a world opens.
     let resources = root.join("resources");
     fs::create_dir(&resources).unwrap();
-    for name in ["sunrise-resources.json", "registries.json"] {
-        fs::write(resources.join(name), "{}").unwrap();
+    for (name, json) in [
+        (
+            "sunrise-resources.json",
+            r#"{"schema":7,"minecraft":"26.3"}"#,
+        ),
+        ("sunrise-prepare.json", r#"{"output_version":8}"#),
+        ("registries.json", "{}"),
+    ] {
+        fs::write(resources.join(name), json).unwrap();
     }
     let run = addon.join("target/sunrise-mod/run");
     fs::create_dir_all(run.join("game")).unwrap();

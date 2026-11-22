@@ -77,11 +77,11 @@ whether the event can reach gameplay mappings with no screen open. A cancelled m
 neither the editor nor Post, but a cancelled real press counts as handled. Key and character Post
 still run only for unhandled input.
 
-The control socket sends `screen_key_released_pre` to the currently open title screen, even if
-that screen did not receive the matching press. For example, when Escape closes the preset editor,
-its release goes to Create World, including when Escape is sent as a single tap. The released key
-is no longer held. If it was a modifier, its bit is already cleared in `event.modifiers` unless
-the other key for the same modifier is still held.
+The control socket sends `screen_key_released_pre` to the currently open screen, even if it did
+not receive the matching press. For example, when Escape closes the preset editor, its release
+goes to Create World, including when Escape is sent as a single tap. If the released key was a
+modifier, its bit is already cleared in `event.modifiers` unless the other key for the same
+modifier is still held.
 
 ## Drawing a dimension transition
 
@@ -320,31 +320,176 @@ for a 133-high hopper layout. Chest layouts use `height - 94`; a shulker box's
 When building a complete `MenuScreenLayout` literal, include `title_label: None` and
 `inventory_label: None`, or use `..Default::default()`.
 
-## Buttons with your own art
+## Mounting widgets on a screen
 
-Set `Button::sprites` before adding a button to your `Widgets`. With `None` (the default), the
-button uses the vanilla sprites. With `Some`, it uses the same GUI sprite names as `DrawContext::sprite`:
+Mount buttons ([`Button`]), single-line text fields ([`TextField`]), and custom widgets
+([`ScreenWidget`]) inside `Hooks::screen_init_post` (`ScreenEvent.Init.Post`) through
+`event.widgets` (`ScreenWidgets`). This works on your own mod screen (`host.mod_screen() == Some(id)`)
+and on vanilla screens alike, matching vanilla's `Screen.addRenderableWidget` and NeoForge's
+`ScreenEvent.Init.Post`.
 
 ```rust
-use mod_api::client::widgets::{Button, ButtonSprites, Widgets};
+{{#include ../../../examples/src/widget_screen.rs:widget_screen}}
+```
 
-let mut widgets = Widgets::new();
+Include `assets/widget_example/lang/en_us.json` in the example mod's resources, and use other
+language files for translations. Done uses vanilla's `gui.done`; a note echoed from the text field
+stays literal because it is player input.
+
+The engine owns drawing order (mounted widgets draw inside the screen's Pre-guarded contents pass,
+before `screen_render_foreground` and tooltips, so cancelling `screen_render_pre` skips them),
+hover, focus, unified Tab / Shift+Tab and arrow navigation across native and mounted controls,
+controller navigation, narration, and mouse/keyboard dispatch on screens, title screens, and
+overlays alike. Mounted widgets are cleared when the screen closes or rebuilds its children
+(for example on a resize that calls `Screen.rebuildWidgets`). A reposition-only resize preserves
+children and focus, and same-instance resizes preserve `MouseHandler` double-click timing. Keep
+text or selection that must survive a rebuild on your mod struct and seed the new widgets from it. Use
+`event.widgets.set_initial_focus(id)` to focus a widget mounted by your listener on open
+(`Screen.setInitialFocus`). Read `event.widgets.children()` for the ordered child list and
+use `event.widgets.remove(child.id)` to remove a listed child (`ScreenEvent.Init.removeListener`).
+The list includes earlier accepted mounts and the native controls on the pause menu. A later
+listener sees your edits only if your callback completes normally. There is no live focus setter
+or mutable lookup for built-in widgets.
+A custom widget can track its own focus via `set_focused` and read or change the state it owns.
+
+### Buttons with your own art
+
+Build an interactive button with `Button::new(rect, label, on_press)` or a disabled one with
+`Button::inactive(rect, label)`. Configure initial state with `.active(bool)`, `.visible(bool)`,
+and `.sprites(ButtonSprites)`. With no custom art (the default), the button uses the vanilla
+nine-slice sprites. With `ButtonSprites`, it uses the same GUI sprite names as
+`DrawContext::sprite`:
+
+```rust,ignore
+use mod_api::client::widgets::{Button, ButtonSprites};
+use mod_api::Text;
+
 let mut art = ButtonSprites::new("mymod:open");
 art.highlighted = Some("mymod:open_highlighted".into());
 art.disabled = Some("mymod:open_disabled".into());
 art.label_offset = [1.0, -1.0];
-let mut button = Button::new([20.0, 24.0, 80.0, 20.0], label);
-button.sprites = Some(art);
-let open = widgets.add_button(button);
+
+event.widgets.add_button(
+    Button::new([20.0, 24.0, 80.0, 20.0], Text::translate("mymod.screen.open", vec![]), |state, host| {
+        state.active = false;
+        host.mod_screen_open("mymod");
+    })
+    .sprites(art),
+);
 ```
 
-`Widgets::draw` stretches the full sprite into the button's rectangle; it doesn't nine-slice custom
-art. Inactive takes precedence over hover or focus. An omitted or unknown state sprite falls back to the
-custom normal sprite, then to the vanilla nine-slice for that state. The label offset is in GUI pixels;
-it moves the text, not the hitbox or the scrolling label's clip. The same button still registers for
-narration and controller focus, and `Widgets` handles clicks, Tab, Enter and Space as before.
-If you call `DrawContext::widget_button` directly, pass the art as `Option<&ButtonSprites>` (`None` for
-vanilla art).
+Custom art stretches the full sprite into the button's rectangle rather than nine-slicing it.
+Inactive takes precedence over hover or focus. An omitted or unknown state sprite falls back to
+the custom normal sprite, then to the vanilla nine-slice for that state. `label_offset` is in GUI
+pixels and moves only the label, not the hitbox or overflow clip. Mounted buttons register for
+narration and controller focus automatically. They activate on left click, on Enter or Space with
+keyboard focus, and through controller activation with controller focus. Controller activation
+calls the widget without dispatching screen mouse hooks. Inside `on_press`, mutate `&mut ButtonState` (`rect`, `label`, `active`, `visible`,
+`sprites`) directly.
+
+### Text fields, IME and double-click
+
+Mount a single-line text field with `TextField::new(rect, max_length)` and configure it with
+`.value(...)`, `.hint(...)`, `.editable(bool)`, `.active(bool)`, `.visible(bool)`,
+`.bordered(bool)`, `.on_change(|text, host| ...)`, and `.on_submit(|text, host| ...)`.
+`max_length` counts UTF-16 code units, following vanilla `EditBox.setMaxLength` and
+`EditBox.insertText`. An emoji represented by a surrogate pair needs two units.
+
+The engine owns the `EditBox` layout, horizontal scroll, cursor, selection, and blink state
+locally—mods never round-trip layout records or forward screen input hooks manually. Focused
+mounted text fields support:
+
+- **IME composition and commit**: enabling OS input methods while focused so preedit and committed
+  text land directly in the field (and block screen hotkeys like `E` while focused).
+- **Double-click and drag selection**: double-clicking selects the word under the cursor using
+  vanilla's 250 ms same-screen same-button `MouseHandler` rule, and dragging extends the selection.
+- **Standard editing and clipboard shortcuts**: arrow/Home/End navigation, word movement, Shift
+  selection, Backspace/Delete, and Ctrl/Cmd + A/C/V/X.
+- **Controller keyboard**: edits go to the focused mounted field. On Chat, completion and
+  suggestion/history navigation are available only when the native chat editor owns the keyboard.
+
+### Custom widgets
+
+Implement [`ScreenWidget`] for controls beyond vanilla buttons and text fields and mount them with
+`event.widgets.add_widget(Box::new(...))`. Implement `bounds(&self) -> [f32; 4]` and override only
+the callbacks you need (`visible`, `active`, `render`, `mouse_clicked`, `mouse_released`,
+`mouse_dragged`, `mouse_scrolled`, `key_pressed`, `key_released`, `char_typed`, `captures_input`,
+`set_focused`). Every input callback defaults to `false` (unhandled). A pointer press goes only
+to the first hit child; if that child declines it, focus stays where it was. Return `true` from
+`captures_input()` when a focused custom
+widget consumes typing so screen hotkeys yield to it and IME stays enabled. A panic inside a
+mounted widget callback disables that mod's widget callbacks for the session and reports an error
+naming the mod without breaking other widgets or the screen.
+
+### Opening a mod screen and synchronous transitions
+
+`ClientHost::mod_screen_open(mod_id)` follows vanilla's `Gui.setScreen` and NeoForge's
+`ScreenEvent.Opening` / `ScreenEvent.Closing`: it can replace any open vanilla screen, title
+screen, overlay (book, sign editor, dialog, or prompt), or another mod's screen. Once hooks allow
+the transition, the engine runs the replaced screen's close cleanup (closing container or creative
+menus and clearing any overlay), switches to `Screen::Mod` owned by `mod_id`, and runs
+`screen_init_post`. It returns `false` when cancelled or redirected by `screen_opening`, while a
+world or connection is loading, or without a client window.
+
+Widget callbacks (`Button` `on_press`, `TextField` `on_change` / `on_submit`, and `ScreenWidget`
+input handlers) receive `&mut dyn ClientHost` and execute screen transitions synchronously: calling
+`host.close_screen()`, `host.mod_screen_close(id)`, or `host.mod_screen_open(next_id)` transitions
+immediately, matching `Button.onPress` calling `Gui.setScreen`. If a callback switches or closes
+the screen, the engine discards the previous screen's mounted widgets once the callback returns.
+
+A dialog moving to its waiting screen or Back from a warning to a live dialog also proposes a
+screen replacement, even though both receivers have the id `dialog`. If `screen_opening` cancels,
+the current dialog's widgets and focus remain; neither `screen_closing` nor a replacement
+`screen_init_post` fires.
+
+## Screen input Pre and Post hooks
+
+Screen mouse, keyboard, character, and preedit hooks match NeoForge's `ScreenEvent.*` Pre/Post
+contract on the **receiving screen**:
+
+- **Receiving screen**: the engine snapshots the open screen at Pre time (including
+  `event.screen.mod_screen` when a mod screen is open) and passes that same `ScreenView` to the
+  matching Post hook, even if handling closed the screen or opened another mod's screen. Read
+  `event.screen.mod_screen` in screen Post hooks rather than `host.mod_screen()`, which always
+  reports the screen currently open at the moment it is called. A dialog, prompt, book, lectern,
+  or sign editor in front of another screen is itself the receiver.
+- **Focused text-box rewrites (`screen_char_typed_pre.field`)**: `event.field` is `Some` for
+  vanilla edit boxes and for focused mounted built-in `TextField`s (whose edits and `on_change`
+  callback stay in sync), and `None` for custom `ScreenWidget`s (which own their own state).
+- **Double-click**: `screen_mouse_button_pressed_pre` and `screen_mouse_button_pressed_post` carry
+  `event.double_click`, following vanilla `MouseHandler`'s 250 ms same-screen same-button rule.
+- **Mouse press and release Post (`collect`, non-cancellable)**:
+  `screen_mouse_button_pressed_post` and `screen_mouse_button_released_post` run after mounted
+  widgets and the screen ran, whenever Pre did not cancel. `event.was_click_handled` and
+  `event.was_release_handled` are the original answer, even if an earlier listener forced a
+  different result. Set `*event.result` to `TriState::True` or `TriState::False` to force handled
+  or unhandled; `TriState::Default` uses the original answer. The press Post receives Pre's
+  `double_click` bit. The final press result determines whether it enters double-click history.
+- **Key press and release Post (unhandled-only, cancellable)**:
+  `screen_key_pressed_post` and `screen_key_released_post` fire on the receiving screen only when
+  neither mounted widgets nor the screen handled the key. Set `event.cancelled = true` (or return
+  `Flow::Cancel`) to mark the key handled so the game's key bindings skip it. A mod browser search
+  box can decline a key; the container then handles its raw bindings, including rebound inventory
+  close. A handled close or sort does not fire Post; an unhandled slot swap, pick or drop has
+  already happened by Post. A mapping reached after Post cannot dispatch a second sort. Cancel Pre
+  to prevent a slot action. Window releases, `sunrise-ctl key … up`, and the release phase of
+  `key … tap` all deliver release Pre and, if unhandled, Post.
+  - Cancelling physical release **Pre** skips the screen and Post, but still clears the device
+    key and runs mapped keyboard release cleanup.
+  - Cancelling socket release **Pre** skips the screen, Post, and the socket's normal key-up
+    handling. A held mapping can stay down.
+  - Cancelling unhandled release **Post** skips normal mapped release on either route, after the
+    screen declined the event. It does not undo device tracking. Do not cancel a release merely
+    to bypass the screen after allowing the mapped press.
+- **Unhandled-only notices (non-cancellable)**:
+  `screen_mouse_dragged_post`, `screen_mouse_scrolled_post`, `screen_char_typed_post`, and
+  `screen_preedit_post` fire on the receiving screen only when neither mounted widgets nor the
+  screen handled the input, and cannot cancel (`screen_char_typed_post` returns `()`). Printable
+  window text without a physical key and unhandled `sunrise-ctl type` text use the same character
+  hooks. Controller keyboard edits go to the focused child without emitting physical input hooks. A built-in
+  `TextField` can consume preedit; a custom `ScreenWidget` cannot, even when its `captures_input()`
+  returns `true`. A custom editor can observe the unhandled composition in `screen_preedit_post`
+  and receives committed characters through `char_typed`.
 
 ## Labels: wrapped text without a widget
 

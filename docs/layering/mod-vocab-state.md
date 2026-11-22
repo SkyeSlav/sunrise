@@ -37,6 +37,7 @@ OUT_DIR file checked by the generator before writing it.
 | --- | --- | --- | --- |
 | `__private/platform.rs::PLATFORM` | `OnceLock<Platform>` | set-once socket | The engine keeps one provider of platform callbacks for registration and profiling; the provider is installed before engine startup. |
 | `block/fluid_capability.rs::BUCKET_IDS` | `std::sync::LazyLock<[crate::Identifier;3]>` | immutable lookup cache | Three vanilla bucket identifiers resolved once; no live registration or world state. |
+| `block/item_place.rs::fresh::NEXT` | `AtomicU64` | monotonic counter | Names lent scratch slots without reusing an identity after a transaction or host drops; it stores no stacks or world state. |
 | `block/part_state.rs::EDITING` | `RefCell<Vec<(AttachmentHolder,&'staticstr,&'staticstr)>>` | reentrancy guard | Per-thread stack of the Part-state edits open on this thread, by holder, so an edit of the same holder and key from inside its own edit is refused. |
 | `callback_owner.rs::CAUGHT` | `RefCell<Option<String>>` | crash owner | Per-thread slot holding the attributed diagnostic recorded by the game panic hook during a contained unwind so hostile payload destructors cannot overwrite it. |
 | `callback_owner.rs::CONTAINED` | `Cell<u32>` | reentrancy guard | Per-thread nesting depth for contain_unwind and CallbackOwner containment so the game panic hook suppresses crash reports and captures diagnostics for contained mod panics. |

@@ -20,10 +20,7 @@ use sunrise_core::nbt::Tag;
 use sunrise_core::position::BlockPos;
 use sunrise_protocol::packets::play::{self, Clientbound as C, Serverbound as S};
 use sunrise_world::level::flags as level_flags;
-use winit::{
-    event::{ElementState, KeyEvent},
-    keyboard::{KeyCode, PhysicalKey},
-};
+use winit::keyboard::KeyCode;
 
 const BLACK: u32 = 0xFF00_0000;
 const PAGE_CHARS: usize = 1024;
@@ -386,7 +383,9 @@ impl Game<'_> {
         {
             self.remote_close_container();
         }
-        self.book = None;
+        if self.book.take().is_some() {
+            self.refresh_screen_widgets();
+        }
         self.capture(self.screen == super::Screen::Playing && !self.screen_over_playing());
     }
     /// `BookEditScreen.saveChanges` and `BookSignScreen`'s Sign and Close:
@@ -412,6 +411,7 @@ impl Game<'_> {
             }));
         }
         self.write_book(slot, pages, title);
+        self.refresh_screen_widgets();
         self.capture(true);
     }
     /// The book and quill at `slot` takes the pages, or with a title becomes
@@ -498,35 +498,46 @@ impl Game<'_> {
                 .update_connection(conn, |g| g.menu_sent[menu_slot] = None);
         }
     }
-    pub(super) fn book_key(&mut self, event: &KeyEvent) {
-        if event.state != ElementState::Pressed {
-            return;
-        }
-        if let Some(shortcut) = self.edit_shortcut(event) {
+    pub(super) fn book_key(
+        &mut self,
+        key: KeyCode,
+        shortcut: Option<sunrise_client::clipboard::EditShortcut>,
+    ) -> bool {
+        if let Some(shortcut) = shortcut
+            && matches!(self.book, Some(BookScreen::Edit { .. }))
+        {
             self.book_shortcut(shortcut);
-            return;
+            return true;
         }
-        let key = match event.physical_key {
-            PhysicalKey::Code(k) => Some(k),
-            _ => None,
-        };
-        self.book_input(key, event.text.as_deref());
+        self.book_input(Some(key), None)
     }
     /// A key and the text it typed in the open book (the keyboard, or a
     /// controller's on-screen keyboard).
-    pub(super) fn book_input(&mut self, key: Option<KeyCode>, text: Option<&str>) {
+    pub(super) fn book_input(&mut self, key: Option<KeyCode>, text: Option<&str>) -> bool {
         match self.book.as_mut() {
             Some(BookScreen::View { .. }) => match key {
-                Some(KeyCode::Escape) => self.close_book(),
-                Some(KeyCode::PageUp) => self.turn_page(false),
-                Some(KeyCode::PageDown) => self.turn_page(true),
-                _ => {}
+                Some(KeyCode::Escape) => {
+                    self.close_book();
+                    true
+                }
+                Some(KeyCode::PageUp) => {
+                    self.turn_page(false);
+                    true
+                }
+                Some(KeyCode::PageDown) => {
+                    self.turn_page(true);
+                    true
+                }
+                _ => false,
             },
             Some(BookScreen::Edit { signing: true, .. }) => match key {
                 // `BookSignScreen` overrides neither `onClose` nor
                 // `shouldCloseOnEsc`: Escape is `Screen.onClose`, which closes
                 // the whole book and saves nothing.
-                Some(KeyCode::Escape) => self.close_book(),
+                Some(KeyCode::Escape) => {
+                    self.close_book();
+                    true
+                }
                 // `BookSignScreen.keyPressed` signs whenever the title box is
                 // not empty, blank or not, and trims the title on send.
                 Some(KeyCode::Enter | KeyCode::NumpadEnter) => {
@@ -536,11 +547,15 @@ impl Game<'_> {
                     if !empty {
                         self.save_book(true);
                     }
+                    !empty
                 }
-                Some(key) if self.book_title_key(key) => {}
+                Some(key) if self.book_title_key(key) => true,
                 _ => {
                     if let Some(typed) = text {
                         self.book_title_insert(typed);
+                        true
+                    } else {
+                        false
                     }
                 }
             },
@@ -548,25 +563,47 @@ impl Game<'_> {
                 // `BookEditScreen` overrides neither `onClose` nor
                 // `shouldCloseOnEsc` either: Escape is `Screen.onClose`, and
                 // only Done calls `saveChanges`.
-                Some(KeyCode::Escape) => self.close_book(),
-                Some(KeyCode::PageUp) => self.turn_page(false),
-                Some(KeyCode::PageDown) => self.turn_page(true),
-                Some(KeyCode::ArrowUp) => self.book_move_line(-1),
-                Some(KeyCode::ArrowDown) => self.book_move_line(1),
+                Some(KeyCode::Escape) => {
+                    self.close_book();
+                    true
+                }
+                Some(KeyCode::PageUp) => {
+                    self.turn_page(false);
+                    true
+                }
+                Some(KeyCode::PageDown) => {
+                    self.turn_page(true);
+                    true
+                }
+                Some(KeyCode::ArrowUp) => {
+                    self.book_move_line(-1);
+                    true
+                }
+                Some(KeyCode::ArrowDown) => {
+                    self.book_move_line(1);
+                    true
+                }
                 // MultilineTextField.keyPressed: Home and End seek the caret's
                 // line; with Ctrl they go to the page's start and end.
                 Some(edge @ (KeyCode::Home | KeyCode::End)) if !self.has_control_down() => {
-                    self.book_line_edge(edge == KeyCode::End)
+                    self.book_line_edge(edge == KeyCode::End);
+                    true
                 }
-                Some(KeyCode::Enter | KeyCode::NumpadEnter) => self.page_insert("\n"),
-                Some(key) if self.book_page_key(key) => {}
+                Some(KeyCode::Enter | KeyCode::NumpadEnter) => {
+                    self.page_insert("\n");
+                    true
+                }
+                Some(key) if self.book_page_key(key) => true,
                 _ => {
                     if let Some(typed) = text {
                         self.page_insert(typed);
+                        true
+                    } else {
+                        false
                     }
                 }
             },
-            None => {}
+            None => false,
         }
     }
     /// Typing for `sunrise-ctl type` (`\n` is a line break).
@@ -1702,6 +1739,9 @@ impl Game<'_> {
                 // event, drawn as the chat draws it (componentHoverEffect).
                 hovered = pages.get(*page).and_then(|t| self.book_style_at(t, left));
             }
+        }
+        if let Some(book_id) = self.book.as_ref().map(BookScreen::id) {
+            self.draw_overlay_mounted_widgets(batch, book_id);
         }
         if let Some(style) = hovered {
             if let Some(cursor) = link_cursor(&style) {

@@ -35,7 +35,7 @@ let into = level.capability(server, &ITEMS, [1, 64, 0], None).unwrap();
 let moved = server.transaction(|host, tx| {
     move_resources(host, &from, &into, |_: &ItemResource| true, 3, Some(tx))
 });
-assert_eq!(moved.ok(), Some(3));
+assert_eq!(moved, Ok(3));
 let into = host.level.block_entity_at([1, 64, 0]).unwrap().items.as_ref().unwrap();
 assert_eq!(into.count("minecraft:stone"), 3);
 ```

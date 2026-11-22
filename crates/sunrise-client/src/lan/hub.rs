@@ -9,7 +9,7 @@ use super::{
     chunk_watch::{ChunkWatchKind, ChunkWatchLog},
     chunks::ChunkEncoder,
     data::SyncData,
-    entity::{Entities, EntityState},
+    entity::{Entities, EntityState, avatar_main_arm_meta},
     equipment_cache,
     guest::{Guest, InboxItem, SentEffect, stack_to_network_projecting},
 };
@@ -26,7 +26,10 @@ use sunrise_core::random::LegacyRandom;
 use sunrise_protocol::ids::play::clientbound as ids;
 use sunrise_protocol::{
     entity_data::{Particle, ParticleData, Particles, Value, serializer},
-    packets::play::{self, Clientbound as C, Serverbound as S},
+    packets::{
+        configuration::ClientInformation,
+        play::{self, Clientbound as C, Serverbound as S},
+    },
     text::{literal, translatable},
 };
 use {
@@ -172,7 +175,7 @@ pub enum HostEvent {
     InputCredits(Vec<crate::net::ingress::ReceiveLease<NetEvent>>),
     RawPayload(Box<crate::raw_payloads::Delivery>),
     /// A guest entered the world; load their saved state.
-    Joined(u32),
+    Joined(u32, Option<super::configuration_tasks::Configured>),
     /// A guest left (state to save, entities to drop).
     Left(Box<Guest>),
     Packet(u32, Box<S>),
@@ -339,6 +342,10 @@ pub struct Hub {
     pub chunk_watches: ChunkWatchLog,
     /// Kicks waiting for the game thread to notify native mods.
     pending_kicks: Vec<HostEvent>,
+    /// The player who left whose logout the mods are hearing (`player_logged_out`), by
+    /// connection: listed again with the online players though no longer in a level, as one
+    /// who quit from the End credits is.
+    pub departing: Option<u32>,
     /// A native mod listens to `player_move`: a changed report waits for the game ([`pending_move`]).
     pub moves_listened: bool,
     /// This hub's game owns the movement effects that need an acting player and a live level.
@@ -816,6 +823,7 @@ impl Hub {
             chunk_watches: ChunkWatchLog::default(),
             packet_drain: None,
             pending_kicks: Vec::new(),
+            departing: None,
             moves_listened: false,
             dispatch_move_effects: false,
             transfers: None,
@@ -993,7 +1001,7 @@ impl Hub {
     pub fn holder_guest(&self, uuid: u128, dimension: &str) -> Option<&Guest> {
         self.guests
             .iter()
-            .find(|g| g.placed && g.uuid == uuid && g.participates_online())
+            .find(|g| self.online(g) && g.uuid == uuid)
             .or_else(|| {
                 self.guests.iter().find(|g| {
                     g.placed
@@ -1006,9 +1014,11 @@ impl Hub {
 
     /// Placed network players in join order.
     pub fn online_players(&self) -> impl Iterator<Item = &Guest> {
-        self.guests
-            .simulation_iter()
-            .filter(|g| g.placed && g.participates_online())
+        self.guests.simulation_iter().filter(|g| self.online(g))
+    }
+    /// Whether `g` is a placed network player, or the one whose logout the mods are hearing.
+    pub fn online(&self, g: &Guest) -> bool {
+        (g.placed || self.departing == Some(g.conn)) && g.participates_online()
     }
     /// The number of network guests, including those still joining.
     pub fn online_count(&self) -> usize {
@@ -2467,7 +2477,7 @@ impl Hub {
                 NetEvent::RawPayload(delivery) => {
                     self.poll_raw_payload(delivery, credit, &mut events, &mut credits);
                 }
-                NetEvent::Joined(j) => {
+                NetEvent::Joined(j, spawn) => {
                     credits.push(credit);
                     while let Some(i) = self
                         .guests
@@ -2477,7 +2487,7 @@ impl Hub {
                         events.push(HostEvent::Left(Box::new(self.guests.remove(i))));
                     }
                     let conn = self.admit(*j, ctx);
-                    events.push(HostEvent::Joined(conn));
+                    events.push(HostEvent::Joined(conn, spawn));
                 }
                 NetEvent::Left(conn, reason) => {
                     credits.push(credit);
@@ -2752,7 +2762,9 @@ impl Hub {
     }
 
     pub(super) fn remove_guest(&mut self, i: usize, reason: &str) -> Guest {
+        let behind = self.guests.iter().take(i).map(|g| g.conn).collect();
         let mut g = self.guests.remove(i);
+        g.listed_behind = behind;
         super::chunk_watch::unwatch_all(&mut self.chunk_watches, &mut g);
         let closed = g
             .menu
@@ -3347,7 +3359,7 @@ impl Hub {
         body: BodyFlags,
         living_flags: i8,
         bed: Option<[i32; 3]>,
-        skin: u8,
+        info: &ClientInformation,
         health: f32,
         equipment: Vec<(u8, Option<sunrise_protocol::item::Stack>)>,
         attributes: Vec<play::AttributeSnapshot>,
@@ -3388,8 +3400,24 @@ impl Hub {
         if (health - 1.0).abs() > f32::EPSILON && health != 20.0 {
             meta.push((9, serializer::FLOAT, Value::Float(health)));
         }
-        if skin != 0 {
-            meta.push((16, serializer::BYTE, Value::Byte(skin as i8)));
+        // The effect swirls go back to none.
+        let mut defaults = vec![
+            (
+                10,
+                serializer::PARTICLES,
+                Value::Particles(Particles::new()),
+            ),
+            (11, serializer::BOOLEAN, Value::Bool(false)),
+        ];
+        // ServerPlayer.updateOptions takes both the arm and the skin layers
+        // from ClientInformation.
+        avatar_main_arm_meta(info.main_hand == 0, &mut meta, &mut defaults);
+        if info.model_customisation != 0 {
+            meta.push((
+                16,
+                serializer::BYTE,
+                Value::Byte(info.model_customisation as i8),
+            ));
         }
         meta.extend(effect_meta);
         EntityState {
@@ -3405,15 +3433,7 @@ impl Hub {
             data: 0,
             meta,
             forced_meta: [0; 4],
-            // The effect swirls go back to none.
-            defaults: vec![
-                (
-                    10,
-                    serializer::PARTICLES,
-                    Value::Particles(Particles::new()),
-                ),
-                (11, serializer::BOOLEAN, Value::Bool(false)),
-            ],
+            defaults,
             equipment,
             attributes,
             precise: false,
@@ -3486,7 +3506,7 @@ impl Hub {
                     guest_body(g),
                     g.living_flags,
                     g.bed,
-                    g.info.model_customisation,
+                    &g.info,
                     g.health,
                     equipment,
                     g.motion
@@ -5433,6 +5453,7 @@ mod tests {
     mod entity_move_check_tests;
     mod first_tick_recipe_tests;
     mod live_player_limit_tests;
+    mod main_hand_tests;
     mod ordered_inbox_tests;
     mod pending_move_bound_tests;
     mod pending_move_scope_tests;

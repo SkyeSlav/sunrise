@@ -124,34 +124,36 @@ fn actual_game_stage_refuses_nested_frame_and_mutated_actor() {
             &layout,
         )
         .unwrap();
-        let root = game.transaction_open();
-        assert!(game.mod_book_placement_context(&before, &selection));
-        let child = game.transaction_open();
-        assert_eq!(
-            game.stage_mod_book_place(&before, &selection, &plan, false),
-            Err(sync::Refusal::Changed)
-        );
-        game.transaction_close(&child, false);
-        assert!(game.mod_book_placement_context(&before, &selection));
-        game.lan
-            .as_mut()
-            .unwrap()
-            .hub
-            .guests
-            .update(0, |g| g.health = 1.0);
-        assert_eq!(
-            game.stage_mod_book_place(&before, &selection, &plan, false),
-            Err(sync::Refusal::Changed)
-        );
-        assert_eq!(
-            game.world.block_entities.get(&pos).unwrap().slots()[0]
-                .as_ref()
+        game.storage_scope(|game, _| {
+            assert!(game.mod_book_placement_context(&before, &selection));
+            game.storage_scope(|game, _| {
+                assert_eq!(
+                    game.stage_mod_book_place(&before, &selection, &plan, false),
+                    Err(sync::Refusal::Changed)
+                );
+                ((), false)
+            });
+            assert!(game.mod_book_placement_context(&before, &selection));
+            game.lan
+                .as_mut()
                 .unwrap()
-                .count,
-            1
-        );
-        assert!(game.world.modified.is_empty());
-        game.transaction_close(&root, false);
+                .hub
+                .guests
+                .update(0, |g| g.health = 1.0);
+            assert_eq!(
+                game.stage_mod_book_place(&before, &selection, &plan, false),
+                Err(sync::Refusal::Changed)
+            );
+            assert_eq!(
+                game.world.block_entities.get(&pos).unwrap().slots()[0]
+                    .as_ref()
+                    .unwrap()
+                    .count,
+                1
+            );
+            assert!(game.world.modified.is_empty());
+            ((), false)
+        });
     });
 }
 #[test]
@@ -167,20 +169,21 @@ fn a_mod_layout_without_a_listening_part_refuses_and_changes_nothing() {
             ),
         )
         .unwrap();
-        let root = game.transaction_open();
-        assert_eq!(
-            game.stage_mod_book_place(&before, &selection, &plan, false),
-            Err(sync::Refusal::Unsupported)
-        );
-        assert_eq!(
-            game.world.block_entities.get(&pos).unwrap().slots()[0]
-                .as_ref()
-                .unwrap()
-                .count,
-            1
-        );
-        assert!(game.world.modified.is_empty());
-        game.transaction_close(&root, false);
+        game.storage_scope(|game, _| {
+            assert_eq!(
+                game.stage_mod_book_place(&before, &selection, &plan, false),
+                Err(sync::Refusal::Unsupported)
+            );
+            assert_eq!(
+                game.world.block_entities.get(&pos).unwrap().slots()[0]
+                    .as_ref()
+                    .unwrap()
+                    .count,
+                1
+            );
+            assert!(game.world.modified.is_empty());
+            ((), false)
+        });
     });
 }
 #[test]
@@ -307,12 +310,13 @@ fn a_listening_part_places_the_recipe_through_the_real_stage() {
                 ),
             )
             .unwrap();
-            let root = game.transaction_open();
-            assert_eq!(
-                game.stage_mod_book_place(&before, &selection, &plan, false),
-                Ok(PostPlace::Nothing)
-            );
-            game.transaction_close(&root, true);
+            game.storage_scope(|game, _| {
+                assert_eq!(
+                    game.stage_mod_book_place(&before, &selection, &plan, false),
+                    Ok(PostPlace::Nothing)
+                );
+                ((), true)
+            });
             let placed = {
                 let host: &mut dyn ServerHost = game;
                 ItemPlace::MenuSlot { menu, slot: 0 }
@@ -348,8 +352,8 @@ fn a_listening_part_places_the_recipe_through_the_real_stage() {
                 host.transaction(|host, tx| {
                     let old = nested.resource(host).ok_or(())?;
                     let count = nested.amount(host);
-                    if nested.extract(host, tx, &old, count) != count
-                        || nested.insert(host, tx, &dirt, 1) != 1
+                    if nested.extract(host, tx, &old, count) != Ok(count)
+                        || nested.insert(host, tx, &dirt, 1) != Ok(1)
                     {
                         return Err(());
                     }
@@ -366,12 +370,13 @@ fn a_listening_part_places_the_recipe_through_the_real_stage() {
                 .unwrap()
                 .inventory
                 .clone();
-            let root = game.transaction_open();
-            assert_eq!(
-                game.stage_mod_book_place(&stale_contents, &selection, &plan, false),
-                Err(sync::Refusal::Changed)
-            );
-            game.transaction_close(&root, false);
+            game.storage_scope(|game, _| {
+                assert_eq!(
+                    game.stage_mod_book_place(&stale_contents, &selection, &plan, false),
+                    Err(sync::Refusal::Changed)
+                );
+                ((), false)
+            });
 
             let stale_identity = game.mod_book_menu_snapshot(12, 1, "review:menu").unwrap();
             let places = [4, 1, 2]
@@ -385,12 +390,13 @@ fn a_listening_part_places_the_recipe_through_the_real_stage() {
                 game.player_back_mod_menu_slots(menu.fields().player, 1, places),
                 Ok(())
             );
-            let root = game.transaction_open();
-            assert_eq!(
-                game.stage_mod_book_place(&stale_identity, &selection, &plan, false),
-                Err(sync::Refusal::Changed)
-            );
-            game.transaction_close(&root, false);
+            game.storage_scope(|game, _| {
+                assert_eq!(
+                    game.stage_mod_book_place(&stale_identity, &selection, &plan, false),
+                    Err(sync::Refusal::Changed)
+                );
+                ((), false)
+            });
         });
     });
 }

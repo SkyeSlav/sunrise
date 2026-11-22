@@ -70,6 +70,8 @@ pub trait EntityPartState: EntityPart + Sized {
 
     /// Changes the entity's value with `edit`, starting from the default when it has none,
     /// and stores the result: see [`edit_part_state`]. A stale handle never creates a map.
+    /// If the host cannot open a transaction, returns [`PartStateError::Unavailable`] without
+    /// calling `edit`.
     fn edit_state<R>(
         host: &mut dyn ServerHost,
         entity: EntityRef,

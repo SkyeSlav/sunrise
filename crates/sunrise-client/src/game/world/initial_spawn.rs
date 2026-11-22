@@ -28,10 +28,10 @@ impl Game<'_> {
             world: &self.world,
             properties: &self.pack.assets.properties,
             collision: self.collision,
-            // The spawn searches are the overworld's (PlayerSpawnFinder); a
-            // ceiling starts them at the generator's spawn height.
-            has_ceiling: self.level_shapes.overworld.has_ceiling,
-            spawn_height: self.spawn_origin.map_or(64, |(_, height)| height),
+            // PlayerSpawnFinder.getLevelRespawnPos: a ceiling starts the walk
+            // at the destination generator's spawn height.
+            has_ceiling: self.dimension_type().height.has_ceiling,
+            spawn_height: self.streaming.spawn_height(),
         }
     }
     /// ChunkGenerator.getOrigin and getSpawnHeight of the overworld.
@@ -270,35 +270,6 @@ impl Game<'_> {
         PlayerSpawnFinder::new(suggestion, radius, |n| {
             random_source::entity().next_int_bound(n).unwrap_or(0)
         })
-    }
-    /// ServerPlayer.adjustSpawnLocation for a server's new player: where
-    /// PlayerSpawnFinder.findSpawn puts their feet around the world spawn
-    /// (`spawn`, the feet there), so that players new to a world don't all
-    /// stand in one spot. Vanilla waits for each candidate's chunk; a server
-    /// tick can't, so a candidate in a chunk not loaded yet is passed over,
-    /// and `spawn` stays when the search never reaches a loaded column.
-    pub(super) fn server_player_spawn(&self, spawn: [f64; 3]) -> [f64; 3] {
-        let suggestion = spawn.map(|v| v.floor() as i32);
-        let mut finder = self.spawn_finder(suggestion);
-        while let Some(candidate) = finder.next_candidate() {
-            let (x, z) = match candidate {
-                SpawnCandidate::Column(x, z) => (x, z),
-                SpawnCandidate::Suggestion => (suggestion[0], suggestion[2]),
-            };
-            if !self.streaming.is_lit(x >> 4, z >> 4) {
-                continue;
-            }
-            let feet = match candidate {
-                SpawnCandidate::Column(x, z) => level_respawn_pos(&self.spawn_columns(), x, z)
-                    .filter(|&pos| self.player_fits(pos))
-                    .map(bottom_center),
-                SpawnCandidate::Suggestion => Some(self.fixup_spawn_height(suggestion)),
-            };
-            if let Some(feet) = feet {
-                return [feet.x, feet.y, feet.z];
-            }
-        }
-        spawn
     }
     /// PlayerSpawnFinder.noCollisionNoLiquid: a player's box standing at the
     /// block's bottom centre touches no block or liquid.

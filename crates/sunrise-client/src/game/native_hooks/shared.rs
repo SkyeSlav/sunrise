@@ -84,7 +84,7 @@ fn apply_menu_button_cursor(
 
 #[path = "shared/screen_view.rs"]
 mod screen_view;
-use screen_view::screen_view_with_id;
+use screen_view::{screen_view_for_mod, screen_view_with_id};
 
 /// What `decide_screen` says the hooks answered to a change of screen.
 enum ScreenDecision {
@@ -117,9 +117,9 @@ pub(super) fn observed_overlay_id(overlays: &[(bool, &'static str)]) -> Option<&
 }
 
 impl Game<'_> {
-    pub(super) fn observed_screen_view(&self) -> Option<ScreenView<'_>> {
+    pub(super) fn observed_overlay_now(&self) -> Option<&'static str> {
         let book = self.book.as_ref().map(super::books::BookScreen::id);
-        let overlay = observed_overlay_id(&[
+        observed_overlay_id(&[
             (self.command_prompt.is_some(), "command_prompt"),
             (self.link_prompt.is_some(), "link_prompt"),
             (self.code_of_conduct.is_some(), "code_of_conduct"),
@@ -127,8 +127,11 @@ impl Game<'_> {
             (self.dialog_open(), "dialog"),
             (book.is_some(), book.unwrap_or("book_view")),
             (self.sign_edit.is_some(), "sign_editor"),
-        ]);
-        let Some(id) = overlay else {
+        ])
+    }
+
+    pub(super) fn observed_screen_view(&self) -> Option<ScreenView<'_>> {
+        let Some(id) = self.observed_overlay_now() else {
             return self.screen_view_now();
         };
         let renderer = self.renderer.as_ref()?;
@@ -138,6 +141,7 @@ impl Game<'_> {
         );
         Some(ScreenView::from(mod_api::__private::built::ScreenView {
             id,
+            mod_screen: None,
             menu: None,
             title: None,
             rect: [0.0, 0.0, batch.width, batch.height],
@@ -153,8 +157,9 @@ impl Game<'_> {
     /// `screen_opening` first (`ScreenEvent.Opening`: a mod may keep the
     /// current screen or open its own), then `screen_closing` for the screen
     /// it replaces. A game with no mod listening to either, and a server's
-    /// or a guest's `Game`, assign the screen directly. A new native menu
-    /// can take over the already shown `Inventory` screen in place.
+    /// or a guest's `Game`, assign the screen directly. A new native menu or
+    /// same-type vanilla container can take over the already shown `Inventory`
+    /// screen in place.
     pub(super) fn set_screen(&mut self, screen: Screen) {
         self.set_screen_with(screen, |_| {});
     }
@@ -164,8 +169,19 @@ impl Game<'_> {
     pub(super) fn set_screen_with(&mut self, screen: Screen, before: impl FnOnce(&mut Self)) {
         let opening_native =
             screen == Screen::Inventory && self.active_native_screen().is_some_and(|s| !s.shown);
+        let new_menu_gen = (screen == Screen::Inventory)
+            .then(|| self.remote.as_ref().map(|r| r.menu.generation))
+            .flatten();
+        let menu_replaced = screen == Screen::Inventory
+            && new_menu_gen.is_some()
+            && self
+                .screen_state
+                .observed
+                .as_ref()
+                .and_then(|o| o.menu_generation)
+                != new_menu_gen;
         if self.screen == screen {
-            if opening_native {
+            if opening_native || menu_replaced {
                 self.apply_screen_with_mod_book(screen, None);
             }
             return;
@@ -197,12 +213,6 @@ impl Game<'_> {
                         self.remote_close_container();
                     }
                     self.open_screen_target(target);
-                    if self.title.is_some() {
-                        // A title screen: told here, so the frame's observer
-                        // doesn't announce it again.
-                        self.screen_state.observed = self.observed_now();
-                        self.shown_init_post();
-                    }
                     return;
                 }
                 ScreenDecision::Open => {}
@@ -239,6 +249,18 @@ impl Game<'_> {
     ) -> ScreenDecision {
         self.screen_decision(self.screen_change(current, new, true, closes))
     }
+    /// Like `decide_screen`, for `mod_screen_open`, which clears any active
+    /// overlay via `close_replaced_screen_for_mod` before applying the
+    /// decision, so `ScreenOpening::ModScreen` and `ScreenOpening::Vanilla`
+    /// answers remain eligible even when replacing an overlay.
+    fn decide_screen_for_mod_open(
+        &self,
+        current: &ScreenView<'_>,
+        new: &ScreenView<'_>,
+        closes: bool,
+    ) -> ScreenDecision {
+        self.screen_decision_with(self.screen_change(current, new, true, closes), true)
+    }
     /// What a mod's `screen_opening` answer does here: a `ModScreen` only
     /// where a mod's screen can open (`mod_screen_blocked`), a `Vanilla`
     /// target only where it opens (a title screen while the title shows, a
@@ -246,6 +268,20 @@ impl Game<'_> {
     /// goes ahead and the refused target is logged. Records whether a mod's
     /// answer changed what shows (`ScreenState::answered`).
     fn screen_decision(&self, answer: Option<Answered<ScreenOpening>>) -> ScreenDecision {
+        self.screen_decision_with(answer, false)
+    }
+    fn screen_decision_with(
+        &self,
+        answer: Option<Answered<ScreenOpening>>,
+        clears_overlays: bool,
+    ) -> ScreenDecision {
+        let blocked = if clears_overlays {
+            self.lan_acting.is_some()
+                || (self.player.is_none() && self.title.is_none())
+                || self.remote_loading()
+        } else {
+            self.mod_screen_blocked()
+        };
         let decision = match answer {
             Some(Answered {
                 answer: ScreenOpening::Cancel,
@@ -255,16 +291,18 @@ impl Game<'_> {
                 answer: ScreenOpening::ModScreen,
                 mod_id,
                 ..
-            }) if !self.mod_screen_blocked() => ScreenDecision::ModScreen(mod_id),
+            }) if !blocked => ScreenDecision::ModScreen(mod_id),
             Some(Answered {
                 answer: ScreenOpening::Vanilla(target),
                 mod_id,
                 ..
             }) => {
                 let opens = match title_target_id(target) {
-                    // An overlay over the title would stay in front of it.
-                    Some(_) => self.title.is_some() && !self.screen_over_playing(),
-                    None => self.title.is_none() && !self.mod_screen_blocked(),
+                    // An overlay over the title would stay in front of it unless cleared.
+                    Some(_) => {
+                        self.title.is_some() && (clears_overlays || !self.screen_over_playing())
+                    }
+                    None => self.title.is_none() && !blocked,
                 };
                 if opens {
                     ScreenDecision::Vanilla(target)
@@ -284,14 +322,15 @@ impl Game<'_> {
     }
     /// Opens vanilla screen `target` as it opens on its own, in place of the
     /// one asked for (`ScreenOpening::Vanilla`, which `screen_decision` let
-    /// through): the change fires no screen hook again.
+    /// through): the change fires no screen hook again, and commits once.
     fn open_screen_target(&mut self, target: ScreenTarget) {
+        let before_instance = self.screen_state.screen_instance;
         self.screen_state.replacing = true;
         match target {
             ScreenTarget::Pause => {
                 self.pause_focus = None;
-                self.set_screen(Screen::Paused);
                 self.pause_menu = true;
+                self.set_screen(Screen::Paused);
             }
             ScreenTarget::Options => self.open_options(false),
             ScreenTarget::Inventory => {
@@ -307,26 +346,59 @@ impl Game<'_> {
             ScreenTarget::Stats => self.open_stats(),
             ScreenTarget::Chat => self.begin_chat_screen("", false),
             _ => {
-                // A title screen: one of the game's own screens over the title goes.
-                self.set_screen(Screen::Playing);
+                // A title screen: set the title mode first so `set_screen(Playing)`
+                // commits directly into the target title screen without double-init.
                 if let (Some(title), Some(id)) = (self.title.as_mut(), title_target_id(target)) {
                     title.open_by_id(id);
                 }
                 self.release_mappings_on_screen_open();
-                self.build_screen();
+                self.set_screen(Screen::Playing);
             }
         }
         // Every target takes the pointer, even one opened in place of a
         // request that grabbed none (a mod's screen asked for while playing).
         self.capture(false);
         self.screen_state.replacing = false;
+        if self.screen_state.screen_instance == before_instance {
+            self.commit_screen_transition();
+        }
     }
-    /// Install a screen instance without firing hooks or rebuilding its layout.
-    pub(super) fn activate_screen(&mut self, screen: Screen) {
-        self.screen = screen;
-        self.screen_activation = self.screen_activation.wrapping_add(1);
+    /// Commit a screen transition synchronously (`Gui.setScreen` / `Screen.init`):
+    /// bumps `screen_instance`, clears `last_click` and outgoing mounted widgets,
+    /// rebuilds layout, publishes `screen_state.observed`, and mounts the
+    /// incoming screen's widgets immediately.
+    pub(super) fn commit_screen_transition(&mut self) {
+        self.screen_state.bump_instance();
+        self.clear_screen_widgets();
+        self.build_screen();
+        let observed = self.observed_now();
+        self.screen_state.observed = observed.clone();
+        if !self.options.execution_role.is_client() || self.lan_acting.is_some() {
+            return;
+        }
+        if let Some(obs) = observed {
+            self.init_screen_widgets(&obs.view());
+        } else if let Some(obs) = self.headless_screen_snapshot() {
+            self.init_screen_widgets(&obs.view());
+        }
     }
-
+    fn headless_screen_snapshot(&self) -> Option<ObservedScreen> {
+        if self.renderer.is_some() || self.remote_loading() {
+            return None;
+        }
+        if let Some(id) = self.observed_overlay_now() {
+            let none = self.screen_change_view(Screen::Playing);
+            return Some(self.observe_view(screen_view_with_id(&none, id)));
+        }
+        if self.screen != Screen::Playing {
+            return Some(self.observe_view(self.screen_change_view(self.screen)));
+        }
+        if let Some(title) = self.title.as_ref() {
+            let none = self.screen_change_view(Screen::Playing);
+            return Some(self.observe_view(screen_view_with_id(&none, title.mode.id())));
+        }
+        None
+    }
     /// What `set_screen` does once the hooks have answered: `screen` opens,
     /// and the mod `owner`'s own screen when one answered `ModScreen`.
     fn apply_screen(&mut self, screen: Screen, owner: Option<&str>) {
@@ -335,9 +407,11 @@ impl Game<'_> {
         if screen != Screen::Inventory && self.active_native_screen().is_some() {
             self.remote_close_container();
         }
-        self.activate_screen(screen);
+        self.screen = screen;
         if let Some(owner) = owner {
             self.native_mod_screen = Some(owner.to_owned());
+        } else if screen != Screen::Mod {
+            self.native_mod_screen = None;
         }
         if screen != Screen::Playing {
             self.release_mappings_on_screen_open();
@@ -349,7 +423,7 @@ impl Game<'_> {
             self.mining = None;
             self.capture(false);
         }
-        self.build_screen();
+        self.commit_screen_transition();
     }
     /// The events of one change of screen, in order, for
     /// `set_screen` and for the overlays `observe_screen` announces: `opens`
@@ -434,7 +508,7 @@ impl Game<'_> {
             open(self);
             self.release_mappings_on_screen_open();
             self.screen_state.build.reopened();
-            self.build_screen();
+            self.commit_screen_transition();
             return true;
         }
         // What changed earlier this frame is told first, so `screen_state`
@@ -455,13 +529,10 @@ impl Game<'_> {
             ScreenDecision::Keep => return false,
             ScreenDecision::ModScreen(mod_id) => {
                 self.apply_screen(Screen::Mod, Some(mod_id));
-                self.screen_state.observed = self.observed_now();
                 return false;
             }
             ScreenDecision::Vanilla(target) => {
                 self.open_screen_target(target);
-                self.screen_state.observed = self.observed_now();
-                self.shown_init_post();
                 return false;
             }
             ScreenDecision::Open => {}
@@ -469,48 +540,91 @@ impl Game<'_> {
         open(self);
         self.release_mappings_on_screen_open();
         self.screen_state.build.reopened();
-        self.build_screen();
-        // Told here, so the frame's `observe_screen` sees no change to announce.
-        self.screen_state.observed = self.observed_now();
-        let none = self.screen_change_view(Screen::Playing);
-        self.native_screen_init_post(&screen_view_with_id(&none, id));
+        self.commit_screen_transition();
         true
     }
 
     /// What `observe_screen` compares with the last frame's.
-    fn observed_now(&self) -> Option<ObservedScreen> {
+    pub(super) fn observed_now(&self) -> Option<ObservedScreen> {
         // Only the title's screens and the overlays show over `Screen::Playing`.
         self.observed_screen_view()
             .map(|view| self.observe_view(view))
     }
 
+    /// Snapshot of the receiving screen for screen input hooks, including overlays.
+    pub(super) fn observed_input_screen(&self) -> Option<ObservedScreen> {
+        let view = self.observed_screen_view()?;
+        let regions = view.regions.to_vec();
+        let mut snapshot = self.observe_view(view);
+        snapshot.regions = regions;
+        Some(snapshot)
+    }
+
+    /// Runs close cleanup for any screen or overlay being replaced by
+    /// `mod_screen_open` once hooks allow the transition, matching vanilla's
+    /// `Gui.setScreen` / `Screen.removed` so no container menu, editor, dialog,
+    /// or prompt stays open over the new screen.
+    fn close_replaced_screen_for_mod(&mut self) {
+        let replacing = std::mem::replace(&mut self.screen_state.replacing, true);
+        match self.screen {
+            Screen::Inventory => self.close_container(),
+            Screen::Creative => self.close_creative_menu(),
+            Screen::Options => self.ui.options.discard_draw(),
+            _ => {}
+        }
+        if self.book.is_some() {
+            self.close_book();
+        }
+        if self.sign_edit.is_some() {
+            self.close_sign_editor();
+        }
+        if self.dialog_open() {
+            self.close_dialogs();
+        }
+        self.link_prompt = None;
+        self.command_prompt = None;
+        self.code_of_conduct = None;
+        self.server_packs.prompt = None;
+        self.screen_state.replacing = replacing;
+    }
+
     pub(super) fn observe_view(&self, view: ScreenView<'_>) -> ObservedScreen {
+        let screen_size = if self.renderer.is_some() {
+            self.gui_frame_now().1.size.map(|size| size as f32)
+        } else {
+            [view.rect[2], view.rect[3]]
+        };
         ObservedScreen {
             id: view.id,
-            overlay: self.screen == Screen::Playing,
+            overlay: self.screen == Screen::Playing || self.observed_overlay_now().is_some(),
+            mod_screen: view.mod_screen.map(str::to_owned),
             menu: view.menu.map(str::to_owned),
+            menu_generation: (self.screen == Screen::Inventory && !self.screen_over_playing())
+                .then(|| self.remote.as_ref().map(|r| r.menu.generation))
+                .flatten(),
+            dialog_key: (view.id == "dialog").then(|| match self.dialog_screen_key() {
+                (true, _, _) => (true, false, None),
+                key => key,
+            }),
             title: view
                 .title
                 .and_then(|_| self.remote.as_ref()?.shared_menu_title_snapshot()),
             rect: view.rect,
+            screen_size,
             slots: view.slots,
             mouse: view.mouse,
             partial_tick: view.partial_tick,
+            regions: Vec::new(),
         }
     }
 
-    /// Opens the title screen `Title::set_mode` asked for, as
-    /// `Minecraft.setScreen` opens the title's screens: `screen_opening` fires
-    /// from the title screen shown to the new one, then `screen_closing` for
-    /// the one it leaves, and the change applies unless a mod answered
-    /// `Cancel`; `ModScreen` opens the mod's own screen over the title instead,
-    /// and `Vanilla` another title screen. Then `screen_init_post` follows and the
-    /// frame's observer is told, so it does not announce it again. Each call
-    /// also sets the title's gate: when no mod listens to the screen hooks
-    /// (`screen_hooks_heard`), `set_mode` applies at once. Run after each window
-    /// event and control command, and each frame.
     pub(super) fn settle_title_mode(&mut self) {
-        let gated = self.screen_hooks_heard();
+        let heard = self.screen_hooks_heard();
+        let gated = heard
+            || (self.options.execution_role.is_client()
+                && self.lan_acting.is_none()
+                && !self.screen_state.replacing
+                && mod_api::__private::listened(mod_api::HookId::ScreenInitPost));
         let Some(title) = self.title.as_mut() else {
             return;
         };
@@ -522,14 +636,16 @@ impl Game<'_> {
         // What changed before is told first.
         let now = self.observed_now();
         self.observe_change(now);
-        let decision = {
+        let decision = if heard {
             let none = self.screen_change_view(Screen::Playing);
             let from = screen_view_with_id(&none, current);
             let to = screen_view_with_id(&none, id);
             self.decide_screen(&from, &to, true)
+        } else {
+            ScreenDecision::Open
         };
         match decision {
-            ScreenDecision::Keep => return,
+            ScreenDecision::Keep => (),
             ScreenDecision::ModScreen(mod_id) => self.apply_screen(Screen::Mod, Some(mod_id)),
             ScreenDecision::Vanilla(target) => self.open_screen_target(target),
             ScreenDecision::Open => {
@@ -537,21 +653,9 @@ impl Game<'_> {
                     title.activate_mode(mode);
                 }
                 self.release_mappings_on_screen_open();
-                self.build_screen();
+                self.commit_screen_transition();
             }
         }
-        self.screen_state.observed = self.observed_now();
-        self.shown_init_post();
-    }
-    /// `screen_init_post` for what shows now, once a change was told to the
-    /// frame's observer: a title screen, a mod's, or the game's own.
-    fn shown_init_post(&self) {
-        let view = self.screen_change_view(self.screen);
-        let id = match &self.title {
-            Some(title) if self.screen == Screen::Playing => title.mode.id(),
-            _ => view.id,
-        };
-        self.native_screen_init_post(&screen_view_with_id(&view, id));
     }
 
     /// Shows `title`, as `Minecraft.setScreen(new TitleScreen())` (or the
@@ -578,9 +682,7 @@ impl Game<'_> {
             self.title_change(None);
         }
         self.title = None;
-        self.screen_activation = self.screen_activation.wrapping_add(1);
-        self.build_screen();
-        self.screen_state.observed = self.observed_now();
+        self.commit_screen_transition();
     }
     /// The hooks of the title appearing (`to` is its screen) or going
     /// (`None`), from what shows now, and a mod's answer. What changed before
@@ -612,6 +714,14 @@ impl Game<'_> {
 
     pub(super) fn observe_screen(&mut self) {
         self.settle_title_mode();
+        self.refresh_screen_widgets();
+    }
+
+    /// Refresh the receiver's build before another input can reach it.
+    pub(super) fn refresh_screen_widgets(&mut self) {
+        if self.screen_state.replacing {
+            return;
+        }
         // Keeps the build on the frame's window size and drops it once nothing
         // shows; an unchanged frame compares and builds nothing.
         self.build_screen();
@@ -628,10 +738,16 @@ impl Game<'_> {
     /// `settle_title_mode`, `show_title`, `hide_title`); what is left, an
     /// overlay closing, is announced here, through the same `screen_change`
     /// and in the same order, but after the change. `screen_init_post`
-    /// follows for every kind, on opening and on a resize.
+    /// follows on opening and when a resize rebuilds the receiver's children.
     fn observe_change(&mut self, current: Option<ObservedScreen>) {
         let changed = match (&self.screen_state.observed, &current) {
-            (Some(old), Some(new)) => old.id != new.id || old.menu != new.menu,
+            (Some(old), Some(new)) => {
+                old.id != new.id
+                    || old.menu != new.menu
+                    || old.menu_generation != new.menu_generation
+                    || old.mod_screen != new.mod_screen
+                    || old.dialog_key != new.dialog_key
+            }
             (None, None) => false,
             _ => true,
         };
@@ -654,13 +770,49 @@ impl Game<'_> {
                     from.is_some(),
                 );
             }
-            if let Some(new) = &current {
-                self.native_screen_init_post(&new.view());
+            self.screen_state.bump_instance();
+            self.clear_screen_widgets();
+            self.screen_state.observed = current.clone();
+            if let Some(new) = &current
+                && self.options.execution_role.is_client()
+                && self.lan_acting.is_none()
+            {
+                self.init_screen_widgets(&new.view());
             }
-        } else if let (Some(old), Some(new)) = (&self.screen_state.observed, &current)
-            && old.rect != new.rect
+            return;
+        }
+        if let (Some(old), Some(new)) = (&self.screen_state.observed, &current)
+            && old.screen_size != new.screen_size
+            // Screen.resize calls repositionElements. Screen's default rebuilds
+            // widgets; these receivers override it to relayout existing children.
+            // A panel rect can also move independently (e.g. opening a recipe book).
+            && !matches!(
+                new.id,
+                "options"
+                    | "world_options"
+                    | "stats"
+                    | "advancements"
+                    | "social"
+                    | "debug_options"
+                    | "dialog"
+                    | "dialog_warning"
+                    | "confirm_link"
+                    | "link_prompt"
+                    | "code_of_conduct"
+                    | "world_select"
+                    | "world_create"
+                    | "world_create_flat"
+                    | "world_create_buffet"
+                    | "world_edit"
+                    | "world_recover"
+                    | "multiplayer"
+                    | "multiplayer_warning"
+                    | "disconnected"
+                    | "onboarding"
+            )
         {
-            self.native_screen_init_post(&new.view());
+            self.clear_screen_widgets();
+            self.init_screen_widgets(&new.view());
         }
         self.screen_state.observed = current;
     }
@@ -1068,42 +1220,31 @@ pub(crate) struct NativeRecipes {
     pub(crate) recipes: Vec<NativeRecipe>,
 }
 
-/// A physical press and its original receiver. Activation counters, unlike screen IDs or
-/// layout revisions, distinguish same-kind replacements but do not change on resize.
-#[derive(Clone, Copy)]
-pub(super) struct ScreenPress {
-    pub(super) activation: u64,
-    pub(super) screen: Screen,
-    pub(super) title_mode: Option<u64>,
-    pub(super) button: i32,
-    pub(super) millis: u64,
-}
-
-impl ScreenPress {
-    pub(super) fn is_double_click(self, last: Option<Self>) -> bool {
-        last.is_some_and(|last| {
-            self.activation == last.activation
-                && self.screen == last.screen
-                && self.title_mode == last.title_mode
-                && self.button == last.button
-                && self.millis - last.millis < 250 // MouseHandler.DOUBLE_CLICK_THRESHOLD_MS
-        })
-    }
-}
-
-/// The button event and its original receiver, retained across a handler that may replace it.
-pub(super) struct ScreenButtonPost {
-    pub(super) screen: ObservedScreen,
-    pub(super) button: i32,
-    pub(super) pressed: bool,
-    pub(super) modifiers: u32,
-    pub(super) double_click: bool,
-}
-
-/// A scroll/drag notice owed after its Pre let the input through.
-pub(super) enum ScreenMousePost {
+/// Which mouse Post hook owes dispatch (`ScreenMousePost`).
+pub(super) enum ScreenMousePostKind {
     Scroll([f64; 2]),
     Drag { button: i32, delta: [f32; 2] },
+}
+
+/// The Post a mouse input owes once the screen has handled it, built when
+/// its Pre let the input through (`Game::screen_mouse_post`), carrying the
+/// receiving screen and modifiers captured at Pre time.
+pub(super) struct ScreenMousePost {
+    pub(super) receiver: ObservedScreen,
+    pub(super) modifiers: u32,
+    pub(super) kind: ScreenMousePostKind,
+    pub(super) handled: bool,
+}
+
+impl ScreenMousePost {
+    pub(super) fn new(receiver: ObservedScreen, modifiers: u32, kind: ScreenMousePostKind) -> Self {
+        Self {
+            receiver,
+            modifiers,
+            kind,
+            handled: false,
+        }
+    }
 }
 
 /// What a drag's Pre decided (`Game::screen_mouse_dragged`).
@@ -1112,26 +1253,6 @@ pub(super) enum ScreenMousePre {
     NotFired,
     Canceled,
     Passed(ScreenMousePost),
-}
-
-/// What a `ScreenEvent.CharacterTyped.Pre` leaves of `text`, given `canceled`
-/// (whether a hook cancelled character `c`): the cancelled printable
-/// characters are gone and every other character stays, control characters
-/// included — a text box reads Backspace, Delete or Escape as keys and vanilla
-/// fires no `charTyped` for them, so they are never offered to the hook.
-/// `None` when nothing is left to type.
-fn screen_text_hooked(text: &str, mut canceled: impl FnMut(char) -> bool) -> Option<String> {
-    let mut left = String::with_capacity(text.len());
-    for c in text.chars() {
-        if !c.is_control() && canceled(c) {
-            continue;
-        }
-        left.push(c);
-    }
-    if left.is_empty() && !text.is_empty() {
-        return None;
-    }
-    Some(left)
 }
 
 /// The hook points. Each does nothing in Sunrise.
@@ -1309,6 +1430,7 @@ impl Game<'_> {
         let menu_shown = screen == Screen::Inventory;
         ScreenView::from(mod_api::__private::built::ScreenView {
             id: screen.id(),
+            mod_screen: (screen == Screen::Mod).then(|| self.mod_screen()).flatten(),
             menu: self
                 .remote_menu_type()
                 .filter(|m| menu_shown && !m.is_empty()),
@@ -1333,6 +1455,7 @@ impl Game<'_> {
         let title = self.title.as_ref()?;
         Some(ScreenView::from(mod_api::__private::built::ScreenView {
             id: title.mode.id(),
+            mod_screen: None,
             menu: None,
             title: None,
             rect: [0.0, 0.0, batch.width, batch.height],
@@ -1374,42 +1497,55 @@ impl Game<'_> {
         else {
             return ScreenMousePre::NotFired;
         };
-        let Some(screen) = self.screen_view_now() else {
+        let Some(receiver) = self.observed_input_screen() else {
             return ScreenMousePre::NotFired;
         };
         let button = super::glfw_button(button);
+        let modifiers = super::glfw_modifiers(self.modifiers);
         let mut canceled = false;
         self.native_screen_mouse_dragged_pre(
-            &screen,
+            &receiver.view(),
             button,
             delta,
-            super::glfw_modifiers(self.modifiers),
+            modifiers,
             &mut canceled,
         );
         if canceled {
             ScreenMousePre::Canceled
         } else {
-            ScreenMousePre::Passed(ScreenMousePost::Drag { button, delta })
+            ScreenMousePre::Passed(ScreenMousePost::new(
+                receiver,
+                modifiers,
+                ScreenMousePostKind::Drag { button, delta },
+            ))
         }
     }
     /// Button Post sees the original receiver and its answer; return the final handled bit.
-    pub(super) fn screen_button_post(&self, post: &ScreenButtonPost, handled: bool) -> bool {
-        let screen = post.screen.view();
+    pub(super) fn screen_button_post(
+        &self,
+        receiver: &ObservedScreen,
+        button: i32,
+        pressed: bool,
+        modifiers: u32,
+        double_click: bool,
+        handled: bool,
+    ) -> bool {
+        let screen = receiver.view();
         let mut result = TriState::Default;
-        if post.pressed {
+        if pressed {
             self.native_screen_mouse_button_pressed_post(
                 &screen,
-                post.button,
-                post.modifiers,
-                post.double_click,
+                button,
+                modifiers,
+                double_click,
                 handled,
                 &mut result,
             );
         } else {
             self.native_screen_mouse_button_released_post(
                 &screen,
-                post.button,
-                post.modifiers,
+                button,
+                modifiers,
                 handled,
                 &mut result,
             );
@@ -1417,35 +1553,33 @@ impl Game<'_> {
         result.or(handled)
     }
 
-    /// Scroll/drag Post is a notice to the screen still open after the input.
+    /// Unhandled scroll/drag notices go to the receiver captured before handling.
     pub(super) fn screen_mouse_post(&self, post: ScreenMousePost) {
-        use mod_api::HookId;
-        let hook = match post {
-            ScreenMousePost::Scroll(_) => HookId::ScreenMouseScrolledPost,
-            ScreenMousePost::Drag { .. } => HookId::ScreenMouseDraggedPost,
-        };
-        if !mod_api::__private::listened(hook) {
+        if post.handled {
             return;
         }
-        let Some(screen) = self.screen_view_now() else {
-            return;
-        };
-        let modifiers = super::glfw_modifiers(self.modifiers);
-        match post {
-            ScreenMousePost::Scroll(scroll) => {
-                self.native_screen_mouse_scrolled_post(&screen, scroll, modifiers)
+        let screen = post.receiver.view();
+        match post.kind {
+            ScreenMousePostKind::Scroll(scroll) => {
+                self.native_screen_mouse_scrolled_post(&screen, scroll, post.modifiers);
             }
-            ScreenMousePost::Drag { button, delta } => {
-                self.native_screen_mouse_dragged_post(&screen, button, delta, modifiers)
+            ScreenMousePostKind::Drag { button, delta } => {
+                self.native_screen_mouse_dragged_post(&screen, button, delta, post.modifiers);
             }
         }
     }
-    /// Whether a Post of the key `key` over the open screen cancelled it
-    /// (`ScreenEvent.KeyPressed.Post` / `KeyReleased.Post`): asked where the
-    /// key no screen arm took reaches the game's own key handling, which a
-    /// cancel then skips. False with no subscriber, no screen of the hooks'
-    /// open, or a key with no vanilla name.
-    pub(super) fn screen_key_post(&self, key: KeyCode, pressed: bool, repeat: bool) -> bool {
+    /// Whether a Post of the key `key` over the receiving screen `receiver`
+    /// cancelled it (`ScreenEvent.KeyPressed.Post` / `KeyReleased.Post`): asked
+    /// where the key neither mounted widgets nor screen arms took reaches the
+    /// game's own key handling, which a cancel then skips. False with no
+    /// subscriber, no receiving screen, or a key with no vanilla name.
+    pub(super) fn screen_key_post_on(
+        &self,
+        receiver: Option<&ObservedScreen>,
+        key: KeyCode,
+        pressed: bool,
+        repeat: bool,
+    ) -> bool {
         let hook = if pressed {
             mod_api::HookId::ScreenKeyPressedPost
         } else {
@@ -1454,11 +1588,12 @@ impl Game<'_> {
         if !mod_api::__private::listened(hook) {
             return false;
         }
-        let (Some(name), Some(screen)) = (keybinds::key_name(key), self.screen_view_now()) else {
+        let (Some(name), Some(receiver)) = (keybinds::key_name(key), receiver) else {
             return false;
         };
         let modifiers = super::glfw_modifiers(self.modifiers);
         let mut canceled = false;
+        let screen = receiver.view();
         if pressed {
             self.native_screen_key_pressed_post(&screen, name, repeat, modifiers, &mut canceled);
         } else {
@@ -1466,19 +1601,17 @@ impl Game<'_> {
         }
         canceled
     }
-    /// `ScreenEvent.CharacterTyped.Post` for each character of `text` that no
-    /// text box took.
-    fn screen_chars_post(&self, text: &str) {
+    /// `ScreenEvent.CharacterTyped.Post` for a character that neither mounted
+    /// widgets nor any text box took, on the captured receiving screen.
+    fn screen_chars_post_on(&self, receiver: Option<&ObservedScreen>, c: char) {
         if !mod_api::__private::listened(mod_api::HookId::ScreenCharTypedPost) {
             return;
         }
-        let Some(screen) = self.screen_view_now() else {
+        let Some(receiver) = receiver else {
             return;
         };
         let modifiers = super::glfw_modifiers(self.modifiers);
-        for c in text.chars() {
-            self.native_screen_char_typed_post(&screen, c, modifiers, &mut false);
-        }
+        self.native_screen_char_typed_post(&receiver.view(), c, modifiers);
     }
     /// A screen the native mods' input hooks are for is open: the window has a
     /// renderer, either the title's own (`title`, `world_select`,
@@ -1512,21 +1645,22 @@ impl Game<'_> {
         }
         self.title_screen_view(&batch)
     }
-    /// Whether the key press `key` over the open screen went no further
+    /// Whether the key press `key` over the receiving screen went no further
     /// (`native_screen_key_pressed_pre`): what `handle_window_event` and the
     /// control socket's `key` command both ask before a screen acts on a key.
-    /// False when no screen of the hooks' is open, and for a key with no
-    /// vanilla name.
-    pub(super) fn screen_key_pressed(&self, key: KeyCode, repeat: bool) -> bool {
-        let Some(name) = keybinds::key_name(key) else {
-            return false;
-        };
-        let Some(screen) = self.screen_view_now() else {
+    /// False when no receiving screen is open, and for a key with no vanilla name.
+    pub(super) fn screen_key_pressed_on(
+        &self,
+        receiver: Option<&ObservedScreen>,
+        key: KeyCode,
+        repeat: bool,
+    ) -> bool {
+        let (Some(name), Some(receiver)) = (keybinds::key_name(key), receiver) else {
             return false;
         };
         let mut canceled = false;
         self.native_screen_key_pressed_pre(
-            &screen,
+            &receiver.view(),
             name,
             repeat,
             super::glfw_modifiers(self.modifiers),
@@ -1534,59 +1668,94 @@ impl Game<'_> {
         );
         canceled
     }
-    pub(super) fn screen_key_released(&self, key: KeyCode) -> bool {
-        let Some(name) = keybinds::key_name(key) else {
-            return false;
-        };
-        let Some(screen) = self.screen_view_now() else {
+    pub(super) fn screen_key_released_on(
+        &self,
+        receiver: Option<&ObservedScreen>,
+        key: KeyCode,
+    ) -> bool {
+        let (Some(name), Some(receiver)) = (keybinds::key_name(key), receiver) else {
             return false;
         };
         let mut canceled = false;
         self.native_screen_key_released_pre(
-            &screen,
+            &receiver.view(),
             name,
             super::glfw_modifiers(self.modifiers),
             &mut canceled,
         );
         canceled
     }
-    /// `native_screen_char_typed_pre` for one character, with the focused
-    /// box's edit: what the listeners leave of `field` goes back to the box
-    /// before the character does. Whether they cancelled the character.
-    fn screen_char_canceled(&mut self, c: char) -> bool {
-        if !mod_api::__private::listened(mod_api::HookId::ScreenCharTypedPre)
-            || !self.screen_hooks_open()
-        {
+    /// `native_screen_char_typed_pre` for one character on `receiver`, with
+    /// the focused box's edit: what the listeners leave of `field` goes back
+    /// to the box before the character does. Whether they cancelled the character.
+    fn screen_char_canceled_on(&mut self, receiver: Option<&ObservedScreen>, c: char) -> bool {
+        if !mod_api::__private::listened(mod_api::HookId::ScreenCharTypedPre) {
             return false;
         }
+        let Some(receiver) = receiver else {
+            return false;
+        };
         let modifiers = super::glfw_modifiers(self.modifiers);
         self.with_focused_text_edit(|game, field| {
-            let Some(screen) = game.screen_view_now() else {
-                return false;
-            };
+            let screen = receiver.view();
             let mut canceled = false;
             game.native_screen_char_typed_pre(&screen, c, modifiers, field, &mut canceled);
             canceled
         })
     }
-    /// Text on its way to a text box after the open screen's character hooks
-    /// (`native_screen_char_typed_pre` per printable character): the cancelled
-    /// characters are gone and every other one stays, control characters
-    /// included (a text box reads Backspace, Delete and the like as keys).
-    /// `None` when none of them is left to type. For a key's text that stays
-    /// on the key, which no box with a `field` takes.
-    pub(super) fn screen_text_typed(&mut self, text: &str) -> Option<String> {
-        screen_text_hooked(text, |c| self.screen_char_canceled(c))
-    }
     /// Text into a text box a character at a time (`Screen.charTyped`): each
-    /// printable one is offered to `native_screen_char_typed_pre`, and `take`
-    /// gets it unless cancelled, before the next is offered. A control
-    /// character goes straight to `take`: a text box reads it as a key.
+    /// printable one snapshots the current receiving screen, is offered to
+    /// `native_screen_char_typed_pre`, and `take` gets it unless cancelled,
+    /// before the next is offered. A control character goes straight to `take`.
     pub(super) fn screen_text_each(&mut self, text: &str, mut take: impl FnMut(&mut Self, &str)) {
         let mut encoded = [0; 4];
         for c in text.chars() {
-            if c.is_control() || !self.screen_char_canceled(c) {
+            if c.is_control() {
                 take(self, c.encode_utf8(&mut encoded));
+                continue;
+            }
+            let receiver = self.observed_input_screen();
+            let initial_instance = self.screen_state.screen_instance;
+            if !self.screen_char_canceled_on(receiver.as_ref(), c)
+                && self.screen_state.screen_instance == initial_instance
+            {
+                take(self, c.encode_utf8(&mut encoded));
+            }
+        }
+    }
+    /// Deliver each printable character of `text` through `CharacterTyped.Pre`,
+    /// mounted screen widgets first, then `take` (the vanilla text box sink,
+    /// returning whether it handled the character), and finally
+    /// `CharacterTyped.Post` on the captured receiving screen ONLY when
+    /// unhandled. Snapshots the receiving screen per character (matching
+    /// vanilla `KeyboardHandler.charTyped` reading `minecraft.screen` each call)
+    /// and never falls through into a replacement screen opened mid-character.
+    pub(super) fn screen_chars_dispatch(
+        &mut self,
+        text: &str,
+        mut take: impl FnMut(&mut Self, &str) -> bool,
+    ) {
+        let modifiers = super::glfw_modifiers(self.modifiers);
+        let mut encoded = [0; 4];
+        for c in text.chars() {
+            if c.is_control() {
+                continue;
+            }
+            if self.observed_screen_view().is_none() && self.headless_screen_snapshot().is_none() {
+                break;
+            }
+            let receiver = self.observed_input_screen();
+            let initial_instance = self.screen_state.screen_instance;
+            if self.screen_char_canceled_on(receiver.as_ref(), c) {
+                continue;
+            }
+            let mut handled = self.screen_state.screen_instance == initial_instance
+                && self.mounted_widget_char_typed(c, modifiers);
+            if !handled && self.screen_state.screen_instance == initial_instance {
+                handled = take(self, c.encode_utf8(&mut encoded));
+            }
+            if !handled {
+                self.screen_chars_post_on(receiver.as_ref(), c);
             }
         }
     }
@@ -1596,27 +1765,23 @@ impl Game<'_> {
     /// characters go to the screen that is open now — a key that closed the
     /// screen leaves none to hear them, as vanilla's closed screen hears
     /// nothing, and one that moved the focus types into the box it moved to.
-    /// Each printable one is offered to `native_screen_char_typed_pre`; the
-    /// survivors go to the focused text box, control characters (keys) gone.
+    /// Each printable one snapshots the current screen, runs
+    /// `native_screen_char_typed_pre` (when hooks apply), then mounted widgets,
+    /// then the focused text box, and unhandled characters fire
+    /// `native_screen_char_typed_post` on that character's captured receiver.
     pub(super) fn screen_chars_typed(&mut self, text: Option<&str>) {
         let Some(text) = text else {
             return;
         };
-        // A held edit modifier makes a shortcut of the key, not text.
-        let text = chars_to_type(text, self.types_text());
-        self.screen_committed_chars(&text);
-    }
-
-    /// Characters already committed by the input method or the control socket are not shortcuts.
-    pub(in crate::game) fn screen_committed_chars(&mut self, text: &str) {
-        if !self.screen_hooks_open() {
+        if self.observed_screen_view().is_none() && self.headless_screen_snapshot().is_none() {
             return;
         }
-        self.screen_text_each(text, |game, c| {
-            if !c.starts_with(char::is_control) && game.type_chars_into_screen(c).is_err() {
-                game.screen_chars_post(c);
-            }
-        });
+        // A held edit modifier makes a shortcut of the key, not text.
+        let text = chars_to_type(text, self.types_text());
+        if text.is_empty() {
+            return;
+        }
+        self.screen_chars_dispatch(&text, |game, c| game.type_chars_into_screen(c).is_ok());
     }
     pub(super) fn observe_client_packet(
         &mut self,
@@ -2881,9 +3046,7 @@ impl Game<'_> {
                 let mut container = None;
                 self.native_block_entity_container(&state.name, &mut container);
                 container.map(|mut c| {
-                    c.slots = c
-                        .slots
-                        .min(usize::from(sunrise_mod_package::content::MAX_MENU_SLOTS));
+                    c.slots = sunrise_client::containers::mod_container_slot_count(&c);
                     let n = c.slots;
                     for list in c.faces.iter_mut().chain([&mut c.inputs, &mut c.outputs]) {
                         list.retain(|&s| s < n);
@@ -3569,21 +3732,23 @@ fn box_meets(b: &sunrise_core::geometry::Aabb, min: [f64; 3], max: [f64; 3]) -> 
         && hi.z > min[2]
 }
 
-/// What `mod_screen_open(mod_id)` does over `screen` (`blocked`: an
-/// overlay, the title screen, no window or no player; `owner`'s own screen
-/// open): `None` opens it, `Some` answers without changing anything (true:
-/// `mod_id`'s is already open).
+/// What `mod_screen_open(mod_id)` does before running a screen transition
+/// (`unavailable`: no renderer, acting for a guest, neither a player nor a
+/// title screen, or a world/connection is loading; `owner`: the mod whose
+/// `Screen::Mod` is currently shown on top, if any): `Some(false)` refuses
+/// without changing state, `Some(true)` keeps `mod_id`'s already open screen,
+/// and `None` proceeds through the normal screen-transition path.
 pub(super) fn mod_screen_opens(
     screen: Screen,
-    blocked: bool,
+    unavailable: bool,
     owner: Option<&str>,
     mod_id: &str,
 ) -> Option<bool> {
-    if screen == Screen::Mod {
-        return Some(owner == Some(mod_id));
-    }
-    if screen != Screen::Playing || blocked {
+    if unavailable {
         return Some(false);
+    }
+    if screen == Screen::Mod && owner == Some(mod_id) {
+        return Some(true);
     }
     None
 }
@@ -4193,12 +4358,17 @@ mod tests {
                 let view = super::ObservedScreen {
                     id: "inventory",
                     overlay: false,
+                    mod_screen: None,
                     menu: None,
+                    menu_generation: None,
+                    dialog_key: None,
                     title: None,
                     rect: [0.0; 4],
+                    screen_size: [0.0; 2],
                     slots: 0,
                     mouse: [0.0; 2],
                     partial_tick: 0.0,
+                    regions: Vec::new(),
                 };
                 let mut areas = Vec::new();
                 if fire {

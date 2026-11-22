@@ -1025,9 +1025,9 @@ impl LoadedMods {
 /// ```
 ///
 /// ```compile_fail
-/// use mod_api::{HostTransaction, RegistrationContext};
+/// use mod_api::{HostTransaction, RegistrationContext, TransactionError};
 /// fn registration(context: &mut RegistrationContext) {
-///     let _: Result<(), ()> = context.transaction(|_, _| Ok(()));
+///     let _: Result<(), TransactionError<()>> = context.transaction(|_, _| Ok(()));
 /// }
 /// ```
 // exhaustive: its fields are private, so mods cannot build or destructure it
@@ -1137,9 +1137,9 @@ impl RegistrationContext {
 /// ```
 ///
 /// ```compile_fail
-/// use mod_api::{DataLoadContext, HostTransaction};
+/// use mod_api::{DataLoadContext, HostTransaction, TransactionError};
 /// fn load(context: &mut dyn DataLoadContext) {
-///     let _: Result<(), ()> = context.transaction(|_, _| Ok(()));
+///     let _: Result<(), TransactionError<()>> = context.transaction(|_, _| Ok(()));
 /// }
 /// ```
 pub trait DataLoadContext {
@@ -1236,9 +1236,9 @@ impl DataLoadContext for OwningLoad<'_> {
 /// ```
 ///
 /// ```compile_fail
-/// use mod_api::{HostTransaction, LoopContext};
+/// use mod_api::{HostTransaction, LoopContext, TransactionError};
 /// fn each(context: &mut dyn LoopContext) {
-///     let _: Result<(), ()> = context.transaction(|_, _| Ok(()));
+///     let _: Result<(), TransactionError<()>> = context.transaction(|_, _| Ok(()));
 /// }
 /// ```
 pub trait LoopContext {
@@ -1362,9 +1362,9 @@ impl LoopContext for OwningLoop<'_> {
 /// ```
 ///
 /// ```compile_fail
-/// use mod_api::{HostTransaction, WorldgenHost};
+/// use mod_api::{HostTransaction, TransactionError, WorldgenHost};
 /// fn generate(host: &mut dyn WorldgenHost) {
-///     let _: Result<(), ()> = host.transaction(|_, _| Ok(()));
+///     let _: Result<(), TransactionError<()>> = host.transaction(|_, _| Ok(()));
 /// }
 /// ```
 pub trait WorldgenHost {

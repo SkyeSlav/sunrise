@@ -41,6 +41,11 @@ pub(super) struct OrderedTicks {
     /// The falling blocks (id, join) that ended a tick still falling with a part listening to
     /// `falling_tick`, delivered after the pass.
     pub(super) falling_ticked: Vec<(u32, JoinSeq)>,
+    /// Only consecutive falling ticks without mod callbacks may defer compaction.
+    pub(super) defer_landings: bool,
+    /// The terminal slots awaiting compaction at the end of that run.
+    pub(super) landed: sunrise_core::fast_hash::FxHashSet<JoinSeq>,
+    pub(super) landing_time: sunrise_client::spans::SpanTotal,
     /// Whether the entity tick hooks are heard this tick, and which types are told alone: the
     /// server's unsimulated entities of those types are told at their place in this order
     /// (game/modding/native_ticks.rs).
@@ -89,6 +94,7 @@ impl Game<'_> {
     pub(super) fn begin_ordered_ticks(&mut self) {
         let _span = sunrise_client::spans::guard("ordered_ticks");
         let pending_buf = std::mem::take(&mut self.ordered.pending_buf);
+        let landed = std::mem::take(&mut self.ordered.landed);
         let mut armor_stands = std::mem::take(&mut self.ordered.armor_stands);
         armor_stands.clear();
         let mut falling_ticked = std::mem::take(&mut self.ordered.falling_ticked);
@@ -122,6 +128,9 @@ impl Game<'_> {
             pending_buf,
             armor_stands,
             falling_ticked,
+            defer_landings: false,
+            landed,
+            landing_time: Default::default(),
             told,
         };
     }
@@ -175,7 +184,12 @@ impl Game<'_> {
         // run and again after an explosion, which can move or remove them.
         let mut obstacles: Option<sunrise_client::entities::ObstacleGrid> = None;
         let mut nearby = Vec::new();
+        self.ordered.defer_landings = mod_api::__private::mods().is_empty();
         'entity: for (join, kind) in pending.drain(..) {
+            // TNT, orbs and mod tick callbacks may observe the falling list.
+            if !matches!(kind, Pending::Falling) {
+                self.remove_landed_falling();
+            }
             self.ordered.done = Some(join);
             // ServerLevel.tick: only entities in entity-ticking chunks tick.
             match kind {
@@ -431,12 +445,24 @@ impl Game<'_> {
                 }
             }
         }
+        self.ordered.defer_landings = false;
+        self.remove_landed_falling();
+        std::mem::take(&mut self.ordered.landing_time).record("fall_finish");
         self.ordered.pending_buf = pending;
         self.deliver_falling_ticks();
         if events && let Err(e) = self.process_level_events() {
             first_error.get_or_insert(e);
         }
         first_error.map_or(Ok(()), Err)
+    }
+
+    /// Close a run of falling blocks before the next entity can observe the list.
+    fn remove_landed_falling(&mut self) {
+        if !self.ordered.landed.is_empty() {
+            let landed = &mut self.ordered.landed;
+            self.falling.retain(|block| !landed.contains(&block.join));
+            landed.clear();
+        }
     }
 
     /// Before a batch of another kind ticks: the three kinds' entities that

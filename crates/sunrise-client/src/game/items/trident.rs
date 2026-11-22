@@ -4,8 +4,8 @@
 //! return to the owner, pickup) with `ThrownTridentRenderer`, and Channeling's
 //! lightning on a hit (`channeling.json`).
 use super::level_sounds::LevelSound;
-use super::{Game, commands::Target, minecarts::CartHit, native_projectiles::ImpactTransaction};
-use mod_api::{SoundSource, TransactionSeal};
+use super::{Game, commands::Target, minecarts::CartHit};
+use mod_api::{__private::TransactionFrame, SoundSource};
 use sunrise_client::{
     arrows::{Pickup, back_off, clip_block_hit},
     collisions::SceneCollisions,
@@ -548,7 +548,7 @@ impl Game<'_> {
         t: ThrownTrident,
         hit: Hit,
         through: &mut Option<JoinSeq>,
-        transaction: &mut Option<TransactionSeal>,
+        transaction: &mut Option<TransactionFrame>,
     ) -> Option<(ThrownTrident, bool)> {
         if !self.native_hears_impacts() {
             return Some((t, false));
@@ -570,23 +570,23 @@ impl Game<'_> {
         let before = motion(&t);
         let target = self.native_impact_target(hit);
         self.tridents.put_back(*index, t);
-        let mut scope = ImpactTransaction::new(self, true);
-        let game = &mut *scope.game;
-        let canceled = game.native_trident_impact(id, guest, hit);
-        if game.entity(id).is_some()
-            && let Some(at) = game.tridents.locate(join)
+        let frame = self.open_storage_transaction();
+        *transaction = Some(frame);
+        let canceled = self.native_trident_impact(id, guest, hit);
+        if self.entity(id).is_some()
+            && let Some(at) = self.tridents.locate(join)
         {
             let refused = canceled
-                || motion(&game.tridents[at]) != before
+                || motion(&self.tridents[at]) != before
                 || target.is_none()
-                || target != game.native_impact_target(hit);
-            if let Some(live) = game.tridents.extract(join) {
+                || target != self.native_impact_target(hit);
+            if let Some(live) = self.tridents.extract(join) {
                 *index = at;
-                *transaction = scope.seal.take();
                 return Some((live, refused));
             }
         }
-        scope.close(true);
+        *transaction = None;
+        self.close_storage_frame(frame, true);
         if let Some(at) = self.tridents.locate(join) {
             *index = at + 1;
         }
@@ -594,9 +594,14 @@ impl Game<'_> {
     }
 
     pub(super) fn tick_tridents(&mut self) {
-        if self.tridents.is_empty() {
-            return;
+        if !self.tridents.is_empty() {
+            self.with_late_storage_scope(|game, transaction| {
+                game.tick_tridents_in_scope(transaction)
+            });
         }
+    }
+
+    fn tick_tridents_in_scope(&mut self, transaction: &mut Option<TransactionFrame>) {
         let catchers = self.trident_catchers();
         let ticking = self.entity_ticking_area();
         let mut targets = self.projectile_targets();
@@ -613,7 +618,6 @@ impl Game<'_> {
                 i += 1;
                 continue;
             }
-            let mut transaction = None;
             let at = self.tridents[i].position;
             if !ticking(at.x.floor() as i32, at.z.floor() as i32) {
                 self.tridents[i].previous = at;
@@ -784,7 +788,7 @@ impl Game<'_> {
                         at,
                     };
                     let Some((live, refused)) =
-                        self.trident_impact(&mut i, t, hit, &mut through, &mut transaction)
+                        self.trident_impact(&mut i, t, hit, &mut through, transaction)
                     else {
                         continue;
                     };
@@ -1029,7 +1033,7 @@ impl Game<'_> {
                             at,
                         };
                         let Some((live, refused)) =
-                            self.trident_impact(&mut i, t, hit, &mut through, &mut transaction)
+                            self.trident_impact(&mut i, t, hit, &mut through, transaction)
                         else {
                             continue;
                         };
@@ -1117,9 +1121,9 @@ impl Game<'_> {
                 if let Some(by) = catchers.iter().find(near)
                     && self.trident_taken(&t, by)
                 {
-                    if let Some(seal) = transaction {
+                    if let Some(frame) = transaction.take() {
                         self.tridents.retire_extracted(t.id, t.join);
-                        self.transaction_close(&seal, true);
+                        self.close_storage_frame(frame, true);
                     }
                     continue;
                 }
@@ -1131,8 +1135,8 @@ impl Game<'_> {
                 self.tridents.insert(i, t);
             }
             self.entity_section_step(id, [from.x, from.y, from.z], [to.x, to.y, to.z]);
-            if let Some(seal) = transaction {
-                self.transaction_close(&seal, true);
+            if let Some(frame) = transaction.take() {
+                self.close_storage_frame(frame, true);
             }
             i += 1;
         }

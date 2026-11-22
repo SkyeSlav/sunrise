@@ -199,11 +199,13 @@ fn parts_grant_and_deny_the_abilities_vanilla_asks_of_an_item_isolated() {
             // rod are dropped instead of shearing it, the stick shears it.
             let sheep = add_sheep(game, 8.5);
             for held in [&shears, &rod] {
-                game.dispense_item((7, 64, 0), Direction::East, held.clone())
+                let _ = game
+                    .dispense_item((7, 64, 0), Direction::East, held.clone())
                     .unwrap();
                 assert!(!game.mobs[sheep].extra.sheared);
             }
-            game.dispense_item((7, 64, 0), Direction::East, stick.clone())
+            let _ = game
+                .dispense_item((7, 64, 0), Direction::East, stick.clone())
                 .unwrap();
             assert!(game.mobs[sheep].extra.sheared);
         });
@@ -245,10 +247,12 @@ fn without_parts_the_vanilla_item_checks_stand() {
         assert!(click_sheep(game, sheep, &shears));
         assert!(game.mobs[sheep].extra.sheared);
         let sheep = add_sheep(game, 8.5);
-        game.dispense_item((7, 64, 0), Direction::East, stick)
+        let _ = game
+            .dispense_item((7, 64, 0), Direction::East, stick)
             .unwrap();
         assert!(!game.mobs[sheep].extra.sheared);
-        game.dispense_item((7, 64, 0), Direction::East, shears)
+        let _ = game
+            .dispense_item((7, 64, 0), Direction::East, shears)
             .unwrap();
         assert!(game.mobs[sheep].extra.sheared);
     });

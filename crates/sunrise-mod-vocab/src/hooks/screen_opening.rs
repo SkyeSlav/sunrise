@@ -6,6 +6,9 @@ pub trait Hooks {
     /// Answer `ScreenOpening::Cancel` to keep the current one,
     /// `ScreenOpening::ModScreen` to open a mod's own screen instead, or
     /// `ScreenOpening::Vanilla` to open another vanilla screen instead.
+    /// The waiting screen and a warning's live return dialog can replace a
+    /// receiver with the same `dialog` id. `Cancel` keeps its mounted widgets
+    /// and focus, without emitting Closing or the replacement's Init.Post.
     #[hook(
         receiver = "read",
         dispatch = "flat",

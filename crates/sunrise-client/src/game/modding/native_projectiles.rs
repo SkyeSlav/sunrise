@@ -11,7 +11,6 @@ use super::{
     lan_pvp::meets_players,
     native_hooks::mob_kind,
 };
-use mod_api::TransactionSeal;
 use std::ops::Range;
 use sunrise_client::{
     arrows::{ArrowEvent, ArrowSound},
@@ -71,33 +70,6 @@ pub(super) struct PendingImpact {
 /// The type the mods know a projectile by: a spectral arrow is its own.
 fn projectile_type(p: &Projectile) -> &'static str {
     p.entity_type()
-}
-
-/// Closes an impact's existing world journal even if a listener unwinds.
-pub(super) struct ImpactTransaction<'game, 'resources> {
-    pub game: &'game mut Game<'resources>,
-    pub seal: Option<TransactionSeal>,
-}
-
-impl<'game, 'resources> ImpactTransaction<'game, 'resources> {
-    pub(super) fn new(game: &'game mut Game<'resources>, enabled: bool) -> Self {
-        let seal = enabled.then(|| game.transaction_open());
-        Self { game, seal }
-    }
-
-    pub(super) fn close(mut self, commit: bool) {
-        if let Some(seal) = self.seal.take() {
-            self.game.transaction_close(&seal, commit);
-        }
-    }
-}
-
-impl Drop for ImpactTransaction<'_, '_> {
-    fn drop(&mut self) {
-        if let Some(seal) = self.seal.take() {
-            self.game.transaction_close(&seal, false);
-        }
-    }
 }
 
 /// Events produced by applying the contact, not the arrow's earlier flight.

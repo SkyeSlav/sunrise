@@ -65,6 +65,7 @@ impl Game<'_> {
             return;
         };
         let g = &host.hub.guests[gi];
+        let conn = g.conn;
         let player = g.uuid;
         if let Some(head) = g.bed
             && mod_api::__private::listened(mod_api::HookId::PlayerBedLeave)
@@ -72,12 +73,12 @@ impl Game<'_> {
             let name = g.name.clone();
             self.native_player_bed_leave(player, &name, head, wake_immediately, update_level);
         }
-        // A listener may have woken the guest already, or changed the list:
-        // find the guest again; `wake` does nothing to one already awake.
+        // The list may have changed, and a reconnect can share the departing guest's UUID.
+        // Find the same connection; `wake` does nothing if the listener already woke it.
         let Some(host) = self.lan.as_mut() else {
             return;
         };
-        let Some(gi) = host.hub.guests.iter().position(|g| g.uuid == player) else {
+        let Some(gi) = host.hub.guests.connection_index(conn) else {
             return;
         };
         host.hub.wake(gi, wake_immediately);

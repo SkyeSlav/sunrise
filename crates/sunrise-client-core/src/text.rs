@@ -5,25 +5,8 @@ use crate::lang;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 
-/// ChatFormatting colours by legacy code index 0..=15.
-pub const COLORS: [(char, &str, u32); 16] = [
-    ('0', "black", 0x000000),
-    ('1', "dark_blue", 0x0000AA),
-    ('2', "dark_green", 0x00AA00),
-    ('3', "dark_aqua", 0x00AAAA),
-    ('4', "dark_red", 0xAA0000),
-    ('5', "dark_purple", 0xAA00AA),
-    ('6', "gold", 0xFFAA00),
-    ('7', "gray", 0xAAAAAA),
-    ('8', "dark_gray", 0x555555),
-    ('9', "blue", 0x5555FF),
-    ('a', "green", 0x55FF55),
-    ('b', "aqua", 0x55FFFF),
-    ('c', "red", 0xFF5555),
-    ('d', "light_purple", 0xFF55FF),
-    ('e', "yellow", 0xFFFF55),
-    ('f', "white", 0xFFFFFF),
-];
+pub use sunrise_core::text::{CHAT_COLORS as COLORS, named_color};
+
 pub const BLACK: u32 = 0x000000;
 pub const GRAY: u32 = 0xAAAAAA;
 pub const DARK_GRAY: u32 = 0x555555;
@@ -35,10 +18,6 @@ pub const GOLD: u32 = 0xFFAA00;
 pub const WHITE: u32 = 0xFFFFFF;
 pub const LIGHT_PURPLE: u32 = 0xFF55FF;
 pub const DARK_PURPLE: u32 = 0xAA00AA;
-
-pub fn named_color(name: &str) -> Option<u32> {
-    COLORS.iter().find(|c| c.1 == name).map(|c| c.2)
-}
 
 /// Click actions carried by text components.
 #[derive(Clone, Debug, PartialEq, Eq)]

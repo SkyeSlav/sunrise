@@ -142,7 +142,6 @@ impl Game<'_> {
         if to_game && self.title.is_none() {
             self.capture(true);
         }
-        self.dragging = false;
         // Closed from calibration (sunrise-ctl, a lost window): out of it.
         self.show_calibration((0.0, 0.0));
     }
@@ -289,12 +288,8 @@ impl Game<'_> {
                 return Ok(false);
             }
             let (events, handled) = self.ui.options.release_with_outcome();
-            self.dragging = false;
             self.handle_option_events(events)?;
             return Ok(handled);
-        }
-        if !right {
-            self.dragging = true;
         }
         let size = self.gui_size();
         let framebuffer = self.renderer.as_ref().map_or([1280, 720], |r| {
@@ -316,26 +311,25 @@ impl Game<'_> {
         self.handle_option_events(events)?;
         Ok(handled)
     }
-    pub(super) fn options_drag(&mut self) -> Result<()> {
+    pub(super) fn options_drag(&mut self) -> Result<bool> {
         let size = self.gui_size();
         let framebuffer = self.renderer.as_ref().map_or([1280, 720], |r| {
             [r.config.width as i32, r.config.height as i32]
         });
         let mut ui = std::mem::take(&mut self.ui.options);
-        let events = ui.click(
+        let (handled, events) = ui.drag(
             &mut self.settings,
             &self.gui.atlas,
-            self.cursor.0,
-            self.cursor.1,
+            self.cursor,
             size,
             framebuffer,
-            true,
             false,
         );
         self.ui.options = ui;
-        self.handle_option_events(events)
+        self.handle_option_events(events)?;
+        Ok(handled)
     }
-    pub(super) fn options_key(&mut self, key: KeyCode, text: Option<&str>) -> Result<()> {
+    pub(super) fn options_key(&mut self, key: KeyCode, text: Option<&str>) -> Result<bool> {
         let size = self.gui_size();
         let shift = self.has_shift_down();
         let framebuffer = self.renderer.as_ref().map_or([1280, 720], |r| {
@@ -345,9 +339,18 @@ impl Game<'_> {
         self.ui.options.framebuffer = framebuffer;
         let mut ui = std::mem::take(&mut self.ui.options);
         ui.modifiers = self.modifiers().bits;
-        let events = ui.key_modifiers(&mut self.settings, &self.gui.atlas, key, text, shift);
+        let (handled, events) = ui.key_input(&mut self.settings, &self.gui.atlas, key, text, shift);
         self.ui.options = ui;
-        self.handle_option_events(events)
+        self.handle_option_events(events)?;
+        self.refresh_screen_widgets();
+        Ok(handled)
+    }
+    pub(super) fn options_key_released(&mut self, key: KeyCode) -> Result<bool> {
+        self.ui.options.modifiers = self.modifiers().bits;
+        let events = self.ui.options.key_released(&mut self.settings, key);
+        let handled = !events.is_empty();
+        self.handle_option_events(events)?;
+        Ok(handled)
     }
     /// Ctrl+A/C/V/X in the options' search boxes; false when none has focus.
     pub(super) fn options_shortcut(
@@ -358,13 +361,13 @@ impl Game<'_> {
             .options
             .shortcut(&self.gui.atlas, shortcut, &mut self.clipboard)
     }
-    pub(super) fn options_scroll(&mut self, amount: f32) -> Result<()> {
+    pub(super) fn options_scroll(&mut self, amount: f32) -> Result<bool> {
         if self.pad_stick_scroll() {
             let size = self.gui_size();
             self.ui
                 .options
                 .scroll_at(&self.settings, size, self.cursor, amount);
-            return Ok(());
+            return Ok(true);
         }
         let framebuffer = self.renderer.as_ref().map_or([1280, 720], |r| {
             [r.config.width as i32, r.config.height as i32]
@@ -374,14 +377,16 @@ impl Game<'_> {
             let mut ui = std::mem::take(&mut self.ui.options);
             let events = ui.video_wheel_gui_scale(&mut self.settings, framebuffer, amount);
             self.ui.options = ui;
-            return self.handle_option_events(events);
+            self.handle_option_events(events)?;
+            return Ok(true);
         }
         let size = self.gui_size();
-        let events =
+        let (handled, events) =
             self.ui
                 .options
-                .wheel(&mut self.settings, size, self.cursor, framebuffer, amount);
-        self.handle_option_events(events)
+                .wheel_input(&mut self.settings, size, self.cursor, framebuffer, amount);
+        self.handle_option_events(events)?;
+        Ok(handled)
     }
     /// Mouse buttons pressed while a key is being bound.
     pub(super) fn options_waiting_for_key(&self) -> bool {
@@ -669,9 +674,8 @@ impl Game<'_> {
             self.ui.chat.rescale(&self.gui.atlas);
         }
         self.notify_window_resize();
-        // The GUI scale is part of the screen's size (`Screen.resize`): a
-        // change remakes its build before this frame draws it.
-        self.build_screen();
+        // GUI-scale changes rebuild mounted children before the next input.
+        self.refresh_screen_widgets();
     }
     pub(super) fn resize_state_of(&self, size: winit::dpi::PhysicalSize<u32>) -> ResizeState {
         let viewport = self
@@ -701,7 +705,7 @@ impl Game<'_> {
                 now.gui_size[0],
                 now.gui_size[1],
             );
-            self.build_screen();
+            self.refresh_screen_widgets();
         }
     }
     /// `Window.updateFullscreenState`: a fullscreen change made by the window

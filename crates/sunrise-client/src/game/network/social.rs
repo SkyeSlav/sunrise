@@ -11,10 +11,7 @@ use sunrise_client::{
     text::Text,
     ui::EditBox,
 };
-use winit::{
-    event::{ElementState, KeyEvent},
-    keyboard::{KeyCode, PhysicalKey},
-};
+use winit::keyboard::KeyCode;
 
 /// `PlayerSocialManager.hiddenPlayers` and the screen's state.
 pub(super) struct Social {
@@ -229,33 +226,28 @@ impl Game<'_> {
         true
     }
     /// `AbstractSelectionList.mouseScrolled`: a row's height and a bit a notch.
-    pub(super) fn social_scroll(&mut self, delta: f32) {
+    pub(super) fn social_scroll(&mut self, delta: f32) -> bool {
+        if !self.pad_stick_scroll()
+            && !self.pad_step_scroll()
+            && !social_screen::list_contains(self.cursor, self.gui_size())
+        {
+            return false;
+        }
         self.social.scroll -= delta * 18.0;
         // `social_view` clamps it to the list.
         let _ = self.social_view();
+        true
     }
     /// The search box has the focus from the start (`setInitialFocus`): typing fills it.
-    pub(super) fn social_key(&mut self, event: &KeyEvent) {
-        if event.state != ElementState::Pressed {
-            return;
+    pub(super) fn social_key(&mut self, key: KeyCode) -> bool {
+        if key == KeyCode::Escape {
+            self.close_social();
+            return true;
         }
-        let PhysicalKey::Code(key) = event.physical_key else {
-            return;
-        };
-        match key {
-            KeyCode::Escape => self.close_social(),
-            _ => {
-                // `EditBox.keyPressed`: Backspace, Delete, the arrows, Home and End.
-                let (ctrl, shift) = (self.has_control_down(), self.has_shift_down());
-                if !self.social.search.key(key, ctrl, shift)
-                    && self.types_text()
-                    && let Some(text) = event.text.as_deref()
-                {
-                    self.social_type(text);
-                }
-                self.social.scroll = 0.0;
-            }
-        }
+        let (ctrl, shift) = (self.has_control_down(), self.has_shift_down());
+        let handled = self.social.search.key(key, ctrl, shift);
+        self.social.scroll = 0.0;
+        handled
     }
     pub(super) fn social_backspace(&mut self) {
         self.social.search.key(KeyCode::Backspace, false, false);

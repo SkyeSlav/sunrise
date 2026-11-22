@@ -959,8 +959,7 @@ impl Game<'_> {
         if let Some(guest) = self.cloning_guest(uuid).or_else(|| {
             self.lan.as_ref().and_then(|host| {
                 host.hub.guests.simulation_iter().find(|guest| {
-                    guest.placed
-                        && guest.participates_online()
+                    host.hub.online(guest)
                         && guest.uuid == uuid
                         && !self.lan_guest_swaps.contains(&guest.conn)
                 })
@@ -2292,14 +2291,11 @@ impl Game<'_> {
         let origin = self.native_command_origin(self.ui.registries.permission)?;
         // Isolate journaled writes when the caller already has a transaction. An ordinary
         // command is not implicitly transactional, and writes outside the journal stay put.
-        let savepoint = self.transaction_current().map(|_| self.transaction_open());
-        let result = callback.call(|| call(self, &origin, &command));
-        if let Some(seal) = savepoint {
-            self.transaction_close(&seal, result.is_ok());
-        } else if !matches!(result, Ok(Ok(_))) && !self.transactions.is_empty() {
-            // No caller-owned frame existed: every open frame belongs to this invocation.
-            self.abort_open_transactions();
-        }
+        let result = if self.has_open_transaction() {
+            self.storage_transaction(|game, _| callback.call(|| call(game, &origin, &command)))
+        } else {
+            callback.call(|| call(self, &origin, &command))
+        };
         match result {
             Ok(Ok(value)) => Ok(value),
             // Failure text can reach a packet or a saved command block. An
@@ -3733,30 +3729,54 @@ mod tests {
                             let refuses = self.0.clone();
                             event.commands.push(mod_api::Command::new(usage).executes(
                                 move |host, _, _| {
+                                    let mutate = |host: &mut dyn mod_api::ServerHost| {
+                                        let level = host.level("minecraft:overworld").unwrap();
+                                        let state = host.block_state_id("minecraft:stone").unwrap();
+                                        if level.set_block(
+                                            host,
+                                            pos,
+                                            state,
+                                            mod_api::BlockUpdateFlags::NONE,
+                                        ) != Ok(true)
+                                        {
+                                            return Err(
+                                                mod_api::Text::literal("block not placed").into()
+                                            );
+                                        }
+                                        if usage == "ordinaryfailure" {
+                                            refuses.fetch_add(1, Ordering::Relaxed);
+                                            return Err(
+                                                mod_api::Text::literal("ordinary failure").into()
+                                            );
+                                        }
+                                        panic!("executor regression panic");
+                                    };
                                     if opens_root {
-                                        let _root = host.transaction_open();
-                                        let _child = host.transaction_open();
-                                    }
-                                    let level = host.level("minecraft:overworld").unwrap();
-                                    let state = host.block_state_id("minecraft:stone").unwrap();
-                                    if level.set_block(
-                                        host,
-                                        pos,
-                                        state,
-                                        mod_api::BlockUpdateFlags::NONE,
-                                    ) != Ok(true)
-                                    {
-                                        return Err(
-                                            mod_api::Text::literal("block not placed").into()
+                                        let res = mod_api::HostTransaction::transaction(
+                                            host,
+                                            |host, _| {
+                                                mod_api::HostTransaction::transaction(
+                                                    host,
+                                                    |host, _| mutate(host),
+                                                )
+                                                .map_err(|e| match e {
+                                                    mod_api::TransactionError::Aborted(msg) => msg,
+                                                    _ => mod_api::Text::literal("tx failed").into(),
+                                                })
+                                            },
                                         );
+                                        match res {
+                                            Ok(()) => Ok(0),
+                                            Err(mod_api::TransactionError::Aborted(msg)) => {
+                                                Err(msg)
+                                            }
+                                            Err(_) => {
+                                                Err(mod_api::Text::literal("tx failed").into())
+                                            }
+                                        }
+                                    } else {
+                                        mutate(host).map(|()| 0)
                                     }
-                                    if usage == "ordinaryfailure" {
-                                        refuses.fetch_add(1, Ordering::Relaxed);
-                                        return Err(
-                                            mod_api::Text::literal("ordinary failure").into()
-                                        );
-                                    }
-                                    panic!("executor regression panic");
                                 },
                             ));
                         }
@@ -3789,21 +3809,23 @@ mod tests {
                             game.build_registries();
                             game.build_native_commands(&[]);
 
-                            let seal = game.transaction_open();
-                            let (failure, outcome) = game.recording_command_outcome(|game| {
-                                game.execute_line("journalboom", game.server_source())
-                            });
-                            assert_eq!(failure.unwrap_err().key, "command.failed");
-                            assert_eq!(outcome, None);
-                            assert_eq!(
-                                game.world.block(JOURNALED[0], JOURNALED[1], JOURNALED[2]),
-                                air
-                            );
-                            assert_eq!(
-                                game.transaction_current().as_ref(),
-                                Some(seal.transaction())
-                            );
-                            game.transaction_close(&seal, true);
+                            game.storage_transaction(|game, outer| {
+                                let (failure, outcome) = game.recording_command_outcome(|game| {
+                                    game.execute_line("journalboom", game.server_source())
+                                });
+                                assert_eq!(failure.unwrap_err().key, "command.failed");
+                                assert_eq!(outcome, None);
+                                assert_eq!(
+                                    game.world.block(JOURNALED[0], JOURNALED[1], JOURNALED[2]),
+                                    air
+                                );
+                                assert!(mod_api::ServerHost::transaction_matches(
+                                    game,
+                                    Some(outer)
+                                ));
+                                Ok::<_, ()>(())
+                            })
+                            .unwrap();
                             let failure = game
                                 .execute_line("plainboom", game.server_source())
                                 .unwrap_err();
@@ -3818,7 +3840,7 @@ mod tests {
                                 .execute_line("rootboom", game.server_source())
                                 .unwrap_err();
                             assert!(failure.unexpected);
-                            assert!(game.transaction_current().is_none());
+                            assert!(!game.has_open_transaction());
                             assert_eq!(
                                 game.world.block(ABANDONED[0], ABANDONED[1], ABANDONED[2]),
                                 air
@@ -3845,7 +3867,7 @@ mod tests {
                                         .plain(),
                                     "ordinary failure"
                                 );
-                                assert!(game.transaction_current().is_none());
+                                assert!(!game.has_open_transaction());
                                 assert_eq!(
                                     game.world.block(REFUSED[0], REFUSED[1], REFUSED[2]),
                                     air

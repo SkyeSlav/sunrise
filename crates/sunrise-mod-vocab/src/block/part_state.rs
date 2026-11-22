@@ -89,7 +89,8 @@ pub trait BlockEntityPartState: BlockEntityPart + Sized {
     }
 
     /// Changes the block entity's value with `edit`, starting from the default when it has
-    /// none, and stores the result: see [`edit_part_state`].
+    /// none, and stores the result: see [`edit_part_state`]. If the host cannot open a
+    /// transaction, returns [`PartStateError::Unavailable`] without calling `edit`.
     fn edit_state<R>(
         host: &mut dyn ServerHost,
         entity: BlockEntityRef,
@@ -131,6 +132,10 @@ pub enum PartStateError {
     /// Something else changed the value while the edit's closure ran; the edit stored
     /// nothing and its transaction was aborted.
     Changed,
+    /// A transaction could not be opened on the host in the current phase.
+    Unavailable,
+    /// The edit ran, but the host rolled back its requested commit.
+    CommitRefused,
     /// The attachment store refused the value: it does not decode (its saved bytes are
     /// kept), does not encode, or the key holds another Rust type.
     Attachment {
@@ -151,6 +156,8 @@ impl fmt::Display for PartStateError {
             Self::HolderBusy => f.write_str("the entity is out of its level for its own tick"),
             Self::Reentrant => f.write_str("this holder's state is already being edited"),
             Self::Changed => f.write_str("the state changed while it was being edited"),
+            Self::Unavailable => f.write_str("transactions are unavailable in the current phase"),
+            Self::CommitRefused => f.write_str("the host refused to commit the state edit"),
             Self::Attachment {
                 namespace,
                 name,
@@ -454,7 +461,7 @@ pub fn edit_part_state<H: PartStateHolder, T: Clone + Send + Sync + 'static, R>(
     edit: impl FnOnce(&mut dyn ServerHost, &mut T) -> R,
 ) -> Result<R, PartStateError> {
     let _editing = Editing::enter(entity.attachment_holder(), key)?;
-    host.transaction(|host, _| {
+    match host.transaction(|host, _| {
         let at = entity.part_state_holder(host)?;
         let store = host.attachments();
         let current = key
@@ -479,7 +486,14 @@ pub fn edit_part_state<H: PartStateHolder, T: Clone + Send + Sync + 'static, R>(
         key.set(store, at, value)
             .map_err(|error| attachment(key, error))?;
         Ok(answer)
-    })
+    }) {
+        Ok(answer) => Ok(answer),
+        Err(crate::TransactionError::Aborted(error)) => Err(error),
+        Err(crate::TransactionError::InvalidContext | crate::TransactionError::Unavailable) => {
+            Err(PartStateError::Unavailable)
+        }
+        Err(crate::TransactionError::CommitRefused) => Err(PartStateError::CommitRefused),
+    }
 }
 
 fn same(a: Option<&AttachmentValue>, b: Option<&AttachmentValue>) -> bool {

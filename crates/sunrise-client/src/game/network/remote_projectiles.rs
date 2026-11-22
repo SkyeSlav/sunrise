@@ -373,8 +373,8 @@ impl Game<'_> {
                             && let Some(r) = self.rockets.iter_mut().find(|r| r.id == id)
                         {
                             let (_, explosions) = fireworks_of(&stack);
-                            r.explosions = explosions;
-                            r.item = stack;
+                            r.explosions = explosions.into();
+                            r.item = stack.into();
                         }
                     }
                     // DATA_ATTACHED_TO_TARGET (OptionalInt: the id plus 1).

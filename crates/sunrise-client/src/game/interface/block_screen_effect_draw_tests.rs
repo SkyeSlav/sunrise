@@ -776,12 +776,15 @@ fn pack_assembly_reports_a_missing_water_default() {
         .unwrap();
         let Err(error) = PackResources::assemble(
             &root,
-            Arc::new(assets),
-            pack.render.clone(),
-            pack.context.tables.clone(),
-            items,
-            pack.context.biomes.clone(),
-            pack.context.light.clone(),
+            super::resource_tables::PackParts {
+                assets: Arc::new(assets),
+                render: pack.render.clone(),
+                tables: pack.context.tables.clone(),
+                item_renderer: items,
+                biomes: pack.context.biomes.clone(),
+                light: pack.context.light.clone(),
+            },
+            true,
         ) else {
             panic!("a registry without water cannot supply the overlay");
         };

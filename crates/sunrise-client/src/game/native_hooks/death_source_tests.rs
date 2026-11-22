@@ -595,10 +595,11 @@ fn later_cancelled_mob_revival_is_transactional_and_a_second_kill_drops_loot() {
                     let host: &mut dyn ServerHost = game;
                     host.living(host.entity(44).unwrap()).unwrap()
                 };
-                let abort = game.transaction_open();
-                assert!(living.set_health(game, 5.0));
-                assert_eq!(game.mob_object(44).unwrap().death_time, 0);
-                game.transaction_close(&abort, false);
+                game.storage_scope(|game, _| {
+                    assert!(living.set_health(game, 5.0));
+                    assert_eq!(game.mob_object(44).unwrap().death_time, 0);
+                    ((), false)
+                });
                 let body = game.mob_object(44).unwrap();
                 assert_eq!(
                     (body.health, body.death_time, body.death_canceled),
@@ -700,14 +701,15 @@ fn later_cancelled_player_revival_is_transactional_and_a_second_kill_drops_inven
                     let host: &mut dyn ServerHost = game;
                     host.living(host.entity(id).unwrap()).unwrap()
                 };
-                let abort = game.transaction_open();
-                assert!(living.set_health(game, 5.0));
-                let guest = &game.lan.as_ref().unwrap().hub.guests[0];
-                assert_eq!(
-                    (guest.health, guest.death_time, guest.death_canceled),
-                    (5.0, 0, false)
-                );
-                game.transaction_close(&abort, false);
+                game.storage_scope(|game, _| {
+                    assert!(living.set_health(game, 5.0));
+                    let guest = &game.lan.as_ref().unwrap().hub.guests[0];
+                    assert_eq!(
+                        (guest.health, guest.death_time, guest.death_canceled),
+                        (5.0, 0, false)
+                    );
+                    ((), false)
+                });
                 let guest = &game.lan.as_ref().unwrap().hub.guests[0];
                 assert_eq!(
                     (guest.health, guest.death_time, guest.death_canceled),

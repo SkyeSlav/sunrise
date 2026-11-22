@@ -19,6 +19,7 @@ pub trait Hooks {
         receiver = "read",
         dispatch = "flat",
         side = "client",
+        version = 2,
         contract = "cancel",
         out = "canceled",
         neoforge = "ScreenEvent.MouseButtonReleased.Pre",

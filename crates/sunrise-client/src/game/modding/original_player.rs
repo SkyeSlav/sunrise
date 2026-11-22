@@ -1,8 +1,9 @@
 //! The old `ServerPlayer` retained across `restoreFrom`, independently of its replacement.
 use super::{Dim, Game};
 use mod_api::{
-    ActiveEffect, AttachmentError, AttachmentForm, AttachmentStore, AttachmentValue, Attachments,
-    Holder, InventoryView, LevelRef, OriginalPlayerAccess, PlayerExperience,
+    __private::TransactionFrame, ActiveEffect, AttachmentError, AttachmentForm, AttachmentStore,
+    AttachmentValue, Attachments, Holder, InventoryView, LevelRef, OriginalPlayerAccess,
+    PlayerExperience,
 };
 use std::sync::{Arc, Mutex};
 use sunrise_core::nbt::Compound;
@@ -20,8 +21,8 @@ pub(super) struct PlayerState {
 /// default insertions, removals and decode caching roll back with an aborted transaction.
 pub(in crate::game) struct OriginalAttachmentSlot {
     map: Attachments,
-    active_frames: Vec<u64>,
-    journal: Vec<(u64, Attachments)>,
+    active_frames: Vec<TransactionFrame>,
+    journal: Vec<(TransactionFrame, Attachments)>,
 }
 
 impl OriginalAttachmentSlot {
@@ -33,11 +34,11 @@ impl OriginalAttachmentSlot {
         }
     }
 
-    pub(in crate::game) fn open_frame(&mut self, token: u64) {
+    pub(in crate::game) fn open_frame(&mut self, token: TransactionFrame) {
         self.active_frames.push(token);
     }
 
-    pub(in crate::game) fn close_frame(&mut self, token: u64, commit: bool) {
+    pub(in crate::game) fn close_frame(&mut self, token: TransactionFrame, commit: bool) {
         if let Some(pos) = self.active_frames.iter().rposition(|&t| t == token) {
             self.active_frames.remove(pos);
         }
@@ -1126,18 +1127,20 @@ mod tests {
                         });
                         let holder = Holder::Player(12);
                         RETAINED.set(game, holder, 17).unwrap();
-                        let txn = game.transaction_open();
-                        RETAINED.set(game, holder, 23).unwrap();
-                        game.guest_respawn(12);
-                        assert!(game.command_guest(12).unwrap().dead);
-                        game.transaction_close(&txn, false);
+                        game.storage_scope(|game, _| {
+                            RETAINED.set(game, holder, 23).unwrap();
+                            game.guest_respawn(12);
+                            assert!(game.command_guest(12).unwrap().dead);
+                            ((), false)
+                        });
                         assert!(game.command_guest(12).unwrap().dead);
                         assert_eq!(RETAINED.get(game, holder), Ok(17));
                         assert!(seen.lock().unwrap().is_empty());
-                        let txn = game.transaction_open();
-                        RETAINED.set(game, holder, 29).unwrap();
-                        game.guest_respawn(12);
-                        game.transaction_close(&txn, true);
+                        game.storage_scope(|game, _| {
+                            RETAINED.set(game, holder, 29).unwrap();
+                            game.guest_respawn(12);
+                            ((), true)
+                        });
                         assert!(!game.command_guest(12).unwrap().dead);
                         assert_eq!(RETAINED.get(game, holder), Ok(29));
                         assert_eq!(
@@ -1168,23 +1171,24 @@ mod tests {
             }
 
             fn player_clone(&self, host: &mut dyn ServerHost, event: &mut PlayerCloneEvent<'_>) {
-                let aborted: Result<(), ()> = host.transaction(|host, _| {
-                    VALUE.set(host, Holder::Player(event.player), 555).unwrap();
-                    event.original.set_attachment(&VALUE, 444).unwrap();
-                    assert_eq!(event.original.remove_attachment(&RETAINED), Ok(Some(17)));
-                    assert_eq!(event.original.attachment(&DEFAULTED), Ok(41));
-                    assert_eq!(event.original.existing_attachment(&SAVED), Ok(Some(31)));
-                    // Inner committed transaction must still roll back when outer aborts.
-                    host.transaction(|_, _| {
-                        event.original.set_attachment(&VALUE, 445).unwrap();
-                        Ok::<(), ()>(())
-                    })
-                    .unwrap();
-                    assert_eq!(event.original.existing_attachment(&VALUE), Ok(Some(445)));
-                    assert_eq!(VALUE.get(host, Holder::Player(event.player)), Ok(555));
-                    Err(())
-                });
-                assert_eq!(aborted, Err(()));
+                let aborted: Result<(), mod_api::TransactionError<()>> =
+                    host.transaction(|host, _| {
+                        VALUE.set(host, Holder::Player(event.player), 555).unwrap();
+                        event.original.set_attachment(&VALUE, 444).unwrap();
+                        assert_eq!(event.original.remove_attachment(&RETAINED), Ok(Some(17)));
+                        assert_eq!(event.original.attachment(&DEFAULTED), Ok(41));
+                        assert_eq!(event.original.existing_attachment(&SAVED), Ok(Some(31)));
+                        // Inner committed transaction must still roll back when outer aborts.
+                        host.transaction(|_, _| {
+                            event.original.set_attachment(&VALUE, 445).unwrap();
+                            Ok::<(), ()>(())
+                        })
+                        .unwrap();
+                        assert_eq!(event.original.existing_attachment(&VALUE), Ok(Some(445)));
+                        assert_eq!(VALUE.get(host, Holder::Player(event.player)), Ok(555));
+                        Err(())
+                    });
+                assert_eq!(aborted, Err(mod_api::TransactionError::Aborted(())));
                 assert_eq!(VALUE.has(host, Holder::Player(event.player)), Ok(false));
                 assert_eq!(event.original.existing_attachment(&VALUE), Ok(Some(73)));
                 assert_eq!(event.original.has_attachment(&RETAINED), Ok(true));

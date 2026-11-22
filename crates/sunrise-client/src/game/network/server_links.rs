@@ -317,10 +317,14 @@ impl Game<'_> {
         self.links_ui.back.unwrap_or(Screen::ServerLinks)
     }
     /// `ScrollableLayout`'s mouse wheel over the links.
-    pub(super) fn server_links_scroll(&mut self, delta: f32) {
+    pub(super) fn server_links_scroll(&mut self, delta: f32) -> bool {
         let (_, h) = self.gui_size();
+        if !(HEADER..h - FOOTER).contains(&self.cursor.1) {
+            return false;
+        }
         self.links_ui.scroll = (self.links_ui.scroll - delta * 10.0)
             .clamp(0.0, scroll_limit(h, self.server_links().len()));
+        true
     }
     /// `ConfirmLinkScreen` (untrusted): "Are you sure you want to open the
     /// following website?", the link, the red warning, and Yes / Copy Link to

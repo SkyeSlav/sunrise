@@ -27,9 +27,8 @@ impl Game<'_> {
     }
     /// A key press while a world is open (keyboard or control socket). `key`
     /// is the vanilla default the pressed mapping translates to, `raw` the
-    /// physical key as pressed (the same where the caller had no window key):
-    /// `Screen.keyPressed` hears the raw one, and only a raw key settles what
-    /// the container's hotbar keys are now (`checkHotbarKeyPressed`).
+    /// physical key as pressed (the same where the caller had no window key).
+    /// The input dispatcher runs a receiving screen's key actions separately.
     pub(super) fn key_pressed(&mut self, key: KeyCode, raw: KeyCode) -> Result<()> {
         // Scripted presses and controller presses are delivered to the same mappings
         // as window input; direct screen keys remain immediate.
@@ -84,10 +83,8 @@ impl Game<'_> {
             }
             return Ok(());
         }
-        if self.sort_key_press(key)
-            || sunrise_client::keybinds::key_name(key).is_some_and(|name| {
-                self.hud_editor_key_press(name) || self.shader_pack_key_press(name)
-            })
+        if sunrise_client::keybinds::key_name(key)
+            .is_some_and(|name| self.hud_editor_key_press(name) || self.shader_pack_key_press(name))
         {
             return Ok(());
         }
@@ -96,7 +93,9 @@ impl Game<'_> {
         }
         match key {
             KeyCode::Escape => match self.screen {
-                Screen::Options => self.options_key(KeyCode::Escape, None)?,
+                Screen::Options => {
+                    self.options_key(KeyCode::Escape, None)?;
+                }
                 Screen::Playing => {
                     if self.replay.playing() && self.captured {
                         self.capture(false);
@@ -156,77 +155,19 @@ impl Game<'_> {
                 Screen::Mod => self.close_mod_screen(),
                 Screen::HudEditor => self.close_hud_editor(),
             },
-            // `checkHotbarKeyPressed`: the keys the controls bind to the off
-            // hand and the hotbar slots, so a rebound key swaps instead of
-            // reaching the screen. The list below keeps Q and the defaults.
-            // The raw key asks what the bindings are now: the translated
-            // `key` is a vanilla default and may itself be another mapping's
-            // rebound key (the off hand on Left Alt while hotbar 7 is on F
-            // would find that F a second time and swap with slot 7).
-            _ if (self.screen == Screen::Inventory
-                || (self.screen == Screen::Creative && !self.creative_screen.tab().search))
-                && self
-                    .settings
-                    .keys
-                    .container_hotbar_key(raw)
-                    .is_some_and(|key| self.inventory_hotkey(key)) => {}
-            KeyCode::Digit1
-            | KeyCode::Digit2
-            | KeyCode::Digit3
-            | KeyCode::Digit4
-            | KeyCode::Digit5
-            | KeyCode::Digit6
-            | KeyCode::Digit7
-            | KeyCode::Digit8
-            | KeyCode::Digit9
-            | KeyCode::KeyF
-            | KeyCode::KeyQ
-                if (self.screen == Screen::Inventory
-                    || (self.screen == Screen::Creative && !self.creative_screen.tab().search))
-                    && self.inventory_hotkey(key) => {}
-            // The search tab's number keys (scripted presses; the window's
-            // keys reach search_tab_hotbar_key before the search box).
-            _ if self.screen == Screen::Creative
-                && self.creative_screen.tab().search
-                && self.search_tab_hotbar_key(key) => {}
-            KeyCode::KeyT if self.screen == Screen::Inventory => self.recipe_focus_search(),
-            // CreativeModeInventoryScreen.keyPressed: the chat key opens the
-            // search tab from another tab, and `ignoreTextInput` drops the
-            // letter it would have typed.
-            KeyCode::KeyT
-                if self.screen == Screen::Creative && !self.creative_screen.tab().search =>
-            {
-                if let Some(tab) = self.creative_screen.search_tab() {
-                    select_creative_tab(&mut self.creative_screen, &mut self.inv_clicks, tab);
-                    self.build_screen();
-                    self.creative_ignore_text = true;
-                }
-            }
             KeyCode::KeyL if self.screen == Screen::Advancements => self.close_advancements(),
             KeyCode::F11 => self.toggle_fullscreen(),
             KeyCode::KeyE
                 if self.screen == Screen::Creative && self.creative_screen.tab().search => {}
             KeyCode::KeyE => match self.screen {
-                Screen::Creative => {
-                    self.pad_clear_focus();
-                    if let Some(c) = self.carried.take() {
-                        let _ = self.add_stack_to_inventory(c);
-                    }
-                    self.set_screen_with(Screen::Playing, |g| g.close_creative_menu());
-                    self.capture(true);
-                }
-                Screen::Inventory => {
-                    self.close_container();
-                    self.set_screen(Screen::Playing);
-                    self.capture(true);
-                }
+                Screen::Creative | Screen::Inventory => self.close_inventory_key(),
                 _ => {}
             },
             _ if self.screen == Screen::Paused && self.pause_menu => {
-                self.pause_key(key)?;
+                let _ = self.pause_key(key)?;
             }
             _ if self.screen == Screen::Dead => {
-                self.death_key(key)?;
+                let _ = self.death_key(key)?;
             }
             _ if self.screen == Screen::Stats => self.stats_key(raw),
             _ => {}

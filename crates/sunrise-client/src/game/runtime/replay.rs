@@ -680,9 +680,9 @@ impl Game<'_> {
         self.replay.driver = Some(Box::new(driver));
         self.camera_type = sunrise_client::camera::CameraType::FirstPerson;
         self.title = None;
-        self.activate_screen(Screen::Playing);
+        self.screen = Screen::Playing;
+        self.commit_screen_transition();
         self.capture(false);
-        self.dragging = false;
         // Apply timestamp-zero login, player pose, and chunk packets before the first rendered
         // frame so playback opens at the recorded player's viewpoint.
         let _ = self.advance_studio_replay();

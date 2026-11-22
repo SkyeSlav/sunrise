@@ -128,6 +128,104 @@ pub struct Contents {
 }
 
 impl Contents {
+    /// Width of a bundle tooltip component in GUI pixels (`ClientBundleTooltip.GRID_WIDTH`).
+    pub const TOOLTIP_WIDTH: i32 = 96;
+
+    /// Whether `stack` carries `minecraft:bundle_contents`, without cloning its items or
+    /// recomputing their weight.
+    pub fn is_bundle(items: &Items, stack: &ItemStack) -> bool {
+        contents_of(items, stack).is_some()
+    }
+
+    /// `ClientBundleTooltip.getHeight`: height of this bundle tooltip component in GUI pixels.
+    /// `description_lines` is the empty-bundle description line count in the active font (ignored
+    /// when non-empty); `line_height` is `Font.lineHeight` (9 in vanilla).
+    pub fn tooltip_height(&self, description_lines: usize, line_height: i32) -> i32 {
+        if self.items.is_empty() {
+            (description_lines as i32)
+                .wrapping_mul(line_height)
+                .wrapping_add(13 + 8)
+        } else {
+            let rows = self.items.len().min(12).div_ceil(4) as i32;
+            rows.wrapping_mul(24).wrapping_add(13 + 8)
+        }
+    }
+
+    /// Lay out this prepared bundle's tooltip (`ClientBundleTooltip`) at `(x, y)` centred inside
+    /// `box_width`, reusing these retained items and weight without re-reading the stack.
+    pub fn tooltip_layout(
+        &self,
+        x: f32,
+        y: f32,
+        box_width: f32,
+        description_lines: usize,
+    ) -> TooltipLayout {
+        let offset = ((box_width - 96.0) / 2.0).floor();
+        if self.items.is_empty() {
+            // The description takes the top; the bar follows it. Its lines are
+            // the caller's font's (`getEmptyBundleDescriptionTextHeight`).
+            let description_height = 9.0 * description_lines as f32;
+            return TooltipLayout {
+                width: 96.0,
+                height: self.tooltip_height(description_lines, 9) as f32,
+                slots: Vec::new(),
+                selected: None,
+                overflow: None,
+                bar: [x + offset, y + description_height + 4.0],
+                fill: 0.0,
+                full: false,
+                label: Some("item.minecraft.bundle.empty"),
+                empty_description: Some([x + offset, y]),
+            };
+        }
+        let (shown, hidden) = self.shown();
+        // `gridSizeY` counts `slotCount()` (at most twelve), not the slots the
+        // overflow count leaves room for.
+        let rows = self.items.len().min(12).div_ceil(4).max(1);
+        let grid_height = rows as f32 * 24.0;
+        let x_start = x + offset + 96.0;
+        let y_start = y + grid_height;
+        let mut slots = Vec::with_capacity(shown.len());
+        let mut selected = None;
+        let mut overflow = None;
+        // Rows fill bottom-up and columns right-to-left, as vanilla draws them.
+        let mut slot = 0;
+        for row in 1..=rows {
+            for column in 1..=4 {
+                let at = [x_start - column as f32 * 24.0, y_start - row as f32 * 24.0];
+                if hidden > 0 && row == 1 && column == 1 {
+                    overflow = Some((at, hidden));
+                } else if slot < shown.len() {
+                    // `extractSlot`: the cell of slot number n holds item `size - n`.
+                    let index = shown.len() - 1 - slot;
+                    if usize::try_from(self.selected()) == Ok(index) {
+                        selected = Some(slots.len());
+                    }
+                    slots.push((at, shown[index].clone()));
+                    slot += 1;
+                }
+            }
+        }
+        let weight = self.weight_fraction();
+        TooltipLayout {
+            width: 96.0,
+            height: self.tooltip_height(description_lines, 9) as f32,
+            slots,
+            selected,
+            overflow,
+            bar: [x + offset, y + grid_height + 4.0],
+            // `Mth.mulAndTruncate(weight, 94)`, kept within the bar.
+            fill: (weight * 94.0).trunc().clamp(0.0, 94.0),
+            full: self.is_full(),
+            label: if self.is_full() {
+                Some("item.minecraft.bundle.full")
+            } else {
+                None
+            },
+            empty_description: None,
+        }
+    }
+
     /// A component collection may belong to any item, including an item with
     /// no previous bundle_contents component. Reuse the same weight model.
     pub fn from_items(items: &Items, inside: Vec<ItemStack>) -> Self {
@@ -348,71 +446,8 @@ pub fn tooltip_layout(
     box_width: f32,
     description_lines: usize,
 ) -> Option<TooltipLayout> {
-    let contents = Contents::of(items, stack)?;
-    let offset = ((box_width - 96.0) / 2.0).floor();
-    if contents.items().is_empty() {
-        // The description takes the top; the bar follows it. Its lines are
-        // the caller's font's (`getEmptyBundleDescriptionTextHeight`).
-        let description_height = 9.0 * description_lines as f32;
-        return Some(TooltipLayout {
-            width: 96.0,
-            height: description_height + 13.0 + 8.0,
-            slots: Vec::new(),
-            selected: None,
-            overflow: None,
-            bar: [x + offset, y + description_height + 4.0],
-            fill: 0.0,
-            full: false,
-            label: Some("item.minecraft.bundle.empty"),
-            empty_description: Some([x + offset, y]),
-        });
-    }
-    let (shown, hidden) = contents.shown();
-    // `gridSizeY` counts `slotCount()` (at most twelve), not the slots the
-    // overflow count leaves room for.
-    let rows = contents.items().len().min(12).div_ceil(4).max(1);
-    let grid_height = rows as f32 * 24.0;
-    let x_start = x + offset + 96.0;
-    let y_start = y + grid_height;
-    let mut slots = Vec::with_capacity(shown.len());
-    let mut selected = None;
-    let mut overflow = None;
-    // Rows fill bottom-up and columns right-to-left, as vanilla draws them.
-    let mut slot = 0;
-    for row in 1..=rows {
-        for column in 1..=4 {
-            let at = [x_start - column as f32 * 24.0, y_start - row as f32 * 24.0];
-            if hidden > 0 && row == 1 && column == 1 {
-                overflow = Some((at, hidden));
-            } else if slot < shown.len() {
-                // `extractSlot`: the cell of slot number n holds item `size - n`.
-                let index = shown.len() - 1 - slot;
-                if usize::try_from(contents.selected()) == Ok(index) {
-                    selected = Some(slots.len());
-                }
-                slots.push((at, shown[index].clone()));
-                slot += 1;
-            }
-        }
-    }
-    let weight = contents.weight_fraction();
-    Some(TooltipLayout {
-        width: 96.0,
-        height: grid_height + 13.0 + 8.0,
-        slots,
-        selected,
-        overflow,
-        bar: [x + offset, y + grid_height + 4.0],
-        // `Mth.mulAndTruncate(weight, 94)`, kept within the bar.
-        fill: (weight * 94.0).trunc().clamp(0.0, 94.0),
-        full: contents.is_full(),
-        label: if contents.is_full() {
-            Some("item.minecraft.bundle.full")
-        } else {
-            None
-        },
-        empty_description: None,
-    })
+    Contents::of(items, stack)
+        .map(|contents| contents.tooltip_layout(x, y, box_width, description_lines))
 }
 
 #[cfg(test)]

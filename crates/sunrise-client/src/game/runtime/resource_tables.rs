@@ -238,6 +238,15 @@ impl UiResources {
     }
 }
 
+pub(super) struct PackParts {
+    pub(super) assets: Arc<Assets>,
+    pub(super) render: Arc<RenderAssets>,
+    pub(super) tables: Arc<MeshTables>,
+    pub(super) item_renderer: sunrise_client::item_render::ItemRenderer,
+    pub(super) biomes: Arc<Biomes>,
+    pub(super) light: Arc<LightTables>,
+}
+
 impl PackResources {
     /// Everything a pack overlay at `root` provides, over `assets` and `render`
     /// loaded from it.
@@ -269,7 +278,18 @@ impl PackResources {
             render.model_library.clone(),
             item_data,
         )?;
-        Self::assemble(root, assets, render, tables, item_renderer, biomes, light)
+        Self::assemble(
+            root,
+            PackParts {
+                assets,
+                render,
+                tables,
+                item_renderer,
+                biomes,
+                light,
+            },
+            true,
+        )
     }
     /// The workers' context over `biomes`: this pack's own when `biomes` is
     /// the table it was built with, else the same parts with that table.
@@ -293,13 +313,17 @@ impl PackResources {
     /// (`sunrise_client::clouds::load`).
     pub(super) fn assemble(
         root: &sunrise_assets::resource_source::ResourceRoot,
-        assets: Arc<Assets>,
-        render: Arc<RenderAssets>,
-        tables: Arc<MeshTables>,
-        item_renderer: sunrise_client::item_render::ItemRenderer,
-        biomes: Arc<Biomes>,
-        light: Arc<LightTables>,
+        parts: PackParts,
+        draws: bool,
     ) -> Result<Self> {
+        let PackParts {
+            assets,
+            render,
+            tables,
+            item_renderer,
+            biomes,
+            light,
+        } = parts;
         let water_overlay_state = assets
             .registry
             .default_state("minecraft:water")
@@ -310,38 +334,58 @@ impl PackResources {
         // images and language map together so a custom-sky pack cannot put all
         // of the pack assembly on the critical path behind its own files.
         let (names, clouds, forcefield, custom_sky, environments, polytone_particles) =
-            std::thread::scope(|scope| {
+            std::thread::scope(|scope| -> Result<_> {
                 let names = named_scope(scope, "pack.names", || Names::load(root.source()));
-                let clouds = named_scope(scope, "pack.clouds", || {
-                    sunrise_client::clouds::load(root.source())
-                });
-                let forcefield =
-                    named_scope(scope, "pack.forcefield", || load_forcefield(root.source()));
-                let custom_sky = named_scope(scope, "pack.custom_sky", || {
-                    sunrise_client::custom_sky::load(root.source())
-                });
-                let environments =
-                    named_scope(scope, "pack.environments", || pack_environments(root));
-                let particles = named_scope(scope, "pack.particles", || {
-                    pack_particles(root, assets.registry)
-                });
-                (
+                let (clouds, forcefield, custom_sky, environments, particles) = if draws {
+                    let clouds = named_scope(scope, "pack.clouds", || {
+                        sunrise_client::clouds::load(root.source())
+                    });
+                    let forcefield =
+                        named_scope(scope, "pack.forcefield", || load_forcefield(root.source()));
+                    let custom_sky = named_scope(scope, "pack.custom_sky", || {
+                        sunrise_client::custom_sky::load(root.source())
+                    });
+                    let environments =
+                        named_scope(scope, "pack.environments", || pack_environments(root));
+                    let particles = named_scope(scope, "pack.particles", || {
+                        pack_particles(root, assets.registry)
+                    });
+                    (
+                        clouds.join().unwrap().map_err(|e| e.to_string())?,
+                        forcefield.join().unwrap(),
+                        custom_sky.join().unwrap(),
+                        environments.join().unwrap(),
+                        particles.join().unwrap(),
+                    )
+                } else {
+                    (
+                        Default::default(),
+                        Default::default(),
+                        sunrise_client::custom_sky::empty(),
+                        None,
+                        None,
+                    )
+                };
+                Ok((
                     names.join().unwrap(),
-                    clouds.join().unwrap(),
-                    forcefield.join().unwrap(),
-                    custom_sky.join().unwrap(),
-                    environments.join().unwrap(),
-                    particles.join().unwrap(),
-                )
-            });
-        let clouds = clouds.map_err(|e| e.to_string())?;
-        let polytone_post = sunrise_client::polytone_post::PolytonePost::read(
-            root.source(),
-            sunrise_client::packs::polytone_configs(&sunrise_client::packs::Source::Opened(
-                root.source().clone(),
-            )),
-        )
-        .map(Arc::new);
+                    clouds,
+                    forcefield,
+                    custom_sky,
+                    environments,
+                    particles,
+                ))
+            })?;
+        let polytone_post = if draws {
+            sunrise_client::polytone_post::PolytonePost::read(
+                root.source(),
+                sunrise_client::packs::polytone_configs(&sunrise_client::packs::Source::Opened(
+                    root.source().clone(),
+                )),
+            )
+            .map(Arc::new)
+        } else {
+            None
+        };
         // Each item's own default name, which the hover name reads as `getDescriptionId` does.
         let names = names.with_item_names(&item_renderer.models.prototypes, assets.registry);
         Ok(Self {
@@ -374,7 +418,11 @@ impl PackResources {
             environments,
             polytone_particles,
             polytone_post,
-            polytone_colors: Arc::new(read_colors(root)),
+            polytone_colors: if draws {
+                Arc::new(read_colors(root))
+            } else {
+                Arc::default()
+            },
         })
     }
 }

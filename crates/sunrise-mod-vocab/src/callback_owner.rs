@@ -230,19 +230,26 @@ impl CallbackOwner {
 
     /// Run a delayed task using its installed owner's shared state. A panic returns a diagnostic
     /// for the server to relay after rolling back the task's transaction.
-    pub fn call_scheduled_task<H: crate::ServerHost>(
+    pub fn call_scheduled_task(
         id: &'static str,
-        host: &mut H,
-        invoke: impl FnOnce(&mut H),
+        host: &mut dyn crate::ServerHost,
+        invoke: impl FnOnce(&mut dyn crate::ServerHost),
     ) -> Result<(), String> {
         let state = Self::scheduled(id).map(|owner| (owner.binding.index, owner.poisoned.as_ref()));
         match run_scheduled(id, state, "schedule_task", || {
-            crate::run_transaction(host, |host, _| {
+            crate::HostTransaction::transaction(host, |host, _| {
                 invoke(host);
-                Ok::<(), ()>(())
+                Ok::<(), core::convert::Infallible>(())
             })
-            .ok();
         }) {
+            Ok(Err(
+                error @ (crate::TransactionError::Unavailable
+                | crate::TransactionError::CommitRefused),
+            )) => {
+                log::warn!("mod {id}: scheduled task refused: {error}");
+                Ok(())
+            }
+            Ok(Err(crate::TransactionError::Aborted(never))) => match never {},
             Err(ScheduledFailure::Panicked(diagnostic)) => Err(diagnostic),
             _ => Ok(()),
         }

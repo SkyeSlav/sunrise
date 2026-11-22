@@ -70,6 +70,28 @@ pub trait DrawContext {
     fn text(&mut self, text: &str, at: [f32; 2], argb: u32, shadow: bool) {
         unimplemented!("DrawContext::text")
     }
+    /// Draw formatted [`Text`] at `(x, y)` in GUI pixels, in `argb` (`0xAARRGGBB`) with optional
+    /// drop shadow. `font` applies where the text has no explicit font. An unknown font ID uses
+    /// missing glyphs, not `minecraft:default`. Returns the drawn width in GUI pixels, or
+    /// [`TextFormError`] if the text's component metadata cannot be represented. Local text
+    /// is not subject to serialization limits.
+    fn text_with_font(
+        &mut self,
+        font: &Identifier,
+        text: &Text,
+        at: [f32; 2],
+        argb: u32,
+        shadow: bool,
+    ) -> Result<f32, TextFormError> {
+        unimplemented!("DrawContext::text_with_font")
+    }
+    /// Borrow the tooltip font `font` for measurement or splitting through an object-safe
+    /// callback; callers use [`DrawContext::with_tooltip_font`].
+    // hidden: object-safe backing method for `impl dyn DrawContext::with_tooltip_font`.
+    #[doc(hidden)]
+    fn with_tooltip_font_raw(&self, font: &Identifier, f: &mut dyn FnMut(&dyn TooltipFont)) {
+        unimplemented!("DrawContext::with_tooltip_font_raw")
+    }
     /// `text` scaled by `scale` about `at`, its top-left corner: what a GUI pose of translate,
     /// scale and translate back around `text` draws (`PoseStack.scale` in vanilla's HUD), without
     /// a `gui_paint` buffer. `0.5` is the half-size line under a widget's label.
@@ -268,33 +290,6 @@ pub trait DrawContext {
     /// Uses the same nonresident stack encoding as `item_stack`, not write validation.
     fn gui_draw_item_with(&mut self, stack: &ItemStack, at: [f32; 2], text: Option<&str>) {
         unimplemented!("DrawContext::gui_draw_item_with")
-    }
-    /// Draws a button and registers it for narration and controller focus like `AbstractButton`.
-    /// `rect` is `[x, y, w, h]` in GUI pixels. The label is centred, scrolls when it is too wide,
-    /// and is grey when inactive. [`crate::client::widgets::Widgets`] uses this to draw its buttons.
-    ///
-    /// `None` uses the vanilla nine-slice for the button's state. With [`ButtonSprites`] the
-    /// full custom sprite stretches into `rect`, and the label moves by `label_offset`. Inactive
-    /// takes precedence over highlighted. An omitted or unknown state id falls back to the custom
-    /// normal sprite, then to the vanilla nine-slice for the current state.
-    fn widget_button(
-        &mut self,
-        rect: [f32; 4],
-        label: &Text,
-        active: bool,
-        highlighted: bool,
-        sprites: Option<&ButtonSprites>,
-    ) -> Result<(), TextFormError> {
-        unimplemented!("DrawContext::widget_button")
-    }
-    /// A text field as the game's screens draw one (`EditBox`): its text from the first
-    /// character `field.scroll` shows, scrolled on to keep the cursor in view, the selection
-    /// highlighted, the caret, the suggestion, the `widget/text_field` sprite when bordered, and
-    /// a record for the narrator and a controller's focus. Answers the scroll it drew with and
-    /// the x of each shown character boundary, for the next press. What
-    /// [`crate::client::widgets::Widgets`] draws its fields with.
-    fn widget_text_field(&mut self, field: &TextFieldView) -> TextFieldLayout {
-        unimplemented!("DrawContext::widget_text_field")
     }
 }
 /// What a block entity, mob or player submit hook draws with, in blocks under a pose stack (`PoseStack`): one per hook call.

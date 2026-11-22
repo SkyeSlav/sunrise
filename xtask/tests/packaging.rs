@@ -50,14 +50,7 @@ fn client_and_server_layouts_require_and_ship_companion_programs() {
             "fixture",
         ],
     );
-    for target in [
-        "linux",
-        "linux-musl",
-        "windows",
-        "windows-arm64",
-        "macos",
-        "macos-x64",
-    ] {
+    for target in ["linux", "windows", "macos"] {
         let source = root.join(target);
         fs::create_dir_all(&source).unwrap();
         let suffix = if target.starts_with("windows") {

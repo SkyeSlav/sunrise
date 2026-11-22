@@ -1,7 +1,7 @@
 use super::api_values::TryIntoApi;
 use super::native_guest_turn_tests::with_guests;
 use mod_api::__private::game::Fields;
-use mod_api::{HostTransaction, ItemPlace, ServerHost};
+use mod_api::{HostTransaction, ItemPlace, ServerHost, TransactionError};
 use sunrise_client::{items::ItemStack, lan::playerdata};
 use sunrise_core::nbt::Tag;
 
@@ -59,9 +59,9 @@ impl mod_api::MenuPart for InventoryPart {
         let give = ItemPlace::MenuSlot { menu, slot: 10 };
         let partial = ItemPlace::MenuSlot { menu, slot: 11 };
         host.transaction(|host, tx| {
-            assert_eq!(take.extract(host, tx, &stone, 4), 4);
-            assert_eq!(give.insert(host, tx, &dirt, 5), 5);
-            assert_eq!(partial.insert(host, tx, &pearl, 10), 4);
+            assert_eq!(take.extract(host, tx, &stone, 4), Ok(4));
+            assert_eq!(give.insert(host, tx, &dirt, 5), Ok(5));
+            assert_eq!(partial.insert(host, tx, &pearl, 10), Ok(4));
             Ok::<_, ()>(())
         })
         .unwrap();
@@ -156,8 +156,8 @@ fn exercise(reopen: bool) {
             };
             (game as &mut dyn ServerHost)
                 .transaction(|host, tx| {
-                    assert_eq!(foreign.extract(host, tx, &stone, 4), 0);
-                    assert_eq!(foreign.insert(host, tx, &dirt, 5), 0);
+                    assert_eq!(foreign.extract(host, tx, &stone, 4), Ok(0));
+                    assert_eq!(foreign.insert(host, tx, &dirt, 5), Ok(0));
                     Ok::<_, ()>(())
                 })
                 .unwrap();
@@ -165,10 +165,11 @@ fn exercise(reopen: bool) {
             assert_eq!(take.with_stack(game, |stack| stack.count()).unwrap(), 6);
             assert_eq!(give.with_stack(game, |stack| stack.count()).unwrap(), 5);
             assert_eq!(partial.with_stack(game, |stack| stack.count()).unwrap(), 16);
-            let aborted: Result<(), ()> = (game as &mut dyn ServerHost).transaction(|host, tx| {
-                assert_eq!(give.insert(host, tx, &dirt, 3), 3);
-                Err(())
-            });
+            let aborted: Result<(), mod_api::TransactionError<()>> = (game as &mut dyn ServerHost)
+                .transaction(|host, tx| {
+                    assert_eq!(give.insert(host, tx, &dirt, 3), Ok(3));
+                    Err(())
+                });
             assert!(aborted.is_err());
             assert_eq!(give.with_stack(game, |stack| stack.count()).unwrap(), 5);
             game.lan
@@ -179,8 +180,8 @@ fn exercise(reopen: bool) {
                 .unwrap();
             (game as &mut dyn ServerHost)
                 .transaction(|host, tx| {
-                    assert_eq!(take.extract(host, tx, &stone, 4), 0);
-                    assert_eq!(give.insert(host, tx, &dirt, 5), 0);
+                    assert_eq!(take.extract(host, tx, &stone, 4), Ok(0));
+                    assert_eq!(give.insert(host, tx, &dirt, 5), Ok(0));
                     Ok::<_, ()>(())
                 })
                 .unwrap();
@@ -246,10 +247,10 @@ mod owner {
             let cursor = menu.cursor();
             let mut seen = Vec::new();
             host.transaction(|host, tx| {
-                seen.push(player_slot.extract(host, tx, &diamond, 1));
-                seen.push(menu_slot.extract(host, tx, &diamond, 1));
-                seen.push(own_slot.insert(host, tx, &diamond, 1));
-                seen.push(cursor.insert(host, tx, &diamond, 1));
+                seen.push(player_slot.extract(host, tx, &diamond, 1).unwrap());
+                seen.push(menu_slot.extract(host, tx, &diamond, 1).unwrap());
+                seen.push(own_slot.insert(host, tx, &diamond, 1).unwrap());
+                seen.push(cursor.insert(host, tx, &diamond, 1).unwrap());
                 seen.push(player_slot.amount(host));
                 seen.push(menu_slot.amount(host));
                 Ok::<_, ()>(())
@@ -347,12 +348,13 @@ mod owner {
                 slot: 0,
             };
             let dropped = game.dropped.len();
-            let moved: Result<(), ()> = (game as &mut dyn ServerHost).transaction(|host, tx| {
-                let taken = source.extract(host, tx, &diamond, 1);
-                assert_eq!(taken, 1);
-                assert_eq!(slot.insert(host, tx, &diamond, taken), 0);
-                Err(())
-            });
+            let moved: Result<(), TransactionError<()>> = (game as &mut dyn ServerHost)
+                .transaction(|host, tx| {
+                    let taken = source.extract(host, tx, &diamond, 1).unwrap();
+                    assert_eq!(taken, 1);
+                    assert_eq!(slot.insert(host, tx, &diamond, taken), Ok(0));
+                    Err(())
+                });
             assert!(moved.is_err());
             assert!(game.inventory.iter().all(Option::is_none));
             let giver = game.lan.as_ref().unwrap().hub.guest(13).unwrap();
@@ -404,10 +406,11 @@ mod owner {
                 .unwrap();
             let player = game.players().server_players()[1];
             assert_eq!(player.uuid(), 13);
-            let aborted: Result<(), ()> = (game as &mut dyn ServerHost).transaction(|host, _| {
-                player.set_inventory_slot(host, 0, None).unwrap();
-                Err(())
-            });
+            let aborted: Result<(), TransactionError<()>> = (game as &mut dyn ServerHost)
+                .transaction(|host, _| {
+                    player.set_inventory_slot(host, 0, None).unwrap();
+                    Err(())
+                });
             assert!(aborted.is_err());
             player
                 .with_inventory(game, |view| {

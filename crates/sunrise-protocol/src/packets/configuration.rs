@@ -5,6 +5,7 @@ use crate::{
     buf::{
         Bool, Byte, Codec, Ident, Int, List, Long, Nbt, Opt, Reader, Str, StrN, UByte, Uuid, VarInt,
     },
+    entity_data::humanoid_arm_id,
     packet, packet_enum,
     packets::Empty,
 };
@@ -189,7 +190,7 @@ impl Codec<ClientInformation> for ClientInformation {
             chat_visibility: VarInt::read(r)?,
             chat_colors: Bool::read(r)?,
             model_customisation: UByte::read(r)?,
-            main_hand: VarInt::read(r)?,
+            main_hand: humanoid_arm_id(VarInt::read(r)?),
             text_filtering: Bool::read(r)?,
             allows_listing: Bool::read(r)?,
             particle_status: VarInt::read(r)?,

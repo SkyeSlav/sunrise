@@ -197,9 +197,16 @@ A translation's `fallback` and an `nbt` component's `interpret`, `plain` and
 key is `index` is refused, as in vanilla; Sunrise follows vanilla there. JSON
 escapes such as `\u0041` are decoded.
 
-`host.text_from_legacy("§cRed")` reads `§` formatting codes as
+`host.text_to_nbt(&text)` encodes the component as vanilla's `ComponentSerialization.CODEC`
+with `NbtOps`, without resolving translations or adding styles. It returns `Result<Tag, TextFormError>`.
+`host.text_from_nbt(&tag)` reads that form, returning `Result<Option<Text>, TextFormError>`.
+An unstyled literal without siblings encodes as an NBT string, and strings are read literally,
+including `§` codes. NBT flags are true for nonzero numeric tags, and custom click payloads
+keep their tag types. Both methods enforce vanilla's 512-container NBT depth limit.
+
+`host.text_from_legacy("§cRed")` instead reads `§` formatting codes as
 the font draws them; `&` codes are not read, so replace `&` with `§` first.
-Both work on either side.
+These conversions work on either side.
 
 ## Server clock, rules and distances
 
@@ -216,6 +223,12 @@ read the distances in chunks; `host.server_set_view_distance(d)` and
 `host.server_set_simulation_distance(d)` change them live for 2 to 32 on a
 dedicated server and return `false` otherwise. `server.properties` is not
 written.
+
+`host.server_is_published()` is `MinecraftServer.isPublished`: always true on a
+dedicated server, and on a single-player world's server only while the world is
+open to LAN, so it turns false again when the LAN closes (`/unpublish`). A rule
+meant for multiplayer only reads it when it applies, not once at start: no hook
+fires when a world is opened to LAN.
 
 `host.tick_rate_is_frozen()` is `TickRateManager.isFrozen` (`/tick freeze`): `Some(true)` while the server's
 ticking is frozen, `None` on a client. A frozen server still runs the ticks `/tick step` asks for, so
@@ -339,6 +352,7 @@ kept body:
 | `on_ground` | The local player's own predicted flag; for another kept entity, its client copy's flag. |
 | `is_in_water` | The local player's own fluid state, or a kept entity's last client update. |
 | `is_swimming` | The local player's swimming flag, not the pose (crawling can share that pose). `None` for other players and other entity kinds. |
+| `main_arm` | `LivingEntity.getMainArm` for every living entity the client tracks, as the server last sent it: another player's or a mannequin's main hand, a mob's left-handed flag; the local player's own Main Hand option. `None` for an entity that isn't living. |
 
 Client reads are views, not server authority. Inventory access here is read-only;
 inventory and movement writes still require a server host.

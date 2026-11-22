@@ -687,6 +687,18 @@ pub(super) fn register_gui_layers(role: ExecutionRole) {
     Game::native_register_gui_layers(&RegistrationContext::new(), &mut layers);
     sunrise_client::gui_layers::freeze(layers);
 }
+/// Install the native mods' client tooltip component factories once at client startup.
+pub(super) fn register_client_tooltip_component_factories(role: ExecutionRole) {
+    if !role.is_client() {
+        return;
+    }
+    let mut factories = sunrise_client::tooltip_components::TooltipComponentFactories::default();
+    Game::native_register_client_tooltip_component_factories(
+        &RegistrationContext::new(),
+        &mut factories,
+    );
+    sunrise_client::tooltip_components::freeze(factories);
+}
 /// Collect the native mods' owned debug renderers and their owners on each list refresh.
 pub(super) fn debug_renderers(
     role: ExecutionRole,

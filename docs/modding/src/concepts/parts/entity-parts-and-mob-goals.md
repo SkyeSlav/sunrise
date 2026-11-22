@@ -126,7 +126,8 @@ let full = Robot::edit_state(host, robot, |_, charge| {
 ```
 
 - `state` and `state_existing` read a snapshot and insert nothing; `edit_state` runs in a nested
-  transaction of its own, as for block entities.
+  transaction of its own, as for block entities. If the transaction cannot open, it returns
+  `PartStateError::Unavailable` without calling the edit closure.
 - Every call checks the handle first:
   - a handle of another world open, or of an entity that was removed (or whose removal waits for
     the root commit), unloaded or moved under a new id, gives `PartStateError::Stale`, and

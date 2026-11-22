@@ -43,12 +43,11 @@ fn attached_items_are_undone_by_an_abort_and_saved_by_their_codec() {
         let dirt = ItemResource::of(&ItemStack::new("minecraft:dirt", 1).try_into_api().unwrap());
         let slots = AttachedItems::new(&ITEMS, CHUNK, 9, 64, |_| true).unwrap();
         let host: &mut dyn ServerHost = game;
-        let aborted =
-            host.transaction(|host, tx| Err::<(), _>(slots.insert_at(host, tx, 4, &dirt, 10)));
-        assert_eq!(aborted, Err(10));
+        let aborted = host
+            .transaction(|host, tx| Err::<(), _>(slots.insert_at(host, tx, 4, &dirt, 10).unwrap()));
+        assert_eq!(aborted, Err(mod_api::TransactionError::Aborted(10)));
         assert_eq!(ITEMS.has(host, CHUNK), Ok(false));
-        let went =
-            host.transaction(|host, tx| Ok::<_, ()>(slots.insert_at(host, tx, 4, &dirt, 10)));
+        let went = host.transaction(|host, tx| slots.insert_at(host, tx, 4, &dirt, 10));
         assert_eq!(went, Ok(10));
         assert_eq!(slots.amount(host, 4), 10);
         // What the save writes reads back to the same index.
@@ -68,7 +67,7 @@ fn attached_energy_refuses_past_its_capacity() {
         let battery = AttachedEnergy::new(&ENERGY, CHUNK, 100, 1000, 1000);
         let host: &mut dyn ServerHost = game;
         let insert = |host: &mut dyn ServerHost, amount| {
-            host.transaction(|host, tx| Ok::<_, ()>(battery.insert(host, tx, amount)))
+            host.transaction(|host, tx| battery.insert(host, tx, amount))
         };
         assert_eq!(insert(&mut *host, 150), Ok(100));
         assert_eq!(insert(&mut *host, 1), Ok(0));

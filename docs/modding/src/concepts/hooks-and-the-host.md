@@ -23,6 +23,11 @@ What a hook's return value means depends on its kind:
 
 A hook with no receiver gets no `Host`.
 
+To group journaled writes from a hook with a `ServerHost`, import `HostTransaction`
+and call `host.transaction(|host, tx| …)`. Use the host and `TransactionContext`
+lent to that closure, even if an engine action already has a transaction open.
+See [Transactions](transactions.md) for nesting and failure handling.
+
 ## Failures and panics
 
 The dispatcher catches panics in hook callbacks, including chunk-disk callbacks and startup
@@ -53,6 +58,12 @@ player's body tick is skipped. Connection and
 level upkeep and outgoing state updates still run. The server resolves whether
 the body runs before the pre hook; a listener changing the player's position
 does not change that decision for the current tick.
+
+## Player logout
+
+`player_logged_out` fires while the player is still listed, before any logout save.
+A listener's edits persist only on leaves this server saves. A completed proxy hand-over
+and a crash write no logout save. A kicked fake player is already off the list and is not saved.
 
 ## Entity tick hooks
 

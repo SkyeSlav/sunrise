@@ -57,7 +57,7 @@ AreaEffectCloud.addAdditionalSaveData	port	crates/sunrise-client/src/game/items/
 AreaEffectCloud.get	skip:other		entity data component accessor for predicates and /data; Sunrise keeps the cloud's potion in PotionCloud
 AreaEffectCloud.applyImplicitComponents	inline	crates/sunrise-client/src/game/items/potions.rs::Game::splash	the lingering branch takes the thrown stack's potion effects and colour; potion_duration_scale is fixed at 0.25
 AreaEffectCloud.applyImplicitComponent	inline	crates/sunrise-client/src/game/items/potions.rs::Game::splash	same: potion contents only
-Avatar.defineSynchedData	port	crates/sunrise-client/src/lan/hub.rs::Hub::player_state	gap: minor: skin parts (entry 16) are sent, the main hand entry is not
+Avatar.defineSynchedData	port	crates/sunrise-client/src/lan/hub.rs::Hub::player_state	entry 15 (main arm) is paired when left and resets to right on a tracked change; entry 16 carries skin parts
 Avatar.isModelPartShown	port	crates/sunrise-client/src/game/network/remote/status.rs::Game::update_remote_skins	the Skin Customization cape option reaches the drawn player
 Bucketable.loadDefaultDataFromBucketTag	port	crates/sunrise-client/src/entity_nbt.rs::apply_item_components	NoAI, Silent, NoGravity, Glowing, Invulnerable, PersistenceRequired and Health, read from the bucket's entity data
 ContainerUser.getLivingEntity	skip:java		interface cast; every container user here is the player
@@ -82,7 +82,7 @@ Display.setBrightnessOverride	missing		minor: server side setter; there is no lo
 Display.getBrightnessOverride	inline	crates/sunrise-client/src/game/entities/text_displays.rs::Game::text_display_geometry	the packed sky and block light of the brightness entry (-1 uses the world light)
 Display.calculateInterpolationProgress	port	crates/sunrise-client/src/game/entities/text_displays.rs::RemoteTextDisplay::progress
 Display.updateCulling	port	crates/sunrise-client/src/text_display.rs::culling_box	noCulling when width or height is 0 (`no_culling`); else the width/height AABB
-Display.shouldRenderAtSqrDistance	inline	crates/sunrise-client/src/game/entities/text_displays.rs::Game::display_in_view	view_range * 64 * view scale squared; frustum when width and height are set
+Display.shouldRenderAtSqrDistance	inline	crates/sunrise-client/src/game/entities/text_displays.rs::Game::display_in_view_with_frustum	view_range * 64 * view scale squared; frustum when width and height are set
 Display.getTeamColor	missing		minor: glow_color_override is read but a glowing display gets no coloured outline
 Display.createFreshRenderState	inline	crates/sunrise-client/src/game/entities/text_displays.rs::RemoteTextDisplay::tick	the copy of the synced data when no interpolation runs
 Display.createInterpolatedRenderState	inline	crates/sunrise-client/src/game/entities/text_displays.rs::RemoteTextDisplay::tick	the new start state is the old one blended to the last drawn progress (TextDisplayData::blend)

@@ -26,7 +26,6 @@ use sunrise_client::{
 };
 use sunrise_core::{position::BlockPos, random::RandomSource};
 use sunrise_world::{level::Ticks, registry::BlockStateId};
-use winit::keyboard::KeyCode;
 
 thread_local! {
     /// Level and game events recorded while a fixture case runs.
@@ -675,9 +674,8 @@ impl Game<'_> {
         self.yaw = op["yaw"].as_f64().unwrap_or(0.0) as f32;
         self.pitch = 90.0;
         self.clear_device_keys();
-        if op["sneaking"].as_bool().unwrap_or(false) {
-            self.insert_device_key(KeyCode::ShiftLeft);
-        }
+        // The oracle supplies the acting player's logical sneak state for each click.
+        self.set_mapping_held("key.sneak", op["sneaking"].as_bool().unwrap_or(false));
         self.using = None;
         // The oracle's player wears nothing: no armor left on from an earlier case.
         self.armor = Default::default();

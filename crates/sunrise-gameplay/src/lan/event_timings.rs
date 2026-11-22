@@ -105,7 +105,7 @@ pub type EventKind = (&'static str, Option<u32>, Option<String>);
 
 pub fn event_kind(event: &HostEvent) -> EventKind {
     match event {
-        HostEvent::Joined(c) => ("join", Some(*c), None),
+        HostEvent::Joined(c, _) => ("join", Some(*c), None),
         HostEvent::Left(g) => ("leave", None, Some(g.name.clone())),
         HostEvent::Packet(c, p) => (p.name(), Some(*c), None),
         HostEvent::InputCredits(_) => ("input credits", None, None),

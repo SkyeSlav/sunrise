@@ -200,7 +200,7 @@ fn saved_mob_binding_rebinds_retained_id_with_a_new_generation() {
 #[test]
 #[ignore = "daily"]
 fn mob_first_store_binds_and_nested_rollback_retires_authority() {
-    use mod_api::{AttachmentError, HostTransaction};
+    use mod_api::AttachmentError;
     with_game(|game| {
         game.options.dedicated = Some(Vec::new());
         game.native_level_opened(Dim::Overworld);
@@ -213,7 +213,7 @@ fn mob_first_store_binds_and_nested_rollback_retires_authority() {
         let holder = Holder::Entity(id);
         assert_eq!(VALUE.get_existing(game, holder), Ok(None));
         assert!(!game.mobs[0].attachment_lifetime.is_bound());
-        let result: Result<(), AttachmentError> = game.transaction(|host, _| {
+        let result: Result<(), AttachmentError> = game.storage_transaction(|host, _| {
             VALUE.set(host, holder, 7)?;
             let index = host.attachment_indexes[&Dim::Overworld].clone();
             assert_eq!(
@@ -224,13 +224,13 @@ fn mob_first_store_binds_and_nested_rollback_retires_authority() {
                     .len(),
                 1
             );
-            let inner: Result<(), AttachmentError> = host.transaction(|host, _| {
+            let inner: Result<(), AttachmentError> = host.storage_transaction(|host, _| {
                 VALUE.set(host, holder, 8)?;
                 Err(AttachmentError::MissingHolder)
             });
             assert!(inner.is_err());
             assert_eq!(VALUE.get_existing(host, holder), Ok(Some(7)));
-            let committed: Result<(), AttachmentError> = host.transaction(|host, _| {
+            let committed: Result<(), AttachmentError> = host.storage_transaction(|host, _| {
                 VALUE.set(host, holder, 9)?;
                 Ok(())
             });
@@ -318,7 +318,7 @@ fn tnt_with_real_lifetime_accepts_first_store() {
 #[test]
 #[ignore = "daily"]
 fn mob_inner_first_binding_commit_outer_abort_invalidates_retained_row() {
-    use mod_api::{AttachmentError, HostTransaction};
+    use mod_api::AttachmentError;
     with_game(|game| {
         game.options.dedicated = Some(Vec::new());
         game.native_level_opened(Dim::Overworld);
@@ -330,9 +330,9 @@ fn mob_inner_first_binding_commit_outer_abort_invalidates_retained_row() {
         let id = game.load_mob(Tag::Compound(tag), None).unwrap();
         let holder = Holder::Entity(id);
         let mut retained = None;
-        let result: Result<(), AttachmentError> = game.transaction(|host, _| {
+        let result: Result<(), AttachmentError> = game.storage_transaction(|host, _| {
             let parent_query = host.query(&VALUE).unwrap();
-            let inner: Result<(), AttachmentError> = host.transaction(|host, _| {
+            let inner: Result<(), AttachmentError> = host.storage_transaction(|host, _| {
                 assert!(matches!(
                     parent_query.iter().try_next(),
                     Err(mod_api::AttachmentRowError::OutsideTransaction)

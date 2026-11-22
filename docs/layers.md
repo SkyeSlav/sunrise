@@ -308,7 +308,7 @@ context for HUD and chat overlays, a settings page) comes with that type's platf
 that belongs to one subsystem (an input source, the compositor) lives in the engine crate that owns it, with the
 same shape: registered before the game runs, read-only after.
 
-**What players get.** The release builds (`game-build.yml`, so the nightly and the release; `tools/ci/build-musl.sh`)
+**What players get.** The release builds (`game-build.yml`, so the nightly and the release)
 build `sunrise-official` and ship it as `sunrise-client`, the name the launcher and players know. The fixed client
 executable in the prebuilt SDK links the same official layer and calls `sunrise_official::register()` before starting
 with native mods. The dedicated server build (`sunrise-engine`)
@@ -691,7 +691,7 @@ Vanilla's endpoints (engine, the same as Java Edition):
 | `textures.minecraft.net` | skins and capes | `skins.rs` |
 | `pc.realms.minecraft.net`, `java.frontend.realms.minecraft-services.net` | Realms | `realms/client.rs` |
 | `aka.ms/…` | vanilla's help links (accessibility, moderation, EULA, Realms terms), opened only on a click | `game/options.rs`, `game/screens.rs`, `ban_notice.rs`, `realms.rs`, `eula.rs` |
-| `libraries.minecraft.net`, `piston-meta.mojang.com`, `resources.download.minecraft.net` | the vanilla jars, libraries and assets | `sunrise-prepare`, launcher |
+| `libraries.minecraft.net`, `piston-meta.mojang.com`, `launchermeta.mojang.com`, `piston-data.mojang.com`, `resources.download.minecraft.net` | vanilla jars, the Java runtime, libraries and assets | `sunrise-prepare`, launcher |
 
 Sunrise's own and third-party addresses (Sunrise layer):
 

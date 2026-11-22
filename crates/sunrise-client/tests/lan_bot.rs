@@ -194,7 +194,7 @@ impl Server {
         let events = self.hub.tick(&mut ctx);
         for event in events {
             match event {
-                HostEvent::Joined(conn) => self.hub.place_new_player(conn, &mut ctx),
+                HostEvent::Joined(conn, _) => self.hub.place_new_player(conn, &mut ctx),
                 HostEvent::Packet(conn, packet) => {
                     if let S::UseItemOn(p) = *packet {
                         let at = [p.pos[0], p.pos[1] + 1, p.pos[2]];

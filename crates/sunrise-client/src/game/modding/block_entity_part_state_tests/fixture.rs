@@ -61,11 +61,12 @@ impl BlockEntityPart for Counter {
                 assert_eq!(edit_part_state(host, entity, &MARK, |_, m| *m = 1), Ok(()));
             }
             _ => {
-                let aborted: Result<(), ()> = host.transaction(|host, _| {
-                    assert_eq!(Counter::edit_state(host, entity, |_, n| *n = 100), Ok(()));
-                    Err(())
-                });
-                assert_eq!(aborted, Err(()));
+                let aborted: Result<(), mod_api::TransactionError<()>> =
+                    host.transaction(|host, _| {
+                        assert_eq!(Counter::edit_state(host, entity, |_, n| *n = 100), Ok(()));
+                        Err(())
+                    });
+                assert_eq!(aborted, Err(mod_api::TransactionError::Aborted(())));
                 let recursive = Counter::edit_state(host, entity, |host, n| {
                     *n += 1;
                     Counter::edit_state(host, entity, |_, n| *n = 50)

@@ -80,6 +80,8 @@ fn gui_options_snapshot(s: &sunrise_client::settings::Settings) -> ClientGuiOpti
         notification_display_time: s.notification_display_time as f32,
         text_background_opacity: s.text_background_opacity as f32,
         menu_blur: s.menu_blur,
+        // The factor the engine's own hurt tilt reads (`fov.rs`, `bob_hurt`).
+        damage_tilt_strength: s.file.double("damageTiltStrength"),
     }
 }
 
@@ -104,6 +106,23 @@ mod tests {
             assert_eq!(
                 gui_options_snapshot(&settings).advanced_item_tooltips,
                 enabled
+            );
+        }
+    }
+
+    /// The snapshot carries the Damage Tilt option as the player sets it, off and full included.
+    #[test]
+    fn gui_snapshot_follows_the_damage_tilt_option() {
+        let mut settings = sunrise_client::settings::Settings::default();
+        assert_eq!(gui_options_snapshot(&settings).damage_tilt_strength, 1.0);
+        for strength in [0.0, 0.35, 1.0] {
+            settings.file.set(
+                "damageTiltStrength",
+                sunrise_client::options_file::V::Double(strength),
+            );
+            assert_eq!(
+                gui_options_snapshot(&settings).damage_tilt_strength,
+                strength
             );
         }
     }

@@ -13,10 +13,7 @@ use sunrise_client::{
     ui::EditBox,
 };
 use sunrise_protocol::packets::play::{self, Clientbound as C, Serverbound as S};
-use winit::{
-    event::{ElementState, KeyEvent},
-    keyboard::{KeyCode, PhysicalKey},
-};
+use winit::keyboard::KeyCode;
 
 pub(super) struct SignEditor {
     pub pos: (i32, i32, i32),
@@ -548,6 +545,7 @@ impl Game<'_> {
             // `SignBlockEntity.updateSignText`'s `setAllowedPlayerEditor(null)`:
             // the editor that closes gives the sign up.
             self.world.block_entities.set_sign_editor(edit.pos, None);
+            self.refresh_screen_widgets();
         }
         self.capture(true);
     }
@@ -664,19 +662,33 @@ impl Game<'_> {
             );
         }
     }
-    pub(super) fn sign_edit_key(&mut self, event: &KeyEvent) {
-        if event.state != ElementState::Pressed {
-            return;
-        }
-        if let Some(shortcut) = self.edit_shortcut(event) {
+    pub(super) fn sign_edit_key(
+        &mut self,
+        key: KeyCode,
+        shortcut: Option<sunrise_client::clipboard::EditShortcut>,
+    ) -> bool {
+        if let Some(shortcut) = shortcut {
             self.sign_shortcut(shortcut);
-            return;
+            true
+        } else if matches!(
+            key,
+            KeyCode::Escape
+                | KeyCode::Enter
+                | KeyCode::NumpadEnter
+                | KeyCode::ArrowUp
+                | KeyCode::ArrowDown
+                | KeyCode::ArrowLeft
+                | KeyCode::ArrowRight
+                | KeyCode::Home
+                | KeyCode::End
+                | KeyCode::Backspace
+                | KeyCode::Delete
+        ) {
+            self.sign_input(Some(key), None);
+            true
+        } else {
+            false
         }
-        let key = match event.physical_key {
-            PhysicalKey::Code(k) => Some(k),
-            _ => None,
-        };
-        self.sign_input(key, event.text.as_deref());
     }
     /// A key and the text it typed on the sign being edited (the keyboard,
     /// or a controller's on-screen keyboard).
@@ -1015,6 +1027,7 @@ impl Game<'_> {
             u32::MAX,
             true,
         );
+        self.draw_overlay_mounted_widgets(batch, "sign_editor");
     }
 }
 

@@ -43,27 +43,9 @@ pub trait ModStateServerHost {
         token: AttachmentWriteToken,
     ) -> Result<(), AttachmentRowError>;
     /// Side: server.
-    /// Opens a transaction, nested in the open one if any (`Transaction.open`), and gives back
-    /// the seal that ends it. `host.transaction` calls it; use that instead.
-    fn transaction_open(&mut self) -> TransactionSeal;
-    /// Side: server.
-    /// Closes the transaction `seal` ends, committed or aborted, aborting first any opened
-    /// inside it and left open. Refused when `seal` names no open transaction, so a mod ends
-    /// only a transaction it opened. `host.transaction` calls it.
-    fn transaction_close(&mut self, seal: &TransactionSeal, commit: bool);
-    /// Side: server.
     /// Where the transaction system is (`Transaction.getLifecycle`): none open, one open, a
     /// nested one closing, or the outermost closing while the game tells the world of a commit.
     fn transaction_lifecycle(&self) -> TransactionLifecycle;
-    /// Side: server.
-    /// The innermost open transaction, to write in (`Transaction.getCurrentOpenedTransaction`);
-    /// none when none is open. It names the transaction only: ending it still takes the seal its
-    /// opener holds.
-    fn transaction_current(&self) -> Option<Transaction>;
-    /// Side: server.
-    /// How deeply `tx` is nested (`TransactionContext.depth`): 0 for the outermost, none for a
-    /// transaction that is not open.
-    fn transaction_depth(&self, tx: &Transaction) -> Option<u32>;
     /// Side: server.
     /// Runs `task` once after `delay_ticks` server ticks, matching vanilla's
     /// `MinecraftServer.schedule(TickTask)` / `BlockableEventLoop.runAllTasks`. Due tasks drain to

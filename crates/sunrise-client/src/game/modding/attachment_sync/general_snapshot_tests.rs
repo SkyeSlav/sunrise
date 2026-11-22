@@ -86,9 +86,10 @@ fn a_general_row_always_has_a_first_snapshot_holding_what_it_holds_now() {
         // First pairing, nothing synced yet: no empty snapshot packet (NeoForge AttachmentSync).
         assert!(game.attachment_snapshot(Holder::Entity(id)).is_empty());
         // A client that pairs later is sent the value the row holds then.
-        let seal = game.transaction_open();
-        VALUE.set(store(game), Holder::Entity(id), 7).unwrap();
-        game.transaction_close(&seal, true);
+        game.storage_scope(|game, _| {
+            VALUE.set(store(game), Holder::Entity(id), 7).unwrap();
+            ((), true)
+        });
         let late = game.attachment_snapshot(Holder::Entity(id));
         assert_eq!(late.len(), 1);
         assert!(late[0].replace);

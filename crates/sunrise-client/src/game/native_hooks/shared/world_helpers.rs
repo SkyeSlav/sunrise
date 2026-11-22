@@ -143,7 +143,7 @@ impl Game<'_> {
             ScreenDecision::Open
         };
         match decision {
-            ScreenDecision::Keep => return,
+            ScreenDecision::Keep => (),
             ScreenDecision::ModScreen(mod_id) => self.apply_screen(Screen::Mod, Some(mod_id)),
             ScreenDecision::Vanilla(target) => self.open_screen_target(target),
             ScreenDecision::Open => {
@@ -153,8 +153,6 @@ impl Game<'_> {
                 self.apply_screen(Screen::Playing, None);
             }
         }
-        self.screen_state.observed = self.observed_now();
-        self.shown_init_post();
     }
 }
 

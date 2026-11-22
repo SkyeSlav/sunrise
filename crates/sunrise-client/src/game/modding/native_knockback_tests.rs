@@ -587,6 +587,7 @@ pub(in crate::game) fn credit_pig(game: &mut super::Game<'_>) {
             players: vec![(0, 0)],
             forced: Vec::new(),
             portal: Vec::new(),
+            spawn: Vec::new(),
             dragon: None,
             viewed: Vec::new(),
             view_distance: 2,
