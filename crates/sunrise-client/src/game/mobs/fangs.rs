@@ -285,6 +285,9 @@ impl Game<'_> {
                     attacker_species: None,
                 },
             );
+            let Some((index, hurt)) = self.complete_mob_hurt(index, hurt) else {
+                continue;
+            };
             self.finish_mob_damage_at(index);
             self.settle_mob_hurt(id);
             if hurt && owner.is_some() {

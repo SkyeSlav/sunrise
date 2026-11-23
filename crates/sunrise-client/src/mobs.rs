@@ -1735,6 +1735,7 @@ pub struct Mob {
     pub accepted_hit: Option<std::sync::Arc<crate::health::AcceptedHit>>,
     /// The in-flight killing hit; its caller settles death before continuing.
     pub damage_completion: Option<crate::health::DamageCompletion>,
+    hurt_paused: bool,
     pub death_canceled: bool,
     /// `DamageSource.getDirectEntity` of `last_damage` when [`Damage`] cannot name it (a
     /// thrown potion, an area effect cloud): its entity type.
@@ -2767,10 +2768,15 @@ pub struct SpawnSetup {
     pub skip_finalize: bool,
 }
 include!("mobs/seen.rs");
+#[path = "mobs/hurt_handoff.rs"]
+mod hurt_handoff;
+use hurt_handoff::{HurtStage, MobHurt, ReducedHurt};
+pub use hurt_handoff::{MobHurtAction, PausedMobHurt};
 
 impl Mob {
     pub(crate) fn hurt_needs_owner(&self) -> bool {
-        self.damage_completion.is_some()
+        self.hurt_paused
+            || self.damage_completion.is_some()
             || creaking::has_pending_hurt(self)
             || villager::ext(self).is_some_and(|ext| {
                 ext.pending_hurt_player.is_some() || ext.pending_hurt_damage.is_some()
@@ -3170,7 +3176,8 @@ pub struct PufferfishReaction {
     pub at: usize,
     target_join: crate::join_seq::JoinSeq,
     fish_join: crate::join_seq::JoinSeq,
-    poison_ticks: Option<i32>,
+    poison_ticks: i32,
+    landed: bool,
 }
 
 impl PufferfishReaction {
@@ -3182,11 +3189,15 @@ impl PufferfishReaction {
         mob.id == self.fish && mob.join == self.fish_join && !mob.removed
     }
 
+    pub fn resolved_hit(&mut self, landed: bool) {
+        self.landed = landed;
+    }
+
     pub fn poison(&self, target: Option<&mut Mob>) -> Vec<MobEvent> {
-        if let Some(ticks) = self.poison_ticks
+        if self.landed
             && let Some(target) = target.filter(|m| self.same_target(m))
         {
-            target.add_effect("minecraft:poison", ticks, 0);
+            target.add_effect("minecraft:poison", self.poison_ticks, 0);
             std::mem::take(&mut target.outbox)
         } else {
             Vec::new()
@@ -3194,14 +3205,12 @@ impl PufferfishReaction {
     }
 
     pub fn sound(&self, fish: &Mob) -> Option<MobEvent> {
-        (self.poison_ticks.is_some() && self.same_fish(fish) && !fish.silent).then_some(
-            MobEvent::Sound(
-                "entity.puffer_fish.sting",
-                [fish.position.x, fish.position.y, fish.position.z],
-                1.0,
-                1.0,
-            ),
-        )
+        (self.landed && self.same_fish(fish) && !fish.silent).then_some(MobEvent::Sound(
+            "entity.puffer_fish.sting",
+            [fish.position.x, fish.position.y, fish.position.z],
+            1.0,
+            1.0,
+        ))
     }
 }
 
@@ -3313,7 +3322,8 @@ pub fn apply_brain_events_until_hurt(
                         at: i,
                         target_join: t.join,
                         fish_join,
-                        poison_ticks: landed.then_some(60 * size),
+                        poison_ticks: 60 * size,
+                        landed,
                     };
                     if can_pause && t.hurt_needs_owner() {
                         let mut position = 0;
@@ -3903,6 +3913,7 @@ impl Mob {
             last_damage: None,
             accepted_hit: None,
             damage_completion: None,
+            hurt_paused: false,
             death_canceled: false,
             last_direct: None,
             combat: combat::Tracker::default(),
@@ -4143,11 +4154,6 @@ impl Mob {
         // `Guardian.hurtServer`'s spikes answer its attacker before
         // `super.hurtServer`'s guards.
         hurt_by::before_hurt(self, &source);
-        // Enderman.hurtServer: past `isInvulnerableTo`, the teleport draw
-        // follows `super.hurtServer` whatever it answered (a hurt cooldown, a
-        // dead enderman), its hurt sound's pitch included.
-        let enderman = self.species() == Species::Enderman;
-        let warden = self.species() == Species::Warden;
         let mut passed_invulnerability = false;
         let hurt = self.hurt_server(
             level,
@@ -4156,17 +4162,28 @@ impl Mob {
             armor_effectiveness,
             &mut passed_invulnerability,
         );
-        if enderman && passed_invulnerability {
-            enderman::after_hurt(self, &source, level.attack().direct.is_some());
-        }
-        // `Warden.hurtServer` runs its own anger/targeting reaction after
-        // `super.hurtServer` regardless of whether `super.hurtServer` accepted
-        // the hit (e.g. when the hit was rejected on hurt cooldown).
-        if warden && !self.extra.client_side {
-            warden::hurt(self, &source, level.attack());
+        if !self.hurt_paused {
+            self.finish_species_hurt(level, &source, passed_invulnerability);
         }
         hurt
     }
+
+    fn finish_species_hurt(
+        &mut self,
+        level: &DamageLevel<'_>,
+        source: &Damage,
+        passed_invulnerability: bool,
+    ) {
+        // Enderman.hurtServer: the teleport roll follows super.hurtServer (even on cooldown).
+        if self.species() == Species::Enderman && passed_invulnerability {
+            enderman::after_hurt(self, source, level.attack().direct.is_some());
+        }
+        // Warden.hurtServer reacts regardless of whether super.hurtServer accepted.
+        if self.species() == Species::Warden && !self.extra.client_side {
+            warden::hurt(self, source, level.attack());
+        }
+    }
+    /// `LivingEntity.hurtServer`: receive a hit, then run the accepted damage and reactions.
     fn hurt_server(
         &mut self,
         level: &mut DamageLevel<'_>,
@@ -4193,7 +4210,8 @@ impl Mob {
             return false;
         }
         let reflected = self.reflected_fireball(&source, level.attack());
-        if self.invulnerable_to_attempt(level, &source) {
+        let (immune, forced_allow) = self.invulnerable_to_attempt(level, &source);
+        if immune || (!reflected && self.enchantment_immune(level, &source)) {
             return reflected;
         }
         *passed_invulnerability = true;
@@ -4237,7 +4255,39 @@ impl Mob {
             // super.hurtServer did.
             return reflected;
         }
-        amount = container.new_damage();
+        let hit = MobHurt {
+            source,
+            reflected,
+            crackiness,
+            forced_allow,
+            container,
+        };
+        // The world write is part of waking, before even checking the hurt cooldown.
+        if villager::sleeping(self) {
+            if level.can_pause_mob_hurt() {
+                self.pause_hurt(level, hit, HurtStage::Wake, MobHurtAction::Wake);
+                return false;
+            }
+            level.wake_mob(self);
+        }
+        self.hurt_after_wake(level, hit, armor_effectiveness)
+    }
+
+    fn hurt_after_wake(
+        &mut self,
+        level: &mut DamageLevel<'_>,
+        hit: MobHurt,
+        armor_effectiveness: Option<&mut dyn FnMut(f32, &mut LegacyRandom) -> f32>,
+    ) -> bool {
+        let MobHurt {
+            source,
+            reflected,
+            crackiness,
+            forced_allow,
+            mut container,
+        } = hit;
+        self.ai.no_action_time = 0;
+        let mut amount = container.new_damage();
         if amount < 0.0 {
             amount = 0.0;
         }
@@ -4309,17 +4359,31 @@ impl Mob {
         // Wolf.actuallyHurt wears armor using the outer argument, not the container's
         // live damage, and skips LivingEntity.actuallyHurt entirely.
         let absorbed = self.wolf_armor_absorbs(&source);
-        let mut armor_hit = None;
-        let mut dealt = amount;
-        let mut through = 0.0;
+        // LivingEntity.actuallyHurt asks the current predicate again, without
+        // reporting a new attempt. Only the inner damage is skipped on refusal.
+        let actually_hurt = !absorbed
+            && (forced_allow || !self.base_damage_immune(level, &source))
+            && (reflected || !self.enchantment_immune(level, &source));
+        let mut reduced = ReducedHurt {
+            amount,
+            blocked,
+            blocked_hit,
+            incoming,
+            cooldown,
+            absorbed,
+            actually_hurt,
+            armor_hit: None,
+            local_magic: amount,
+        };
+        let mut resisted_award = None;
         if absorbed {
             self.hurt_wolf_armor(actually_hurt_argument);
-        } else {
+        } else if actually_hurt {
             // LivingEntity.getDamageAfterArmorAbsorb asks `hurtArmor` *before*
             // `CombatRules.getDamageAfterAbsorb`, so a worn piece wears by the
             // damage the armour, toughness and enchantment reductions have not
             // touched yet, and only a hit outside `#bypasses_armor` asks at all.
-            armor_hit = (!source.bypasses_armor() && amount > 0.0).then_some(amount);
+            reduced.armor_hit = (!source.bypasses_armor() && amount > 0.0).then_some(amount);
             let entered = amount;
             if !source.bypasses_armor() {
                 let (armor, armor_toughness) = armor::values(self);
@@ -4349,25 +4413,77 @@ impl Mob {
             // NeoForge's guarded protection site and the witch override both read the
             // method's local damage independently of what a modifier leaves in the container.
             let mut local_magic = amount;
-            if !source.kind.bypasses_effects() {
-                if !source.kind.bypasses_resistance()
-                    && let Some(&StoredEffect { amplifier: amp, .. }) = self
-                        .extra
-                        .effects
-                        .iter()
-                        .find(|e| e.id == "minecraft:resistance")
-                {
-                    let remainder = 25i32.wrapping_sub(amp.wrapping_add(1).wrapping_mul(5));
-                    local_magic = sunrise_world::living_damage::java_max_f32(
-                        (amount * remainder as f32) / 25.0,
-                        0.0,
-                    );
-                    let resisted = amount - local_magic;
-                    if resisted > 0.0 && resisted < sunrise_world::living_damage::STAT_LIMIT {
-                        amount =
-                            container.reduce(Reduction::MobEffects, amount, resisted, local_magic);
+            if !source.kind.bypasses_effects()
+                && !source.kind.bypasses_resistance()
+                && let Some(&StoredEffect { amplifier: amp, .. }) = self
+                    .extra
+                    .effects
+                    .iter()
+                    .find(|e| e.id == "minecraft:resistance")
+            {
+                let remainder = 25i32.wrapping_sub(amp.wrapping_add(1).wrapping_mul(5));
+                local_magic = sunrise_world::living_damage::java_max_f32(
+                    (amount * remainder as f32) / 25.0,
+                    0.0,
+                );
+                let resisted = amount - local_magic;
+                if resisted > 0.0 && resisted < sunrise_world::living_damage::STAT_LIMIT {
+                    amount = container.reduce(Reduction::MobEffects, amount, resisted, local_magic);
+                    if source.attacker == Some(Who::Player) && level.attack().attacker != 0 {
+                        resisted_award = Some(MobHurtAction::AwardResistance {
+                            player: level.attack().attacker as u32,
+                            tenths: sunrise_core::jmath::round_f32(resisted * 10.0),
+                        });
                     }
                 }
+            }
+            reduced.amount = amount;
+            reduced.local_magic = local_magic;
+        }
+        let hit = MobHurt {
+            source,
+            reflected,
+            crackiness,
+            forced_allow,
+            container,
+        };
+        if let Some(action) = resisted_award
+            && level.can_pause_mob_hurt()
+        {
+            self.pause_hurt(level, hit, HurtStage::AfterResistance(reduced), action);
+            return false;
+        }
+        self.hurt_after_resistance(level, hit, reduced)
+    }
+
+    fn hurt_after_resistance(
+        &mut self,
+        level: &mut DamageLevel<'_>,
+        hit: MobHurt,
+        reduced: ReducedHurt,
+    ) -> bool {
+        let MobHurt {
+            source,
+            reflected,
+            crackiness,
+            mut container,
+            ..
+        } = hit;
+        let ReducedHurt {
+            mut amount,
+            blocked,
+            blocked_hit,
+            incoming,
+            cooldown,
+            absorbed,
+            actually_hurt,
+            armor_hit,
+            mut local_magic,
+        } = reduced;
+        let mut dealt = 0.0;
+        let mut through = 0.0;
+        if actually_hurt {
+            if !source.kind.bypasses_effects() {
                 if local_magic <= 0.0 {
                     local_magic = 0.0;
                 } else if !source.kind.bypasses_enchantments() {
@@ -4600,14 +4716,21 @@ impl Mob {
             && !self.removed
             && !self.is_invulnerable_to(&source);
         let hurt = self.damage(level, amount, source);
-        if cloud {
-            enderman::teleport_chance(self, &source);
+        if self.hurt_paused {
+            level.paused_mob_hurt().direct_tail = Some((direct, cloud));
+        } else {
+            self.finish_damage_by(hurt, &source, direct, cloud);
         }
+        hurt
+    }
 
+    fn finish_damage_by(&mut self, hurt: bool, source: &Damage, direct: &'static str, cloud: bool) {
+        if cloud {
+            enderman::teleport_chance(self, source);
+        }
         if hurt {
             self.last_direct = Some(direct);
         }
-        hurt
     }
     /// `Wolf.canArmorAbsorb`: it wears wolf armor and the damage type is not
     /// in `#bypasses_wolf_armor` (drowning, magic, thorns, in a wall, out of

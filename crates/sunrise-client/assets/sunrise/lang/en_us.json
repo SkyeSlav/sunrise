@@ -435,6 +435,7 @@
   "sunrise.extras.dynamic_lights.tooltip": "Torches and other light sources held, dropped or on fire light the blocks around them.",
   "sunrise.extras.fullbright": "Fullbright",
   "sunrise.extras.fullbright.tooltip": "Show blocks and entities at full light, even in dark areas.",
+  "sunrise.extras.graphics.group": "Graphics",
   "sunrise.extras.header.chat": "Chat",
   "sunrise.extras.header.inventory": "Inventory",
   "sunrise.extras.header.lighting": "Lighting",
