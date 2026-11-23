@@ -219,7 +219,7 @@ const API_CRATES: &[&str] = &["mod_api"];
 
 // Only test-only declarations are excluded. Other cfgs keep their spelling and visibility, and
 // each entry records them: changing visibility doesn't select an OS or feature for the build.
-use mod_source::modules::{conditions, test_only};
+use mod_source::modules::{conditions, literal_include, test_only};
 
 /// The attributes a layout's signature keeps: which fields exist, and whether another crate may
 /// build it.
@@ -650,8 +650,23 @@ fn type_path(module: &str, ident: &syn::Ident, generics: &syn::Generics) -> Stri
     format!("{module}::{}", owner(&ty))
 }
 
+/// Items at one physical origin in a logical module, with the gates on that contribution.
+struct SourceItems {
+    file: usize,
+    cfg: Vec<String>,
+    items: Vec<Item>,
+}
+
 impl Pass {
     fn load(&mut self, path: &Path) -> Result<usize, String> {
+        let physical = path
+            .canonicalize()
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        self.load_physical(&physical)
+    }
+
+    // All spellings of the same source file share one edit map.
+    fn load_physical(&mut self, path: &Path) -> Result<usize, String> {
         if let Some(index) = self.sources.iter().position(|source| source.path == path) {
             return Ok(index);
         }
@@ -751,7 +766,9 @@ impl Pass {
                 }
             }
         }
-        syn::visit::Visit::visit_file(&mut StagedTypes(&mut self.sources[index]), &parsed);
+        if !test_only(&parsed.attrs) {
+            syn::visit::Visit::visit_file(&mut StagedTypes(&mut self.sources[index]), &parsed);
+        }
         Ok(index)
     }
 
@@ -1070,38 +1087,121 @@ impl Pass {
         }
     }
 
+    /// Read the files supplying items to a single lower-crate scope. Keep their spans separate:
+    /// edits to a declaration must go to its own fragment, not to the file spelling `include!`.
+    fn lower_scope(
+        &mut self,
+        root: &Path,
+        initial: SourceItems,
+    ) -> Result<Vec<SourceItems>, String> {
+        let physical = self.sources[initial.file].path.clone();
+        let mut scope = Vec::new();
+        let mut pending = vec![(initial, vec![physical])];
+        while let Some((unit, ancestors)) = pending.pop() {
+            for (relative, attrs) in unit.items.iter().rev().filter_map(literal_include) {
+                if test_only(attrs) {
+                    continue;
+                }
+                let from = &self.sources[unit.file].path;
+                let path = from.parent().expect("source parent").join(relative.value());
+                let physical = path
+                    .canonicalize()
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                if !physical.starts_with(root) {
+                    return Err(format!(
+                        "{}: outside the source at {}",
+                        path.display(),
+                        root.display()
+                    ));
+                }
+                if ancestors.contains(&physical) {
+                    return Err(format!("{}: source inclusion cycle", path.display()));
+                }
+                let file = self.load_physical(&physical)?;
+                let parsed = &self.sources[file].parsed;
+                if test_only(&parsed.attrs) {
+                    continue;
+                }
+                let mut cfg = unit.cfg.clone();
+                cfg.extend(conditions(attrs));
+                cfg.extend(conditions(&parsed.attrs));
+                let mut chain = ancestors.clone();
+                chain.push(physical);
+                pending.push((
+                    SourceItems {
+                        file,
+                        cfg,
+                        items: parsed.items.clone(),
+                    },
+                    chain,
+                ));
+            }
+            scope.push(unit);
+        }
+        Ok(scope)
+    }
+
     fn lower(&mut self, root: &Path, path: &str, whole_module: bool) -> Result<(), String> {
         self.cfg.clear();
         let parsed: syn::Path = syn::parse_str(path).map_err(|e| format!("invalid path: {e}"))?;
         let mut segments = parsed.segments.iter();
         let crate_name = segments.next().ok_or("empty path")?.ident.to_string();
         let (_, lib) = crate::source::crate_root(root, &crate_name)?;
-        let mut file = self.load(&lib)?;
-        let mut dir = self.sources[file]
-            .path
-            .parent()
-            .expect("source parent")
-            .to_owned();
-        let mut items = self.sources[file].parsed.items.clone();
+        let root = root
+            .canonicalize()
+            .map_err(|e| format!("{}: {e}", root.display()))?;
+        let file = self.load(&lib)?;
+        let mut dir = lib.parent().expect("source parent").to_owned();
+        let mut initial = SourceItems {
+            file,
+            cfg: conditions(&self.sources[file].parsed.attrs),
+            items: self.sources[file].parsed.items.clone(),
+        };
         let mut module = crate_name;
         let segments: Vec<_> = segments.collect();
         for (index, segment) in segments.iter().enumerate() {
             let ident = &segment.ident;
-            let child = items.iter().find_map(|item| match item {
-                Item::Mod(value) if value.ident == *ident && !test_only(&value.attrs) => {
-                    Some(value)
+            fn child_module<'a>(item: &'a Item, ident: &syn::Ident) -> Option<&'a syn::ItemMod> {
+                match item {
+                    Item::Mod(value) if value.ident == *ident && !test_only(&value.attrs) => {
+                        Some(value)
+                    }
+                    _ => None,
                 }
-                _ => None,
-            });
-            if let Some(child) = child {
-                self.item(file, &module, &Item::Mod(child.clone()), false);
+            }
+            // An ordinary declaration already identifies the child scope; don't stage unrelated
+            // sibling fragments just to find it.
+            let scope = if initial
+                .items
+                .iter()
+                .any(|item| child_module(item, ident).is_some())
+            {
+                vec![initial]
+            } else {
+                self.lower_scope(&root, initial)?
+            };
+            let items = || {
+                scope
+                    .iter()
+                    .flat_map(|unit| unit.items.iter().map(move |item| (unit, item)))
+            };
+            let child = items()
+                .find_map(|(unit, item)| child_module(item, ident).map(|child| (unit, child)));
+            if let Some((unit, child)) = child {
+                self.cfg.clone_from(&unit.cfg);
+                self.item(unit.file, &module, &Item::Mod(child.clone()), false);
                 module = format!("{module}::{ident}");
                 if index + 1 == segments.len() {
                     return Ok(());
                 }
-                self.cfg.extend(conditions(&child.attrs));
+                let mut cfg = unit.cfg.clone();
+                cfg.extend(conditions(&child.attrs));
                 if let Some((_, inner)) = &child.content {
-                    items = inner.clone();
+                    initial = SourceItems {
+                        file: unit.file,
+                        cfg,
+                        items: inner.clone(),
+                    };
                     dir = dir.join(ident.to_string());
                 } else {
                     let explicit = child.attrs.iter().find_map(|attr| match &attr.meta {
@@ -1117,7 +1217,7 @@ impl Pass {
                         _ => None,
                     });
                     let child_path = if let Some(relative) = explicit {
-                        self.sources[file]
+                        self.sources[unit.file]
                             .path
                             .parent()
                             .expect("source parent")
@@ -1132,16 +1232,20 @@ impl Pass {
                     } else {
                         child_path.with_extension("")
                     };
-                    file = self.load(&child_path)?;
-                    items = self.sources[file].parsed.items.clone();
+                    let file = self.load(&child_path)?;
+                    cfg.extend(conditions(&self.sources[file].parsed.attrs));
+                    initial = SourceItems {
+                        file,
+                        cfg,
+                        items: self.sources[file].parsed.items.clone(),
+                    };
                 }
                 continue;
             }
             let rest = &segments[index..];
             if rest.len() == 1 {
-                let selected = items
-                    .iter()
-                    .find(|item| match item {
+                let (unit, selected) = items()
+                    .find(|(_, item)| match item {
                         Item::Fn(value) => value.sig.ident == *ident && !test_only(&value.attrs),
                         Item::Struct(value) => value.ident == *ident && !test_only(&value.attrs),
                         Item::Enum(value) => value.ident == *ident && !test_only(&value.attrs),
@@ -1154,16 +1258,20 @@ impl Pass {
                     })
                     .ok_or("item not found")?;
                 if whole_module {
-                    self.items(file, &module, &items);
+                    for unit in &scope {
+                        self.cfg.clone_from(&unit.cfg);
+                        self.items(unit.file, &module, &unit.items);
+                    }
                 } else {
-                    self.item(file, &module, selected, false);
+                    self.cfg.clone_from(&unit.cfg);
+                    self.item(unit.file, &module, selected, false);
                 }
                 return Ok(());
             }
             if rest.len() == 2 {
                 let member_name = &rest[1].ident;
                 let mut found = false;
-                for item in &items {
+                for (unit, item) in items() {
                     if let Item::Impl(block) = item
                         && block.trait_.is_none()
                         && !test_only(&block.attrs)
@@ -1174,6 +1282,8 @@ impl Pass {
                             .last()
                             .is_some_and(|part| part.ident == *ident)
                     {
+                        self.cfg.clone_from(&unit.cfg);
+                        self.cfg.extend(conditions(&block.attrs));
                         for member in &block.items {
                             let matches = match member {
                                 ImplItem::Fn(value) => {
@@ -1189,7 +1299,7 @@ impl Pass {
                             };
                             if matches {
                                 self.member(
-                                    file,
+                                    unit.file,
                                     &module,
                                     &format!("{module}::{}", owner(&block.self_ty)),
                                     block,
@@ -1202,14 +1312,18 @@ impl Pass {
                 }
                 if found {
                     if whole_module {
-                        self.items(file, &module, &items);
+                        for unit in &scope {
+                            self.cfg.clone_from(&unit.cfg);
+                            self.items(unit.file, &module, &unit.items);
+                        }
                     }
-                    for item in &items {
+                    for (unit, item) in items() {
                         if matches!(item, Item::Struct(value) if value.ident == *ident)
                             || matches!(item, Item::Enum(value) if value.ident == *ident)
                             || matches!(item, Item::Union(value) if value.ident == *ident)
                         {
-                            self.item(file, &module, item, false);
+                            self.cfg.clone_from(&unit.cfg);
+                            self.item(unit.file, &module, item, false);
                         }
                     }
                     return Ok(());
@@ -1387,7 +1501,8 @@ pub(crate) fn widen_generated(path: &Path, text: String) -> Result<String, Strin
 
 /// Widen game internals and the declared lower-crate items in a staged source copy.
 /// Fails before writing anything if a declaration in `internals.txt` cannot be resolved.
-/// A marked replaceable lower-crate function is an internal too: its copy names the function's types.
+/// A marked replaceable lower-crate function is an internal too: its copy names declarations in
+/// the same module, including those from literal source fragments.
 pub fn widen(root: &Path) -> Result<Widened, String> {
     stage(root, false)
 }
@@ -1447,6 +1562,7 @@ fn collect(root: &Path, lists: &[(&str, String)], discovery: bool) -> Result<Pas
             module: "sunrise_client::entry".into(),
             path: src.join("entry.rs"),
             cfg: Vec::new(),
+            included: false,
         }))
     {
         let file = pass.load(&source.path)?;
@@ -2433,6 +2549,45 @@ const LABEL: &str = "é"; struct AfterUnicode;
                 .iter()
                 .any(|entry| entry.path.contains("unrelated") || entry.path.contains("sibling"))
         );
+    }
+
+    #[test]
+    fn required_lower_fragment_errors_name_the_file() {
+        let fixture = Fixture::new("");
+        fixture.lower();
+        fixture.put(
+            "crates/lower/src/hidden.rs",
+            r#"
+#[cfg_attr(not(test), cfg(any()))]
+include!("disabled.rs");
+include!("fragments/outer.rs");
+fn selected() { helper(); }
+"#,
+        );
+        fixture.put(
+            "crates/lower/src/fragments/outer.rs",
+            r#"include!("required.rs");"#,
+        );
+        let fragment = "crates/lower/src/fragments/required.rs";
+        let stage_scope = || Pass::default().lower(&fixture.0, "lower::hidden::selected", true);
+        let missing = stage_scope().unwrap_err();
+        assert!(missing.contains("required.rs:"), "{missing}");
+
+        fixture.put(fragment, "fn =");
+        let invalid = stage_scope().unwrap_err();
+        assert!(invalid.contains("required.rs:"), "{invalid}");
+        assert!(invalid.contains("expected identifier"), "{invalid}");
+
+        fixture.put(fragment, r#"include!(".././hidden.rs");"#);
+        let cycle = stage_scope().unwrap_err();
+        assert!(
+            cycle.contains("hidden.rs: source inclusion cycle"),
+            "{cycle}"
+        );
+
+        // `disabled.rs` is still absent: the non-test pass never opens it.
+        fixture.put(fragment, "fn helper() {}");
+        stage_scope().unwrap();
     }
 
     #[test]
