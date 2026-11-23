@@ -336,6 +336,37 @@ fn tracked_waypoint_bytes() {
 }
 
 #[test]
+fn tracked_waypoint_style_uses_packet_identifier_validation() {
+    use crate::ids::play::clientbound::WAYPOINT;
+
+    for (style, expected) in [
+        ("..:flag", None),
+        ("...:flag", Some("...:flag")),
+        ("flag", Some("minecraft:flag")),
+        (":flag", Some("minecraft:flag")),
+        ("example:..", Some("example:..")),
+    ] {
+        let mut payload = Writer::new();
+        payload.varint(0); // TRACK
+        payload.bool(false); // A name, not a UUID.
+        payload.string("..:free-form NAME");
+        payload.string(style);
+        payload.bool(false); // No colour.
+        payload.varint(0); // Empty target.
+        let decoded = Clientbound::decode(WAYPOINT, &payload.data);
+        if let Some(expected) = expected {
+            let Clientbound::TrackedWaypoint(waypoint) = decoded.unwrap() else {
+                panic!("expected a tracked waypoint packet");
+            };
+            assert_eq!(waypoint.style, expected);
+            assert_eq!(waypoint.id, WaypointId::Name("..:free-form NAME".into()));
+        } else {
+            assert!(decoded.is_err(), "accepted reserved style namespace");
+        }
+    }
+}
+
+#[test]
 fn clientbound_round_trips() {
     let packets = vec![
         Clientbound::BundleDelimiter(Empty),

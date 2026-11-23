@@ -8,7 +8,7 @@ use crate::hud_layout::{Blend, GuiDraw};
 use std::{borrow::Cow, collections::HashMap};
 use sunrise_assets::animation::{AnimationClip, AnimationMetadata};
 use sunrise_assets::resource_source::ResourceSource;
-use sunrise_core::geometry::trig;
+use sunrise_core::geometry::{Vec3, trig};
 use sunrise_core::random::java_string_hash;
 use sunrise_protocol::packets::play::{
     TrackedWaypoint, WaypointId, WaypointTarget, waypoint_operation,
@@ -229,6 +229,22 @@ impl ClientWaypoints {
             }
         }
     }
+    /// All tracked waypoints, before rendering filters and without a promised order.
+    pub fn iter(&self) -> impl Iterator<Item = &TrackedWaypoint> {
+        self.waypoints.iter()
+    }
+
+    /// `ClientWaypointManager.forEachWaypoint`: farthest first from the camera entity's feet.
+    pub fn by_distance(&self, [x, y, z]: [f64; 3]) -> Vec<(f64, &TrackedWaypoint)> {
+        let camera = Vec3::new(x, y, z);
+        let mut sorted: Vec<_> = self
+            .iter()
+            .map(|w| (View::distance_sq(w.target, camera), w))
+            .collect();
+        sorted.sort_by(|a, b| b.0.total_cmp(&a.0));
+        sorted
+    }
+
     pub fn has_waypoints(&self) -> bool {
         !self.waypoints.is_empty()
     }
@@ -358,9 +374,10 @@ impl View<'_> {
         let angle = trig::atan2(z, x) as f32 * (180.0 / std::f32::consts::PI);
         f64::from(wrap_degrees(angle - self.yaw))
     }
-    /// `ChunkPos.getMiddleBlockPosition(y)`'s centre.
+    /// `ChunkPos.getMiddleBlockPosition(y)`'s centre, using Java `int` section coordinates.
     fn chunk_middle(chunk: [i32; 2], y: i32) -> [f64; 3] {
-        centre([chunk[0] * 16 + 8, y, chunk[1] * 16 + 8])
+        let [x, z] = chunk.map(|c| (c << 4).wrapping_add(8));
+        centre([x, y, z])
     }
     fn yaw_angle(&self, w: &TrackedWaypoint) -> f64 {
         match w.target {
@@ -412,14 +429,19 @@ impl View<'_> {
             }
         }
     }
-    /// `distanceSquared` from the camera entity.
-    fn distance_sq(&self, w: &TrackedWaypoint) -> f64 {
-        let e = self.camera_entity_pos;
-        let d = |p: [f64; 3]| (0..3).map(|i| (p[i] - e[i]).powi(2)).sum::<f64>();
-        match w.target {
-            WaypointTarget::Block(v) => d(centre(v)),
-            WaypointTarget::Chunk(c) => d(Self::chunk_middle(c, e[1].floor() as i32)),
-            WaypointTarget::Empty | WaypointTarget::Azimuth(_) => f64::INFINITY,
+    /// `TrackedWaypoint.distanceSquared` from the camera entity, not the rendered camera.
+    fn distance_sq(target: WaypointTarget, camera: Vec3) -> f64 {
+        let [x, y, z] = match target {
+            WaypointTarget::Block(v) => centre(v),
+            WaypointTarget::Chunk(c) => Self::chunk_middle(c, sunrise_core::mth::floor(camera.y)),
+            WaypointTarget::Empty | WaypointTarget::Azimuth(_) => return f64::INFINITY,
+        };
+        let distance = camera.distance_squared(Vec3::new(x, y, z));
+        // Java Double.compare treats all NaNs as the same key, greater than infinity.
+        if distance.is_nan() {
+            f64::NAN.abs()
+        } else {
+            distance
         }
     }
 }
@@ -449,14 +471,8 @@ impl ClientWaypoints {
     /// `LocatorBar.extractRenderState`: the farthest waypoint first.
     pub fn draw(&self, view: &View) -> Vec<GuiDraw> {
         let top = view.gui_height - 32 + 3;
-        let mut sorted: Vec<(f64, &TrackedWaypoint)> = self
-            .waypoints
-            .iter()
-            .map(|w| (view.distance_sq(w), w))
-            .collect();
-        sorted.sort_by(|a, b| b.0.total_cmp(&a.0));
         let mut out = Vec::new();
-        for (distance_sq, w) in sorted {
+        for (distance_sq, w) in self.by_distance(view.camera_entity_pos) {
             if w.id == WaypointId::Uuid(view.camera_uuid) {
                 continue;
             }

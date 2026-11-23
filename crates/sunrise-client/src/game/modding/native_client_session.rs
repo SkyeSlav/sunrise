@@ -3,8 +3,13 @@
 use super::{Game, remote::Remote};
 #[cfg(test)]
 use mod_api::prelude::*;
-use mod_api::{BlockBreakingState, BlockPos, ClientFrameStats, ClientServer, PlayerRef};
+use mod_api::{
+    BlockBreakingState, BlockPos, ClientFrameStats, ClientServer, ClientWaypointEntry,
+    ClientWaypointId, ClientWaypointTarget, ClientWaypoints, PlayerRef,
+};
 use std::sync::Arc;
+use sunrise_client::locator_bar::ClientWaypoints as TrackedWaypoints;
+use sunrise_protocol::packets::play::{TrackedWaypoint, WaypointId, WaypointTarget};
 
 impl Game<'_> {
     pub(super) fn native_session(&self) -> Option<&Remote> {
@@ -51,6 +56,14 @@ impl Game<'_> {
             &self.score.board,
             self.tab_list.header.as_ref(),
             self.tab_list.footer.as_ref(),
+        ))
+    }
+
+    pub(super) fn native_client_waypoints(&self) -> Option<ClientWaypoints> {
+        self.native_session()?;
+        Some(waypoints_snapshot(
+            &self.waypoints,
+            self.camera_entity_position(),
         ))
     }
 
@@ -175,10 +188,174 @@ fn tab_list(
     mod_api::ClientTabList::new(entries, header.map(text), footer.map(text))
 }
 
+/// `ClientPacketListener.getWaypointManager`: project the tracked data, not the rendered icons.
+fn waypoints_snapshot(tracked: &TrackedWaypoints, camera: Option<[f64; 3]>) -> ClientWaypoints {
+    let entry = |waypoint: &TrackedWaypoint| {
+        let id = match &waypoint.id {
+            WaypointId::Uuid(uuid) => ClientWaypointId::Uuid(*uuid),
+            WaypointId::Name(name) => ClientWaypointId::Name(name.clone()),
+        };
+        let target = match waypoint.target {
+            WaypointTarget::Block([x, y, z]) => ClientWaypointTarget::Block(BlockPos::new(x, y, z)),
+            WaypointTarget::Chunk([x, z]) => ClientWaypointTarget::Chunk { x, z },
+            WaypointTarget::Azimuth(radians) => ClientWaypointTarget::Azimuth(radians),
+            WaypointTarget::Empty => ClientWaypointTarget::Empty,
+        };
+        ClientWaypointEntry::new(
+            id,
+            target,
+            waypoint.style.clone(),
+            waypoint.color.map(|argb| (argb as u32) & 0x00ff_ffff),
+        )
+    };
+    let entries = match camera {
+        Some(position) => tracked
+            .by_distance(position)
+            .into_iter()
+            .map(|(_, waypoint)| entry(waypoint))
+            .collect(),
+        None => tracked.iter().map(entry).collect(),
+    };
+    ClientWaypoints::new(entries)
+}
+
 #[cfg(test)]
 pub(super) mod tests {
     use super::super::native_entity_refs::tests::with_client_game;
     use super::*;
+
+    #[test]
+    fn waypoint_snapshots_own_the_applied_targets_and_use_camera_distance() {
+        use sunrise_protocol::packets::play::waypoint_operation::{TRACK, UNTRACK, UPDATE};
+
+        let mut tracked = TrackedWaypoints::default();
+        let camera = Some([8.5, -0.75, 8.5]);
+        assert!(waypoints_snapshot(&tracked, camera).entries.is_empty());
+        let track = |id, target, style: &str, color| TrackedWaypoint {
+            operation: TRACK,
+            id,
+            target,
+            style: style.into(),
+            color,
+        };
+        let block = track(
+            WaypointId::Uuid(7),
+            WaypointTarget::Block([8, -1, 8]),
+            "example:missing",
+            Some(0xff12_65ab_u32 as i32),
+        );
+        for packet in [
+            track(
+                WaypointId::Name("west camp".into()),
+                WaypointTarget::Chunk([i32::MIN, 0]),
+                "example:camp",
+                None,
+            ),
+            block.clone(),
+            track(
+                WaypointId::Name("unknown".into()),
+                WaypointTarget::Empty,
+                "example:empty",
+                None,
+            ),
+            track(
+                WaypointId::Uuid(8),
+                WaypointTarget::Azimuth(-1.25),
+                "example:azimuth",
+                None,
+            ),
+        ] {
+            tracked.apply(&packet);
+        }
+        let moved = TrackedWaypoint {
+            operation: UPDATE,
+            target: WaypointTarget::Block([8, -2, 8]),
+            style: "example:update".into(),
+            color: None,
+            ..block.clone()
+        };
+        tracked.apply(&moved);
+        tracked.apply(&TrackedWaypoint {
+            id: WaypointId::Uuid(999),
+            ..moved.clone()
+        });
+        tracked.apply(&TrackedWaypoint {
+            target: WaypointTarget::Azimuth(0.5),
+            ..moved
+        });
+
+        let expected = [
+            ClientWaypointEntry::new(
+                ClientWaypointId::Name("unknown".into()),
+                ClientWaypointTarget::Empty,
+                "example:empty".into(),
+                None,
+            ),
+            ClientWaypointEntry::new(
+                ClientWaypointId::Uuid(8),
+                ClientWaypointTarget::Azimuth(-1.25),
+                "example:azimuth".into(),
+                None,
+            ),
+            ClientWaypointEntry::new(
+                ClientWaypointId::Uuid(7),
+                ClientWaypointTarget::Block(BlockPos::new(8, -2, 8)),
+                "example:missing".into(),
+                Some(0x12_65ab),
+            ),
+            ClientWaypointEntry::new(
+                ClientWaypointId::Name("west camp".into()),
+                ClientWaypointTarget::Chunk { x: i32::MIN, z: 0 },
+                "example:camp".into(),
+                None,
+            ),
+        ];
+        let snapshot = waypoints_snapshot(&tracked, camera);
+        // Both unpositioned waypoints are infinitely far. The squared distances are 0.5625
+        // to the block and 0.0625 to the chunk's wrapped middle at block Y -1.
+        assert_eq!(snapshot.entries.len(), expected.len());
+        assert!(
+            expected[..2]
+                .iter()
+                .all(|w| snapshot.entries[..2].contains(w))
+        );
+        assert_eq!(snapshot.entries[2..], expected[2..]);
+        let without_camera = waypoints_snapshot(&tracked, None);
+        assert_eq!(without_camera.entries.len(), expected.len());
+        assert!(expected.iter().all(|w| without_camera.entries.contains(w)));
+
+        let replacement = TrackedWaypoint {
+            target: WaypointTarget::Empty,
+            style: "example:replacement".into(),
+            color: None,
+            ..block
+        };
+        tracked.apply(&replacement);
+        let replaced = waypoints_snapshot(&tracked, None);
+        assert_eq!(replaced.entries.len(), expected.len());
+        assert!(replaced.entries.contains(&ClientWaypointEntry::new(
+            ClientWaypointId::Uuid(7),
+            ClientWaypointTarget::Empty,
+            "example:replacement".into(),
+            None,
+        )));
+        tracked.apply(&TrackedWaypoint {
+            operation: UNTRACK,
+            ..replacement
+        });
+        let remaining = waypoints_snapshot(&tracked, None);
+        assert_eq!(remaining.entries.len(), 3);
+        assert!(
+            remaining
+                .entries
+                .iter()
+                .all(|w| w.id != ClientWaypointId::Uuid(7))
+        );
+        assert_eq!(
+            snapshot.entries[2], expected[2],
+            "the earlier snapshot is unchanged"
+        );
+    }
 
     /// The Tab overlay's names, order, cap, header and footer, as `client_tab_list` reads them.
     #[test]

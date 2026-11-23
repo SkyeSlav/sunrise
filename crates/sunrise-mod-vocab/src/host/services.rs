@@ -73,6 +73,15 @@ pub trait ClientSession {
         unimplemented!("ClientSession::client_tab_list")
     }
     /// Side: client.
+    /// An owned snapshot of all applied locator bar waypoints, before HUD filtering.
+    /// Returns `None` outside a logged-in client world, or an empty list when none are tracked.
+    /// With a camera entity, entries are farthest first by vanilla squared distance from it,
+    /// with no promised tie order. Without one, order is unspecified.
+    /// This read sends nothing, changes nothing and fires no hooks.
+    fn client_waypoints(&self) -> Option<ClientWaypoints> {
+        unimplemented!("ClientSession::client_waypoints")
+    }
+    /// Side: client.
     /// Existing local frame counters; None outside a logged-in client world.
     /// This read collects no history and sends nothing anywhere.
     fn client_frame_stats(&self) -> Option<ClientFrameStats> {

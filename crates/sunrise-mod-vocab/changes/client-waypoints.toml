@@ -1,0 +1,3 @@
+ids = ["method:ClientSession::client_waypoints", "type:ClientWaypoints", "type:ClientWaypointEntry", "type:ClientWaypointId", "type:ClientWaypointTarget"]
+why = "Adds a client read of the tracked locator bar waypoints, including packet targets, style identifiers and optional RGB colours, before HUD filtering."
+migrate = "Additive. Read it from the client session; it is None outside a logged-in client world."

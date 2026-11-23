@@ -223,6 +223,16 @@ These read the local player as the client sees it. They take no mod-controlled n
   then, among equal list orders, spectators last, team name and name) and stop at the 80 it draws. Header and footer are `None` when empty. It is what
   this client has been sent and changes as the server updates the list; `None` outside a world.
   There is no NeoForge call for this: it is Sunrise's own read.
+- `ClientHost::client_session().client_waypoints()` returns an owned snapshot of the client's
+  tracked waypoints, from packets it has already applied. It is `None` outside a logged-in client
+  world and returns an empty `entries` list when nothing is tracked. Each entry keeps its UUID or name
+  and its packet target: a block position, chunk X/Z, an azimuth in radians, or `Empty`.
+  The namespaced `style` identifies the `waypoint_style` asset even if it is missing, and
+  `color` is the optional `0xRRGGBB` value, without the HUD's fallback colour. The read includes
+  waypoints the HUD would hide or clip and never resolves a target from a live entity. It lists
+  waypoints farthest first by vanilla squared distance from the camera entity, without promising
+  an order for ties or when there is no camera entity. A custom HUD can read this snapshot from
+  the existing `gui_layer_pre` hook; the read itself does not send packets or fire a hook.
 - `ClientHost::local_item_use()` reports ordinary item use: `ItemUse { hand, ticks_used, ticks_remaining }`
   (`isUsingItem`, `getUsedItemHand`, `getTicksUsingItem`, `getUseItemRemainingTicks`).
   `ticks_used + ticks_remaining` is the use duration. It is `None` when no item is in use or no world

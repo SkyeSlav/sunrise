@@ -102,7 +102,7 @@ Tutorial.setStep	port	crates/sunrise-client/src/game/interface/tutorial.rs::Tuto
 Tutorial.isSurvival	inline	crates/sunrise-client/src/game/interface/tutorial.rs::Game::tick_tutorial	the game mode is read there and passed to Tutorial::tick, which stops the step outside survival
 TutorialSteps.getByName	port	crates/sunrise-client-render/src/options_file.rs::OptionsFile::try_apply	tutorialStep name read from options
 ClientWaypointManager.updateWaypoint	port	crates/sunrise-client/src/locator_bar.rs::ClientWaypoints::apply	updates a tracked waypoint by id
-ClientWaypointManager.forEachWaypoint	port	crates/sunrise-client/src/locator_bar.rs::ClientWaypoints::draw	drawn farthest first
+ClientWaypointManager.forEachWaypoint	port	crates/sunrise-client/src/locator_bar.rs::ClientWaypoints::by_distance	visits tracked waypoints farthest first
 ArgumentVisitor.visitArguments	port	crates/sunrise-client/src/game/network/lan_chat.rs::Game::signable_arguments	collects the message arguments of a command
 ArgumentVisitor.visitNodeArguments	inline	crates/sunrise-client/src/game/network/lan_chat.rs::Game::signable_arguments	per-node walk folded into the collector
 CacheableFunction.get	skip:java		caches the resolved function; no behaviour of its own

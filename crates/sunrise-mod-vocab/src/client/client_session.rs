@@ -143,3 +143,81 @@ impl ClientTabListEntry {
         }
     }
 }
+
+/// An owned snapshot of the client's tracked locator bar waypoints.
+/// Later packets do not change a snapshot already returned to a mod.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct ClientWaypoints {
+    /// All tracked entries, without HUD visibility or clipping rules. With a camera entity,
+    /// farthest first by vanilla squared distance; ties and camera-less order are unspecified.
+    pub entries: Vec<ClientWaypointEntry>,
+}
+
+impl ClientWaypoints {
+    /// A snapshot from its entries.
+    pub fn new(entries: Vec<ClientWaypointEntry>) -> Self {
+        Self { entries }
+    }
+}
+
+/// One tracked waypoint, as sent by the server rather than resolved for drawing.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct ClientWaypointEntry {
+    /// The identifier used to track, update and remove this waypoint.
+    pub id: ClientWaypointId,
+    /// The packet's target, not a position inferred from a live entity.
+    pub target: ClientWaypointTarget,
+    /// The namespaced `waypoint_style` asset identifier, even if the asset is missing.
+    pub style: String,
+    /// The packet's optional RGB colour (`0xRRGGBB`, without alpha).
+    /// `None` does not include the HUD's identifier-derived fallback colour.
+    pub color: Option<u32>,
+}
+
+impl ClientWaypointEntry {
+    /// A waypoint entry from its packet fields.
+    pub fn new(
+        id: ClientWaypointId,
+        target: ClientWaypointTarget,
+        style: String,
+        color: Option<u32>,
+    ) -> Self {
+        Self {
+            id,
+            target,
+            style,
+            color,
+        }
+    }
+}
+
+/// A locator bar waypoint's identifier.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ClientWaypointId {
+    /// An entity UUID.
+    Uuid(u128),
+    /// A name sent by the server, not an asset identifier.
+    Name(String),
+}
+
+/// A locator bar waypoint's tracked target.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum ClientWaypointTarget {
+    /// A block position.
+    Block(BlockPos),
+    /// A horizontal chunk position.
+    Chunk {
+        /// Chunk X coordinate.
+        x: i32,
+        /// Chunk Z coordinate.
+        z: i32,
+    },
+    /// An azimuth in radians.
+    Azimuth(f32),
+    /// No position or angle.
+    Empty,
+}

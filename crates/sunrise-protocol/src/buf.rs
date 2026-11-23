@@ -381,9 +381,11 @@ impl Ident {
         let value =
             std::str::from_utf8(value).map_err(|_| Error::new("invalid resource identifier"))?;
         let (namespace, path) = value.split_once(':').unwrap_or(("", value));
-        if !namespace
-            .bytes()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_.-".contains(&c))
+        // Identifier.isValidNamespace excludes exactly `..`.
+        if namespace == ".."
+            || !namespace
+                .bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_.-".contains(&c))
             || !path
                 .bytes()
                 .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"/_.-".contains(&c))

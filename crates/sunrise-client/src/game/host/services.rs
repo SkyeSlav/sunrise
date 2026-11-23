@@ -16,6 +16,9 @@ impl ClientSession for Game<'_> {
     fn client_tab_list(&self) -> Option<ClientTabList> {
         self.native_client_tab_list()
     }
+    fn client_waypoints(&self) -> Option<ClientWaypoints> {
+        self.native_client_waypoints()
+    }
     fn client_frame_stats(&self) -> Option<ClientFrameStats> {
         self.native_client_frame_stats()
     }
