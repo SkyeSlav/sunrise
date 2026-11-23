@@ -707,6 +707,16 @@ impl Game<'_> {
         if reason.is_none() && self.integrated.as_ref().is_some_and(|s| !s.stopped()) {
             return self.begin_closing_save(false);
         }
+        self.close_server_session(reason, |_| {})
+    }
+
+    /// Close the transport before finishing any pack feedback, but keep the pack manager's
+    /// prompt state until that feedback has been processed.
+    pub(in crate::game) fn close_server_session(
+        &mut self,
+        reason: Option<Text>,
+        before_pack_cleanup: impl FnOnce(&mut crate::game::server_packs::ServerPackState),
+    ) -> Result<()> {
         self.client_logging_out();
         self.finish_perf();
         // The one boundary every network session passes when it closes here: the player leaving,
@@ -758,6 +768,7 @@ impl Game<'_> {
         self.mod_sounds.clear();
         self.update_window_title();
         self.gui.atlas.clear_object_skins();
+        before_pack_cleanup(&mut self.server_packs);
         self.server_packs_disconnect();
         self.code_of_conduct = None;
         self.reset_tutorial();
