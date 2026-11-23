@@ -1,11 +1,8 @@
 use super::*;
 
 impl Game<'_> {
-    /// `C::AddEntity`: its arms of `apply_packet`, guard and order kept.
+    /// `C::AddEntity`: admit the entity before replacing an old ID.
     pub(super) fn apply_add_entity_packet(&mut self, p: play::AddEntity) {
-        // ClientLevel.addEntity removes any existing entity with the same id before inserting.
-        self.detach_camera_if_matching(|cam_id| cam_id == p.id);
-        self.audio.remove_sound_entity(p.id as u32);
         let kind = self
             .remote
             .as_ref()
@@ -16,6 +13,22 @@ impl Game<'_> {
                     .map(str::to_owned)
             })
             .unwrap_or_default();
+        // `createEntityFromPacket`: an unlisted PlayerInfo still supplies its profile.
+        if kind == "minecraft:player"
+            && !self
+                .remote
+                .as_ref()
+                .is_some_and(|r| r.tab_players.contains_key(&p.uuid))
+        {
+            log::warn!(
+                "Server attempted to add a player before PlayerInfo ({:032x})",
+                p.uuid
+            );
+            return;
+        }
+        // ClientLevel.addEntity removes any existing entity with the same id before inserting.
+        self.detach_camera_if_matching(|cam_id| cam_id == p.id);
+        self.audio.remove_sound_entity(p.id as u32);
         let rotation = [p.yaw, p.pitch, p.head_yaw].map(sunrise_protocol::buf::unpack_degrees);
         // ClientLevel.addEntity discards the old entity before inserting the new one.
         if self
@@ -78,6 +91,7 @@ impl Game<'_> {
         self.move_remote_text_display(p.id, p.position, Some((rotation[0], rotation[1])));
         self.move_remote_interaction(p.id, p.position);
         self.pick_section_sync_id(p.id as u32);
+        self.entity_section_joined(p.id as u32, p.position);
     }
 
     /// `C::RemoveEntities`: its arms of `apply_packet`, guard and order kept.

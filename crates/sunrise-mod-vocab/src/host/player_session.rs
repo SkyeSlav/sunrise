@@ -30,6 +30,15 @@ pub trait PlayerSessionBackend {
     /// None for a stale or unavailable player.
     fn player_permission_level(&self, player: PlayerRef) -> Option<u8>;
     /// Side: server.
+    /// `MinecraftServer.isSingleplayerOwner`: whether the player is the integrated server's
+    /// owner, as `IntegratedServer.isSingleplayerOwner` decides it: by the **name** of the
+    /// profile the server launched with ([`Players::singleplayer_profile`]), ignoring case,
+    /// not by UUID. Cheats, opening to LAN, join order and permission level don't change it;
+    /// whether the player is an operator is [`permission_level`](PlayerRef::permission_level).
+    /// An identity read that grants nothing. False on a dedicated server
+    /// (`DedicatedServer.isSingleplayerOwner`) and for a stale or unavailable player.
+    fn player_is_singleplayer_owner(&self, player: PlayerRef) -> bool;
+    /// Side: server.
     /// `ServerPlayer.isTextFilteringEnabled`: the text-filtering option the player's client
     /// announced (`ClientInformation.textFilteringEnabled`). False for the player running the
     /// server and for an acting player with no connection, as for a client that sent none. None
