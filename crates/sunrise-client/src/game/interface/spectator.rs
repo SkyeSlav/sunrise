@@ -16,49 +16,61 @@ impl Game<'_> {
     fn spectator_now(&self) -> i64 {
         self.started.elapsed().as_millis() as i64
     }
-    /// `new SpectatorMenu`: the listed players, and the teams with a player
-    /// to go to (`TeleportToTeamMenuCategory.createTeamEntries`).
+    /// `TeleportToPlayerMenuCategory` starts from listed players;
+    /// `TeleportToTeamMenuCategory.TeamSelectionItem.create` looks up every team member.
     fn new_spectator_menu(&mut self) -> SpectatorMenu {
-        let mut tab: Vec<TabPlayer> = self
+        let tab = self
             .remote_tab_players()
             .map_or_else(Vec::new, |(players, _, _)| players);
-        for p in &mut tab {
-            p.skin = self.face_skin(p.uuid, &p.skin);
-        }
-        let member = |p: &TabPlayer| Member {
+        let member = |p: &TabPlayer, skin: String| Member {
             uuid: p.uuid,
             name: p.name.clone(),
-            skin: p.skin.clone(),
+            skin,
             enabled: p.game_mode != SPECTATOR,
         };
-        let players: Vec<Member> = tab.iter().map(member).collect();
-        let teams = self
-            .score
-            .board
-            .teams
+        let players = tab
             .iter()
-            .filter_map(|team| {
-                let members: Vec<Member> = team
+            .map(|p| member(p, self.face_skin(p.uuid, &p.skin)))
+            .collect();
+        let teams = &self.score.board.teams;
+        let rosters: Vec<_> = self
+            .remote
+            .iter()
+            .flat_map(|remote| teams.iter().map(move |team| (remote, team)))
+            .filter_map(|(remote, team)| {
+                let members: Vec<_> = team
                     .players
                     .iter()
-                    .filter_map(|name| tab.iter().find(|p| &p.name == name))
+                    .filter_map(|name| remote.player_info_by_name(name))
                     .filter(|p| p.game_mode != SPECTATOR)
-                    .map(member)
+                    .map(|p| member(p, remote.player_info_skin(p.uuid).to_owned()))
                     .collect();
-                if members.is_empty() {
-                    return None;
+                (!members.is_empty()).then(|| {
+                    (
+                        comp_text(&team.display_name),
+                        team.color.as_deref().and_then(team_color_rgb),
+                        members,
+                    )
+                })
+            })
+            .collect();
+        let teams = rosters
+            .into_iter()
+            .map(|(name, color, mut players)| {
+                for p in &mut players {
+                    p.skin = self.face_skin(p.uuid, &p.skin);
                 }
                 // A random member's face is the team's icon.
                 let pick = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |d| d.subsec_nanos() as usize)
-                    % members.len();
-                Some(Team {
-                    name: comp_text(&team.display_name),
-                    color: team.color.as_deref().and_then(team_color_rgb),
-                    icon: members[pick].skin.clone(),
-                    players: members,
-                })
+                    % players.len();
+                Team {
+                    name,
+                    color,
+                    icon: players[pick].skin.clone(),
+                    players,
+                }
             })
             .collect();
         SpectatorMenu::new(players, teams)
@@ -113,5 +125,85 @@ impl Game<'_> {
             ));
         }
         hud_layout::paint(batch, &self.gui.atlas, &draws);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::{in_own_process, native_entity_refs::tests::with_client_game};
+    use sunrise_client::{spectator_menu::Item, tab_list::default_skin};
+    use sunrise_protocol::packets::{Empty, play::Clientbound as C};
+
+    #[test]
+    #[ignore = "daily"]
+    fn an_unlisted_player_is_a_teleport_target_only_on_their_team_page() {
+        in_own_process(
+            "game::spectator::tests::an_unlisted_player_is_a_teleport_target_only_on_their_team_page",
+            || {
+                with_client_game(|game| {
+                    let (mut peer, _writer) = crate::game::remote::tests::connect_menu_test(game);
+                    const UNLISTED: u128 = 0xcafe;
+                    const LISTED: u128 = 0xbeef;
+                    game.handle_packet(C::PlayerInfoUpdate(play::PlayerInfoUpdate {
+                        actions: 0x01 | 0x04 | 0x08, // ADD_PLAYER | UPDATE_GAME_MODE | UPDATE_LISTED
+                        entries: [
+                            (UNLISTED, "Unlisted", 0, false),
+                            (LISTED, "Listed", 0, true),
+                            (0xaa, "Spectator", SPECTATOR, false),
+                        ]
+                        .into_iter()
+                        .map(|(uuid, name, game_mode, listed)| play::PlayerInfo {
+                            uuid,
+                            name: Some(name.into()),
+                            game_mode: Some(game_mode),
+                            listed: Some(listed),
+                            ..play::PlayerInfo::default()
+                        })
+                        .collect(),
+                    }))
+                    .unwrap();
+                    let board = &mut game.score.board;
+                    board.add_team("hidden");
+                    for name in ["Unlisted", "Spectator", "Unknown"] {
+                        board.add_to_team(name, "hidden");
+                    }
+
+                    let mut players = game.new_spectator_menu();
+                    players.select_slot(0);
+                    players.select_slot(0);
+                    assert!(matches!(players.item(0), Item::Player(p) if p.uuid == LISTED));
+                    assert_eq!(players.item(1), Item::Empty);
+
+                    let mut teams = game.new_spectator_menu();
+                    assert_eq!(teams.item(1), Item::TeleportToTeam { enabled: true });
+                    teams.select_slot(1);
+                    teams.select_slot(1);
+                    let Item::Team(team) = teams.item(0) else {
+                        panic!("team with only an unlisted eligible member is missing");
+                    };
+                    assert_eq!(team.icon, default_skin(UNLISTED));
+                    teams.select_slot(0);
+                    teams.select_slot(0);
+                    assert!(matches!(teams.item(0), Item::Player(p) if p.uuid == UNLISTED));
+                    assert_eq!(teams.item(1), Item::Empty);
+                    assert_eq!(teams.select_slot(0), Outcome::None);
+                    game.spectator_outcome(teams.select_slot(0));
+                    game.send(S::ClientTickEnd(Empty));
+                    let mut teleports = Vec::new();
+                    loop {
+                        let (id, body) = peer.recv().unwrap();
+                        match S::decode(id, &body).unwrap() {
+                            S::TeleportToEntity(p) => teleports.push(p.uuid),
+                            S::ClientTickEnd(_) => break,
+                            _ => {}
+                        }
+                    }
+                    assert_eq!(teleports, [UNLISTED]);
+                    let (tab, _, _) = game.remote_tab_players().unwrap();
+                    assert_eq!(tab.iter().map(|p| p.uuid).collect::<Vec<_>>(), [LISTED]);
+                });
+            },
+        );
     }
 }

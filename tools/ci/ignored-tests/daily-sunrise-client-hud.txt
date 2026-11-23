@@ -1,0 +1,2 @@
+# HUD parity cases: PACKAGE TEST TARGET daily REASON, sorted.
+sunrise-client game::spectator::tests::an_unlisted_player_is_a_teleport_target_only_on_their_team_page lib daily child-process
