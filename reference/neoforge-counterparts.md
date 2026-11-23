@@ -6,7 +6,7 @@ The book build renders it directly from those declarations; there is no generate
 A key names the event class (`PlayerEvent.Clone`) or runtime callback (`IPayloadHandler.handle`);
 notes about cancelling or the event bus belong in the hook's `///` doc, not in the key.
 
-760 hooks: 460 name a counterpart, 299 say they have none.
+764 hooks: 460 name a counterpart, 300 say they have none.
 This is a declaration reference, not an independent verification of every mapping. Registration events and the
 callbacks they register are different moments: packet receipt names `IPayloadHandler.handle`, and per-draw item
 decoration names `IItemDecorator.render`, not their registration events. A `none` explains why no event or method
@@ -682,6 +682,7 @@ A hook with no NeoForge counterpart is judged on its merits like any other. The 
 | `player_lectern_page_change` | server | NeoForge has no such event |
 | `player_level_change` | server | NeoForge has no such event; Bukkit's PlayerLevelChangeEvent |
 | `player_login` | server | Bukkit's PlayerLoginEvent; NeoForge's PlayerNegotiationEvent is not cancellable |
+| `player_login_profile` | server | NeoForge's PlayerNegotiationEvent shows the profile but can't edit it before it is sent |
 | `player_loom_pattern_select` | server | NeoForge has no such event |
 | `player_map_filled` | server | NeoForge has no such event |
 | `player_move` | server | NeoForge has no player move event; PlayerTickEvent covers the tick |
