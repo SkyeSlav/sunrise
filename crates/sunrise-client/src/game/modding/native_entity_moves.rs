@@ -126,14 +126,14 @@ impl Game<'_> {
     /// Moves the entity by `delta` as `Entity.move(cause, delta)` does: collided, stepping,
     /// through the `entity_move` hook. How far it moved; None for a stale handle, on a client,
     /// for an entity outside the entity walk, and for an unknown cause and for a delta that is
-    /// not finite or beyond 64 blocks on an axis. A player is moved by `move_player_by`.
+    /// not finite. A player is moved by `move_player_by`.
     pub(super) fn entity_move_by(
         &mut self,
         entity: EntityRef,
         delta: [f64; 3],
         cause: MoveCause,
     ) -> Option<[f64; 3]> {
-        if self.remote.is_some() || !sunrise_client::move_gate::valid_mod_move_delta(delta) {
+        if self.remote.is_some() || !delta.iter().all(|v| v.is_finite()) {
             return None;
         }
         let mover = sunrise_client::move_gate::mover_of(cause)?;

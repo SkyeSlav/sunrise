@@ -1168,8 +1168,8 @@ position and aim are unchanged.
 - `native_push_player([x, y, z])` (client) adds a push to the player's own velocity, in blocks a tick, as an
   explosion's knockback does: the player's own game moves them. The server didn't send it, so a server's movement checks
   may see a move they can't explain; for a push the server should stand behind, have the server send it. Each component is
-  cut to 4 either way; an upward push lifts the player off the ground. A spectator, no player, or a value that isn't
-  a number is left alone. A server mod that wants a client pushed sends its client half a message.
+  added as given; an upward push lifts the player off the ground. No player, or a value that isn't
+  finite, is left alone. A server mod that wants a client pushed sends its client half a message.
 
 ### Values for a mod's shader pack
 

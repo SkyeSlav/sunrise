@@ -44,9 +44,10 @@ pub trait PlayersServerHost {
 pub trait PlayersClientHost {
     /// Side: client.
     /// For a client mod: a push added to the local player's velocity, in blocks a tick, as an
-    /// explosion's knockback is (the window's player moves itself, as vanilla's client does). Each component is
-    /// clamped to -4..4; a spectator, or a value that is not a number, is left alone.
-    fn push_player(&mut self, kick: [f32; 3]);
+    /// explosion's knockback is (the window's player moves itself, as vanilla's client does), as
+    /// `Entity.push(double, double, double)` does: no clamp, spectators included; a value that is not
+    /// finite is left alone.
+    fn push_player(&mut self, kick: [f64; 3]);
     /// Side: client.
     /// For a client mod: chooses the local player's hotbar slot, `slot` (0 to 8), as
     /// `Inventory.setSelectedSlot` does for a number key. It sends nothing itself: the game
@@ -92,8 +93,7 @@ pub trait PlayersClientHost {
     /// The normal position report carries the movement and ground flag, and the server checks
     /// the report as usual.
     /// Returns the displacement actually made, or `Ok(None)` without moving if there is no
-    /// local player, the player is dead, sleeping or riding, or a component is non-finite or
-    /// outside ±64 blocks. `Err(LevelWriteError::Unavailable)` means the call is outside a
+    /// local player, the player is dead, sleeping or riding, or a component is non-finite. `Err(LevelWriteError::Unavailable)` means the call is outside a
     /// world phase or the engine couldn't finish the move.
     fn move_local_player_by(
         &mut self,

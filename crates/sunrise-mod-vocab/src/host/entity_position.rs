@@ -96,8 +96,8 @@ pub trait EntityPositionBackendMut {
     /// mob's budget carries across calls in a tick, any other kind's lasts the call. Returns how far
     /// the entity moved, `delta` less what the collisions took. None for a stale handle, on a
     /// client, for an entity outside the game's entity walk (a display, a painting, an item
-    /// frame, an End crystal, a dragon part) and for a delta that is not finite or has a
-    /// component beyond 64 blocks. The base move's fall handling can remove a body before
+    /// frame, an End crystal, a dragon part) and for a delta that is not finite (any finite delta
+    /// is swept, as `Entity.move` sweeps it). The base move's fall handling can remove a body before
     /// restitution. Block effects and triggers outside the base move still run at their own moments.
     ///
     /// A player moves as `Entity.move` with `MoverType.SELF` would, whatever `cause` the hook

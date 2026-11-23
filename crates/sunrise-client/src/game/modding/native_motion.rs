@@ -2,28 +2,19 @@
 //! client.
 use super::Game;
 
-/// Each component of a push is clamped to this, in blocks a tick.
-const PUSH_MAX: f32 = 4.0;
-/// The velocity after a push: `kick` added, each component clamped; none when one of `kick`'s isn't a number.
-fn pushed(velocity: [f64; 3], kick: [f32; 3]) -> Option<[f64; 3]> {
-    if !kick.iter().all(|v| v.is_finite()) {
-        return None;
-    }
-    Some(std::array::from_fn(|i| {
-        velocity[i] + f64::from(kick[i].clamp(-PUSH_MAX, PUSH_MAX))
-    }))
-}
-
 impl Game<'_> {
-    /// For a client mod: a push added to the local player's velocity, in blocks a tick, as an
-    /// explosion's knockback is (the window's player moves itself, as vanilla's client does). Each component is
-    /// clamped to -4..4; a spectator, or a value that is not a number, is left alone.
-    pub(super) fn push_player(&mut self, kick: [f32; 3]) {
+    /// `Entity.push(double, double, double)` on the local player, for a client mod: `kick` is added to its
+    /// velocity, in blocks a tick, as an explosion's knockback is (the window's player moves itself, as
+    /// vanilla's client does). Whatever the player's mode; a value that is not finite is left alone.
+    pub(super) fn push_player(&mut self, kick: [f64; 3]) {
         if let Some(p) = self.player.as_mut()
-            && !p.spectator
-            && let Some([x, y, z]) = pushed([p.velocity.x, p.velocity.y, p.velocity.z], kick)
+            && kick.iter().all(|v| v.is_finite())
         {
-            p.velocity = sunrise_core::geometry::Vec3::new(x, y, z);
+            p.velocity = sunrise_core::geometry::Vec3::new(
+                p.velocity.x + kick[0],
+                p.velocity.y + kick[1],
+                p.velocity.z + kick[2],
+            );
             if kick[1] > 0.0 {
                 p.ground.on_ground = false;
             }
@@ -34,15 +25,22 @@ impl Game<'_> {
 #[cfg(test)]
 mod motion_tests {
     use super::*;
+    use crate::game::native_entity_refs::tests::with_game;
 
     #[test]
-    fn a_push_adds_to_the_velocity_clamped() {
-        assert_eq!(
-            pushed([0.1, -0.08, 0.0], [0.8, 0.55, -0.5]),
-            Some([0.1 + 0.8f32 as f64, -0.08 + 0.55f32 as f64, -0.5])
-        );
-        assert_eq!(pushed([0.0; 3], [9.0, -9.0, 0.0]), Some([4.0, -4.0, 0.0]));
-        assert_eq!(pushed([1.0; 3], [f32::NAN, 0.0, 0.0]), None);
-        assert_eq!(pushed([1.0; 3], [0.0, f32::INFINITY, 0.0]), None);
+    fn a_push_adds_to_the_velocity_as_given_in_any_mode() {
+        with_game(|game| {
+            game.player = Some(
+                sunrise_client::motion::PlayerMotion::new(game.motion, Default::default()).unwrap(),
+            );
+            game.player.as_mut().unwrap().spectator = true;
+            game.player.as_mut().unwrap().velocity =
+                sunrise_core::geometry::Vec3::new(0.1, -0.08, 0.0);
+            game.push_player([9.0, -9.0, 0.5]);
+            let v = game.player.as_ref().unwrap().velocity;
+            assert_eq!([v.x, v.y, v.z], [9.1, -9.08, 0.5]);
+            game.push_player([f64::NAN, 0.0, 0.0]);
+            assert_eq!(game.player.as_ref().unwrap().velocity.x, 9.1);
+        });
     }
 }

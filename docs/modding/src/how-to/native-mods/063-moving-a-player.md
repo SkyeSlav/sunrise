@@ -6,7 +6,7 @@
 `player.entity().move_by(host, delta, cause)` (`EntityRef::move_by`, the call that moves any other entity, on a
 `&mut dyn ServerHost`) moves a player by `delta` through the level as `Entity.move` would: blocks, other entities' colliders and the player's
 collision exclusions stop it, and a step up is taken. It returns the displacement made. As for every entity, a
-`delta` beyond 64 blocks on an axis is refused. The `entity_move` hook hears it once, for
+`delta` that is not finite is refused; any finite one is swept. The `entity_move` hook hears it once, for
 the player and with `cause`, and a listener may replace or cancel it as for any other entity (a cancelled move is
 `Some([0.0; 3])` and the client is told nothing); `cause` changes only what the hook hears, not the physics.
 
@@ -42,7 +42,7 @@ movement:
   It steps up and collides as the player's own move does, including moving colliders and collision exclusions.
   It updates the ground flag and fall state, and has the usual effects on velocity. It returns `Ok(Some(delta))`
   with the displacement actually made. It returns `Ok(None)` without moving if there is no local player, the
-  player is dead, sleeping or riding, or a component is non-finite or outside ±64 blocks. An unavailable world
+  player is dead, sleeping or riding, or a component is non-finite. An unavailable world
   phase or a move the engine cannot finish returns `Err(LevelWriteError::Unavailable)`. Other hooks with a
   writable client world host, such as `client_tick_pre` and `input_key`, can also call it. The client does not
   fire the server's `entity_move` hook. A crossing notifies `entity_entering_section` at the position write,
