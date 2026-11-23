@@ -6,6 +6,36 @@ use mod_api::{LevelRef, PlayerRef};
 use sunrise_world::registry::BlockStateId;
 
 impl Game<'_> {
+    /// `BlockBehaviour.getDestroyProgress(state, player, level, pos)` for a supplied state:
+    /// the same math as the game's own dig, including the `player_break_speed` hook. A server
+    /// asks a connected or fake player (their state swapped in); a client only its local
+    /// player. None for a stale handle, an unknown state, a dead player, a level other than
+    /// the one in place, or a call from inside the break-speed hook, which would recurse.
+    pub(super) fn player_destroy_progress(
+        &mut self,
+        player: PlayerRef,
+        level: LevelRef,
+        pos: [i32; 3],
+        state: BlockStateId,
+    ) -> Option<f32> {
+        self.pack.assets.registry.state(state)?;
+        if crate::game::hand::BreakSpeedDispatch::running() {
+            return None;
+        }
+        if self.native_level_read_world(level).is_none() || level.dimension() != self.dim.key() {
+            return None;
+        }
+        let mut answer = None;
+        if self.is_logical_server() {
+            self.native_as_player_handle(player, |game| {
+                answer = Some(game.destroy_progress_for(pos, state));
+            });
+        } else if self.local_player() == Some(player) {
+            answer = Some(self.destroy_progress_for(pos, state));
+        }
+        answer
+    }
+
     /// `Player.hasCorrectToolForDrops(state, level, pos)` and `canHarvestBlock`: the player's
     /// selected slot against `state`, then the mods' `can_harvest_block` and
     /// `player_harvest_check`. A server asks a connected or fake player (their state swapped
@@ -127,6 +157,47 @@ mod tests {
             );
             assert_eq!(ask(game, stale, stone), None);
         });
+    }
+
+    /// A supplied state answers the dig's own math for that state, not the block at the
+    /// position, and an unknown state asks nothing.
+    #[test]
+    #[ignore = "daily"]
+    fn the_destroy_progress_query_uses_the_supplied_state() {
+        with_guests(|game| {
+            let (stone, dirt) = {
+                let host = &*game as &dyn mod_api::Host;
+                (
+                    host.block_state_id("minecraft:stone").unwrap(),
+                    host.block_state_id("minecraft:dirt").unwrap(),
+                )
+            };
+            let player = game.player(12).unwrap();
+            let level = player.level(&*game).unwrap();
+            game.lan
+                .as_mut()
+                .unwrap()
+                .hub
+                .update_guest(12, |guest| {
+                    guest.inventory[guest.selected] =
+                        Some(ItemStack::new("minecraft:iron_pickaxe", 1));
+                })
+                .unwrap();
+            let (rock, soil) = (6.0 / 1.5 / 30.0, 1.0 / 0.5 / 100.0);
+            assert_eq!(
+                player.destroy_progress(game, level, [0, 64, 0], stone),
+                Some(rock)
+            );
+            assert_eq!(
+                player.destroy_progress(game, level, [0, 64, 0], dirt),
+                Some(soil)
+            );
+            let unknown = mod_api::__private::block_state_from_ordinal(stone.block(), u16::MAX);
+            assert_eq!(
+                player.destroy_progress(game, level, [0, 64, 0], unknown),
+                None
+            );
+        })
     }
 
     /// Asks the player query for a different state from a `player_harvest_check` listener.

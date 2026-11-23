@@ -59,6 +59,23 @@ pub trait PlayerInteractionBackend {
 #[doc(hidden)]
 #[sunrise_mod_api_macros::host_area]
 pub trait PlayerInteractionBackendMut {
+    /// Side: server.
+    /// `BlockBehaviour.getDestroyProgress(state, player, level, pos)`: the share of `state`
+    /// one tick of mining removes at `pos`, using the tool in `player`'s selected hotbar
+    /// slot (never the offhand), the block's hardness, efficiency, effects, block-break
+    /// speed, submerged mining and the on-ground penalty, then the `player_break_speed`
+    /// hook. `0.0` for an unbreakable state, and never more than the game's own dig gives
+    /// for the same state and position. Nothing requires `pos` to hold `state`.
+    /// None for a stale handle or player, an unknown block state, a dead server player, a
+    /// level other than the one in place, and a call from inside a `player_break_speed`
+    /// listener, which would run that hook again.
+    fn player_destroy_progress(
+        &mut self,
+        player: PlayerRef,
+        level: LevelRef,
+        pos: [i32; 3],
+        state: BlockState,
+    ) -> Option<f32>;
     /// Side: both.
     /// `Player.hasCorrectToolForDrops(state, level, pos)` and `IBlockExtension.canHarvestBlock`
     /// in one answer: whether the tool in `player`'s selected hotbar slot (never the offhand)
