@@ -14,7 +14,7 @@ pub trait Hooks {
     ///
     /// The roll is drawn before the hook either way, in vanilla's order,
     /// including sweet berries and bamboo, not NeoForge's moved draw order.
-    /// Server-side. Named injections request `hook_version = 2`.
+    /// Server-side.
     #[hook(
         side = "server",
         contract = "listen",
