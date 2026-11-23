@@ -327,6 +327,99 @@ fn set_up(game: &mut Game<'_>, case: &serde_json::Value) {
     }
 }
 
+/// `Hud.getPlayerVehicleWithHealth` and `Hud.getAirBubbleYLine`: the watched rider can
+/// ride the dragon or the local player, but a boat leaves the food and air rows unchanged.
+#[test]
+#[ignore = "daily"]
+fn a_watched_rider_gets_hearts_for_the_dragon_and_local_player_but_not_a_boat() {
+    use crate::game::{Screen, in_own_process, remote_camera::CameraPlayer};
+
+    in_own_process(
+        "game::remote::tests::client_hud_camera_tests::a_watched_rider_gets_hearts_for_the_dragon_and_local_player_but_not_a_boat",
+        || {
+            with_client_game(|game| {
+                let (_reader, _writer) = super::connect_menu_test(game);
+                super::spawn_menu_test(game);
+                game.remote.as_mut().unwrap().level_load.finish();
+                game.screen = Screen::Playing;
+                game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
+                // LivingEntity.getMaxHealth converts to f32 before Hud adds the half point.
+                attributes(game, LOCAL, &[("minecraft:max_health", 31.499_999_9)]);
+                game.handle_packet(C::SetHealth(play::SetHealth {
+                    health: 17.25,
+                    food: 20,
+                    saturation: 5.0,
+                }))
+                .unwrap();
+
+                const DRAGON: i32 = 60;
+                const BOAT: i32 = 80;
+                game.handle_packet(C::PlayerInfoUpdate(play::PlayerInfoUpdate {
+                    actions: 1,
+                    entries: vec![play::PlayerInfo {
+                        uuid: WATCHED as u128 + 1000,
+                        name: Some("Watched".into()),
+                        ..play::PlayerInfo::default()
+                    }],
+                }))
+                .unwrap();
+                spawn(game, WATCHED, "minecraft:player");
+                data(game, WATCHED, vec![(1, serializer::INT, Value::Int(150))]);
+                spawn(game, DRAGON, "minecraft:ender_dragon");
+                // Seed the live dragon, not its generic mob metadata.
+                game.dragon.as_mut().unwrap().health = 37.25;
+                spawn(game, BOAT, "minecraft:oak_boat");
+                game.handle_packet(C::SetCamera(play::SetCamera { camera_id: WATCHED }))
+                    .unwrap();
+                let camera = game.camera_player();
+                let CameraPlayer::Other(watched) = camera else {
+                    panic!("expected the watched player to be the camera");
+                };
+
+                for (vehicle, expected, air_y) in [
+                    (DRAGON, Some((30, 37.25_f32.to_bits())), 171),
+                    (LOCAL, Some((16, 17.25_f32.to_bits())), 181),
+                    (BOAT, None, 191),
+                ] {
+                    game.handle_packet(C::SetPassengers(play::SetPassengers {
+                        vehicle,
+                        passengers: vec![WATCHED],
+                    }))
+                    .unwrap();
+                    assert_eq!(game.mobs[watched].extra.mount, Some(vehicle as u32));
+                    assert_eq!(game.camera_vehicle(camera).is_some(), expected.is_some());
+                    assert_eq!(
+                        game.camera_vehicle_health(camera)
+                            .map(|(hearts, health)| (hearts, health.to_bits())),
+                        expected,
+                        "vehicle {vehicle}"
+                    );
+                    let drawn = drawn_groups(game);
+                    let containers = drawn
+                        .get("vehicle")
+                        .into_iter()
+                        .flatten()
+                        .filter(|sprite| sprite.0 == "hud/heart/vehicle_container")
+                        .count();
+                    assert_eq!(
+                        containers,
+                        expected.map_or(0, |(hearts, _)| hearts as usize)
+                    );
+                    assert_eq!(drawn.contains_key("food"), expected.is_none());
+                    let air = &drawn["air"];
+                    assert!(!air.is_empty());
+                    assert!(air.iter().all(|sprite| sprite.2 == air_y));
+                    game.handle_packet(C::SetPassengers(play::SetPassengers {
+                        vehicle,
+                        passengers: vec![],
+                    }))
+                    .unwrap();
+                }
+            });
+        },
+    );
+}
+
 #[test]
 #[ignore = "run by tools/test_camera_parity.py"]
 fn hud_bars_follow_the_camera_player_like_26_3() {
