@@ -713,16 +713,18 @@ impl Game<'_> {
                                 &mut movement,
                             )
                         }
-                        Some(Pause::Trample(_) | Pause::FallToPassengers(_)) => {
-                            sunrise_client::mobs::riders::resume_movement(
-                                &mut mobs,
-                                i,
-                                &w,
-                                &mut level,
-                                &mut movement,
-                                &mut events,
-                            )
-                        }
+                        Some(
+                            Pause::Trample(_)
+                            | Pause::FallToPassengers(_)
+                            | Pause::SectionEntered { .. },
+                        ) => sunrise_client::mobs::riders::resume_movement(
+                            &mut mobs,
+                            i,
+                            &w,
+                            &mut level,
+                            &mut movement,
+                            &mut events,
+                        ),
                         Some(Pause::Consumption { was_on_fire, .. }) => {
                             sunrise_client::mobs::riders::resume_after_consumption(
                                 &mut mobs,
@@ -1151,6 +1153,9 @@ impl Game<'_> {
                         }
                         Pause::FallToPassengers(fall) => {
                             self.fall_to_passengers(id, fall.distance, fall.modifier);
+                        }
+                        Pause::SectionEntered { from, to } => {
+                            self.tell_section_entered(id, from.components(), to.components());
                         }
                     }
                 }

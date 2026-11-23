@@ -322,6 +322,10 @@ impl MotionWorld<'_, '_, '_> {
             self.player.flying = true;
         }
         self.rider_travel_tick(direction)?;
+        if self.player.paused.is_some() {
+            self.player.paused.defer(crate::motion::TickFrame::Rider);
+            return Ok(());
+        }
         self.passenger_sits_up()
     }
     /// A passenger's tick before it could move: the fluids in the box its vehicle allows, off the
@@ -342,7 +346,7 @@ impl MotionWorld<'_, '_, '_> {
         self.player.fall_fly_ticks = 0;
     }
     /// `Player.updatePlayerPose` for a passenger.
-    fn passenger_sits_up(&mut self) -> Result<()> {
+    pub(crate) fn passenger_sits_up(&mut self) -> Result<()> {
         self.update_player_pose()?;
         // A cushion's seat puts the feet in the support block, so neither
         // standing nor crawling fits and `updatePlayerPose` keeps the old

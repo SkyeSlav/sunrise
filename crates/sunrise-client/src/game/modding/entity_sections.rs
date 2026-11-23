@@ -36,9 +36,6 @@
 
 #[path = "entity_sections/observer_cache.rs"]
 pub(super) mod observer_cache;
-#[path = "entity_sections/player.rs"]
-mod player;
-pub(super) use player::PlayerSectionObserver;
 
 use super::Game;
 use crate::mobs::living::section_writes::PositionWrite;
@@ -197,14 +194,6 @@ struct SectionWriter {
     entity: EntityRef,
     residency: EntityResidency,
     position: [f64; 3],
-    player: Option<PlayerMoveState>,
-}
-
-#[derive(Clone, Copy)]
-struct PlayerMoveState {
-    local_player: Option<mod_api::PlayerRef>,
-    on_ground: bool,
-    velocity: [f64; 3],
 }
 
 /// The Host used while the entity's world view is borrowed. It answers only
@@ -252,15 +241,7 @@ impl mod_api::prelude::ScoreboardClientHost for LiveSectionHost {
         Err(mod_api::NoBackend::no_backend())
     }
 }
-mod_api::impl_backend_areas!(
-    LiveSectionHost,
-    partial(
-        entity_position,
-        entity_residency,
-        entity_on_ground,
-        entity_velocity
-    )
-);
+mod_api::impl_backend_areas!(LiveSectionHost, partial(entity_position, entity_residency));
 
 impl mod_api::prelude::NetworkClientHost for LiveSectionHost {
     fn build_play_packet(
@@ -290,7 +271,7 @@ impl mod_api::prelude::ClientRenderClientHost for LiveSectionHost {
 
 impl mod_api::prelude::MenusClientHost for LiveSectionHost {
     fn local_player(&self) -> Option<mod_api::PlayerRef> {
-        self.writer?.player?.local_player
+        None
     }
 }
 
@@ -309,25 +290,13 @@ impl LiveSectionHost {
     }
 
     fn entity_residency(&self, entity: EntityRef) -> EntityResidency {
-        self.writer
-            .filter(|writer| writer.entity == entity)
-            .map_or(EntityResidency::Gone, |writer| writer.residency)
-    }
-
-    fn entity_on_ground(&self, entity: EntityRef) -> Option<bool> {
-        let player = self
-            .writer
-            .filter(|writer| writer.entity == entity)?
-            .player?;
-        Some(player.on_ground)
-    }
-
-    fn entity_velocity(&self, entity: EntityRef) -> Option<[f64; 3]> {
-        let player = self
-            .writer
-            .filter(|writer| writer.entity == entity)?
-            .player?;
-        Some(player.velocity)
+        match self.writer {
+            Some(writer) if writer.entity == entity => writer.residency,
+            // Every other entity of this world is in the lists the borrowed view holds: it is
+            // there, but not readable from here (not `Gone`).
+            Some(writer) if writer.entity.epoch() == entity.epoch() => EntityResidency::Busy,
+            _ => EntityResidency::Gone,
+        }
     }
 }
 
@@ -357,7 +326,6 @@ fn tell_live(sections: &std::cell::RefCell<EntitySections>, writer: SectionWrite
             } else {
                 SectionWriter {
                     residency: EntityResidency::Gone,
-                    player: None,
                     ..writer
                 }
             }
@@ -438,7 +406,6 @@ impl crate::mobs::living::section_writes::WriteObserver for LiveSectionObserver 
                 entity: EntityRef::new(self.scope.epoch, id),
                 residency,
                 position: to.components(),
-                player: None,
             },
             true,
         );
@@ -491,6 +458,17 @@ impl Game<'_> {
             self.native_lifecycle
                 .entity_sections
                 .moved(scope, id, None, at);
+            self.tell_entity_sections();
+        }
+    }
+
+    /// A paused mob move wrote `from` to `to` (`Entity.setPosRaw`): file it and tell the
+    /// crossing with the ordinary Host, before the move goes on.
+    pub(in crate::game) fn tell_section_entered(&mut self, id: u32, from: [f64; 3], to: [f64; 3]) {
+        if let Some(scope) = self.entity_section_scope() {
+            self.native_lifecycle
+                .entity_sections
+                .moved(scope, id, Some(from), to);
             self.tell_entity_sections();
         }
     }

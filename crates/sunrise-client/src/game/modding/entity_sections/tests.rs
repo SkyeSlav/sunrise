@@ -87,7 +87,6 @@ fn live_section_host_reports_moved_entity_residency_in_callback() {
                 entity: player,
                 residency: EntityResidency::InPlace,
                 position: [24.0, 64.0, 8.0],
-                player: None,
             },
             false,
         );
@@ -102,7 +101,6 @@ fn live_section_host_reports_moved_entity_residency_in_callback() {
                 entity: mob,
                 residency: EntityResidency::Busy,
                 position: [24.0, 64.0, 8.0],
-                player: None,
             },
             true,
         );
@@ -111,8 +109,8 @@ fn live_section_host_reports_moved_entity_residency_in_callback() {
     assert_eq!(
         *observed.lock().unwrap(),
         vec![
-            (true, EntityResidency::InPlace, EntityResidency::Gone),
-            (false, EntityResidency::Busy, EntityResidency::Gone),
+            (true, EntityResidency::InPlace, EntityResidency::Busy),
+            (false, EntityResidency::Busy, EntityResidency::Busy),
         ]
     );
 }
@@ -560,7 +558,8 @@ fn a_real_mob_tick_exposes_each_intermediate_position_to_the_listener() {
                 (Some([8.5, 127.75, 8.5]), EntityResidency::Busy)
             );
             assert!(positions[1].0.is_some_and(|at| at[1] >= 128.0));
-            assert_eq!(positions[1].1, EntityResidency::Busy);
+            // The walk's write is told with the owning Host; the teleport before it is not.
+            assert_eq!(positions[1].1, EntityResidency::InPlace);
         })
     });
 }

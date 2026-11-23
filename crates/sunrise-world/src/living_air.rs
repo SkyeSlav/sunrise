@@ -26,6 +26,14 @@ pub trait LivingAirWorld {
     /// The `gate` is the invocation's move gate (#2414): the caller received
     /// it armed with the decision, and the mover applies what it decided.
     fn move_self(&mut self, gate: &mut MoveGate, movement: Vec3) -> Result<(), Self::Error>;
+    /// Whether the move just made paused at its position write, for its caller to tell a section
+    /// crossing. A travel function that sees it stops, files what is left of itself with
+    /// `defer` and returns; `resume_travel` runs those frames afterwards.
+    fn paused(&self) -> bool {
+        false
+    }
+    /// File what is left of a travel stopped at its move, innermost first.
+    fn defer(&mut self, _frame: TravelFrame) {}
     fn horizontal_collision(&self) -> bool;
     fn jumping(&self) -> bool;
     fn was_in_powder_snow(&self) -> bool;
@@ -159,6 +167,32 @@ pub fn friction_influenced_speed<W: LivingAirWorld>(
         world.flying_speed()
     }
 }
+/// What is left of a travel that stopped at its move (`LivingAirWorld::paused`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+// exhaustive: the frames are `travel_in_air`, `travel_in_water`, `travel_in_lava` and
+// `travel_in_fluid`, one for each place a travel stops, and `resume_travel` runs each.
+pub enum TravelFrame {
+    Air {
+        support: BlockPos,
+        friction: f32,
+    },
+    Water {
+        slowdown: f32,
+        input_changed: bool,
+        gravity: f64,
+        falling: bool,
+        old_y: f64,
+    },
+    Lava {
+        input_changed: bool,
+        gravity: f64,
+        falling: bool,
+        old_y: f64,
+    },
+    /// What `travel_in_fluid` does after the water or lava branch.
+    FluidRide,
+}
+
 pub fn relative_friction_movement<W: LivingAirWorld>(
     world: &mut W,
     gate: &mut MoveGate,
@@ -170,6 +204,12 @@ pub fn relative_friction_movement<W: LivingAirWorld>(
     let velocity = handle_on_climbable(world, world.velocity())?;
     world.set_velocity(velocity)?;
     world.move_self(gate, world.velocity())?;
+    if world.paused() {
+        return Ok((world.velocity(), input_changed));
+    }
+    Ok((after_friction_move(world)?, input_changed))
+}
+pub(crate) fn after_friction_move<W: LivingAirWorld>(world: &mut W) -> Result<Vec3, W::Error> {
     let mut velocity = world.velocity();
     if (world.horizontal_collision() || world.jumping())
         && (world.on_climbable()?
@@ -177,7 +217,7 @@ pub fn relative_friction_movement<W: LivingAirWorld>(
     {
         velocity.y = 0.2;
     }
-    Ok((velocity, input_changed))
+    Ok(velocity)
 }
 /// Ground friction is captured before movement; drag and gravity are queried
 /// afterwards. This distinction preserves movement callbacks' field changes.
@@ -194,7 +234,21 @@ pub fn travel_in_air<W: LivingAirWorld>(
     } else {
         1.0
     };
-    let (mut velocity, input_changed) = relative_friction_movement(world, gate, input, friction)?;
+    let (velocity, input_changed) = relative_friction_movement(world, gate, input, friction)?;
+    if world.paused() {
+        world.defer(TravelFrame::Air { support, friction });
+        return Ok(input_changed);
+    }
+    air_after_move(world, support, friction, velocity)?;
+    Ok(input_changed)
+}
+/// `LivingEntity.travelInAir` after `move`.
+pub(crate) fn air_after_move<W: LivingAirWorld>(
+    world: &mut W,
+    support: BlockPos,
+    friction: f32,
+    mut velocity: Vec3,
+) -> Result<(), W::Error> {
     if let Some(amplifier) = world.levitation_amplifier()? {
         velocity.y += (0.05 * f64::from(amplifier.wrapping_add(1)) - velocity.y) * 0.2;
     } else if !world.is_client_side()? || world.has_chunk_at(support)? {
@@ -222,8 +276,7 @@ pub fn travel_in_air<W: LivingAirWorld>(
             velocity.z * f64::from(horizontal),
         );
     }
-    world.set_velocity(velocity)?;
-    Ok(input_changed)
+    world.set_velocity(velocity)
 }
 
 #[cfg(test)]

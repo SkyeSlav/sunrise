@@ -53,7 +53,6 @@ mod body_restitution;
 mod exclusions;
 mod restitution;
 pub use body_restitution::{BodyCollision, BodyContact, BodyMotion, BodyMove, BodyRestitution};
-pub mod section_writes;
 
 /// A living entity jumped (`LivingEvent.LivingJumpEvent`); `velocity` is its motion right after
 /// the jump.
@@ -559,6 +558,11 @@ pub struct PlayerMotion {
     /// `living_fall`, `player_flyable_fall`) don't fire. What its movement asks (block parts'
     /// answers, the movement value hooks) still answers, as on any tick.
     pub(crate) replaying: bool,
+    /// A live local tick whose listener tells `entity_entering_section` at the position write:
+    /// its travel move then pauses there (`PausedTick`) and its caller tells the crossing.
+    pub section_yield: bool,
+    /// What is left of a tick paused at its move.
+    pub(crate) paused: PausedTick,
     /// The span of `events` a wall hit on the server's copy pushed (sound and
     /// damage): `server_travel` keeps them while it drops the simulated moves.
     pub wall_hit_events: Option<std::ops::Range<usize>>,
@@ -1029,24 +1033,116 @@ pub struct MotionWorld<'p, 'w, 'r> {
     pub block_registries: Option<&'w crate::command::args::Registries>,
 }
 
-/// A player landing interrupted `Entity.move`, before restitution or auto-jump.
+/// What interrupted a player's `Entity.move` for its owning level.
+pub enum PlayerPause {
+    /// The landing, before restitution or auto-jump.
+    Landing(crate::landing::PlayerLandingPause),
+    /// The position write left `from` for `to` (`Entity.setPosRaw`'s section callback), before
+    /// the rest of the move reads the entity again.
+    Section { from: Vec3, to: Vec3 },
+}
+
+/// What is left of a live tick whose travel move paused at its position write: the rest of the
+/// move and, innermost first, the rest of each function that was running it.
+pub struct TickPause {
+    /// The position write left `from` for `to`.
+    pub from: Vec3,
+    pub to: Vec3,
+    movement: PlayerMoveTail,
+    frames: std::collections::VecDeque<TickFrame>,
+}
+
+/// The paused tick a player holds between the pause and its resume. A copy of the player is
+/// not mid-tick.
+#[derive(Default)]
+pub(crate) struct PausedTick(Option<TickPause>);
+
+impl Clone for PausedTick {
+    fn clone(&self) -> Self {
+        Self(None)
+    }
+}
+
+impl PausedTick {
+    pub(crate) fn is_some(&self) -> bool {
+        self.0.is_some()
+    }
+    pub(crate) fn defer(&mut self, frame: TickFrame) {
+        if let Some(paused) = &mut self.0 {
+            paused.frames.push_back(frame);
+        }
+    }
+}
+
+impl PlayerMotion {
+    /// The tick that paused at its move, for the caller to tell the crossing and then resume.
+    pub fn take_pause(&mut self) -> Option<TickPause> {
+        self.paused.0.take()
+    }
+}
+
+/// What a function of a paused tick still has to do, one per function that was running the move.
+#[derive(Clone, Copy)]
+pub(crate) enum TickFrame {
+    Travel(sunrise_world::living_air::TravelFrame),
+    /// `travelFallFlying` after the move, from this horizontal speed before it.
+    Glide {
+        move_h: f64,
+    },
+    /// The branch that ends a glide on a climbable.
+    EndGlide,
+    /// `player_travel` after its branch: creative flight's damping of the vertical speed.
+    Flight {
+        y: Option<f64>,
+    },
+    Dry {
+        before_travel: Aabb,
+    },
+    Movement,
+    Simulation {
+        previous: Vec3,
+    },
+    Rider,
+}
+
+/// A player move interrupted for its owning level.
 pub struct PlayerMovePause {
-    pub landing: crate::landing::PlayerLandingPause,
+    pub pause: PlayerPause,
     pub movement: PlayerMoveTail,
 }
 
 pub struct PlayerMoveTail {
-    movement: entity_move::MoveTail,
+    movement: entity_move::MoveStage,
     auto_jump_from: Option<Vec3>,
+    handoff: bool,
 }
 
 impl PlayerMoveTail {
-    pub fn finish(self, world: &mut MotionWorld<'_, '_, '_>) -> Result<()> {
-        self.movement.finish(world)?;
-        if let Some(before) = self.auto_jump_from {
+    /// Run the rest of the move; it may pause again at the landing.
+    pub fn finish(self, world: &mut MotionWorld<'_, '_, '_>) -> Result<Option<PlayerMovePause>> {
+        let Self {
+            movement,
+            auto_jump_from,
+            handoff,
+        } = self;
+        if let Some((pause, movement)) = movement
+            .resume(world, |world, dy, grounded, state, p| {
+                world.move_fall_check(handoff, dy, grounded, state, p)
+            })?
+        {
+            return Ok(Some(PlayerMovePause {
+                pause,
+                movement: Self {
+                    movement,
+                    auto_jump_from,
+                    handoff,
+                },
+            }));
+        }
+        if let Some(before) = auto_jump_from {
             world.auto_jump_after_move(before)?;
         }
-        Ok(())
+        Ok(None)
     }
 }
 
@@ -1278,6 +1374,13 @@ impl MotionWorld<'_, '_, '_> {
             direction,
             jumping: jumping && !self.player.flying,
         })?;
+        if self.player.paused.is_some() {
+            self.player.paused.defer(TickFrame::Movement);
+            return Ok(());
+        }
+        self.movement_after_dry()
+    }
+    fn movement_after_dry(&mut self) -> Result<()> {
         // LivingEntity.tick counts fallFlyTicks after aiStep.
         if self.player.fall_flying {
             self.player.fall_fly_ticks += 1;
@@ -1309,6 +1412,13 @@ impl MotionWorld<'_, '_, '_> {
         self.tick_environment_damage()?;
         let previous = self.player.position;
         self.player_movement_tick_with_fluids(direction, jumping)?;
+        if self.player.paused.is_some() {
+            self.player.paused.defer(TickFrame::Simulation { previous });
+            return Ok(());
+        }
+        self.simulation_after_movement(previous)
+    }
+    fn simulation_after_movement(&mut self, previous: Vec3) -> Result<()> {
         self.apply_fire_contact()?;
         self.player.refresh_attributes()?;
         self.update_player_pose()?;
@@ -1428,6 +1538,13 @@ impl MotionWorld<'_, '_, '_> {
         self.jump_phase()?;
         let before_travel = self.player.bounds();
         self.player_travel(input)?;
+        if self.player.paused.is_some() {
+            self.player.paused.defer(TickFrame::Dry { before_travel });
+            return Ok(());
+        }
+        self.dry_after_travel(before_travel)
+    }
+    fn dry_after_travel(&mut self, before_travel: Aabb) -> Result<()> {
         if self.player.block_effects {
             self.apply_effects_from_blocks()?;
         }
@@ -1495,6 +1612,9 @@ impl MotionWorld<'_, '_, '_> {
             &mut gate,
             Vec3::new(f64::from(input[0]), 0.0, f64::from(input[1])),
         )?;
+        if self.player.paused.is_some() {
+            return Ok(());
+        }
         self.player.fall_distance = 0.0;
         Ok(())
     }
@@ -2072,18 +2192,81 @@ impl MotionWorld<'_, '_, '_> {
     /// and collision state (`Entity.setOnGroundWithMovement`). A piston's move
     /// uses its per-tick budget (`limitPistonMovement`).
     pub fn move_with_cause(&mut self, mover: MoverType, movement: Vec3) -> Result<()> {
-        self.move_ordinary(&mut MoveGate::new(), mover, movement, false, false)
+        self.move_ordinary(&mut MoveGate::new(), mover, movement, false, false, false)
             .map(|_| ())
     }
     /// `LocalPlayer.move`: the move, then `updateAutoJump` with the float
     /// horizontal displacement. The gate is this invocation's (#2414), armed
     /// here before the move's own handling, no-physics included.
     pub fn move_self(&mut self, gate: &mut MoveGate, movement: Vec3) -> Result<()> {
-        self.move_ordinary(gate, MoverType::SelfMovement, movement, true, false)
-            .map(|_| ())
+        let sections = self.player.section_yield;
+        let Some(paused) = self.move_ordinary(
+            gate,
+            MoverType::SelfMovement,
+            movement,
+            true,
+            false,
+            sections,
+        )?
+        else {
+            return Ok(());
+        };
+        let PlayerPause::Section { from, to } = paused.pause else {
+            return Err("a player's own move paused at a landing".into());
+        };
+        self.player.paused = PausedTick(Some(TickPause {
+            from,
+            to,
+            movement: paused.movement,
+            frames: Default::default(),
+        }));
+        Ok(())
     }
 
-    /// An ordinary move; its acting server player can hand off a landing to Game.
+    /// Run what a paused tick has left, after its crossing was told. It may pause again.
+    pub fn resume_tick(&mut self, pause: TickPause) -> Result<()> {
+        let TickPause {
+            movement,
+            mut frames,
+            ..
+        } = pause;
+        if movement.finish(self)?.is_some() {
+            return Err("a player's own move paused at a landing".into());
+        }
+        while let Some(frame) = frames.pop_front() {
+            self.run_frame(frame)?;
+            if let Some(paused) = &mut self.player.paused.0 {
+                paused.frames.extend(frames);
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn run_frame(&mut self, frame: TickFrame) -> Result<()> {
+        match frame {
+            TickFrame::Travel(frame) => sunrise_world::living_fluid::resume_travel(self, frame),
+            TickFrame::Glide { move_h } => self.fall_flying_after_move(move_h),
+            TickFrame::EndGlide => {
+                self.player.fall_flying = false;
+                Ok(())
+            }
+            TickFrame::Flight { y } => {
+                self.flight_after_travel(y);
+                Ok(())
+            }
+            TickFrame::Dry { before_travel } => self.dry_after_travel(before_travel),
+            TickFrame::Movement => self.movement_after_dry(),
+            TickFrame::Simulation { previous } => self.simulation_after_movement(previous),
+            TickFrame::Rider => {
+                self.player.fall_distance = 0.0;
+                self.passenger_sits_up()
+            }
+        }
+    }
+
+    /// An ordinary move; its acting server player can hand off a landing to Game, and `sections`
+    /// pauses it after its position write for the section callback.
     pub fn move_ordinary(
         &mut self,
         gate: &mut MoveGate,
@@ -2091,6 +2274,7 @@ impl MotionWorld<'_, '_, '_> {
         movement: Vec3,
         auto_jump: bool,
         handoff: bool,
+        sections: bool,
     ) -> Result<Option<PlayerMovePause>> {
         crate::move_gate::arm(
             gate,
@@ -2104,20 +2288,24 @@ impl MotionWorld<'_, '_, '_> {
             return Ok(None);
         }
         let auto_jump_from = auto_jump.then_some(self.player.position);
-        if handoff {
-            if let Some((landing, movement)) = entity_move::move_entity_until_landing(
+        if handoff || sections {
+            if let Some((pause, movement)) = entity_move::move_entity_until_landing(
                 self,
                 mover,
                 gate.delta(),
+                |_, from, to| {
+                    Ok((sections && from != to).then_some(PlayerPause::Section { from, to }))
+                },
                 |world, dy, grounded, state, p| {
-                    world.check_guest_fall_damage(dy, grounded, state, p)
+                    world.move_fall_check(handoff, dy, grounded, state, p)
                 },
             )? {
                 return Ok(Some(PlayerMovePause {
-                    landing,
+                    pause,
                     movement: PlayerMoveTail {
                         movement,
                         auto_jump_from,
+                        handoff,
                     },
                 }));
             }
@@ -2128,6 +2316,25 @@ impl MotionWorld<'_, '_, '_> {
             self.auto_jump_after_move(before)?;
         }
         Ok(None)
+    }
+
+    /// `checkFallDamage` of a move: an acting guest's landing hands off to its owner.
+    fn move_fall_check(
+        &mut self,
+        handoff: bool,
+        dy: f64,
+        grounded: bool,
+        state: BlockStateId,
+        p: BlockPos,
+    ) -> Result<Option<PlayerPause>> {
+        if handoff {
+            Ok(self
+                .check_guest_fall_damage(dy, grounded, state, p)?
+                .map(PlayerPause::Landing))
+        } else {
+            EntityMoveWorld::check_fall_damage(self, dy, grounded, state, p)?;
+            Ok(None)
+        }
     }
 
     fn auto_jump_after_move(&mut self, before: Vec3) -> Result<()> {
@@ -2246,11 +2453,7 @@ impl EntityMoveWorld for MotionWorld<'_, '_, '_> {
         self.player.position
     }
     fn set_position(&mut self, p: Vec3) -> Result<()> {
-        let from = self.player.position;
         self.player.position = p;
-        if from != p {
-            section_writes::position_written(self.player, from);
-        }
         Ok(())
     }
     fn record_movement(&mut self, mover: MoverType, movement: Vec3) -> Result<()> {
