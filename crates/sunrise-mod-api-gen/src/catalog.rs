@@ -556,14 +556,18 @@ impl Hook {
             return Err(CatalogError::InvalidContract(name));
         }
         if let Some(validator) = &api.output_validator
-            && (api.contract != Contract::Cancel
+            && (!matches!(api.contract, Contract::Cancel | Contract::Listen)
                 || scope.is_some()
                 || entry.event_per_listener
+                || (api.contract == Contract::Listen
+                    && (api.staged_surface.is_some()
+                        || api.owner.is_some()
+                        || entry.context.is_some()))
                 || syn::parse_str::<syn::Path>(validator).is_err())
         {
             return Err(CatalogError::InvalidHook {
                 hook: name.clone(),
-                error: "output_validator is a path on a global cancel hook with shared outputs"
+                error: "output_validator is a path on a global cancel or plain global listen hook with shared outputs"
                     .into(),
             });
         }

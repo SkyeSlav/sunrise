@@ -664,6 +664,424 @@ fn enter_test_world(game: &mut Game<'_>) {
 
 #[test]
 #[ignore = "daily"]
+fn hotbar_attack_indicator_progress_edits_only_stock_hotbar_paint() {
+    use mod_api::{HotbarAttackIndicatorProgressEvent, ItemDecorationsEvent, ItemPart, Registrar};
+    use sunrise_client::{items::ItemStack, mobs::Mob};
+
+    const HOTBAR: &str = "minecraft:hotbar";
+    const CASE: &str = "SUNRISE_HOTBAR_ATTACK_INDICATOR_FIXTURE";
+    if run_fresh_cases(
+        "game::gui_layer_tests::hotbar_attack_indicator_progress_edits_only_stock_hotbar_paint",
+        CASE,
+        &["stock", "replace", "delegate", "skip"],
+    ) {
+        return;
+    }
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Body {
+        Stock,
+        Replace,
+        Delegate,
+        Skip,
+    }
+    let body = match std::env::var(CASE).unwrap().as_str() {
+        "stock" => Body::Stock,
+        "replace" => Body::Replace,
+        "delegate" => Body::Delegate,
+        "skip" => Body::Skip,
+        case => panic!("unknown hotbar fixture: {case}"),
+    };
+
+    #[derive(Debug, PartialEq)]
+    enum Call {
+        Pre,
+        Before,
+        Items,
+        Progress(f32),
+        After,
+        Replaced,
+        Post,
+    }
+
+    #[derive(Default)]
+    struct Trace {
+        cancel: bool,
+        proposals: [Option<f32>; 2],
+        calls: Vec<Call>,
+    }
+
+    #[derive(Clone)]
+    struct Decoration(Arc<Mutex<Trace>>);
+
+    #[mod_api::sunrise_part]
+    impl ItemPart for Decoration {
+        fn item_decorations(&self, _: &dyn ClientHost, _: &mut ItemDecorationsEvent<'_>) {
+            self.0.lock().unwrap().calls.push(Call::Items);
+        }
+    }
+
+    struct Layer {
+        body: Body,
+        trace: Arc<Mutex<Trace>>,
+    }
+
+    #[mod_api::__subscriptions]
+    impl Hooks for Layer {
+        fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
+            let key = r.item_key("minecraft:stick");
+            r.item_part(key, Decoration(self.trace.clone()));
+        }
+
+        fn register_gui_layers(
+            &self,
+            _: &RegistrationContext,
+            event: &mut RegisterGuiLayersEvent<'_>,
+        ) {
+            let trace = self.trace.clone();
+            match self.body {
+                Body::Stock => {}
+                Body::Replace => assert!(event.layers.replace_layer(
+                    HOTBAR,
+                    Box::new(move |_, _| trace.lock().unwrap().calls.push(Call::Replaced)),
+                )),
+                Body::Delegate | Body::Skip => {
+                    let delegate = self.body == Body::Delegate;
+                    assert!(event.layers.wrap_layer(
+                        HOTBAR,
+                        Box::new(move |ctx| {
+                            trace.lock().unwrap().calls.push(Call::Before);
+                            if delegate {
+                                ctx.draw_previous();
+                            }
+                            trace.lock().unwrap().calls.push(Call::After);
+                        }),
+                    ));
+                }
+            }
+        }
+
+        fn gui_layer_pre(&self, _: &dyn ClientHost, event: &mut GuiLayerPreEvent<'_>) -> Flow {
+            if event.layer == HOTBAR {
+                let mut trace = self.trace.lock().unwrap();
+                trace.calls.push(Call::Pre);
+                if trace.cancel {
+                    return Flow::Cancel;
+                }
+            }
+            Flow::Continue
+        }
+
+        fn gui_layer_post(&self, _: &dyn ClientHost, event: &mut GuiLayerPostEvent<'_>) {
+            if event.layer == HOTBAR {
+                self.trace.lock().unwrap().calls.push(Call::Post);
+            }
+        }
+    }
+
+    struct Listener {
+        proposal: Option<usize>,
+        trace: Arc<Mutex<Trace>>,
+    }
+
+    #[mod_api::__subscriptions]
+    impl Hooks for Listener {
+        fn hotbar_attack_indicator_progress(
+            &self,
+            _: &dyn ClientHost,
+            event: &mut HotbarAttackIndicatorProgressEvent,
+        ) {
+            let mut trace = self.trace.lock().unwrap();
+            trace.calls.push(Call::Progress(event.progress));
+            if let Some(value) = self.proposal.and_then(|i| trace.proposals[i]) {
+                event.progress = value;
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Variant {
+        Stock,
+        Crosshair,
+        Off,
+        Hidden,
+        Spectator,
+        Mob,
+        Veto,
+    }
+
+    #[derive(Clone, Copy)]
+    struct Frame {
+        name: &'static str,
+        ticker: i32,
+        variant: Variant,
+        proposals: [Option<f32>; 2],
+        seen: [f32; 3],
+        fill: Option<i32>,
+    }
+
+    impl Frame {
+        fn edit(
+            name: &'static str,
+            ticker: i32,
+            proposals: [Option<f32>; 2],
+            seen: [f32; 3],
+            fill: Option<i32>,
+        ) -> Self {
+            Self {
+                name,
+                ticker,
+                proposals,
+                seen,
+                fill,
+                ..PARTIAL
+            }
+        }
+
+        fn gated(name: &'static str, variant: Variant) -> Self {
+            Self {
+                name,
+                variant,
+                fill: None,
+                ..PARTIAL
+            }
+        }
+    }
+
+    // The local player's 4.0 base attack speed gives five ticks to full charge.
+    const PARTIAL: Frame = Frame {
+        name: "partial",
+        ticker: 2,
+        variant: Variant::Stock,
+        proposals: [None, None],
+        seen: [0.4; 3],
+        fill: Some(7),
+    };
+
+    let trace = Arc::new(Mutex::new(Trace::default()));
+    let mut entries = vec![ModEntry::new(
+        "hotbar-layer",
+        Box::new(Layer {
+            body,
+            trace: trace.clone(),
+        }),
+    )];
+    entries.extend(
+        [
+            ("first-edit", Some(0)),
+            ("second-edit", Some(1)),
+            ("observer", None),
+        ]
+        .map(|(id, proposal)| {
+            ModEntry::new(
+                id,
+                Box::new(Listener {
+                    proposal,
+                    trace: trace.clone(),
+                }),
+            )
+        }),
+    );
+    // Install before the game fixture snapshots registrations and resolves the stick's Part.
+    mod_platform::__private::install(entries.into());
+    with_client_game(|game| {
+        mods::register_gui_layers(ExecutionRole::Client);
+        enter_test_world(game);
+        game.settings.main_hand_left = false;
+        game.selected = 0;
+        game.inventory[1] = Some(ItemStack::new("minecraft:stick", 1));
+        game.clock
+            .advance(std::time::Duration::from_millis(25), 50.0);
+        assert_eq!(game.clock.fraction(), 0.5, "exercise a draw between ticks");
+
+        let mut frames = vec![PARTIAL, Frame::gated("Pre veto", Variant::Veto)];
+        if body == Body::Stock {
+            frames.extend(
+                [
+                    ("NaN", f32::NAN),
+                    ("+infinity", f32::INFINITY),
+                    ("-infinity", f32::NEG_INFINITY),
+                    ("above full", 1.25),
+                    ("negative", -0.25),
+                ]
+                .map(|(name, invalid)| Frame {
+                    name,
+                    proposals: [Some(invalid), None],
+                    ..PARTIAL
+                }),
+            );
+            frames.extend([
+                Frame::edit("full charge", 5, [None; 2], [1.0; 3], None),
+                Frame::edit(
+                    "full, edited then refused",
+                    5,
+                    [Some(0.5), Some(f32::NAN)],
+                    [1.0, 0.5, 0.5],
+                    Some(9),
+                ),
+                Frame::edit(
+                    "edited to full",
+                    2,
+                    [Some(1.0), None],
+                    [0.4, 1.0, 1.0],
+                    None,
+                ),
+                Frame::edit(
+                    "edited to zero",
+                    2,
+                    [Some(0.0), None],
+                    [0.4, 0.0, 0.0],
+                    Some(0),
+                ),
+                Frame {
+                    proposals: [Some(1.0), None],
+                    ..Frame::gated("Crosshair", Variant::Crosshair)
+                },
+                Frame::gated("Off", Variant::Off),
+                Frame::gated("F1", Variant::Hidden),
+                Frame::gated("spectator", Variant::Spectator),
+                Frame::gated("non-player camera", Variant::Mob),
+            ]);
+        }
+
+        // Only the non-player camera case needs a connection, and it runs last.
+        let mut server = None;
+        for frame in frames {
+            if frame.variant == Variant::Mob {
+                server = Some(super::native_client_session::tests::logged_client(game));
+                game.remote.as_mut().unwrap().level_load.finish();
+                enter_test_world(game);
+                let cow = game.res.mob_types().get("minecraft:cow").unwrap().clone();
+                game.mobs.push(Mob::new(31, cow, Vec3::ZERO, 0.0));
+                game.remote_set_camera(31);
+                assert_eq!(
+                    game.camera_player(),
+                    super::remote_camera::CameraPlayer::Absent
+                );
+            }
+            game.set_mode_id(if frame.variant == Variant::Spectator {
+                3
+            } else {
+                0
+            });
+            game.ui.hide_gui = frame.variant == Variant::Hidden;
+            game.settings.attack_indicator = match frame.variant {
+                Variant::Off => 0,
+                Variant::Crosshair => 1,
+                _ => 2,
+            };
+            game.hand_strength.ticker = frame.ticker;
+            let cancel = frame.variant == Variant::Veto;
+            *trace.lock().unwrap() = Trace {
+                cancel,
+                proposals: frame.proposals,
+                calls: Vec::new(),
+            };
+
+            let batch = game.hud_layers([640, 480]);
+            let stock = !cancel
+                && matches!(body, Body::Stock | Body::Delegate)
+                && matches!(
+                    frame.variant,
+                    Variant::Stock | Variant::Crosshair | Variant::Off
+                );
+            let mut expected = vec![Call::Pre];
+            if !cancel {
+                if matches!(body, Body::Delegate | Body::Skip) {
+                    expected.push(Call::Before);
+                }
+                if stock {
+                    expected.push(Call::Items);
+                    if frame.variant == Variant::Stock {
+                        expected.extend(frame.seen.map(Call::Progress));
+                    }
+                }
+                match body {
+                    Body::Delegate | Body::Skip => expected.push(Call::After),
+                    Body::Replace => expected.push(Call::Replaced),
+                    Body::Stock => {}
+                }
+                expected.push(Call::Post);
+            }
+            assert_eq!(
+                trace.lock().unwrap().calls,
+                expected,
+                "{body:?}: {}",
+                frame.name
+            );
+            assert_eq!(
+                game.hand_strength.ticker, frame.ticker,
+                "paint must not change attack charge"
+            );
+
+            // Read screen and source rectangles, keyed by the sprite atlas coordinates.
+            type Quad = ([[f32; 2]; 2], [[i32; 2]; 2]);
+            let assert_sprite = |sprite, expected: Option<Quad>| {
+                let r = *game.gui.atlas.gui_rect(sprite).unwrap();
+                let source = |[u, v]: [f32; 2]| {
+                    [
+                        ((u - r.u0) / (r.u1 - r.u0) * r.w as f32).round() as i32,
+                        ((v - r.v0) / (r.v1 - r.v0) * r.h as f32).round() as i32,
+                    ]
+                };
+                let actual: Vec<_> = batch
+                    .vertices
+                    .as_chunks::<6>()
+                    .0
+                    .iter()
+                    .filter_map(|q| {
+                        let [u, v] = q[0].uv;
+                        if (r.u0..=r.u1).contains(&u)
+                            && (r.v0..=r.v1).contains(&v)
+                            && q[0].pos[1] != q[2].pos[1]
+                        {
+                            Some(([q[0].pos, q[2].pos], [source(q[0].uv), source(q[2].uv)]))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                assert_eq!(
+                    actual.as_slice(),
+                    expected.as_slice(),
+                    "{body:?}: {}, {sprite}",
+                    frame.name
+                );
+            };
+
+            let mid = (batch.width as i32 / 2) as f32;
+            let (x, y) = (mid + 97.0, batch.height - 20.0);
+            let fill = frame.fill.filter(|_| stock);
+            assert_sprite(
+                "hud/hotbar_attack_indicator_background",
+                fill.map(|_| ([[x, y], [x + 18.0, y + 18.0]], [[0, 0], [18, 18]])),
+            );
+            assert_sprite(
+                "hud/hotbar_attack_indicator_progress",
+                fill.filter(|&fill| fill > 0).map(|fill| {
+                    (
+                        [[x, y + (18 - fill) as f32], [x + 18.0, y + 18.0]],
+                        [[0, 18 - fill], [18, 18]],
+                    )
+                }),
+            );
+
+            let (x, y) = (mid - 8.0, (batch.height as i32 / 2) as f32 + 9.0);
+            let crosshair = frame.variant == Variant::Crosshair;
+            assert_sprite(
+                "hud/crosshair_attack_indicator_background",
+                crosshair.then_some(([[x, y], [x + 16.0, y + 4.0]], [[0, 0], [16, 4]])),
+            );
+            assert_sprite(
+                "hud/crosshair_attack_indicator_progress",
+                crosshair.then_some(([[x, y], [x + 6.0, y + 4.0]], [[0, 0], [6, 4]])),
+            );
+        }
+        drop(server);
+    });
+}
+
+#[test]
+#[ignore = "daily"]
 fn f1_hides_vanilla_paint_without_skipping_the_hud_walk() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use sunrise_client::{

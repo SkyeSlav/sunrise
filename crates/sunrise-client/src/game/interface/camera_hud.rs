@@ -19,7 +19,6 @@ impl Game<'_> {
     pub(in crate::game) fn camera_hotbar(
         &self,
         camera: CameraPlayer,
-        attack: Option<f32>,
     ) -> Option<(HotbarInputs, HotbarSource)> {
         match camera {
             CameraPlayer::Absent => None,
@@ -35,7 +34,6 @@ impl Game<'_> {
                             .map(|_| (f32::from(self.hotbar_pop[i]) - partial).max(0.0))
                     }),
                     offhand_pop: (f32::from(self.hotbar_pop[9]) - partial).max(0.0),
-                    attack,
                 };
                 Some((inputs, HotbarSource::Own))
             }
@@ -50,7 +48,6 @@ impl Game<'_> {
                         (s == 0 && m.extra.main_hand_stack().is_some()).then_some(0.0)
                     }),
                     offhand_pop: 0.0,
-                    attack,
                 };
                 Some((inputs, HotbarSource::Mob(i)))
             }
@@ -64,7 +61,6 @@ impl Game<'_> {
                         (s == 0 && hud.main_hand.is_some()).then_some(0.0)
                     }),
                     offhand_pop: 0.0,
-                    attack,
                 };
                 Some((inputs, HotbarSource::DetachedCamera))
             }
