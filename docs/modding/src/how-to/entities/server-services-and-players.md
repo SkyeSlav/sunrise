@@ -70,6 +70,20 @@ trips averaged three parts old to one part new. It is 0 until the first keep-ali
 player and for an acting player without a known connection. It refuses with `PlayerWorldRefusal::Client`
 on a client and `PlayerWorldRefusal::Stale` for a stale handle.
 
+`player.send_ping(host, id)` queues a play-phase ping to that player's current
+connection from a mutable `ServerHost`. The ID is a signed `i32`, and a vanilla
+client echoes it without a mod. Success means the packet was queued (or staged
+in the current transaction), not delivered or answered. `PlayerPingRefusal`
+distinguishes a stale handle, no open play connection, and a send failure.
+
+Listen to `player_pong` to observe `event.player`, `event.name` (the profile
+name) and `event.id`. This non-cancellable notice runs on the server thread at
+the packet's turn, before later input from that connection is applied. Match
+pongs by player and ID if you need to correlate them, but the ID is client
+supplied and unauthenticated: unsolicited and duplicate pongs are still
+reported. Configuration, login, status, and the separate play latency request
+do not fire this hook. Neither API changes keep-alive latency.
+
 The online list includes connected players during nested player turns. Name,
 permission and address reads work for connected players whose bodies are displaced
 by another player's turn; stale handles are refused. Entity and living handles

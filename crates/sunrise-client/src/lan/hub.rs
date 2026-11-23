@@ -174,6 +174,11 @@ pub enum HostEvent {
     /// Release input reservations only after this segment has finished in Game.
     InputCredits(Vec<crate::net::ingress::ReceiveLease<NetEvent>>),
     RawPayload(Box<crate::raw_payloads::Delivery>),
+    /// A joined player's play pong; dispatch before resuming their inbox.
+    PlayerPong {
+        conn: u32,
+        id: i32,
+    },
     /// A guest entered the world; load their saved state.
     Joined(u32, Option<super::configuration_tasks::Configured>),
     /// A guest left (state to save, entities to drop).
@@ -2544,9 +2549,15 @@ impl Hub {
         events
     }
 
+    fn observes_play_pongs(guest: &Guest) -> bool {
+        guest.joined()
+            && guest.participates_online()
+            && mod_api::__private::listened(mod_api::HookId::PlayerPong)
+    }
+
     /// Keeps server-answer packets in a frozen player's inbox (teleport, chunk batch,
     /// loaded, keep-alive, ping request, tick end, client information), plus debug
-    /// subscription updates. Drops the rest, including play `Pong`, which answers nothing.
+    /// subscription updates. Do not filter beyond a raw payload or subscribed play pong.
     /// Chat messages and signed commands are dropped, but their last-seen messages
     /// are taken first (`unpackAndApplyLastSeen`). Chat acknowledgements are handled
     /// here in arrival order: the client counts them as acknowledged, and its next
@@ -2556,13 +2567,20 @@ impl Hub {
         let mut credits = Vec::new();
         let mut inbox = inbox.into_iter();
         while let Some(entry) = inbox.next() {
-            let InboxItem::Packet(packet, credit) = entry else {
-                // Never filter or acknowledge past a raw callback boundary.
-                self.guests.update(i, |g| {
-                    g.inbox.push_back(entry);
-                    g.inbox.extend(inbox);
-                });
-                break;
+            let (packet, credit) = match entry {
+                InboxItem::Packet(packet, credit)
+                    if !matches!(&packet, S::Pong(_))
+                        || !Self::observes_play_pongs(&self.guests[i]) =>
+                {
+                    (packet, credit)
+                }
+                boundary => {
+                    self.guests.update(i, |g| {
+                        g.inbox.push_back(boundary);
+                        g.inbox.extend(inbox);
+                    });
+                    break;
+                }
             };
             match &packet {
                 S::Chat(c) => {
@@ -4350,8 +4368,14 @@ impl Hub {
                         g.max_unacknowledged = 10;
                     });
                 }
-                // The server sends no pings during play: nothing answers one.
-                S::Pong(_) => {}
+                // ServerCommonPacketListenerImpl.handlePong has no vanilla side effects.
+                S::Pong(p) => {
+                    if Self::observes_play_pongs(&self.guests[i]) {
+                        events.push(HostEvent::PlayerPong { conn, id: p.id });
+                        events.push(HostEvent::InputCredits(credits));
+                        return true;
+                    }
+                }
                 // ServerGamePacketListenerImpl.handlePingRequest: echo on this connection.
                 S::PingRequest(p) => self.send_to(conn, &C::PongResponse(p)),
                 // handleAttack is the game's too: a move queued behind an attack would move

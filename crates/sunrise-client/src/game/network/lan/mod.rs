@@ -2095,6 +2095,26 @@ impl Game<'_> {
                 HostEvent::RawPayload(delivery) => {
                     self.run_payload(delivery.endpoint, delivery.incoming);
                 }
+                HostEvent::PlayerPong { conn, id } => {
+                    let Some(guest) = self.lan.as_ref()?.hub.guest(conn).filter(|g| {
+                        g.joined() && g.participates_online() && g.play_connection_open()
+                    }) else {
+                        continue;
+                    };
+                    let Some(epoch) = self.native_lifecycle.epoch() else {
+                        continue;
+                    };
+                    let player = mod_api::__private::game::player_ref(
+                        mod_api::EntityRef::new(epoch, guest.entity_id as u32),
+                        guest.uuid,
+                    );
+                    let name = guest.name.clone();
+                    self.native_player_pong(crate::game::native_hooks::PlayerPongCall {
+                        player,
+                        name: &name,
+                        id,
+                    });
+                }
                 event @ (HostEvent::Chat { .. } | HostEvent::Warn(_) | HostEvent::Error(_)) => {
                     self.lan_log_event(event);
                 }

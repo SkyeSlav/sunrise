@@ -535,28 +535,50 @@ impl PlayerSender {
         self.send_body(body.into());
     }
     pub(super) fn send_body(&self, body: Body) {
+        self.queue_body(body, true);
+    }
+    /// Admit a typed play ping in normal send order, without closing on backpressure.
+    /// Admission to a held queue or transaction is not a promise of delivery.
+    pub fn try_send_play_ping(&self, id: i32) -> bool {
+        self.is_live()
+            && play::Clientbound::Ping(cfg::Ping { id })
+                .try_encode()
+                .is_ok_and(|body| self.queue_body(body.into(), false))
+    }
+    fn queue_body(&self, body: Body, close_on_full: bool) -> bool {
         if matches!(self.to, To::Disabled) {
-            return;
+            return false;
         }
         let cost = io_pool::charge(body.retained());
-        let Err(body) = transaction_packets::capture(self, body, cost) else {
-            return;
+        let body = match transaction_packets::capture(self, body, cost) {
+            Ok(admitted) => return admitted,
+            Err(body) => body,
         };
         if !self.reserve_queued(cost) {
-            self.close();
-            return;
+            if close_on_full {
+                self.close();
+            }
+            return false;
         }
-        self.publish_reserved(body);
+        self.publish_reserved(body)
     }
-    fn publish_reserved(&self, body: Body) {
+    fn publish_reserved(&self, body: Body) -> bool {
         if HOLDING.get() {
             self.held().push(body);
+            true
         } else {
             self.flush();
             match &self.to {
-                To::Disabled => {}
-                To::Channel(tx) => drop(tx.send(Out::Packet(body.into_vec()))),
-                To::Pool(outbox, _) => outbox.send(vec![body], None),
+                To::Disabled => false,
+                To::Channel(tx) => {
+                    let cost = io_pool::body_charge(&body);
+                    if tx.send(Out::Packet(body.into_vec())).is_err() {
+                        self.pending.fetch_sub(cost, Ordering::Relaxed);
+                        return false;
+                    }
+                    true
+                }
+                To::Pool(outbox, _) => outbox.try_send(vec![body], None),
             }
         }
     }
@@ -3857,6 +3879,40 @@ mod outgoing_budget_tests {
             menu_extra_rev: 0,
         }
     }
+    #[test]
+    fn play_ping_reports_queue_admission() {
+        let mut s = sender(Framing::Network(None));
+        s.cap = 0;
+        assert!(!s.try_send_play_ping(-1));
+        assert!(s.is_live());
+        let transaction = transaction_packets::Scope::begin();
+        assert!(!s.try_send_play_ping(-1));
+        assert!(transaction_packets::Scope::refused());
+        drop(transaction);
+        assert_eq!(s.queued(), (0, 0));
+        assert!(s.is_live());
+
+        s.cap = io_pool::MAX_PENDING;
+        let transaction = transaction_packets::Scope::begin();
+        assert!(s.try_send_play_ping(42));
+        assert_eq!(s.queued().0, 0, "tentative packets cannot reach the outbox");
+        drop(transaction);
+        assert_eq!(s.queued(), (0, 0));
+        assert!(
+            s.try_send_play_ping(42),
+            "admission does not require a worker wake"
+        );
+        assert_eq!(s.queued().0, 1);
+        s.close();
+        assert!(!s.try_send_play_ping(43));
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let channel = PlayerSender::new(tx, Arc::default());
+        drop(rx);
+        assert!(!channel.try_send_play_ping(44));
+        assert_eq!(channel.queued(), (0, 0));
+    }
+
     #[test]
     fn empty_prepared_journal_records_are_bounded_and_fully_refunded() {
         let s = sender(Framing::Memory);
