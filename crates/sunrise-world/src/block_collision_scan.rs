@@ -270,6 +270,14 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
         Ok(scan.find_next()?.is_some())
     }
 
+    /// The same scan for a caller that reads only each hit's position: a full collision cube
+    /// is not translated, and its hit carries the unit cube. Every other shape is still
+    /// moved and tested against the box exactly as before, so the same cells hit.
+    pub fn positions_only(mut self) -> Self {
+        self.presence_only = true;
+        self
+    }
+
     /// The cells after the current one (cell `x` of its row, block x `block_x`) that are in the
     /// same row and chunk, never more than the budget has left: what can be passed at once.
     fn rest_in_chunk(&self, x: usize, block_x: i32) -> usize {
