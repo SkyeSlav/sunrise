@@ -68,15 +68,18 @@ pub trait PlayerMenusBackendMut {
     /// for the player with storage that is not a block entity (#3385; NeoForge's
     /// `StackCopySlot` and `ResourceHandlerSlot`): `places[n]` is what slot `n` shows. From then
     /// on a click or shift-click on those slots, and an `ItemPlace::MenuSlot` write, go through
-    /// that storage's own handler, journalled; the client sees ordinary synced slots, mirrored
-    /// after each click and each write through an `ItemPlace` of that storage, never each tick.
+    /// that storage's own handler in a transaction. Only committed changes sync to the client
+    /// through the ordinary menu slots after a click or an `ItemPlace` write, never each tick.
+    /// A `MenuSlotPlace::HeldItem` writes the actual selected hotbar or off-hand inventory slot
+    /// even in creative. Ordinary hand interactions keep their own behavior.
     /// Right after the open is the place to call it, the player's own item use included: backed
     /// inside a hook of that player's own action, the slots are mirrored once the action is over.
     /// A slot past `places` stays the mods' own (`menu_clicked`). The menu closes once a
     /// place stops resolving (the backpack left the hand, the entity is gone) or a held stack is
     /// no longer the one bound when the slots were backed, checked before each click and at
-    /// each change notice. A `MenuSlotPlace::HeldItem` locks the inventory slot holding that
-    /// stack while the menu is open, so it can't go into itself. Backing again replaces the
+    /// each change notice. Direct writes refuse a changed held-item binding even before that
+    /// close. A `MenuSlotPlace::HeldItem` locks the hotbar slot holding a main-hand container
+    /// while the menu is open, so it can't go into itself. Backing again replaces the
     /// places; a slot no longer backed (an empty list, a shorter one) is emptied, never left
     /// holding the copy it showed. A [`MenuSlotBackRefusal`], and nothing changes, for a player
     /// not online or a window that is not their open menu, a menu that is not a blockless mod

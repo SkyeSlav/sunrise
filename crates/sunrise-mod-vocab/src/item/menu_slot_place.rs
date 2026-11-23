@@ -6,7 +6,7 @@
 //! storage's own handler in one journalled transaction, as a block entity's slots do.
 use crate::{
     Capability, ENTITY_ITEMS, EntityRef, Hand, ITEM_ITEMS, ItemPlace, ItemResource, PlayerRef,
-    ResourceHandler, ServerHost,
+    ResourceHandler, ServerHost, backend_of,
 };
 
 /// The storage one container slot of a mod menu opened with no block shows
@@ -15,12 +15,13 @@ use crate::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
 pub enum MenuSlotPlace {
     /// Slot `slot` of the container inside the stack the menu's player holds in `hand`, through
-    /// that stack's [`ITEM_ITEMS`] handler: a backpack's contents (`StackCopySlot`). The menu
-    /// closes once the hand holds no such container, and the player's inventory
-    /// slot that holds it takes no click while the menu is open, so the stack can't go into
-    /// itself. The stack is bound when the slots are backed: the menu closes, before the next
-    /// click or at the next change notice, once that inventory slot no longer holds it (another
-    /// stack put in its place, the selected hotbar slot changed).
+    /// that stack's [`ITEM_ITEMS`] handler (`StackCopySlot`). Writes update the actual selected
+    /// hotbar or off-hand inventory slot in every game mode (`ItemAccess.forPlayerSlot`), not
+    /// the hand interaction (`ItemAccess.forPlayerInteraction`). The hotbar slot holding a
+    /// main-hand container takes no click while the menu is open, so it can't go into itself.
+    /// The stack is bound when the slots are backed. Direct writes refuse a changed binding;
+    /// the menu closes before the next click or at the next change notice if the bound stack
+    /// was replaced or the selected hotbar slot holding it changed.
     HeldItem {
         /// The hand holding the container.
         hand: Hand,
@@ -67,30 +68,35 @@ impl crate::NoBackend for MenuSlotBackRefusal {
 }
 
 impl MenuSlotPlace {
-    /// The handler this place reads and writes, and the index in it, for the menu of `player`;
-    /// None once it no longer resolves. It builds no [`ItemPlace`] on the way.
+    /// The handler and its in-range index for the menu of `player`, if the place resolves.
     pub(crate) fn handler(
         self,
         host: &mut dyn ServerHost,
         player: PlayerRef,
     ) -> Option<(Capability<dyn ResourceHandler<ItemResource>>, usize)> {
-        match self {
+        let (handler, slot) = match self {
             Self::HeldItem { hand, slot } => {
-                let held = ItemPlace::PlayerHand {
-                    player: player.uuid(),
-                    hand,
+                let inventory_slot = match hand {
+                    Hand::Main => {
+                        i32::try_from(backend_of(host)?.player_selected_slot(player)?).ok()?
+                    }
+                    Hand::Off => -106, // ItemPlace::PlayerSlot's off-hand address.
                 };
-                Some((held.capability(host, &ITEM_ITEMS)?, slot))
+                let held = ItemPlace::PlayerSlot {
+                    player: player.uuid(),
+                    slot: inventory_slot,
+                };
+                (held.capability(host, &ITEM_ITEMS)?, slot)
             }
             Self::EntityItems { entity, slot } => {
-                Some((entity.capability(host, &ENTITY_ITEMS, ())?, slot))
+                (entity.capability(host, &ENTITY_ITEMS, ())?, slot)
             }
-        }
+        };
+        (slot < handler.size(host)).then_some((handler, slot))
     }
 
     /// Whether this place still names storage, for the menu of `player`: false closes the menu.
     pub fn resolves(self, host: &mut dyn ServerHost, player: PlayerRef) -> bool {
-        self.handler(host, player)
-            .is_some_and(|(handler, slot)| slot < handler.size(host))
+        self.handler(host, player).is_some()
     }
 }

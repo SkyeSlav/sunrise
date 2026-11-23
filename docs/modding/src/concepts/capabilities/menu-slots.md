@@ -441,23 +441,25 @@ entity, as NeoForge's `StackCopySlot` and `ResourceHandlerSlot` do. Right after 
 slots with `player.back_mod_menu_slots(host, window, places)`, one `MenuSlotPlace` per slot:
 
 - `MenuSlotPlace::HeldItem { hand, slot }`: slot `slot` of the container inside the stack in the player's `hand`, through
-  its `ITEM_ITEMS` handler (a backpack's contents). While the menu is open, the hotbar slot holding a main-hand stack takes
-  no click, so the backpack can't go into itself.
+  its `ITEM_ITEMS` handler. Writes update the actual selected hotbar or off-hand inventory slot in every game mode,
+  including creative (`ItemAccess.forPlayerSlot`). Ordinary hand interactions (`ItemAccess.forPlayerInteraction`)
+  are unchanged. While the menu is open, the hotbar slot holding a main-hand container takes no click, so it can't
+  go into itself.
 - `MenuSlotPlace::EntityItems { entity, slot }`: slot `slot` of `entity`'s `ENTITY_ITEMS` handler, as a mod's provider
   answers it.
 
 From then on `MenuRef::slot_backing` names the slot `MenuSlotBacking::Place(place)`. A pickup or shift-click on the
-menu, and an `ItemPlace::MenuSlot` write, go through that storage's own handler in one transaction, so an aborted
-transaction leaves it as it was. The client sees ordinary synced slots; there is no new packet. Nothing runs per tick:
-the slots are mirrored after each click on the menu and after each `ItemPlace` write to the player's places (their hand,
-a container held there, the menu's slots), and only the slots that changed are written. These writes queue a change
-notice, deduplicated per menu; there is no next-tick scan. A handler changed independently of an `ItemPlace` write
-is checked and mirrored at the next click, not automatically on the next tick. Before each click and at each
-change notice the menu checks its places: it closes once one stops resolving (the backpack left the hand, the entity is
-gone), or once a `HeldItem` hand no longer holds the stack bound when the slots were backed (another stack put in its
-place, another hotbar slot selected). Stacks are values, so the bound stack is told apart by its item and components
-other than its contents. Slots past `places` stay the mod's own (`menu_clicked`). A drag, a number-key swap, a
-double-click collect or a throw on a backed menu is still the mod's to answer.
+menu, and an `ItemPlace::MenuSlot` write, go through that storage's own handler in one transaction. An aborted
+transaction leaves the storage as it was. Only committed changes sync through the ordinary menu slots after a click
+or an `ItemPlace` write to the player's places (their hand, a container held there, the menu's slots). These writes
+queue a change notice, deduplicated per menu; there is no next-tick scan. A handler changed independently of an
+`ItemPlace` write is checked and mirrored at the next click, not automatically on the next tick. Before each click
+and at each change notice the menu checks its places: it closes once one stops resolving (the backpack left the
+hand, the entity is gone), or once a `HeldItem` hand no longer holds the stack bound when the slots were backed
+(another stack put in its place, another hotbar slot selected). Direct writes refuse a changed held-item binding
+even before the close. Stacks are values, so the bound stack is told apart by its item and components other than its
+contents. Slots past `places` stay the mod's own (`menu_clicked`). A drag, a number-key swap, a double-click collect
+or a throw on a backed menu is still the mod's to answer.
 
 Backing the same window again replaces its places. A slot no longer backed (an empty list, or a shorter one) is
 emptied: it never keeps the copy it showed, which stays in the storage it came from. A backing that cannot be made

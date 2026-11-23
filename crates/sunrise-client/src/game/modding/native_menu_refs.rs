@@ -5,8 +5,8 @@ use super::{
 };
 use mod_api::__private::game::*;
 use mod_api::{
-    DragKind, EntityRef, LevelReadError, MenuClick, MenuRef, MenuSlotBacking, MouseButton,
-    PlayerRef, SwapWith,
+    DragKind, EntityRef, LevelReadError, MenuClick, MenuRef, MenuSlotBacking, MenuSlotPlace,
+    MouseButton, PlayerRef, SwapWith,
 };
 use sunrise_client::{
     containers::BlockEntity,
@@ -384,7 +384,15 @@ impl Game<'_> {
             SlotBacking::Ender(n) => MenuSlotBacking::Ender(n),
             // Only a slot a mod backed (`player_back_mod_menu_slots`) reads as a place.
             SlotBacking::Native(n) => match self.native_menu_place(guest.conn, open.window, n) {
-                Some(place) => MenuSlotBacking::Place(place),
+                Some(place) => {
+                    // Direct slot writes can arrive before a click or notice closes the menu.
+                    if matches!(place, MenuSlotPlace::HeldItem { .. })
+                        && !self.held_places_bound(guest.conn, menu.fields().player)
+                    {
+                        return None;
+                    }
+                    MenuSlotBacking::Place(place)
+                }
                 None if open.owned_slots().is_some() => MenuSlotBacking::Owned(n),
                 None => MenuSlotBacking::Native(n),
             },

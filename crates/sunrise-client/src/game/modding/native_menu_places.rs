@@ -227,7 +227,7 @@ impl Game<'_> {
 
     /// Whether the stacks `conn`'s held places were bound to are still where they were: the same
     /// inventory slot (the same hotbar slot selected) holding the same stack, its contents aside.
-    fn held_places_bound(&self, conn: u32, player: mod_api::PlayerRef) -> bool {
+    pub(super) fn held_places_bound(&self, conn: u32, player: mod_api::PlayerRef) -> bool {
         let Some(backed) = self
             .lan
             .as_ref()
@@ -764,6 +764,165 @@ mod tests {
         slots
             .map(|slot| MenuSlotPlace::HeldItem { hand, slot })
             .collect()
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn held_item_menu_writes_the_actual_creative_slot() {
+        const CASE: &str = "SUNRISE_HELD_ITEM_MENU_CHILD";
+        if super::super::native_entity_refs::tests::run_fresh_cases(
+            "game::native_menu_places::tests::held_item_menu_writes_the_actual_creative_slot",
+            CASE,
+            &["main", "off"],
+        ) {
+            return;
+        }
+        let hand = match std::env::var(CASE).unwrap().as_str() {
+            "main" => Hand::Main,
+            "off" => Hand::Off,
+            _ => unreachable!("unknown held-item menu case"),
+        };
+        with_game(|game| {
+            backpack_guest(game);
+            edit_guest(game, |g| {
+                g.game_mode = mod_api::GameMode::Creative.id();
+                g.selected = 3;
+                let pack = g.inventory[0].take();
+                match hand {
+                    Hand::Main => g.inventory[3] = pack,
+                    Hand::Off => g.offhand = pack,
+                }
+            });
+            let window = open_pack(game);
+            let menu = game.menu(123, window).unwrap();
+            let player = menu.fields().player;
+            player
+                .back_mod_menu_slots(game, window, held_places(hand, 0..27))
+                .unwrap();
+            assert_eq!(
+                player.back_mod_menu_slots(
+                    game,
+                    window,
+                    vec![MenuSlotPlace::HeldItem {
+                        hand,
+                        slot: usize::MAX,
+                    }]
+                ),
+                Err(MenuSlotBackRefusal::PlaceUnresolved { index: 0 })
+            );
+
+            let assert_box = |game: &Game<'_>, expected: &[(u8, u32)]| {
+                let guest = game.lan.as_ref().unwrap().hub.guest(1).unwrap();
+                let pack = match hand {
+                    Hand::Main => guest.inventory[guest.selected].as_ref(),
+                    Hand::Off => guest.offhand.as_ref(),
+                }
+                .unwrap();
+                assert_eq!(pack.item.as_ref(), "minecraft:shulker_box");
+                assert_eq!(pack.count, 1);
+                let contents = pack
+                    .data()
+                    .map_or(&[][..], |data| data.container.as_slice());
+                let counts: Vec<_> = contents
+                    .iter()
+                    .map(|(slot, stack)| {
+                        assert_eq!(stack.item.as_ref(), "minecraft:stone");
+                        (*slot, stack.count)
+                    })
+                    .collect();
+                assert_eq!(counts.as_slice(), expected);
+            };
+            let shown = |game: &Game<'_>| {
+                let guest = game.lan.as_ref().unwrap().hub.guest(1).unwrap();
+                guest.native_menu[1].as_ref().map(|stack| stack.count)
+            };
+            let source = ItemPlace::PlayerSlot {
+                player: 123,
+                slot: 9,
+            };
+            let stone = source.resource(game).unwrap();
+            let cursor = menu.cursor();
+            let slot = ItemPlace::MenuSlot { menu, slot: 1 };
+
+            // Shift-click from inventory slot 9, then right-click to pick up half.
+            assert_eq!(game.place_menu_click(123, window, 27, 0, 1), Some(true));
+            assert_box(game, &[(0, 64)]);
+            let guest = game.lan.as_ref().unwrap().hub.guest(1).unwrap();
+            assert!(guest.inventory[9].is_none());
+            let boxes: u32 = guest
+                .inventory
+                .iter()
+                .chain([&guest.offhand])
+                .flatten()
+                .filter(|stack| stack.item.as_ref() == "minecraft:shulker_box")
+                .map(|stack| stack.count)
+                .sum();
+            assert_eq!(boxes, 1, "no changed copy was added elsewhere");
+            assert_eq!(game.place_menu_click(123, window, 0, 1, 0), Some(true));
+            assert_box(game, &[(0, 32)]);
+            assert_eq!(cursor.amount(game), 32);
+
+            // A direct slot write updates storage, then the notice refreshes the mirror.
+            assert_eq!(
+                game.storage_transaction(|host, tx| {
+                    assert_eq!(slot.insert(host, tx, &stone, 5), Ok(5));
+                    assert_eq!(shown(host), None);
+                    Ok::<_, ()>(())
+                }),
+                Ok(())
+            );
+            assert_box(game, &[(0, 32), (1, 5)]);
+            game.run_native_menu_events();
+            assert_eq!(shown(game), Some(5));
+
+            // Rolling back a move restores both places and leaves the shown slots unchanged.
+            assert_eq!(
+                game.storage_transaction(|host, tx| {
+                    assert_eq!(slot.insert(host, tx, &stone, 4), Ok(4));
+                    assert_eq!(cursor.extract(host, tx, &stone, 4), Ok(4));
+                    assert_box(host, &[(0, 32), (1, 9)]);
+                    assert_eq!(cursor.amount(host), 28);
+                    assert_eq!(shown(host), Some(5));
+                    Err::<(), _>(())
+                }),
+                Err(())
+            );
+            assert_box(game, &[(0, 32), (1, 5)]);
+            assert_eq!(cursor.amount(game), 32);
+            game.run_native_menu_events();
+            assert_eq!(shown(game), Some(5));
+
+            // Both replacements still have a valid handler, but neither is the bound box.
+            edit_guest(game, |g| {
+                let mut pack = ItemStack::new("minecraft:shulker_box", 1);
+                match hand {
+                    Hand::Main => {
+                        g.selected = 4;
+                        g.inventory[4] = Some(pack);
+                    }
+                    Hand::Off => {
+                        pack.data_mut().custom_name =
+                            Some(sunrise_core::nbt::Tag::String("Replacement".into()));
+                        g.offhand = Some(pack);
+                    }
+                }
+            });
+            assert_eq!(
+                game.storage_transaction(|host, tx| {
+                    let moved = slot.insert(host, tx, &stone, 4).unwrap();
+                    if moved > 0 {
+                        assert_eq!(cursor.extract(host, tx, &stone, moved), Ok(moved));
+                    }
+                    Ok::<_, ()>(moved)
+                }),
+                Ok(0)
+            );
+            assert_box(game, &[]);
+            assert_eq!(cursor.amount(game), 32);
+            assert_eq!(shown(game), Some(5));
+            assert_eq!(game.place_menu_click(123, window, 1, 0, 0), Some(true));
+            assert_eq!(game.menu(123, window), None);
+        });
     }
 
     /// Stone in the box, inventory slot 9 and the menu's own slots: un-backing keeps it at 64.
