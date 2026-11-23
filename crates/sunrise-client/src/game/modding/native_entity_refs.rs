@@ -5104,7 +5104,9 @@ pub(super) mod tests {
         use sunrise_core::geometry::Vec3;
         use sunrise_protocol::{
             connection::Pipe,
-            packets::play::{AddEntity, Clientbound as C, RemoveEntities},
+            packets::play::{
+                AddEntity, Clientbound as C, PlayerInfo, PlayerInfoUpdate, RemoveEntities,
+            },
         };
         with_game(|game| {
             game.options.execution_role = ExecutionRole::Client;
@@ -5125,6 +5127,15 @@ pub(super) mod tests {
                 Some(sunrise_client::motion::PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
             game.spawn_entity(15, "minecraft:pig", [2.0, 0.0, 0.0], [0.0; 3]);
             let add_player = |game: &mut crate::game::Game<'_>, id, uuid, x| {
+                game.handle_packet(C::PlayerInfoUpdate(PlayerInfoUpdate {
+                    actions: 1,
+                    entries: vec![PlayerInfo {
+                        uuid,
+                        name: Some(format!("Player{id}")),
+                        ..Default::default()
+                    }],
+                }))
+                .unwrap();
                 game.handle_packet(C::AddEntity(AddEntity {
                     id,
                     uuid,
