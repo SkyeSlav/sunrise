@@ -1,18 +1,20 @@
 //! `Animal.mobInteract` food acceptance.
 use super::{Mob, Species, can_age_up};
 
-/// Whether `Animal.mobInteract` takes the animal's food: an adult at age 0
-/// that `canFallInLove` (not in love yet) or a baby that `canAgeUp` (not age
-/// locked). Tamed wolves and cats only sit or stand when it does not.
+/// Adult breeding eligibility at `Animal.mobInteract` after the food and
+/// species-specific interaction have been selected.
+pub fn can_enter_love_mode(m: &Mob) -> bool {
+    m.extra.age == 0
+        && m.extra.in_love <= 0
+        && match m.species() {
+            Species::Turtle => !crate::mobs::turtle::has_egg(m),
+            Species::CamelHusk | Species::HappyGhast | Species::ZombieHorse => false,
+            _ => !crate::mobs::piglin::refuses_love(m),
+        }
+}
+
+/// Whether `Animal.mobInteract` takes the animal's food: an adult entering
+/// love or a baby growing. Tamed wolves and cats can instead sit or stand.
 pub fn takes_food(m: &Mob) -> bool {
-    // `canFallInLove`: a turtle carrying an egg, a pacified hoglin and a camel
-    // husk refuse their food.
-    let breedable = m.extra.in_love <= 0
-        && !(m.species() == Species::Turtle && crate::mobs::turtle::has_egg(m))
-        && !(m.species() == Species::CamelHusk)
-        && !crate::mobs::piglin::refuses_love(m);
-    // The growing branch is `canAgeUp()`, which asks `isBaby()`, not the raw
-    // age: a frog or a camel husk that `canBeABaby` says is never a baby keeps
-    // the food in the player's hand however negative its `Age` is.
-    (m.extra.age == 0 && breedable) || can_age_up(m)
+    can_enter_love_mode(m) || can_age_up(m)
 }

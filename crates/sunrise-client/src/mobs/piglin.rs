@@ -3030,7 +3030,7 @@ mod brute_home_tests {
 #[cfg(test)]
 mod hoglin_pacified_feeding_tests {
     use super::*;
-    use crate::mobs::ai::{feed_animal, takes_food};
+    use crate::mobs::ai::{can_enter_love_mode, feed_animal, takes_food};
     use crate::mobs::sensor_scan_tests::kind;
     use crate::mobs::world::with_built_test_world;
     use std::sync::Arc;
@@ -3091,12 +3091,12 @@ mod hoglin_pacified_feeding_tests {
         assert!(takes_food(&adult), "an unpacified adult breeds");
         adult.extra.ints[0] = 200;
         assert!(!takes_food(&adult), "a pacified adult refuses its food");
-        assert!(feed_animal(&mut adult, &mut level, None).is_none());
-        assert_eq!(adult.extra.in_love, 0);
+        assert!(!can_enter_love_mode(&adult));
 
         let mut baby = hoglin(-24000);
         baby.extra.ints[0] = 200;
-        assert!(feed_animal(&mut baby, &mut level, None).is_some());
+        assert!(takes_food(&baby));
+        let _ = feed_animal(&mut baby, &mut level, true);
         assert_eq!(baby.extra.age, -24000 + 120 * 20, "a tenth of the growth");
     }
     /// `Hoglin.canFallInLove` is
@@ -3117,17 +3117,13 @@ mod hoglin_pacified_feeding_tests {
             assert_eq!(adult.extra.repellent, Some([3, 0, 0]), "the sensor sees it");
             assert!(pacified(&adult), "and the hoglin turns passive");
             assert!(!takes_food(&adult), "a pacified adult refuses its food");
-            assert!(
-                feed_animal(&mut adult, &mut level, None).is_none(),
-                "so the fungus is not eaten"
-            );
-            assert_eq!(adult.extra.in_love, 0, "and it does not fall in love");
+            assert!(!can_enter_love_mode(&adult), "it cannot fall in love");
 
             let mut baby = hoglin(-24000);
             tick(&mut baby, w, 20);
             assert!(pacified(&baby), "the baby is pacified too");
             assert!(takes_food(&baby), "but it still takes food to grow");
-            assert!(feed_animal(&mut baby, &mut level, None).is_some());
+            let _ = feed_animal(&mut baby, &mut level, true);
             assert_eq!(baby.extra.age, -24000 + 120 * 20, "a tenth of the growth");
             assert_eq!(baby.extra.in_love, 0, "a baby never falls in love");
 
@@ -3147,7 +3143,6 @@ mod hoglin_pacified_feeding_tests {
     #[test]
     #[ignore = "daily"]
     fn pacification_outlives_the_repellent_by_200_ticks() {
-        let mut level = LegacyRandom::new(0);
         let ran = with_built_test_world(&[], build(true), |w, _| {
             let mut m = hoglin(0);
             tick(&mut m, w, 20);
@@ -3158,14 +3153,11 @@ mod hoglin_pacified_feeding_tests {
             assert_eq!(m.extra.repellent, None, "the sensor lost the fungus");
             assert!(pacified(&m), "but PACIFIED still has 180 ticks left");
             assert!(!takes_food(&m));
-            assert!(feed_animal(&mut m, &mut level, None).is_none());
-            assert_eq!(m.extra.in_love, 0);
+            assert!(!can_enter_love_mode(&m));
 
             tick(&mut m, w, 180);
             assert!(!pacified(&m), "PACIFIED expires after 200 ticks");
-            assert!(takes_food(&m), "the adult breeds again");
-            assert!(feed_animal(&mut m, &mut level, None).is_some());
-            assert_eq!(m.extra.in_love, 600);
+            assert!(can_enter_love_mode(&m), "the adult can enter love again");
         });
         assert!(ran, "vanilla data is missing");
     }

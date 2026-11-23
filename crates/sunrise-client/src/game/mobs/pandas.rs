@@ -8,7 +8,7 @@ use super::{
 };
 use sunrise_client::{
     items::ItemStack,
-    mobs::{Species, panda},
+    mobs::{Mob, Species, ai::can_enter_love_mode, panda},
     particles::{ParticleOptions, ParticleType},
 };
 use sunrise_core::geometry::Vec3;
@@ -94,9 +94,8 @@ impl Game<'_> {
             panda::got_bamboo(m);
         }
         let at = [m.position.x, m.position.y, m.position.z];
-        let id = m.id;
         let mut dropped = None;
-        let mut loved = false;
+        let eligible = |m: &Mob| can_enter_love_mode(m) && !panda::scared(m);
         if m.is_baby() {
             // Panda.mobInteract: a baby an age lock holds back passes.
             if !sunrise_client::mobs::ai::can_age_up(m) {
@@ -105,10 +104,11 @@ impl Game<'_> {
             // ageUp((int) (-getAge() / 20 * 0.1F), true).
             let seconds = ((-m.extra.age / 20) as f32 * 0.1) as i32;
             sunrise_client::mobs::ai::age_up(m, seconds, true);
-        } else if m.extra.age == 0 && m.extra.in_love <= 0 {
-            m.extra.in_love = 600;
-            m.extra.love_player = true;
-            loved = true;
+        } else if eligible(m) {
+            let attempt = self.animal_love_attempt(index);
+            self.consume_held();
+            self.try_enter_animal_love_mode(attempt, eligible);
+            return true;
         } else {
             if panda::is_sitting(m) || m.fluids.in_water {
                 return false;
@@ -122,18 +122,6 @@ impl Game<'_> {
                 dropped = Some(ItemStack::new(&held, panda::held_count(m)));
             }
             panda::hold(m, item, 1, false);
-        }
-        if loved {
-            self.love_cause.insert(id, self.lan_acting);
-            let kind = self
-                .mobs
-                .iter()
-                .find(|m| m.id == id)
-                .map(super::native_hooks::mob_kind)
-                .unwrap_or_default();
-            self.native_entity_enter_love_mode(id, &kind, self.lan_acting_uuid);
-            // Animal.setInLove: entity event 18, the love hearts.
-            self.mob_event_particles(id, 18);
         }
         self.consume_held();
         if let Some(stack) = dropped {

@@ -9,7 +9,7 @@ mod freezing;
 use flower_contact::flower_contact_effects;
 use std::ops::ControlFlow;
 
-pub use feeding::takes_food;
+pub use feeding::{can_enter_love_mode, takes_food};
 
 use super::{
     Damage, DamageKind, Mob, MobEvent, MobWorld, Species, Who, aquatic,
@@ -4339,28 +4339,15 @@ pub(super) fn inherited_voice_sounds(m: &Mob) -> [&'static str; 3] {
         _ => m.kind.sounds,
     }
 }
-/// `Animal.mobInteract` with its food in hand: an adult that can fall in
-/// love does, a baby grows up by a tenth, and either plays its eating sound
-/// (`Strider.mobInteract` plays its own afterwards). `None` when the animal
-/// does not take the food; otherwise the sound to play, if any.
+/// Finish an accepted `Animal.mobInteract` feed. The chosen growing branch
+/// grows a baby by a tenth; the server handles adult love entry separately.
+/// Return the eating sound, if any (`Strider.mobInteract` adds its own).
 pub fn feed_animal(
     m: &mut Mob,
     level: &mut impl RandomSource,
-    love_cause: Option<[i32; 4]>,
-) -> Option<Option<(&'static str, f32, f32)>> {
-    // Armadillo.mobInteract: a ball takes no food.
-    if super::armadillo::scared(m) {
-        return None;
-    }
-    if !takes_food(m) {
-        return None;
-    }
-    if m.extra.age == 0 {
-        m.extra.in_love = 600;
-        m.extra.love_player = true;
-        // Animal.setInLove: the player who fed it, for a fox baby to trust.
-        m.extra.love_cause = love_cause;
-    } else {
+    grow: bool,
+) -> Option<(&'static str, f32, f32)> {
+    if grow {
         // AgeableMob.ageUp(getSpeedUpSecondsWhenFeeding(-age), true): a tenth.
         let secs = ((-m.extra.age / 20) as f32 * 0.1) as i32;
         age_up(m, secs, true);
@@ -4370,7 +4357,7 @@ pub fn feed_animal(
         let pitch = 1.0 + (m.random.next_float() - m.random.next_float()) * 0.2;
         sound = Some(("entity.strider.eat", 1.0, pitch));
     }
-    Some(sound)
+    sound
 }
 /// `AgeableMob.canAgeUp`: a baby that no age lock holds back.
 pub fn can_age_up(m: &Mob) -> bool {
@@ -6563,8 +6550,17 @@ mod turtle_ambient_tests {
 #[cfg(test)]
 mod feed_tests {
     use super::*;
-    use crate::mobs::MobTypes;
     use std::sync::Arc;
+
+    fn animal(id: &str, species: Species, age: i32) -> Mob {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let k = Arc::make_mut(&mut kind);
+        k.id = id.into();
+        k.species = species;
+        let mut m = Mob::new(1, kind, Vec3::ZERO, 0.0);
+        m.extra.age = age;
+        m
+    }
 
     /// `Animal.mobInteract` (#2780): food grows a tamed baby cat or wolf
     /// (`canAgeUp`), so `Wolf.mobInteract` and `Cat.mobInteract` see the click
@@ -6572,21 +6568,15 @@ mod feed_tests {
     /// or an age-locked baby, leaves the food to the sit toggle.
     #[test]
     fn food_grows_a_tamed_baby_cat_or_wolf() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../.local/sunrise-client")
-            .join(sunrise_core::VANILLA_VERSION);
-        if !root.join("entity-types.json").exists() {
-            return;
-        }
-        let data = MobTypes::load(&root).unwrap();
         let mut level = crate::health::TestLevel::new(0);
-        for id in ["minecraft:wolf", "minecraft:cat"] {
-            let kind = Arc::new(data.types.get(id).unwrap().clone());
-            let mut m = Mob::new(1, kind, Vec3::new(0.0, 4.0, 0.0), 0.0);
+        for (id, species) in [
+            ("minecraft:wolf", Species::Wolf),
+            ("minecraft:cat", Species::Cat),
+        ] {
+            let mut m = animal(id, species, -24000);
             m.extra.tame = true;
-            m.extra.age = -24000;
             assert!(takes_food(&m), "{id}: a tamed baby takes its food");
-            assert!(feed_animal(&mut m, level.random(), None).is_some(), "{id}");
+            let _ = feed_animal(&mut m, level.random(), true);
             // getSpeedUpSecondsWhenFeeding(24000): a tenth of 1200 seconds.
             assert_eq!(m.extra.age, -24000 + 120 * 20, "{id}: grew a tenth");
             assert_eq!(m.extra.in_love, 0, "{id}: a baby does not fall in love");
@@ -6612,26 +6602,13 @@ mod feed_tests {
     /// it and grows a tenth.
     #[test]
     fn a_mob_that_cannot_be_a_baby_never_takes_the_food_that_grows_it() {
-        let mob = |id: &str, species: Species, age: i32| {
-            let mut kind = crate::mobs::sensor_scan_tests::kind();
-            let k = Arc::make_mut(&mut kind);
-            k.id = id.into();
-            k.species = species;
-            let mut m = Mob::new(1, kind, Vec3::ZERO, 0.0);
-            m.extra.age = age;
-            m
-        };
         let mut level = crate::health::TestLevel::new(0);
-        let mut frog = mob("minecraft:frog", Species::Frog, -24_000);
-        assert!(!frog.is_baby());
+        let frog = animal("minecraft:frog", Species::Frog, -24_000);
         assert!(!takes_food(&frog), "a frog is never a baby");
-        assert!(feed_animal(&mut frog, level.random(), None).is_none());
-        assert_eq!(frog.extra.age, -24_000, "it does not grow");
 
-        let mut cow = mob("minecraft:cow", Species::Cow, -24_000);
-        assert!(cow.is_baby());
+        let mut cow = animal("minecraft:cow", Species::Cow, -24_000);
         assert!(takes_food(&cow));
-        assert!(feed_animal(&mut cow, level.random(), None).is_some());
+        let _ = feed_animal(&mut cow, level.random(), true);
         assert_eq!(cow.extra.age, -24_000 + 120 * 20, "it grows a tenth");
     }
 
@@ -6640,31 +6617,15 @@ mod feed_tests {
     /// neither eaten nor turned into love mode.
     #[test]
     fn a_turtle_carrying_an_egg_refuses_its_food() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../.local/sunrise-client")
-            .join(sunrise_core::VANILLA_VERSION);
-        if !root.join("entity-types.json").exists() {
-            return;
-        }
-        let data = MobTypes::load(&root).unwrap();
-        let mut level = crate::health::TestLevel::new(0);
-        let kind = Arc::new(data.types.get("minecraft:turtle").unwrap().clone());
-        let mut m = Mob::new(1, kind, Vec3::new(0.0, 4.0, 0.0), 0.0);
-        m.extra.age = 0;
-
+        let mut m = animal("minecraft:turtle", Species::Turtle, 0);
         m.extra.flag = true;
-        assert!(crate::mobs::turtle::has_egg(&m));
         assert!(!takes_food(&m), "an egg-carrying turtle refuses its food");
-        assert!(
-            feed_animal(&mut m, level.random(), None).is_none(),
-            "and does not enter love mode"
-        );
-        assert_eq!(m.extra.in_love, 0);
 
         m.extra.flag = false;
-        assert!(takes_food(&m), "a turtle without an egg takes it");
-        assert!(feed_animal(&mut m, level.random(), None).is_some());
-        assert_eq!(m.extra.in_love, 600);
+        assert!(
+            can_enter_love_mode(&m),
+            "a turtle without an egg can enter love"
+        );
     }
 }
 

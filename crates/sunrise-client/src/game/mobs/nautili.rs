@@ -3,7 +3,10 @@
 //! nautilus a drowned with a trident sometimes rides.
 use super::Game;
 use sunrise_client::actions::Action;
-use sunrise_client::{items::ItemStack, mobs::nautilus};
+use sunrise_client::{
+    items::ItemStack,
+    mobs::{Mob, ai::can_enter_love_mode, nautilus},
+};
 use sunrise_core::random::RandomSource;
 
 impl Game<'_> {
@@ -17,16 +20,7 @@ impl Game<'_> {
     /// `AbstractNautilus.usePlayerItem`: bucketed fish leave a water bucket.
     fn use_nautilus_food(&mut self, item: &str) {
         let bucket = self.item_tagged("minecraft:nautilus_bucket_food", item);
-        self.consume_held();
-        if bucket && !self.creative {
-            let water = ItemStack::new("minecraft:water_bucket", 1);
-            if self.inventory[self.selected].is_none() {
-                self.inventory[self.selected] = Some(water);
-            } else if let Some(rest) = self.add_stack_to_inventory(water) {
-                let at = self.eye_position().unwrap_or([0.0; 3]);
-                self.spawn_item(rest, at, [0.0; 3], 40);
-            }
-        }
+        self.use_animal_food(self.held_slot(), bucket);
     }
     fn nautilus_sound(&mut self, index: usize, sound: &str) {
         let at = self.mobs[index].center();
@@ -170,19 +164,16 @@ impl Game<'_> {
         // Animal.mobInteract: a tame adult fed at full health falls in love
         // (a zombie nautilus too: `ZombieNautilus` overrides neither `isFood`
         // nor `mobInteract`, and its brain simply has no make-love goal).
-        let m = &mut self.mobs[index];
-        if food && m.extra.age == 0 && m.extra.in_love <= 0 {
-            m.extra.in_love = 600;
-            m.extra.love_player = true;
-            let sound = nautilus::eat_sound(m);
-            let id = m.id;
-            self.love_cause.insert(id, self.lan_acting);
-            let kind = self.mobs[index].kind.id.clone();
-            self.native_entity_enter_love_mode(id, &kind, self.lan_acting_uuid);
+        let eligible =
+            |m: &Mob| m.extra.tame && m.health >= m.attrs.max_health && can_enter_love_mode(m);
+        if food && eligible(&self.mobs[index]) {
+            let attempt = self.animal_love_attempt(index);
             self.use_nautilus_food(item);
-            self.nautilus_sound(index, sound);
-            // Animal.setInLove: entity event 18.
-            self.mob_event_particles(self.mobs[index].id, 18);
+            self.try_enter_animal_love_mode(attempt, eligible);
+            if let Some(index) = attempt.resolve(self) {
+                let sound = nautilus::eat_sound(&self.mobs[index]);
+                self.nautilus_sound(index, sound);
+            }
             return true;
         }
         false

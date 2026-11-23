@@ -2,10 +2,9 @@
 //! and a camel is tempted by cactus.
 use super::*;
 use crate::mobs::MobType;
-use crate::mobs::ai::{feed_animal, takes_food};
+use crate::mobs::ai::{can_enter_love_mode, takes_food};
 use crate::mobs::world::with_test_world;
 use std::sync::Arc;
-use sunrise_core::random::LegacyRandom;
 
 /// `CamelHusk.canMate` and `CamelHusk.canFallInLove` are both false, and
 /// `AnimalMakeLove` only ever pairs a `Camel` with a `Camel`: two husks fed
@@ -35,7 +34,7 @@ fn a_camel_husk_never_breeds() {
         ));
     });
     assert!(ran, "vanilla data is missing");
-    let Some((mut husk, husk_partner, mut camel, camel_partner, mut fed)) = mobs else {
+    let Some((mut husk, husk_partner, mut camel, camel_partner, fed)) = mobs else {
         return;
     };
     let seen = [
@@ -69,10 +68,8 @@ fn a_camel_husk_never_breeds() {
     assert!(ran, "vanilla data is missing");
     // `Animal.mobInteract` asks `canFallInLove` before it sets love mode, so a
     // husk fed its food never even starts (its `canBeABaby` is false too).
-    let mut level = LegacyRandom::new(0);
     assert!(!takes_food(&fed), "a husk never falls in love over food");
-    assert!(feed_animal(&mut fed, &mut level, None).is_none());
-    assert_eq!(fed.extra.in_love, 0);
+    assert!(!can_enter_love_mode(&fed));
 }
 
 /// `CamelAi.RandomSitting` kneels only without a *controlling* passenger

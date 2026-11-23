@@ -439,25 +439,51 @@ impl Game<'_> {
         self.start_riding(id);
         true
     }
-    /// `AbstractHorse.handleEating`.
-    fn feed_mount(&mut self, index: usize, item: &str) -> bool {
-        let Some((heal, age_up, temper, love)) = eating(self.mobs[index].species(), item) else {
+    /// `AbstractHorse.fedFood` consumes the original stack after the eating
+    /// handler. A listener's replacement in that slot is not the food.
+    pub(super) fn consume_mount_food(&mut self, original: Option<(usize, ItemStack)>) {
+        if let Some((slot, stack)) = original
+            && self.stack_in(slot) == Some(&stack)
+        {
+            self.consume_player_slot(slot, 1);
+        }
+    }
+
+    /// `AbstractHorse.handleEating` (and `Camel.handleEating`).
+    fn feed_mount(&mut self, mut index: usize, item: &str) -> bool {
+        let species = self.mobs[index].species();
+        let Some((heal, age_up, temper, love)) = eating(species, item) else {
             return false;
         };
+        let original = if self.creative {
+            None
+        } else {
+            self.held().cloned().map(|stack| (self.held_slot(), stack))
+        };
+        let eligible = |m: &Mob| m.extra.tame && sunrise_client::mobs::ai::can_enter_love_mode(m);
+        let attempt =
+            (love && eligible(&self.mobs[index])).then(|| self.animal_love_attempt(index));
+        let heals_first = matches!(species, Species::Camel | Species::CamelHusk);
         let m = &mut self.mobs[index];
-        let mut used = false;
-        let mut loved = false;
-        if love && m.extra.tame && m.extra.age == 0 && m.extra.in_love <= 0 {
-            m.extra.in_love = 600;
-            m.extra.love_player = true;
-            used = true;
-            loved = true;
-        }
-        if m.health < m.attrs.max_health && heal > 0.0 {
+        let mut used = attempt.is_some();
+        if heals_first && m.health < m.attrs.max_health && heal > 0.0 {
             m.heal(&self.loop_context, heal);
             used = true;
         }
-        if m.is_baby() && age_up > 0 && !m.extra.age_locked {
+        if let Some(attempt) = attempt {
+            self.try_enter_animal_love_mode(attempt, eligible);
+            let Some(current) = attempt.resolve(self) else {
+                self.consume_mount_food(original);
+                return true;
+            };
+            index = current;
+        }
+        let m = &mut self.mobs[index];
+        if !heals_first && m.health < m.attrs.max_health && heal > 0.0 {
+            m.heal(&self.loop_context, heal);
+            used = true;
+        }
+        if attempt.is_none() && m.is_baby() && age_up > 0 && !m.extra.age_locked {
             // AbstractHorse.handleEating (Camel's too): the HAPPY_VILLAGER's
             // `getRandomX(1.0)`, `getRandomY() + 0.5` and `getRandomZ(1.0)`
             // each draw a double from the mount's own random before it ages
@@ -509,14 +535,7 @@ impl Game<'_> {
         // gameEvent(GameEvent.EAT): at the mount, from the mount.
         let ctx = self.who_context(Some(Who::Mob(id)), None);
         self.post_game_event("minecraft:eat", at, ctx);
-        // Animal.setInLove: entity event 18.
-        if loved {
-            self.love_cause.insert(id, self.lan_acting);
-            let kind = self.mobs[index].kind.id.clone();
-            self.native_entity_enter_love_mode(id, &kind, self.lan_acting_uuid);
-            self.mob_event_particles(id, 18);
-        }
-        self.consume_held();
+        self.consume_mount_food(original);
         true
     }
     /// `LocalPlayer.aiStep`'s riding jump: the bar charges while jump is

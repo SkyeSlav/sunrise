@@ -2746,6 +2746,13 @@ impl Game<'_> {
         self.fire_whitelist_state_update(enabled);
     }
 
+    pub(in crate::game) fn native_entity_enter_love_mode_pre(
+        &mut self,
+        call: EntityEnterLoveModePreCall<'_>,
+    ) {
+        self.fire_entity_enter_love_mode_pre(call);
+    }
+
     /// A mob entered love mode after player interaction. `player` is the
     /// feeder when known.
     pub(in crate::game) fn native_entity_enter_love_mode(

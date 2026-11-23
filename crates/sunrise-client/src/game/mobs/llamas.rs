@@ -3,7 +3,7 @@
 //! off and riding.
 use super::Game;
 use sunrise_client::actions::Action;
-use sunrise_client::mobs::{equine, llama};
+use sunrise_client::mobs::{Mob, ai::can_enter_love_mode, equine, llama};
 use sunrise_core::random::RandomSource;
 
 impl Game<'_> {
@@ -15,28 +15,36 @@ impl Game<'_> {
     }
     /// `Llama.handleEating`: wheat and hay bales heal, age up a baby, raise
     /// the temper and, from a hay bale, put a tame adult in love.
-    fn feed_llama(&mut self, index: usize, item: &str) -> bool {
+    fn feed_llama(&mut self, mut index: usize, item: &str) -> bool {
         let (age_up, temper, heal) = match item {
             "minecraft:wheat" => (10, 3, 2.0),
             "minecraft:hay_block" => (90, 6, 10.0),
             _ => return false,
         };
-        let m = &mut self.mobs[index];
-        let mut used = false;
-        let mut loved = false;
-        if item == "minecraft:hay_block" && m.extra.tame && m.extra.age == 0 && m.extra.in_love <= 0
-        {
-            m.extra.in_love = 600;
-            m.extra.love_player = true;
-            used = true;
-            loved = true;
+        let original = if self.creative {
+            None
+        } else {
+            self.held().cloned().map(|stack| (self.held_slot(), stack))
+        };
+        let eligible = |m: &Mob| m.extra.tame && can_enter_love_mode(m);
+        let enters_love = item == "minecraft:hay_block" && eligible(&self.mobs[index]);
+        if enters_love {
+            let attempt = self.animal_love_attempt(index);
+            self.try_enter_animal_love_mode(attempt, eligible);
+            let Some(current) = attempt.resolve(self) else {
+                self.consume_mount_food(original);
+                return true;
+            };
+            index = current;
         }
+        let m = &mut self.mobs[index];
+        let mut used = enters_love;
         if m.health < m.attrs.max_health {
             m.heal(&self.loop_context, heal);
             used = true;
         }
         let mut happy = false;
-        if m.is_baby() && !m.extra.age_locked {
+        if !enters_love && m.is_baby() && !m.extra.age_locked {
             m.extra.age = (m.extra.age + age_up * 20).min(0);
             used = true;
             happy = true;
@@ -57,16 +65,8 @@ impl Game<'_> {
         if !used {
             return false;
         }
-        // Animal.setInLove: entity event 18.
-        if loved {
-            let id = self.mobs[index].id;
-            self.love_cause.insert(id, self.lan_acting);
-            let kind = self.mobs[index].kind.id.clone();
-            self.native_entity_enter_love_mode(id, &kind, self.lan_acting_uuid);
-            self.mob_event_particles(id, 18);
-        }
         self.llama_sound(index, "entity.llama.eat", 1.0);
-        self.consume_held();
+        self.consume_mount_food(original);
         true
     }
     /// `AbstractChestedHorse.mobInteract` and `AbstractHorse.mobInteract` for

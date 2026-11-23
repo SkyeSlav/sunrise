@@ -12,8 +12,8 @@ pub(in crate::game) use block_entity_tick::ResidentBlockEntityAccess;
 pub(in crate::game) use build_creative_mode_tab_contents::CreativeCache;
 pub(in crate::game) use client_pick::ClientPick;
 pub(in crate::game) use fire::{
-    ConnectsToCall, EntityChangeBlockPreCall, ItemAfterVerticalCollisionCall,
-    PreRemoveSideEffectsCall, UpdateShapeCall,
+    ConnectsToCall, EntityChangeBlockPreCall, EntityEnterLoveModePreCall,
+    ItemAfterVerticalCollisionCall, PreRemoveSideEffectsCall, UpdateShapeCall,
 };
 use mod_api::{BlockEntityDataSource, BlockEntityRef, ClockAdjustment};
 

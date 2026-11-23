@@ -1,0 +1,1 @@
+sunrise-client game::creatures::animal_love_mode_tests::love_mode_pre_gates_entry_without_rejecting_the_feed lib daily child-process

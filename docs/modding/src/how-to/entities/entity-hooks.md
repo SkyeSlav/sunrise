@@ -43,6 +43,28 @@ scoreboard tag without allocating. To read all tags, the
 yields UTF-16 slices in saved order. Choose checked or lossy conversion explicitly
 when you need UTF-8.
 
+## Vetoing animal love mode
+
+`entity_enter_love_mode_pre` runs with a `ServerHost` on the logical server,
+including integrated and dedicated servers. It runs once when an eligible feed
+reaches vanilla's `Animal.setInLove`; NeoForge has no event at this point.
+`animal` is the fed `EntityRef`, `level` is its `LevelRef`, and `player` is the
+actual feeder's `PlayerRef` when available, not the animal's owner.
+
+Return `Flow::Cancel` to skip love mode, breeding credit, entry hearts and the
+`entity_enter_love_mode` notice. The accepted feeding interaction still goes
+through. Ordinary animals (including egg-layers and nautili) and pandas use
+the food before the hook, including any fish-bucket remainder. Horses, other
+equines, camels and llamas use it after the eating handler. Camel healing
+precedes the veto point; horse golden-food healing follows it. Growth, taming,
+healing-only feeds and ineligible adults (such as a turtle already carrying an
+egg) do not fire the hook.
+
+Even if the hook allows entry, the server applies it only if the same animal
+is still alive, in the same level and eligible. It does not retry or switch
+targets. `entity_enter_love_mode` remains a notice after successful entry;
+`baby_entity_spawn` is a separate hook for the later birth.
+
 ## Opening a container
 
 `player_container_open` runs synchronously after a successful open. Failed opens and opening the player's

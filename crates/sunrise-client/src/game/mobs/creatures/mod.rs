@@ -65,7 +65,10 @@ use sunrise_client::{
     mesher::Vertex,
     mobs::{
         Damage, DamageKind, Mob, MobEvent, MobWorld, PlayerView, Seen, SpawnSetup, Species, Who,
-        ai::{eating_sound, eating_sound_is_bound, feed_animal, takes_food},
+        ai::{
+            can_age_up, can_enter_love_mode, eating_sound, eating_sound_is_bound, feed_animal,
+            takes_food,
+        },
         entity_sounds::full_id,
         finalize::Group,
         spawning::{self, BiomeFacts},
@@ -79,6 +82,163 @@ use sunrise_core::{
     position::BlockPos,
     random::RandomSource,
 };
+
+/// The accepted animal and feeder, captured before any item or mob hook runs.
+#[derive(Clone, Copy)]
+pub(super) struct AnimalLoveAttempt {
+    dim: Dim,
+    join: JoinSeq,
+    id: u32,
+    conn: Option<u32>,
+    uuid: Option<u128>,
+    player: Option<mod_api::PlayerRef>,
+}
+
+impl AnimalLoveAttempt {
+    pub(super) fn resolve(self, game: &Game<'_>) -> Option<usize> {
+        if game.dim != self.dim {
+            return None;
+        }
+        let index = game.mobs.locate(self.join)?;
+        let mob = &game.mobs[index];
+        (mob.id == self.id
+            && mob.alive()
+            && !mob.removed
+            && !game.target_removed(&super::commands::Target::Mob(self.id)))
+        .then_some(index)
+    }
+}
+
+impl Game<'_> {
+    pub(super) fn animal_love_attempt(&self, index: usize) -> AnimalLoveAttempt {
+        use sunrise_client::lan::playerdata::ints_uuid;
+        let mob = &self.mobs[index];
+        let conn = self.lan_acting;
+        let uuid = self.lan_acting_uuid.or_else(|| {
+            self.player.as_ref()?;
+            self.player_uuid_of(conn).map(ints_uuid)
+        });
+        let player = if mod_api::__private::listened(mod_api::HookId::EntityEnterLoveModePre) {
+            self.native_acting_player()
+        } else {
+            None
+        };
+        AnimalLoveAttempt {
+            dim: self.dim,
+            join: mob.join,
+            id: mob.id,
+            conn,
+            uuid,
+            player,
+        }
+    }
+
+    /// `Animal.setInLove`. A refusal changes only this step of the accepted
+    /// feed; the caller continues at the next step of its own eating handler.
+    pub(super) fn try_enter_animal_love_mode(
+        &mut self,
+        attempt: AnimalLoveAttempt,
+        eligible: impl Fn(&Mob) -> bool,
+    ) {
+        if !self.is_logical_server() {
+            return;
+        }
+        let resolve = |game: &Self| attempt.resolve(game).filter(|&i| eligible(&game.mobs[i]));
+        let Some(mut index) = resolve(self) else {
+            return;
+        };
+        if mod_api::__private::listened(mod_api::HookId::EntityEnterLoveModePre) {
+            let (Some(animal), Some(level)) =
+                (self.entity(attempt.id), self.level(attempt.dim.id()))
+            else {
+                return;
+            };
+            let mut cancel = false;
+            self.native_entity_enter_love_mode_pre(
+                super::native_hooks::EntityEnterLoveModePreCall {
+                    animal,
+                    level,
+                    player: attempt.player,
+                    cancel: &mut cancel,
+                },
+            );
+            if cancel {
+                return;
+            }
+            let Some(current) = resolve(self) else {
+                return;
+            };
+            index = current;
+        }
+
+        let mob = &mut self.mobs[index];
+        mob.extra.in_love = 600;
+        mob.extra.love_player = attempt.uuid.is_some();
+        mob.extra.love_cause = attempt.uuid.map(sunrise_client::lan::playerdata::uuid_ints);
+        if attempt.uuid.is_some() {
+            self.love_cause.insert(attempt.id, attempt.conn);
+        } else {
+            self.love_cause.remove(&attempt.id);
+        }
+        let kind = mob.kind.id.clone();
+        self.native_entity_enter_love_mode(attempt.id, &kind, attempt.uuid);
+        if attempt.resolve(self).is_some() {
+            self.mob_event_particles(attempt.id, 18);
+        }
+    }
+
+    /// `Animal.usePlayerItem` and the fish-bucket overrides in `Axolotl` and
+    /// `AbstractNautilus`. `ItemUtils.createFilledResult` puts the remainder
+    /// in the actual feeding hand when the original stack runs out.
+    pub(super) fn use_animal_food(&mut self, slot: usize, water_bucket: bool) {
+        if !water_bucket {
+            if !self.creative {
+                self.consume_player_slot(slot, 1);
+            }
+            return;
+        }
+        let water = ItemStack::new("minecraft:water_bucket", 1);
+        if self.creative {
+            let has_water_bucket = self
+                .inventory
+                .iter()
+                .chain(&self.armor)
+                .chain([&self.offhand])
+                .flatten()
+                .any(|s| {
+                    s.item == water.item && s.damage == water.damage && s.extra == water.extra
+                });
+            if !has_water_bucket {
+                let _ = self.add_stack_to_inventory(water);
+            }
+            return;
+        }
+        self.consume_player_slot(slot, 1);
+        if self.stack_in(slot).is_none() {
+            *self.stack_in_mut(slot) = Some(water);
+        } else if let Some(rest) = self.add_stack_to_inventory(water)
+            && let Some(eye) = self.eye_position()
+        {
+            let _ = self.throw_from_eyes(rest, eye, false, false);
+        }
+    }
+
+    fn play_mob_eating_sound(
+        &mut self,
+        species: Species,
+        id: u32,
+        feet: [f64; 3],
+        (sound, volume, pitch): (&str, f32, f32),
+    ) {
+        let name = full_id(sound);
+        if eating_sound_is_bound(species) {
+            let sound = LevelSound::new(&name, feet, volume, pitch).in_source(SoundSource::Neutral);
+            self.play_bound_sound(sound, id, None);
+        } else {
+            self.audio.play(&name, Some(feet), volume, pitch);
+        }
+    }
+}
 
 /// `AbstractArrow.onHitEntity` when `hurtOrSimulate` returned false.
 /// An enderman that teleported (`projectileReceivesSideEffectsOnHit` is
@@ -8116,31 +8276,48 @@ impl Game<'_> {
                 && species != Species::Parrot
                 && (species != Species::HappyGhast || m.is_baby()) =>
             {
-                // Animal.mobInteract: breed adults, speed up babies, then
-                // playEatingSound (silent unless the species overrides it).
-                match feed_animal(m, &mut self.world.random, Some(acting)) {
-                    Some(sound) => {
-                        consume = true;
-                        eat = sound;
-                        // Axolotl.usePlayerItem: a tropical fish bucket is
-                        // emptied into a water bucket in its place.
-                        if species == Species::Axolotl && &*item == "minecraft:tropical_fish_bucket"
-                        {
-                            give = Some("minecraft:water_bucket");
-                        }
-                        // Animal.setInLove: entity event 18 (a baby that
-                        // only grew is not in love).
-                        if self.mobs[index].extra.in_love > 0 {
-                            let id = self.mobs[index].id;
-                            self.love_cause.insert(id, self.lan_acting);
-                            let kind = self.mobs[index].kind.id.clone();
-                            self.native_entity_enter_love_mode(id, &kind, self.lan_acting_uuid);
-                            self.mob_event_particles(id, 18);
+                use sunrise_client::mobs::armadillo;
+                let eligible = |mob: &Mob| can_enter_love_mode(mob) && !armadillo::scared(mob);
+                let water_bucket =
+                    species == Species::Axolotl && item == "minecraft:tropical_fish_bucket";
+                if eligible(m) {
+                    // Animal.mobInteract uses the stack before setInLove;
+                    // Axolotl.usePlayerItem also leaves the bucket first.
+                    let attempt = self.animal_love_attempt(index);
+                    self.use_animal_food(selected, water_bucket);
+                    self.try_enter_animal_love_mode(attempt, eligible);
+                    if let Some(index) = attempt.resolve(self) {
+                        let mob = &mut self.mobs[index];
+                        if let Some(sound) = feed_animal(mob, &mut self.world.random, false) {
+                            let (species, id, feet) =
+                                (mob.species(), mob.id, mob.position.components());
+                            self.play_mob_eating_sound(species, id, feet, sound);
                         }
                     }
+                    if let Some(stack) = &held
+                        && let Some(index) = attempt.resolve(self)
+                    {
+                        let target = self.mob_entity(&self.mobs[index]);
+                        self.trigger_item_entity(
+                            "minecraft:player_interacted_with_entity",
+                            stack,
+                            &target,
+                        );
+                    }
+                    // The accepted feed consumes the click even if a listener
+                    // vetoed entry or removed the animal.
+                    self.swing_arm();
+                    return Ok(true);
+                }
+                if armadillo::scared(m) || !can_age_up(m) {
                     // Animal.mobInteract still consumes the client click when
                     // an adult cannot breed, without swinging or taking food.
-                    None => return Ok(true),
+                    return Ok(true);
+                }
+                eat = feed_animal(m, &mut self.world.random, true);
+                consume = true;
+                if water_bucket {
+                    give = Some("minecraft:water_bucket");
                 }
             }
             _ => handled = false,
@@ -8220,16 +8397,8 @@ impl Game<'_> {
             }
             None => {}
         }
-        if let Some((s, volume, pitch)) = eat {
-            let name = full_id(s);
-            if eating_sound_is_bound(species) {
-                let id = self.mobs[index].id;
-                let sound =
-                    LevelSound::new(&name, feet, volume, pitch).in_source(SoundSource::Neutral);
-                self.play_bound_sound(sound, id, None);
-            } else {
-                self.audio.play(&name, Some(feet), volume, pitch);
-            }
+        if let Some(sound) = eat {
+            self.play_mob_eating_sound(species, mob.0, feet, sound);
         }
         if consume && !creative {
             self.consume_player_slot(selected, 1);
@@ -9678,6 +9847,9 @@ mod death_loot_context_tests;
 
 #[cfg(test)]
 mod breeding_heart_tests;
+
+#[cfg(test)]
+mod animal_love_mode_tests;
 
 #[cfg(test)]
 #[path = "frame_projectile_tests.rs"]
