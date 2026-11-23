@@ -60,6 +60,36 @@ impl Game<'_> {
         let stats = self.native_player_stats(player)?;
         Some(stats.map_or(0, |s| s.get(ty, &namespaced(key))))
     }
+    /// `ServerStatsCounter.toJson` for this player's live counter.
+    pub(super) fn player_statistics(&self, player: PlayerRef) -> Option<String> {
+        if !self.is_logical_server() {
+            return None;
+        }
+        let json = self
+            .native_player_stats(player)?
+            .map_or_else(|| Stats::default().to_json(), Stats::to_json);
+        Some(json.to_string())
+    }
+
+    /// Decode with the server's registries before entering the player's turn.
+    pub(super) fn player_set_statistics(&mut self, player: PlayerRef, snapshot: &str) -> bool {
+        if !self.is_logical_server() {
+            return false;
+        }
+        let Some(values) = Stats::decode_snapshot(snapshot, |registry, id| {
+            self.stat_registry_contains(registry, id)
+        }) else {
+            return false;
+        };
+        self.native_as_player_handle(player, |game| {
+            // A local counter loads lazily; guest turns already own their counter.
+            if game.lan_acting.is_none() {
+                game.load_stats();
+            }
+            game.stats.replace_values(values);
+        })
+    }
+
     /// `Player.awardStat(stat, amount)`: adds `amount`, as the game does
     /// for its own counts, so `player_stat_award` hears it and may rewrite or cancel
     /// it, and scoreboard criteria follow. False for a player it can't
@@ -166,8 +196,195 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::native_entity_refs::tests::with_game;
-    use mod_api::StatType;
+    use super::super::{
+        native_entity_refs::tests::{fixture_root, run_fresh_cases, with_game},
+        native_guest_turn_tests::with_guests,
+    };
+    use mod_api::{Flow, Hooks, PlayerStatAwardEvent, ServerHost, StatType};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    struct ObserveAwards(Arc<AtomicUsize>);
+
+    #[mod_api::__subscriptions]
+    impl Hooks for ObserveAwards {
+        fn player_stat_award(
+            &self,
+            _: &mut dyn ServerHost,
+            _: &mut PlayerStatAwardEvent<'_>,
+        ) -> Flow {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Flow::Continue
+        }
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn statistics_restore_updates_live_scores_and_next_request_without_awarding() {
+        use serde_json::{Value, json};
+        use sunrise_client::{
+            lan::{Out, PlayerSender, playerdata::uuid_ints},
+            scoreboard::{RenderType, literal},
+        };
+        use sunrise_protocol::{
+            buf::Reader,
+            ids::play::clientbound::AWARD_STATS,
+            packets::play::{ClientCommand, Clientbound, Serverbound},
+        };
+
+        if run_fresh_cases(
+            "game::native_player_stats::tests::statistics_restore_updates_live_scores_and_next_request_without_awarding",
+            "SUNRISE_STATISTICS_SNAPSHOT_CHILD",
+            &["restore"],
+        ) {
+            return;
+        }
+        sunrise_world::datafix::set_resources(&fixture_root());
+        let awards = Arc::new(AtomicUsize::new(0));
+        let mods = vec![mod_api::ModEntry::new(
+            "observe_awards",
+            Box::new(ObserveAwards(awards.clone())),
+        )]
+        .into();
+        mod_platform::testing::with_mods(mods, || {
+            with_guests(|game| {
+                let world = tempfile::tempdir().unwrap();
+                game.world_root = world.path().to_path_buf();
+                game.load_scoreboard();
+                assert!(mod_api::__private::listened(
+                    mod_api::HookId::PlayerStatAward
+                ));
+
+                let version = sunrise_world::DATA_VERSION;
+                let empty = json!({"DataVersion": version, "stats": {}});
+                let player = game.player(12).unwrap();
+                let other = game.player(13).unwrap();
+                let stale = mod_api::__private::game::player_ref(player.entity(), 999);
+                assert!(stale.statistics(game).is_none());
+                assert!(!stale.set_statistics(game, &empty.to_string()));
+                let before = player.statistics(game).unwrap();
+                assert_eq!(serde_json::from_str::<Value>(&before).unwrap(), empty);
+
+                // No DataVersion: vanilla's StatsCounterFix upgrades this flat counter.
+                assert!(player.set_statistics(game, r#"{"stat.jump":6}"#));
+                assert_eq!(player.stat(game, StatType::Custom, "jump"), Some(6));
+                assert_eq!(serde_json::from_str::<Value>(&before).unwrap(), empty);
+
+                let host = game.lan.as_mut().unwrap();
+                let stats = &mut host.play.get_mut(&12).unwrap().stats;
+                stats.add("mined", "minecraft:stone", 6);
+                stats.custom("jump", 3);
+                stats.custom("deaths", 2);
+                stats.events.clear();
+                stats.take_dirty();
+                host.play.entry(13).or_default().stats.custom("jump", 17);
+                let other_before = other.statistics(game).unwrap();
+                let board = &mut game.score.board;
+                for (name, criteria, score) in [
+                    ("jump", "minecraft.custom:minecraft.jump", 50),
+                    ("mined", "minecraft.mined:minecraft.stone", 40),
+                    ("deaths", "minecraft.custom:minecraft.deaths", 11),
+                    ("dummy", "dummy", 80),
+                ] {
+                    assert!(board.add_objective(
+                        name,
+                        criteria,
+                        literal(name),
+                        RenderType::Integer,
+                        false,
+                        None
+                    ));
+                    board.set("guest12", name, score);
+                }
+                board.set("guest13", "jump", 17);
+
+                let before = player.statistics(game).unwrap();
+                assert!(!player.set_statistics(game, r#"{"stats":{}"#));
+                assert_eq!(player.statistics(game).unwrap(), before);
+                let restored = json!({
+                    "DataVersion": version,
+                    "stats": {"minecraft:custom": {"minecraft:jump": -7, "minecraft:deaths": 2}}
+                });
+                assert!(player.set_statistics(game, &restored.to_string()));
+                assert_eq!(player.stat(game, StatType::Mined, "stone"), Some(0));
+                assert_eq!(other.statistics(game).unwrap(), other_before);
+                let board = &game.score.board;
+                for (holder, name, value) in [
+                    ("guest12", "jump", -7),
+                    ("guest12", "mined", 0),
+                    ("guest12", "deaths", 11),
+                    ("guest12", "dummy", 80),
+                    ("guest13", "jump", 17),
+                ] {
+                    assert_eq!(
+                        board.score(holder, name).unwrap().value,
+                        value,
+                        "{holder}/{name}"
+                    );
+                }
+
+                let (tx, rx) = std::sync::mpsc::channel();
+                game.lan
+                    .as_mut()
+                    .unwrap()
+                    .hub
+                    .update_guest(12, |guest| {
+                        guest.sender = PlayerSender::new(tx, Arc::default());
+                    })
+                    .unwrap();
+                game.lan_guest_packet(12, Serverbound::ClientCommand(ClientCommand { action: 1 }));
+                let host = game.lan.as_ref().unwrap();
+                let hub = &host.hub;
+                let id = |registry, key| hub.registry_id(registry, key).unwrap();
+                let mut responses = Vec::new();
+                for out in rx.try_iter() {
+                    let bodies = match out {
+                        Out::Packet(body) => vec![body],
+                        Out::Packets(bodies) => bodies,
+                        Out::Disconnect(_) => panic!("statistics request disconnected the guest"),
+                    };
+                    for body in bodies {
+                        let mut r = Reader::new(&body);
+                        let id = r.varint().unwrap();
+                        if id == AWARD_STATS {
+                            let Clientbound::AwardStats(response) =
+                                Clientbound::decode(id, r.rest()).unwrap()
+                            else {
+                                panic!("not an AwardStats response");
+                            };
+                            responses.push(response.stats);
+                        }
+                    }
+                }
+                assert_eq!(
+                    responses,
+                    [vec![
+                        (
+                            id("minecraft:stat_type", "minecraft:custom"),
+                            id("minecraft:custom_stat", "minecraft:jump"),
+                            -7
+                        ),
+                        (
+                            id("minecraft:stat_type", "minecraft:mined"),
+                            id("minecraft:block", "minecraft:stone"),
+                            0
+                        ),
+                    ]]
+                );
+                game.save_connected_guest_statistics(host);
+                let path = super::super::stats::player_json(world.path(), "stats", uuid_ints(12));
+                let saved: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+                assert_eq!(saved, restored);
+
+                assert!(player.set_statistics(game, &json!({"DataVersion": version}).to_string()));
+                let cleared = player.statistics(game).unwrap();
+                assert_eq!(serde_json::from_str::<Value>(&cleared).unwrap(), empty);
+                assert_eq!(awards.load(Ordering::Relaxed), 0);
+            });
+        });
+    }
 
     #[test]
     #[ignore = "daily"]

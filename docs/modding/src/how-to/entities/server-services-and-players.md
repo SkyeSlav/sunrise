@@ -71,6 +71,22 @@ In `player_stat_award`, find the recipient with
 even if a nested turn has displaced them. This does not make displaced players
 available for statistic writes.
 
+On the server, `player.statistics(host)` takes `&dyn Host` and returns owned save
+JSON (`Option<String>`): namespaced statistic types and entries under `stats`,
+with the current `DataVersion`. An online player without counters has an empty
+map; a stale or unavailable player gives `None`, as does a client host.
+
+`player.set_statistics(host, snapshot)` takes `&mut dyn ServerHost` and borrowed
+JSON. It upgrades older saves, reports decode errors and keeps recoverable
+registered counters. An absent or empty `stats` map clears the counters. It
+returns `false` without changing the player for malformed JSON, a snapshot that
+cannot be decoded as a map, or a player unavailable for writes. A successful
+restore replaces rather than merges counters: omitted counters read as zero,
+and only changed statistic-criterion scores are updated. The next regular
+statistics request sends the changed counts, including zero for removals, and
+the normal player save persists the new map. Restoring does not fire
+`player_stat_award`.
+
 `player.level(host)` returns the authoritative `LevelRef`;
 `player.dimension(host)` returns its dimension `Identifier`, including registered
 custom dimensions. Both accept `&dyn Host`. On a server they identify the player's

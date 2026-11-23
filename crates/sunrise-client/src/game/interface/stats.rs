@@ -5,8 +5,7 @@
 use super::native_hooks::PhantomSpawnResult;
 use super::{Dim, Game};
 use std::path::PathBuf;
-use sunrise_core::geometry::Vec3;
-use sunrise_core::random::RandomSource;
+use sunrise_core::{geometry::Vec3, identifier::Identifier, random::RandomSource};
 
 pub(super) use sunrise_gameplay::stats::{Stats, locate_player_json, player_json};
 use sunrise_gameplay::stats::{namespaced, stat_registry};
@@ -57,26 +56,16 @@ impl Game<'_> {
         }
         let valid = amount >= 0
             && stat_registry(&new_ty).is_some_and(|registry| {
-                let known = |registry: &str, id: &str| {
-                    if let Some(host) = self.lan.as_ref() {
-                        use sunrise_core::identifier::Identifier;
-                        // Parsing aliases here would let counters, criteria and packets
-                        // disagree about the spelling of the same statistic.
-                        let (Some(registry), Some(id)) = (
-                            Identifier::parse_namespaced(registry),
-                            Identifier::parse_namespaced(id),
-                        ) else {
-                            return false;
-                        };
-                        return host.hub.synced_id(&registry, &id).is_some();
-                    }
-                    self.ui
-                        .registries
-                        .ids(registry)
-                        .iter()
-                        .any(|entry| entry == id)
+                // Unlike a save document, rewrites must already use the canonical spelling
+                // shared by counters, criteria and packets.
+                let (Some(ty), Some(key)) = (
+                    Identifier::parse_namespaced(&new_ty),
+                    Identifier::parse_namespaced(&new_key),
+                ) else {
+                    return false;
                 };
-                known("minecraft:stat_type", &new_ty) && known(registry, &new_key)
+                self.stat_registry_contains("minecraft:stat_type", &ty)
+                    && self.stat_registry_contains(registry, &key)
             });
         if valid {
             Some((new_ty, new_key, amount))
@@ -91,6 +80,18 @@ impl Game<'_> {
             Some((ty.to_owned(), key.to_owned(), n))
         }
     }
+    pub(super) fn stat_registry_contains(&self, registry: &str, id: &Identifier) -> bool {
+        if let Some(host) = self.lan.as_ref() {
+            return Identifier::parse_namespaced(registry)
+                .is_some_and(|registry| host.hub.synced_id(&registry, id).is_some());
+        }
+        self.ui
+            .registries
+            .ids(registry)
+            .iter()
+            .any(|entry| entry.split_once(':') == Some((id.namespace(), id.path())))
+    }
+
     fn stats_path(&self) -> Option<PathBuf> {
         Some(locate_player_json(
             &self.world_root,
