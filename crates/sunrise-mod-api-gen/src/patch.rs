@@ -812,8 +812,10 @@ struct Tree {
 /// The patch crate for `targets` (as `[[native.mixin]]` rows write them), from the pinned game source
 /// at `root`, which `index` (the build's `functions.json`) describes. `krate` is the patch crate's
 /// name. A target's file and verdict come from the index, and its text is checked against it
-/// before it is copied: the source is never walked. Every target that can't be copied is refused
-/// by name; the crate is returned only when none is.
+/// before it is copied: the source is never walked. A lower crate's mirror retains the crate-root
+/// re-exports and alias chains its kept imports depend on, without keeping unrelated imports in
+/// other modules. Every target that can't be copied is refused by name; the crate is returned only
+/// when none is.
 pub fn generate(
     root: &Path,
     krate: &str,
@@ -1089,11 +1091,12 @@ pub fn generate(
             idents_in(&tree_tokens(tree), &mut used);
             used
         });
-        let narrowing = used.as_ref().map(|used| Narrowing {
+        let mut narrowing = used.as_ref().map(|used| Narrowing {
             used,
             linked: &extras.linked,
+            root_bindings: BTreeSet::new(),
         });
-        let body = match mirror(&mut source, source_crate, tree, bridges, narrowing.as_ref()) {
+        let body = match mirror(&mut source, source_crate, tree, bridges, narrowing.as_mut()) {
             Ok(body) => body,
             Err(why) => {
                 return Err(targets
@@ -1451,6 +1454,9 @@ struct Narrowing<'a> {
     /// or from std, is kept whatever it names. A copy may call a trait's method without naming
     /// the trait (`angle.mcos()` from `Mth`), and such an import resolves as it did in the game.
     linked: &'a BTreeSet<String>,
+    /// The bindings kept imports depend on at this crate's root, never a reason to keep a
+    /// same-named import in a child module.
+    root_bindings: BTreeSet<String>,
 }
 
 /// The statics std's `thread_local!` declares in `mac`, with their attributes and visibility;
@@ -1504,7 +1510,7 @@ fn mirror(
     path: &str,
     tree: &Tree,
     bridges: &[syn::Ident],
-    narrowing: Option<&Narrowing<'_>>,
+    mut narrowing: Option<&mut Narrowing<'_>>,
 ) -> Result<proc_macro2::TokenStream, String> {
     let items = source.module(path)?.items.clone();
     let original: syn::Path =
@@ -1549,7 +1555,8 @@ fn mirror(
             _ => None,
         })
         .collect();
-    let root = !path.contains("::");
+    let depth = path.matches("::").count();
+    let root = depth == 0;
     let only_public =
         root || (path.split("::").next() != Some("sunrise_client") && tree.copies.is_empty());
     // A `thread_local!` names the statics it declares. Only a public one can be re-exported:
@@ -1633,21 +1640,7 @@ fn mirror(
         };
         quote!(#cfg pub use #original::#ident;)
     });
-    let uses = uses(&items).into_iter().filter_map(|item| {
-        let mut item = item.clone();
-        item.tree = filter_use_tree(item.tree, None, None, &|name, root| {
-            // A `use` naming a child mirror or a copy would collide with it. In a lower
-            // crate, only the listed functions' modules are widened: other private imports
-            // wouldn't resolve, so keep only names the copies and helpers refer to, and in a
-            // copy's module every import from std and the linked crates ([`Narrowing`]).
-            !reserved.contains(name)
-                && narrowing.is_none_or(|narrowing| {
-                    narrowing.used.contains(name)
-                        || (!tree.copies.is_empty() && narrowing.resolves(root))
-                })
-        })?;
-        Some(item)
-    });
+    // Let each child contribute its retained imports' root dependencies before pruning the root.
     let mut children = Vec::new();
     for (name, child) in &tree.children {
         let ident = format_ident!("{name}");
@@ -1656,10 +1649,57 @@ fn mirror(
             &format!("{path}::{name}"),
             child,
             bridges,
-            narrowing,
+            narrowing.as_deref_mut(),
         )?;
         children.push(quote!(pub mod #ident { #inner }));
     }
+    let imports = uses(&items);
+    let mut use_path = Vec::new();
+    let uses = loop {
+        let mut dependencies = BTreeSet::new();
+        let retained: Vec<_> = imports
+            .iter()
+            .filter_map(|&item| {
+                let tree = filter_use_tree(&item.tree, &mut use_path, &mut |name, segments| {
+                    // A binding naming a child mirror or copy would collide with it. In a
+                    // lower crate only the listed functions' modules are widened, so other
+                    // private imports may not resolve. Keep what the copies and helpers name,
+                    // and in a copy's module keep imports from std and the linked crates.
+                    let keep = name.is_none_or(|ident| {
+                        let name = ident.to_string();
+                        !reserved.contains(&name)
+                            && narrowing.as_ref().is_none_or(|narrowing| {
+                                narrowing.used.contains(&name)
+                                    || (root && narrowing.root_bindings.contains(&unraw(ident)))
+                                    || (!tree.copies.is_empty() && narrowing.resolves(segments[0]))
+                            })
+                    });
+                    if keep
+                        && narrowing.is_some()
+                        && item.leading_colon.is_none()
+                        && let Some(binding) = root_use_dependency(segments, depth)
+                    {
+                        dependencies.insert(unraw(binding));
+                    }
+                    keep
+                })?;
+                Some(syn::ItemUse {
+                    tree,
+                    ..item.clone()
+                })
+            })
+            .collect();
+        if let Some(narrowing) = narrowing.as_mut() {
+            let before = narrowing.root_bindings.len();
+            narrowing.root_bindings.append(&mut dependencies);
+            // A root import can itself use an alias at the root. Repeat until no new binding
+            // is needed, without promoting those names into child scopes.
+            if root && narrowing.root_bindings.len() != before {
+                continue;
+            }
+        }
+        break retained;
+    };
     // Repeated before the children, which see them by textual scope as the game's did.
     let macros = source.scope_macros(path);
     let copies = &tree.copies;
@@ -1909,45 +1949,70 @@ fn may_import(tree: &syn::UseTree, prefix: Option<&syn::Ident>, name: &str) -> b
     }
 }
 
-/// Filter individual bindings, preserving paths and unnameable imports that can affect resolution.
-/// `keep` is asked about each binding with the first segment of its path (`sunrise_core` for
-/// `sunrise_core::trig::Mth`, in a group or not): `root` is that segment once a branch has one.
-fn filter_use_tree(
-    tree: syn::UseTree,
-    prefix: Option<&syn::Ident>,
-    root: Option<&syn::Ident>,
-    keep: &impl Fn(&str, &syn::Ident) -> bool,
+/// The first binding a relative import path needs at the crate root. A bare path counts only
+/// at the root itself, where it may refer to another root import rather than an external crate.
+fn root_use_dependency<'a>(path: &[&'a syn::Ident], depth: usize) -> Option<&'a syn::Ident> {
+    let tail = match path {
+        [first, rest @ ..] if *first == "crate" || (depth == 0 && *first == "self") => rest,
+        [first, ..] if *first == "super" => {
+            let (parents, rest) = path.split_at_checked(depth)?;
+            if depth == 0 || !parents.iter().all(|&part| part == "super") {
+                return None;
+            }
+            rest
+        }
+        _ if depth == 0 => path,
+        _ => return None,
+    };
+    tail.first()
+        .copied()
+        .filter(|&name| name != "self" && name != "super")
+}
+
+/// Filter individual leaves. For each leaf, `keep` sees the complete path and the name it binds
+/// (`None` for globs and `as _`, which have no binding to prune by name).
+fn filter_use_tree<'a>(
+    tree: &'a syn::UseTree,
+    path: &mut Vec<&'a syn::Ident>,
+    keep: &mut impl FnMut(Option<&syn::Ident>, &[&syn::Ident]) -> bool,
 ) -> Option<syn::UseTree> {
     use syn::UseTree::*;
-    match tree {
-        Path(mut path) => {
-            let root = root.unwrap_or(&path.ident).clone();
-            path.tree = Box::new(filter_use_tree(
-                *path.tree,
-                Some(&path.ident),
-                Some(&root),
-                keep,
-            )?);
-            Some(Path(path))
+    let (binding, last) = match tree {
+        Path(segment) => {
+            path.push(&segment.ident);
+            let child = filter_use_tree(&segment.tree, path, keep);
+            path.pop();
+            return Some(Path(syn::UsePath {
+                ident: segment.ident.clone(),
+                colon2_token: segment.colon2_token,
+                tree: Box::new(child?),
+            }));
         }
-        Group(mut group) => {
-            group.items = group
+        Group(group) => {
+            let items: syn::punctuated::Punctuated<_, _> = group
                 .items
-                .into_iter()
-                .filter_map(|item| filter_use_tree(item, prefix, root, keep))
+                .iter()
+                .filter_map(|item| filter_use_tree(item, path, keep))
                 .collect();
-            (!group.items.is_empty()).then_some(Group(group))
+            return (!items.is_empty()).then_some(Group(syn::UseGroup {
+                brace_token: group.brace_token,
+                items,
+            }));
         }
-        Name(ref name) => keep(
-            &use_binding(&name.ident, prefix).to_string(),
-            root.unwrap_or(&name.ident),
-        )
-        .then_some(tree),
-        Rename(ref rename) => (rename.rename == "_"
-            || keep(&rename.rename.to_string(), root.unwrap_or(&rename.ident)))
-        .then_some(tree),
-        Glob(_) => Some(tree),
-    }
+        Name(name) => (
+            Some(use_binding(&name.ident, path.last().copied())),
+            &name.ident,
+        ),
+        Rename(rename) => (
+            (rename.rename != "_").then_some(&rename.rename),
+            &rename.ident,
+        ),
+        Glob(_) => return keep(None, path).then(|| tree.clone()),
+    };
+    path.push(last);
+    let retained = keep(binding, path);
+    path.pop();
+    retained.then(|| tree.clone())
 }
 
 #[cfg(test)]
@@ -2170,11 +2235,12 @@ mod tests {
             ..Tree::default()
         };
         let linked = BTreeSet::new();
-        let narrowing = Narrowing {
+        let mut narrowing = Narrowing {
             used: &used,
             linked: &linked,
+            root_bindings: BTreeSet::new(),
         };
-        let out = mirror(&mut source, "fixture", &tree, &[], Some(&narrowing)).unwrap();
+        let out = mirror(&mut source, "fixture", &tree, &[], Some(&mut narrowing)).unwrap();
         let parsed: syn::File = syn::parse2(out).unwrap();
         let imports: Vec<String> = uses(&parsed.items)
             .iter()
@@ -2188,6 +2254,187 @@ mod tests {
                 "std :: collections :: *",
             ]
         );
+    }
+
+    fn root_reexport_fixture(
+        root_path: &str,
+    ) -> (tempfile::TempDir, crate::functions::FunctionIndex) {
+        use crate::functions::{CrateModules, Function, FunctionIndex, ModuleFile, sha256};
+
+        let dir = tempfile::tempdir().unwrap();
+        let lib = "pub use ::std::num as base;
+                   pub use self::base as middle;
+                   pub use crate::middle as numbers;
+                   pub use numbers as types;
+                   pub use ::std::marker as unrelated;
+                   pub mod parent;";
+        let imports = format!(
+            "use {root_path}::types::{{NonZeroU8, NonZeroU16}};\n\
+             use crate::unrelated::PhantomData as middle;\n"
+        );
+        let copy = "pub fn echo(n: NonZeroU8) -> NonZeroU8 { n }";
+        let child = format!("{imports}{copy}");
+        let modules = [
+            ("fixture", "lib.rs", lib),
+            ("fixture::parent", "parent.rs", "pub mod child;"),
+            ("fixture::parent::child", "child.rs", &child),
+        ]
+        .into_iter()
+        .map(|(module, path, text)| {
+            std::fs::write(dir.path().join(path), text).unwrap();
+            (
+                module.into(),
+                vec![ModuleFile {
+                    path: path.into(),
+                    sha256: sha256(text.as_bytes()),
+                }],
+            )
+        })
+        .collect();
+        let index = FunctionIndex {
+            crates: BTreeMap::from([(
+                "fixture".into(),
+                CrateModules {
+                    library: "fixture".into(),
+                    modules,
+                },
+            )]),
+            functions: BTreeMap::from([(
+                "fixture::parent::child::echo".into(),
+                Function {
+                    module: "fixture::parent::child".into(),
+                    file: "child.rs".into(),
+                    span: [imports.len(), child.len()],
+                    signature_hash: String::new(),
+                    sha256: sha256(copy.as_bytes()),
+                    digests: None,
+                },
+            )]),
+            ..FunctionIndex::default()
+        };
+        (dir, index)
+    }
+
+    #[test]
+    fn a_lower_crate_copy_resolves_imports_through_root_reexports() {
+        use syn::UseTree;
+
+        for (root_path, qualifiers) in [
+            ("crate", &["crate"][..]),
+            ("super::super", &["super", "super"][..]),
+        ] {
+            let (dir, index) = root_reexport_fixture(root_path);
+            let targets = ["fixture::parent::child::echo".to_owned()];
+            let patch =
+                generate(dir.path(), "patch", &targets, &Extras::default(), &index).unwrap();
+            let lib: syn::File = syn::parse_str(&patch.libs[0].1).unwrap();
+            let child =
+                ["parent", "child"]
+                    .into_iter()
+                    .fold(lib.items.as_slice(), |items, name| {
+                        crate::source::inline_module_items(items, name)
+                            .next()
+                            .unwrap()
+                    });
+            let copy = child
+                .iter()
+                .find_map(|item| match item {
+                    Item::Fn(f) if f.sig.ident == "echo" => Some(f),
+                    _ => None,
+                })
+                .unwrap();
+            let syn::ReturnType::Type(_, output) = &copy.sig.output else {
+                panic!("the copied function lost its return type");
+            };
+            let syn::Type::Path(output) = output.as_ref() else {
+                panic!("expected an imported type");
+            };
+            let imported = output.path.get_ident().unwrap();
+            let imports = uses(child);
+            // Neither the unused grouped type nor the unrelated child binding of `middle`
+            // should survive just because their root import or another alias is needed.
+            assert_eq!(imports.len(), 1);
+            let mut path = &imports[0].tree;
+            for &qualifier in qualifiers {
+                let UseTree::Path(segment) = path else {
+                    panic!("missing {qualifier} qualifier")
+                };
+                assert_eq!(segment.ident, qualifier);
+                path = &segment.tree;
+            }
+            let UseTree::Path(alias) = path else {
+                panic!("missing root alias in the child import")
+            };
+            let UseTree::Group(group) = alias.tree.as_ref() else {
+                panic!("missing imported type")
+            };
+            assert_eq!(group.items.len(), 1);
+            assert!(
+                matches!(group.items.first(), Some(UseTree::Name(item)) if item.ident == *imported)
+            );
+
+            let aliases: BTreeMap<_, _> = uses(&lib.items)
+                .into_iter()
+                .filter_map(|item| {
+                    let mut segments = Vec::new();
+                    let mut path = &item.tree;
+                    while let UseTree::Path(segment) = path {
+                        segments.push(segment.ident.to_string());
+                        path = &segment.tree;
+                    }
+                    let UseTree::Rename(rename) = path else {
+                        return None;
+                    };
+                    Some((
+                        rename.rename.to_string(),
+                        (
+                            item.leading_colon.is_some(),
+                            segments,
+                            rename.ident.to_string(),
+                        ),
+                    ))
+                })
+                .collect();
+            assert_eq!(aliases.len(), 4);
+            let mut name = alias.ident.to_string();
+            for prefix in [None, Some("crate"), Some("self")] {
+                let (absolute, segments, next) = &aliases[&name];
+                assert!(!absolute);
+                assert!(segments.iter().map(String::as_str).eq(prefix));
+                name = next.clone();
+            }
+            let (absolute, segments, item) = &aliases[&name];
+            assert!(*absolute);
+            let resolved: Vec<_> = segments
+                .iter()
+                .map(String::as_str)
+                .chain([item.as_str()])
+                .collect();
+            assert_eq!(resolved, ["std", "num"]);
+            assert_eq!(imported, "NonZeroU8");
+        }
+    }
+
+    #[test]
+    fn a_lower_crate_copy_refuses_a_changed_or_missing_root_reexport_source() {
+        let (dir, index) = root_reexport_fixture("crate");
+        let targets = ["fixture::parent::child::echo".to_owned()];
+        let root = dir.path().join("lib.rs");
+        for replacement in [Some("pub mod parent;"), None] {
+            if let Some(replacement) = replacement {
+                std::fs::write(&root, replacement).unwrap();
+            } else {
+                std::fs::remove_file(&root).unwrap();
+            }
+            let errors =
+                generate(dir.path(), "patch", &targets, &Extras::default(), &index).unwrap_err();
+            let [refusal] = errors.as_slice() else {
+                panic!("expected one refusal, got {errors:?}")
+            };
+            assert_eq!(refusal.code, "E_MIXIN_SOURCE");
+            assert_eq!(refusal.target, targets[0]);
+            assert!(refusal.why.contains("lib.rs"), "{refusal}");
+        }
     }
 
     #[test]
@@ -2531,13 +2778,21 @@ mod tests {
                     use crate::helpers::Helper;";
         let used = BTreeSet::new();
         let linked = BTreeSet::from(["sunrise_core".to_owned()]);
-        let narrowing = Narrowing {
-            used: &used,
-            linked: &linked,
-        };
         let imports = |tree: &Tree| {
+            let mut narrowing = Narrowing {
+                used: &used,
+                linked: &linked,
+                root_bindings: BTreeSet::new(),
+            };
             let mut source = source_of("lower::render", text);
-            let out = mirror(&mut source, "lower::render", tree, &[], Some(&narrowing)).unwrap();
+            let out = mirror(
+                &mut source,
+                "lower::render",
+                tree,
+                &[],
+                Some(&mut narrowing),
+            )
+            .unwrap();
             let parsed: syn::File = syn::parse2(out).unwrap();
             uses(&parsed.items)
                 .iter()

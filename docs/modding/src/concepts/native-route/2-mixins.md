@@ -170,7 +170,7 @@ replacement is given coordinates beyond the columns of the chunk or tile being g
 | The selector lands inside a closure, which can run separately from the target function. | Select a site outside the closure, or target a replaceable function that the closure calls. |
 | `WRAP_OPERATION` would impose a type on a struct-literal receiver and could change method resolution. | Use `AFTER_CALL` to observe the call, or wrap a method on one of the target's reference parameters. |
 | `RETURN` cannot cover an implicit exit through `?`, or the target result type is unresolved. | For `?`, use `HEAD` or hook the caller. If the result is plain `Self`, use the concrete impl type in your `$value` binding and helper signature; projections such as `Self::Output` are not resolved. |
-| An import needed by the helper is not available in the copied scope. Lower-crate mirrors keep named imports used by the copies and helpers, not every sibling in a grouped `use`. | Name the item explicitly in the helper, or use its full path if it is accessible. A private item outside the copied scope may need a different target. |
+| An import needed by the helper is not available in the copied scope. Lower-crate mirrors keep named imports used by the copies and helpers, along with the crate-root re-exports and alias chains those imports depend on. They do not keep unrelated siblings in a grouped `use` or widen unrelated scopes. | Name the item explicitly in the helper, or use its full path if it is accessible. A private item outside the copied scope may need a different target. |
 
 ## With other mods
 
