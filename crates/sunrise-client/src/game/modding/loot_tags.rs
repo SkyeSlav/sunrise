@@ -11,6 +11,9 @@ impl Tags for LootTags<'_> {
         let item = mod_api::__private::item_key_id(item)?;
         mod_api::__private::with_tag_name(tag, |tag| Some(self.0.contains("item", tag?, item)))
     }
+    fn damage_type_in_tag(&self, damage_type: &str, tag: TagKey) -> Option<bool> {
+        mod_api::__private::with_tag_name(tag, |tag| self.0.damage_type_in_tag(damage_type, tag?))
+    }
     fn item_tags(&self, item: ItemKey) -> Option<Vec<Identifier>> {
         super::native_tags::item_tags(self.0, item)
     }

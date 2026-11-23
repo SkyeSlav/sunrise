@@ -19,6 +19,7 @@ fn data(tables: Vec<(&str, Value)>) -> LootData {
         item_tag_names: None,
         block_tag_names: None,
         fluid_tag_names: None,
+        damage_types: vec![],
         smelting: vec![],
     }
 }

@@ -415,12 +415,15 @@ for example when building a Part or a recipe kind.
 A bare name uses the `minecraft` namespace; an invalid name refuses the mod at load.
 `host.tags()` and a restricted level host's `tags()` expose the same `Tags` service. Later,
 `tags.key(&identifier)` resolves the same key from a validated identifier. Naming a tag does
-not require it to have any members. Item, block and fluid tags share one name table; the
-membership method chooses the registry. `tags.name(tag_key)` returns the key's canonical
+not require it to have any members. Item, block, fluid and damage type tags share one name table;
+the membership method chooses the registry. `tags.name(tag_key)` returns the key's canonical
 `Identifier` even before tags have been applied or when no tag binds that name. It returns
 `None` if the key has no name. Reload replaces membership, not key identity.
 `tags.is_in_tag(item_key, tag_key)` tests merged item membership. It returns `Some(false)`
-for either an absent tag or a loaded empty tag. Use `tags.items(tag_key)`,
+for either an absent tag or a loaded empty tag. `tags.damage_type_in_tag(damage_type, tag_key)`
+tests a damage type, by the name a hit's `HurtSource::damage_type` gives, the same way; it
+returns `None` for a damage type the registry doesn't have, and from a tag service with no
+damage type data. Use `tags.items(tag_key)`,
 `tags.blocks(tag_key)` or `tags.fluids(tag_key)` to tell them apart. Each returns a
 `TagMembers<K>` for the registry's key type:
 

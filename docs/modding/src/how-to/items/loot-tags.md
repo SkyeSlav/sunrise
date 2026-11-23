@@ -10,6 +10,9 @@ and call `is_in_tag(item, tag)` for item membership. The `items(tag)`, `blocks(t
 and `fluids(tag)` methods return `TagMembers::Missing` if a tag is absent,
 `TagMembers::Members(keys)` for a loaded tag's ordered members (possibly empty),
 or `TagMembers::Unavailable` if a required key mapping is not available.
+`damage_type_in_tag(damage_type, tag)` tests a damage type against the evaluation's bound
+damage type tags (`DamageSource.is(TagKey)`); it returns `None` for a damage type the bound
+registry doesn't have.
 Use `item_tags(item)`, `block_tags(block)` or `fluid_tags(fluid)` for the names of the
 bound tags that contain that registry entry. A resolved entry with no tags returns an
 empty list; an unresolved key, unavailable registry snapshot or incomplete result returns

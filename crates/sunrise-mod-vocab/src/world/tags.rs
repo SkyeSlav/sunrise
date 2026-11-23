@@ -30,8 +30,8 @@ pub enum TagMembers<K> {
     Unavailable,
 }
 
-/// Read merged block, item and fluid tags without borrowing the game's registry structs.
-/// A client reads the tags its server sent. The list methods distinguish absent tags
+/// Read merged block, item, fluid and damage type tags without borrowing the game's registry
+/// structs. A client reads the tags its server sent. The list methods distinguish absent tags
 /// from loaded empty tags, and report unavailable until that registry's authoritative tags
 /// are applied or if a member key cannot be resolved. A retained tag key reads the current
 /// snapshot on each call, including after reload. Refresh retained lists after `tags_updated`.
@@ -50,6 +50,14 @@ pub trait Tags {
     /// unavailable authoritative tags or item mappings answer None.
     fn is_in_tag(&self, _item: ItemKey, _tag: TagKey) -> Option<bool> {
         unimplemented!("Tags::is_in_tag")
+    }
+    /// `DamageSource.is(TagKey)`: whether damage type `damage_type`, a hit's
+    /// [`HurtSource::damage_type`](crate::HurtSource::damage_type) (`minecraft:arrow`), is in the
+    /// current damage type tag, as bound at the last data reload. An unknown tag is false;
+    /// an unknown damage type, or unavailable authoritative damage type tags, answer None.
+    /// A tag service with no damage type data, such as a crafting kind's, answers None.
+    fn damage_type_in_tag(&self, _damage_type: &str, _tag: TagKey) -> Option<bool> {
+        None
     }
     /// The names of the tags that currently contain `item`, each once, in no specified order.
     /// `None` means the item mapping or authoritative tag names are unavailable.

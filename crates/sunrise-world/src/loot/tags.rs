@@ -83,6 +83,12 @@ pub trait LootTags {
         self.members(registry, tag)
             .is_some_and(|members| members.iter().any(|member| member == id))
     }
+    /// `DamageSource.is(TagKey)`: whether `damage_type` is in the bound damage type tag `tag`.
+    /// An unbound tag is false; a damage type the bound registry lacks, or no bound damage
+    /// type registry, answer None.
+    fn damage_type_in_tag(&self, _damage_type: &str, _tag: &str) -> Option<bool> {
+        None
+    }
 }
 
 impl LootTags for super::LootData {
@@ -108,6 +114,13 @@ impl LootTags for super::LootData {
             .get(registry)
             .and_then(|tags| tags.get(tag))
             .is_some_and(|members| members.iter().any(|member| member == id))
+    }
+
+    fn damage_type_in_tag(&self, damage_type: &str, tag: &str) -> Option<bool> {
+        self.damage_types
+            .binary_search_by(|id| id.as_str().cmp(damage_type))
+            .ok()?;
+        Some(self.contains("damage_type", tag, damage_type))
     }
 }
 

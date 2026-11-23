@@ -236,6 +236,15 @@ main-hand weapon (`DamageSource.getEntity().getWeaponItem()`): an off-hand cross
 name the saved crossbow in `weapon` and the shooter's main-hand sword in `causing_weapon`.
 An absent, unknown or non-living cause has no `causing_weapon`.
 
+A damage listener tests its source against a damage type tag (`DamageSource.is(TagKey)`) through
+its host's tags: `host.tags().damage_type_in_tag(event.source.damage_type, tag)`, with `tag` a
+`TagKey` such as `minecraft:is_projectile` ([Registry keys](registry-keys.md)). It answers the
+tags as bound at the last data reload, `Some(false)` for a tag no data defines, and `None` for a
+damage type the registry doesn't have or while the damage type tags are unavailable. On a client,
+including the hit host of a mount it predicts, it answers the damage registry and tags its server
+sent, the same membership the server's host answers.
+A custom loot function or condition reads the same through its context's `tags()`.
+
 The event is a generated struct named after the catalog hook, in CamelCase plus `Event`.
 The game constructs it and passes it to the listener. It is `#[non_exhaustive]`: a mod cannot build it
 with a struct literal, and a destructuring pattern must include `..`. Listeners still read and write

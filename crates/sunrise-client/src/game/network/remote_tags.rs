@@ -11,6 +11,8 @@ const READ_REGISTRIES: [(&str, TagRegistry); 3] = [
     ("minecraft:item", TagRegistry::Item),
     ("minecraft:fluid", TagRegistry::Fluid),
 ];
+/// The synced registry whose tags `Tags::damage_type_in_tag` reads.
+const DAMAGE_TYPE: &str = "minecraft:damage_type";
 
 impl Game<'_> {
     /// `ClientboundUpdateTagsPacket` in play.
@@ -61,7 +63,8 @@ impl Game<'_> {
         let Some(r) = self.remote.as_mut() else {
             return;
         };
-        if r.registries.tags.is_empty() {
+        let damage_types = r.registries.registries.get(DAMAGE_TYPE);
+        if r.registries.tags.is_empty() && damage_types.is_none() {
             r.tags = None;
             self.refresh_recipe_property_context();
             return;
@@ -78,6 +81,26 @@ impl Game<'_> {
             let members = |ids: &[i32]| ids.iter().filter_map(|&id| names.name(key, id)).collect();
             let tags = tags.iter().map(|(tag, ids)| (tag.clone(), members(ids)));
             items.set_tags(registry, tags.collect());
+        }
+        // The damage type registry and its tags, for `Tags::damage_type_in_tag`. A registry
+        // sent with no tag group binds its types with no tags, as vanilla binds received
+        // elements whose tag payload was omitted.
+        if let Some(types) = damage_types {
+            let members = |ids: &[i32]| {
+                ids.iter()
+                    .filter_map(|&id| names.name(DAMAGE_TYPE, id))
+                    .collect()
+            };
+            items.bind_damage_registry(
+                types.iter().map(|(name, _)| name.clone()).collect(),
+                r.registries
+                    .tags
+                    .get(DAMAGE_TYPE)
+                    .into_iter()
+                    .flatten()
+                    .map(|(tag, ids)| (tag.clone(), members(ids)))
+                    .collect(),
+            );
         }
         // Parts still use the local class overlay; mod tag-name lists keep the packet's bindings.
         super::class_tags::install(&mut items, self.res.facts());
@@ -1027,6 +1050,116 @@ mod tests {
                     0,
                     "tag-bound part detached before snapshot"
                 );
+            });
+        });
+    }
+
+    /// A client's damage type tags are the ones its server sent, at join and after a tag
+    /// update, for its own tag service, a tag listener and the hit host of a mount it predicts.
+    #[test]
+    #[ignore = "daily"]
+    fn a_client_reads_the_damage_type_tags_its_server_sent() {
+        use crate::game::native_entity_refs::tests::run_fresh_cases;
+        use mod_api::{LevelHost, Tags};
+        if run_fresh_cases(
+            "game::remote_tags::tests::a_client_reads_the_damage_type_tags_its_server_sent",
+            "SUNRISE_TEST_CLIENT_DAMAGE_TYPE_TAGS",
+            &["client", "no_group"],
+        ) {
+            return;
+        }
+        let case = std::env::var("SUNRISE_TEST_CLIENT_DAMAGE_TYPE_TAGS").unwrap();
+        const TYPES: [&str; 3] = [
+            "minecraft:arrow",
+            "minecraft:mob_attack",
+            "minecraft:in_fire",
+        ];
+        /// Whether `arrow` and `mob_attack` are in `minecraft:is_projectile`, and what an
+        /// unknown damage type answers.
+        type Reads = [Option<bool>; 3];
+        fn reads(tags: &dyn Tags) -> Reads {
+            let key = tags
+                .key(&Identifier::parse("minecraft:is_projectile").unwrap())
+                .unwrap();
+            [
+                tags.damage_type_in_tag("minecraft:arrow", key),
+                tags.damage_type_in_tag("minecraft:mob_attack", key),
+                tags.damage_type_in_tag("test:no_such_damage_type", key),
+            ]
+        }
+        struct DamageTagProbe(Arc<Mutex<Vec<Reads>>>);
+        #[mod_api::__subscriptions]
+        impl Hooks for DamageTagProbe {
+            fn tags_updated(&self, context: &dyn mod_api::ReloadContext, _: &mut TagsUpdatedEvent) {
+                self.0.lock().unwrap().push(reads(context.tags()));
+            }
+        }
+        // `is_projectile` holding the damage types at these registry ids.
+        let projectiles = |ids: Vec<i32>| UpdateTags {
+            registries: vec![RegistryTags {
+                registry: "minecraft:damage_type".into(),
+                tags: vec![TagEntry {
+                    name: "minecraft:is_projectile".into(),
+                    ids,
+                }],
+            }],
+        };
+        let predicting = |game: &mut super::Game<'_>| {
+            let hooks = game.damage_hooks.client_side();
+            let mut lent = sunrise_client::health::LentLevel::take(&mut game.world);
+            let seen = {
+                let hit = crate::game::native_hooks::HitLevel(
+                    game.predicting_damage_level(&mut lent, &hooks),
+                );
+                reads(hit.tags())
+            };
+            lent.give_back(&mut game.world);
+            seen
+        };
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mods = vec![ModEntry::new(
+            "damage_tag_probe",
+            Box::new(DamageTagProbe(seen.clone())),
+        )]
+        .into();
+        mod_platform::testing::with_mods(mods, || {
+            with_client_game(|game| {
+                let (pipe, _server) = sunrise_protocol::connection::Pipe::pair();
+                game.connect_local(pipe, "Steve").unwrap();
+                let registries = Arc::make_mut(&mut game.remote.as_mut().unwrap().registries);
+                registries.registries.insert(
+                    "minecraft:damage_type".into(),
+                    TYPES.map(|name| (name.to_owned(), None)).to_vec(),
+                );
+                if case == "no_group" {
+                    // A registry sent with no damage type tags: its types are known and
+                    // in no tag; an unknown type stays unanswered.
+                    game.handle_packet(login()).unwrap();
+                    let joined = [Some(false), Some(false), None];
+                    assert_eq!(reads(game), joined, "at join with no tag group");
+                    assert_eq!(predicting(game), joined, "the predicting hit host");
+                    assert_eq!(*seen.lock().unwrap(), [joined]);
+                    return;
+                }
+                registries.add_tags(&projectiles(vec![0]));
+                assert_eq!(reads(game), [None; 3], "before the login installs them");
+                assert_eq!(predicting(game), [None; 3]);
+
+                game.handle_packet(login()).unwrap();
+                let joined = [Some(true), Some(false), None];
+                assert_eq!(reads(game), joined, "at join");
+                assert_eq!(predicting(game), joined, "the predicting hit host at join");
+
+                game.handle_packet(C::UpdateTags(projectiles(vec![1])))
+                    .unwrap();
+                let updated = [Some(false), Some(true), None];
+                assert_eq!(reads(game), updated, "after a tag update");
+                assert_eq!(
+                    predicting(game),
+                    updated,
+                    "the predicting hit host after it"
+                );
+                assert_eq!(*seen.lock().unwrap(), [joined, updated]);
             });
         });
     }

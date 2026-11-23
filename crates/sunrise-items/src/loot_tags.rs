@@ -34,6 +34,24 @@ impl sunrise_world::loot::LootTags for Items {
         .get(tag)
         .is_some_and(|members| members.contains(id))
     }
+    /// The damage type registry and tags bound at the last reload
+    /// ([`Items::bind_component_damage_catalog`], [`Items::bind_damage_registry`]).
+    fn damage_type_in_tag(&self, damage_type: &str, tag: &str) -> Option<bool> {
+        let types = &self
+            .component_registry
+            .by_registry
+            .get("minecraft:damage_type")?
+            .ids;
+        if !types.iter().any(|id| id == damage_type) {
+            return None;
+        }
+        Some(
+            self.enchantments
+                .damage_tags
+                .get(tag)
+                .is_some_and(|members| members.contains(damage_type)),
+        )
+    }
 }
 
 #[cfg(test)]

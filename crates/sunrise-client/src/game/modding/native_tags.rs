@@ -15,6 +15,16 @@ pub(super) fn is_in_tag(items: Option<&Items>, item: ItemKey, tag: TagKey) -> Op
         )
     })
 }
+/// `DamageSource.is(TagKey)` over the damage type registry and tags `items` was bound to at
+/// its last reload. The tag's name is read on the call, so a key made after that reload resolves.
+pub(super) fn damage_type_in_tag(
+    items: Option<&Items>,
+    damage_type: &str,
+    tag: TagKey,
+) -> Option<bool> {
+    let items = items?;
+    mod_api::__private::with_tag_name(tag, |name| items.damage_type_in_tag(damage_type, name?))
+}
 pub(super) fn item_tags(tags: &dyn LootTags, item: ItemKey) -> Option<Vec<Identifier>> {
     let item = mod_api::__private::item_key_id(item)?;
     tags.item_tag_names()?
@@ -80,6 +90,10 @@ macro_rules! impl_tags {
             fn is_in_tag(&self, item: mod_api::ItemKey, tag: mod_api::TagKey) -> Option<bool> {
                 let $this = self;
                 $crate::game::native_tags::is_in_tag($items, item, tag)
+            }
+            fn damage_type_in_tag(&self, damage_type: &str, tag: mod_api::TagKey) -> Option<bool> {
+                let $this = self;
+                $crate::game::native_tags::damage_type_in_tag($items, damage_type, tag)
             }
             fn item_tags(&self, item: mod_api::ItemKey) -> Option<Vec<mod_api::Identifier>> {
                 let $this = self;
@@ -152,6 +166,10 @@ pub(in crate::game) const PACK_BINDING_CASES: [(&str, &[u8], bool); 3] = [
         false,
     ),
 ];
+
+#[cfg(test)]
+#[path = "native_damage_tag_tests.rs"]
+mod native_damage_tag_tests;
 
 #[cfg(test)]
 mod tests {
@@ -292,6 +310,93 @@ mod tests {
             "unresolved members must not produce a partial list"
         );
     }
+    /// A damage catalog of `in_fire` and `arrow`, with `tags` as its damage type tag files.
+    fn bind_damage(table: &mut Items, tags: serde_json::Value) {
+        let types: Vec<_> = ["in_fire", "arrow"]
+            .into_iter()
+            .map(|name| {
+                serde_json::json!({
+                    "id": format!("minecraft:{name}"), "message_id": name, "exhaustion": "3dcccccd",
+                    "scaling": "never", "effects": "hurt", "death_message_type": "default"
+                })
+            })
+            .collect();
+        let catalog = sunrise_world::damage_source::Catalog::from_json(
+            &serde_json::json!({"data_version": sunrise_world::DATA_VERSION, "types": types}),
+            &tags,
+        )
+        .unwrap();
+        std::sync::Arc::make_mut(&mut table.enchantments).bind_damage_catalog(&catalog);
+        table.bind_component_damage_catalog(&catalog);
+    }
+
+    /// Runs in a fresh child process: its keys intern tag names in the process-wide table.
+    #[test]
+    #[ignore = "daily"]
+    fn damage_type_membership_follows_the_last_bound_catalog() {
+        if crate::game::native_entity_refs::tests::run_fresh_cases(
+            "game::native_tags::tests::damage_type_membership_follows_the_last_bound_catalog",
+            "SUNRISE_TEST_DAMAGE_TYPE_CATALOG",
+            &["catalog"],
+        ) {
+            return;
+        }
+        let tag =
+            |name| mod_api::__private::tag_key(&mod_api::Identifier::parse(name).unwrap()).unwrap();
+        let fire = tag("minecraft:is_fire");
+        let mut table = Items::empty();
+        let view = TagView(Some(&table));
+        assert_eq!(view.damage_type_in_tag("minecraft:in_fire", fire), None);
+        assert_eq!(
+            TagView(None).damage_type_in_tag("minecraft:in_fire", fire),
+            None
+        );
+        bind_damage(
+            &mut table,
+            serde_json::json!({
+                "minecraft:is_fire": r#"{"values":["minecraft:in_fire"]}"#,
+                "minecraft:bypasses_armor": r#"{"values":[]}"#,
+            }),
+        );
+        let view = TagView(Some(&table));
+        assert_eq!(
+            view.damage_type_in_tag("minecraft:in_fire", fire),
+            Some(true)
+        );
+        assert_eq!(
+            view.damage_type_in_tag("minecraft:arrow", fire),
+            Some(false)
+        );
+        assert_eq!(view.damage_type_in_tag("test:unknown", fire), None);
+        // A key first made after the catalog was bound resolves on its first read.
+        let armor = tag("minecraft:bypasses_armor");
+        let absent = tag("test:damage_absent");
+        assert_eq!(
+            view.damage_type_in_tag("minecraft:arrow", armor),
+            Some(false)
+        );
+        assert_eq!(
+            view.damage_type_in_tag("minecraft:arrow", absent),
+            Some(false)
+        );
+        bind_damage(
+            &mut table,
+            serde_json::json!({
+                "minecraft:is_fire": r#"{"values":[]}"#,
+                "minecraft:bypasses_armor": r#"{"values":["minecraft:arrow"]}"#,
+            }),
+        );
+        let view = TagView(Some(&table));
+        assert_eq!(
+            view.damage_type_in_tag("minecraft:in_fire", fire),
+            Some(false)
+        );
+        assert_eq!(
+            view.damage_type_in_tag("minecraft:arrow", armor),
+            Some(true)
+        );
+    }
+
     #[test]
     fn keys_survive_membership_reload_and_reads_distinguish_unavailable_from_unknown() {
         crate::game::api_values::install_parts(&[]).unwrap();
