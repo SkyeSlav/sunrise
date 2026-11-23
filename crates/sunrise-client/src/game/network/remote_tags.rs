@@ -798,6 +798,155 @@ mod tests {
         );
     }
 
+    #[test]
+    #[ignore = "daily"]
+    fn block_state_fire_follows_applied_block_tags() {
+        use crate::game::{
+            Game,
+            native_entity_refs::tests::{run_fresh_cases, with_game},
+            world_loading::WorldRequest,
+        };
+        use mod_api::{BlockState, HostBlockStates, LevelHost, prelude::BlockStatesHost};
+
+        const FIXTURE: &str = "SUNRISE_BLOCK_STATE_FIRE_FIXTURE";
+        if run_fresh_cases(
+            "game::remote_tags::tests::block_state_fire_follows_applied_block_tags",
+            FIXTURE,
+            &["server", "client"],
+        ) {
+            return;
+        }
+
+        let states = |game: &Game<'_>| {
+            [
+                "minecraft:fire[age=0]",
+                "minecraft:fire[age=1]",
+                "minecraft:soul_fire",
+                "minecraft:stone",
+            ]
+            .map(|name| BlockStatesHost::block_state_id(game, name).unwrap())
+        };
+        let read = |game: &Game<'_>, states: [BlockState; 4]| {
+            let facts = game.block_states();
+            states.map(|state| facts.is_fire(state))
+        };
+        let read_level = |game: &mut Game<'_>, states: [BlockState; 4]| {
+            game.with_level(|_, level, _| {
+                let facts = level.block_states();
+                states.map(|state| facts.is_fire(state))
+            })
+        };
+        let replaced = [Some(false), Some(false), Some(false), Some(true)];
+        match std::env::var(FIXTURE).unwrap().as_str() {
+            "server" => with_game(|game| {
+                let states = states(game);
+                assert_ne!(states[0], states[1]);
+                assert_eq!(read(game, states), [None; 4]);
+
+                let save = tempfile::tempdir().unwrap();
+                let pack = save.path().join("datapacks/test");
+                let tags = pack.join("data/minecraft/tags/block");
+                std::fs::create_dir_all(&tags).unwrap();
+                std::fs::write(
+                    save.path().join("datapacks.json"),
+                    br#"{"enabled":["vanilla","file/test"],"disabled":[]}"#,
+                )
+                .unwrap();
+                let format = sunrise_core::version::DATA_PACK_FORMAT;
+                std::fs::write(
+                    pack.join("pack.mcmeta"),
+                    serde_json::json!({"pack": {
+                        "description": "Fire tag fixture",
+                        "min_format": format,
+                        "max_format": format,
+                    }})
+                    .to_string(),
+                )
+                .unwrap();
+                let mut request = WorldRequest::new(
+                    "fire-tag",
+                    Some("test"),
+                    Some(1),
+                    true,
+                    None,
+                    Arc::new(sunrise_client::gamerules::RuleRegistry::vanilla()),
+                )
+                .unwrap();
+                request.save_root = save.path().to_owned();
+                game.load_world(request).unwrap();
+                assert_eq!(
+                    read(game, states),
+                    [Some(true), Some(true), Some(true), Some(false)],
+                );
+
+                std::fs::write(
+                    tags.join("fire.json"),
+                    br#"{"replace":true,"values":["minecraft:stone"]}"#,
+                )
+                .unwrap();
+                game.reload_datapacks(true, &game.level.enabled_features.clone())
+                    .unwrap();
+                assert_eq!(read(game, states), replaced);
+                assert_eq!(read_level(game, states), replaced);
+            }),
+            "client" => {
+                // Remote tag tables for mods are only installed when a mod is present.
+                struct FireTagReader;
+                #[mod_api::__subscriptions]
+                impl Hooks for FireTagReader {}
+                mod_platform::testing::with_mods(
+                    vec![ModEntry::new("fire_tag_reader", Box::new(FireTagReader))].into(),
+                    || {
+                        with_client_game(|game| {
+                            let (pipe, _server) = sunrise_protocol::connection::Pipe::pair();
+                            game.connect_local(pipe, "Steve").unwrap();
+                            let builtin = game.remote.as_ref().unwrap().builtin.clone();
+                            game.handle_packet(login()).unwrap();
+                            let states = states(game);
+                            assert_eq!(read(game, states), [None; 4]);
+
+                            game.handle_packet(C::UpdateTags(update(
+                                &builtin,
+                                &[("minecraft:item", "test:items", &["minecraft:stick"])],
+                            )))
+                            .unwrap();
+                            assert_eq!(read(game, states), [None; 4]);
+
+                            game.handle_packet(C::UpdateTags(update(
+                                &builtin,
+                                &[("minecraft:block", "minecraft:fire", &["minecraft:stone"])],
+                            )))
+                            .unwrap();
+                            assert_eq!(read(game, states), replaced);
+                            assert_eq!(read_level(game, states), replaced);
+                            let facts = game.block_states();
+                            let invalid = mod_api::__private::block_state_from_ordinal(
+                                states[3].block(),
+                                u16::MAX,
+                            );
+                            let unknown = mod_api::__private::block_state_from_ordinal(
+                                mod_api::__private::parts_installation::block_key(u32::MAX),
+                                0,
+                            );
+                            assert_eq!(facts.is_fire(invalid), None);
+                            assert_eq!(facts.is_fire(unknown), None);
+
+                            game.handle_packet(C::UpdateTags(UpdateTags {
+                                registries: vec![RegistryTags {
+                                    registry: "minecraft:block".into(),
+                                    tags: vec![],
+                                }],
+                            }))
+                            .unwrap();
+                            assert_eq!(read(game, states), [Some(false); 4]);
+                        });
+                    },
+                );
+            }
+            case => panic!("unknown fire-tag fixture: {case}"),
+        }
+    }
+
     fn power_update(builtin: &Builtin, tags: &[(&str, &[&str])]) -> UpdateTags {
         let blocks = builtin.get("minecraft:block").unwrap();
         UpdateTags {

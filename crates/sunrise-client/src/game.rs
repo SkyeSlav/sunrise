@@ -30,6 +30,16 @@ macro_rules! world_items {
         }
     };
 }
+/// The applied tags mods read, borrowed by field so level views can hold them.
+macro_rules! native_tag_items {
+    ($s:ident) => {
+        if $s.options.execution_role.is_client() {
+            $s.remote.as_ref().and_then(|remote| remote.tags.as_ref())
+        } else {
+            $s.session_lock.is_some().then(|| world_items!($s))
+        }
+    };
+}
 macro_rules! world_recipes {
     ($s:ident) => {
         match &$s.world_tables {
@@ -5485,7 +5495,11 @@ impl Game<'_> {
             trigger_extras,
             world: &mut self.world,
             facts: self.res.facts(),
-            tables: native_block_tables::BlockTables::new(&self.res, &self.pack),
+            tables: native_block_tables::BlockTables::new(
+                &self.res,
+                &self.pack,
+                native_tag_items!(self),
+            ),
             collision: self.collision,
             events: &mut self.level_events,
             dimension,

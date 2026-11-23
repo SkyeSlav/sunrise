@@ -251,6 +251,9 @@ impl BlockStatesBackend for NoBlockTables {
     fn block_state_is_solid_render(&self, _: BlockState) -> Option<bool> {
         None
     }
+    fn block_state_is_fire(&self, _: BlockState) -> Option<bool> {
+        None
+    }
     fn block_state_is_redstone_conductor(&self, _: BlockState) -> Option<bool> {
         None
     }
@@ -434,6 +437,13 @@ impl BlockStates<'_> {
     /// None as for `replaceable`.
     pub fn is_solid_render(&self, state: BlockState) -> Option<bool> {
         self.backend.block_state_is_solid_render(state)
+    }
+    /// Whether `state`'s block belongs to the applied `minecraft:fire` block tag
+    /// (`BlockState.is`), regardless of its state properties. Clients read the server's tags.
+    /// Returns `Some(false)` if the applied tag is absent or does not contain the block, and
+    /// `None` for an unknown block, invalid local ordinal, or unavailable state or block tag tables.
+    pub fn is_fire(&self, state: BlockState) -> Option<bool> {
+        self.backend.block_state_is_fire(state)
     }
     /// Whether `state`'s block is of vanilla class `class`, subclasses included (Java's
     /// `instanceof`). It reads the engine's class of the block, never a tag, so it does not move

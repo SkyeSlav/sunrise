@@ -180,6 +180,10 @@ pub trait BlockStatesBackend {
     /// None for an unknown state.
     fn block_state_is_solid_render(&self, state: BlockState) -> Option<bool>;
     /// Side: both.
+    /// Membership in the applied block tag for [`BlockStates::is_fire`].
+    #[forward_api_inputs]
+    fn block_state_is_fire(&self, state: BlockState) -> Option<bool>;
+    /// Side: both.
     /// `BlockState.isRedstoneConductor` for a state alone. None if the state is unknown
     /// or the predicate needs a level and position.
     fn block_state_is_redstone_conductor(&self, state: BlockState) -> Option<bool>;

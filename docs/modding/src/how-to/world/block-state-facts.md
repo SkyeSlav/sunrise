@@ -27,6 +27,7 @@ known state reads as `Ok(None)`; unavailable metadata, invalid states and refuse
 | `light_emission(state) -> Option<u8>` | `BlockState.getLightEmission()`: 0 to 15; a block with `dynamic_light` answers per cell through its parts, which this does not ask |
 | `friction(state) -> Option<f32>` | `BlockBehaviour.getFriction()` of the block: 0.6 usually, 0.98 ice, 0.8 slime |
 | `is_solid_render(state) -> Option<bool>` | `BlockState.isSolidRender()`: a full, occluding cube (stone yes; glass, leaves, slabs no) |
+| `is_fire(state) -> Option<bool>` | `BlockState.is` for the applied `minecraft:fire` block tag |
 | `is_redstone_conductor(state) -> Option<bool>` | `BlockState.isRedstoneConductor` when it depends only on the block state; `None` when a position is needed |
 | `map_color(state) -> Option<u8>` | `BlockState.getMapColor`: the `MapColor.id` a map item colours a column by, 0 for none |
 | `map_color_rgba(packed) -> Option<[u8; 4]>` | `MapColor.getColorFromPackedId`: decode a map pixel to `[red, green, blue, alpha]`; ID 0 and undefined IDs decode to transparent RGBA; `None` means no game backend |
@@ -63,6 +64,12 @@ placed block, use `LevelRef::is_redstone_conductor(host, pos)` (server side, `No
 position).
 
 Option-only queries return `None` for an unknown state or block, including an invalid local ordinal, and on a host with no game behind it (a mod's test double). Queries returning `Result<Option<_>, LevelReadError>` distinguish unknown states (`Ok(None)`) from unavailable metadata (`Err(LevelReadError::Unavailable)`). The ordinal order is defined by the complete canonical property constraints, not by the engine's numeric enumeration.
+
+`is_fire(state)` checks the state's block, regardless of its properties. Fire and soul fire are
+vanilla defaults, not a fixed list: the server uses its current data-pack tags, and clients use the
+server's tags once applied, never their local pack tags. `None` means the state is invalid or the
+state or block tag tables are unavailable. Once the block tag table is applied, a missing or
+empty `minecraft:fire` tag gives `Some(false)` for valid states.
 
 ## Contextual friction
 

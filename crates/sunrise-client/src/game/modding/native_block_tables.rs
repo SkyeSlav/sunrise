@@ -1,13 +1,13 @@
-//! The read-only tables behind `BlockStates`: the facts a block state carries, read from the
-//! game's shared resources alone. `Game` and every level view hand out this one view, so a part
-//! reads the same facts in a level callback as through a `Host`.
+//! The read-only tables behind `BlockStates`: the game's shared resources and the owning side's
+//! applied tags. `Game` and every level view hand out this one view, so a part reads the same
+//! facts in a level callback as through a `Host`.
 use super::{Game, PackResources, Resources, WorldRest, api_values::TryIntoEngine};
 use mod_api::{
     BlockKey, BlockSoundType, BlockState, BlockStateRange, FluidDefinition, FluidKey, FluidState,
     FluidStateError, FluidTypeProperties, StateConstraint, StateMatchError, StateProperties,
     WeatheringAge,
 };
-use sunrise_client::items::ItemStack;
+use sunrise_client::items::{ItemStack, Items, TagRegistry};
 use sunrise_world::fluid::FluidKind;
 use sunrise_world::level::{fluid_drip_particle, fluid_explosion_resistance, fluid_randomly_ticks};
 use sunrise_world::registry::BlockStateId;
@@ -17,19 +17,28 @@ use sunrise_world::registry::BlockStateId;
 pub(in crate::game) struct BlockTables<'a> {
     res: &'a Resources,
     pack: &'a PackResources,
+    tag_items: Option<&'a Items>,
 }
 
 impl<'a> BlockTables<'a> {
-    pub(in crate::game) fn new(res: &'a Resources, pack: &'a PackResources) -> Self {
-        Self { res, pack }
+    pub(in crate::game) fn new(
+        res: &'a Resources,
+        pack: &'a PackResources,
+        tag_items: Option<&'a Items>,
+    ) -> Self {
+        Self {
+            res,
+            pack,
+            tag_items,
+        }
     }
 
     pub(in crate::game) fn of(game: &'a Game<'_>) -> Self {
-        Self::new(&game.res, &game.pack)
+        Self::new(&game.res, &game.pack, game.native_tag_items())
     }
 
     /// The item table the generated forwarders convert item values with.
-    pub(in crate::game) fn items(&self) -> &sunrise_client::items::Items {
+    pub(in crate::game) fn items(&self) -> &Items {
         self.res.items()
     }
 
@@ -268,6 +277,15 @@ impl<'a> BlockTables<'a> {
     pub(in crate::game) fn block_state_is_solid_render(&self, state: BlockStateId) -> Option<bool> {
         self.pack.assets.registry.state(state)?;
         Some(self.res.facts().get(state).solid_render)
+    }
+    /// `TypedInstance.is(TagKey)` for a block state and `BlockTags.FIRE`.
+    pub(in crate::game) fn block_state_is_fire(&self, state: BlockState) -> Option<bool> {
+        let items = self
+            .tag_items
+            .filter(|items| items.tags_loaded(TagRegistry::Block))?;
+        let state = state.try_into_engine(&()).ok()?;
+        let block = self.pack.assets.registry.state(state)?;
+        Some(items.block_in_tag("minecraft:fire", &block.name))
     }
     /// `BlockState.isRedstoneConductor` for a state alone, not a block in a level.
     pub(in crate::game) fn block_state_is_redstone_conductor(
