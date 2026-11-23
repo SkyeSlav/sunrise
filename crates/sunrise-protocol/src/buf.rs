@@ -465,14 +465,14 @@ impl Codec<Tag> for Nbt {
         w.nbt(v)
     }
 }
-/// Network NBT with `NbtAccounter.unlimitedHeap()` limits.
+/// Network NBT read with `NbtAccounter.unlimitedHeap()` limits.
 pub struct TrustedNbt;
 impl Codec<Tag> for TrustedNbt {
     fn read(r: &mut Reader) -> Result<Tag> {
         r.nbt_within(nbt::Limits::unlimited_heap())
     }
     fn write(v: &Tag, w: &mut Writer) {
-        w.nbt_within(v, nbt::Limits::unlimited_heap())
+        Nbt::write(v, w)
     }
 }
 /// `ByteBufCodecs.TRUSTED_COMPOUND_TAG`: unlimited-heap NBT with a required compound root.

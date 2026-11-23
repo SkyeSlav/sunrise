@@ -20,9 +20,6 @@ mod registered_commands;
 #[cfg(test)]
 #[path = "native_server/selector_tests.rs"]
 mod selector_tests;
-#[cfg(test)]
-#[path = "native_server/sidebar_tests.rs"]
-mod sidebar_tests;
 
 use super::api_values::{TryIntoApi, TryIntoEngine};
 use super::{Dim, Game, commands::execute, respawn_anchor::RespawnConfig};
@@ -38,8 +35,7 @@ pub(super) use registered_commands::NativeCommandState;
 use mod_api::LevelRef;
 use mod_api::{
     ActionOutcome, ActionRefused, FakeEffect, GameMode, GlobalPos, Identifier, PlayerAction,
-    PlayerActionSetup, PlayerFood, PlayerRef, PlayerRespawnConfig, ScopedActionResult, Sidebar,
-    TextFormError,
+    PlayerActionSetup, PlayerFood, PlayerRef, PlayerRespawnConfig, ScopedActionResult,
 };
 use serde_json::{Map, Value, json};
 use std::sync::{
@@ -50,14 +46,26 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use sunrise_client::{
     command::{Arg, ArgType, Context, Dispatcher},
     items::ItemStack,
-    lan::{
-        abilities::PlayerAbilities, data::component_nbt, guest::Guest, scoreboard::SidebarContents,
-    },
+    lan::{abilities::PlayerAbilities, data::component_nbt, guest::Guest},
     motion::PlayerMotion,
     text::Text,
 };
 use sunrise_core::position::BlockPos;
 use sunrise_protocol::packets::play::{self, Clientbound as C};
+
+/// A sidebar a server mod shows one player (`native_sidebar`): its title and
+/// up to 15 lines, top first, each a text on the left and, where the score's
+/// number would be, an optional text on the right.
+#[allow(dead_code)]
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct NativeSidebar {
+    pub(crate) title: Text,
+    pub(crate) lines: Vec<(Text, Option<Text>)>,
+}
+
+/// The objective a mod's sidebar is sent as: the player's client only; the
+/// server's scoreboard never holds it.
+const SIDEBAR_OBJECTIVE: &str = "sunrise:native_sidebar";
 
 /// The report's name of an operator level (`commands.json`'s
 /// `permissions`).
@@ -1484,23 +1492,51 @@ impl Game<'_> {
         }
         true
     }
-    /// Resolve the physical recipient before converting any of the supplied text.
-    pub(super) fn player_set_sidebar(
-        &mut self,
-        player: PlayerRef,
-        sidebar: Option<Sidebar>,
-    ) -> Result<bool, TextFormError> {
-        let Some(conn) = self.online_player_record(player).map(|guest| guest.conn) else {
-            return Ok(false);
-        };
-        let contents = sidebar
-            .map(|sidebar| {
-                let items = self.res.item_defaults().entries();
-                SidebarContents::prepare(sidebar, &|item| items.contains_key(item)).map(Box::new)
-            })
-            .transpose()?;
-        self.after_commit(super::transactions::After::PersonalSidebar(conn, contents));
-        Ok(true)
+    /// Shows `sidebar` on that player's screen, in place of the one shown
+    /// before, or takes it away (None). Only their client holds it: the
+    /// server's scoreboard, its `/scoreboard` and the other players don't
+    /// see it, and it is gone when they leave (a mod sends it again when
+    /// they come back). It takes the sidebar's place from an objective the
+    /// world shows there, for this player, until they rejoin. False when
+    /// they aren't on.
+    pub(super) fn native_sidebar(&mut self, uuid: u128, sidebar: Option<&NativeSidebar>) -> bool {
+        let objective = SIDEBAR_OBJECTIVE.to_owned();
+        // Removed first, so the new one's lines replace all the old ones.
+        let mut packets = vec![C::SetObjective(play::SetObjective {
+            name: objective.clone(),
+            method: 1,
+            display: None,
+        })];
+        if let Some(sidebar) = sidebar {
+            let title = component_nbt(&sidebar.title.component());
+            packets.push(C::SetObjective(play::SetObjective {
+                name: objective.clone(),
+                method: 0,
+                display: Some((title, 0, Some(play::NumberFormat::Blank))),
+            }));
+            // DisplaySlot.SIDEBAR.
+            packets.push(C::SetDisplayObjective(play::SetDisplayObjective {
+                slot: 1,
+                objective: objective.clone(),
+            }));
+            let lines = &sidebar.lines[..sidebar.lines.len().min(15)];
+            for (i, (left, right)) in lines.iter().enumerate() {
+                packets.push(C::SetScore(play::SetScore {
+                    // Highest first. The display name shows, not the owner;
+                    // an owner starting with '#' is hidden from the sidebar
+                    // (ScoreHolder's isHidden), and ':' is in no player's name.
+                    owner: format!("sunrise:line{i:02}"),
+                    objective: objective.clone(),
+                    score: (lines.len() - i) as i32,
+                    display: Some(component_nbt(&left.component())),
+                    number_format: Some(match right {
+                        Some(t) => play::NumberFormat::Fixed(component_nbt(&t.component())),
+                        None => play::NumberFormat::Blank,
+                    }),
+                }));
+            }
+        }
+        self.native_send_all(uuid, packets)
     }
     /// The lines over and under that player's list of players (Tab):
     /// `ClientboundTabListPacket`, an empty text for none. False when they

@@ -572,11 +572,10 @@ pub struct Guest {
     pub advancements_sent: bool,
     pub advancements_visible: Vec<bool>,
     pub advancements_changed: std::collections::BTreeSet<usize>,
-    /// The world board last published to this connection, excluding its private overlay.
+    /// The server's scoreboard as this player's client has it (lan/scoreboard.rs).
     pub scoreboard: super::scoreboard::View,
     /// Whether the joining sync (`PlayerList.updateEntireScoreboard`) went out.
-    pub(super) scoreboard_synced: bool,
-    pub(super) personal_sidebar: Option<Box<super::scoreboard::PersonalSidebar>>,
+    pub scoreboard_synced: bool,
     /// Recipes unlocked since the client was last told
     /// (`ServerRecipeBook.addRecipes` sends them).
     pub recipes_unlocked: Vec<String>,
@@ -981,7 +980,6 @@ impl Guest {
             advancements_changed: Default::default(),
             scoreboard: Default::default(),
             scoreboard_synced: false,
-            personal_sidebar: None,
             recipes_unlocked: Vec::new(),
         }
     }
