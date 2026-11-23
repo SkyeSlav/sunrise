@@ -6760,8 +6760,8 @@ fn signs_take_their_form_wood_and_wall_block_from_their_declaration() {
 #[test]
 #[ignore = "daily"]
 fn any_content_block_pair_shares_a_standing_and_wall_item() {
-    use sunrise_world::level::{Behaviours, ItemKind};
     use sunrise_core::geometry::Direction;
+    use sunrise_world::level::{Behaviours, ItemKind};
 
     let Some(base) = prepared() else {
         return;
@@ -6806,7 +6806,10 @@ fn any_content_block_pair_shares_a_standing_and_wall_item() {
     let facts = BlockFacts::load(&root, registry).unwrap();
     let behaviours = Behaviours::load(registry, &root).unwrap();
     let id = |name: &str| behaviours.table.block_by_name(name);
-    for (item, wall) in [("walls:lamp", "walls:wall_lamp"), ("walls:brand", "walls:wall_brand")] {
+    for (item, wall) in [
+        ("walls:lamp", "walls:wall_lamp"),
+        ("walls:brand", "walls:wall_brand"),
+    ] {
         let binding = behaviours.item_binding(item).unwrap();
         assert_eq!(binding.kind, ItemKind::StandingAndWall, "{item}");
         assert_eq!(
@@ -6831,7 +6834,9 @@ fn any_content_block_pair_shares_a_standing_and_wall_item() {
         "door",
     );
     assert!(
-        door.unwrap_err().to_string().contains("wall_block needs a template whose item is a BlockItem"),
+        door.unwrap_err()
+            .to_string()
+            .contains("wall_block needs a template whose item is a BlockItem"),
     );
     let _ = fs::remove_dir_all(&scratch);
 }
@@ -6918,11 +6923,15 @@ fn a_content_block_plays_its_own_sound_type() {
         (
             0.8,
             1.25,
-            ["metal:plate.break", "minecraft:block.chain.place", "metal:plate.fall"]
-                .map(str::to_owned)
+            [
+                "metal:plate.break",
+                "minecraft:block.chain.place",
+                "metal:plate.fall"
+            ]
+            .map(str::to_owned)
         )
     );
-    // The vanilla block's `SoundType.GLASS` and the template's `SoundType.METAL`.
+    // The vanilla block's `SoundType.GLASS` and `Blocks.IRON_BLOCK`'s `SoundType.IRON`.
     assert_eq!(
         client("metal:glassy"),
         (
@@ -6941,13 +6950,13 @@ fn a_content_block_plays_its_own_sound_type() {
         client("metal:plain"),
         (
             1.0,
-            1.5,
+            1.0,
             events([
-                "minecraft:block.metal.break",
-                "minecraft:block.metal.step",
-                "minecraft:block.metal.place",
-                "minecraft:block.metal.hit",
-                "minecraft:block.metal.fall",
+                "minecraft:block.iron.break",
+                "minecraft:block.iron.step",
+                "minecraft:block.iron.place",
+                "minecraft:block.iron.hit",
+                "minecraft:block.iron.fall",
             ])
         )
     );

@@ -2330,7 +2330,10 @@ fn check_block(file: &Block) -> Result<(), String> {
                 .into_iter()
                 .all(|id| namespaced_id(id)) =>
         {
-            return Err("sounds' break, step, place, hit and fall are sound event ids, namespace:path".into());
+            return Err(
+                "sounds' break, step, place, hit and fall are sound event ids, namespace:path"
+                    .into(),
+            );
         }
         _ => {}
     }
@@ -2477,7 +2480,9 @@ fn check_block(file: &Block) -> Result<(), String> {
 /// A block's `wall_block` is one of the mod's own blocks, with no item of its own and paired with
 /// no other block; a sign's is the wall form of its kind, with the same text. Checked here, a
 /// pair that doesn't fit leaves out its mod alone.
-fn wall_block_refusals<'a>(blocks: &'a [&'a Block]) -> impl Iterator<Item = (&'a str, String)> + 'a {
+fn wall_block_refusals<'a>(
+    blocks: &'a [&'a Block],
+) -> impl Iterator<Item = (&'a str, String)> + 'a {
     let mut paired = BTreeMap::new();
     blocks.iter().filter_map(move |standing| {
         let wall = standing.wall_block.as_ref()?;
@@ -3054,7 +3059,7 @@ capabilities = ["registries"]
                 properties: BlockProperties {
                     hardness: Some(4.0),
                     light: Some(3),
-                    sounds: Some("minecraft:amethyst_block".into()),
+                    sounds: Some(BlockSounds::Block("minecraft:amethyst_block".into())),
                     ..BlockProperties::default()
                 },
                 item: true,
@@ -4041,7 +4046,9 @@ capabilities = ["registries"]
         };
         let sounds = |json: &str| block(json).unwrap().blocks[0].properties.sounds.clone();
         assert_eq!(
-            sounds(r#"{"template": "minecraft:stone", "properties": {"sounds": "minecraft:glass"}}"#),
+            sounds(
+                r#"{"template": "minecraft:stone", "properties": {"sounds": "minecraft:glass"}}"#
+            ),
             Some(BlockSounds::Block("minecraft:glass".into()))
         );
         let own = r#"{"template": "minecraft:stone", "properties": {"sounds": {"volume": 0.5, "pitch": 2.0,
@@ -4330,7 +4337,10 @@ capabilities = ["registries"]
         };
         let lamp = r#"{"template": "minecraft:stone", "wall_block": "ruby:wall_lamp"}"#;
         let parsed = pair(lamp, r#"{"template": "minecraft:stone", "item": false}"#).unwrap();
-        assert_eq!(parsed.blocks[0].wall_block.as_deref(), Some("ruby:wall_lamp"));
+        assert_eq!(
+            parsed.blocks[0].wall_block.as_deref(),
+            Some("ruby:wall_lamp")
+        );
         for (wall, wanted) in [
             (r#"{"template": "minecraft:stone"}"#, "\"item\" is false"),
             (
@@ -4341,8 +4351,15 @@ capabilities = ["registries"]
             let e = pair(lamp, wall).unwrap_err();
             assert!(e.contains(wanted), "{wanted}: {e}");
         }
-        let unplaced = r#"{"template": "minecraft:stone", "item": false, "wall_block": "ruby:wall_lamp"}"#;
-        assert!(pair(unplaced, r#"{"template": "minecraft:stone", "item": false}"#).is_err());
+        let unplaced =
+            r#"{"template": "minecraft:stone", "item": false, "wall_block": "ruby:wall_lamp"}"#;
+        assert!(
+            pair(
+                unplaced,
+                r#"{"template": "minecraft:stone", "item": false}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]

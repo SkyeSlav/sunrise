@@ -36,8 +36,9 @@ use sunrise_core::{
     nbt::{Compound, JavaString, Limits, Tag},
 };
 use sunrise_mod_package::content::{
-    Block, BlockEntityType, BlockShapes, BlockSounds, Content, ContextCollision, CreativeTab, EntityType,
-    FluidLook, Item, LocalDeclaration, MenuType, MobEffect, Rarity, StateProperty, StateValues,
+    Block, BlockEntityType, BlockShapes, BlockSounds, Content, ContextCollision, CreativeTab,
+    EntityType, FluidLook, Item, LocalDeclaration, MenuType, MobEffect, Rarity, StateProperty,
+    StateValues,
 };
 use sunrise_mod_package::manifest::{
     JarInputsError, JarRef, collect_jar_requirements, missing_jars,
@@ -820,13 +821,14 @@ struct NewBlock<'a> {
 }
 impl NewBlock<'_> {
     /// The item its gameplay row names when that is not the template's item
-    /// renamed: `block_item`, or `minecraft:air` for a block with no item
-    /// (a sign's wall form keeps the paired sign's). `Block.asItem` and, unless
+    /// renamed: `block_item`, the paired block's item for a wall form (its
+    /// template's item may be the template itself, which the block's own rename
+    /// would turn into the wall form), or `minecraft:air` for a block with no item. `Block.asItem` and, unless
     /// the block has a `pick_item` row of its own, pick-block read this value.
     fn item_row(&self) -> Option<&str> {
         match &self.decl.block_item {
             Some(item) => Some(item),
-            None => (!self.decl.item && self.wall_of.is_none()).then_some("minecraft:air"),
+            None => (!self.decl.item).then(|| self.wall_of.as_deref().unwrap_or("minecraft:air")),
         }
     }
 
