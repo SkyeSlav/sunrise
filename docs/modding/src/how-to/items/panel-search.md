@@ -24,9 +24,7 @@ On the client, the mod that owns a `panel_items` panel can put text in its searc
   selection where they are.
 
 ```rust
-// In the viewer's own panel_event hook (its mod id is "jei"): the player
-// pressed its "clear" key, so the viewer empties its own search box.
-host.panel_search("jei", "");
+{{#include ../../../examples/src/item_behaviors.rs:clear_panel_search}}
 ```
 
 This is JEI's `IIngredientFilter.setFilterText`; the recipe book's own box does the same with

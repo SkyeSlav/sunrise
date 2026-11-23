@@ -2565,17 +2565,12 @@ mod datapack_damage_tests {
             with_pack(game);
             let crystal = |game: &mut crate::game::Game<'_>, id: u32| {
                 game.next_entity = game.next_entity.max(id);
-                game.crystals.push(crate::game::dragon::Crystal {
-                    attachment_lifetime: Default::default(),
-                    join: Default::default(),
+                game.crystals.push(crate::game::dragon::Crystal::new(
                     id,
-                    position: Vec3::new(0.5, 64.0, 0.5),
-                    show_bottom: false,
-                    time: 0,
-                    beam: None,
-                    invulnerable: false,
-                    fall: (false, 0.0),
-                });
+                    Vec3::new(0.5, 64.0, 0.5),
+                    false,
+                    0,
+                ));
             };
             pig(game, 1, Vec3::new(2.5, 64.0, 0.5));
             crystal(game, 50);

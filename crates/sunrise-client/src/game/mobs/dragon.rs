@@ -232,6 +232,8 @@ pub(super) struct Crystal {
     /// The entity id a server tracks it by (0 until it is tracked).
     pub id: u32,
     pub position: Vec3,
+    pub rotation: [f32; 2],
+    pub fire: i16,
     pub show_bottom: bool,
     /// EndCrystal.time (the bob and spin), starting random.
     pub time: i32,
@@ -424,6 +426,7 @@ pub(in crate::game) struct Dragon {
     pub previous: Vec3,
     pub(super) velocity: Vec3,
     pub yaw: f32,
+    pub pitch: f32,
     pub previous_yaw: f32,
     yaw_accel: f32,
     pub health: f32,
@@ -432,6 +435,8 @@ pub(in crate::game) struct Dragon {
     /// only damage above the last hit lands, and only the excess.
     invulnerable: i32,
     last_hurt: f32,
+    /// Transient `LivingEntity.lastHurtMob`; an owned arrow or wind charge can set it.
+    pub(super) last_hurt_mob: Option<(u32, i32)>,
     /// `lastHurtByPlayer` with its 100 tick memory: the player credited with
     /// the kill, and the dragon tick of their last hit.
     hurt_by_player: Option<(FightWho, i32)>,
@@ -678,12 +683,14 @@ impl Dragon {
             previous: position,
             velocity: Vec3::ZERO,
             yaw,
+            pitch: 0.0,
             previous_yaw: yaw,
             yaw_accel: 0.0,
             health: MAX_HEALTH,
             hurt_time: 0,
             invulnerable: 0,
             last_hurt: 0.0,
+            last_hurt_mob: None,
             hurt_by_player: None,
             last_source: None,
             death_time: 0,
@@ -882,7 +889,12 @@ impl Dragon {
             position: [self.position.x, self.position.y, self.position.z],
             view: [view.x, view.y, view.z],
         };
-        if level.incoming_canceled(hurting, victim, &mut container) {
+        let body = super::native_living_body::dragon_body(self);
+        if level
+            .reborrow()
+            .with_victim(body)
+            .incoming_canceled(hurting, victim, &mut container)
+        {
             return Hurt::Landed { full: false };
         }
         damage = container.new_damage();
@@ -928,7 +940,11 @@ impl Dragon {
         dealt = container.reduce(Reduction::Armor, before_armor, before_armor - dealt, dealt);
         let hurting = sunrise_client::health::Hurting::Dragon(self.id as i32, source);
         container.record_new_damage(dealt);
-        level.damage_pre(hurting, &mut container);
+        let body = super::native_living_body::dragon_body(self);
+        level
+            .reborrow()
+            .with_victim(body)
+            .damage_pre(hurting, &mut container);
         dealt = container.capture_inflicted();
         // LivingEntity.actuallyHurt: absorption runs after Pre even with 0.0 absorption hearts.
         let (remaining, _, _) = container.absorb(dealt, 0.0);
@@ -971,7 +987,11 @@ impl Dragon {
         // The last of `LivingEntity.hurtServer` (`reallyHurt`'s `super.hurtServer`):
         // `LivingDamageEvent.Post`, health taken or not.
         let hurting = sunrise_client::health::Hurting::Dragon(self.id as i32, source);
-        level.damage_post(hurting, &container);
+        let body = super::native_living_body::dragon_body(self);
+        level
+            .reborrow()
+            .with_victim(body)
+            .damage_post(hurting, &container);
         if self.phase.sitting() {
             self.sitting_damage += before - self.health.max(0.0);
             if self.sitting_damage > 0.25 * MAX_HEALTH {
@@ -1490,17 +1510,8 @@ impl Game<'_> {
             // EndCrystal's constructor takes an id from the entity counter.
             self.next_entity += 1;
             self.persist.uuids.insert(self.next_entity, uuid);
-            self.crystals.push(Crystal {
-                attachment_lifetime: Default::default(),
-                join: Default::default(),
-                id: self.next_entity,
-                position: at,
-                show_bottom: true,
-                time,
-                beam: None,
-                invulnerable: false,
-                fall: (false, 0.0),
-            });
+            self.crystals
+                .push(Crystal::new(self.next_entity, at, true, time));
             self.world
                 .modified
                 .insert((at.x.floor() as i32 >> 4, at.z.floor() as i32 >> 4));
@@ -2773,13 +2784,21 @@ impl Game<'_> {
         if let Some(id) = self.dragon.as_ref().map(|d| d.id) {
             self.tick_saved_invulnerable_time(id);
         }
+        let target_dead = self
+            .dragon
+            .as_ref()
+            .and_then(|d| d.last_hurt_mob)
+            .is_some_and(|(id, _)| !self.last_hurt_target_alive(id));
         let Some(d) = self.dragon.as_mut() else {
             return;
         };
         d.previous = d.position;
         d.previous_yaw = d.yaw;
         d.old_flap = d.flap;
-        d.ticks += 1;
+        d.ticks = d.ticks.wrapping_add(1);
+        if target_dead {
+            d.last_hurt_mob = None;
+        }
         d.hurt_time = (d.hurt_time - 1).max(0);
         d.invulnerable = (d.invulnerable - 1).max(0);
         for part in &mut d.parts {
@@ -3991,7 +4010,7 @@ impl Dragon {
             "minecraft:ender_dragon",
             self.position,
             self.velocity,
-            [self.yaw, 0.0],
+            [self.yaw, self.pitch],
             (false, 0.0),
             uuid,
             raw,
@@ -4017,8 +4036,10 @@ impl Dragon {
         tag
     }
     pub(super) fn from_nbt(tag: &Tag, seed: i64) -> Option<Self> {
-        let (position, velocity, yaw) = sunrise_client::entity_nbt::boat_from_nbt(tag)?;
+        let (position, velocity, _) = sunrise_client::entity_nbt::boat_from_nbt(tag)?;
+        let [yaw, pitch] = sunrise_client::entity_nbt::loaded_rotation(tag);
         let mut d = Self::new(position, yaw, seed);
+        d.pitch = pitch;
         d.velocity = velocity;
         // Vanilla getFloatOr/getIntOr accept any numeric tag type.
         d.health = nbt_value::float(tag.get("Health")).map_or(d.health, |h| h as f32);
@@ -4045,15 +4066,18 @@ impl Crystal {
             "minecraft:end_crystal",
             self.position,
             Vec3::ZERO,
-            [0.0, 0.0],
+            self.rotation,
             self.fall,
             uuid,
             raw,
         );
         if let Tag::Compound(map) = &mut tag {
+            map.insert("Fire".into(), Tag::Short(self.fire));
             map.insert("ShowBottom".into(), Tag::Byte(i8::from(self.show_bottom)));
             if let Some(b) = self.beam {
                 map.insert("beam_target".into(), Tag::IntArray(b.to_vec()));
+            } else {
+                map.remove(&"beam_target".into());
             }
             map.insert(
                 "Invulnerable".into(),
@@ -4064,11 +4088,19 @@ impl Crystal {
     }
     pub(super) fn from_nbt(tag: &Tag, time: i32) -> Option<Self> {
         let (position, _, _) = sunrise_client::entity_nbt::boat_from_nbt(tag)?;
+        // TagValueInput.getShortOr uses NumericTag.shortValue.
+        let fire = match tag.get("Fire") {
+            Some(Tag::Float(bits)) => sunrise_core::mth::floor_f32(f32::from_bits(*bits)) as i16,
+            Some(Tag::Double(bits)) => sunrise_core::mth::floor(f64::from_bits(*bits)) as i16,
+            value => nbt_value::number(value).unwrap_or_default() as i16,
+        };
         Some(Self {
             attachment_lifetime: Default::default(),
             join: Default::default(),
             id: 0,
             position,
+            rotation: sunrise_client::entity_nbt::loaded_rotation(tag),
+            fire,
             show_bottom: sunrise_client::entity_nbt::flag_or(tag, "ShowBottom", true),
             time,
             beam: match tag.get("beam_target") {
@@ -4342,17 +4374,8 @@ impl Game<'_> {
         // EndCrystal's constructor takes an id from the entity counter, so
         // the crystal is an entity a command can name (`@e[type=end_crystal]`).
         self.next_entity += 1;
-        self.crystals.push(Crystal {
-            attachment_lifetime: Default::default(),
-            join: Default::default(),
-            id: self.next_entity,
-            position: at,
-            show_bottom: false,
-            time,
-            beam: None,
-            invulnerable: false,
-            fall: (false, 0.0),
-        });
+        self.crystals
+            .push(Crystal::new(self.next_entity, at, false, time));
         // EndCrystalItem.useOn: ENTITY_PLACE at the block above, by the player.
         self.post_block_game_event("minecraft:entity_place", above, self.sculk_actor(), None);
         self.world.modified.insert((above[0] >> 4, above[2] >> 4));

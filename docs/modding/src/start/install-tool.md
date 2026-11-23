@@ -147,7 +147,7 @@ cargo sunrise-mod --help
 ```
 
 It prints a short list of the everyday commands, which shows it is installed (`cargo sunrise-mod help all`
-lists every command's usage, and `cargo sunrise-mod <command> --help` says one command's):
+lists the author-facing commands, and `cargo sunrise-mod <command> --help` shows the usage for one command):
 
 ```text
 usage: cargo sunrise-mod <command> [options]
@@ -160,8 +160,6 @@ A tool built before `--help` existed prints the same usage after `error:` and ex
 
 The tool checks every SDK it fetches against Sunrise's release signature before it uses it, whatever the tool's own
 origin.
-
-To move to a newer tool later, run the same block again.
 
 ## Newest tool from main
 
@@ -182,15 +180,36 @@ Which to take:
   pinned SDK as long as that SDK has what the tool needs; when it does not, `build` stops and names both ways out:
   `cargo sunrise-mod update --sunrise nightly`, or the tool in that SDK's own release.
 
-`cargo sunrise-mod --version` prints the commit a tool is built from, or `dev` for a tool you built yourself without
+`cargo sunrise-mod --version` prints the commit a tool is built from, or `commit local` for a tool you built yourself without
 naming one (`cargo install`); a tool older than that option answers with its usage instead. The newest tool's commit is `commit` in
 [`tool.json`](https://github.com/sunrise-org/sunrise/releases/download/mod-tool/tool.json).
 
-For [tagged native releases](../how-to/publish.md#tagged-native-releases-in-github-actions), use a signed `mod-tool`
-that supports both `cargo sunrise-mod release plan` and `cargo sunrise-mod release scripts`. The generated workflow
-verifies the tool and `tool.json` against the signed sums before running it, pins the same tool commit across all
-jobs and extracts the release scripts shipped in that tool. The mod's stable SDK is a separate pin, even if that
-SDK ships an older tool.
+[`cargo sunrise-mod release`](../how-to/publish.md#releasing) pushes a tag that runs the registry's shared
+release workflow. That workflow installs the signed `mod-tool` itself and checks it against the signed sums, so
+a release needs nothing else from this page. The mod's SDK is a separate pin.
+
+## Updating the tool
+
+<!-- quickstart-test: skip, the installed Nightly tool may predate this command; the signed update is tested separately -->
+```sh
+cargo sunrise-mod self-update
+```
+
+This replaces a standalone copy of the rolling `mod-tool` release, installed by the "Newest tool from main" block
+in `~/.local/bin` (Linux and macOS) or `%USERPROFILE%\.sunrise\bin` (Windows), with that release's newest build. It verifies Sunrise's signature and
+the checksum of the release's commit metadata before deciding whether the tool is current. If it installs an
+update, it also verifies the archive's checksum and prints the old and new commits. It never changes a mod's
+pinned SDK. On Windows, the previous executable is kept as `.cargo-sunrise-mod.exe.old` beside the new one and can
+be deleted once the command exits.
+
+On `new`, `build`, `run`, `check` and `update`, such a copy checks the signed rolling release for a newer build once
+per day at most. It prints a reminder when one is available but never installs it automatically. The check is off
+in CI and when `CARGO_NET_OFFLINE` is set to anything but `false`.
+
+A copy installed from an SDK follows that SDK and is never replaced by `self-update`. If your copy does not know
+`self-update` yet, or you want to switch between an SDK's tool and the rolling release, rerun the appropriate
+install block above. Copies run from an SDK folder or managed by `cargo install` or
+another package manager are not replaced in place; update them through their own install method.
 
 ## With `cargo install`
 

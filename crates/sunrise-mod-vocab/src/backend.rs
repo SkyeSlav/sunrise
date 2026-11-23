@@ -246,6 +246,9 @@ pub fn client_backend_mut_of(host: &mut dyn ClientHost) -> Option<&mut dyn Clien
 macro_rules! host_attachment_store {
     ($($host:ident),+) => { $(
         impl AttachmentStore for dyn $host + '_ {
+            fn read_only(&mut self, holder: Holder) -> AttachmentResult<bool> {
+                self.attachments().read_only(holder)
+            }
             fn validate_attachment(&mut self, namespace: &str, name: &str, sync: bool) -> AttachmentResult<()> {
                 crate::parts::validate_attachment_use(namespace, name, sync)
             }

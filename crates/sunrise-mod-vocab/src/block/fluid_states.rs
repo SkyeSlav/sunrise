@@ -56,6 +56,15 @@ pub struct FluidTypeProperties {
     /// `Fluid.getDripParticle`: the particle id a block of the fluid drips beneath it
     /// (`minecraft:dripping_water`, `minecraft:dripping_lava`), none for any other fluid.
     pub drip_particle: Option<String>,
+    /// `FluidType.getTemperature`: how hot it is, roughly in kelvin. Water and a mod's fluid
+    /// that states none are 300, lava 1300 and the empty fluid 0.
+    pub temperature: i32,
+    /// `FluidType.getDensity`: how dense it is, roughly in kg/m³; below 0 is lighter than air.
+    /// Water and a mod's fluid that states none are 1000, lava 3000 and the empty fluid 0.
+    pub density: i32,
+    /// `FluidType.getViscosity`: how thick it is, 0 or more. Water and a mod's fluid that
+    /// states none are 1000, lava 6000 and the empty fluid 0.
+    pub viscosity: i32,
 }
 
 /// Why fluid-state constraints could not be validated.

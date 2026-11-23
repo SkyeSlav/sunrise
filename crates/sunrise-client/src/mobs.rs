@@ -1725,6 +1725,8 @@ pub struct Mob {
     pub glowing: bool,
     pub air: i32,
     pub last_hurt: f32,
+    /// The living target and this mob’s tick count at `setLastHurtMob`. Not saved.
+    pub last_hurt_mob: Option<(u32, i32)>,
     /// `LivingEntity.getAbsorptionAmount`: golden hearts that soak damage before health.
     pub absorption: f32,
     /// Tenths of absorbed damage a player's hit dealt, which the attack awards as
@@ -2048,7 +2050,8 @@ pub enum MobEvent {
         source: Option<u32>,
         state: sunrise_world::registry::BlockStateId,
     },
-    AttackPlayer(f32, [f64; 3]),
+    /// A player hit. The last field names the attacker only for `Mob.doHurtTarget`.
+    AttackPlayer(f32, [f64; 3], Option<u32>),
     /// `Bee.doHurtTarget`: a sting that lands leaves its stinger and poisons.
     Sting {
         target: Who,
@@ -2060,6 +2063,7 @@ pub enum MobEvent {
     /// cave spider poison, wither skeleton wither): a shield-blocked hit gives
     /// nothing.
     AttackPlayerWithEffect {
+        attacker: u32,
         amount: f32,
         from: [f64; 3],
         effect: &'static str,
@@ -2169,6 +2173,7 @@ pub enum MobEvent {
         target: u32,
         amount: f32,
         source: Damage,
+        remember_target: bool,
     },
     /// A melee hit on another mob whose effect rides the hit:
     /// `CaveSpider`, `Husk` and `WitherSkeleton.doHurtTarget` add it inside
@@ -2211,6 +2216,16 @@ pub enum MobEvent {
     /// target off its mount.
     StabDismount {
         target: Who,
+    },
+    /// `LivingEntity.stabAttack`'s successful tail, after the hit, pushes and dismount.
+    StabMemory {
+        attacker: u32,
+        target: Who,
+        /// Its place among the attacker's contacts this tick, in `stabAttack` order. A player
+        /// target's row is delivered with that player's actions, after the other rows.
+        contact: usize,
+        attempted_damage: bool,
+        otherwise_affected: bool,
     },
     /// `LivingEntity.knockback(power, x, z, source)`; a ram's blocked again first (`RamTarget.tick`).
     Knockback {
@@ -2715,6 +2730,7 @@ impl MobEvent {
             | Self::Knockback { target, .. }
             | Self::Sting { target, .. }
             | Self::StabDismount { target }
+            | Self::StabMemory { target, .. }
             | Self::Ignite(target, _)
             | Self::ZombieIgnite(target, _)
             | Self::IronGolemHit { target, .. } => *target == Who::Player,
@@ -3398,7 +3414,7 @@ pub struct PlayerView {
     /// `getLastHurtByMob` (within 100 ticks) and when.
     pub hurt_by: Option<(Who, i64)>,
     /// `getLastHurtMob` and when.
-    pub last_hurt: Option<(Who, i64)>,
+    pub last_hurt: Option<(u32, i32)>,
     pub velocity: Vec3,
     pub yaw: f32,
     /// `Player.isSprinting` and `isPassenger` (what scares an armadillo).
@@ -3907,6 +3923,7 @@ impl Mob {
             glowing: false,
             air: 300,
             last_hurt: 0.0,
+            last_hurt_mob: None,
             absorption: 0.0,
             dealt_absorbed: 0,
             last_damage: None,

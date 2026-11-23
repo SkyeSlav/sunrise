@@ -8,20 +8,16 @@ use std::{
 use sunrise_mod_package::index::{self, Index, Project, Trust, Version, native::Bundle};
 
 #[derive(Default)]
-pub(crate) struct Registry<'a> {
-    /// A release job can use the index and files it already fetched. Files are named by SHA-256.
-    pub(crate) index: Option<&'a Path>,
-    pub(crate) files: Option<&'a Path>,
+pub(crate) struct Registry {
+    /// Tests read the files from a folder, named by SHA-256, instead of downloading them.
+    #[cfg(test)]
+    pub(crate) files: Option<std::path::PathBuf>,
     /// Source release jobs can require an author signature; dev builds also use reviewed unsigned rows.
     pub(crate) signed_only: bool,
 }
 
-impl Registry<'_> {
+impl Registry {
     pub(crate) fn read_index(&self) -> Result<Index, String> {
-        if let Some(path) = self.index {
-            return Index::parse(&bounded::read(path, index::MAX_INDEX)?)
-                .map_err(|e| format!("{}: {e}", path.display()));
-        }
         let url =
             test_url("index.json").unwrap_or_else(|| sunrise_addresses::MOD_REGISTRY_INDEX.into());
         let mut raw = String::new();
@@ -76,7 +72,11 @@ impl Registry<'_> {
         fs::create_dir_all(&parent).map_err(|e| failed(e.to_string()))?;
         let pending = tempfile::tempdir_in(&parent).map_err(|e| failed(e.to_string()))?;
         let archive = pending.path().join("package.smod");
-        let input: Box<dyn Read> = if let Some(files) = self.files {
+        #[cfg(test)]
+        let folder = self.files.as_deref();
+        #[cfg(not(test))]
+        let folder: Option<&Path> = None;
+        let input: Box<dyn Read> = if let Some(files) = folder {
             Box::new(
                 fs::File::open(files.join(&row.file.sha256)).map_err(|e| failed(e.to_string()))?,
             )

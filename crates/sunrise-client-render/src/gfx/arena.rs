@@ -764,6 +764,64 @@ pub(super) fn try_create(
     pollster::block_on(scope.pop()).is_none().then_some(buffer)
 }
 
+/// A buffer that is recreated larger when it must hold more.
+pub(super) struct Grown {
+    pub(super) buffer: wgpu::Buffer,
+    pub(super) bytes: u64,
+    label: &'static str,
+    usage: wgpu::BufferUsages,
+}
+
+impl Grown {
+    pub(super) fn new(
+        device: &wgpu::Device,
+        label: &'static str,
+        bytes: u64,
+        usage: wgpu::BufferUsages,
+    ) -> Option<Self> {
+        Some(Self {
+            buffer: try_create(device, label, bytes, usage)?,
+            bytes,
+            label,
+            usage,
+        })
+    }
+    /// Room for `bytes`, in a power of two within the device's limits:
+    /// `Some(true)` when the buffer was made anew (its contents lost), `None`
+    /// past the limits or when the memory for it is missing.
+    pub(super) fn reserve(&mut self, device: &wgpu::Device, bytes: u64) -> Option<bool> {
+        if bytes <= self.bytes {
+            return Some(false);
+        }
+        let limits = device.limits();
+        let mut limit = limits.max_buffer_size;
+        if self.usage.contains(wgpu::BufferUsages::STORAGE) {
+            limit = limit.min(limits.max_storage_buffer_binding_size);
+        }
+        if bytes > limit {
+            return None;
+        }
+        let size = bytes.next_power_of_two().min(limit & !3);
+        self.buffer = try_create(device, self.label, size, self.usage)?;
+        self.bytes = size;
+        Some(true)
+    }
+    /// `reserve`, keeping what the buffer held (`runs`' stamps).
+    pub(super) fn reserve_keeping(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        bytes: u64,
+    ) -> Option<bool> {
+        let (old, old_bytes) = (self.buffer.clone(), self.bytes);
+        let made = self.reserve(device, bytes)?;
+        if made {
+            encoder.copy_buffer_to_buffer(&old, 0, &self.buffer, 0, old_bytes);
+        }
+        Some(made)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1070,13 +1128,14 @@ mod tests {
             assert_eq!(records.page_sections(), [recorded], "split {split}");
             arena.close(0);
             let mut encoder = device.create_command_encoder(&Default::default());
-            let meshes = sections.iter_mut();
+            let meshes = sections.iter_mut().map(|s| (s, None));
             let mut budget = u64::MAX;
             assert!(move_off_page(
                 &mut arena,
                 &mut encoder,
                 None,
                 Some(&mut records),
+                None,
                 meshes,
                 0,
                 Part::Section { split },
@@ -1237,7 +1296,8 @@ mod tests {
             &mut encoder,
             Some((&mut flat, &device, &mut uploads)),
             None,
-            std::iter::once(&mut section),
+            None,
+            std::iter::once((&mut section, None)),
             0,
             Part::Translucent,
             &mut budget
@@ -1521,9 +1581,9 @@ mod tests {
                          encoder: &mut _,
                          meshes: &mut [(u32, SectionGpu)],
                          budget: &mut u64| {
-                let held = meshes.iter_mut().map(|(_, s)| s);
+                let held = meshes.iter_mut().map(|(_, s)| (s, None));
                 assert!(move_off_page(
-                    arena, encoder, None, None, held, 0, part, budget
+                    arena, encoder, None, None, None, held, 0, part, budget
                 ));
                 let on = |s: &SectionGpu| part.of(s).is_some_and(|r| r.0 == 1);
                 meshes.iter().filter(|(_, s)| on(s)).count()

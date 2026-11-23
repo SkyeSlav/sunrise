@@ -29,9 +29,13 @@ pub(super) use sunrise_gameplay::dispense_rules::{
 };
 use sunrise_gameplay::dispense_rules::{
     LAUNCH, block_box, data_value, mob_can_dispenser_equip, mob_can_use_slot, overlaps,
-    place_rotation, section_order, shrink, step, y_rot,
+    section_order, shrink, step, y_rot,
 };
-use sunrise_world::{fluid::FluidKind, level::PlaceContext, registry::BlockStateId};
+use sunrise_world::{
+    fluid::FluidKind,
+    level::{PlaceContext, PlacementSource},
+    registry::BlockStateId,
+};
 
 /// A behaviour returns a detached stack; the dispenser applies the slot limit afterwards.
 fn mod_dispensed(
@@ -1683,6 +1687,28 @@ impl Game<'_> {
         ))
     }
     /// `ShulkerBoxDispenseBehavior`: place it like a `DirectionalPlaceContext`.
+    fn shulker_box_place_context(
+        front: Pos,
+        facing: Direction,
+        below_empty: bool,
+        item: String,
+    ) -> PlaceContext {
+        let clicked_face = if below_empty { facing } else { Direction::Up };
+        PlaceContext {
+            clicked_pos: Self::pos_of(front),
+            face: clicked_face,
+            hit: Vec3::new(
+                f64::from(front.0) + 0.5,
+                f64::from(front.1),
+                f64::from(front.2) + 0.5,
+            ),
+            inside: false,
+            source: PlacementSource::Directional { direction: facing },
+            item,
+            can_use_game_master_blocks: false,
+        }
+    }
+    /// `ShulkerBoxDispenseBehavior`: place it like a `DirectionalPlaceContext`.
     fn dispense_shulker_box(
         &mut self,
         pos: Pos,
@@ -1694,24 +1720,13 @@ impl Game<'_> {
             .res
             .facts()
             .is_air(self.block_at((front.0, front.1 - 1, front.2)));
-        let clicked_face = if below_empty { facing } else { Direction::Up };
-        let ctx = PlaceContext {
-            clicked_pos: Self::pos_of(front),
-            face: clicked_face,
-            hit: Vec3::new(
-                f64::from(front.0) + 0.5,
-                f64::from(front.1),
-                f64::from(front.2) + 0.5,
-            ),
-            inside: false,
-            yaw: place_rotation(facing),
-            pitch: 0.0,
-            sneaking: false,
-            item: stack.item.to_string(),
-            can_use_game_master_blocks: false,
-        };
-        // DirectionalPlaceContext places at the front block or nowhere.
-        if !self.with_level(|b, level, ticks| b.directional_can_place(level, ticks, &ctx)) {
+        let ctx =
+            Self::shulker_box_place_context(front, facing, below_empty, stack.item.to_string());
+        // DirectionalPlaceContext places at the front block or nowhere. A shulker box is
+        // neither a slab nor snow, so `canPlace` always has an answer here.
+        if self.with_level(|b, level, ticks| b.directional_can_place(level, ticks, &ctx))
+            != Ok(true)
+        {
             return Ok((Some(stack), FAIL));
         }
         if self.place_item_block(&ctx, false, &stack)?.is_none() {
@@ -3173,6 +3188,41 @@ mod tests {
         // x is the outer loop, ascending as a signed coordinate.
         assert!(at(-1.0, 0.0, 0.0) < at(0.0, 0.0, 0.0));
         assert!(at(15.9, 0.0, 0.0) < at(16.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn shulker_box_dispenser_builds_directional_place_context() {
+        use sunrise_core::{geometry::Vec3, position::BlockPos};
+        for facing in Direction::ALL {
+            let over_air = super::Game::shulker_box_place_context(
+                (10, 64, 5),
+                facing,
+                true,
+                "minecraft:shulker_box".into(),
+            );
+            assert_eq!(over_air.clicked_pos, BlockPos::new(10, 64, 5));
+            assert_eq!(over_air.face, facing);
+            assert_eq!(over_air.hit, Vec3::new(10.5, 64.0, 5.5));
+            assert!(!over_air.inside);
+            assert_eq!(
+                over_air.source,
+                super::PlacementSource::Directional { direction: facing }
+            );
+            assert_eq!(over_air.item, "minecraft:shulker_box");
+            assert!(!over_air.can_use_game_master_blocks);
+
+            let over_solid = super::Game::shulker_box_place_context(
+                (10, 64, 5),
+                facing,
+                false,
+                "minecraft:shulker_box".into(),
+            );
+            assert_eq!(over_solid.face, Direction::Up);
+            assert_eq!(
+                over_solid.source,
+                super::PlacementSource::Directional { direction: facing }
+            );
+        }
     }
 }
 

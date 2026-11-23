@@ -461,7 +461,7 @@ mod tests {
                 assert!(
                     events
                         .iter()
-                        .any(|e| matches!(e, MobEvent::AttackPlayer(_, _))),
+                        .any(|e| matches!(e, MobEvent::AttackPlayer(..))),
                     "the swoop should bite through the pane: {events:?}"
                 );
             }),

@@ -420,6 +420,31 @@ impl Game<'_> {
         }
     }
 
+    /// Whether the living entity `id` resident in a parked level is alive (`Entity.isAlive`):
+    /// a remembered target stays remembered while its holder is in another level.
+    pub(in crate::game) fn parked_living_alive(&self, id: u32) -> bool {
+        let EntityLookup::Found { location, value } = self.server_resident_entity(id) else {
+            return false;
+        };
+        let Some(parked) = (self.levels.parked.iter())
+            .find(|(dim, _)| dim.key() == location.owner.dimension)
+            .map(|(_, parked)| parked)
+        else {
+            return false;
+        };
+        match value {
+            Target::Mob(_) => {
+                (parked.mobs.locate(location.join)).is_some_and(|i| parked.mobs[i].alive())
+            }
+            Target::Stand(_) => (parked.armor_stands.locate(location.join))
+                .is_some_and(|i| parked.armor_stands[i].health > 0.0),
+            Target::Dragon(id) => {
+                (parked.dragon.as_ref()).is_some_and(|d| d.id == id && d.health > 0.0)
+            }
+            _ => false,
+        }
+    }
+
     pub(in crate::game) fn server_resident_entity(&self, id: u32) -> EntityLookup<Target> {
         let found = self
             .resident_entities
@@ -438,6 +463,27 @@ impl Game<'_> {
             EntityLookup::Taken => EntityLookup::Taken,
         }
     }
+    /// `ServerLevel.getEntity(UUID)`: search this level's admitted entities, not unloaded
+    /// saves or tracking entries. A departure can overlap a replacement with the same UUID.
+    pub(super) fn level_entity_by_uuid(&self, dim: Dim, uuid: [i32; 4]) -> Option<Target> {
+        let dimension = dim.key();
+        let mut table = self.resident_entities.table.borrow_mut();
+        let mut after = None;
+        loop {
+            let id = table.level_uuid_candidate(dimension, uuid, after)?;
+            if let EntityLookup::Found {
+                value: (target, true),
+                ..
+            } = table.entity_lookup(&dimension, id.get(), |at| {
+                self.locate_server_resident_owner(at)
+            }) && self.resident_source_target_visible(dimension, target)
+            {
+                return Some(target);
+            }
+            after = Some(id);
+        }
+    }
+
     /// Find the canonical level without swapping or probing physical families.
     pub(super) fn resident_target_dimension(&self, target: Target) -> Option<Dim> {
         let id = self.resident_target_id(target)?;

@@ -10,6 +10,8 @@ impl Crystal {
             join: Default::default(),
             id,
             position,
+            rotation: [0.0; 2],
+            fire: 0,
             show_bottom,
             time,
             beam: None,

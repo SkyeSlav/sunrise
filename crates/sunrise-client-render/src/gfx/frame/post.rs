@@ -41,6 +41,8 @@ pub(in crate::gfx) struct PostPassArgs<'a> {
     pub(in crate::gfx) gpu_frame: bool,
     pub(in crate::gfx) serial: u64,
     pub(in crate::gfx) cpu: [usize; 3],
+    pub(in crate::gfx) sourced_frame: bool,
+    pub(in crate::gfx) sourced_cpu: [usize; 3],
     pub(in crate::gfx) lifts_world: bool,
 }
 
@@ -97,6 +99,8 @@ impl Renderer {
             gpu_frame,
             serial,
             cpu,
+            sourced_frame,
+            sourced_cpu,
             lifts_world,
         } = args;
 
@@ -355,9 +359,14 @@ impl Renderer {
         if culling && let Some(cull) = &mut self.cull {
             cull.end(&self.device, &mut encoder);
         }
-        // GPU culling's counts once its world passes are done (phase 2's too).
+        // GPU culling's counts once its world passes are done (phase 2's too), and sourced
+        // geometry's beside them; whether the frame drew sourced geometry rides the near
+        // copy, so its half waits for sourced geometry's (`in_flight::collect_stats`).
         if gpu_frame && let Some(gpu) = &mut self.gpu_culling {
-            gpu.copy_stats(&mut encoder, serial, cpu);
+            gpu.copy_stats(&mut encoder, serial, cpu, sourced_frame);
+        }
+        if sourced_frame {
+            self.sourced.copy_stats(&mut encoder, serial, sourced_cpu);
         }
         if let Some(timer) = &mut self.gpu_timer {
             timer.end(&self.device, &mut encoder, (&view_target, overlay_format));

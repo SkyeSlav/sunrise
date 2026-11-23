@@ -114,7 +114,7 @@ class StageToolTests(unittest.TestCase):
                     prebuilt_game.build(root / "other-sdk", server=False)
                 raise RuntimeError("build failed")
 
-            with patch.dict(os.environ, CARGO_TARGET_DIR=directory), \
+            with patch.object(prebuilt_game, "os", ScopedOs({"CARGO_TARGET_DIR": directory})), \
                  patch.object(prebuilt_game, "_build_locked", side_effect=build_then_fail) as build_locked:
                 with self.assertRaisesRegex(RuntimeError, "build failed"):
                     prebuilt_game.build(root / "sdk", server=True)
@@ -590,12 +590,10 @@ class ToolBuildTests(unittest.TestCase):
     def built_with(self, environment: dict, binary: bytes = b"tool") -> dict:
         calls = []
         with tempfile.TemporaryDirectory() as directory, \
-                patch.dict(os.environ, {"CARGO_TARGET_DIR": directory}), \
+                patch.object(prebuilt_game, "os", ScopedOs({"CARGO_TARGET_DIR": directory, **environment})), \
                 patch.object(prebuilt_game, "rustc_host", return_value="x86_64-unknown-linux-gnu"), \
                 patch.object(prebuilt_game, "head", return_value=COMMIT), \
                 patch.object(prebuilt_game, "run", side_effect=lambda *args, **kwargs: calls.append(kwargs)):
-            os.environ.pop("SUNRISE_TOOL_COMMIT", None)
-            os.environ.update(environment)
             release = Path(directory) / "release"
             release.mkdir()
             (release / prebuilt_game.TOOL_PROGRAM).write_bytes(binary)
@@ -653,7 +651,7 @@ class AllocatorSelectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             target = root / "target" / "prebuilt"
-            with patch.dict(os.environ, CARGO_TARGET_DIR=str(target.parent)), \
+            with patch.object(prebuilt_game, "os", ScopedOs({"CARGO_TARGET_DIR": str(target.parent)})), \
                     patch.object(prebuilt_game, "_build_locked") as build_locked:
                 for out in (root, target, target / "stage"):
                     with self.subTest(out=out), self.assertRaisesRegex(SystemExit, "E_SDK_OUT_OVERLAPS_TARGET"):
@@ -676,7 +674,7 @@ class AllocatorSelectionTests(unittest.TestCase):
                 target.symlink_to(work, target_is_directory=True)
             except OSError:
                 self.skipTest("directory symlinks unavailable")
-            with patch.dict(os.environ, CARGO_TARGET_DIR=str(target.parent)), \
+            with patch.object(prebuilt_game, "os", ScopedOs({"CARGO_TARGET_DIR": str(target.parent)})), \
                     patch.object(prebuilt_game, "_build_locked") as build_locked:
                 with self.assertRaisesRegex(SystemExit, "E_SDK_OUT_OVERLAPS_TARGET"):
                     prebuilt_game.build(output, server=False)

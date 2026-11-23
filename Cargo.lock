@@ -507,19 +507,12 @@ name = "cargo-sunrise-mod"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "cap-fs-ext",
- "cap-std",
- "chrono",
  "dunce",
- "getrandom 0.4.3",
  "libc",
  "lzma-rust2",
- "minisign",
- "minisign-verify",
  "ring",
- "rpassword",
  "rustc-demangle",
- "same-file",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -537,9 +530,7 @@ dependencies = [
  "tempfile",
  "toml",
  "toml_edit",
- "ureq",
- "windows-sys 0.61.2",
- "zeroize",
+ "url",
  "zip",
 ]
 
@@ -900,12 +891,6 @@ checksum = "ce6e4c961d6cd6c9a86db418387425e8bdeaf05b3c8bc1411e6dca4c252f1453"
 dependencies = [
  "hybrid-array",
 ]
-
-[[package]]
-name = "ct-codecs"
-version = "1.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fd9f3db6f2cfef61c10613071955154ffdc9e515daebff26de4b54e35038fdd"
 
 [[package]]
 name = "cty"
@@ -2270,18 +2255,6 @@ name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
-
-[[package]]
-name = "minisign"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3062dbbf4d8f57899e2252804f7512a4fd89c8211c58fa6c786d38794a0c809d"
-dependencies = [
- "ct-codecs",
- "getrandom 0.4.3",
- "rpassword",
- "scrypt",
-]
 
 [[package]]
 name = "minisign-verify"
@@ -3747,27 +3720,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rpassword"
-version = "7.5.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fa2c5d9304b618df61ff17f3d3485c6e1854a3d94902a49abbb8d43dfbe0464"
-dependencies = [
- "libc",
- "rtoolbox",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "rtoolbox"
-version = "0.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a1efe12a1469752d0e6ff5ebec0b6ef4924cc5c4c71046b0ec730040535819d"
-dependencies = [
- "libc",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "rusqlite"
 version = "0.41.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4903,9 +4855,11 @@ dependencies = [
  "tar",
  "tempfile",
  "toml",
+ "url",
  "windows-sys 0.61.2",
  "xz4rust",
  "zip",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -4972,6 +4926,7 @@ dependencies = [
 name = "sunrise-modding-examples"
 version = "0.0.0"
 dependencies = [
+ "log",
  "sunrise-mod-api",
 ]
 
