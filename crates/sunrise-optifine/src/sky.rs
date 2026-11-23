@@ -188,7 +188,8 @@ impl Fade {
 
     /// The brightness at `day_time` (ticks; any day).
     pub fn brightness(&self, day_time: i64) -> f32 {
-        let since = |t: i64| (t - self.start_in).rem_euclid(DAY);
+        let start = self.start_in.rem_euclid(DAY);
+        let since = |t: i64| (t.rem_euclid(DAY) - start).rem_euclid(DAY);
         let now = since(day_time);
         let (end_in, start_out) = (since(self.end_in), since(self.start_out));
         // A fade out that ends where the fade in starts ends a whole day later, not at once.
@@ -304,7 +305,7 @@ impl SkyLayer {
         if !self.rotate {
             return 0.0;
         }
-        let days = (day_time - 6000).div_euclid(DAY);
+        let days = day_time.div_euclid(DAY) - i64::from(day_time.rem_euclid(DAY) < 6000);
         // Whole turns only matter at a speed that is not whole; keep the f32 small.
         let days = (days as f64 * f64::from(self.speed)).rem_euclid(1.0);
         (days + f64::from(sun_turns) * f64::from(self.speed)).rem_euclid(1.0) as f32
@@ -495,6 +496,20 @@ mod tests {
         assert_eq!(l.brightness(0), 0.0); // 6:00
         assert_eq!(l.brightness(6000), 0.0); // noon
         assert_eq!(l.brightness(24000 * 3 + 13000), 0.5, "any day");
+    }
+
+    #[test]
+    fn a_layer_uses_the_full_signed_clock_for_fading_and_rotation() {
+        let mut l = layer("speed=0.5");
+        l.fade = Some(Fade {
+            start_in: 16190,
+            end_in: 16194,
+            start_out: 18000,
+            end_out: 20000,
+        });
+        // MIN is at tick 16192 on noon-relative day -384307168202283.
+        assert_eq!(l.brightness(i64::MIN), 0.5);
+        assert_eq!(l.turns(i64::MIN, 0.25), 0.625);
     }
 
     #[test]

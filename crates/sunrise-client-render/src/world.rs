@@ -283,12 +283,17 @@ impl Weather {
         self.rain_level = (target(self.raining), target(self.raining));
         self.thunder_level = (target(self.thundering), target(self.thundering));
     }
-    /// Level.getRainLevel / getThunderLevel (thunder scales with rain).
-    pub fn levels(&self, partial: f32) -> (f32, f32) {
+    /// Interpolated rain and thunder strengths before weighting thunder by rain.
+    pub fn raw_levels(&self, partial: f32) -> (f32, f32) {
         let rain = self.rain_level.0 + (self.rain_level.1 - self.rain_level.0) * partial;
         let thunder =
             self.thunder_level.0 + (self.thunder_level.1 - self.thunder_level.0) * partial;
-        (rain, thunder * rain)
+        (rain, thunder)
+    }
+    /// Level.getRainLevel / getThunderLevel (thunder scales with rain).
+    pub fn levels(&self, partial: f32) -> (f32, f32) {
+        let (rain, raw_thunder) = self.raw_levels(partial);
+        (rain, raw_thunder * rain)
     }
     /// `ClientPacketListener.handleGameEvent`'s weather events, the player's level's or a viewed
     /// level's: START_RAINING (1), STOP_RAINING (2), RAIN_LEVEL_CHANGE (7) and

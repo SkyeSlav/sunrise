@@ -182,12 +182,12 @@ impl Game<'_> {
         let fixed = self.settings.extras.pvp.tweaks.time;
         sunrise_client::pvp::view_day_time(self.world.day_time, fixed.filter(|_| self.own_view()))
     }
-    /// The rain and thunder levels the frame draws (rain, the sky's colour and light, fog): PvP &
-    /// HUD's weather, else the world's. Gameplay (riptide, mobs, crops) keeps the world's.
+    /// The view's rain and raw thunder before mods, for a level that can have weather:
+    /// PvP & HUD's weather if set, otherwise the world's interpolated strengths.
     pub(in crate::game) fn view_weather(&self, partial: f32) -> (f32, f32) {
         match self.settings.extras.pvp.tweaks.weather {
-            Some(w) if self.own_view() && self.can_have_weather() => w.levels(),
-            _ => self.weather_levels(partial),
+            Some(w) if self.own_view() => w.levels(),
+            _ => self.world.weather.raw_levels(partial),
         }
     }
     // What the engine reads from PvP & HUD. Every engine use goes through these, so each becomes

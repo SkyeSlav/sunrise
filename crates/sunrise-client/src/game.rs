@@ -11021,6 +11021,12 @@ impl Game<'_> {
         // chains: its strings are rewritten in place, so it allocates nothing once they have
         // grown to the dimension's and biome's names.
         let mut frame = std::mem::take(&mut self.expression_frame);
+        let presentation = self.sample_sky_environment(alpha as f32);
+        let (day_time, rain, thunder) = (
+            presentation.day_time,
+            presentation.rain,
+            presentation.thunder,
+        );
         let environment = self.view_environment();
         // EnvironmentAttributeProbe: the spatially interpolated biome colours,
         // Gaussian-weighted over the noise biomes around the camera (plains
@@ -11062,7 +11068,6 @@ impl Game<'_> {
                 post_blend.accumulate(weight, post_of(b));
             }
         }
-        let (rain, thunder) = self.view_weather(alpha as f32);
         // What the packs' attribute expressions read (only a pack's stack has any).
         let mut polytone_frame = None;
         if self.pack.environments.is_some()
@@ -11077,7 +11082,7 @@ impl Game<'_> {
                 rain: frame_rain,
                 thunder: frame_thunder,
                 game_time,
-                day_time,
+                day_time: frame_day_time,
                 render_distance,
                 sky_type,
                 dimension,
@@ -11097,7 +11102,7 @@ impl Game<'_> {
             biome_name.clone_from(&info.name);
             (*temperature, *downfall) = (info.temperature, info.downfall);
             (*frame_rain, *frame_thunder) = (rain, thunder);
-            (*game_time, *day_time) = (self.world.game_time, self.view_day_time());
+            (*game_time, *frame_day_time) = (self.world.game_time, day_time);
             *render_distance = self.streaming.radius;
             *sky_type = match self.dimension_type().skybox {
                 sunrise_world::dimension_type::Skybox::Overworld => 1,
@@ -11123,15 +11128,22 @@ impl Game<'_> {
             environment.set_frame(&frame);
             polytone_frame = Some(&frame);
         }
-        let mut sky = environment.sample(&sunrise_client::environment::Sample {
-            day_time: self.view_day_time(),
+        let at = sunrise_client::environment::Sample {
+            day_time,
             rain,
             thunder,
             blend: Some(&blend),
             biome: Some(attributes_of(biome)),
             post_blend: Some(&post_blend),
             post_biome: Some(post_of(biome)),
-        });
+        };
+        let mut sky = if presentation.day_time_changed
+            && let Some(remote) = &self.remote
+        {
+            environment.sample_with_clock(&at, &|clock| remote.visual_clock_time(clock, day_time))
+        } else {
+            environment.sample(&at)
+        };
         self.end_flash_sky(&mut sky, alpha);
         if self.flash > 0 && !self.settings.file.bool("hideLightningFlashes") {
             // ClientLevel's flash layer while skyFlashTime > 0: the sky colour
@@ -11323,7 +11335,7 @@ impl Game<'_> {
         // renderer keeps the bytes in each reading core pipeline's blocks, which write them to
         // the GPU when that pipeline uploads its blocks for its draw; a post pass writes them
         // when it draws.
-        let (sun_angle, day_time) = (sky.sun_angle, self.view_day_time());
+        let sun_angle = sky.sun_angle;
         let player = (self.player.as_ref()).map_or(camera.to_array(), |p| {
             [p.position.x, p.position.y, p.position.z]
         });
@@ -11380,7 +11392,7 @@ impl Game<'_> {
         let mut pack_inputs = if title {
             Default::default()
         } else {
-            self.shader_pack_inputs(camera, alpha as f32, &sky)
+            self.shader_pack_inputs(camera, alpha as f32, &sky, &presentation)
         };
         // Retain the existing additive particle stream; the ordered dragon emitter appends
         // the eyes and rays to it without changing their material routing.
@@ -11416,14 +11428,14 @@ impl Game<'_> {
             (Vec::new(), Vec::new(), None)
         } else if self.overworld_skybox() && !sky_effect_blocked {
             // Camera.doesMobEffectBlockSky: no sun, moon or stars.
-            self.celestial_geometry(&sky, rain)
+            self.celestial_geometry(&sky, day_time, rain)
         } else if self.end_skybox() && self.settings.sunrise.sky {
             let (flash, bodies) = self.end_flash_geometry();
             (flash, bodies, None)
         } else {
             (Vec::new(), Vec::new(), None)
         };
-        self.custom_sky_frame([camera.x, camera.y, camera.z], &sky, (rain, thunder), title);
+        self.custom_sky_frame([camera.x, camera.y, camera.z], &sky, &presentation, title);
         pr.lap("pr_celestial");
         let (mut hand, hand_items) = if title || self.scoping() {
             Default::default()
@@ -11461,7 +11473,7 @@ impl Game<'_> {
         self.outline_fill(&outline, camera, &mut entities);
         pr.lap("pr_screen_end");
         let weather = if !title && self.can_have_weather() && self.settings.sunrise.weather {
-            sunrise_client::spans::time("weather", || self.weather_geometry(camera, alpha))
+            sunrise_client::spans::time("weather", || self.weather_geometry(camera, rain))
         } else {
             Vec::new()
         };

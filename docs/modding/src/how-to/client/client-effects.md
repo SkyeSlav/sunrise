@@ -177,6 +177,43 @@ and error toast naming the mod. The first publisher owns a retained payload: a G
 or an item-image provider. Reordering or cloning someone else's component does not transfer
 its ownership or disable a healthy provider when that payload panics on drop.
 
+## Changing the visible time and weather
+
+Implement `Hooks::sky_environment` to change the sky, fog, lightmap, clouds and
+precipitation that the local client draws. It runs for a joined world, including
+single-player, not for the title panorama or the server. The read-only
+`ClientHost` still reads the real level. Edits do not change synchronized
+weather or clock state, gameplay light, or packets.
+
+For example, a photo mode can show clear daylight without using a world command:
+
+```rust,ignore
+fn sky_environment(
+    &self,
+    _host: &dyn mod_api::ClientHost,
+    event: &mut mod_api::SkyEnvironmentEvent,
+) {
+    event.day_time = 6000;
+    event.rain = 0.0;
+    event.raw_thunder = 0.0;
+}
+```
+
+Each sample starts with the ordinary view after local visual settings. Listeners
+see earlier edits in dependency order and each receives the original
+`partial_tick`. The renderer can sample at different partial ticks during one
+frame, so keep the result deterministic for a given input.
+
+`day_time` accepts any signed tick count. It replaces only the displayed
+dimension's default clock and has no effect if the dimension has no default
+clock. Timeline tracks retain their own periods and clocks, and the dimension
+does not gain sky effects it would not otherwise draw. Weather edits apply only
+where `Level.canHaveWeather` permits weather; biome and terrain rules for rain
+and snow still apply. After the listeners run, an edited rain or raw thunder
+strength is clamped to 0 through 1 as in `Level.setRainLevel` and
+`Level.setThunderLevel`. A final NaN restores that field's original visual
+strength. The renderer multiplies raw thunder by rain as in `Level.getThunderLevel`.
+
 ## Drawing a second world camera
 
 Native internals mods can request extra world cameras through `world_views` and

@@ -13,7 +13,7 @@ use sunrise_shader_api::Api;
 use sunrise_shaders::{BlockIds, Macros, Pack, Properties, dimension_folder_named, load_post};
 
 use super::native_shaders::{fingerprint, outcome, refused, remember};
-use super::{Dim, Game, Screen};
+use super::{Dim, Game, Screen, native_hooks::SkyEnvironmentSample};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use sunrise_client_render::render_geometry::EntitySpan;
@@ -306,6 +306,7 @@ impl Game<'_> {
         camera: glam::DVec3,
         partial: f32,
         sky: &sunrise_client::environment::Sky,
+        presentation: &SkyEnvironmentSample,
     ) -> PackInputs {
         // A `shaders/` pack lights the faces itself unless `oldLighting=true`: sections mesh
         // without the game's face shading (the pack loaded or dropped below shows next frame).
@@ -517,7 +518,10 @@ impl Game<'_> {
                 self.shader_pack_failed(name, dimension, &error);
             }
         }
-        let lerp = |(old, new): (f32, f32)| old + (new - old) * partial;
+        let (rain, thunder) = presentation.raw_thunder_override.map_or_else(
+            || self.world.weather.raw_levels(partial),
+            |raw_thunder| (presentation.rain, raw_thunder),
+        );
         let at = camera.floor().as_ivec3();
         let light = self.world.light(at.x, at.y, at.z);
         let biome = self
@@ -533,13 +537,15 @@ impl Game<'_> {
         PackInputs {
             // `Level.getDefaultClockTime`: 0 in a dimension type with no default clock (the
             // Nether's has none), as Iris 1.11.7 reads `worldTime` there (probe pack).
-            day_time: if dimension.is_some_and(|d| d.default_clock.is_none()) {
+            day_time: if presentation.day_time_changed {
+                presentation.day_time
+            } else if dimension.is_some_and(|d| d.default_clock.is_none()) {
                 0
             } else {
                 self.world.day_time
             },
-            rain: lerp(self.world.weather.rain_level),
-            thunder: lerp(self.world.weather.thunder_level),
+            rain,
+            thunder,
             eye_in: match self.camera_fluid(camera.to_array()) {
                 CameraFluid::None => 0,
                 CameraFluid::Water => 1,

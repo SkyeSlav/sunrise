@@ -64,6 +64,7 @@ impl Game<'_> {
     pub(super) fn celestial_geometry(
         &self,
         sky: &sunrise_client::environment::Sky,
+        day_time: i64,
         rain: f32,
     ) -> (Vec<Vertex>, Vec<CelestialBody>, Option<(glam::Mat4, f32)>) {
         let body_color =
@@ -78,7 +79,7 @@ impl Game<'_> {
             "first_quarter",
             "waxing_gibbous",
         ];
-        let phase = phases[(self.view_day_time() / 24000).rem_euclid(8) as usize];
+        let phase = phases[(day_time / 24000).rem_euclid(8) as usize];
         let moon = format!("environment/celestial/moon/{phase}");
         let (out, bodies) = celestial_bodies(&self.gui.atlas.sprites, sky, &moon, body_color);
         // SkyRenderer.renderStars: the static star buffer on the same frame.
@@ -473,10 +474,9 @@ impl Game<'_> {
     pub(super) fn weather_geometry(
         &mut self,
         camera: glam::DVec3,
-        alpha: f64,
+        intensity: f32,
     ) -> Vec<sunrise_client::weather::Vertex> {
         use sunrise_client::weather;
-        let (intensity, _) = self.view_weather(alpha as f32);
         if intensity <= 0.0 {
             return Vec::new();
         }

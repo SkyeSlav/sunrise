@@ -1009,7 +1009,9 @@ impl Environment {
                 .map_err(|e| e.to_string())
                 .and_then(|t| Timeline::parse(&t))
             {
-                Ok(timeline) => {
+                Ok(mut timeline) => {
+                    // Timeline clock holders resolve bare names in the default namespace.
+                    timeline.clock = crate::atlas_sources::qualified(&timeline.clock);
                     builder.timeline_layer(&timeline);
                 }
                 Err(e) => log::warn!("timeline {id}: {e}"),
@@ -1102,16 +1104,24 @@ impl Environment {
     /// `EnvironmentAttributeSystem.getValue` of one attribute, or its dimension value without
     /// a biome.
     pub fn value(&self, id: &str, at: &Sample) -> Option<Value> {
+        self.value_with_clock(id, at, &|_| at.day_time)
+    }
+
+    fn value_with_clock(
+        &self,
+        id: &str,
+        at: &Sample,
+        clock: &dyn Fn(&str) -> i64,
+    ) -> Option<Value> {
         let attribute = attribute(id)?;
         let biome = |_full_resolution: bool| at.biome;
-        let clock = |_clock: &str| at.day_time;
         let post_biome = |_full_resolution: bool| at.post_biome;
         let conditions = Conditions {
             rain: at.rain,
             thunder: at.thunder,
             blend: at.blend,
             biome: &biome,
-            clock: &clock,
+            clock,
             post_blend: at.post_blend,
             post_biome: Some(&post_biome),
         };
@@ -1123,15 +1133,22 @@ impl Environment {
 
     /// The sky state the renderer draws.
     pub fn sample(&self, at: &Sample) -> Sky {
-        let float = |id: &str| match self.value(id, at) {
+        self.sample_with_clock(at, &|_| at.day_time)
+    }
+
+    /// Draw the same environment layers, resolving each timeline's own clock. Only the
+    /// client presentation path supplies a replacement for its default clock.
+    pub fn sample_with_clock(&self, at: &Sample, clock: &dyn Fn(&str) -> i64) -> Sky {
+        let value = |id: &str| self.value_with_clock(id, at, clock);
+        let float = |id: &str| match value(id) {
             Some(Value::Float(f)) => f,
             _ => 0.0,
         };
-        let rgb = |id: &str| match self.value(id, at) {
+        let rgb = |id: &str| match value(id) {
             Some(Value::Rgb(c)) => c,
             _ => [0.0; 3],
         };
-        let argb = |id: &str| match self.value(id, at) {
+        let argb = |id: &str| match value(id) {
             Some(Value::Argb(c)) => c,
             _ => [0.0; 4],
         };
@@ -1178,6 +1195,64 @@ pub fn sky_darken(environment: &Environment, day_time: i64, rain: f32, thunder: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_visual_clock_replacement_uses_each_tracks_clock_and_period() {
+        let default = Timeline::parse(&serde_json::json!({
+            "clock": "test:default",
+            "period_ticks": 10,
+            "tracks": {
+                "visual/fog_start_distance": {"keyframes": [
+                    {"ticks": 0, "value": 10}, {"ticks": 4, "value": 50}
+                ]}
+            }
+        }))
+        .unwrap();
+        let other = Timeline::parse(&serde_json::json!({
+            "clock": "test:other",
+            "tracks": {
+                "visual/fog_end_distance": {"keyframes": [
+                    {"ticks": 0, "value": 100}, {"ticks": 4, "value": 140}
+                ]}
+            }
+        }))
+        .unwrap();
+        let mut builder = Builder::default();
+        builder.timeline_layer(&default).timeline_layer(&other);
+        let env = Environment {
+            system: builder.build(),
+            frame: Default::default(),
+            biomes: Default::default(),
+            post: Default::default(),
+            source: ResourceSource::directory(Default::default()),
+            dimension: "test:dimension".into(),
+            packs: Default::default(),
+        };
+        let at = Sample {
+            day_time: 0,
+            ..Sample::default()
+        };
+        let ordinary = env.sample(&at);
+        assert_eq!((ordinary.fog_start, ordinary.fog_end), (10.0, 100.0));
+        let replaced = env.sample_with_clock(&at, &|clock| match clock {
+            "test:default" => i64::MIN,
+            "test:other" => 4,
+            _ => panic!("unexpected clock {clock}"),
+        });
+        // The first clock wraps MIN to tick 2 out of 10; the other still reads tick 4.
+        assert_eq!((replaced.fog_start, replaced.fog_end), (30.0, 140.0));
+        for (ticks, expected) in [(i64::MIN, 100.0), (i64::MAX, 140.0)] {
+            let at_endpoint = env.sample_with_clock(&at, &|clock| match clock {
+                "test:default" => 0,
+                "test:other" => ticks,
+                _ => panic!("unexpected clock {clock}"),
+            });
+            assert_eq!(
+                (at_endpoint.fog_start, at_endpoint.fog_end),
+                (10.0, expected)
+            );
+        }
+    }
 
     /// `Frame::clone_from` copies every field and writes the strings into the destination's own
     /// buffers (their address and capacity kept), so a context copied each frame allocates

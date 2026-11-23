@@ -52,6 +52,21 @@ impl Remote {
             .map_or(0, |c| c.total_ticks)
     }
 
+    pub(in crate::game) fn has_default_clock(&self) -> bool {
+        self.default_clock.is_some()
+    }
+
+    /// Visual replacement for the joined dimension's default clock only. Other timelines
+    /// still see their own synchronized clock, as in `AttributeTrackSampler.applyTimeBased`.
+    pub(in crate::game) fn visual_clock_time(&self, name: &str, day_time: i64) -> i64 {
+        let id = self.registries.id("minecraft:world_clock", name);
+        if id.is_some() && id == self.default_clock {
+            day_time
+        } else {
+            self.clock_time(id)
+        }
+    }
+
     pub(in crate::game) fn overworld_clock_time(&self) -> i64 {
         self.clock_time(self.overworld_clock)
     }

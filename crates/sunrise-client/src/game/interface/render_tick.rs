@@ -224,14 +224,15 @@ impl Game<'_> {
         };
         let at = [camera.x, camera.y, camera.z];
         let fog_type = self.camera_fog_type(at);
-        let (rain, thunder) = self.view_weather(self.clock.fraction() as f32);
+        let partial = self.clock.fraction() as f32;
+        let presentation = self.sample_sky_environment(partial);
+        let (rain, thunder) = (presentation.rain, presentation.thunder);
         let title_fog = sunrise_client::fog::FogTables::default();
         let tables = if self.title.is_some() {
             &title_fog
         } else {
             self.res.fog()
         };
-        let partial = self.clock.fraction() as f32;
         let fog_effects = cam.as_ref().map(|c| c.fog_effects);
         let blindness = fog_effects.map(|e| e.blindness).unwrap_or_else(|| {
             self.potions
@@ -710,7 +711,7 @@ impl Game<'_> {
             eye[1].floor() as i32,
             eye[2].floor() as i32,
         ];
-        let rain = self.view_weather(1.0).0;
+        let rain = self.sample_sky_environment(1.0).rain;
         let biome = self
             .world
             .chunks
@@ -1104,8 +1105,12 @@ impl Game<'_> {
     /// time of day, the weather, and for expressions the packs' Polytone frame, or the time and
     /// weather alone when no Polytone pack makes one.
     fn update_animation_inputs(&mut self) {
-        let (rain, thunder) = self.view_weather(0.0);
-        let day_time = self.view_day_time();
+        let presentation = self.sample_sky_environment(0.0);
+        let (day_time, rain, thunder) = (
+            presentation.day_time,
+            presentation.rain,
+            presentation.thunder,
+        );
         let frame = self
             .pack
             .polytone_particles

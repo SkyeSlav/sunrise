@@ -1,7 +1,7 @@
 //! Custom skies (`sunrise_client::custom_sky`, OptiFine's format): each frame, the layers of the
 //! world's sky whose day, weather, biome and height hold at the camera, handed to the renderer,
 //! which draws them over the vanilla sky. A pack without layers hands it none.
-use super::*;
+use super::{native_hooks::SkyEnvironmentSample, *};
 use sunrise_client::custom_sky::{Conditions, Weather};
 
 /// The layers' eased brightness between frames, and when the last frame was.
@@ -18,7 +18,7 @@ impl Game<'_> {
         &mut self,
         camera: [f64; 3],
         sky: &sunrise_client::environment::Sky,
-        (rain, thunder): (f32, f32),
+        presentation: &SkyEnvironmentSample,
         title: bool,
     ) {
         let Some(mut draws) = self
@@ -45,15 +45,15 @@ impl Game<'_> {
         {
             let mut state = std::mem::take(&mut self.custom_sky.state);
             // Level.isThundering / isRaining.
-            let weather = if thunder > 0.9 && rain > 0.2 {
+            let weather = if presentation.thunder > 0.9 && presentation.rain > 0.2 {
                 Weather::Thunder
-            } else if rain > 0.2 {
+            } else if presentation.rain > 0.2 {
                 Weather::Rain
             } else {
                 Weather::Clear
             };
             let conditions = Conditions {
-                day_time: self.view_day_time(),
+                day_time: presentation.day_time,
                 weather,
                 biome: self.biome_at(camera),
                 y: camera[1].floor() as i32,
