@@ -865,7 +865,7 @@ pub fn push_text(
                     sprite,
                     0.0,
                     argb,
-                    0,
+                    crate::gfx::TEXT_POLYGON_OFFSET_SOLID_OVERLAY,
                 );
                 x = right;
             }
@@ -4541,10 +4541,12 @@ mod tests {
         );
     }
 
-    /// A glowing sign's outline belongs to its text: an image span is one quad, as on a plain
-    /// sign, while a glyph run still gets the outline's eight passes under its own.
+    /// An inline image draws once in the sign face's layer; only glyphs get the eight
+    /// glowing outline copies in the normal depth layer.
     #[test]
     fn a_glowing_sign_draws_an_inline_image_once() {
+        use crate::gfx::{TEXT_NORMAL_SOLID_OVERLAY, TEXT_POLYGON_OFFSET_SOLID_OVERLAY};
+
         let cell = Rect {
             u0: 0.0,
             v0: 0.0,
@@ -4572,18 +4574,22 @@ mod tests {
             advance: 6.0,
             ..Glyph::default()
         };
-        let quads = |call: &TextCall| {
+        let layers = |call: &TextCall| {
             let mut out = Vec::new();
             push_text(&glyph, None, &call.run(), &mut out);
-            out.len() / 4
+            out.into_iter().map(|v| v.layer).collect::<Vec<_>>()
         };
         let outline = 0xFF00_0000;
+        let face = [TEXT_POLYGON_OFFSET_SOLID_OVERLAY; 4];
         let image = |outline| call("\u{fffc}", Some(cell), outline);
-        assert_eq!(quads(&image(0)), 1);
-        assert_eq!(quads(&image(outline)), quads(&image(0)));
+        assert_eq!(layers(&image(0)), face);
+        assert_eq!(layers(&image(outline)), face);
         let letter = |outline| call("a", None, outline);
-        assert_eq!(quads(&letter(0)), 1);
-        assert_eq!(quads(&letter(outline)), 9);
+        assert_eq!(layers(&letter(0)), face);
+        let glowing = layers(&letter(outline));
+        assert_eq!(glowing.len(), 36);
+        assert_eq!(glowing[..32], [TEXT_NORMAL_SOLID_OVERLAY; 32]);
+        assert_eq!(glowing[32..], face);
     }
 
     /// A glowing sign's own colour still wins over its dye, and the outline

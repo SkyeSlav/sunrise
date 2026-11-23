@@ -2879,7 +2879,8 @@ impl Renderer {
             if text_solid_quads > 0 {
                 pass.stage(self.own_timing.as_mut(), "entity text solid");
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-                // NORMAL outlines and plain text before the coplanar POLYGON_OFFSET fills.
+                // Draw glowing outline copies with NORMAL depth before coplanar
+                // POLYGON_OFFSET sign glyph faces and inline sprites.
                 let marked = light_marks(self.output.frame.format, self.hdr.is_some());
                 for (index, (pipeline, count, first)) in [
                     (
