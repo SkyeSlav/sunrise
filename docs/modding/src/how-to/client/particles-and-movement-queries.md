@@ -133,9 +133,8 @@ a quaternion of no length and a roll beyond half of `f32::MAX` expire the partic
 
 `ParticleLevelView` reads the loaded level around the particles, read-only: `block_state(pos)` and
 `brightness(layer, pos)`. A missing chunk reads as air. Light follows the render world's stored light; a dimension
-without skylight always reads zero on the sky layer. Currently, an absent chunk or a position above the build height
-reads full sky where present and no block light; below a loaded column both layers read zero. The client light storage
-for padding sections and unloaded borders is tracked in [#2761](https://github.com/sunrise-org/sunrise/issues/2761).
+without skylight always reads zero on the sky layer. An absent chunk or a position above the build height
+reads full sky where present and no block light; below a loaded column both layers read zero.
 
 Dispatch reuses its batch storage once it has enough capacity.
 
@@ -199,6 +198,23 @@ Duplicate IDs fail client startup without invoking any factory (matching NeoForg
 groups already built; it does not call factories again. Provider registration is separate:
 a group chooses the draw layer and quota for the listed particle types, not how those
 particles move.
+
+## Server item particles
+
+On a `ServerHost`, build `ParticleOptions::item_stack(item_particle_key, stack)` from the
+load-resolved `minecraft:item` key and an API `ItemStack`. Pass it to
+`level.send_particles(host, &options, state, at, spread, speed, count)` on a `LevelRef`.
+An invalid stack (unknown item, invalid components or count) returns `false` without
+queueing particles. `true` means queued, not drawn. In a transaction, accepted particles
+follow the [deferred effect rules](../../concepts/transactions.md#deferred-level-entity-and-player-effects).
+
+The packet carries the stack, not sprite names. Each client resolves its ground model
+with seed 0, as in `ClientHost::item_particle_options`, so the client's resources and
+the stack's components choose the particle sprites. The explicit sprite list in
+`ParticleOptions::item` is for local rendering, not server sends.
+
+Block, block-marker, falling-dust, dust-pillar and block-crumble requests need a valid
+block state argument. Server sends refuse trail and vibration requests.
 
 ## Block hit and destroy debris
 

@@ -112,6 +112,15 @@ data slots. If a neighbor write must commit with the subject edit, use
 inputs fails. A read-only or no-op loan does not copy or journal storage. A type
 with no subscriber skips the tick entirely; pending load notices still come first.
 
+### Combining subject and world writes in one transaction
+
+To make a dropped-item edit and a resident block-entity write atomic, run both inside
+`tick.transaction` and return `Err` if either write or the subject reacquisition is refused:
+
+```rust
+{{#include ../../../examples/src/block_entity_transaction.rs:block_entity_transaction}}
+```
+
 ## One-shot client effects
 
 To tell clients about something that happened once, such as a burst of particles, queue

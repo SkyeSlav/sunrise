@@ -561,7 +561,7 @@ impl Goal for OwnerHurtBy {
 /// `OwnerHurtTargetGoal`: attack what the owner attacks.
 #[derive(Clone, Debug)]
 struct OwnerHurt {
-    timestamp: i64,
+    timestamp: i32,
 }
 impl Goal for OwnerHurt {
     goal_clone!();
@@ -572,10 +572,12 @@ impl Goal for OwnerHurt {
         if !m.extra.tame || m.extra.sitting {
             return false;
         }
-        let Some((who, at)) = owner_view(m, cx.w).and_then(|p| p.last_hurt) else {
+        let Some((id, at)) = owner_view(m, cx.w).and_then(|p| p.last_hurt) else {
             return false;
         };
-        at != self.timestamp && wants_to_attack(m, cx.w, who)
+        // Only a mob of the snapshot can be targeted here: a player the owner hurt, and an
+        // owner other than the tick's selected player, are #4539.
+        at != self.timestamp && wants_to_attack(m, cx.w, Who::Mob(id))
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.ai.target
@@ -583,8 +585,8 @@ impl Goal for OwnerHurt {
             .is_some_and(|t| t.alive)
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
-        if let Some((who, at)) = owner_view(m, cx.w).and_then(|p| p.last_hurt) {
-            m.set_ai_target(cx.w, Some(who));
+        if let Some((id, at)) = owner_view(m, cx.w).and_then(|p| p.last_hurt) {
+            m.set_ai_target(cx.w, Some(Who::Mob(id)));
             self.timestamp = at;
         }
     }

@@ -249,6 +249,7 @@ fn expand(mut implementation: ItemImpl, export: bool) -> TokenStream {
 /// `#[serialize_text]` validates Text arguments at a forwarding boundary that writes a packet
 /// or a saved component; unmarked text arguments are converted only for in-process use.
 /// Use `#[manual_handle]` for an inherent handle wrapper written by hand.
+/// `#[goal_view]` marks a read a mob's goal tick answers from its own view for every holder.
 #[proc_macro_attribute]
 pub fn host_area(_attribute: TokenStream, input: TokenStream) -> TokenStream {
     let mut area = parse_macro_input!(input as syn::ItemTrait);
@@ -290,6 +291,7 @@ pub fn host_area(_attribute: TokenStream, input: TokenStream) -> TokenStream {
                 && !attr.path().is_ident("serialize_text")
                 && !attr.path().is_ident("decline_unavailable")
                 && !attr.path().is_ident("manual_handle")
+                && !attr.path().is_ident("goal_view")
         });
         // A shared published read answers from the installed table, without a live Game.
         let published = match method

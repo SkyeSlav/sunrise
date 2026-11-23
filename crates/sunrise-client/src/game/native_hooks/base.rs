@@ -4744,9 +4744,9 @@ impl LevelView<'_> {
     /// in `answer` as `Some(Some(state))`, including a registered state of
     /// another block, or refuse with `Some(None)`: the block goes nowhere
     /// and the stack is kept, as vanilla's `null`. Left empty, the block's
-    /// own placement runs. `context` is
-    /// vanilla's `BlockPlaceContext` (the clicked face, the placer's rotation,
-    /// the clicked position, whether the clicked block is being replaced, the
+    /// own placement runs. `context` is vanilla's `BlockPlaceContext` (the
+    /// clicked face, the clicked position, `source` distinguishing `Player`
+    /// from `Directional`, whether the clicked block is being replaced, the
     /// item in hand) and `fluid` the fluid in the position the block would go
     /// in, which a waterlogged block reads. Build the state from `state` with
     /// `native_state_with_property`, and know whether `state` is yours with

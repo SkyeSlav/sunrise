@@ -432,6 +432,7 @@ fn ram_tick(m: &mut Mob, cx: &mut Cx) {
             Who::Mob(id) => cx.events.push(MobEvent::AttackMob {
                 target: id,
                 amount,
+                remember_target: false,
                 // The same `noAggroMobAttack`: a ram angers no mob.
                 source: Damage {
                     kind: DamageKind::MobAttackNoAggro,

@@ -11,14 +11,15 @@ impl Game<'_> {
         let Some(host) = self.lan.as_mut() else {
             return;
         };
-        let Some(guest) = host.hub.guest(conn) else {
+        let Some((end_conquered, dead)) = host.hub.update_guest(conn, |guest| {
+            (
+                std::mem::take(&mut guest.won_game),
+                guest.dead && !guest.respawning,
+            )
+        }) else {
             return;
         };
-        let end_conquered = host
-            .play
-            .get_mut(&conn)
-            .is_some_and(|play| std::mem::take(&mut play.won_game));
-        if end_conquered || (guest.dead && !guest.respawning) {
+        if end_conquered || dead {
             self.queue_spawn_trip(
                 conn,
                 SpawnAction::Replace {
@@ -99,6 +100,7 @@ impl Game<'_> {
                 // Even a credits return constructs a new entity. Keep its restored attributes
                 // and health, not the old body's Entity.tickCount.
                 g.carried_tick_count = None;
+                g.carried_last_hurt_mob = None;
                 // Entity's constructor starts it at the origin; snapTo follows clone and copy.
                 g.place([0.0; 3]);
                 (g.yaw, g.pitch) = (0.0, 0.0);

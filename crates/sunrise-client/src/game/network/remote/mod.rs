@@ -223,6 +223,12 @@ pub(super) struct Tracked {
     silent: bool,
     /// `Entity.vehicle`: the entity it rides (`SetPassengers`), whatever either one's type.
     pub(in crate::game) vehicle: Option<u32>,
+    /// `Entity.tickCount` of this client's copy: the ticks the client level gave it since the
+    /// server added it (`Entity.commonTick`), counted in `tick_remote_entities`.
+    pub(in crate::game) tick_count: i32,
+    /// What `entity_size` answered at this copy's last size refresh, with the synced pose it
+    /// was asked for, unless the copy is a mob, which keeps its own (`Mob::size_answer`).
+    pub(in crate::game) size_answer: Option<sunrise_client::pose::SizeAnswer>,
 }
 
 /// An item has joined the client level, but has no stack to draw yet.
@@ -372,8 +378,6 @@ pub(super) struct Remote {
     pub(super) camera: Option<i32>,
     /// Detached camera snapshot retained after `RemoveEntities` until `SetCamera` replaces it.
     pub(super) detached_camera: Option<Box<crate::game::remote_camera::ResolvedCameraEntity>>,
-    /// The item the player's use began with (`LivingEntity.useItem`).
-    pub(super) use_item: Option<Arc<str>>,
     pub(super) dimension: DimensionType,
     /// The level's key (`minecraft:overworld`): where its far terrain is kept.
     pub(in crate::game) level: String,
@@ -523,6 +527,9 @@ pub(super) struct Remote {
     /// Whether the player is the first passenger of its vehicle, the one
     /// `getControllingPassenger` names.
     pub(super) first_passenger: bool,
+    /// `Entity.tickCount` of the local player: its ticks in the client level since the player
+    /// was made (Login or Respawn, then the server's first teleport).
+    pub(in crate::game) own_tick_count: i32,
     /// The player's place in its vehicle's `getPassengers`.
     pub(super) passenger_index: usize,
     /// Item entities waiting for their item data: where they are and their motion.
@@ -2459,6 +2466,9 @@ pub(crate) mod tests {
     }
     mod client_player_reads_tests {
         include!("client_player_reads_tests.rs");
+    }
+    mod client_vanilla_reads_tests {
+        include!("client_vanilla_reads_tests.rs");
     }
     mod client_read_tests {
         include!("client_read_tests.rs");

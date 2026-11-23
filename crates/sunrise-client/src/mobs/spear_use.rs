@@ -195,7 +195,7 @@ fn damage_entities(
     // The attack damage attribute's base value.
     let base = m.attrs.attack_damage;
     let mut affected = false;
-    for (i, _) in hits {
+    for (contact, (i, _)) in hits.into_iter().enumerate() {
         let target = &targets[i];
         let recent = m.extra.stabbed.as_ref().is_some_and(|stabbed| {
             stabbed.iter().any(|&(who, at)| {
@@ -227,6 +227,7 @@ fn damage_entities(
             affected |= stab_attack(
                 m,
                 target.who,
+                contact,
                 amount,
                 (damages, pushes, dismounts),
                 w,
@@ -251,6 +252,7 @@ fn damage_entities(
 fn stab_attack(
     m: &mut Mob,
     target: Who,
+    contact: usize,
     base_damage: f32,
     (deals_damage, deals_knockback, dismounts): (bool, bool, bool),
     w: &MobWorld,
@@ -282,6 +284,7 @@ fn stab_attack(
                 target: id,
                 amount: damage,
                 source,
+                remember_target: false,
             }),
         }
         affected = true;
@@ -297,9 +300,19 @@ fn stab_attack(
         let power = gear::knockback(m) as f32 / 2.0;
         cause_extra_knockback(m, target, power, source, w, events);
     }
-    if dismounts && w.target_info(target).is_some_and(|t| t.passenger) {
+    let dismounted = dismounts && w.target_info(target).is_some_and(|t| t.passenger);
+    if dismounted {
         affected = true;
         events.push(w.route_player_event(MobEvent::StabDismount { target }));
+    }
+    if affected {
+        events.push(w.route_player_event(MobEvent::StabMemory {
+            attacker: m.id,
+            target,
+            contact,
+            attempted_damage: deals_damage,
+            otherwise_affected: deals_knockback || dismounted,
+        }));
     }
     affected
 }

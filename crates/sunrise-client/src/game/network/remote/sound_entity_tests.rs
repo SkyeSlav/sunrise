@@ -20,6 +20,8 @@ fn a_sound_entity_is_heard_where_its_entity_is() {
             mod_fire_immune: false,
             silent: false,
             vehicle: None,
+            tick_count: 0,
+            size_answer: None,
         },
     );
     let player = Some((2, [0.5, 70.0, 0.5], false));
@@ -72,6 +74,8 @@ fn a_sound_entity_retains_silence_for_players_and_non_mob_targets() {
             mod_fire_immune: false,
             silent: true,
             vehicle: None,
+            tick_count: 0,
+            size_answer: None,
         },
     );
     let state = crate::game::remote::entity_sound_state(7, None, None, &tracked, None).unwrap();

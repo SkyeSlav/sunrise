@@ -6,6 +6,7 @@
 
 use std::ops::Range;
 
+use sunrise_render_core::entity::{TEXT_NORMAL_SOLID_OVERLAY, TEXT_POLYGON_OFFSET_SOLID_OVERLAY};
 use sunrise_shaders::render_stage;
 
 // `FLUID_OVERLAY` and the terrain overlays are only read by the tests' probes.
@@ -861,30 +862,42 @@ fn material_program(span: &EntitySpan, layer: u32, drawn: [bool; PROGRAMS]) -> O
     })
 }
 
-/// Split only where an available variant changes a quad's program. Keep contiguous runs,
-/// their vertex order and the original single draw when no material variant is usable.
+/// Split where a quad's program changes, keeping contiguous runs in vertex order.
 fn material_runs<'a>(
     vertices: &'a [Vertex],
     spans: &'a [EntitySpan],
     drawn: [bool; PROGRAMS],
 ) -> impl Iterator<Item = (EntitySpan, Range<usize>, Option<usize>)> + 'a {
     runs(vertices.len(), spans).flat_map(move |(span, range)| {
-        let split = match program_of(&span) {
-            Some(BLOCK) => drawn[BLOCK_TRANSLUCENT],
-            Some(PARTICLE) => drawn[PARTICLE_TRANSLUCENT],
-            _ => false,
+        let program = program_of(&span);
+        let split =
+            program == Some(BLOCK) || (program == Some(PARTICLE) && drawn[PARTICLE_TRANSLUCENT]);
+        let program_at = move |i: usize| {
+            let layer = vertices[i].layer;
+            // Both halves of sign text must reach the native text passes. The pack's
+            // block program does not distinguish normal and polygon-offset depth.
+            if program == Some(BLOCK)
+                && matches!(
+                    layer & 0xffff,
+                    TEXT_NORMAL_SOLID_OVERLAY | TEXT_POLYGON_OFFSET_SOLID_OVERLAY
+                )
+            {
+                None
+            } else {
+                material_program(&span, layer, drawn)
+            }
         };
         let mut start = range.start;
         std::iter::from_fn(move || {
             if start >= range.end {
                 return None;
             }
-            let program = material_program(&span, vertices[start].layer, drawn);
+            let program = program_at(start);
             let end = if split {
                 (start..range.end)
                     .step_by(4)
                     .skip(1)
-                    .find(|&i| material_program(&span, vertices[i].layer, drawn) != program)
+                    .find(|&i| program_at(i) != program)
                     .unwrap_or(range.end)
             } else {
                 range.end
@@ -1255,6 +1268,7 @@ mod crack_projection_tests {
 mod gpu_span_tests {
     use super::*;
     use sunrise_render_core::{PosedModelRuns, SkinRunJob};
+
     #[test]
     #[ignore = "daily"]
     fn native_fluid_stays_native_while_model_uses_pack() {
@@ -1331,6 +1345,62 @@ mod gpu_span_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn sign_text_stays_native_while_model_uses_pack() {
+        let _gpu = crate::test_gpu::lock();
+        let adapter = crate::test_gpu::adapter().unwrap();
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let layout = crate::pack_draw::DrawUniforms::new(&device);
+        let mut geometry = PackEntities::new(&device, &layout.layout);
+        // One sign span has a model quad, a normal outline quad and a biased face quad.
+        let mixed = [
+            0,
+            TEXT_NORMAL_SOLID_OVERLAY,
+            TEXT_POLYGON_OFFSET_SOLID_OVERLAY,
+        ]
+        .into_iter()
+        .flat_map(|overlay| {
+            [Vertex {
+                layer: overlay | 279 << 16,
+                uv: [0.25, 0.75],
+                ..bytemuck::Zeroable::zeroed()
+            }; 4]
+        })
+        .collect::<Vec<_>>();
+        let mut rest = Vec::new();
+        geometry.prepare(
+            &device,
+            &queue,
+            &layout.layout,
+            &mixed,
+            &[EntitySpan {
+                start: 0,
+                id: 77,
+                stage: render_stage("BLOCK_ENTITIES"),
+                ..Default::default()
+            }],
+            [true; PROGRAMS],
+            ([0.; 4], [1; 2]),
+            Casters {
+                blocks: true,
+                ..Default::default()
+            },
+            &mut rest,
+            None,
+            (&[], &[]),
+        );
+        assert_eq!(geometry.scratch.len(), 4, "only the model uses the pack");
+        assert_eq!(geometry.draws.len(), 1);
+        assert!(geometry.draws[0].pack);
+        assert_eq!(
+            bytemuck::cast_slice::<_, u8>(&rest),
+            bytemuck::cast_slice::<_, u8>(&mixed[4..]),
+            "both text modes reach the native draw in order, with UV and layer intact"
+        );
     }
 
     #[test]

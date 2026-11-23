@@ -1008,17 +1008,12 @@ mod tests {
                     Some(&(base + 3, "minecraft:sheep".into(), true))
                 );
 
-                game.crystals.push(super::super::dragon::Crystal {
-                    fall: Default::default(),
-                    attachment_lifetime: Default::default(),
-                    join: Default::default(),
-                    id: base + 4,
-                    position: Vec3::ZERO,
-                    show_bottom: true,
-                    time: 0,
-                    beam: None,
-                    invulnerable: false,
-                });
+                game.crystals.push(super::super::dragon::Crystal::new(
+                    base + 4,
+                    Vec3::ZERO,
+                    true,
+                    0,
+                ));
                 game.cushions.push(sunrise_client::entities::Cushion {
                     attachment_lifetime: Default::default(),
                     join: Default::default(),

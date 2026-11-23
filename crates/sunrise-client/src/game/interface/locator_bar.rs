@@ -60,12 +60,20 @@ impl Game<'_> {
     /// `Hud.nextContextualInfoState`: jump bar reads `LocalPlayer.jumpableVehicle`, not `getCameraPlayer`.
     pub(in crate::game) fn contextual_bar(&self) -> sunrise_client::locator_bar::ContextualBar {
         sunrise_client::locator_bar::ContextualBar::next(
-            self.waypoints.has_waypoints(),
-            self.jumpable_mount(),
+            self.has_waypoints(),
+            self.jumpable_mount().is_some(),
             self.mount_jumping(),
             self.can_hurt_player(),
             self.experience_recent(),
         )
+    }
+    /// `LocalPlayer.jumpableVehicle` as a handle: the mount whose jump bar `contextual_bar` shows.
+    pub(in crate::game) fn jumpable_vehicle(&self) -> Option<mod_api::EntityRef> {
+        self.entity(self.jumpable_mount()?)
+    }
+    /// `ClientWaypointManager.hasWaypoints`: what `contextual_bar` reads for the locator bar.
+    pub(in crate::game) fn has_waypoints(&self) -> bool {
+        self.waypoints.has_waypoints()
     }
     /// The local player's UUID, as servers know it.
     pub(super) fn own_uuid(&self) -> u128 {

@@ -165,7 +165,7 @@ pub(super) const AREAS_OUTPUT: &str = "mod_api_host_areas.rs";
 
 /// The traits an area file may hold, each a part of one of the unions.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-enum Tier {
+pub(crate) enum Tier {
     Host,
     ServerHost,
     ClientHost,
@@ -221,17 +221,26 @@ impl Tier {
 }
 
 /// A method of an area trait, as the file declares it.
-struct Entry {
-    name: String,
-    sig: syn::Signature,
-    attrs: Vec<syn::Attribute>,
+pub(crate) struct Entry {
+    pub(crate) name: String,
+    pub(crate) sig: syn::Signature,
+    pub(crate) attrs: Vec<syn::Attribute>,
+}
+
+impl Entry {
+    /// `#[goal_view]`: a mob's goal tick answers this read from its own view for every holder,
+    /// players included, and resolves the entity the answer names there too, so a mob lent to
+    /// the tick stays visible. Unmarked reads in [`GOAL_VIEW_READS`] send players to the game.
+    fn goal_view(&self) -> bool {
+        self.attrs.iter().any(|a| a.path().is_ident("goal_view"))
+    }
 }
 
 /// One area file: its traits by tier.
-struct Area {
-    stem: String,
-    camel: String,
-    tiers: BTreeMap<Tier, Vec<Entry>>,
+pub(crate) struct Area {
+    pub(crate) stem: String,
+    pub(crate) camel: String,
+    pub(crate) tiers: BTreeMap<Tier, Vec<Entry>>,
     /// The backend tiers the game answers from a borrowed view of its read-only tables, not
     /// from `Game`, declared by `#[table_backend("path")]` on the trait: the view carries the
     /// reads and implements the trait once, and `Game` forwards to it.
@@ -343,7 +352,7 @@ fn table_backends(camel: &str, file: &syn::File) -> Result<BTreeMap<Tier, String
 }
 
 /// The area files, `base` first and then by name, as the catalog's are.
-fn load(root: &Path) -> Result<Vec<Area>, String> {
+pub(crate) fn load(root: &Path) -> Result<Vec<Area>, String> {
     let dir = root.join(DIRECTORY);
     let mut areas = Vec::new();
     for stem in catalog::Catalog::modules(&dir)? {
@@ -633,6 +642,11 @@ pub(super) fn game_forwarders(root: &Path) -> Result<String, String> {
                         match result_error(&entry.sig.output) {
                             Some(error) if outer_type(error, "LevelReadError") => format!(
                                 "{call}.try_into_api().unwrap_or(Err(mod_api::LevelReadError::Unavailable))"
+                            ),
+                            // The placement-state read refuses an unrepresentable state as
+                            // other level reads do.
+                            Some(error) if outer_type(error, "PlacementStateError") => format!(
+                                "{call}.try_into_api().unwrap_or(Err(mod_api::PlacementStateError::Unavailable))"
                             ),
                             Some(error) if outer_type(error, "GameRuleReadError") => format!(
                                 "{call}.try_into_api().expect(\"game rule values convert infallibly\")"
@@ -968,7 +982,9 @@ fn handle_method(
     let mut docs = doc_comments(&entry.attrs, name, true)?;
     // The reads a mob's goal tick answers from its view carry the snapshot rule where a mod reads
     // them (#1077).
-    if GOAL_VIEW_READS.contains(&name) {
+    if entry.goal_view() {
+        docs.push_str("///\n/// In a mob's goal tick ([`GoalContext::host`](crate::GoalContext::host)) this reads\n/// the tick's own view for every holder, and the entity it names resolves there too.\n");
+    } else if GOAL_VIEW_READS.contains(&name) {
         docs.push_str("///\n/// In a mob's goal tick ([`GoalContext::host`](crate::GoalContext::host)) this reads\n/// the active mob or a disjoint live mob when available; player reads use the\n/// game host. Other unsupported reads retain their typed refusal.\n");
     }
     let backend = match (mutable, tier.client()) {
@@ -1169,7 +1185,7 @@ fn goal_view(
             }
             refusal => format!(".unwrap_or({refusal})"),
         };
-        let body = if GOAL_VIEW_READS.contains(&name) {
+        let body = if entry.goal_view() || GOAL_VIEW_READS.contains(&name) {
             format!("self.r_{name}({args})")
         } else if entity_data {
             if args.is_empty() {
@@ -1213,7 +1229,7 @@ fn goal_view(
                 }
             })
             .collect();
-        let body = if entity_data && !game_entities.is_empty() {
+        let body = if entity_data && !game_entities.is_empty() && !entry.goal_view() {
             let all_available = game_entities
                 .iter()
                 .map(|entity| format!("self.is_game_entity({entity})"))

@@ -123,9 +123,11 @@ fn declared_vegetation_places_and_breaks_independently_of_its_template() {
                         face: Direction::Up,
                         hit: Vec3::new(5.5, 65.0, 5.5),
                         inside: false,
-                        yaw: 0.0,
-                        pitch: 0.0,
-                        sneaking: false,
+                        source: sunrise_world::level::PlacementSource::Player {
+                            yaw: 0.0,
+                            pitch: 0.0,
+                            sneaking: false,
+                        },
                         item: plant.into(),
                         can_use_game_master_blocks: false,
                     };

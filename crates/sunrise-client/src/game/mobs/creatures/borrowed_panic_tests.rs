@@ -656,7 +656,7 @@ fn run_fixture(family: Family, output: Output, dim: Dim) {
                     .batches
                     .push_back(MobOutputBatch {
                         normal: NormalMobActions::default(),
-                        guests: vec![(12, 71, MobEvent::AttackPlayer(2.0, [1.0, 80.0, 0.5]))],
+                        guests: vec![(12, 71, MobEvent::AttackPlayer(2.0, [1.0, 80.0, 0.5], None))],
                     });
             }
             game.last_hurt_by_player

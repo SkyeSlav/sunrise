@@ -37,12 +37,16 @@ pub trait FluidsRegistrar {
     /// Request a fluid by canonical registry id, checked when the registry loads.
     fn fluid_key(&mut self, id: &str) -> crate::FluidKey;
 
-    /// Declare a tank-only fluid and return its key.
+    /// Declare a tank-only fluid and return its key. Its
+    /// `data/<namespace>/sunrise/fluid/<path>.json`, if any, says how it looks and states its
+    /// `FluidType` numbers: `temperature` and `density` (any `i32`, defaults 300 and 1000) and
+    /// `viscosity` (0 or more, default 1000), read back through `FluidTypeProperties`.
     fn declare_fluid(&mut self, path: &str) -> crate::FluidKey;
 
     /// Declare a fluid that exists in the world (NeoForge's `RegisterEvent` for a `FluidType`),
     /// with its block and, as `fluid` says, its bucket. Its
-    /// `data/<namespace>/sunrise/fluid/<path>.json`, if any, says how it looks.
+    /// `data/<namespace>/sunrise/fluid/<path>.json`, if any, says how it looks and states its
+    /// `temperature`, `density` and `viscosity`, as for [`declare_fluid`](Self::declare_fluid).
     fn declare_world_fluid(&mut self, path: &str, fluid: crate::WorldFluid) -> crate::FluidKey;
 
     /// Declare what a liquid block of `interaction.source` turns into beside another fluid or

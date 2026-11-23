@@ -146,8 +146,11 @@ impl Game<'_> {
         };
         self.tick_text_displays(running);
         if running {
+            // Entity.commonTick for each entity the level ticks, before any of them is told
+            // (`EntityTickEvent.Pre`): setOldPosAndRot and its own tickCount.
             if let Some(r) = self.remote.as_mut() {
                 for t in r.entities.values_mut() {
+                    t.tick_count = t.tick_count.wrapping_add(1);
                     t.previous = t.position;
                     t.previous_yaw = t.yaw;
                     t.previous_pitch = t.pitch;
@@ -162,6 +165,7 @@ impl Game<'_> {
             if let Some(r) = self.remote.as_mut() {
                 for &id in &frozen_ticking {
                     if let Some(t) = r.entities.get_mut(&id) {
+                        t.tick_count = t.tick_count.wrapping_add(1);
                         t.previous = t.position;
                         t.previous_yaw = t.yaw;
                         t.previous_pitch = t.pitch;
@@ -696,6 +700,9 @@ impl Game<'_> {
             }
             let section_id = m.id;
             let section_to = m.position;
+            // `refreshDimensions` from its tick: a `minecraft:scale` the server sent since
+            // (`LivingEntity.refreshDirtyAttributes`), a shulker's lid (`onPeekAmountChange`).
+            self.native_client_copy_size(section_id, None);
             if let Some(player) = player_ref {
                 self.native_player_tick_post(mod_api::__private::PlayerTickPostCall { player });
             }
@@ -1463,6 +1470,11 @@ impl Game<'_> {
         // for LevelExtractor.extractPlayerState, which still sees it on the death screen.
         if self.player.is_none() || self.local_player_removed_by_death() {
             return Ok(None);
+        }
+        // ClientLevel.tickNonPassenger's Entity.commonTick, before LocalPlayer.tick: the player
+        // counts this tick whether it has loaded, sleeps or rides.
+        if let Some(r) = self.remote.as_mut() {
+            r.own_tick_count = r.own_tick_count.wrapping_add(1);
         }
         // LocalPlayer.tick and sendChanges run once the client has loaded (hasClientLoaded),
         // wherever the player is: a chunk that hasn't come yet has no blocks here, as vanilla's

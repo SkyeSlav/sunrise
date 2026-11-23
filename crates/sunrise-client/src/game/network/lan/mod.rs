@@ -5285,6 +5285,9 @@ impl super::Dim {
 }
 
 #[cfg(test)]
+mod player_packet_tests;
+
+#[cfg(test)]
 pub(crate) mod world_spawn_sync_tests {
     use super::*;
     use std::sync::{Arc, atomic::AtomicI32, mpsc};

@@ -314,6 +314,26 @@ impl GoalCx<'_, '_> {
         self.lookup_entity(id)
     }
 
+    pub(super) fn r_living_last_hurt_mob(
+        &self,
+        living: LivingRef,
+    ) -> Option<(mod_api::EntityRef, i32)> {
+        let (id, tick) = match self.resolve(living.entity()) {
+            Some(Resolved::Player) => self.w.selected_player()?.last_hurt,
+            Some(Resolved::Own) => self.m.last_hurt_mob,
+            Some(Resolved::Live(mob)) => mob.last_hurt_mob,
+            // A snapshot row carries no record, and an unavailable mob answers nothing.
+            Some(Resolved::Seen(_) | Resolved::Unavailable) => None,
+            // Holders that resolve in the ordinary game view: its raw record, resolved below.
+            Some(Resolved::Dragon(_)) | None => self.w.goal_host?.living_last_hurt_record(living),
+        }?;
+        let entity = self.lookup_entity(id)?;
+        let alive = self
+            .r_living_alive(LivingRef::new(entity))
+            .unwrap_or_else(|| self.w.side.living_target_alive(id));
+        alive.then_some((entity, tick))
+    }
+
     pub(super) fn r_living_kill_credit(&self, living: LivingRef) -> Option<mod_api::EntityRef> {
         let mob = self.live_living_mob(living)?;
         if let Some(credit) = self.w.goal_host?.mob_player_credit(mob) {

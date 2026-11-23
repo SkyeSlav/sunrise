@@ -118,27 +118,6 @@ pub fn check(
     key: Option<&str>,
     signature: Option<&str>,
 ) -> Result<Report, String> {
-    check_package(path, kind, key, signature, true)
-}
-
-/// Inspect a reviewed source when adding only a build. An older source without a uses list
-/// stays exact to its pin; the registry still verifies its source and judges the appended build.
-pub(crate) fn check_reviewed_source(
-    path: &Path,
-    kind: Kind,
-    key: Option<&str>,
-    signature: Option<&str>,
-) -> Result<Report, String> {
-    check_package(path, kind, key, signature, false)
-}
-
-fn check_package(
-    path: &Path,
-    kind: Kind,
-    key: Option<&str>,
-    signature: Option<&str>,
-    require_uses: bool,
-) -> Result<Report, String> {
     let size = std::fs::metadata(path)
         .map_err(|e| format!("{}: {e}", path.display()))?
         .len();
@@ -147,7 +126,7 @@ fn check_package(
     }
     index::open(&kind)?;
     let facts = index::inspect(&kind, path)?;
-    if require_uses && kind == Kind::NativeMod {
+    if kind == Kind::NativeMod {
         uses_list(path)?;
     }
     let signed = match (key, signature) {

@@ -15,7 +15,7 @@ use sunrise_assets::{
     model::{Direction, Material},
 };
 use sunrise_client::{
-    block_entity_render::{TEXT_OVER_OUTLINE, diffuse, diffuse_lights, vertex_light},
+    block_entity_render::{diffuse, diffuse_lights, vertex_light},
     containers::{BlockEntity, ModRevision},
     fast_hash::FxHashMap,
     gfx::Cull,
@@ -26,6 +26,9 @@ use sunrise_client::{
     text::Text,
 };
 use sunrise_world::registry::BlockStateId;
+
+// The native block-entity draw helper submits the outline and fill as one material.
+const TEXT_OVER_OUTLINE: f32 = 0.05;
 
 /// Atlas-resolved standalone geometry, indexed by model slot and resource generation.
 pub(super) struct StandaloneGeometry {
@@ -1493,8 +1496,6 @@ impl Game<'_> {
         let light = if glowing { 240 | 240 << 8 } else { draw.light };
         let pose = draw.pose();
         for (i, quad) in batch.vertices.as_chunks::<6>().0.iter().enumerate() {
-            // The text sits a hair in front of its outline, as a sign's does
-            // (`TEXT_OVER_OUTLINE`): one mesh, so no polygon offset.
             let lift = if outline.is_some() && i * 6 >= front {
                 TEXT_OVER_OUTLINE
             } else {

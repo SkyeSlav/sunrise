@@ -51,10 +51,8 @@ compound SNBT strings) stay accepted. Generic registry IDs are checked for synta
 not arbitrary registry membership; codecs with a closed registry still enforce it.
 Primitive integer fields accept numeric JSON tokens such as `2.0` and `1e1` and
 use signed Java-style narrowing rather than defaulting those tokens to zero.
-Extreme numeric literals can still lose precision in the JSON representation
-([#2105](https://github.com/sunrise-org/sunrise/issues/2105)). Text shape checks do
-not yet replace complete selector, coordinate and canonical text-size validation
-([#2112](https://github.com/sunrise-org/sunrise/issues/2112)).
+Extreme numeric literals can lose precision in the JSON representation.
+Text shape checks do not fully validate selectors, coordinates or canonical text size.
 
 `LootEntryData` is API-owned and derives `Wire`. Its one private JSON-value field
 uses the shared JSON tree encoding: length-prefixed UTF-8 JSON, with the shared
@@ -71,7 +69,7 @@ a condition call failure is diagnosed and does not pass. Callback failures warn 
 per type id in each retained data generation, not once per roll.
 
 The context supplies optional facts through `snapshot()`,
-authoritative tags through `tags()`, and `random()`. See [Reading tags](loot-tags.md).
+[authoritative tags](#reading-tags) through `tags()`, and `random()`.
 Use only that random source: it is the evaluator's actual selected stream, not a
 new generator seeded from a snapshot. Reading facts consumes no random; the
 snapshot's `seed` field is zero. Codecs are shared immutable declarations and
@@ -115,6 +113,25 @@ remain separate mechanisms. Use a custom type for logic not expressible by a
 standard operation; `copy_components`, `copy_custom_data`, `copy_state` and
 `match_block` are vanilla built-ins, not names for custom registration.
 
+## Reading tags
+
+`LootTypeContext::tags() -> &dyn Tags` gives either codec a read-only view of the
+current evaluator's merged tags. Resolve a tag's `Identifier` with `context.tags().key(&id)`
+and use the resulting `TagKey` with `is_in_tag(item, tag)` to check item membership.
+A retained key keeps its identity across reloads; its members come from the current tables.
+
+- `items(tag)`, `blocks(tag)` and `fluids(tag)` return `TagMembers::Members(keys)` for ordered
+  members (possibly empty), `TagMembers::Missing` for an absent tag, or `TagMembers::Unavailable`
+  when a required key mapping is unavailable.
+- `damage_type_in_tag(damage_type, tag)` tests a damage type against the evaluation's bound
+  damage type tags (`DamageSource.is(TagKey)`); it returns `None` for a damage type the bound
+  registry doesn't have.
+- `item_tags(item)` lists the tag names an item belongs to; `item_tag_names()` lists all bound
+  item tags, including empty tags. Both return identifiers without resolving keys.
+
+Neither callback can edit tags or access a mutable host. Evaluating a type without a
+registered codec does not copy a tag snapshot.
+
 ## Copying components
 
 `minecraft:copy_components` reads `source` as `block_entity`, `tool`, or an
@@ -133,10 +150,9 @@ source component, while an empty list selects none. `exclude` is applied after
 components without removing unselected values. An absent source makes no edit.
 This is the same operation in both loot evaluators.
 
-Entity sources currently supply custom name when present and custom data
-(including an empty compound when unset). Subtype components such as variants
-and entity-type default components will arrive with the separate general entity
-component-getter follow-up; the copy function does not manufacture those values.
+Entity sources supply `custom_name` when present and `custom_data` (including an
+empty compound when unset). Copying does not synthesize subtype components such as
+variants or entity-type default components.
 
 ## Copying custom data
 
@@ -162,3 +178,10 @@ changed. Other components are untouched. Literal NBT types, arrays and Java
 UTF-16 payloads are retained. Both evaluators use the same path parser and merge
 implementation. Like `set` and `insert`, append and merge refuse writes beyond
 the existing 512-level NBT budget before creating any target parents.
+
+## Container loot
+
+To inspect or edit rolled container loot after table-load changes and before shuffle, splitting and placement,
+implement the server-side `Hooks::container_loot_filled` hook. For opener rules, double-chest fills, stack
+trimming and refused edits, see `Hooks::container_loot_filled` in the
+[mod API reference](../../reference/api.md).

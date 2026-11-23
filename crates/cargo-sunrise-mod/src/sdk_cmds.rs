@@ -230,25 +230,13 @@ pub(crate) enum Subject {
         /// The mod's manifest: the game code it declares is judged with the list.
         manifest: Box<Manifest>,
     },
-    /// The answer to print with exit status 2, and a reason suitable for the index.
-    NotApplicable {
-        message: String,
-        reason: &'static str,
-    },
+    /// The answer to print with exit status 2.
+    NotApplicable { message: String },
 }
 
-pub(crate) struct PackageSubject {
-    pub content_api: String,
-    pub uses: Result<Subject, String>,
-}
-
-/// The manifest API requirement is known even when the optional uses list cannot be read.
-pub(crate) fn package_subject(path: &Path) -> Result<PackageSubject, String> {
-    let package = Package::read(path)?;
-    Ok(PackageSubject {
-        content_api: package.manifest.api.clone(),
-        uses: package_uses(path, package),
-    })
+/// What the package at `path` gives `fits` to judge.
+pub(crate) fn package_subject(path: &Path) -> Result<Subject, String> {
+    package_uses(path, Package::read(path)?)
 }
 
 fn package_uses(path: &Path, package: Package) -> Result<Subject, String> {
@@ -256,13 +244,11 @@ fn package_uses(path: &Path, package: Package) -> Result<Subject, String> {
     if let Some(table) = game_uses::unjudged(&package.manifest) {
         return Ok(Subject::NotApplicable {
             message: exact_text(name, &format!("it has a {table} table")),
-            reason: table,
         });
     }
     let Some(native) = &package.manifest.native else {
         return Ok(Subject::NotApplicable {
             message: content_text(name),
-            reason: "no native code",
         });
     };
     let pin = &native.sunrise;
@@ -271,7 +257,6 @@ fn package_uses(path: &Path, package: Package) -> Result<Subject, String> {
             message: format!(
                 "{name} pins build {pin} and its package carries no list of what it uses, so it can't be shown to fit another build. Pack it with `cargo sunrise-mod build`, which writes the list when the mod's code can be read, or repin it with `cargo sunrise-mod update --sunrise <build>` first."
             ),
-            reason: "no uses list",
         });
     };
     let table = UsesTable::read(&bytes).map_err(|e| format!("{USES_FILE}: {e}"))?;
@@ -281,7 +266,6 @@ fn package_uses(path: &Path, package: Package) -> Result<Subject, String> {
                 "{name} pins build {pin} and its list of what it uses was made for {}, so the list says nothing about the pinned build. Pack it again with `cargo sunrise-mod build`.",
                 table.made_for
             ),
-            reason: "the uses list is for a different build",
         });
     }
     Ok(Subject::Table {
@@ -298,25 +282,22 @@ fn folder_subject(entry: ChildEntry, root: &Path) -> Result<Subject, String> {
     let Some(native) = &parsed.native else {
         return Ok(Subject::NotApplicable {
             message: content_text(name),
-            reason: "no native code",
         });
     };
     if let Some(table) = game_uses::unjudged(&parsed) {
         return Ok(Subject::NotApplicable {
             message: exact_text(name, &format!("it has a {table} table")),
-            reason: table,
         });
     }
     let sdk = fetch_pinned(root, &native.sunrise)?;
     match uses_table::scan(entry, root, &parsed, &surface_of(&sdk)?)? {
         Scanned::Uses(uses) => Ok(Subject::Table {
             name: name.clone(),
-            table: uses_table::table(&uses, root, &parsed, &sdk)?,
+            table: uses_table::table(&uses, Some(root), &parsed, &sdk)?,
             manifest: Box::new(parsed),
         }),
         Scanned::Exact(why) => Ok(Subject::NotApplicable {
             message: exact_text(name, &why),
-            reason: "the mod must be built for its pin",
         }),
         Scanned::Unread(why) => Err(why),
     }
@@ -376,7 +357,7 @@ fn fits_lines(entry: ChildEntry, args: &[String]) -> Result<Answer, String> {
     }
     let project = Path::new(".");
     let subject = match package {
-        Some(path) => package_subject(path)?.uses?,
+        Some(path) => package_subject(path)?,
         None => folder_subject(entry, project)?,
     };
     let (name, mut table, manifest) = match subject {
@@ -650,7 +631,7 @@ pub(crate) fn update_report(
         report(name, &old, &new, &uses, &old_surface, &new_surface, &notes)
     );
     // The game code the mod declares, by the new build's build data.
-    let made = uses_table::table(&uses, root, &parsed, &old)?;
+    let made = uses_table::table(&uses, Some(root), &parsed, &old)?;
     let (compared, uncompared) = game_fit(root, &parsed, &made, &new)?;
     for misfit in &compared.misfits {
         println!("{misfit}");
@@ -761,10 +742,15 @@ fn report(
     text
 }
 
-/// `check [--uses]` in a mod folder: the package rules, then `cargo check` and an API use
-/// report for a native mod. `--uses` lists each item and the line that brought it in.
-pub(crate) fn check_mod(entry: ChildEntry, show_uses: bool, with: &[&Path]) -> Result<(), String> {
-    let root = Path::new(".");
+/// Checks a mod folder and reports its API uses. Release checks enforce the page and tag
+/// requirements, and compile a native mod instead of only type-checking it.
+pub(crate) fn check_mod(
+    entry: ChildEntry,
+    root: &Path,
+    show_uses: bool,
+    with: &[&Path],
+    release: Option<&str>,
+) -> Result<(), String> {
     let package = Package::read(root)?;
     let files = package.directory_files(root)?;
     let (pipelines, refused) = crate::check::pipeline_shaders(&files);
@@ -781,6 +767,7 @@ pub(crate) fn check_mod(entry: ChildEntry, show_uses: bool, with: &[&Path]) -> R
         );
     }
     crate::check::references(root, &package.manifest)?;
+    crate::page::check(root, &package, release)?;
     let Some(native) = &package.manifest.native else {
         if !with.is_empty() {
             return Err("check --with supplies libraries to a native mod".into());
@@ -788,10 +775,29 @@ pub(crate) fn check_mod(entry: ChildEntry, show_uses: bool, with: &[&Path]) -> R
         println!("{}: the package rules hold.", package.manifest.name);
         return Ok(());
     };
+    // A release builds from the tagged source with its committed lockfile, as the registry does.
+    if release.is_some()
+        && !std::fs::symlink_metadata(root.join("Cargo.lock")).is_ok_and(|m| m.is_file())
+    {
+        return Err(
+            "a native mod releases with its Cargo.lock committed beside sunrise-mod.toml".into(),
+        );
+    }
     // The mod's `sunrise-mod-api` is a path into `.sunrise/sdk/`: fetch it before Cargo looks.
     let sdk = fetch_pinned(root, &native.sunrise)?;
     let surface = surface_of(&sdk)?;
-    crate::dev::check(root, &package, with)?;
+    if release.is_some() {
+        crate::dev::build(
+            root,
+            &package,
+            with,
+            false,
+            sunrise_native_build::contract::TargetName::Client,
+            true,
+        )?;
+    } else {
+        crate::dev::check(root, &package, with)?;
+    }
     match uses_table::scan(entry, root, &package.manifest, &surface)? {
         Scanned::Uses(uses) => {
             print!(
@@ -911,7 +917,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("greeter.smod");
         std::fs::write(&path, Package::write_files(&manifest, &files).unwrap()).unwrap();
-        package_subject(&path).unwrap().uses.unwrap()
+        package_subject(&path).unwrap()
     }
 
     #[test]

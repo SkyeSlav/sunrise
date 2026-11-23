@@ -1121,6 +1121,12 @@ impl Game<'_> {
                 view,
             );
         }
+        // A client's copy of the server's entity: the size its `entity_size` answer gave it
+        // (`refreshDimensions`), else its kind's.
+        let sized = |id: u32, size: (f32, f32), eye: f32| match self.client_copy_answer(id) {
+            Some([width, height, eye]) => ((width, height), eye),
+            None => (size, eye),
+        };
         for item in &self.dropped {
             if hide_camera == Some(item.id) {
                 continue;
@@ -1131,7 +1137,8 @@ impl Game<'_> {
                 lerp(item.previous.z, item.position.z),
             ];
             // EntityType.ITEM: 0.25 by 0.25, eyes at 0.2125.
-            g.hitbox(pos, (0.25, 0.25), 0.2125, false, (0.0, 0.0));
+            let (size, eye) = sized(item.id, (0.25, 0.25), 0.2125);
+            g.hitbox(pos, size, eye, false, (0.0, 0.0));
         }
         // The other entities (EntityTypes sizes; eyes at 0.85 of the height
         // unless the type sets one). `at` is the interpolated position.
@@ -1172,16 +1179,20 @@ impl Game<'_> {
                 continue;
             }
             let pos = at(i.previous, i.position);
-            let half = f64::from(i.width) / 2.0;
+            // Its `entity_size` answer's size on a client's copy, else its synched one.
+            let (width, height, eye) = self
+                .client_copy_answer(id as u32)
+                .map_or((i.width, i.height, i.eye_height()), |[w, h, e]| (w, h, e));
+            let half = f64::from(width) / 2.0;
             let b = sunrise_core::geometry::Aabb::new(
                 Vec3::new(pos[0] - half, pos[1], pos[2] - half),
-                Vec3::new(pos[0] + half, pos[1] + f64::from(i.height), pos[2] + half),
+                Vec3::new(pos[0] + half, pos[1] + f64::from(height), pos[2] + half),
             );
             g.entity_box(
                 [b.min(Axis::X), b.min(Axis::Y), b.min(Axis::Z)],
                 [b.max(Axis::X), b.max(Axis::Y), b.max(Axis::Z)],
                 pos,
-                i.eye_height(),
+                eye,
                 false,
                 (
                     lerpf(i.previous_pitch, i.pitch),
@@ -1201,6 +1212,7 @@ impl Game<'_> {
                 (_, true) => ((0.25, 0.9875), 0.9875),
                 _ => ((0.5, 1.975), 1.7775),
             };
+            let (size, eye) = sized(a.id, size, eye);
             g.hitbox(
                 at(a.previous, a.position),
                 size,
@@ -1214,13 +1226,8 @@ impl Game<'_> {
                 continue;
             }
             let h = super::boats::HEIGHT as f32;
-            g.hitbox(
-                at(b.previous, b.position),
-                (super::boats::WIDTH as f32, h),
-                h,
-                false,
-                (0.0, b.yaw),
-            );
+            let (size, eye) = sized(b.id, (super::boats::WIDTH as f32, h), h);
+            g.hitbox(at(b.previous, b.position), size, eye, false, (0.0, b.yaw));
         }
         for c in &self.carts {
             if hide_camera == Some(c.id) {
@@ -1230,56 +1237,37 @@ impl Game<'_> {
                 super::minecarts::WIDTH as f32,
                 super::minecarts::HEIGHT as f32,
             );
-            g.hitbox(
-                at(c.previous, c.position),
-                (w, h),
-                h * 0.85,
-                false,
-                (0.0, c.yaw),
-            );
+            let (size, eye) = sized(c.id, (w, h), h * 0.85);
+            g.hitbox(at(c.previous, c.position), size, eye, false, (0.0, c.yaw));
         }
         for o in &self.orbs {
             if hide_camera == Some(o.id) {
                 continue;
             }
-            g.hitbox(
-                at(o.previous, o.position),
-                (0.5, 0.5),
-                0.425,
-                false,
-                (0.0, 0.0),
-            );
+            let (size, eye) = sized(o.id, (0.5, 0.5), 0.425);
+            g.hitbox(at(o.previous, o.position), size, eye, false, (0.0, 0.0));
         }
         for f in &self.falling {
             if hide_camera == Some(f.id) {
                 continue;
             }
-            g.hitbox(
-                at(f.previous, f.position),
-                (0.98, 0.98),
-                0.833,
-                false,
-                (0.0, 0.0),
-            );
+            let (size, eye) = sized(f.id, (0.98, 0.98), 0.833);
+            g.hitbox(at(f.previous, f.position), size, eye, false, (0.0, 0.0));
         }
         for t in &self.tnts {
             if hide_camera == Some(t.id) {
                 continue;
             }
-            g.hitbox(
-                at(t.previous, t.position),
-                (0.98, 0.98),
-                0.15,
-                false,
-                (0.0, 0.0),
-            );
+            let (size, eye) = sized(t.id, (0.98, 0.98), 0.15);
+            g.hitbox(at(t.previous, t.position), size, eye, false, (0.0, 0.0));
         }
         for c in &self.crystals {
             if hide_camera == Some(c.id) {
                 continue;
             }
             let p = c.position;
-            g.hitbox([p.x, p.y, p.z], (2.0, 2.0), 1.7, false, (0.0, 0.0));
+            let (size, eye) = sized(c.id, (2.0, 2.0), 1.7);
+            g.hitbox([p.x, p.y, p.z], size, eye, false, (0.0, 0.0));
         }
         for p in &self.creatures.projectiles {
             if hide_camera == Some(p.id) {
@@ -1301,9 +1289,10 @@ impl Game<'_> {
                 K::WindCharge | K::BreezeWindCharge => (0.3125, 0.0),
                 K::LargeFireball { .. } | K::DragonFireball => (1.0, 0.85),
             };
+            let (size, eye) = sized(p.id, (size, size), eye);
             g.hitbox(
                 at(p.previous, p.position),
-                (size, size),
+                size,
                 eye,
                 false,
                 (p.pitch, p.yaw),
@@ -1313,10 +1302,11 @@ impl Game<'_> {
             if hide_camera == Some(t.id) {
                 continue;
             }
+            let (size, eye) = sized(t.id, (0.5, 0.5), 0.13);
             g.hitbox(
                 at(t.previous, t.position),
-                (0.5, 0.5),
-                0.13,
+                size,
+                eye,
                 false,
                 (t.pitch, t.yaw),
             );
@@ -1340,13 +1330,8 @@ impl Game<'_> {
             let v = r.velocity;
             let yaw = v.x.atan2(v.z).to_degrees() as f32;
             let pitch = v.y.atan2(v.x.hypot(v.z)).to_degrees() as f32;
-            g.hitbox(
-                at(r.previous, r.position),
-                (0.25, 0.25),
-                0.2125,
-                false,
-                (pitch, yaw),
-            );
+            let (size, eye) = sized(r.id, (0.25, 0.25), 0.2125);
+            g.hitbox(at(r.previous, r.position), size, eye, false, (pitch, yaw));
         }
         for h in self
             .hook
@@ -1362,7 +1347,8 @@ impl Game<'_> {
         // AreaEffectCloud.getDimensions: diameter follows synced radius,
         // height is 0.5; EntityDimensions.scalable gives eyes at 85% height.
         for c in &self.potions.clouds {
-            g.hitbox(c.at, (c.radius * 2.0, 0.5), 0.425, false, (0.0, 0.0));
+            let (size, eye) = sized(c.id, (c.radius * 2.0, 0.5), 0.425);
+            g.hitbox(c.at, size, eye, false, (0.0, 0.0));
         }
         // The dragon: 16 by 8, a living entity; its parts follow.
         if let Some(d) = self.dragon.as_ref().filter(|d| hide_camera != Some(d.id)) {

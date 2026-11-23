@@ -2,7 +2,8 @@
 
 Implement `Hooks::ingredient(context, event) -> Option<IngredientDefinition>` to resolve recipe ingredient types outside the `minecraft:` namespace. Return `None` when you do not handle `event.kind`. For your kind, parse `event.data` once and return `Some(IngredientDefinition::new(items, predicate))`. The first answer in dispatch order wins; the loader removes duplicate item IDs in first-seen order.
 
-This list supplies recipe-book placement candidates. The [bound predicate](ingredient-matching.md) checks a concrete stack. A nonempty candidate list filters matching by item on every matching path, including shaped, shapeless and non-simple shapeless matching, before the stack test runs. The list must therefore contain every item the test should accept; the test can only narrow it. An empty custom list retains the predicate without this filter, so the stack test decides which items match manually. Recipe displays and synced candidate data do not carry the predicate; the server rechecks the actual stacks during placement.
+The item list supplies recipe-book placement candidates and filters which stacks the
+[bound predicate](#testing-stacks) can accept.
 
 For example, `example:used_shears` can require at least the damage named by the
 recipe's `minimum_damage` field:
@@ -52,7 +53,36 @@ The predicate itself reads just the borrowed stack and the parsed minimum.
 - An existing empty item tag likewise retains an unplaceable recipe, but never matches a stack. An undefined tag fails the recipe with an error. A direct empty list (`[]`) remains invalid and fails the recipe with an error.
 - A non-string entry (a number, an object, or `null`) in an ingredient list fails the whole recipe file, logged at error level naming the file; nothing is dropped. A directly named `minecraft:air` (alone or in a list) fails the file the same way, while a tag that holds air is taken as the tag holds it.
 
-A predicate runs as the mod that answered. Disabling the owner after load makes the predicate reject stacks without invoking that mod or asking another mod for a match. A panic is logged with the mod's name and queues an error toast on a local client. Only the panicking predicate then answers `false` for the session, including after `/reload` of the same definition. Other occurrences still run, including those of the same kind. Returning `false` normally is just a non-match and does not disable anything. Clients without the predicate receive only display and placement data; the server's check is authoritative.
+## Testing stacks
+
+The predicate takes `(&dyn LoopContext, IngredientStack<'_>)` and returns `true` to accept a
+stack. It runs as the mod that supplied the definition, on the side testing the recipe.
+It can run many times without editing the game; return the same answer for the same inputs.
+
+- Read identity with `item_id()` or `item_key()`, quantity with `count()`, and optional damage with
+  `damage()` (which may return `Some(0)`).
+- `has_component(id)` reads effective presence, `component_removed(id)` checks for an explicit
+  removal, and `stored_component(id)` borrows retained NBT without building a patch. The latter
+  does not expose inherited defaults or typed-only fields such as damage.
+
+`Ingredient::test(host, stack)` uses the host's loop context. On every matching path, including shaped
+and shapeless recipes, a nonempty candidate list filters by item ID before the predicate runs.
+List every item your predicate might accept. An empty custom list has no filter for manual
+matching, but supplies no placement candidates.
+
+A disabled owner rejects stacks without running the predicate or asking another mod.
+A panic logs the owner's name, queues a local error toast, and disables only that occurrence's
+predicate for the session, including after reloading the same definition. Returning `false`
+normally is just a non-match.
+
+`Ingredient`, `Recipe`, `RecipeRule`, `FireworkShapeIngredient`, `PlacementInfo`,
+`RecipeBookCategory` and `RecipeBookDisplayEntry` can contain native predicates and do not
+implement `Wire`. Derive it on a separate payload carrying data such as recipe IDs, item IDs
+or `RecipeBookDisplay` values.
+The recipe book syncs display data and static candidates; empty candidate sets become
+`PlacementInfo::NOT_PLACEABLE`. When `datapack_sync` sends a vanilla recipe type in full,
+the client receives resolved candidate lists, not the predicates. The server rechecks live
+stacks for crafting and placement.
 
 ## Ingredient data
 
