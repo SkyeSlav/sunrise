@@ -100,10 +100,9 @@ impl Game<'_> {
                 (super::dragon::MAX_HEALTH, dragon.health)
             } else if let Some(m) = self.mob_index.get(&self.mobs, id) {
                 (m.attrs.max_health, m.health)
-            } else if let Some(stand) = self.armor_stands.iter().find(|s| s.id == id) {
-                (20.0, stand.health)
             } else {
-                return None;
+                let stand = self.armor_stands.iter().find(|s| s.id == id)?;
+                (20.0, stand.health)
             };
         let max_health = self
             .motion

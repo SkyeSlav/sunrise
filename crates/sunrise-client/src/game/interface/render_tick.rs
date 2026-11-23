@@ -1297,7 +1297,7 @@ mod tests {
                     assert!(quads(game).is_empty());
                     game.camera_type = CameraType::FirstPerson;
                     game.inventory[4] = Some(ItemStack::new("minecraft:spyglass", 1));
-                    game.using = Some((4, 1));
+                    assert!(game.start_using_item(), "spyglass use starts");
                     assert!(
                         quads(game).is_empty(),
                         "scoping suppresses equipment overlays"
