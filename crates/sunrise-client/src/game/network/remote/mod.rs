@@ -72,7 +72,7 @@ use sunrise_client::{
     tab_list::SPECTATOR,
     text::Text,
 };
-use sunrise_core::{geometry::Vec3, random::RandomSource};
+use sunrise_core::{geometry::Vec3, profile::AccountProperty, random::RandomSource};
 use sunrise_protocol::{
     entity_data::{ITEM_ENTITY_ITEM, Value},
     item::{Hashed, Stack},
@@ -85,6 +85,7 @@ use sunrise_protocol::{
     secure_chat::{self, Signature},
     text::{Language, plain},
 };
+use sunrise_server_files::profiles::ServicesKeySet;
 use {
     sunrise_core::nbt::Tag,
     sunrise_mod_runtime::attachments::{Holder, ResidentAttachments},
@@ -274,15 +275,47 @@ fn mob_pos_rot(m: &Mob) -> PosRot {
     }
 }
 
-/// `Minecraft.services().profileKeySignatureValidator()`: the services' profile-key keys, which a
-/// player's chat key must be signed by. Asked for once per connection to a server, off the game
-/// thread.
+/// `Minecraft.services()` trust keys, fetched once per connection off the game thread.
 pub(super) enum ServicesKeys {
     Pending,
-    Ready(Vec<RsaPublicKey>),
-    /// `canValidateProfileKeys()` is false: none could be had.
-    Missing,
+    Ready(ServicesKeySet),
 }
+
+/// One `PlayerInfo` property, shared by the list entry and the entities that kept it.
+struct PlayerTextures {
+    property: AccountProperty,
+    unpacked: std::sync::OnceLock<sunrise_client::skins::Textures>,
+}
+
+impl PlayerTextures {
+    fn new(property: AccountProperty) -> Self {
+        Self {
+            property,
+            unpacked: std::sync::OnceLock::new(),
+        }
+    }
+
+    fn unpack(
+        &self,
+        services_keys: &ServicesKeys,
+        valid_uris: &[impl AsRef<str>],
+    ) -> Option<&sunrise_client::skins::Textures> {
+        use sunrise_client::skins;
+        let signature = self.property.signature.as_deref();
+        let property_keys: &[RsaPublicKey] = match services_keys {
+            // Never cache an invalid result for a signature the pending keys could verify.
+            ServicesKeys::Pending if signature.is_some() => return None,
+            ServicesKeys::Pending => &[],
+            ServicesKeys::Ready(keys) => &keys.profile_property_keys,
+        };
+        Some(self.unpacked.get_or_init(|| {
+            let value = &self.property.value;
+            let signature = skins::property_signature(value, signature, property_keys);
+            skins::unpack(value, signature, valid_uris)
+        }))
+    }
+}
+
 /// The signed-in account's `/minecraft/profile` fetch after joining.
 enum OwnProfile {
     Idle,
@@ -576,12 +609,12 @@ pub(super) struct Remote {
     tab_game_modes: HashMap<u128, Arc<std::sync::atomic::AtomicI32>>,
     /// First resolved `PlayerInfo` game mode cell of the current `LocalPlayer` entity.
     own_player_info: std::cell::OnceCell<Arc<std::sync::atomic::AtomicI32>>,
-    /// Each listed profile's unpacked `textures` property.
-    skin_textures: HashMap<u128, sunrise_client::skins::Textures>,
+    /// Each listed profile's `textures` property, verified once the keys are ready.
+    skin_textures: HashMap<u128, Arc<PlayerTextures>>,
     /// Active skin and cape from the services profile when the server sent none.
     own_profile: OwnProfile,
-    /// The skin texture each profile's players show, once its download is ready.
-    skins: HashMap<u128, String>,
+    /// The accepted body, cape and elytra of each profile after its downloads settle.
+    skins: HashMap<u128, sunrise_client::skins::ResolvedSkin>,
     skins_revision: u64,
     published_skins: Option<(usize, u128, u64, u64)>,
     listed: std::collections::HashSet<u128>,
@@ -600,7 +633,7 @@ pub(super) struct Remote {
     /// The `textures` each player entity found in the player list first
     /// (`AbstractClientPlayer.getPlayerInfo` keeps that `PlayerInfo`): its skin
     /// outlives the entry, which NPC plugins remove a moment after spawning.
-    level_player_textures: HashMap<i32, sunrise_client::skins::Textures>,
+    level_player_textures: HashMap<i32, Arc<PlayerTextures>>,
     /// Entities with shared flag 6 (`Entity.isCurrentlyGlowing` on a client); mobs keep
     /// theirs in `Mob::glowing`.
     pub(super) glowing: std::collections::HashSet<i32>,
@@ -2264,9 +2297,9 @@ fn object_skin_changed(published: &HashMap<String, String>, key: &str, skin: &st
 /// looks the PlayerInfo up once and holds it, removed from the list or not).
 fn skin_entries(
     level_players: &HashMap<i32, u128>,
-    listed: &HashMap<u128, sunrise_client::skins::Textures>,
-    kept: &mut HashMap<i32, sunrise_client::skins::Textures>,
-) -> Vec<(u128, sunrise_client::skins::Textures)> {
+    listed: &HashMap<u128, Arc<PlayerTextures>>,
+    kept: &mut HashMap<i32, Arc<PlayerTextures>>,
+) -> Vec<(u128, Arc<PlayerTextures>)> {
     for (id, uuid) in level_players {
         if !kept.contains_key(id)
             && let Some(textures) = listed.get(uuid)

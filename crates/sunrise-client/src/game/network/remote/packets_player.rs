@@ -373,18 +373,10 @@ impl Game<'_> {
                             .entry(e.uuid)
                             .or_insert_with(|| Arc::new(std::sync::atomic::AtomicI32::new(0)));
                         if let Some(t) = e.properties.iter().find(|p| p.name == "textures") {
-                            // Without the services' profile property keys a
-                            // signature can't be checked; a signed property
-                            // counts as genuine.
-                            use sunrise_client::skins::{self, Signature};
-                            let signature = if t.signature.is_some() {
-                                Signature::Signed
-                            } else {
-                                Signature::Unsigned
-                            };
-                            let textures =
-                                skins::unpack(&t.value, signature, skins::texture_uris());
-                            r.skin_textures.entry(e.uuid).or_insert(textures);
+                            // Keep the raw property until the services keys settle.
+                            r.skin_textures
+                                .entry(e.uuid)
+                                .or_insert_with(|| Arc::new(PlayerTextures::new(t.clone())));
                         }
                     }
                 }

@@ -181,8 +181,10 @@ impl Game<'_> {
             p.skin = self
                 .remote
                 .as_ref()
-                .and_then(|r| r.skins.get(&p.uuid).cloned())
-                .unwrap_or_else(|| sunrise_client::tab_list::default_skin(p.uuid).to_owned());
+                .and_then(|r| r.skins.get(&p.uuid))
+                .map(|skin| skin.body(p.uuid).0)
+                .unwrap_or_else(|| sunrise_client::tab_list::default_skin(p.uuid))
+                .to_owned();
         }
         let r = self.remote.as_ref()?;
         let upside_down = players

@@ -21,10 +21,11 @@ impl Game<'_> {
             let Some(p) = r.tab_players.get(uuid) else {
                 continue;
             };
-            let skin = r.skins.get(uuid).map_or_else(
-                || sunrise_client::tab_list::default_skin(*uuid),
-                String::as_str,
-            );
+            let skin = r
+                .skins
+                .get(uuid)
+                .map(|skin| skin.body(*uuid).0)
+                .unwrap_or_else(|| sunrise_client::tab_list::default_skin(*uuid));
             for key in [
                 format!("id:{uuid:032x}"),
                 format!("name:{}", p.name.to_ascii_lowercase()),

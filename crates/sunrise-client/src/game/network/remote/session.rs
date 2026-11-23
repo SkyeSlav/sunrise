@@ -230,20 +230,22 @@ impl Game<'_> {
         // server included: its guests' chat keys are checked against them.
         let services_keys = Arc::new(std::sync::Mutex::new(ServicesKeys::Pending));
         let slot = services_keys.clone();
-        let _ = std::thread::Builder::new()
+        if let Err(why) = std::thread::Builder::new()
             .name("Services keys".into())
             .spawn(move || {
                 use sunrise_server_files::profiles;
-                let keys = profiles::fetch_profile_key_keys(&profiles::discovery_url());
-                *slot.lock().unwrap_or_else(|e| e.into_inner()) = match keys {
-                    Ok(keys) if !keys.is_empty() => ServicesKeys::Ready(keys),
-                    Ok(_) => ServicesKeys::Missing,
-                    Err(why) => {
+                let keys = profiles::fetch_profile_key_keys(&profiles::discovery_url())
+                    .unwrap_or_else(|why| {
                         log::error!("Sunrise: {why}");
-                        ServicesKeys::Missing
-                    }
-                };
-            });
+                        ServicesKeySet::default()
+                    });
+                *slot.lock().unwrap_or_else(|e| e.into_inner()) = ServicesKeys::Ready(keys);
+            })
+        {
+            log::error!("Sunrise: could not start services key fetch: {why}");
+            *services_keys.lock().unwrap_or_else(|e| e.into_inner()) =
+                ServicesKeys::Ready(ServicesKeySet::default());
+        }
         self.ui.registries.selector_tokens.clear();
         self.remote = Some(Remote {
             selector_metadata_supported: true,
@@ -514,7 +516,9 @@ impl Game<'_> {
         self.boss_overlay.reset();
 
         let chat_tree = self.chat_tree_for(None);
-        let services_keys = Arc::new(std::sync::Mutex::new(ServicesKeys::Ready(Vec::new())));
+        let services_keys = Arc::new(std::sync::Mutex::new(ServicesKeys::Ready(
+            ServicesKeySet::default(),
+        )));
 
         self.ui.registries.selector_tokens.clear();
         self.remote = Some(Remote {
