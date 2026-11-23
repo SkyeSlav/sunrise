@@ -180,6 +180,21 @@ pub trait ClientRenderClientHost {
     fn texture_sprites(&self, textures: &[&str]) -> Vec<Option<SpriteRef>>;
     /// Side: client.
     /// Published asset/data read: available in Setup, Reloading and World.
+    /// Read original CPU frames of the block atlas, like NeoForge's `TextureAtlasSprite.getPixelARGB`
+    /// and `SpriteContents.getOriginalImage`. Returns one image per request in order (including
+    /// duplicates), or `None` for unavailable pixels, invalid refs or out-of-range animated cells.
+    /// Empty input returns an empty list. An output allocation failure rejects the whole batch.
+    ///
+    /// In `texture_atlas_stitched` for Blocks, use [`Self::texture_sprites`] to resolve refs
+    /// from the new atlas. For refs from block states, wait for `model_baking_completed`.
+    /// Resolve refs again when [`Self::block_sprites_version`] changes. Results are owned
+    /// source pixels, not a view of live animation or of GPU textures.
+    fn sprite_pixels(
+        &self,
+        requests: &[SpritePixelsRequest],
+    ) -> Result<Vec<Option<SpriteImage>>, SpritePixelsError>;
+    /// Side: client.
+    /// Published asset/data read: available in Setup, Reloading and World.
     /// For a client mod: where GUI sprite `sprite` lies in the GUI atlas and its size, none for one the atlas lacks
     /// or whose entry its definition removed (a server's metrics-only atlas lacks them all). The atlas names its
     /// sprites by GUI id, the id its definition lists them under: `minecraft:container/slot` (also given as
@@ -189,6 +204,7 @@ pub trait ClientRenderClientHost {
     /// Side: client.
     /// Published asset/data read: available in Setup, Reloading and World.
     /// For a client mod: changes each time the resources load (a resource pack turned on or off can move every
-    /// sprite): ask `native_block_sprites` again then. API 380.
+    /// sprite): resolve sprite refs again. During `texture_atlas_stitched`, this is the new
+    /// atlas's version; block-state refs still belong to the old model generation. API 380.
     fn block_sprites_version(&self) -> u64;
 }

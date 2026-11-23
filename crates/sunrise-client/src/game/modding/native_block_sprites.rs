@@ -1,7 +1,11 @@
 //! Where blocks' textures are in the block sprite arrays, for a client mod drawing blocks with the player's own
 //! textures (resource packs included) in its own pass: with `WorldDrawn::block_sprites`, the arrays themselves.
-use super::Game;
-use mod_api::{AtlasRegion, ColorResolver, Identifier, LevelReadError};
+use super::{Game, RenderAssets};
+use mod_api::{
+    AtlasRegion, ColorResolver, Identifier, LevelReadError, SpriteImage, SpritePixelsError,
+    SpritePixelsRequest,
+};
+use std::sync::Arc;
 use sunrise_client::block_sprites::{BlockSprites, Lookup, SpriteRef};
 use sunrise_client::chunk::Chunk;
 use sunrise_world::registry::BlockStateId;
@@ -26,21 +30,29 @@ impl Game<'_> {
             })
             .collect()
     }
-    /// For a client mod: each texture's sprite by name (`minecraft:block/stone`, `block/stone`), none for one no
-    /// model uses. API 380.
-    pub(super) fn texture_sprites(&self, textures: &[&str]) -> Vec<Option<SpriteRef>> {
+    /// Atlas reads switch generations at stitching, before model-based lookups do.
+    pub(super) fn published_block_atlas(&self) -> (&Arc<RenderAssets>, u32) {
         let atlas = self
             .stitching_block_atlas
             .as_ref()
             .unwrap_or(&self.pack.render);
-        let split = self
-            .renderer
-            .as_ref()
-            .map_or(u32::MAX, |r| r.sprite_split());
+        (atlas, self.block_sprite_split())
+    }
+
+    pub(super) fn texture_sprites(&self, textures: &[&str]) -> Vec<Option<SpriteRef>> {
+        let (atlas, split) = self.published_block_atlas();
         textures
             .iter()
             .map(|name| sunrise_client::block_sprites::texture_at(atlas, split, name))
             .collect()
+    }
+
+    pub(super) fn sprite_pixels(
+        &self,
+        requests: &[SpritePixelsRequest],
+    ) -> Result<Vec<Option<SpriteImage>>, SpritePixelsError> {
+        let (atlas, split) = self.published_block_atlas();
+        sunrise_client::block_sprites::sprite_pixels_at(Some((atlas.as_ref(), split)), requests)
     }
     /// `ClientLevel.getBlockTint(pos, resolver)`, without consulting block or fluid tint sources.
     pub(super) fn biome_tint(
@@ -121,10 +133,7 @@ impl Game<'_> {
     /// For a client mod: changes each time the resources load (a resource pack turned on or off can move every
     /// sprite): ask `block_sprites` again then. API 380.
     pub(super) fn block_sprites_version(&self) -> u64 {
-        self.stitching_block_atlas
-            .as_ref()
-            .unwrap_or(&self.pack.render)
-            .generation
+        self.published_block_atlas().0.generation
     }
     /// For a client mod: where GUI sprite `sprite` lies in the GUI atlas and its size, none for one the atlas lacks
     /// or whose entry its definition removed (a server's metrics-only atlas lacks them all). The atlas names its
@@ -140,21 +149,28 @@ impl Game<'_> {
         };
         Some(AtlasRegion::new([r.u0, r.v0, r.u1, r.v1], [r.w, r.h]))
     }
-    fn native_sprite_lookup(&self) -> Lookup<'_> {
-        // (no renderer, no arrays: every layer counts as array 0's)
-        let split = self
-            .renderer
+    fn block_sprite_split(&self) -> u32 {
+        // Without a renderer, every layer counts as array 0's.
+        self.renderer
             .as_ref()
-            .map_or(u32::MAX, |r| r.sprite_split());
-        Lookup::new(&self.pack.context, split, &self.pack.layer_names)
+            .map_or(u32::MAX, |r| r.sprite_split())
+    }
+
+    fn native_sprite_lookup(&self) -> Lookup<'_> {
+        Lookup::new(
+            &self.pack.context,
+            self.block_sprite_split(),
+            &self.pack.layer_names,
+        )
     }
 }
 
 #[cfg(test)]
 mod texture_atlas_stitched_tests {
     use mod_api::{
-        AtlasRegion, ClientHost, Hooks, Identifier, ModEntry, SpriteRef, TextureAtlas,
-        TextureAtlasStitchedEvent,
+        AtlasRegion, BakedModelKey, ClientHost, ClientReloadHost, ClientResourcesReloadedEvent,
+        ClientSetupContext, ClientSetupEvent, Hooks, Identifier, ModEntry, SpriteImage,
+        SpritePixelsRequest, SpriteRef, TextureAtlas, TextureAtlasStitchedEvent,
     };
     use mod_platform::testing::with_mods;
     use std::sync::{Arc, Mutex};
@@ -192,13 +208,35 @@ mod texture_atlas_stitched_tests {
         Identifier::parse(text).unwrap()
     }
 
-    /// A mod's sprite source: a 2x2 block sprite no model names, and a GUI sprite one pixel
-    /// wider each time the GUI atlas is asked, so a reload's answer differs from the first load's.
+    /// A mod's sprite source gives the same ids different pixels on reload.
     #[derive(Default)]
     struct Marker {
         gui_asks: u32,
+        reload: bool,
         block: Option<SpriteRef>,
         gui: Option<AtlasRegion>,
+        stitched: Vec<(u64, SpriteImage, BakedModelKey)>,
+        setup: Option<SpriteImage>,
+        reloaded: Option<SpriteImage>,
+    }
+
+    impl Marker {
+        fn block_request(&self) -> [SpritePixelsRequest; 1] {
+            [SpritePixelsRequest::new(
+                self.block.expect("published sprite no model names"),
+                None,
+            )]
+        }
+    }
+
+    fn stone_model_key(host: &dyn ClientHost) -> BakedModelKey {
+        let stone = host.block_state_id("minecraft:stone").unwrap();
+        host.render_assets()
+            .block_state_models(stone)
+            .unwrap()
+            .iter()
+            .next()
+            .unwrap()
     }
     struct Source(Arc<Mutex<Marker>>);
     #[mod_api::__subscriptions]
@@ -216,8 +254,17 @@ mod texture_atlas_stitched_tests {
                     "minecraft:blocks" => output.push(mod_api::SpriteSourceOutput::Pixels {
                         sprite: id("marker:block/own"),
                         width: 2,
-                        height: 2,
-                        rgba: [32, 64, 96, 255].repeat(4),
+                        height: 1,
+                        rgba: vec![
+                            if marker.reload { 33 } else { 32 },
+                            64,
+                            96,
+                            0,
+                            4,
+                            8,
+                            12,
+                            127,
+                        ],
                     }),
                     "minecraft:gui" => {
                         marker.gui_asks += 1;
@@ -259,10 +306,41 @@ mod texture_atlas_stitched_tests {
             match event.atlas {
                 TextureAtlas::Blocks => {
                     marker.block = host.texture_sprites(&["marker:block/own"])[0];
+                    let image = host
+                        .sprite_pixels(&marker.block_request())
+                        .unwrap()
+                        .pop()
+                        .flatten()
+                        .unwrap();
+                    marker.stitched.push((
+                        host.block_sprites_version(),
+                        image,
+                        stone_model_key(host),
+                    ));
                 }
                 TextureAtlas::Gui => marker.gui = host.gui_sprite(&id("marker:own")),
                 _ => {}
             }
+        }
+        fn client_setup(&self, host: &mut dyn ClientSetupContext, _: &mut ClientSetupEvent) {
+            let mut marker = self.0.lock().unwrap();
+            marker.setup = host
+                .sprite_pixels(&marker.block_request())
+                .unwrap()
+                .pop()
+                .flatten();
+        }
+        fn client_resources_reloaded(
+            &self,
+            host: &dyn ClientReloadHost,
+            _: &mut ClientResourcesReloadedEvent,
+        ) {
+            let mut marker = self.0.lock().unwrap();
+            marker.reloaded = host
+                .sprite_pixels(&marker.block_request())
+                .unwrap()
+                .pop()
+                .flatten();
         }
     }
 
@@ -360,13 +438,20 @@ mod texture_atlas_stitched_tests {
                 root.path().to_owned(),
                 role,
                 |game| {
-                    game.texture_atlases_stitched();
+                    game.publish_initial_client_models(vec![
+                        crate::game::client_reload::PreparedClientReload::Vanilla(()),
+                    ])
+                    .unwrap();
+                    let first_model = stone_model_key(game);
+                    let first_version = game.block_sprites_version();
+                    let initial = SpriteImage::new(2, 1, vec![32, 64, 96, 0, 4, 8, 12, 127]);
                     {
-                        let mut marker = marker.lock().unwrap();
-                        assert!(
-                            marker.block.take().is_some(),
-                            "no model names the block sprite"
+                        let marker = marker.lock().unwrap();
+                        assert_eq!(
+                            marker.stitched,
+                            [(first_version, initial.clone(), first_model)]
                         );
+                        assert_eq!(marker.setup.as_ref(), Some(&initial));
                         assert_eq!(marker.gui.map(|s| s.size), Some([3, 3]));
                     }
                     assert_eq!(
@@ -378,19 +463,24 @@ mod texture_atlas_stitched_tests {
                         game.gui_sprite(&id("marker:first_only")).map(|s| s.size),
                         Some([2, 2])
                     );
-                    game.spawn_pack_reload(super::super::packs::ReloadKind::Selection)
-                        .unwrap();
-                    let started = std::time::Instant::now();
-                    while game.pack_reload.is_some() {
-                        assert!(
-                            started.elapsed().as_secs() < 300,
-                            "the reload never finished"
-                        );
-                        std::thread::sleep(std::time::Duration::from_millis(20));
-                        game.drive_pack_reload();
-                    }
+                    marker.lock().unwrap().reload = true;
+                    super::super::model_baking_completed_tests::reload(game);
                     let marker = marker.lock().unwrap();
-                    assert!(marker.block.is_some(), "published again after the reload");
+                    let version = game.block_sprites_version();
+                    let reloaded = SpriteImage::new(2, 1, vec![33, 64, 96, 0, 4, 8, 12, 127]);
+                    assert!(version > first_version);
+                    assert_ne!(stone_model_key(game), first_model);
+                    assert_eq!(marker.stitched.len(), 2);
+                    assert_eq!(
+                        marker.stitched[1],
+                        (version, reloaded.clone(), first_model),
+                        "the reload stitches new pixels while model reads still use the old generation"
+                    );
+                    assert_eq!(marker.reloaded.as_ref(), Some(&reloaded));
+                    assert_eq!(
+                        game.sprite_pixels(&marker.block_request()).unwrap(),
+                        [Some(reloaded)]
+                    );
                     assert_eq!(
                         game.gui_sprite(&id("marker:first_only")),
                         None,

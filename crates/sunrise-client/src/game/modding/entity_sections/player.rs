@@ -3,36 +3,33 @@
 use super::{EntitySections, Game, PlayerMoveState, Scope, SectionWriter, tell_live};
 use crate::game::native_lifecycle::NativeLifecycle;
 use mod_api::{EntityRef, PlayerRef};
-use std::{
-    cell::{Cell, RefCell},
-    rc::Rc,
-};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 use sunrise_client::motion::{
     PlayerMotion,
     section_writes::{PositionObserver, PositionObserverScope},
 };
 use sunrise_core::geometry::Vec3;
 
-#[derive(Clone, Copy)]
 pub(in crate::game) struct PlayerSectionScope {
     scope: Scope,
     id: u32,
     body_id: i32,
     local_player: Option<PlayerRef>,
     server: bool,
+    atlas: Option<(Arc<sunrise_client::assets::RenderAssets>, u32)>,
 }
 
 #[derive(Default)]
 pub(in crate::game) struct PlayerSectionObserver {
-    active: Cell<Option<PlayerSectionScope>>,
+    active: RefCell<Option<PlayerSectionScope>>,
     sections: RefCell<EntitySections>,
 }
 
 impl PositionObserver for PlayerSectionObserver {
     fn position_written(&self, player: &PlayerMotion, from: Vec3) {
-        let Some(active) = self
-            .active
-            .get()
+        let active = self.active.borrow();
+        let Some(active) = active
+            .as_ref()
             .filter(|active| active.body_id == player.entity_id)
         else {
             return;
@@ -53,6 +50,10 @@ impl PositionObserver for PlayerSectionObserver {
                 }),
             },
             active.server,
+            active
+                .atlas
+                .as_ref()
+                .map(|(atlas, split)| (atlas.as_ref(), *split)),
         );
     }
 }
@@ -76,7 +77,7 @@ impl PlayerSectionScope {
         let observer = lifecycle
             .player_section_observer
             .get_or_insert_with(Default::default);
-        observer.active.set(Some(self));
+        observer.active.replace(Some(self));
         let sections = &mut lifecycle.entity_sections;
         std::mem::swap(sections, &mut observer.sections.borrow_mut());
         PlayerSectionPass {
@@ -93,12 +94,19 @@ impl Game<'_> {
         let id = u32::try_from(self.own_entity_id())
             .ok()
             .filter(|id| *id != 0)?;
+        let body_id = self.player.as_ref()?.entity_id;
+        let server = self.is_logical_server();
+        let atlas = (!server).then(|| {
+            let (atlas, split) = self.published_block_atlas();
+            (Arc::clone(atlas), split)
+        });
         Some(PlayerSectionScope {
             scope,
             id,
-            body_id: self.player.as_ref()?.entity_id,
+            body_id,
             local_player: self.local_player(),
-            server: self.is_logical_server(),
+            server,
+            atlas,
         })
     }
 }

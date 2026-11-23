@@ -89,6 +89,8 @@ pub struct RenderAssets {
     pub model_placements: Vec<(sunrise_core::position::BlockPos, BlockStateId)>,
     pub model_gallery: Vec<Value>,
     pub animations: Vec<crate::sprites::SpriteAnimation>,
+    /// The atlas generation's original CPU frames, indexed by global layer.
+    pub(crate) sprite_source_pixels: Vec<Option<crate::sprites::SpriteSourcePixels>>,
     pub sprite_layers: std::collections::BTreeMap<String, u32>,
     /// The first block sprite name at each layer, in `sprite_layers`' name order.
     pub(crate) sprite_names: Vec<Option<String>>,
@@ -129,6 +131,7 @@ impl RenderAssets {
             model_placements: Vec::new(),
             model_gallery: Vec::new(),
             animations: Vec::new(),
+            sprite_source_pixels: Vec::new(),
             sprite_layers: Default::default(),
             sprite_names: Vec::new(),
             file_layers: Default::default(),
@@ -575,6 +578,7 @@ impl RenderAssets {
             model_placements: models.placements,
             model_gallery: models.states,
             animations: sprites.animations,
+            sprite_source_pixels: sprites.source_pixels,
             sprite_layers: sprites.layers,
             sprite_names,
             file_layers: sprites.files,

@@ -3,17 +3,18 @@
 //! cache location, valid only while the resource source's textures and atlas
 //! definitions have the same identities/change stamps (or open archive contents)
 //! and format version; anything else (missing, corrupt, stale, unwritable) means the normal decoding path.
-use crate::{mipmap::Strategy, resource_source::ResourceRoot};
+use crate::{mipmap::Strategy, resource_source::ResourceRoot, sprites::RectangularSheet};
 use std::{
     collections::HashMap,
     fs,
     hash::{DefaultHasher, Hash, Hasher},
     path::PathBuf,
+    sync::Arc,
 };
 
 const MAGIC: &[u8; 4] = b"HSPR";
 /// Bump when `Decoded` or the decoding in `Sprites::decode` changes.
-const VERSION: u32 = 4;
+const VERSION: u32 = 5;
 const FILE: &str = "sunrise-sprites.cache";
 
 /// What decoding one texture gives, before it takes a layer.
@@ -21,6 +22,7 @@ const FILE: &str = "sunrise-sprites.cache";
 pub(crate) struct Decoded {
     pub side: u32,
     pub frames: Vec<Vec<u8>>,
+    pub original_sheet: Option<Arc<RectangularSheet>>,
     /// The `.mcmeta` `animation` value, as text.
     pub animation: Option<String>,
     pub strategy: Strategy,
@@ -101,6 +103,13 @@ fn serialize(fingerprint: u64, entries: &HashMap<String, Decoded>) -> Vec<u8> {
         for frame in &d.frames {
             put_bytes(&mut out, frame);
         }
+        out.push(u8::from(d.original_sheet.is_some()));
+        if let Some(sheet) = &d.original_sheet {
+            for dimension in sheet.image.into_iter().chain(sheet.frame) {
+                out.extend_from_slice(&dimension.to_le_bytes());
+            }
+            put_bytes(&mut out, &sheet.rgba);
+        }
         put_bytes(&mut out, d.animation.as_deref().unwrap_or("").as_bytes());
         out.push(u8::from(d.animation.is_some()));
         out.push(d.strategy as u8);
@@ -149,6 +158,36 @@ fn parse(bytes: &[u8], fingerprint: u64) -> Option<HashMap<String, Decoded>> {
         for _ in 0..frame_count {
             frames.push(r.bytes()?.to_vec());
         }
+        let original_sheet = match r.take(1)?[0] {
+            0 => None,
+            1 => {
+                let image = [r.u32()?, r.u32()?];
+                let frame = [r.u32()?, r.u32()?];
+                let [w, h] = image;
+                let [fw, fh] = frame;
+                let rgba = r.bytes()?;
+                let len = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
+                if w == 0
+                    || h == 0
+                    || fw == 0
+                    || fh == 0
+                    || fw == fh
+                    || fw.max(fh) != side
+                    || !w.is_multiple_of(fw)
+                    || !h.is_multiple_of(fh)
+                    || (w / fw).checked_mul(h / fh)? != frame_count
+                    || rgba.len() != len
+                {
+                    return None;
+                }
+                Some(Arc::new(RectangularSheet {
+                    image,
+                    frame,
+                    rgba: rgba.to_vec(),
+                }))
+            }
+            _ => return None,
+        };
         let animation = String::from_utf8(r.bytes()?.to_vec()).ok()?;
         let has_animation = r.take(1)?[0] != 0;
         let strategy = match r.take(1)?[0] {
@@ -162,7 +201,7 @@ fn parse(bytes: &[u8], fingerprint: u64) -> Option<HashMap<String, Decoded>> {
         let alpha_cutoff_bias = f32::from_bits(r.u32()?);
         let flags = r.take(1)?[0];
         let frame_len = (side as usize).checked_mul(side as usize)?.checked_mul(4)?;
-        if frames.is_empty() || frames.iter().any(|f| f.len() != frame_len) {
+        if side == 0 || frames.is_empty() || frames.iter().any(|f| f.len() != frame_len) {
             return None;
         }
         entries.insert(
@@ -170,6 +209,7 @@ fn parse(bytes: &[u8], fingerprint: u64) -> Option<HashMap<String, Decoded>> {
             Decoded {
                 side,
                 frames,
+                original_sheet,
                 animation: has_animation.then_some(animation),
                 strategy,
                 alpha_cutoff_bias,
@@ -191,6 +231,7 @@ mod tests {
         Decoded {
             side: 2,
             frames: vec![vec![blue; 16], vec![blue + 1; 16]],
+            original_sheet: None,
             animation: animation.map(str::to_owned),
             strategy: Strategy::Cutout,
             alpha_cutoff_bias: 0.25,
@@ -209,9 +250,21 @@ mod tests {
     #[test]
     fn round_trips() {
         let mut entries = HashMap::new();
-        entries.insert("a:b".to_owned(), sample(1, Some("{\"frametime\":2}")));
+        let mut rectangle = sample(1, Some("{\"frametime\":2,\"width\":2,\"height\":1}"));
+        let rgba = [12, 45, 34, 0, 82, 28, 52, 127, 3, 5, 8, 255, 99, 51, 67, 32];
+        rectangle.original_sheet = Some(Arc::new(RectangularSheet {
+            image: [2, 2],
+            frame: [2, 1],
+            rgba: rgba.to_vec(),
+        }));
+        entries.insert("a:b".to_owned(), rectangle);
         entries.insert("a:c".to_owned(), sample(9, None));
         let back = parse(&serialize(7, &entries), 7).unwrap();
+        let sheet = back["a:b"].original_sheet.as_ref().unwrap();
+        assert_eq!(sheet.image, [2, 2]);
+        assert_eq!(sheet.frame, [2, 1]);
+        assert_eq!(sheet.rgba, rgba);
+        assert!(back["a:c"].original_sheet.is_none());
         for (name, d) in &entries {
             let e = &back[name];
             assert_eq!(

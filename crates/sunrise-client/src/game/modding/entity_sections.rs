@@ -194,19 +194,22 @@ struct PlayerMoveState {
     velocity: [f64; 3],
 }
 
-/// The Host used while the entity's world view is borrowed. It answers only
-/// reads from the current write; other operations retain their typed refusal.
-struct LiveSectionHost(Option<SectionWriter>);
+/// The Host used while the entity's world view is borrowed. It can read the current write
+/// and the client's published atlas without borrowing the world.
+struct LiveSectionHost<'a> {
+    writer: Option<SectionWriter>,
+    atlas: Option<(&'a super::RenderAssets, u32)>,
+}
 
-mod_api::impl_host_areas!(LiveSectionHost, except(datafix));
-mod_api::impl_server_host_areas!(LiveSectionHost);
-mod_api::impl_client_host_areas!(LiveSectionHost, except(client_render, menus, services));
+mod_api::impl_host_areas!(LiveSectionHost<'_>, except(datafix));
+mod_api::impl_server_host_areas!(LiveSectionHost<'_>);
+mod_api::impl_client_host_areas!(LiveSectionHost<'_>, except(client_render, menus, services));
 mod_api::impl_backend_areas!(
-    LiveSectionHost,
+    LiveSectionHost<'_>,
     partial(entity_position, entity_on_ground, entity_velocity)
 );
 
-impl mod_api::prelude::DatafixHost for LiveSectionHost {
+impl mod_api::prelude::DatafixHost for LiveSectionHost<'_> {
     fn upgrade_nbt(
         &self,
         kind: mod_api::NbtDataType,
@@ -217,7 +220,14 @@ impl mod_api::prelude::DatafixHost for LiveSectionHost {
     }
 }
 
-impl mod_api::prelude::ClientRenderClientHost for LiveSectionHost {
+impl mod_api::prelude::ClientRenderClientHost for LiveSectionHost<'_> {
+    fn sprite_pixels(
+        &self,
+        requests: &[mod_api::SpritePixelsRequest],
+    ) -> Result<Vec<Option<mod_api::SpriteImage>>, mod_api::SpritePixelsError> {
+        sunrise_client::block_sprites::sprite_pixels_at(self.atlas, requests)
+    }
+
     fn biome_tint(
         &self,
         _: [i32; 3],
@@ -227,13 +237,13 @@ impl mod_api::prelude::ClientRenderClientHost for LiveSectionHost {
     }
 }
 
-impl mod_api::prelude::MenusClientHost for LiveSectionHost {
+impl mod_api::prelude::MenusClientHost for LiveSectionHost<'_> {
     fn local_player(&self) -> Option<mod_api::PlayerRef> {
-        self.0?.player?.local_player
+        self.writer?.player?.local_player
     }
 }
 
-impl mod_api::prelude::ServicesClientHost for LiveSectionHost {
+impl mod_api::prelude::ServicesClientHost for LiveSectionHost<'_> {
     fn client_executor(&self) -> Option<mod_api::ClientExecutor> {
         None
     }
@@ -241,41 +251,55 @@ impl mod_api::prelude::ServicesClientHost for LiveSectionHost {
 
 // The generated read backend forwards these snapshots and answers the
 // standard no-backend result for reads that would need the borrowed world.
-impl LiveSectionHost {
+impl LiveSectionHost<'_> {
     fn entity_position(&self, entity: EntityRef) -> Option<[f64; 3]> {
-        let writer = self.0.filter(|writer| writer.entity == entity)?;
+        let writer = self.writer.filter(|writer| writer.entity == entity)?;
         Some(writer.position)
     }
 
     fn entity_on_ground(&self, entity: EntityRef) -> Option<bool> {
-        let player = self.0.filter(|writer| writer.entity == entity)?.player?;
+        let player = self
+            .writer
+            .filter(|writer| writer.entity == entity)?
+            .player?;
         Some(player.on_ground)
     }
 
     fn entity_velocity(&self, entity: EntityRef) -> Option<[f64; 3]> {
-        let player = self.0.filter(|writer| writer.entity == entity)?.player?;
+        let player = self
+            .writer
+            .filter(|writer| writer.entity == entity)?
+            .player?;
         Some(player.velocity)
     }
 }
 
-impl mod_api::Backend for LiveSectionHost {}
+impl mod_api::Backend for LiveSectionHost<'_> {}
 
-impl mod_api::Host for LiveSectionHost {
+impl mod_api::Host for LiveSectionHost<'_> {
     fn backend(&self) -> Option<mod_api::BackendRef<'_>> {
         Some(mod_api::BackendRef::of(self))
     }
 }
 
-impl mod_api::ServerHost for LiveSectionHost {}
-impl mod_api::ClientHost for LiveSectionHost {}
+impl mod_api::ServerHost for LiveSectionHost<'_> {}
+impl mod_api::ClientHost for LiveSectionHost<'_> {}
 
-fn tell_live(sections: &std::cell::RefCell<EntitySections>, writer: SectionWriter, server: bool) {
+fn tell_live(
+    sections: &std::cell::RefCell<EntitySections>,
+    writer: SectionWriter,
+    server: bool,
+    atlas: Option<(&super::RenderAssets, u32)>,
+) {
     let Some(batch) = sections.borrow_mut().begin_telling() else {
         return;
     };
     for crossing in &batch {
         let entity = EntityRef::new(writer.entity.epoch(), crossing.id);
-        let mut host = LiveSectionHost((entity == writer.entity).then_some(writer));
+        let mut host = LiveSectionHost {
+            writer: (entity == writer.entity).then_some(writer),
+            atlas,
+        };
         let host = if server {
             mod_api::HostSide::Server(&mut host)
         } else {
@@ -327,6 +351,7 @@ impl crate::mobs::living::section_writes::WriteObserver for LiveSectionObserver 
                 player: None,
             },
             true,
+            None,
         );
     }
 }

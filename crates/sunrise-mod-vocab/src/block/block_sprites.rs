@@ -14,6 +14,76 @@ pub struct SpriteRef {
     /// Some of its pixels are clear (alpha 0): leaves, glass, flowers. Draw those as holes.
     pub cutout: bool,
 }
+/// One frame to read from the currently published block atlas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+// no wire: in-process atlas read request.
+pub struct SpritePixelsRequest {
+    /// Resolve this again when `block_sprites_version` changes. The array and layer identify
+    /// the sprite; the flags do not control the read.
+    pub sprite: SpriteRef,
+    /// A zero-based source-sheet cell, row by row, even if playback skips it. `None` selects
+    /// the first frame in the filtered playback sequence, not the frame playing now. Static
+    /// sprites always return their single displayed image, ignoring this index.
+    pub source_frame: Option<u32>,
+}
+
+impl SpritePixelsRequest {
+    /// Request a source cell, or pass `None` for the first displayed frame.
+    pub const fn new(sprite: SpriteRef, source_frame: Option<u32>) -> Self {
+        Self {
+            sprite,
+            source_frame,
+        }
+    }
+}
+
+/// An owned, untinted base-level sprite frame at its original decoded size.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+// no wire: owned CPU snapshot of a native atlas frame.
+pub struct SpriteImage {
+    /// The original frame width in pixels.
+    pub width: u32,
+    /// The original frame height in pixels.
+    pub height: u32,
+    /// RGBA8, left to right and top to bottom, four bytes per pixel. Alpha and RGB under
+    /// transparent pixels are preserved. No resize, filtering or interpolation is applied.
+    pub rgba: Vec<u8>,
+}
+
+impl SpriteImage {
+    /// An original-size RGBA8 frame copied from the atlas by the game.
+    // hidden: only the atlas provider constructs the owned image returned to mods.
+    #[doc(hidden)]
+    pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> Self {
+        Self {
+            width,
+            height,
+            rgba,
+        }
+    }
+}
+
+/// Failure to return the batch of sprite images. Individual missing images are not errors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+// no wire: local allocation refusal.
+pub enum SpritePixelsError {
+    /// The output capacity cannot be represented or the allocation failed.
+    OutputAllocation,
+}
+
+impl std::fmt::Display for SpritePixelsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OutputAllocation => f.write_str("cannot allocate sprite pixel output"),
+        }
+    }
+}
+
+impl std::error::Error for SpritePixelsError {}
+
 /// One face of a block's model on one of its sides.
 #[derive(Clone, Debug, PartialEq)]
 // exhaustive: the game builds it with a literal; mods only read it

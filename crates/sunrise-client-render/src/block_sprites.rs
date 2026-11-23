@@ -8,6 +8,7 @@
 //! 0 to 1 within its layer; the renderer's split (`Renderer::sprite_split`) layers to an array.
 use crate::{mesher::TintSource, models::catalog::BakedFace, streaming::WorkerContext};
 pub use mod_api::block::block_sprites::{BlockSprites, FaceSprite, SpriteRef};
+use mod_api::{SpriteImage, SpritePixelsError, SpritePixelsRequest};
 use sunrise_assets::model::Direction;
 use sunrise_core::position::BlockPos;
 use sunrise_world::registry::{BlockRegistry, BlockStateId};
@@ -134,6 +135,33 @@ pub fn texture_at(
         .get(name)
         .or_else(|| layers.get(&format!("minecraft:{name}")))?;
     Some(sprite_at(render, split.max(1), *layer))
+}
+
+/// Read original CPU frames from the same atlas and split used to resolve the refs.
+pub fn sprite_pixels_at(
+    atlas: Option<(&crate::assets::RenderAssets, u32)>,
+    requests: &[SpritePixelsRequest],
+) -> Result<Vec<Option<SpriteImage>>, SpritePixelsError> {
+    let mut images = Vec::new();
+    images
+        .try_reserve_exact(requests.len())
+        .map_err(|_| SpritePixelsError::OutputAllocation)?;
+    let atlas = atlas.map(|(render, split)| (render, split.max(1)));
+    for request in requests {
+        let source = atlas.and_then(|(render, split)| {
+            let SpriteRef { array, layer, .. } = request.sprite;
+            if layer >= split {
+                return None;
+            }
+            let global = array.checked_mul(split)?.checked_add(layer)?;
+            render.sprite_source_pixels.get(global as usize)?.as_ref()
+        });
+        images.push(match source {
+            Some(source) => source.copy_frame(request.source_frame)?,
+            None => None,
+        });
+    }
+    Ok(images)
 }
 
 impl Lookup<'_> {

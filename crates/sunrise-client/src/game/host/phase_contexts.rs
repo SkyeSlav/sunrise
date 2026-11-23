@@ -168,6 +168,12 @@ impl ClientReloadHost for Game<'_> {
     fn texture_sprites(&self, textures: &[&str]) -> Vec<Option<SpriteRef>> {
         <Self as prelude::ClientRenderClientHost>::texture_sprites(self, textures)
     }
+    fn sprite_pixels(
+        &self,
+        requests: &[SpritePixelsRequest],
+    ) -> Result<Vec<Option<SpriteImage>>, SpritePixelsError> {
+        <Self as prelude::ClientRenderClientHost>::sprite_pixels(self, requests)
+    }
     fn gui_sprite(&self, sprite: &Identifier) -> Option<AtlasRegion> {
         <Self as prelude::ClientRenderClientHost>::gui_sprite(self, sprite)
     }

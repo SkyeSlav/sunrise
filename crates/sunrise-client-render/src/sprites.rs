@@ -97,10 +97,73 @@ impl SpriteAnimation {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct StillKey {
     frame: u64,
+    original_sheet: u64,
     pbr: u64,
     side: u32,
     settings: [u32; 2],
     flags: [bool; 4],
+}
+
+/// Original sheet used only for cells that the renderer must resample to square.
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub(crate) struct RectangularSheet {
+    pub(crate) image: [u32; 2],
+    pub(crate) frame: [u32; 2],
+    pub(crate) rgba: Vec<u8>,
+}
+
+#[derive(Clone)]
+enum SourceFrames {
+    Square { side: u32, cells: Arc<Vec<Vec<u8>>> },
+    Rectangle(Arc<RectangularSheet>),
+}
+
+#[derive(Clone)]
+pub(crate) struct SpriteSourcePixels {
+    frames: SourceFrames,
+    count: u32,
+    first_played: Option<u32>,
+}
+
+impl SpriteSourcePixels {
+    pub(crate) fn copy_frame(
+        &self,
+        requested: Option<u32>,
+    ) -> std::result::Result<Option<mod_api::SpriteImage>, mod_api::SpritePixelsError> {
+        use mod_api::SpritePixelsError::OutputAllocation;
+
+        let cell = self
+            .first_played
+            .map_or(0, |first| requested.unwrap_or(first));
+        if cell >= self.count {
+            return Ok(None);
+        }
+        let [width, height] = match &self.frames {
+            SourceFrames::Square { side, .. } => [*side; 2],
+            SourceFrames::Rectangle(sheet) => sheet.frame,
+        };
+        let row_len = (width as usize).checked_mul(4).ok_or(OutputAllocation)?;
+        let len = row_len
+            .checked_mul(height as usize)
+            .ok_or(OutputAllocation)?;
+        let mut rgba = Vec::new();
+        rgba.try_reserve_exact(len).map_err(|_| OutputAllocation)?;
+        match &self.frames {
+            SourceFrames::Square { cells, .. } => rgba.extend_from_slice(&cells[cell as usize]),
+            SourceFrames::Rectangle(sheet) => {
+                // Decode and cache parse guarantee a whole grid backed by a complete RGBA sheet.
+                let columns = sheet.image[0] / width;
+                let x = (cell % columns) as usize * row_len;
+                let y = (cell / columns * height) as usize;
+                let stride = sheet.image[0] as usize * 4;
+                for row in y..y + height as usize {
+                    let start = row * stride + x;
+                    rgba.extend_from_slice(&sheet.rgba[start..start + row_len]);
+                }
+            }
+        }
+        Ok(Some(mod_api::SpriteImage::new(width, height, rgba)))
+    }
 }
 
 #[derive(Default)]
@@ -127,6 +190,8 @@ pub struct Sprites {
     /// Each layer's frames at the texture's own resolution (square), and the
     /// frame shown first.
     native: Vec<(u32, Arc<Vec<Vec<u8>>>, usize)>,
+    /// Original source frames by the same global layer; absent for a substituted missing tile.
+    pub(crate) source_pixels: Vec<Option<SpriteSourcePixels>>,
     /// Each layer's LabPBR maps (`_n` normals, `_s` specular) beside its texture: their
     /// frames at their own resolution (square).
     pbr: Vec<[Option<(u32, Vec<Vec<u8>>)>; 2]>,
@@ -501,7 +566,17 @@ impl Sprites {
                 self.translucent.push(false);
                 self.mips.push(crate::mipmap::Settings::default());
                 self.slot_mut(slot).insert(name.to_owned(), layer);
-                self.native.push((SPRITE_SIZE, Arc::new(vec![frame]), 0));
+                let frames = Arc::new(vec![frame]);
+                self.source_pixels
+                    .push((name == "minecraft:missingno").then(|| SpriteSourcePixels {
+                        frames: SourceFrames::Square {
+                            side: SPRITE_SIZE,
+                            cells: Arc::clone(&frames),
+                        },
+                        count: 1,
+                        first_played: None,
+                    }));
+                self.native.push((SPRITE_SIZE, frames, 0));
                 Ok(layer)
             }
         }
@@ -690,6 +765,7 @@ impl Sprites {
                     opaque: alphas().all(|&a| a == 255),
                     translucent: alphas().any(|&a| a != 0 && a != 255),
                     frames,
+                    original_sheet: None,
                 };
                 let tile_name = format!("fusion/{}#{tile}", name.replace(':', "/"));
                 self.register(&tile_name, decoded).map(Some)
@@ -707,6 +783,7 @@ impl Sprites {
         self.still.retain(|_, l| *l != layer);
         let (l, s) = (layer as usize, source as usize);
         self.native[l] = self.native[s].clone();
+        self.source_pixels[l] = self.source_pixels[s].clone();
         self.opaque[l] = self.opaque[s];
         self.translucent[l] = self.translucent[s];
         self.mips[l] = self.mips[s];
@@ -837,6 +914,13 @@ impl Sprites {
                 .0
                 .iter()
                 .any(|p| p[3] != 0 && p[3] != 255),
+            original_sheet: (width != height).then(|| {
+                Arc::new(RectangularSheet {
+                    image: [png_width, png_height],
+                    frame: [width, height],
+                    rgba: pixels,
+                })
+            }),
         })
     }
     /// A 16 x 16 opaque white sprite under `name`: what a flat colour is drawn from, tinted.
@@ -846,6 +930,7 @@ impl Sprites {
             crate::sprite_cache::Decoded {
                 side: 16,
                 frames: vec![[255u8; 16 * 16 * 4].to_vec()],
+                original_sheet: None,
                 animation: None,
                 strategy: Default::default(),
                 alpha_cutoff_bias: 0.0,
@@ -861,6 +946,7 @@ impl Sprites {
         let crate::sprite_cache::Decoded {
             side,
             frames,
+            original_sheet,
             animation: animation_text,
             strategy,
             alpha_cutoff_bias,
@@ -901,10 +987,13 @@ impl Sprites {
                 use std::hash::{Hash, Hasher};
                 let mut frame = std::collections::hash_map::DefaultHasher::new();
                 frames[0].hash(&mut frame);
+                let mut source = std::collections::hash_map::DefaultHasher::new();
+                original_sheet.hash(&mut source);
                 let mut maps = std::collections::hash_map::DefaultHasher::new();
                 pbr.hash(&mut maps);
                 StillKey {
                     frame: frame.finish(),
+                    original_sheet: source.finish(),
                     pbr: maps.finish(),
                     side,
                     settings: [
@@ -915,21 +1004,29 @@ impl Sprites {
                 }
             });
         if let Some(&same) = still.as_ref().and_then(|k| self.still.get(k)) {
-            self.layers.insert(name.to_owned(), same);
-            return Ok(same);
+            let i = same as usize;
+            let source = self.source_pixels[i].as_ref().map(|source| &source.frames);
+            let original_matches = match (source, &original_sheet) {
+                (Some(SourceFrames::Square { .. }), None) => true,
+                (Some(SourceFrames::Rectangle(sheet)), Some(original)) => sheet == original,
+                _ => false,
+            };
+            if original_matches && self.native[i].1.as_ref() == &frames {
+                self.layers.insert(name.to_owned(), same);
+                return Ok(same);
+            }
         }
         if let Some(key) = still {
             self.still.insert(key, layer);
         }
         let frames = Arc::new(frames);
-        let mut initial = 0;
-        if let Some(clip) = animation
+        let clip = animation
             .as_ref()
             .map(|m| m.clip(count))
             .transpose()?
-            .flatten()
-        {
-            initial = clip.sample(0).frame as usize;
+            .flatten();
+        let first_played = clip.as_ref().map(|clip| clip.sample(0).frame);
+        if let Some(clip) = clip {
             self.animations.push(SpriteAnimation {
                 layer,
                 frames: frames.clone(),
@@ -942,7 +1039,19 @@ impl Sprites {
         self.translucent.push(translucent);
         self.pbr.push(pbr);
         self.layers.insert(name.to_owned(), layer);
-        self.native.push((side, frames, initial));
+        self.source_pixels.push(Some(SpriteSourcePixels {
+            frames: match original_sheet {
+                Some(sheet) => SourceFrames::Rectangle(sheet),
+                None => SourceFrames::Square {
+                    side,
+                    cells: Arc::clone(&frames),
+                },
+            },
+            count,
+            first_played,
+        }));
+        self.native
+            .push((side, frames, first_played.unwrap_or(0) as usize));
         Ok(layer)
     }
 }
@@ -1115,6 +1224,111 @@ pub(crate) fn sprite_mipmap_limit(requested: u32, size: u32, minimum: u32, avail
 mod tests {
     use super::*;
     use std::fs::{self, File};
+
+    #[test]
+    fn sprite_pixel_batch_reads_original_cells_in_request_order() {
+        use crate::{assets::RenderAssets, block_sprites::sprite_pixels_at};
+        use mod_api::{SpriteImage, SpritePixelsRequest, SpriteRef};
+
+        let texels = |numbers: &[u8]| -> Vec<u8> {
+            numbers
+                .iter()
+                .flat_map(|&n| [n, 250 - n, 100 + n, if n & 1 == 0 { 127 } else { 0 }])
+                .collect()
+        };
+        let sheet = texels(&(1..=24).collect::<Vec<_>>());
+        let decoded = |indices: &str| {
+            let metadata = serde_json::from_str(&format!(
+                r#"{{"animation":{{"width":2,"height":3,"frames":[{indices}]}}}}"#
+            ))
+            .unwrap();
+            Sprites::decode_image("test:block/sheet", Some(metadata), (4, 6, sheet.clone()))
+                .unwrap()
+        };
+        let mut sprites = Sprites::default();
+        let animated = sprites
+            .register("test:block/animated", decoded("99,2,0"))
+            .unwrap();
+        let one_frame = sprites
+            .register("test:block/static_sheet", decoded("99,3"))
+            .unwrap();
+        let mut still = |name, height, numbers: &[u8]| {
+            let decoded = Sprites::decode_image(name, None, (2, height, texels(numbers))).unwrap();
+            sprites.register(name, decoded).unwrap()
+        };
+        // Both render as the same square, but they are not the same original image.
+        let short = still("test:block/short", 1, &[9, 10]);
+        let square = still("test:block/square", 2, &[9, 10, 9, 10]);
+        let missing = sprites
+            .or_missing(
+                Slot::Layers,
+                "test:block/unavailable",
+                Err("missing sprite".into()),
+            )
+            .unwrap();
+
+        let request = |layer, source_frame| {
+            SpritePixelsRequest::new(
+                SpriteRef {
+                    array: layer / 2,
+                    layer: layer % 2,
+                    animated: false,
+                    cutout: false,
+                },
+                source_frame,
+            )
+        };
+        let first = request(animated, None);
+        let mut bad_layer = first;
+        bad_layer.sprite.layer = 2; // Must not alias array 1, layer 0.
+        let mut bad_array = first;
+        bad_array.sprite.array = u32::MAX;
+        let requests = [
+            first,
+            request(short, None),
+            request(animated, Some(1)), // A valid source cell absent from playback.
+            bad_layer,
+            first,
+            request(animated, Some(3)),
+            request(one_frame, Some(3)),
+            request(animated, Some(4)),
+            bad_array,
+            request(square, None),
+            request(missing, None),
+            request(missing + 1, None),
+        ];
+        let image = |height, numbers: &[u8]| Some(SpriteImage::new(2, height, texels(numbers)));
+        let empty_atlas = RenderAssets::unpublished();
+        assert_eq!(
+            sprite_pixels_at(Some((&empty_atlas, 2)), &[first]).unwrap(),
+            [None]
+        );
+        assert_eq!(
+            sprite_pixels_at(None, &[first, first]).unwrap(),
+            [None, None]
+        );
+        let mut atlas = empty_atlas;
+        atlas.sprite_source_pixels = sprites.source_pixels;
+        assert!(sprite_pixels_at(Some((&atlas, 2)), &[]).unwrap().is_empty());
+        assert_eq!(
+            sprite_pixels_at(Some((&atlas, 2)), &requests).unwrap(),
+            [
+                image(3, &[13, 14, 17, 18, 21, 22]),
+                image(1, &[9, 10]),
+                image(3, &[3, 4, 7, 8, 11, 12]),
+                None,
+                image(3, &[13, 14, 17, 18, 21, 22]),
+                image(3, &[15, 16, 19, 20, 23, 24]),
+                image(3, &[1, 2, 5, 6, 9, 10]),
+                None,
+                None,
+                image(2, &[9, 10, 9, 10]),
+                None,
+                None,
+            ]
+        );
+    }
+
     /// A sprite is refused by the side its PNG header claims when no atlas
     /// would take it, before the reader sizes a buffer from that header.
     #[test]

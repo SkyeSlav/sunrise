@@ -341,6 +341,22 @@ pub trait ClientReloadHost: ReloadContext + crate::prelude::ItemParticlesClientH
     fn texture_sprites(&self, textures: &[&str]) -> Vec<Option<crate::SpriteRef>> {
         vec![None; textures.len()]
     }
+    /// Read owned, original-size RGBA8 frames from the published block atlas, in request
+    /// order, including duplicates. An invalid ref, unavailable pixels or an out-of-range
+    /// animated source cell gives `None`; an output allocation failure rejects the batch.
+    /// Resolve refs again when [`Self::block_sprites_version`] changes. See
+    /// [`crate::prelude::ClientRenderClientHost::sprite_pixels`] for the stitch boundary.
+    fn sprite_pixels(
+        &self,
+        requests: &[crate::SpritePixelsRequest],
+    ) -> Result<Vec<Option<crate::SpriteImage>>, crate::SpritePixelsError> {
+        let mut images = Vec::new();
+        images
+            .try_reserve_exact(requests.len())
+            .map_err(|_| crate::SpritePixelsError::OutputAllocation)?;
+        images.resize_with(requests.len(), || None);
+        Ok(images)
+    }
     /// GUI atlas region for `sprite`.
     fn gui_sprite(&self, _sprite: &crate::Identifier) -> Option<crate::AtlasRegion> {
         None

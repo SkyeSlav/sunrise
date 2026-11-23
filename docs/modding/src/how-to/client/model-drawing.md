@@ -547,3 +547,27 @@ position. Untinted faces return `None`. Both block and fluid faces use the meshe
 biome colours, including updates from `refresh_biome_colors`. Water faces use tint index 0
 and honour resource-pack water colormaps; other water indices return `None`. This differs
 from `fluid_box`, whose colour comes from its fluid stack.
+
+### Read block sprite pixels on the CPU
+
+Call `sprite_pixels` on the client host during setup, resource reload or in the world.
+Build each request with `SpritePixelsRequest::new(sprite, source_frame)`. Each result belongs
+to the request at the same index, including repeated requests; an empty batch returns an empty
+list.
+
+Each image owns the frame's original dimensions and untinted, base-level RGBA8 bytes, in
+rows from the top left. Both alpha and the RGB values of fully transparent pixels are preserved.
+There is no resize, filtering or GPU readback. These bytes are not a view of a GPU texture
+or of the animation playing now.
+
+For an animated sprite, use `Some(index)` to select a zero-based cell in the source sheet
+in row order, even if the animation never plays it. Use `None` to read the first frame in
+the filtered playback sequence. A static sprite always returns its single displayed image.
+An invalid array or layer, an out-of-range animated cell or unavailable source pixels gives
+`None` for that request. `SpritePixelsError::OutputAllocation` means the output could not be
+represented or allocated; no partial batch is returned.
+
+In the Blocks `texture_atlas_stitched` hook, resolve names with `texture_sprites` and read
+those refs with `sprite_pixels`: both use the new atlas. Block-state lookups still use the
+previous model generation inside that hook. Wait for `model_baking_completed` to resolve
+new model-derived refs. Resolve refs again whenever `block_sprites_version` changes.
