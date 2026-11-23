@@ -432,6 +432,86 @@ fn a_title_screen_opens_through_screen_opening() {
     });
 }
 
+#[test]
+#[ignore = "daily"]
+fn title_hook_requests_one_orderly_quit() {
+    use crate::game::EventLoopCtl;
+    use crate::game::native_entity_refs::tests::{run_fresh_cases, with_client_game};
+    use mod_api::{ClientStoppingEvent, ScreenKeyPressedPreEvent};
+    use std::cell::Cell;
+    use winit::event_loop::ControlFlow;
+
+    if run_fresh_cases(
+        "game::native_hooks::base::screen_open_tests::title_hook_requests_one_orderly_quit",
+        "SUNRISE_CLIENT_QUIT_CHILD",
+        &["title"],
+    ) {
+        return;
+    }
+
+    struct QuitProbe(Arc<Mutex<Vec<(&'static str, bool)>>>);
+    #[mod_api::__subscriptions]
+    impl Hooks for QuitProbe {
+        fn screen_key_pressed_pre(
+            &self,
+            host: &dyn ClientHost,
+            event: &mut ScreenKeyPressedPreEvent<'_>,
+        ) -> Flow {
+            if event.screen.id != "title" {
+                return Flow::Continue;
+            }
+            let accepted = host.request_client_quit();
+            let duplicate = host.request_client_quit();
+            self.0
+                .lock()
+                .unwrap()
+                .extend([("request", accepted), ("request", duplicate)]);
+            Flow::Cancel
+        }
+
+        fn client_stopping(&self, host: &mut dyn ClientHost, _: &mut ClientStoppingEvent) {
+            let accepted = host.request_client_quit();
+            self.0.lock().unwrap().push(("stopping", accepted));
+        }
+    }
+
+    struct QuitLoop(Cell<usize>);
+    impl EventLoopCtl for QuitLoop {
+        fn exit(&self) {
+            self.0.set(self.0.get() + 1);
+        }
+
+        fn set_control_flow(&self, _: ControlFlow) {}
+    }
+
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mods = vec![ModEntry::new("quit", Box::new(QuitProbe(log.clone())))].into();
+    with_mods(mods, || {
+        with_client_game(|game| {
+            game.title = Some(game.new_title(game.save.root.clone()));
+            let event_loop = QuitLoop(Cell::new(0));
+            let batch = HudBatch::scratch([854, 480]);
+            let screen = game.title_screen_view(&batch).unwrap();
+            let mut canceled = false;
+            game.native_screen_key_pressed_pre(&screen, "key.keyboard.q", false, 0, &mut canceled);
+            let requests = [("request", true), ("request", false)];
+            assert_eq!(*log.lock().unwrap(), requests);
+            assert_eq!(event_loop.0.get(), 0);
+
+            game.idle(&event_loop);
+            assert_eq!(event_loop.0.get(), 1);
+            assert!(game.error.is_none(), "quit failed: {:?}", game.error);
+            assert_eq!(*log.lock().unwrap(), requests);
+
+            game.shut_down();
+            assert_eq!(
+                *log.lock().unwrap(),
+                [("request", true), ("request", false), ("stopping", false)]
+            );
+        });
+    });
+}
+
 /// `Vanilla` opens another vanilla screen where it can: the death screen's
 /// way to the title ends on the server list, while the same title target
 /// asked for in the world keeps the screen asked for.
