@@ -78,7 +78,7 @@ impl GeneratorData {
                 .as_bool()
                 .unwrap_or(false),
         };
-        let mut densities = DensityRegistry::from_json(&data.noises, &data.densities)?;
+        let mut densities = data.density_registry(seed)?;
         let router =
             NoiseRouter::from_json(&settings_json["noise_router"].to_string(), &mut densities)?;
         // NoiseGeneratorSettings.debugFunctions: a registered density or an

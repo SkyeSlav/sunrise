@@ -339,3 +339,31 @@ with a message naming the mod, and so does a dimension whose `mod_biome_source` 
 The source may come from a mod that loads later. A level whose world lacks one of the possible
 biomes refuses to open, naming the source and the biome, as does a level stem naming a source that
 is gone.
+
+### Density function types
+
+A density function type is a mod's own kind of node in a world's density graph: vanilla's
+`DENSITY_FUNCTION_TYPE` registry, which NeoForge fills through `RegisterEvent`. Register it once, at
+startup; a data pack's density function, noise router or noise settings then names it as
+`{"type": "mymod:walls", ...}`, as a named entry, an inline node or an argument of a vanilla one:
+
+```rust,ignore
+{{#include ../../../examples/src/worldgen.rs:density_function}}
+```
+
+`decode` gets the node's whole JSON object, `type` included, while a world's generator data loads,
+and returns the function, or an error that stops the data from loading, naming the type. A world
+that names a type no mod registered fails to load the same way.
+
+The function is a leaf of the graph, sampled in `f32`. `range` is vanilla's `minValue` and
+`maxValue`: the graph folds and clamps with it, so every value the function returns must lie inside
+it; a range that is not ordered, or holds NaN, refuses the node. `varies_with_y` returning `false`
+lets the graph ask once per column, at Y 0, and reuse the value. Both are read once, when the node
+is decoded. `sample` answers for one block position of a world with `seed`; `fill` answers for a
+lattice of them (Z outermost, then X, then Y), and by default asks `sample` at each point. Both run
+on the worldgen worker threads with no `Host`, so the function is `Send + Sync`, keeps no mutable
+state and gives the same value for the same position and seed. A value outside the declared range,
+NaN or a slot `fill` left unwritten stops the game with a crash report naming the mod.
+
+A type in another mod's namespace, an empty or malformed name and an id registered twice stop the
+game at startup with a message naming the mod.

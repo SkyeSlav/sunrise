@@ -628,7 +628,7 @@ impl GeneratorData {
     }
 
     fn decode_density_names(&self) -> Option<RegistryNames> {
-        let densities = DensityRegistry::from_json(&self.noises, &self.densities).ok()?;
+        let densities = self.density_registry(0).ok()?;
         Some(
             densities
                 .entries()
@@ -637,8 +637,19 @@ impl GeneratorData {
         )
     }
 
+    /// The registry's densities with the mods' density function types, for a world with
+    /// `seed` (0 where only names are read).
+    pub(crate) fn density_registry(&self, seed: i64) -> Result<DensityRegistry, DecodeError> {
+        DensityRegistry::from_json_with_types(
+            &self.noises,
+            &self.densities,
+            crate::worldgen::mod_density_types::mod_density_types(),
+            seed,
+        )
+    }
+
     fn decode_rule_names(&self) -> Option<RegistryNames> {
-        let densities = DensityRegistry::from_json(&self.noises, &self.densities).ok()?;
+        let densities = self.density_registry(0).ok()?;
         let codec =
             crate::registry::BlockStateJsonCodec::new(self.registry, self.integers.clone()).ok()?;
         let rules = MaterialRuleLibrary::from_json(

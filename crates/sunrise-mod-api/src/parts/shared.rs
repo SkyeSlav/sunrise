@@ -95,6 +95,7 @@ pub struct PartRegistrar {
     pub(crate) dimension_shape: fn(&crate::DimensionSettings) -> bool,
     pub(crate) chunk_generators: Vec<ChunkGeneratorInfo>,
     pub(crate) biome_sources: Vec<BiomeSourceInfo>,
+    pub(crate) density_function_types: Vec<DensityFunctionTypeInfo>,
     pub(crate) refused: Vec<String>,
     /// The Part state keys this mod declared, with their type names.
     pub(crate) part_states: HashMap<(&'static str, &'static str), &'static str>,
@@ -154,6 +155,7 @@ impl PartRegistrar {
             dimension_shape: |_| false,
             chunk_generators: Vec::new(),
             biome_sources: Vec::new(),
+            density_function_types: Vec::new(),
             refused: Vec::new(),
             part_states: HashMap::new(),
         }
@@ -383,6 +385,7 @@ pub(crate) fn install_registrar(
         dimensions: registrar.dimensions,
         chunk_generators: registrar.chunk_generators,
         biome_sources: registrar.biome_sources,
+        density_function_types: registrar.density_function_types,
         warnings: registrar.warnings,
     };
     mod_vocab::__private::parts_installation::install(installed);

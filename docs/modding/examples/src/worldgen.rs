@@ -77,6 +77,41 @@ pub mod biome_source {
     // ANCHOR_END: biome_source
 }
 
+pub mod density_functions {
+    // ANCHOR: density_function
+    use mod_api::{DensityFunction, DensityFunctionType, Hooks, Registrar, RegistrationContext};
+
+    /// Walls 8 blocks thick every 16 blocks along X: 1 inside a wall, -1 between them.
+    struct Walls;
+    impl DensityFunction for Walls {
+        fn range(&self) -> [f32; 2] {
+            [-1.0, 1.0]
+        }
+        fn varies_with_y(&self) -> bool {
+            false
+        }
+        fn sample(&self, [x, _, _]: [i32; 3], _seed: i64) -> f32 {
+            if x.rem_euclid(16) < 8 { 1.0 } else { -1.0 }
+        }
+    }
+    /// `{"type": "mymod:walls"}`: the node has no fields of its own.
+    struct WallsType;
+    impl DensityFunctionType for WallsType {
+        fn decode(&self, _json: &str) -> Result<Box<dyn DensityFunction>, String> {
+            Ok(Box::new(Walls))
+        }
+    }
+    #[derive(Default)]
+    pub struct WallsMod;
+    #[mod_api::sunrise_mod]
+    impl Hooks for WallsMod {
+        fn register(&self, registrar: &mut dyn Registrar, _: &RegistrationContext) {
+            registrar.register_density_function_type("walls", WallsType);
+        }
+    }
+    // ANCHOR_END: density_function
+}
+
 pub mod structures {
     // ANCHOR: structure
     use mod_api::{

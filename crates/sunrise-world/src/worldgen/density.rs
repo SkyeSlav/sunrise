@@ -1,5 +1,6 @@
 //! Bounded decoding of density registries into the immutable core graph.
 //! Named registry holders and raw numeric tokens preserve compilation behavior.
+use super::mod_density_types::{ModDensityType, ModDensityTypes};
 use super::*;
 use std::{collections::BTreeSet, sync::Arc};
 use sunrise_core::{
@@ -61,14 +62,30 @@ pub struct DensityRegistry {
     graph: DensityGraph,
     values: BTreeMap<String, FunctionId>,
     noises: BTreeMap<String, NoiseId>,
+    /// The mods' density function types later roots may name, and the world seed their
+    /// functions sample with.
+    types: Arc<ModDensityTypes>,
+    seed: i64,
 }
 impl DensityRegistry {
     /// Input keys are registry identifiers, and values contain original JSON.
     /// This API accepts acyclic registries, at most 256 nested graph levels and
     /// at most 256 interval branches. Inline noise holders are not yet supported.
+    /// Vanilla's density function types only.
     pub fn from_json(
         noises: &BTreeMap<String, String>,
         densities: &BTreeMap<String, String>,
+    ) -> Result<Self, DecodeError> {
+        Self::from_json_with_types(noises, densities, Arc::default(), 0)
+    }
+    /// [`Self::from_json`] where a node may also name one of the mods' `types`
+    /// (`DensityFunctions.DIRECT_CODEC` over the `DENSITY_FUNCTION_TYPE` registry), decoded
+    /// for a world with `seed`.
+    pub fn from_json_with_types(
+        noises: &BTreeMap<String, String>,
+        densities: &BTreeMap<String, String>,
+        types: Arc<ModDensityTypes>,
+        seed: i64,
     ) -> Result<Self, DecodeError> {
         let mut loader = Loader {
             graph: DensityGraph::new(),
@@ -76,6 +93,8 @@ impl DensityRegistry {
             definitions: BTreeMap::new(),
             values: BTreeMap::new(),
             active: BTreeSet::new(),
+            types,
+            seed,
         };
         for (name, json) in noises {
             let name = identifier(name)?;
@@ -101,6 +120,8 @@ impl DensityRegistry {
             graph: loader.graph,
             values: loader.values,
             noises: loader.noises,
+            types: loader.types,
+            seed,
         })
     }
     pub fn graph(&self) -> &DensityGraph {
@@ -128,6 +149,8 @@ impl DensityRegistry {
             definitions: BTreeMap::new(),
             values: BTreeMap::new(),
             active: BTreeSet::new(),
+            types: self.types.clone(),
+            seed: self.seed,
         };
         let roots = json
             .iter()
@@ -146,6 +169,8 @@ struct Loader {
     definitions: BTreeMap<String, Box<RawValue>>,
     values: BTreeMap<String, FunctionId>,
     active: BTreeSet<String>,
+    types: Arc<ModDensityTypes>,
+    seed: i64,
 }
 impl Loader {
     fn resolve(&mut self, name: &str, depth: usize) -> Result<FunctionId, DecodeError> {
@@ -456,13 +481,30 @@ impl Loader {
                     GraphNode::Spline(self.spline(required(&object, "spline")?, depth + 1)?)
                 }
                 _ => {
-                    return Err(DecodeError::Registry(format!(
-                        "unknown density type: {kind}"
-                    )));
+                    let Some(ty) = self.types.get(&kind).cloned() else {
+                        return Err(DecodeError::Registry(format!(
+                            "unknown density type: {kind}"
+                        )));
+                    };
+                    return self.mod_leaf(&kind, &*ty, raw);
                 }
             }
         };
         Ok(self.graph.insert(node)?)
+    }
+    /// A mod's node: decoded by its type, then bound with the range it declared, over
+    /// X, Y and Z, or X and Z alone when it doesn't vary with Y.
+    fn mod_leaf(
+        &mut self,
+        kind: &str,
+        ty: &dyn ModDensityType,
+        raw: &RawValue,
+    ) -> Result<FunctionId, DecodeError> {
+        let leaf = ty
+            .decode(raw.get(), self.seed)
+            .map_err(|error| DecodeError::Registry(format!("density type {kind}: {error}")))?;
+        let axes = if leaf.varies_with_y { 0b111 } else { 0b101 };
+        Ok(self.graph.bind(leaf.sampler, leaf.range, axes)?)
     }
     fn spline(
         &mut self,
@@ -497,7 +539,7 @@ impl Loader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sunrise_core::density::{SamplerContext, graph::DensityCompiler};
+    use sunrise_core::density::{DensitySampler, SamplerContext, graph::DensityCompiler};
     #[test]
     fn numeric_tokens_keep_negative_zero_and_avoid_double_rounding() {
         let densities = BTreeMap::from([
@@ -574,5 +616,179 @@ mod tests {
                 "{json}"
             );
         }
+    }
+
+    /// A mod-registered leaf: `x + 2y + 4z + seed + 0.25`, or a record of the positions a
+    /// Y-invariant one was asked for.
+    #[derive(Debug)]
+    struct Linear {
+        seed: i64,
+        asked: Option<Arc<std::sync::Mutex<Vec<[i32; 3]>>>>,
+    }
+    impl DensitySampler for Linear {
+        fn sample_value(
+            &self,
+            _: &mut SamplerContext,
+            [x, y, z]: [i32; 3],
+        ) -> Result<f32, sunrise_core::density::SampleError> {
+            if let Some(asked) = &self.asked {
+                asked.lock().unwrap().push([x, y, z]);
+                return Ok(x as f32);
+            }
+            Ok((x + 2 * y + 4 * z) as f32 + self.seed as f32 + 0.25)
+        }
+    }
+    #[derive(Debug, Default)]
+    struct LinearType {
+        asked: Option<Arc<std::sync::Mutex<Vec<[i32; 3]>>>>,
+    }
+    impl ModDensityType for LinearType {
+        fn decode(
+            &self,
+            json: &str,
+            seed: i64,
+        ) -> Result<super::super::mod_density_types::ModDensityLeaf, String> {
+            if json.contains("refuse") {
+                return Err("the fixture refuses this node".into());
+            }
+            Ok(super::super::mod_density_types::ModDensityLeaf {
+                sampler: Arc::new(Linear {
+                    seed,
+                    asked: self.asked.clone(),
+                }),
+                range: sunrise_core::density::Interval::new(-1e9, 1e9).unwrap(),
+                varies_with_y: self.asked.is_none(),
+            })
+        }
+    }
+    fn linear_types(ty: LinearType) -> Arc<ModDensityTypes> {
+        Arc::new(BTreeMap::from([(
+            "test:linear".to_owned(),
+            Arc::new(ty) as Arc<dyn ModDensityType>,
+        )]))
+    }
+
+    /// `DensityFunctions.DIRECT_CODEC` dispatches a registered type for a named entry, a
+    /// node inside a vanilla one and an inline root alike, point and volume agreeing.
+    #[test]
+    fn a_mod_density_type_decodes_named_nested_and_inline_nodes() {
+        let densities = BTreeMap::from([(
+            "test:leaf".to_owned(),
+            r#"{"type":"test:linear"}"#.to_owned(),
+        )]);
+        let mut registry = DensityRegistry::from_json_with_types(
+            &BTreeMap::new(),
+            &densities,
+            linear_types(LinearType::default()),
+            7,
+        )
+        .unwrap();
+        let roots = registry
+            .decode_functions(&[
+                r#"{"type":"minecraft:add","left":"test:leaf","right":2}"#,
+                r#"{"type":"test:linear"}"#,
+            ])
+            .unwrap();
+        let compiler = DensityCompiler::new(registry.into_graph());
+        let mut context = SamplerContext::default();
+        let sum = compiler.compile_raw(roots[0]).unwrap();
+        assert_eq!(sum.sample_value(&mut context, [1, -2, 3]).unwrap(), 18.25);
+        let volume =
+            sunrise_core::noise::DensityVolume::new([2, 2, 2], [1, -2, 3], [2, 3, 5]).unwrap();
+        let mut values = [0.0; 8];
+        sum.sample_volume(&mut context, &mut values, volume)
+            .unwrap();
+        assert_eq!(
+            values,
+            [18.25, 24.25, 20.25, 26.25, 38.25, 44.25, 40.25, 46.25]
+        );
+        let inline = compiler.compile_raw(roots[1]).unwrap();
+        assert_eq!(
+            inline.sample_value(&mut context, [1, -2, 3]).unwrap(),
+            16.25
+        );
+        // Another world's seed reaches the function.
+        let registry = DensityRegistry::from_json_with_types(
+            &BTreeMap::new(),
+            &densities,
+            linear_types(LinearType::default()),
+            8,
+        )
+        .unwrap();
+        let leaf = registry.value("test:leaf").unwrap();
+        let compiler = DensityCompiler::new(registry.into_graph());
+        assert_eq!(
+            compiler
+                .compile_raw(leaf)
+                .unwrap()
+                .sample_value(&mut context, [1, -2, 3])
+                .unwrap(),
+            17.25
+        );
+    }
+
+    /// An unregistered type and a node its type refuses fail the load, naming the type.
+    #[test]
+    fn a_refused_or_unknown_mod_density_node_fails_the_load() {
+        let load = |json: &str| {
+            DensityRegistry::from_json_with_types(
+                &BTreeMap::new(),
+                &BTreeMap::from([("test:leaf".to_owned(), json.to_owned())]),
+                linear_types(LinearType::default()),
+                0,
+            )
+            .unwrap_err()
+            .to_string()
+        };
+        let refused = load(r#"{"type":"test:linear","refuse":true}"#);
+        assert!(
+            refused.contains("test:linear") && refused.contains("the fixture refuses"),
+            "{refused}"
+        );
+        assert!(load(r#"{"type":"test:other"}"#).contains("unknown density type: test:other"));
+        // Without the mods' types, vanilla's loader knows none of them.
+        assert!(
+            DensityRegistry::from_json(
+                &BTreeMap::new(),
+                &BTreeMap::from([(
+                    "test:leaf".to_owned(),
+                    r#"{"type":"test:linear"}"#.to_owned()
+                )]),
+            )
+            .is_err()
+        );
+    }
+
+    /// A function that doesn't vary with Y is asked at Y = 0 only (`SliceUniformAxes`).
+    #[test]
+    fn a_y_invariant_mod_density_node_is_asked_at_y_zero() {
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut registry = DensityRegistry::from_json_with_types(
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            linear_types(LinearType {
+                asked: Some(asked.clone()),
+            }),
+            0,
+        )
+        .unwrap();
+        let root = registry
+            .decode_functions(&[r#"{"type":"test:linear"}"#])
+            .unwrap()[0];
+        let sampler = DensityCompiler::new(registry.into_graph())
+            .get_sampler(root)
+            .unwrap();
+        let volume =
+            sunrise_core::noise::DensityVolume::new([2, 3, 1], [0, 10, 0], [1, 1, 1]).unwrap();
+        let mut values = [0.0; 6];
+        sampler
+            .sample_volume(&mut SamplerContext::default(), &mut values, volume)
+            .unwrap();
+        assert_eq!(values, [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
+        let asked = asked.lock().unwrap();
+        assert!(
+            !asked.is_empty() && asked.iter().all(|&[_, y, _]| y == 0),
+            "{asked:?}"
+        );
     }
 }

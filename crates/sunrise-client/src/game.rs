@@ -1170,6 +1170,8 @@ mod native_datafix_tests;
 mod native_datapack_refs;
 #[path = "game/modding/native_death_weapon.rs"]
 mod native_death_weapon;
+#[path = "game/modding/native_density_functions.rs"]
+mod native_density_functions;
 #[path = "game/modding/native_dimensions.rs"]
 mod native_dimensions;
 #[path = "game/modding/native_disconnect.rs"]
@@ -14342,9 +14344,11 @@ pub(crate) fn run_with(
         {
             log::warn!("Mod dimensions already installed; keeping the first table");
         }
-        // Their chunk generators and biome sources, which those levels' and the packs' stems name.
+        // Their chunk generators and biome sources, which those levels' and the packs' stems
+        // name, and the density function types the packs' density graphs name.
         native_chunk_generator::install();
         native_biome_source::install();
+        native_density_functions::install();
         mods::register_components(&vanilla_root)?;
         sunrise_client::item_sync::install_consume_effect_codecs()?;
         mods::register_standalone_models(options.execution_role);

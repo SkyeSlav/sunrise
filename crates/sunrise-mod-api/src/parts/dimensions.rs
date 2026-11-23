@@ -153,6 +153,27 @@ impl DimensionsRegistrar for PartRegistrar {
             source,
         });
     }
+    fn add_density_function_type(&mut self, name: &str, ty: Arc<dyn crate::DensityFunctionType>) {
+        let id = match self.owned_declaration_id(name) {
+            Ok(id) => id,
+            Err(reason) => {
+                self.refused.push(reason);
+                return;
+            }
+        };
+        if self.density_function_types.iter().any(|t| *t.id == *id) {
+            self.refused.push(format!(
+                "{} registered density function type {id} twice",
+                self.mod_id
+            ));
+            return;
+        }
+        self.density_function_types.push(DensityFunctionTypeInfo {
+            id: id.into(),
+            mod_id: self.mod_id,
+            ty,
+        });
+    }
 }
 
 /// The levels every world has, which no mod's can be.
