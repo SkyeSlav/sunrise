@@ -52,13 +52,13 @@ impl Remote {
             .map_or(0, |c| c.total_ticks)
     }
 
-    /// The synchronized clock supplying a time-based environment layer.
-    pub(in crate::game) fn named_clock_time(&self, clock: &str) -> i64 {
-        self.clock_time(self.registries.id("minecraft:world_clock", clock))
-    }
-
     pub(in crate::game) fn overworld_clock_time(&self) -> i64 {
         self.clock_time(self.overworld_clock)
+    }
+
+    /// `ClientClockManager.getInstance(...).totalTicks()` for a timeline's clock.
+    pub(in crate::game) fn named_clock_time(&self, clock: &str) -> i64 {
+        self.clock_time(self.registries.id("minecraft:world_clock", clock))
     }
 
     /// `Minecraft.level != null`: from `handleLogin` until the next

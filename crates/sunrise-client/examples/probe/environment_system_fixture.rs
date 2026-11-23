@@ -17,6 +17,7 @@ fn format(value: &Value) -> String {
         Value::Float(f) => bits(*f),
         Value::Rgb(v) => v.map(bits).join(" "),
         Value::Argb(v) => v.map(bits).join(" "),
+        Value::MoonPhase(phase) => phase.serialized_name().to_owned(),
         Value::AmbientParticles(list) => format!("{list:?}"),
         Value::Other(json) => json.to_string(),
     }
@@ -100,7 +101,7 @@ fn run(
         post_blend: None,
         post_biome: None,
     };
-    // The Java system fixture samples numeric, color and boolean attributes.
+    // Ambient lists are covered separately from the Java system fixture.
     for attribute in ATTRIBUTES
         .iter()
         .filter(|a| !matches!(a.kind, Kind::Other | Kind::AmbientParticles))

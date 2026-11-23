@@ -335,7 +335,7 @@ fn as_number(value: &Value) -> f64 {
         Value::Argb([r, g, b, a]) => {
             f64::from((byte(*a) << 24 | byte(*r) << 16 | byte(*g) << 8 | byte(*b)) as i32)
         }
-        Value::AmbientParticles(_) | Value::Other(_) => 0.0,
+        Value::MoonPhase(_) | Value::AmbientParticles(_) | Value::Other(_) => 0.0,
     }
 }
 
@@ -1106,6 +1106,16 @@ impl Environment {
     /// a biome.
     pub fn value(&self, id: &str, at: &Sample) -> Option<Value> {
         self.value_at(attribute(id)?, at, &|_| at.day_time)
+    }
+
+    /// `EnvironmentAttributes.MOON_PHASE`, on the clock named by each timeline.
+    pub fn moon_phase(&self, clock: &dyn Fn(&str) -> i64) -> i32 {
+        let Some(Value::MoonPhase(phase)) = attribute("visual/moon_phase")
+            .and_then(|attribute| self.value_at(attribute, &Sample::default(), clock))
+        else {
+            unreachable!("visual/moon_phase has a moon phase type and default")
+        };
+        phase.index()
     }
 
     /// Sample a known attribute with the level's clock values.
