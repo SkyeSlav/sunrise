@@ -868,6 +868,7 @@ fn singleplayer_and_unstored_pick_share_unified_query_and_root_exclusion_26_3() 
                 game.world.set(0, 65, 4, stone).unwrap();
                 let tnt_pos = Vec3::new(0.5, 65.1, 2.5);
                 game.tnts.push(PrimedTnt {
+                    size_answer: None,
                     attachment_lifetime: Default::default(),
                     rotation: [0.0, 0.0],
                     join: Default::default(),
@@ -913,6 +914,7 @@ fn singleplayer_and_unstored_pick_share_unified_query_and_root_exclusion_26_3() 
                 game.tnts.clear();
                 let fb_pos = Vec3::new(0.5, 65.1, 2.5);
                 game.falling.push(FallingBlock {
+                    size_answer: None,
                     attachment_lifetime: Default::default(),
                     rotation: [0.0, 0.0],
                     join: Default::default(),
@@ -999,6 +1001,7 @@ fn singleplayer_and_unstored_pick_share_unified_query_and_root_exclusion_26_3() 
                 game.mobs.push(husk);
                 let behind_tnt = Vec3::new(0.5, 65.3, 2.5);
                 game.tnts.push(PrimedTnt {
+                    size_answer: None,
                     attachment_lifetime: Default::default(),
                     rotation: [0.0, 0.0],
                     join: Default::default(),
@@ -1048,6 +1051,7 @@ fn singleplayer_and_unstored_pick_share_unified_query_and_root_exclusion_26_3() 
                 game.interactions.insert(113, inter);
                 let behind_fb = Vec3::new(0.5, 66.1, 2.9);
                 game.falling.push(FallingBlock {
+                    size_answer: None,
                     attachment_lifetime: Default::default(),
                     rotation: [0.0, 0.0],
                     join: Default::default(),
@@ -1096,6 +1100,7 @@ fn singleplayer_and_unstored_pick_share_unified_query_and_root_exclusion_26_3() 
                 game.world.set(0, 65, 4, chest).unwrap();
                 let far_tnt = Vec3::new(0.5, 65.1, 4.19);
                 game.tnts.push(PrimedTnt {
+                    size_answer: None,
                     attachment_lifetime: Default::default(),
                     rotation: [0.0, 0.0],
                     join: Default::default(),
@@ -1142,6 +1147,7 @@ fn singleplayer_and_unstored_pick_share_unified_query_and_root_exclusion_26_3() 
                 game.mobs.push(zombie);
                 let shield_tnt = Vec3::new(0.5, 65.1, 1.8);
                 game.tnts.push(PrimedTnt {
+                    size_answer: None,
                     attachment_lifetime: Default::default(),
                     rotation: [0.0, 0.0],
                     join: Default::default(),
@@ -1169,6 +1175,7 @@ fn singleplayer_and_unstored_pick_share_unified_query_and_root_exclusion_26_3() 
                 );
                 game.tnts.clear();
                 game.falling.push(FallingBlock {
+                    size_answer: None,
                     attachment_lifetime: Default::default(),
                     rotation: [0.0, 0.0],
                     join: Default::default(),

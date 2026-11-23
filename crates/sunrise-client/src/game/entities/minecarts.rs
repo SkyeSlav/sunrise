@@ -193,6 +193,9 @@ pub(super) struct Minecart {
     /// `AbstractMinecart.customDisplayOffset` (`DisplayOffset`), in sixteenths.
     pub custom_offset: Option<i32>,
     pub random: LegacyRandom,
+    /// What `entity_size` answered at its last size refresh (`EntityEvent.Size`): its box takes
+    /// the answer while it holds for its vanilla size.
+    pub(super) size_answer: Option<sunrise_client::pose::SizeAnswer>,
 }
 /// `EntityType.MINECART`'s `sized(0.98F, 0.7F)`: float dimensions, widened.
 pub(super) const WIDTH: f64 = 0.98_f32 as f64;
@@ -495,6 +498,7 @@ impl Minecart {
     }
     pub fn new(id: u32, kind: CartKind, position: Vec3) -> Self {
         Self {
+            size_answer: None,
             join: Default::default(),
             attachment_lifetime: Default::default(),
             id,
@@ -543,12 +547,19 @@ impl Minecart {
             random: random_source::entity(),
         }
     }
+    /// `EntityType.MINECART & co`'s `getDimensions()`: width, height and eye height.
+    pub(super) const DIMENSIONS: [f32; 3] = [0.98, 0.7, 0.595];
     pub fn bounds(&self) -> Aabb {
-        let (w, p) = (WIDTH / 2.0, self.position);
-        Aabb::new(
+        self.bounds_at(self.position)
+    }
+    /// The box of this cart were its position `p`.
+    fn bounds_at(&self, p: Vec3) -> Aabb {
+        let w = WIDTH / 2.0;
+        let vanilla = Aabb::new(
             Vec3::new(p.x - w, p.y, p.z - w),
             Vec3::new(p.x + w, p.y + HEIGHT, p.z + w),
-        )
+        );
+        sunrise_client::pose::SizeAnswer::sized_box(self.size_answer, Self::DIMENSIONS, p, vanilla)
     }
     fn horizontal(&self) -> f64 {
         sunrise_core::geometry::length(self.velocity.x, self.velocity.z)
@@ -868,12 +879,7 @@ impl Game<'_> {
     /// left it. `slot` is where the cart is stored.
     fn cart_inside_blocks(&mut self, c: &mut Minecart, slot: usize, from: Vec3, to: Vec3) {
         let shrink = f64::from(1.0e-5f32);
-        let half = WIDTH / 2.0;
-        let bounds = Aabb::new(
-            Vec3::new(to.x - half, to.y, to.z - half),
-            Vec3::new(to.x + half, to.y + HEIGHT, to.z + half),
-        )
-        .deflate(Vec3::new(shrink, shrink, shrink));
+        let bounds = c.bounds_at(to).deflate(Vec3::new(shrink, shrink, shrink));
         let mut hits = Vec::new();
         let behaviours = self.res.behaviours();
         let world = &self.world;

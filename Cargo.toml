@@ -23,6 +23,7 @@ members = [
     "crates/sunrise-hdr",
     "crates/sunrise-world",
     "crates/sunrise-client",
+    "crates/sunrise-parity-fixtures",
     "crates/sunrise-internals",
     "crates/sunrise-client-lib",
     "crates/sunrise-gameplay",

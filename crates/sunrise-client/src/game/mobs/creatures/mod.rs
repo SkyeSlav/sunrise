@@ -1415,6 +1415,7 @@ impl Game<'_> {
         // `EntityEvent.Size` for the sizes that changed outside the mob ticks (spawns,
         // commands, a player's interaction), before the ticks move by them.
         self.native_mob_sizes();
+        self.native_entity_sizes();
         // Hit-driven deaths already ran inside the hurt. Handle deaths from other
         // state changes before the mob ticks.
         let killed: Vec<Mob> = self
@@ -1712,6 +1713,7 @@ impl Game<'_> {
         laps.lap("creature_outbox");
         // And for the sizes the ticks changed (a pose, a baby grown, a scale).
         self.native_mob_sizes();
+        self.native_entity_sizes();
         Ok(())
     }
     /// `LivingEntity.tickDeath` tells clients to poof before removing the body.
@@ -7599,10 +7601,10 @@ impl Game<'_> {
         } else {
             false
         };
-        let cannot = self
-            .items()
-            .entity_type_tags
-            .contains("minecraft:cannot_be_age_locked", &m.kind.id);
+        let cannot = self.items().entity_type_tags.has_bit(
+            m.kind.flags.entity_tag_slot,
+            sunrise_client::items::EntityTypeTags::CANNOT_BE_AGE_LOCKED,
+        );
         sunrise_client::mobs::ai::can_use_golden_dandelion(
             item,
             baby,
@@ -9911,7 +9913,7 @@ mod conversion_tag_tests;
 mod pickable_projectile_tests;
 
 #[cfg(test)]
-mod mob_pearl_hook_tests;
+pub(in crate::game) mod mob_pearl_hook_tests;
 
 #[cfg(test)]
 mod breeding_orb_tests;
@@ -9990,8 +9992,8 @@ mod frame_projectile_tests;
 
 #[cfg(test)]
 #[path = "projectile_targets_tests.rs"]
-mod projectile_targets_tests;
+pub(in crate::game) mod projectile_targets_tests;
 
 #[cfg(test)]
 #[path = "projectiles_120_124_tests.rs"]
-mod projectiles_120_124_tests;
+pub(in crate::game) mod projectiles_120_124_tests;

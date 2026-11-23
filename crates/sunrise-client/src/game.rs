@@ -198,7 +198,7 @@ mod block_entity_anims;
 mod block_entity_part_state_tests;
 #[cfg(test)]
 #[path = "game/blocks/block_entity_reach_draw_tests.rs"]
-mod block_entity_reach_draw_tests;
+pub(in crate::game) mod block_entity_reach_draw_tests;
 #[path = "game/blocks/block_entity_ticks.rs"]
 mod block_entity_ticks;
 #[path = "game/blocks/block_items.rs"]
@@ -1655,7 +1655,7 @@ mod native_registry_ids_tests;
 mod native_registry_processor_tests;
 #[cfg(test)]
 #[path = "game/modding/native_render_pair_tests.rs"]
-mod native_render_pair_tests;
+pub(in crate::game) mod native_render_pair_tests;
 #[path = "game/modding/native_render_visibility.rs"]
 mod native_render_visibility;
 #[cfg(test)]
@@ -1817,6 +1817,9 @@ mod pad_menu;
 mod paintings;
 #[path = "game/mobs/pandas.rs"]
 mod pandas;
+#[cfg(sunrise_parity_fixtures)]
+#[path = "game/parity_fixtures.rs"]
+pub mod parity_fixtures;
 #[path = "game/modding/part_admission.rs"]
 mod part_admission;
 #[cfg(test)]
@@ -2142,7 +2145,7 @@ mod spawn_yaw_tests;
 mod spawner;
 #[cfg(test)]
 #[path = "game/mobs/spawner_client_tick_tests.rs"]
-mod spawner_client_tick_tests;
+pub(in crate::game) mod spawner_client_tick_tests;
 #[path = "game/items/spear.rs"]
 mod spear;
 #[path = "game/items/spear_players.rs"]
@@ -2310,7 +2313,7 @@ mod using_item;
 mod vault;
 #[cfg(test)]
 #[path = "game/entities/vehicle_removal_tests.rs"]
-mod vehicle_removal_tests;
+pub(in crate::game) mod vehicle_removal_tests;
 #[path = "game/entities/vehicle_teleport.rs"]
 mod vehicle_teleport;
 #[cfg(test)]
@@ -2922,7 +2925,7 @@ impl<'w> entity::EntityLists<'w> {
                 self.falling
                     .iter()
                     .filter(|f| f.blocks_building)
-                    .map(|f| sunrise_client::falling_block::bounds(f.position)),
+                    .map(FallingBlock::bounds),
             )
     }
 }
@@ -2976,10 +2979,25 @@ struct FallingBlock {
     damage: sunrise_client::falling_block::Damage,
     /// The UUID and compound it was loaded with, kept while it moves.
     saved: Option<Box<([i32; 4], sunrise_core::nbt::Tag)>>,
+    /// What `entity_size` answered at its last size refresh (`EntityEvent.Size`): its box takes
+    /// the answer while it holds for its vanilla size.
+    pub(super) size_answer: Option<sunrise_client::pose::SizeAnswer>,
 }
 sunrise_mod_runtime::impl_attachment_lifetime!(FallingBlock);
 
 impl FallingBlock {
+    /// `EntityType.FALLING_BLOCK.getDimensions()`: width, height and eye height.
+    const DIMENSIONS: [f32; 3] = [0.98, 0.98, 0.833_000_06];
+    /// Its box (`falling_block::bounds`), or its `entity_size` answer's.
+    fn bounds(&self) -> sunrise_core::geometry::Aabb {
+        let vanilla = sunrise_client::falling_block::bounds(self.position);
+        sunrise_client::pose::SizeAnswer::sized_box(
+            self.size_answer,
+            Self::DIMENSIONS,
+            self.position,
+            vanilla,
+        )
+    }
     /// Where `FallingBlockRenderer` draws the block's model corner, `alpha`
     /// into the tick: centred on the entity, then moved by `offset`, the
     /// block's random model offset (`ModelBlockRenderer.tesselateBlock`:
@@ -6339,6 +6357,7 @@ impl Game<'_> {
                     );
                     self.next_entity += 1;
                     self.falling.push(FallingBlock {
+                        size_answer: None,
                         attachment_lifetime: Default::default(),
                         rotation: [0.0, 0.0],
                         join: Default::default(),

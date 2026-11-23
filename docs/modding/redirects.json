@@ -16,6 +16,7 @@
   "how-to/items/tool-transformation-previews": "how-to/items/item-abilities",
   "how-to/native-mods/builtin-item-ingredients": "how-to/items/builtin-item-ingredients",
   "how-to/native-mods/collision-exclusions": "how-to/entities/collision-exclusions",
+  "how-to/native-mods/install-from-github": "how-to/native-mods/add-from-source",
   "how-to/native-mods/moving-a-player": "how-to/entities/moving-a-player",
   "how-to/screen-room": "how-to/client/screen-room",
   "how-to/wasm-mods": "how-to/native-mods",

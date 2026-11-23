@@ -2429,7 +2429,7 @@ impl Remote {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub(in crate::game) mod tests {
     mod client_explosion_tests {
         include!("client_explosion_tests.rs");
     }
@@ -2559,7 +2559,7 @@ pub(crate) mod tests {
     mod particle_group_tests {
         include!("particle_group_tests.rs");
     }
-    mod placement_preview_tests {
+    pub(in crate::game) mod placement_preview_tests {
         include!("placement_preview_tests.rs");
     }
     mod player_animation_tests {

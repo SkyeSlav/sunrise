@@ -124,7 +124,6 @@ pub(super) fn emit<'a>(
             ));
         }
         host_param::validate(hook, name, is_level, receiver_mut, ticks)?;
-        let context = host_param::context_param(hook);
         let declared = hook
             .call
             .iter()
@@ -218,23 +217,21 @@ pub(super) fn emit<'a>(
         } else {
             String::new()
         };
-        let host = context
-            .or_else(|| host_param::host_param(hook, receiver_mut, ticks))
-            .map(|param| {
-                (
-                    fresh_name(
-                        if hook.context.is_some() {
-                            "context"
-                        } else if is_level {
-                            "level"
-                        } else {
-                            "host"
-                        },
-                        &mut used,
-                    ),
-                    param,
-                )
-            });
+        let host = listener_host_or_context(hook).map(|param| {
+            (
+                fresh_name(
+                    if hook.context.is_some() {
+                        "context"
+                    } else if is_level {
+                        "level"
+                    } else {
+                        "host"
+                    },
+                    &mut used,
+                ),
+                param,
+            )
+        });
         let staged_host = hook.staged_surface.as_deref() == Some("host")
             && !args.iter().any(|(arg, _)| arg == "host");
         let mut staged_draw = false;

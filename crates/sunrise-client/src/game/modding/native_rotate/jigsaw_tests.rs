@@ -405,6 +405,15 @@ fn publish(game: &mut crate::game::Game<'_>) {
 #[test]
 #[ignore = "daily"]
 fn position_sensitive_part_connects_at_built_height_in_both_assemblers() {
+    // The Part table and the published worldgen hooks are process-wide: another test's
+    // install in the shared process would swap this connector's Part mid-assembly.
+    if crate::game::native_entity_refs::tests::run_fresh_cases(
+        "game::native_rotate::jigsaw_tests::position_sensitive_part_connects_at_built_height_in_both_assemblers",
+        "SUNRISE_JIGSAW_POSITION_SENSITIVE_CHILD",
+        &["position-sensitive"],
+    ) {
+        return;
+    }
     let _publishing = native_worldgen_parts::PUBLISHING
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
@@ -453,7 +462,9 @@ fn position_sensitive_part_connects_at_built_height_in_both_assemblers() {
                 project_to: Some(HeightmapType::WorldSurfaceWg),
                 ..config
             };
-            let (position, start) = jigsaw::assemble(
+            // `JigsawPlacement.addPieces` adds no piece at depth 0 (`if (maxDepth > 0)`), the
+            // start's included: the projected start piece is read where it is placed.
+            let (_, none) = jigsaw::assemble(
                 &projected,
                 &mut Flat,
                 &pools,
@@ -463,13 +474,24 @@ fn position_sensitive_part_connects_at_built_height_in_both_assemblers() {
                 [10, 10, 20],
             )
             .unwrap();
-            assert_eq!(position, [10, 90, 20]);
-            assert_eq!(start.len(), 1);
-            assert_eq!(start[0].position, [10, 89, 20]);
-            let connectors = start[0].element.shuffled_jigsaws(
+            assert!(none.is_empty());
+            let placed = jigsaw::place_start(
+                &projected,
+                &mut Flat,
+                &pools,
                 &resources,
-                start[0].position,
-                start[0].rotation,
+                &bindings,
+                &mut LegacyRandom::new(0),
+                [10, 10, 20],
+            )
+            .unwrap();
+            assert_eq!(placed.position, [10, 90, 20]);
+            let start = placed.piece();
+            assert_eq!(start.position, [10, 89, 20]);
+            let connectors = start.element.shuffled_jigsaws(
+                &resources,
+                start.position,
+                start.rotation,
                 &mut LegacyRandom::new(0),
             );
             assert_eq!(
@@ -638,8 +660,22 @@ fn no_part_fixed_seed_layout_bytes_and_draws_stay_unchanged() {
                     max_depth: 0,
                     ..config
                 };
+                // `JigsawPlacement.addPieces` adds no piece at depth 0 (`if (maxDepth > 0)`): the
+                // layout is empty, and the start piece is read where it is placed, with the
+                // same draws.
+                let (_, none) = jigsaw::assemble(
+                    &start_only,
+                    &mut Flat,
+                    &pools,
+                    &resources,
+                    &bindings,
+                    &mut LegacyRandom::new(0),
+                    [10, 10, 20],
+                )
+                .unwrap();
+                assert!(none.is_empty());
                 let mut random = LegacyRandom::new(0);
-                let (_, start) = jigsaw::assemble(
+                let start = jigsaw::place_start(
                     &start_only,
                     &mut Flat,
                     &pools,
@@ -650,7 +686,7 @@ fn no_part_fixed_seed_layout_bytes_and_draws_stay_unchanged() {
                 )
                 .unwrap();
                 assert_eq!(
-                    saved(&start),
+                    saved(std::slice::from_ref(start.piece())),
                     bytes(vec![expected_piece(false, "CLOCKWISE_180", false)])
                 );
                 assert_eq!(random.next_long(), 4_437_113_781_045_784_766);
@@ -659,7 +695,7 @@ fn no_part_fixed_seed_layout_bytes_and_draws_stay_unchanged() {
                     ..start_only
                 };
                 let mut random = LegacyRandom::new(0);
-                let (position, start) = jigsaw::assemble(
+                let start = jigsaw::place_start(
                     &projected,
                     &mut Flat,
                     &pools,
@@ -669,14 +705,17 @@ fn no_part_fixed_seed_layout_bytes_and_draws_stay_unchanged() {
                     [10, 10, 20],
                 )
                 .unwrap();
-                assert_eq!(position, [10, 90, 20]);
+                assert_eq!(start.position, [10, 90, 20]);
                 let Tag::Compound(mut expected) = expected_piece(false, "CLOCKWISE_180", false)
                 else {
                     unreachable!()
                 };
                 expected.insert("PosY".into(), Tag::Int(89));
                 expected.insert("BB".into(), Tag::IntArray(vec![10, 89, 20, 10, 89, 20]));
-                assert_eq!(saved(&start), bytes(vec![Tag::Compound(expected)]));
+                assert_eq!(
+                    saved(std::slice::from_ref(start.piece())),
+                    bytes(vec![Tag::Compound(expected)])
+                );
                 assert_eq!(random.next_long(), 4_437_113_781_045_784_766);
             })
         });
@@ -686,6 +725,14 @@ fn no_part_fixed_seed_layout_bytes_and_draws_stay_unchanged() {
 #[test]
 #[ignore = "daily"]
 fn placed_palette_keeps_connector_identity_and_named_start_requirement() {
+    // As above: the Part table it installs is process-wide.
+    if crate::game::native_entity_refs::tests::run_fresh_cases(
+        "game::native_rotate::jigsaw_tests::placed_palette_keeps_connector_identity_and_named_start_requirement",
+        "SUNRISE_JIGSAW_PLACED_PALETTE_CHILD",
+        &["placed-palette"],
+    ) {
+        return;
+    }
     let _publishing = native_worldgen_parts::PUBLISHING
         .lock()
         .unwrap_or_else(PoisonError::into_inner);

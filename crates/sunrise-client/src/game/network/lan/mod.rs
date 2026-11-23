@@ -3914,7 +3914,7 @@ impl Game<'_> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::game) mod tests {
     use super::{
         EventTimings, Hub, LanHost, LanSettings, OFFHAND_SLOT, living_flags, mob_freeze_meta,
     };
@@ -4597,6 +4597,10 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn datapack_damage_world_open_reuses_the_no_pack_preload() {
+        run_datapack_damage_world_open_reuses_the_no_pack_preload();
+    }
+
+    pub(in crate::game) fn run_datapack_damage_world_open_reuses_the_no_pack_preload() {
         use super::{
             SyncData,
             sync::{SyncCache, cached_sync_data, initialize_world_sync_data},
@@ -4655,6 +4659,10 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn datapack_damage_world_open_replaces_preload_atomically() {
+        run_datapack_damage_world_open_replaces_preload_atomically();
+    }
+
+    pub(in crate::game) fn run_datapack_damage_world_open_replaces_preload_atomically() {
         use super::{
             SyncData,
             sync::{SyncCache, cached_sync_data, initialize_world_sync_data},
@@ -4765,6 +4773,10 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn datapack_damage_unrelated_packs_do_not_load_sync_data_at_open() {
+        run_datapack_damage_unrelated_packs_do_not_load_sync_data_at_open();
+    }
+
+    pub(in crate::game) fn run_datapack_damage_unrelated_packs_do_not_load_sync_data_at_open() {
         use super::{
             SyncData,
             sync::{SyncCache, initialize_world_sync_data},
@@ -4833,6 +4845,11 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn datapack_damage_lazy_wire_snapshot_survives_reload_before_first_hub() {
+        run_datapack_damage_lazy_wire_snapshot_survives_reload_before_first_hub();
+    }
+
+    pub(in crate::game) fn run_datapack_damage_lazy_wire_snapshot_survives_reload_before_first_hub()
+    {
         use super::sync::{
             SyncCache, cached_sync_data, initialize_world_sync_data, prepare_sync_reload,
         };
@@ -4946,6 +4963,10 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn datapack_damage_lazy_wire_load_caches_after_all_packs_are_removed() {
+        run_datapack_damage_lazy_wire_load_caches_after_all_packs_are_removed();
+    }
+
+    pub(in crate::game) fn run_datapack_damage_lazy_wire_load_caches_after_all_packs_are_removed() {
         if crate::game::native_entity_refs::tests::run_fresh_cases(
             "game::lan::tests::datapack_damage_lazy_wire_load_caches_after_all_packs_are_removed",
             "SUNRISE_LAZY_DAMAGE_CUSTOM_COMPONENTS",
@@ -5877,10 +5898,10 @@ impl super::Dim {
 }
 
 #[cfg(test)]
-mod player_packet_tests;
+pub(in crate::game) mod player_packet_tests;
 
 #[cfg(test)]
-pub(crate) mod world_spawn_sync_tests {
+pub(in crate::game) mod world_spawn_sync_tests {
     use super::*;
     use std::sync::{Arc, atomic::AtomicI32, mpsc};
     use sunrise_client::lan::{Joined, Out, PlayerSender, guest::Guest};
@@ -5965,6 +5986,10 @@ pub(crate) mod world_spawn_sync_tests {
     #[test]
     #[ignore = "daily"]
     fn join_and_respawn_contexts_use_world_spawn_not_a_personal_spawn() {
+        run_join_and_respawn_contexts_use_world_spawn_not_a_personal_spawn();
+    }
+
+    pub(in crate::game) fn run_join_and_respawn_contexts_use_world_spawn_not_a_personal_spawn() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             game.level.world_spawn = Some([100, 140, -20]);
             game.spawn = Some(sunrise_core::geometry::Vec3::new(96.5, 145.0, -31.5));
@@ -5983,6 +6008,10 @@ pub(crate) mod world_spawn_sync_tests {
     #[test]
     #[ignore = "daily"]
     fn setworldspawn_reaches_guests_with_the_dimension_it_ran_in() {
+        run_setworldspawn_reaches_guests_with_the_dimension_it_ran_in();
+    }
+
+    pub(in crate::game) fn run_setworldspawn_reaches_guests_with_the_dimension_it_ran_in() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             game.build_registries();
             game.level.world_spawn = None;
@@ -6104,6 +6133,11 @@ pub(crate) mod world_spawn_sync_tests {
     #[test]
     #[ignore = "daily"]
     fn guest_respawn_without_a_known_world_spawn_never_advertises_the_hosts_personal_point() {
+        run_guest_respawn_without_a_known_world_spawn_never_advertises_the_hosts_personal_point();
+    }
+
+    pub(in crate::game) fn run_guest_respawn_without_a_known_world_spawn_never_advertises_the_hosts_personal_point()
+     {
         crate::game::native_entity_refs::tests::with_game(|game| {
             game.level.world_spawn = None;
             game.level.world_spawn_angle = [45.0, -10.0];

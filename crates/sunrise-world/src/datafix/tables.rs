@@ -28,11 +28,48 @@ type IntNames = &'static [(i32, &'static str)];
 
 type BlockIds = &'static [(&'static str, i32)];
 type StructureTemplateRenames = &'static [(&'static str, &'static str, Pairs)];
-type RawTables = BTreeMap<String, Box<RawValue>>;
+/// The file's tables by name, each row list kept raw until its table is first used.
+struct RawTables(BTreeMap<String, Box<RawValue>>);
+
+/// The top level as the struct this map replaced read it (`deny_unknown_fields` and serde's
+/// duplicate-field error): every key one of [`NAMES`], uppercased, at most once. No row is
+/// decoded here.
+impl<'de> serde::Deserialize<'de> for RawTables {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = RawTables;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("the datafix tables by name")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<RawTables, A::Error> {
+                use serde::de::Error;
+                let mut tables = BTreeMap::new();
+                while let Some(name) = map.next_key::<String>()? {
+                    if !NAMES.iter().any(|known| known.to_ascii_uppercase() == name) {
+                        return Err(A::Error::custom(format!("unknown table {name}")));
+                    }
+                    if tables.contains_key(&name) {
+                        return Err(A::Error::custom(format!("duplicate table {name}")));
+                    }
+                    let rows = map.next_value::<Box<RawValue>>()?;
+                    tables.insert(name, rows);
+                }
+                Ok(RawTables(tables))
+            }
+        }
+        deserializer.deserialize_map(Visitor)
+    }
+}
 
 // Keep one cache per table so a malformed row fails only lookups of its own table.
 macro_rules! legacy_tables {
     ($($(#[$doc:meta])* $name:ident: $ty:ty = $convert:ident;)*) => {
+        /// Every table's name, as the file writes it uppercased.
+        const NAMES: &[&str] = &[$(stringify!($name)),*];
         $(
             $(#[$doc])*
             pub(super) fn $name() -> $ty {
@@ -169,7 +206,7 @@ fn leak_structure_renames(
 }
 
 fn decode<T: DeserializeOwned>(raw: &RawTables, name: &str) -> io::Result<T> {
-    let value = raw.get(name).ok_or_else(|| {
+    let value = raw.0.get(name).ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidData, format!("missing table {name}"))
     })?;
     serde_json::from_str(value.get()).map_err(|error| {
@@ -331,6 +368,26 @@ mod tests {
             ),
             Err(NbtUpgradeError::MalformedCompound),
         );
+    }
+
+    /// A duplicated or unknown table name refuses the whole file, as the struct read before
+    /// the raw map did, so the upgrade answers `LegacyTablesUnavailable`; one of each known
+    /// name reads, and no row is decoded until its table is asked for.
+    #[test]
+    fn duplicate_and_unknown_table_names_refuse_the_file() {
+        let read = |text: &str| serde_json::from_str::<RawTables>(text);
+        let tables =
+            read(r#"{"ITEM_IDS": [[1, "minecraft:stone"]], "BLOCK_STATE_DATA": "not rows"}"#)
+                .unwrap();
+        assert_eq!(tables.0.len(), 2);
+        assert!(decode::<Vec<String>>(&tables, "BLOCK_STATE_DATA").is_err());
+        for text in [
+            r#"{"ITEM_IDS": [], "ITEM_IDS": []}"#,
+            r#"{"ITEM_IDS": [], "NOT_A_TABLE": []}"#,
+            r#"{"item_ids": []}"#,
+        ] {
+            assert!(read(text).is_err(), "{text}");
+        }
     }
 
     /// The prepared file holds every table, each non-empty, and `BlockStateData` registers

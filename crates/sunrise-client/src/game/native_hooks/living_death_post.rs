@@ -252,7 +252,7 @@ mod tests {
 
                 assert_eq!(
                     *heard.lock().unwrap(),
-                    ["death", "xp", "post"],
+                    ["death", "loot", "xp", "post"],
                     "the inventory drop, the message and the experience ran before it"
                 );
                 let post = post.lock().unwrap();
