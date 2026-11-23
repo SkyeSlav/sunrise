@@ -468,11 +468,34 @@ impl Game<'_> {
                     off_hand,
                 )
             };
-            if off_hand == mob.extra.using_off_hand && mob.extra.using_item > 0 {
+            let duration = self.use_duration(&stack);
+            let crossbow_charge = Self::charge_ticks(&stack).max(1) as i32;
+            if local_player {
+                let hand_slot = if off_hand {
+                    super::shield::OFFHAND_SLOT
+                } else {
+                    self.selected
+                };
+                if let Some((slot, ticks)) = self.using
+                    && slot == hand_slot
+                {
+                    owner.using_this_item = true;
+                    owner.use_duration = duration;
+                    owner.use_item_remaining_ticks = self.use_duration - ticks as i32;
+                    owner.crossbow_charge_duration = crossbow_charge;
+                }
+            } else if off_hand == mob.extra.using_off_hand && mob.extra.using_item > 0 {
                 owner.using_this_item = true;
-                owner.use_duration = 72_000;
-                owner.use_item_remaining_ticks = 72_000 - mob.extra.using_item;
-                owner.crossbow_charge_duration = 25;
+                owner.use_duration = duration;
+                owner.use_item_remaining_ticks =
+                    if mob.species() == Species::Witch && mob.extra.flag {
+                        mob.extra.using_item
+                    } else {
+                        // Remote mobs count `using_item` from 1 upward each tick; `LivingEntity.updateUsingItem`
+                        // decrements `useItemRemaining` without clamping.
+                        duration - (mob.extra.using_item - 1)
+                    };
+                owner.crossbow_charge_duration = crossbow_charge;
             }
             use sunrise_assets::item_model::DisplayContext as Context;
             // PandaHoldsItemLayer, FoxHeldItemLayer and DolphinCarryingItemLayer
