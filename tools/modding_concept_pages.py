@@ -12,6 +12,7 @@ no edit to SUMMARY.md, and check every page's links.
   book names `playsunrise.net/docs/modding`, where it is published; the old Pages addresses are refused.
   Horizon's own projects (the machine sample, the mixins tool) keep their links.
 - A page the book doesn't render, or one titled as a design, a plan or a work list, fails the build.
+- The HTML check also requires each source page to have a unique H1 and no bare issue or PR numbers.
 """
 import argparse
 from collections import Counter
@@ -28,6 +29,9 @@ SRC = ROOT / "docs/modding/src"
 LINK = re.compile(r"(\!?\[[^\n]*?\]\()([^\s)]+)(\))")
 REFERENCE = re.compile(r"^( {0,3}\[[^\]\n]+\]:[ \t]*<?)([^\s>]+)(>?)", re.MULTILINE)
 INCLUDE = re.compile(r"(\{\{#(?:rustdoc_)?include )([^ }]+)(\s*\}\})")
+FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+ISSUE_REF = re.compile(r"#\d{3,5}\b")
+URL = re.compile(r"""(?:https?:)?//[^\s<>()\[\]"'`]+""", re.IGNORECASE)
 # The game repository and the mod registry are sunrise-org's, and the book is published at
 # playsunrise.net/docs/modding, not on a Pages site (`sunrise-org.github.io/sunrise-mods` is the registry's
 # index, and keeps its link). A sub-project under another owner (`horizon-machine-sample`, `horizon-mixins`)
@@ -46,23 +50,38 @@ SECTION_PAGES = "<!-- section-pages -->"
 NOT_A_MANUAL = re.compile(r"\b(design|designs|proposal|proposed|draft|roadmap|tracker|status|plan)\b", re.IGNORECASE)
 
 
-def headings(text):
+def unfenced_lines(text):
+    """Yield numbered source lines outside backtick and tilde fences."""
+    fence = None
+    for number, line in enumerate(text.splitlines(), 1):
+        match = FENCE.match(line)
+        if fence is not None:
+            if match and match[1].startswith(fence) and not match[2].strip():
+                fence = None
+        elif match and (match[1][0] == "~" or "`" not in match[2]):
+            fence = match[1]
+        else:
+            yield number, line
+
+
+def headings(text, *, level=None):
     """Yield ATX headings outside fenced examples, using mdBook's heading IDs."""
-    fenced = False
     counts = Counter()
-    for line in text.splitlines():
-        if line.startswith(("```", "~~~")):
-            fenced = not fenced
-        if not fenced and re.match(r"^#{1,6} ", line):
-            title = line.split(" ", 1)[1]
-            explicit = re.fullmatch(r"(.*?)\s*\{#([\w-]+)\}\s*", title)
-            if explicit:
-                yield explicit[1], explicit[2]
-                continue
+    for _, line in unfenced_lines(text):
+        match = re.match(r"^(#{1,6}) (.*)$", line)
+        if match is None:
+            continue
+        title = re.sub(r"(?:^|[ \t]+)#+[ \t]*$", "", match[2]).strip()
+        explicit = re.fullmatch(r"(.*?)\s*\{#([\w-]+)\}", title)
+        if explicit:
+            title, anchor = explicit.groups()
+        else:
             slug = re.sub(r"[^\w\- ]", "", title.lower()).replace(" ", "-")
             n = counts[slug]
             counts[slug] += 1
-            yield title, slug + (f"-{n}" if n else "")
+            anchor = slug + (f"-{n}" if n else "")
+        if level is None or len(match[1]) == level:
+            yield title, anchor
 
 
 def page_title(text, path):
@@ -71,14 +90,8 @@ def page_title(text, path):
 
 def prose(text):
     """`text` without fenced code blocks and inline code spans, whose brackets are not links."""
-    out, fenced = [], False
-    for line in text.splitlines():
-        if line.lstrip().startswith(("```", "~~~")):
-            fenced = not fenced
-            continue
-        if not fenced:
-            out.append(re.sub(r"(`+)(?:(?!\1).)+?\1", "", line))
-    return "\n".join(out)
+    return "\n".join(re.sub(r"(`+)(?:(?!\1).)+?\1", "", line)
+                     for _, line in unfenced_lines(text))
 
 
 def check_url(link, where):
@@ -218,8 +231,30 @@ class HtmlLinks(HTMLParser):
             self.links.append(attrs["href"])
 
 
+def check_source_pages(src, pages):
+    """Report all source-page violations together before checking the rendered links."""
+    titles, errors = {}, []
+    for page in pages:
+        text = (src / page).read_text(encoding="utf-8")
+        title = next((title for title, _ in headings(text, level=1)), None)
+        if title:
+            first = titles.setdefault(title.casefold(), page)
+            if first != page:
+                errors.append(f"{page}: duplicate H1 {title!r} (also in {first})")
+        else:
+            errors.append(f"{page}: missing top-level H1 (# Title)")
+        for number, line in unfenced_lines(text):
+            # Omit URL destinations, not link labels: the label is still reader text.
+            line = REFERENCE.sub(r"\1 \3", LINK.sub(r"\1 \3", line))
+            for issue in ISSUE_REF.finditer(URL.sub(" ", line)):
+                errors.append(f"{page}:{number}: bare issue or PR reference {issue[0]}")
+    if errors:
+        raise AssertionError("\n".join(errors))
+
+
 def check_html(directory, src=SRC):
     pages = sorted(p.relative_to(src).as_posix() for p in src.rglob("*.md") if p.name != "SUMMARY.md")
+    check_source_pages(src, pages)
     # The generated chapters have no source page.
     pages += [p for p in ("reference/hook-notes.md", "reference/neoforge-counterparts.md")
               if (directory / p).with_suffix(".html").is_file()]

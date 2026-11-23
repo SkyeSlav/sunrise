@@ -189,5 +189,66 @@ class ConceptPages(unittest.TestCase):
                 pages.check_html(output, self.src / "concepts/..")
 
 
+class BookSourceGuards(unittest.TestCase):
+    def setUp(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.src = root / "src"
+        self.html = root / "html"
+
+    def write_page(self, name, text):
+        source = self.src / name
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(text, encoding="utf-8")
+        if source.name != "SUMMARY.md":
+            rendered = (self.html / name).with_suffix(".html")
+            rendered.parent.mkdir(parents=True, exist_ok=True)
+            rendered.write_text("<html></html>", encoding="utf-8")
+
+    def test_duplicate_h1_is_case_insensitive_across_folders(self):
+        self.write_page("concepts/parts.md", "# Registry keys\n")
+        self.write_page("reference/keys.md", "# Registry Keys {#reference-keys}\n")
+        with self.assertRaisesRegex(AssertionError, r"reference/keys\.md: duplicate H1 .*concepts/parts\.md"):
+            pages.check_html(self.html, self.src)
+
+    def test_an_h2_and_a_fenced_h1_do_not_make_a_page_title(self):
+        self.write_page("reference/keys.md", "## Registry keys\n\n~~~markdown\n# Example\n~~~\n")
+        with self.assertRaisesRegex(AssertionError, r"reference/keys\.md: missing top-level H1"):
+            pages.check_html(self.html, self.src)
+
+    def test_bare_issue_refs_are_refused_even_in_markdown_link_labels(self):
+        cases = (
+            ("See #123.", "#123"),
+            ("See [#1234](https://github.com/sunrise-org/sunrise/issues/1234).", "#1234"),
+            ("See #12345.", "#12345"),
+        )
+        for text, ref in cases:
+            with self.subTest(text=text):
+                self.write_page("reference/keys.md", f"# Registry keys\n\n{text}\n")
+                with self.assertRaisesRegex(AssertionError, rf"reference/keys\.md:3: .*{ref}$"):
+                    pages.check_html(self.html, self.src)
+
+    def test_issue_refs_in_fences_and_urls_and_summary_are_ignored(self):
+        self.write_page("SUMMARY.md", "The navigation is not a reader page. #1234\n")
+        self.write_page("reference/keys.md", """# Registry keys
+
+````markdown
+```
+#1234
+```
+````
+
+  ~~~markdown
+#1234
+  ~~~
+
+Read https://example.test/notes#1234 or <https://example.test/notes#1234>.
+See [the notes](https://example.test/notes#1234) or [the local anchor](#1234).
+Not issue references: #12, #123456, #1234beta.
+
+[notes]: <https://example.test/notes#1234>
+""")
+        pages.check_html(self.html, self.src)
+
+
 if __name__ == "__main__":
     unittest.main()
