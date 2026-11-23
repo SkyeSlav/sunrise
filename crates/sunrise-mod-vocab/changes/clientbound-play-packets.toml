@@ -1,0 +1,3 @@
+ids = ["handle:PlayerRef::send_play_packets", "type:ClientboundPlayPacket", "type:SendClientboundPacketsError"]
+why = "Server mods can send one player a list of vanilla play packets, each named by its packet id with its encoded body, optionally as one bundle."
+migrate = "Nothing to migrate: the method is new."
