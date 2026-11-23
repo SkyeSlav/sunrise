@@ -5,10 +5,10 @@
 //! is here too: `hurtEnemy`, the post-attack enchantments and `postHurtEnemy`.
 use super::Game;
 use sunrise_client::{
-    enchant::EffectContext,
+    enchant::{EffectContext, Enchantments},
     health::ArmorWeapon,
-    items::ItemStack,
-    mobs::{Damage, Mob, MobEvent, Species},
+    items::{ItemStack, Items},
+    mobs::{Damage, DamageKind, Mob, MobEvent, Species},
     particles::{ParticleOptions, ParticleType},
 };
 use sunrise_core::{
@@ -20,6 +20,39 @@ use sunrise_core::{
 #[cfg(test)]
 #[path = "tests/player_armor_weapon_tests.rs"]
 mod player_armor_weapon_tests;
+
+/// `CombatRules.getDamageAfterAbsorb`: the attacking weapon's armor effectiveness.
+pub(super) fn breach_modifier<'a>(
+    weapon: Option<&'a ItemStack>,
+    target: &'a str,
+    source: DamageKind,
+    items: &'a Items,
+    enchantments: &'a Enchantments,
+) -> impl FnMut(f32, &mut sunrise_core::random::LegacyRandom) -> f32 + use<'a> {
+    let ctx = EffectContext {
+        this: Some(target),
+        attacker: Some("minecraft:player"),
+        direct_attacker: Some("minecraft:player"),
+        is_direct: true,
+        damage_type: Some(match source {
+            DamageKind::MaceSmash => "minecraft:mace_smash",
+            DamageKind::Spear => "minecraft:spear",
+            DamageKind::Thorns => "minecraft:thorns",
+            _ => "minecraft:player_attack",
+        }),
+        items: Some(items),
+        ..Default::default()
+    };
+    move |fraction, random| {
+        enchantments.modify_value(
+            weapon,
+            "minecraft:armor_effectiveness",
+            &ctx,
+            random,
+            fraction,
+        )
+    }
+}
 
 /// `MaceItem.SMASH_ATTACK_FALL_THRESHOLD`.
 const FALL_THRESHOLD: f64 = 1.5;
@@ -295,31 +328,6 @@ impl Game<'_> {
         let held = self.held().cloned();
         let aim = self.attacker_aim(source.attacker);
         let kind = self.mobs[index].kind.id.clone();
-        let ctx = EffectContext {
-            this: Some(&kind),
-            attacker: Some("minecraft:player"),
-            direct_attacker: Some("minecraft:player"),
-            is_direct: true,
-            damage_type: Some(match source.kind {
-                sunrise_client::mobs::DamageKind::MaceSmash => "minecraft:mace_smash",
-                sunrise_client::mobs::DamageKind::Spear => "minecraft:spear",
-                sunrise_client::mobs::DamageKind::Thorns => "minecraft:thorns",
-                _ => "minecraft:player_attack",
-            }),
-            items: Some(world_items!(self)),
-            ..Default::default()
-        };
-        let enchantments = &world_stations!(self).enchantments;
-        // CombatRules.getDamageAfterAbsorb: EnchantmentHelper.modifyArmorEffectiveness.
-        let mut breach = |fraction: f32, random: &mut sunrise_core::random::LegacyRandom| {
-            enchantments.modify_value(
-                held.as_ref(),
-                "minecraft:armor_effectiveness",
-                &ctx,
-                random,
-                fraction,
-            )
-        };
         let (id, join, old_health) = (
             self.mobs[index].id,
             self.mobs[index].join,
@@ -331,14 +339,27 @@ impl Game<'_> {
         self.mobs[index].attacker_aim = aim;
         self.mobs[index].dealt_absorbed = 0;
         let mut credit = plan.lend(&mut self.last_hurt_by_player);
-        let hurt = self.mobs[index].damage_with(
-            crate::game::entity::damage_level_of!(self, &attack, &mut credit, None),
-            amount,
-            source,
-            Some(&mut breach),
-        );
+        let hurt = {
+            let mut breach = breach_modifier(
+                held.as_ref(),
+                &kind,
+                source.kind,
+                world_items!(self),
+                &world_stations!(self).enchantments,
+            );
+            self.mobs[index].damage_with(
+                crate::game::entity::damage_level_of!(self, &attack, &mut credit, None),
+                amount,
+                source,
+                Some(&mut breach),
+            )
+        };
         self.mobs[index].attacker_aim = None;
         self.mobs[index].creative_attacker = false;
+        let Some((index, hurt)) = self.complete_mob_hurt_with_weapon(index, hurt, held.as_ref())
+        else {
+            return (false, false);
+        };
         // `Guardian.hurtServer`'s spikes answer the attacker inside the hurt,
         // before `super.hurtServer` returns: those hits land here, where
         // `Who::Player` is the player whose blow this is. Left in the outbox,

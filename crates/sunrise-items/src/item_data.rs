@@ -4397,7 +4397,7 @@ mod carried_component_tests {
             panic!("native effect")
         };
         assert!(Arc::ptr_eq(a, b));
-        assert_eq!(a.get("amount"), Some(&Tag::Byte(42)));
+        assert_eq!(a.get("amount"), Some(&Tag::Int(42)));
         assert_eq!(components_tag(0, stack.data()), Some(patch));
         stack
             .data_mut()
