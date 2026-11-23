@@ -1,6 +1,5 @@
 ids = [
     "hook:entity_size",
-    "method:Hooks::entity_size",
 ]
 why = """
 `entity_size` answers above 32 blocks were ignored, a limit `EntityDimensions` and NeoForge's
