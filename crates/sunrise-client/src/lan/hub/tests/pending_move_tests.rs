@@ -1,4 +1,4 @@
-//! `player_move`: a changed report is held for the mods, ruled on, and the inbox waits behind it.
+//! Movement packet observation, vetoes, and how they order the guest's inbox.
 use super::*;
 pub(super) use crate::lan::guest::InboxItem;
 
@@ -90,6 +90,189 @@ pub(super) fn tick_end() -> S {
     S::ClientTickEnd(sunrise_protocol::packets::Empty)
 }
 
+fn move_packets(events: &[HostEvent]) -> Vec<(u32, MovePacketReport)> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            HostEvent::PlayerMovePacket(conn, report) => Some((*conn, *report)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn observes_all_four_packet_forms_even_on_the_first_level_tick() {
+    let mut hub = standing(
+        true,
+        vec![
+            at(0.0),
+            S::MovePlayerRot(play::MovePlayerRot {
+                yaw: 370.0,
+                pitch: 100.0,
+                flags: 0,
+            }),
+            S::MovePlayerStatus(play::MovePlayerStatus { flags: 1 }),
+            tick_end(),
+            S::MovePlayerPosRot(play::MovePlayerPosRot {
+                x: 0.5,
+                y: 64.0,
+                z: 0.0,
+                yaw: 20.0,
+                pitch: -15.0,
+                flags: 0,
+            }),
+        ],
+    );
+    hub.move_packets_listened = true;
+    hub.ticks = 1;
+    hub.guests.update(0, |g| {
+        g.level_entered = 0;
+        (g.yaw, g.pitch) = (15.0, 5.0);
+    });
+    let (conn, player) = (hub.guests[0].conn, hub.guests[0].uuid);
+    for (position, [yaw, pitch], [on_ground, has_position, has_rotation], remaining) in [
+        ([0.0, 64.0, 0.0], [15.0, 5.0], [true, true, false], 4),
+        ([0.0, 64.0, 0.0], [10.0, 100.0], [false, false, true], 3),
+        ([0.0, 64.0, 0.0], [10.0, 90.0], [true, false, false], 2),
+        ([0.5, 64.0, 0.0], [20.0, -15.0], [false, true, true], 0),
+    ] {
+        let events = drain(&mut hub);
+        assert_eq!(
+            move_packets(&events),
+            [(
+                conn,
+                MovePacketReport {
+                    player,
+                    position,
+                    yaw,
+                    pitch,
+                    on_ground,
+                    has_position,
+                    has_rotation
+                }
+            )],
+        );
+        assert!(moves(&events).is_empty(), "the first tick is not vetoable");
+        assert!(hub.packets_paused());
+        assert_eq!(hub.guests[0].inbox.len(), remaining);
+    }
+    assert!(move_packets(&drain(&mut hub)).is_empty());
+    assert!(!hub.packets_paused());
+    assert!(!hub.guests[0].disconnect_pending);
+}
+
+#[test]
+fn observes_passenger_look_but_not_the_vehicle_report() {
+    let mut hub = standing(
+        true,
+        vec![
+            turned(30.0),
+            S::MoveVehicle(play::MoveVehicleRequest {
+                position: [1.0, 64.0, 0.0],
+                yaw: 40.0,
+                pitch: 0.0,
+                on_ground: true,
+            }),
+        ],
+    );
+    hub.move_packets_listened = true;
+    hub.guests.update(0, |g| {
+        g.vehicle = Some(5);
+        g.on_ground = false;
+    });
+    let (conn, player) = (hub.guests[0].conn, hub.guests[0].uuid);
+    let events = drain(&mut hub);
+    assert_eq!(
+        move_packets(&events),
+        [(
+            conn,
+            MovePacketReport {
+                player,
+                position: [0.0, 64.0, 0.0],
+                yaw: 30.0,
+                pitch: 0.0,
+                on_ground: true,
+                has_position: false,
+                has_rotation: true,
+            }
+        )]
+    );
+    assert!(moves(&events).is_empty());
+    assert_eq!(hub.guests[0].inbox.len(), 1);
+    assert_eq!(hub.guests[0].position, [0.0, 64.0, 0.0]);
+    assert_eq!(look(&hub), [30.0, 0.0]);
+    assert!(!hub.guests[0].on_ground);
+
+    let events = drain(&mut hub);
+    assert!(move_packets(&events).is_empty());
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, HostEvent::Packet(_, p) if matches!(&**p, S::MoveVehicle(_))))
+    );
+}
+
+#[test]
+fn invalid_or_unloaded_reports_and_teleport_handling_are_not_observed() {
+    let mut invalid = standing(false, vec![turned(f32::NAN)]);
+    invalid.move_packets_listened = true;
+    assert!(move_packets(&drain(&mut invalid)).is_empty());
+    assert!(invalid.guests[0].disconnect_pending);
+
+    let mut unloaded = standing(false, vec![turned(30.0)]);
+    unloaded.move_packets_listened = true;
+    unloaded.guests.update(0, |g| g.load_timeout = 2);
+    assert!(move_packets(&drain(&mut unloaded)).is_empty());
+    assert_eq!(look(&unloaded), [0.0, 0.0]);
+
+    let mut teleporting = standing(false, vec![turned(30.0)]);
+    teleporting.move_packets_listened = true;
+    let at = [3.0, 64.0, 0.0];
+    teleporting.teleport(0, Some(at));
+    assert!(move_packets(&drain(&mut teleporting)).is_empty());
+    assert_eq!(look(&teleporting), [30.0, 0.0]);
+    let (id, _) = teleporting.guests[0].awaiting_teleport.unwrap();
+    teleporting.guests.update(0, |g| {
+        g.inbox
+            .push_back(InboxItem::uncredited(S::AcceptTeleportation(
+                play::AcceptTeleportation {
+                    id,
+                    x: at[0],
+                    y: at[1],
+                    z: at[2],
+                    yaw: 30.0,
+                    pitch: 0.0,
+                },
+            )));
+    });
+    assert!(move_packets(&drain(&mut teleporting)).is_empty());
+    assert!(teleporting.guests[0].awaiting_teleport.is_none());
+    assert_eq!(teleporting.guests[0].position, at);
+}
+
+#[test]
+fn only_the_first_position_report_in_a_client_tick_is_observed() {
+    let mut hub = standing(false, vec![at(0.5), at(0.75)]);
+    hub.move_packets_listened = true;
+    let events = drain(&mut hub);
+    assert!(
+        matches!(move_packets(&events).as_slice(), [(_, report)] if report.position == [0.5, 64.0, 0.0])
+    );
+    assert!(!hub.guests[0].disconnect_pending);
+    assert!(move_packets(&drain(&mut hub)).is_empty());
+    assert!(hub.guests[0].disconnect_pending);
+    assert_eq!(hub.guests[0].position, [0.5, 64.0, 0.0]);
+}
+
+#[test]
+fn movement_requiring_a_server_correction_is_not_observed() {
+    let mut hub = standing(false, vec![at(50.0)]);
+    hub.move_packets_listened = true;
+    assert!(move_packets(&drain(&mut hub)).is_empty());
+    assert_eq!(hub.guests[0].position, [0.0, 64.0, 0.0]);
+    assert!(hub.guests[0].awaiting_teleport.is_some());
+}
+
 /// The guest's accepted look as `[yaw, pitch]`.
 fn look(hub: &Hub) -> [f32; 2] {
     [hub.guests[0].yaw, hub.guests[0].pitch]
@@ -168,7 +351,10 @@ fn a_veto_of_the_first_of_two_reports_in_one_tick_corrects_and_the_second_is_not
 #[test]
 fn two_reports_in_one_tick_with_no_listener_are_committed_at_once_in_order() {
     let mut hub = standing(false, vec![turned(10.0), turned(20.0)]);
-    assert!(moves(&drain(&mut hub)).is_empty());
+    let events = drain(&mut hub);
+    assert!(moves(&events).is_empty());
+    assert!(move_packets(&events).is_empty());
+    assert!(!hub.packets_paused());
     assert_eq!(look(&hub), [20.0, 0.0]);
     assert!(hub.guests[0].pending_move.is_none());
     assert!(hub.guests[0].inbox.is_empty());

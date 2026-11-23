@@ -189,6 +189,8 @@ pub enum HostEvent {
     PlayerMove(u32),
     /// An accepted report whose effects the game completes before the inbox resumes.
     AcceptedMove(u32, CommittedMove),
+    /// A validated movement packet to observe after any movement effects or veto.
+    PlayerMovePacket(u32, MovePacketReport),
     /// A guest's client finished loading the level around them.
     PlayerLoaded(u32),
     /// A guest changed recipe book settings.
@@ -331,6 +333,45 @@ fn take_tracking(
     }
 }
 
+/// What the player reported, resolved against their pose before the packet was handled.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MovePacketReport {
+    pub player: u128,
+    pub position: [f64; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+    pub on_ground: bool,
+    pub has_position: bool,
+    pub has_rotation: bool,
+}
+
+struct MoveTarget {
+    position: [f64; 3],
+    yaw: f32,
+    pitch: f32,
+    flags: u8,
+}
+
+impl MoveTarget {
+    fn new(position: [f64; 3], (yaw, pitch): (f32, f32), flags: u8) -> Self {
+        Self {
+            position: Self::clamp_position(position),
+            yaw: wrap_degrees(yaw),
+            pitch: wrap_degrees(pitch),
+            flags,
+        }
+    }
+
+    /// `ServerGamePacketListenerImpl.clampHorizontal` and `clampVertical`.
+    fn clamp_position([x, y, z]: [f64; 3]) -> [f64; 3] {
+        [
+            x.clamp(-3.0E7, 3.0E7),
+            y.clamp(-2.0E7, 2.0E7),
+            z.clamp(-3.0E7, 3.0E7),
+        ]
+    }
+}
+
 pub struct Hub {
     packet_drain: Option<PacketDrain>,
     /// Main-thread world identity used to bind typed network-context player handles.
@@ -348,6 +389,8 @@ pub struct Hub {
     pub departing: Option<u32>,
     /// A native mod listens to `player_move`: a changed report waits for the game ([`pending_move`]).
     pub moves_listened: bool,
+    /// A native mod listens to `player_move_packet`: snapshot validated client reports.
+    pub move_packets_listened: bool,
     /// This hub's game owns the movement effects that need an acting player and a live level.
     pub dispatch_move_effects: bool,
     /// `[transfer]` on (a dedicated server's `--transfers`): the players a proxy
@@ -825,6 +868,7 @@ impl Hub {
             pending_kicks: Vec::new(),
             departing: None,
             moves_listened: false,
+            move_packets_listened: false,
             dispatch_move_effects: false,
             transfers: None,
             native_tracking: Vec::new(),
@@ -4281,8 +4325,8 @@ impl Hub {
                         // The confirmation is then an ordinary report of where the client
                         // is: its own position goes through the speed test, the collided
                         // replay and the moved-wrongly test, from the target just snapped to.
-                        let (to, rot) = ([p.x, p.y, p.z], (p.yaw, p.pitch));
-                        self.position_change(i, to, rot, 0, Hearing::Confirmation, ctx, events);
+                        let target = MoveTarget::new([p.x, p.y, p.z], (p.yaw, p.pitch), 0);
+                        self.position_change(i, target, Hearing::Confirmation, ctx, events);
                     }
                 }
                 // handlePlayerAbilities: the client flies only if it may.
@@ -4578,13 +4622,17 @@ impl Hub {
                 }
                 other => events.push(HostEvent::Packet(conn, Box::new(other))),
             }
-            if events[event_start..]
-                .iter()
-                .any(|event| matches!(event, HostEvent::AcceptedMove(..)))
-            {
-                // Fall and landing can write to the level or move the player again. A
-                // subsequent packet must read those writes, not just the accepted position.
-                events.push(HostEvent::InputCredits(credits));
+            if events[event_start..].iter().any(|event| {
+                matches!(
+                    event,
+                    HostEvent::AcceptedMove(..) | HostEvent::PlayerMovePacket(..)
+                )
+            }) {
+                // Finish movement effects and notify the listener before reading the next
+                // packet. A held move must also mark its existing pause for the ruling.
+                if !self.pause_for_move(i, &mut credits, events) {
+                    events.push(HostEvent::InputCredits(credits));
+                }
                 return true;
             }
         }
@@ -4645,29 +4693,57 @@ impl Hub {
             }
             return;
         }
-        let to = pos.unwrap_or(g.position);
-        let rot = rot.unwrap_or((g.yaw, g.pitch));
-        self.position_change(i, to, rot, flags, Hearing::Heard, ctx, events);
+        let target = MoveTarget::new(
+            pos.unwrap_or(g.position),
+            rot.unwrap_or((g.yaw, g.pitch)),
+            flags,
+        );
+        let report = self.move_packets_listened.then(|| {
+            let has_position = pos.is_some();
+            let has_rotation = rot.is_some();
+            let (yaw, pitch) = if has_rotation {
+                (target.yaw, target.pitch)
+            } else {
+                (g.yaw, g.pitch)
+            };
+            MovePacketReport {
+                player: g.uuid,
+                position: if has_position {
+                    target.position
+                } else {
+                    g.position
+                },
+                yaw,
+                pitch,
+                on_ground: flags & 1 != 0,
+                has_position,
+                has_rotation,
+            }
+        });
+        if self.position_change(i, target, Hearing::Heard, ctx, events)
+            && let Some(report) = report
+        {
+            events.push(HostEvent::PlayerMovePacket(conn, report));
+        }
     }
 
-    /// ServerGamePacketListenerImpl.handlePlayerPositionChange.
+    /// ServerGamePacketListenerImpl.handlePlayerPositionChange. Returns whether the report
+    /// passed movement checks, including when it is held for a mod's ruling.
     fn position_change(
         &mut self,
         i: usize,
-        to: [f64; 3],
-        (yaw, pitch): (f32, f32),
-        flags: u8,
+        target: MoveTarget,
         hearing: Hearing,
         ctx: &TickCtx,
         events: &mut Vec<HostEvent>,
-    ) {
+    ) -> bool {
         let (frozen, (check, elytra_check)) = (self.ticking.1, self.movement_checks);
-        let to = [
-            to[0].clamp(-3.0E7, 3.0E7),
-            to[1].clamp(-2.0E7, 2.0E7),
-            to[2].clamp(-3.0E7, 3.0E7),
-        ];
-        let (yaw, pitch) = (wrap_degrees(yaw), wrap_degrees(pitch));
+        let MoveTarget {
+            position: to,
+            yaw,
+            pitch,
+            flags,
+        } = target;
         // A carried player's report is measured in the collider's frame, and judged in it.
         let plan = (hearing != Hearing::Confirmation)
             .then(|| self.carry_plan(i, to))
@@ -4737,7 +4813,7 @@ impl Hub {
                     self.resend_teleport(i, back);
                     self.keep_carried(i, carried, back);
                 }
-                return;
+                return !resend;
             }
         };
         // A veto applies from the last server travel onward, not to reports
@@ -4749,7 +4825,7 @@ impl Hub {
             self.guests.update(i, |g| (g.yaw, g.pitch) = (yaw, pitch));
             self.send_position_correction(i, Some(start), 0, [0.0; 3], velocity);
             self.keep_carried(i, carried, Some(start));
-            return;
+            return false;
         }
         // The confirmation of a teleport (a carried player's correction included) is committed in
         // place against the world as it stands.
@@ -4770,7 +4846,7 @@ impl Hub {
             let carried = self.guests[i].on_collider;
             self.resend_teleport(i, Some(back));
             self.keep_carried(i, carried, Some(back));
-            return;
+            return false;
         }
         // A carried player is where the server puts it: its local position under the
         // collider's transform now, not the position in the frame the client held.
@@ -4811,6 +4887,7 @@ impl Hub {
             floating,
         };
         self.accept_move(i, accepted, hearing, events);
+        true
     }
 
     /// `ServerGamePacketListenerImpl.noBlocksAround`: every block of the

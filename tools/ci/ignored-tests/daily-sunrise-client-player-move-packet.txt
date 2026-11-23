@@ -1,0 +1,1 @@
+sunrise-client game::native_player_move_tests::observes_validated_move_after_veto_and_before_next_packet lib daily child-process

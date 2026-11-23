@@ -445,6 +445,7 @@ mod player_inventory_changed;
 mod player_item_smithed;
 mod player_leave;
 mod player_move;
+mod player_move_packet;
 mod player_passage_cross;
 mod player_set_spawn;
 mod player_spawn_phantoms;

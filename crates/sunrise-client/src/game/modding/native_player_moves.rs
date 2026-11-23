@@ -1,12 +1,36 @@
-//! `player_move`: the game's half of a movement report the hub holds for the mods.
+//! The game's dispatch for the hub's movement veto and packet observation hooks.
 use super::Game;
-use sunrise_client::lan::hub::Hub;
+use mod_api::{__private::PlayerMovePacketCall, HookId, Vec3};
+use sunrise_client::lan::hub::{Hub, MovePacketReport};
 
 impl Game<'_> {
     /// What the hub needs to know of the loaded mods each tick.
     pub(in crate::game) fn sync_hub_mod_flags(hub: &mut Hub) {
         hub.mods_loaded = !mod_api::__private::mods().is_empty();
-        hub.moves_listened = mod_api::__private::listened(mod_api::HookId::PlayerMove);
+        hub.moves_listened = mod_api::__private::listened(HookId::PlayerMove);
+        hub.move_packets_listened = mod_api::__private::listened(HookId::PlayerMovePacket);
+    }
+
+    /// Observe the snapshot after the report's handling, with the reporting player acting.
+    pub(in crate::game) fn lan_player_move_packet(&mut self, conn: u32, report: MovePacketReport) {
+        self.as_guest(conn, |game| {
+            let Some(player) = game
+                .native_acting_player()
+                .filter(|p| p.uuid() == report.player)
+            else {
+                return;
+            };
+            let [x, y, z] = report.position;
+            game.native_player_move_packet(PlayerMovePacketCall {
+                player,
+                position: Vec3::new(x, y, z),
+                yaw: report.yaw,
+                pitch: report.pitch,
+                on_ground: report.on_ground,
+                has_position: report.has_position,
+                has_rotation: report.has_rotation,
+            });
+        });
     }
 
     /// The hub holds guest `conn`'s movement report: the mods hear it with the player's state

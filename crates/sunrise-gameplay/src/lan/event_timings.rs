@@ -115,6 +115,7 @@ pub fn event_kind(event: &HostEvent) -> EventKind {
         HostEvent::ChatSessionStarted(_) => ("chat session", None, None),
         HostEvent::AcceptedMove(conn, _) => ("accepted player move", Some(*conn), None),
         HostEvent::PlayerMove(c) => ("player move", Some(*c), None),
+        HostEvent::PlayerMovePacket(c, _) => ("player move packet", Some(*c), None),
         HostEvent::PlayerLoaded(c) => ("loaded", Some(*c), None),
         HostEvent::RecipeBookSettings { conn, .. } => ("recipe book", Some(*conn), None),
         HostEvent::Sneak { conn, .. } => ("sneak", Some(*conn), None),

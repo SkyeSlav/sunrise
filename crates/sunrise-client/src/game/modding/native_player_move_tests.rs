@@ -1,7 +1,7 @@
-//! `player_move`: the hook hears a held report with the player's state swapped in, and its
-//! veto decides what the hub does with it. The ordered cases run the real game tick.
-use super::native_guest_turn_tests::with_guests;
-use mod_api::{Flow, Hooks, PlayerMoveEvent, ServerHost};
+//! Movement hooks hear their reports with the player's state swapped in. The ordered cases
+//! run the real game tick.
+use super::{native_entity_refs::tests::run_fresh_cases, native_guest_turn_tests::with_guests};
+use mod_api::{Flow, Hooks, PlayerMoveEvent, PlayerMovePacketEvent, ServerHost};
 use std::sync::{Arc, Mutex};
 use sunrise_client::lan::hub::{Accepted, PendingMove};
 
@@ -119,6 +119,10 @@ impl Hooks for Ruling {
 /// Guest 13 stands where it was placed, loaded, long past its first tick, with two turns of its
 /// head (yaw 10, then 20) in its inbox, both in the one client tick.
 fn two_turns_waiting(game: &mut super::Game<'_>) {
+    turns_waiting(game, &[10.0, 20.0]);
+}
+
+fn turns_waiting(game: &mut super::Game<'_>, yaws: &[f32]) {
     use sunrise_client::lan::guest::InboxItem;
     use sunrise_protocol::packets::play::{self, Serverbound as S};
     let hub = &mut game.lan.as_mut().unwrap().hub;
@@ -129,7 +133,7 @@ fn two_turns_waiting(game: &mut super::Game<'_>) {
         (g.yaw, g.pitch) = (0.0, 0.0);
         g.level_entered = 0;
         g.last_reported = (g.position, [0.0, 0.0]);
-        for yaw in [10.0, 20.0] {
+        for &yaw in yaws {
             let turn = S::MovePlayerRot(play::MovePlayerRot {
                 yaw,
                 pitch: 0.0,
@@ -158,6 +162,53 @@ fn state(game: &super::Game<'_>) -> ([f32; 2], usize, bool) {
 }
 
 const AT: [f64; 3] = [3.0, 64.0, 5.0];
+
+struct ObserveTurn(Arc<Mutex<Vec<(f32, f32)>>>);
+
+#[mod_api::__subscriptions]
+impl Hooks for ObserveTurn {
+    fn player_move(&self, _: &mut dyn ServerHost, event: &mut PlayerMoveEvent) -> Flow {
+        if event.to_rotation[0] == 40.0 {
+            Flow::Cancel
+        } else {
+            Flow::Continue
+        }
+    }
+
+    fn player_move_packet(&self, host: &mut dyn ServerHost, event: &mut PlayerMovePacketEvent) {
+        assert_eq!(host.players().acting_player(), Some(event.player));
+        assert_eq!(event.player.uuid(), 13);
+        let [yaw, _] = event.player.entity().rotation(host).unwrap();
+        self.0.lock().unwrap().push((event.yaw, yaw));
+    }
+}
+
+#[test]
+#[ignore = "daily"]
+fn observes_validated_move_after_veto_and_before_next_packet() {
+    if run_fresh_cases(
+        "game::native_player_move_tests::observes_validated_move_after_veto_and_before_next_packet",
+        "SUNRISE_PLAYER_MOVE_PACKET_CASE",
+        &["game"],
+    ) {
+        return;
+    }
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let mods = vec![mod_api::ModEntry::new(
+        "observe-turn",
+        Box::new(ObserveTurn(heard.clone())),
+    )]
+    .into();
+    mod_platform::testing::with_mods(mods, || {
+        with_guests(|game| {
+            turns_waiting(game, &[20.0, 40.0, 60.0]);
+            game_tick(game);
+            assert_eq!(*heard.lock().unwrap(), [(20.0, 20.0), (40.0, 20.0)]);
+            // The third turn only updates look while the veto correction awaits its ack.
+            assert_eq!(state(game), ([60.0, 0.0], 0, true));
+        });
+    });
+}
 
 #[test]
 #[ignore = "daily"]

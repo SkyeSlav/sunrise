@@ -175,6 +175,25 @@ A second disconnect on a guest already leaving is a no-op and keeps the first re
 
 Vetoing a player's movement: the `player_move` hook hears each validated movement report whose position or rotation differs from the player's last reported location, after the server's own checks and before the report is committed, with the exact `from`, `to` and both rotations. The last reported location is kept on the player's connection, apart from the accepted position: it is the position given to the listener before it runs, and the destination of every server-side teleport (a join, a teleport in the level, a level change, a respawn, the resend of an unconfirmed teleport and the correction after a veto); `from` is that location. Set `cancel` and the report is not applied; the client is sent back to the accepted position and rotation. The report was already seen by the server's own checks before the hook, so what a violation of those would have done still happens. The engine applies no threshold, so a mod that wants to ignore small moves compares the two positions itself (`(to - from).length() < 1.0 / 16.0` skips anything under 1/16 of a block). A held report is ruled on in the same tick; that player's later packets (further reports, the end of the client tick, pongs) wait in order behind it, then go on in that tick, so each later report is heard from the one before. A report is out of time at its 21st tick, counting the tick it was held at as the first: it is dropped with the correction, never committed, even when a ruling arrives after that; a disconnect, teleport or level change drops it cleanly. Not heard: the first tick in a level (the tick after a join or a level change; the second is heard), a player riding something (`vehicle_moved` hears the vehicle), any teleport (its confirmation's own position is validated from the teleport's target and committed without the hook, and so is the veto's own correction; a report that arrives while a teleport is unconfirmed is not heard either) and a passage crossing (its caller reads the position at once, so the report is committed in place). The first report after a teleport that passed validation is heard, with the teleport's destination as its `from`. With or without a listener, accepted movement finishes its game effects before later packets run. Only a listening mod causes a validated report to be held before it commits. A native listener that never returns is out of scope: it blocks the game thread like any native code, and the 20-tick deadline covers only a report held pending across ticks.
 
+Observing a player's movement reports: `player_move_packet` receives a `PlayerMovePacketEvent`
+with a `ServerHost` in the reporting player's context. It hears each validated position-only,
+rotation-only, combined, or status-only packet, even if nothing changed or this is the
+player's first tick in the level. A passenger's accepted look is included; vehicle movement
+packets, teleport acknowledgements, look updates while a teleport is pending, and synthetic
+moves are not.
+
+The snapshot contains the player's handle, target feet position, and target yaw and pitch in
+degrees. Position and rotation carried by the packet use the movement handler's clamps and
+angle wrapping; missing fields use the player's actual pose before the packet. The target
+is not necessarily the pose the server applies. `on_ground` is what the client claimed,
+and `has_position` and `has_rotation` tell you which fields were present, not which values
+changed.
+
+The server runs the observer after handling the report and before reading that player's
+next packet. If `player_move` vetoes the report, the observer still sees the original
+snapshot after the correction; reading the live player through the host shows the result
+of the handling. The observer cannot change or veto the report.
+
 ## Text conversions
 
 `host.text_from_json(json)` reads one JSON or SNBT component the way `/tellraw`
