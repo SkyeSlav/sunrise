@@ -935,21 +935,10 @@ impl Game<'_> {
                 1.0,
             );
         }
-        let movement = sunrise_client::block_contact::bounce(
-            &mut sunrise_client::health::DamageLevel::of(
-                &mut self.world,
-                self.pack.assets.registry,
-                Some(world_items!(self)),
-                Some(&self.pack.block_registries),
-                &self.damage_hooks,
-            )
-            .no_push(),
-            sunrise_client::block_contact::Contact {
-                entity: id as i32,
-                kind,
-                state: bounce.state,
-                position: bounce.position,
-            },
+        let movement = self.native_bounce_on(
+            id,
+            bounce.state,
+            bounce.position,
             bounce.fall_distance,
             response.velocity,
         );
@@ -1208,14 +1197,13 @@ impl Game<'_> {
         step_on(StepLevel::Server(&mut level), step, velocity)
     }
 
-    pub(super) fn tick_item_with_block_contacts(
+    pub(super) fn begin_item_move(
         &mut self,
         item: &mut ItemEntity,
         escape_speed: Option<f32>,
         entity_boxes: &[Aabb],
-        client: bool,
         splash: &mut impl FnMut(sunrise_client::entities::ItemSplash),
-    ) -> (bool, bool) {
+    ) -> sunrise_client::entities::ItemStep {
         let no_physics = escape_speed.is_some();
         // Entity.baseTick splashes before moving, except on the first tick, at
         // the motion before the currents push it.
@@ -1239,13 +1227,17 @@ impl Game<'_> {
         item.check_fall(&mut step, |fall, from, moved| {
             self.vehicle_fall_reset(fall, from, moved)
         });
-        if !client && let Some((on, distance)) = step.landed() {
-            self.item_fall_on(item.id, on, distance);
-        }
-        if let Some(response) = item.move_restitution(self.body_motion(&game_side!(self)), step) {
-            item.velocity =
-                self.finish_body_restitution((item.id, "minecraft:item"), item.position, response);
-        }
+        step
+    }
+
+    pub(super) fn finish_item_after_restitution(
+        &mut self,
+        item: &mut ItemEntity,
+        step: sunrise_client::entities::ItemStep,
+        client: bool,
+        no_physics: bool,
+        splash: &mut impl FnMut(sunrise_client::entities::ItemSplash),
+    ) -> (bool, bool) {
         if let Some(pos) = step.vertical_contact {
             let state = self.world.block(pos.x, pos.y, pos.z);
             let position = item.position;
@@ -1317,6 +1309,59 @@ impl Game<'_> {
             item.push_by_fluid(&self.world, &self.res.motion().fluids, &self.loop_context);
         item.water_entry(water > 0.0, false, before, splash);
         (alive, false)
+    }
+
+    pub(super) fn tick_item_with_block_contacts(
+        &mut self,
+        item: &mut ItemEntity,
+        escape_speed: Option<f32>,
+        entity_boxes: &[Aabb],
+        client: bool,
+        splash: &mut impl FnMut(sunrise_client::entities::ItemSplash),
+    ) -> (bool, bool) {
+        let no_physics = escape_speed.is_some();
+        let step = self.begin_item_move(item, escape_speed, entity_boxes, splash);
+        if !client
+            && let Some((on, distance)) = step.landed()
+            && sunrise_client::block_contact::fall_listens(self.world.block(on.x, on.y, on.z))
+        {
+            let resident = self.dropped.iter().position(|e| e.id == item.id);
+            if let Some(idx) = resident {
+                self.dropped.update(idx, |e| *e = item.clone());
+            }
+            self.item_fall_on(item.id, on, distance);
+            if resident.is_some() {
+                if let Some(updated) = self.dropped.iter().find(|e| e.id == item.id) {
+                    *item = updated.clone();
+                } else {
+                    return (false, true);
+                }
+            }
+        }
+        if let Some(response) = item.move_restitution(self.body_motion(&game_side!(self)), step) {
+            let listens = !client
+                && response
+                    .bounce
+                    .as_ref()
+                    .is_some_and(|b| sunrise_client::block_contact::bounce_listens(b.state));
+            let resident = listens
+                .then(|| self.dropped.iter().position(|e| e.id == item.id))
+                .flatten();
+            if let Some(idx) = resident {
+                self.dropped.update(idx, |e| *e = item.clone());
+            }
+            let velocity =
+                self.finish_body_restitution((item.id, "minecraft:item"), item.position, response);
+            if resident.is_some() {
+                if let Some(updated) = self.dropped.iter().find(|e| e.id == item.id) {
+                    *item = updated.clone();
+                } else {
+                    return (false, true);
+                }
+            }
+            item.velocity = velocity;
+        }
+        self.finish_item_after_restitution(item, step, client, no_physics, splash)
     }
 }
 

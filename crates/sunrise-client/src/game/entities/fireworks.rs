@@ -478,7 +478,25 @@ impl Game<'_> {
             r.velocity,
             r.fall_distance,
         );
-        r.velocity = self.finish_body_restitution(entity, r.position, response);
+        r.velocity = if self.is_logical_server()
+            && response
+                .bounce
+                .as_ref()
+                .is_some_and(|b| sunrise_client::block_contact::bounce_listens(b.state))
+        {
+            if let Some(idx) = self.rockets.iter().position(|e| e.id == r.id) {
+                self.rockets.update(idx, |e| *e = r.clone());
+            }
+            let velocity = self.with_held_entity_live(r.id, |game| {
+                game.finish_body_restitution(entity, r.position, response)
+            });
+            if let Some(updated) = self.rockets.iter().find(|e| e.id == r.id) {
+                *r = updated.clone();
+            }
+            velocity
+        } else {
+            self.finish_body_restitution(entity, r.position, response)
+        };
         let side = game_side!(self);
         let motion = self.body_motion(&side);
         motion.apply_block_speed(r.position, &mut r.velocity);

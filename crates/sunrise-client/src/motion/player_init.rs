@@ -30,7 +30,6 @@ impl PlayerMotion {
             history: MovementHistory::default(),
             fall_distance: 0.0,
             record_fall_reset: false,
-            block_landing: None,
             stuck_multiplier: Vec3::ZERO,
             piston: Default::default(),
             yaw: 0.0,

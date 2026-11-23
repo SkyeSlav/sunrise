@@ -1433,7 +1433,8 @@ sunrise-client game::native_hooks::block_entity_on_load_routes_tests::tests::blo
 sunrise-client game::native_hooks::block_entity_on_load_tests::tests::block_entity_on_load_client_instance_reads_received_fields lib daily resources
 sunrise-client game::native_hooks::block_entity_on_load_tests::tests::block_entity_on_load_saved_data_placement_rewrite_and_reload lib daily child-process
 sunrise-client game::native_hooks::block_entity_on_load_tests::tests::block_entity_on_load_without_listener_preserves_data_and_never_queues lib daily resources
-sunrise-client game::native_hooks::block_landing::landing_crossing_tests::landing_crossing_refuses_invalid_writes_and_sibling_damage lib daily resources
+sunrise-client game::native_hooks::block_landing::landing_crossing_tests::fall_on_after_trample_is_visible_in_batch_and_bounce_on_precedes_bounce_event lib daily child-process
+sunrise-client game::native_hooks::block_landing::landing_crossing_tests::fall_on_and_bounce_on_lend_live_server_host_and_apply_writes_immediately lib daily child-process
 sunrise-client game::native_hooks::book_screen::lifecycle_tests::authoritative_custom_book_rebuilds_cached_geometry_without_observe_screen lib daily resources
 sunrise-client game::native_hooks::book_screen::lifecycle_tests::entering_inventory_requests_catalogue_for_preinstalled_bound_screen lib daily resources
 sunrise-client game::native_hooks::camera_type::camera_type_tests::a_client_mod_picks_the_camera_type_f5_cycles_to lib daily resources

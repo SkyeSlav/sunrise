@@ -94,6 +94,11 @@ impl Probe {
         *self.draw.lock().unwrap() = host.with_random(|random| random.next_long());
         let _ = VALUE.set(host.attachments(), Holder::Level, 314);
     }
+
+    fn progress_server(&self, host: &mut dyn mod_api::ServerHost, level: mod_api::LevelRef) {
+        *self.draw.lock().unwrap() = level.with_random(host, |random| random.next_long());
+        let _ = VALUE.set(host.attachments(), Holder::Level, 314);
+    }
 }
 
 fn assert_panic_report(mod_id: &'static str, hook: &'static str) {
@@ -165,15 +170,11 @@ impl mod_api::MobEffectPart for GoalPart {
 struct FailingLanding(Arc<Probe>);
 #[mod_api::sunrise_part]
 impl mod_api::BlockPart for FailingLanding {
-    fn fall_on(
-        &self,
-        host: &mut dyn mod_api::LevelRandomHost,
-        event: &mut mod_api::FallOnEvent<'_>,
-    ) {
-        if event.entity == 72 {
+    fn fall_on(&self, host: &mut dyn mod_api::ServerHost, event: &mut mod_api::FallOnEvent) {
+        if event.entity.id() == 72 {
             self.0
                 .enter_failing(Proposal::FallMultiplier(event.damage_multiplier));
-            self.0.progress(host);
+            self.0.progress_server(host, event.level);
             event.damage_multiplier = 0.0;
             panic!("borrowed landing callback");
         }
@@ -183,8 +184,8 @@ impl mod_api::BlockPart for FailingLanding {
 struct HealthyLanding(Arc<Probe>);
 #[mod_api::sunrise_part]
 impl mod_api::BlockPart for HealthyLanding {
-    fn fall_on(&self, _: &mut dyn mod_api::LevelRandomHost, event: &mut mod_api::FallOnEvent<'_>) {
-        if event.entity == 72 {
+    fn fall_on(&self, _: &mut dyn mod_api::ServerHost, event: &mut mod_api::FallOnEvent) {
+        if event.entity.id() == 72 {
             self.0
                 .healthy_proposals
                 .lock()
@@ -626,13 +627,16 @@ fn run_fixture(family: Family, output: Output, dim: Dim) {
                 queue_egg(game);
                 game.clear_entities();
             }
-            let journal = Journal::default();
             let owner = Owner {
                 dimension: game.dim.key(),
                 kind: Kind::Mob,
             };
-            game.mobs
-                .bind_residency(&journal, owner, |m| (m.id, m.join));
+            let local_journal = (family != Family::Landing).then(|| {
+                let journal = Journal::default();
+                game.mobs
+                    .bind_residency(&journal, owner, |m| (m.id, m.join));
+                journal
+            });
             let ids: &[u32] = match output {
                 Output::Push => &[70, 71, 72],
                 Output::Mixed => &[71, 72, 73],
@@ -762,23 +766,25 @@ fn run_fixture(family: Family, output: Output, dim: Dim) {
                 }
             }
 
-            let mut pending = Vec::new();
-            journal.drain_into(&mut pending);
-            let (mut depth, mut lifts) = (0usize, 0usize);
-            for e in pending {
-                assert_eq!(e.owner, owner);
-                match e.change {
-                    Change::Lifted => {
-                        depth += 1;
-                        lifts += 1;
+            if let Some(journal) = &local_journal {
+                let mut pending = Vec::new();
+                journal.drain_into(&mut pending);
+                let (mut depth, mut lifts) = (0usize, 0usize);
+                for e in pending {
+                    assert_eq!(e.owner, owner);
+                    match e.change {
+                        Change::Lifted => {
+                            depth += 1;
+                            lifts += 1;
+                        }
+                        Change::Restored => depth = depth.checked_sub(1).unwrap(),
+                        _ => {}
                     }
-                    Change::Restored => depth = depth.checked_sub(1).unwrap(),
-                    _ => {}
+                    journal.push(e);
                 }
-                journal.push(e);
+                assert!(lifts > 0);
+                assert_eq!(depth, 0, "borrowed region was not restored");
             }
-            assert!(lifts > 0);
-            assert_eq!(depth, 0, "borrowed region was not restored");
             assert_eq!(
                 game.mobs.iter().map(|m| (m.id, m.join)).collect::<Vec<_>>(),
                 rows
@@ -811,20 +817,34 @@ fn run_fixture(family: Family, output: Output, dim: Dim) {
                 random.next_long(),
                 "level RNG position after the first tick"
             );
-            let mut table = EntityTable::new(journal);
-            for &(id, join) in &rows {
-                let found = table.entity_lookup(&owner.dimension, id, |at| {
-                    let m = &game.mobs[game.mobs.locate(at.join)?];
-                    Some(SourceEntity {
-                        id: m.id,
-                        value: m.join,
-                    })
-                });
-                assert!(
-                    matches!(found, EntityLookup::Found { location, value } if location.owner == owner && value == join)
-                );
+            let mut local_table = local_journal.map(EntityTable::new);
+            if let Some(table) = local_table.as_mut() {
+                for &(id, join) in &rows {
+                    let found = table.entity_lookup(&owner.dimension, id, |at| {
+                        let m = &game.mobs[game.mobs.locate(at.join)?];
+                        Some(SourceEntity {
+                            id: m.id,
+                            value: m.join,
+                        })
+                    });
+                    assert!(
+                        matches!(found, EntityLookup::Found { location, value } if location.owner == owner && value == join)
+                    );
+                }
+                table.end_tick().unwrap();
+            } else {
+                for &(id, _) in &rows {
+                    assert!(
+                        game.entity(id).is_some(),
+                        "resident entity {id} was lost after landing callback"
+                    );
+                }
+                game.resident_entities
+                    .table
+                    .borrow_mut()
+                    .end_tick()
+                    .unwrap();
             }
-            table.end_tick().unwrap();
 
             if unwind.is_some() {
                 assert!(
@@ -857,7 +877,15 @@ fn run_fixture(family: Family, output: Output, dim: Dim) {
                     !probe.posts.lock().unwrap().is_empty(),
                     "real post listener never ran on retry"
                 );
-                table.end_tick().unwrap();
+                if let Some(table) = local_table.as_mut() {
+                    table.end_tick().unwrap();
+                } else {
+                    game.resident_entities
+                        .table
+                        .borrow_mut()
+                        .end_tick()
+                        .unwrap();
+                }
                 if family == Family::MountedGoal {
                     assert_eq!(probe.calls.load(Ordering::SeqCst), 2);
                     eprintln!("BORROWED_MOUNTED_RETRY_OK:{dim:?}");
@@ -929,7 +957,15 @@ fn run_fixture(family: Family, output: Output, dim: Dim) {
             );
             assert!(take_hook_panics().is_empty());
             assert_eq!(probe.posts.lock().unwrap().as_slice(), ids);
-            table.end_tick().unwrap();
+            if let Some(table) = local_table.as_mut() {
+                table.end_tick().unwrap();
+            } else {
+                game.resident_entities
+                    .table
+                    .borrow_mut()
+                    .end_tick()
+                    .unwrap();
+            }
             assert_eq!(
                 VALUE
                     .get_existing(&mut game.world.attachments, Holder::Level)

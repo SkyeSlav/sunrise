@@ -153,37 +153,134 @@ impl Game<'_> {
                     break 'tick;
                 }
                 self.tick_saved_invulnerable_time(items[i].id);
-                let item = &mut items[i];
-                let mut at_turn = |item: &mut ItemEntity| {
-                    // `getEntityCollisions(entity, bounds.expandTowards(movement))`: the boxes around
-                    // where the item can reach this tick.
-                    obstacles.near(ahead::reach(item), &mut nearby);
-                    // ItemEntity.tick's noPhysics (servers only): out of a block, a solid entity
-                    // or the border, placed or closed on it, towards the closest open side (#1252).
+                let (no_physics, alive, discarded, entered) = if let Some(moved) =
+                    moves.take(i, &mut items[i], |item| {
+                        // `getEntityCollisions(entity, bounds.expandTowards(movement))`: the boxes around
+                        // where the item can reach this tick.
+                        obstacles.near(ahead::reach(item), &mut nearby);
+                        // ItemEntity.tick's noPhysics (servers only): out of a block, a solid entity
+                        // or the border, placed or closed on it, towards the closest open side (#1252).
+                        let no_physics = merging
+                            && item.inside_block(
+                                &self.world,
+                                self.collision,
+                                &nearby,
+                                Some(self.border.geometry()),
+                            );
+                        // `moveTowardsClosestSpace` draws the speed from the item's own random.
+                        let escape_speed = no_physics.then(|| item.random.next_float() * 0.2 + 0.1);
+                        let mut entered = Vec::new();
+                        let (alive, discarded) = self.tick_item_with_block_contacts(
+                            item,
+                            escape_speed,
+                            &nearby,
+                            false,
+                            &mut |splash| entered.push(splash),
+                        );
+                        (no_physics, alive, discarded, entered)
+                    }) {
+                    moved
+                } else {
+                    obstacles.near(ahead::reach(&items[i]), &mut nearby);
                     let no_physics = merging
-                        && item.inside_block(
+                        && items[i].inside_block(
                             &self.world,
                             self.collision,
                             &nearby,
                             Some(self.border.geometry()),
                         );
-                    // `moveTowardsClosestSpace` draws the speed from the item's own random.
-                    let escape_speed = no_physics.then(|| item.random.next_float() * 0.2 + 0.1);
+                    let escape_speed = no_physics.then(|| items[i].random.next_float() * 0.2 + 0.1);
                     let mut entered = Vec::new();
-                    let (alive, discarded) = self.tick_item_with_block_contacts(
-                        item,
-                        escape_speed,
-                        &nearby,
+                    let step =
+                        self.begin_item_move(&mut items[i], escape_speed, &nearby, &mut |splash| {
+                            entered.push(splash)
+                        });
+                    if let Some((on, distance)) = step.landed()
+                        && sunrise_client::block_contact::fall_listens(
+                            self.world.block(on.x, on.y, on.z),
+                        )
+                    {
+                        let (id, join) = (items[i].id, items[i].join);
+                        let given =
+                            self.give_items_back(items, &mut pass, i, round, |game, round| {
+                                game.item_fall_on(id, on, distance);
+                                if alone {
+                                    game.native_item_removals_flush(|item| {
+                                        if item.join > join {
+                                            round.not_ticked(item.id);
+                                        }
+                                    });
+                                    if !game.dropped.iter().any(|item| item.id == id) {
+                                        game.native_tick_post_one(round, id, native_ticks::ITEM);
+                                    }
+                                }
+                            });
+                        (items, next) = (given.items, given.next);
+                        let Some(at) = given.at else {
+                            for splash in entered {
+                                self.apply_item_splash(splash);
+                            }
+                            continue 'items;
+                        };
+                        i = at;
+                    }
+                    if let Some(response) =
+                        items[i].move_restitution(self.body_motion(&game_side!(self)), step)
+                    {
+                        if response
+                            .bounce
+                            .as_ref()
+                            .is_some_and(|b| sunrise_client::block_contact::bounce_listens(b.state))
+                        {
+                            let (id, join, feet) = (items[i].id, items[i].join, items[i].position);
+                            let mut velocity = response.velocity;
+                            let given =
+                                self.give_items_back(items, &mut pass, i, round, |game, round| {
+                                    velocity = game.finish_body_restitution(
+                                        (id, "minecraft:item"),
+                                        feet,
+                                        response,
+                                    );
+                                    if alone {
+                                        game.native_item_removals_flush(|item| {
+                                            if item.join > join {
+                                                round.not_ticked(item.id);
+                                            }
+                                        });
+                                        if !game.dropped.iter().any(|item| item.id == id) {
+                                            game.native_tick_post_one(
+                                                round,
+                                                id,
+                                                native_ticks::ITEM,
+                                            );
+                                        }
+                                    }
+                                });
+                            (items, next) = (given.items, given.next);
+                            let Some(at) = given.at else {
+                                for splash in entered {
+                                    self.apply_item_splash(splash);
+                                }
+                                continue 'items;
+                            };
+                            i = at;
+                            items[i].velocity = velocity;
+                        } else {
+                            let (id, pos) = (items[i].id, items[i].position);
+                            items[i].velocity =
+                                self.finish_body_restitution((id, "minecraft:item"), pos, response);
+                        }
+                    }
+                    let (alive, discarded) = self.finish_item_after_restitution(
+                        &mut items[i],
+                        step,
                         false,
+                        no_physics,
                         &mut |splash| entered.push(splash),
                     );
                     (no_physics, alive, discarded, entered)
                 };
-                let (no_physics, alive, discarded, entered) =
-                    match moves.take(i, item, &mut at_turn) {
-                        Some(moved) => moved,
-                        None => at_turn(item),
-                    };
+                let item = &mut items[i];
                 // Entity.doWaterSplashEffect: the server plays the sound (broadcast
                 // to clients). Its addParticle is empty.
                 for splash in entered {

@@ -52,12 +52,31 @@ fn java_max(a: f64, b: f64) -> f64 {
         a.max(b)
     }
 }
+/// A bounce paused right before `Block.bounceOn` so the owning level can lend `&mut dyn ServerHost`.
+#[derive(Clone, Copy, Debug)]
+pub struct BouncePause {
+    pub block: BlockStateId,
+    pub position: BlockPos,
+    pub fall_distance: f64,
+    pub movement: Vec3,
+}
+
 /// Provider errors preserve already performed effects; no rollback is attempted.
 /// Call only when Entity.move's simulation/collision guards request restitution.
 pub fn restitute_movement<W: RestitutionWorld>(
     world: &mut W,
     input: RestitutionInput,
 ) -> Result<(), W::Error> {
+    let _ = restitute_movement_until_bounce(world, input, |_| false)?;
+    Ok(())
+}
+
+/// Run `restitute_movement`, suspending right before `bounce_on` when `pause_bounce(block)` is true.
+pub fn restitute_movement_until_bounce<W: RestitutionWorld>(
+    world: &mut W,
+    input: RestitutionInput,
+    pause_bounce: impl FnOnce(BlockStateId) -> bool,
+) -> Result<Option<BouncePause>, W::Error> {
     let mut bounce = if world.suppressing_bounce()? {
         0.0
     } else {
@@ -101,9 +120,28 @@ pub fn restitute_movement<W: RestitutionWorld>(
     }
     if emit {
         let position = world.movement_support_position()?;
+        if pause_bounce(input.block) {
+            return Ok(Some(BouncePause {
+                block: input.block,
+                position,
+                fall_distance: input.fall_distance,
+                movement: velocity,
+            }));
+        }
         velocity = world.bounce_on(input.block, position, input.fall_distance, velocity)?;
         world.bounce_event()?;
         world.mark_position_for_sync();
     }
+    world.set_velocity(velocity)?;
+    Ok(None)
+}
+
+/// Resume `restitute_movement_until_bounce` after the owning level ran `Block.bounceOn`.
+pub fn finish_bounce_restitution<W: RestitutionWorld>(
+    world: &mut W,
+    velocity: Vec3,
+) -> Result<(), W::Error> {
+    world.bounce_event()?;
+    world.mark_position_for_sync();
     world.set_velocity(velocity)
 }

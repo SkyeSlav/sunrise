@@ -22,7 +22,10 @@ use sunrise_world::{
     fluid::{FluidKind, FluidState},
     fluid_flow::FluidFlowWorld,
     move_gate::MoveGate,
-    movement_restitution::{RestitutionInput, RestitutionWorld, restitute_movement},
+    movement_restitution::{
+        RestitutionInput, RestitutionWorld, finish_bounce_restitution,
+        restitute_movement_until_bounce,
+    },
     registry::BlockStateId,
 };
 #[path = "climbing.rs"]
@@ -407,8 +410,28 @@ enum TravelStop {
 /// What the owning level must do before the mob's move can continue.
 pub enum MovementAction {
     Trample(FarmlandTrample),
+    FallOn(MobFallOn),
+    BounceOn(MobBounceOn),
     SettleHit,
     Passengers(PassengerFall),
+}
+
+/// A mob landing suspended right before `BlockPart::fall_on` so Game can lend `&mut dyn ServerHost`.
+#[derive(Clone, Copy, Debug)]
+pub struct MobFallOn {
+    pub state: BlockStateId,
+    pub position: BlockPos,
+    pub distance: f64,
+    pub multiplier: f32,
+}
+
+/// A mob bounce suspended right before `BlockPart::bounce_on` so Game can lend `&mut dyn ServerHost`.
+#[derive(Clone, Copy, Debug)]
+pub struct MobBounceOn {
+    pub state: BlockStateId,
+    pub position: BlockPos,
+    pub fall_distance: f64,
+    pub movement: Vec3,
 }
 
 /// The operands already selected for `Entity.propagateFallToPassengers`.
@@ -421,8 +444,39 @@ pub struct PassengerFall {
 impl TravelPause {
     pub(super) fn action(&self) -> MovementAction {
         match &self.0 {
-            TravelStop::Move { movement, .. } => movement.fall.action(),
+            TravelStop::Move { movement, .. } => match &movement.stage {
+                MoveStage::Fall(fall) => fall.action(),
+                MoveStage::Bounce(bounce) => MovementAction::BounceOn(*bounce),
+            },
             TravelStop::AfterHit => MovementAction::SettleHit,
+        }
+    }
+
+    pub(super) fn set_fall_on(&mut self, distance: f64, multiplier: f32) {
+        if let TravelStop::Move {
+            movement:
+                MovePause {
+                    stage: MoveStage::Fall(fall),
+                    ..
+                },
+            ..
+        } = &mut self.0
+        {
+            fall.set_fall_on(distance, multiplier);
+        }
+    }
+
+    pub(super) fn set_bounce_on(&mut self, movement: Vec3) {
+        if let TravelStop::Move {
+            movement:
+                MovePause {
+                    stage: MoveStage::Bounce(bounce),
+                    ..
+                },
+            ..
+        } = &mut self.0
+        {
+            bounce.movement = movement;
         }
     }
 
@@ -436,22 +490,49 @@ impl TravelPause {
         let TravelStop::Move { movement, tail } = self.0 else {
             return ControlFlow::Continue(());
         };
-        if let Some(fall) = mob.resume_fall(w, level, events, movement.fall) {
-            return ControlFlow::Break(Self(TravelStop::Move {
-                movement: MovePause { fall, ..movement },
-                tail,
-            }));
-        }
-        if !mob.removed {
-            mob.finish_move(
-                w,
-                level,
-                movement.wanted,
-                movement.moved,
-                movement.effect,
-                events,
-            );
-            tail.finish(mob, w, level, events, true)?;
+        let MovePause {
+            stage,
+            wanted,
+            moved,
+            effect,
+        } = movement;
+        match stage {
+            MoveStage::Fall(fall) => {
+                if let Some(fall) = mob.resume_fall(w, level, events, fall) {
+                    return ControlFlow::Break(Self(TravelStop::Move {
+                        movement: MovePause {
+                            stage: MoveStage::Fall(fall),
+                            wanted,
+                            moved,
+                            effect,
+                        },
+                        tail,
+                    }));
+                }
+                if !mob.removed {
+                    if let Some(bounce) =
+                        mob.finish_move_until_bounce(w, wanted, moved, effect, events, true)
+                    {
+                        return ControlFlow::Break(Self(TravelStop::Move {
+                            movement: MovePause {
+                                stage: MoveStage::Bounce(bounce),
+                                wanted,
+                                moved,
+                                effect,
+                            },
+                            tail,
+                        }));
+                    }
+                    tail.finish(mob, w, level, events, true)?;
+                }
+            }
+            MoveStage::Bounce(bounce) => {
+                if !mob.removed {
+                    mob.finish_bounce_restitution(w, bounce.movement);
+                    mob.finish_move_after_restitution(w, moved, events);
+                    tail.finish(mob, w, level, events, true)?;
+                }
+            }
         }
         ControlFlow::Continue(())
     }
@@ -459,10 +540,16 @@ impl TravelPause {
 
 #[derive(Debug)]
 struct MovePause {
-    fall: FallPause,
+    stage: MoveStage,
     wanted: Vec3,
     moved: Vec3,
     effect: (BlockPos, BlockStateId),
+}
+
+#[derive(Debug)]
+enum MoveStage {
+    Fall(FallPause),
+    Bounce(MobBounceOn),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -474,6 +561,7 @@ enum LandingOwner {
 #[derive(Debug)]
 enum FallPause {
     Trample(FarmlandTrample),
+    DoneFallOn(MobFallOn),
     Hurt { block: FallenOn, stop: FallHurtStop },
 }
 
@@ -481,9 +569,27 @@ impl FallPause {
     fn action(&self) -> MovementAction {
         match self {
             Self::Trample(trample) => MovementAction::Trample(*trample),
-            Self::Hurt { stop, .. } => stop
-                .passengers()
-                .map_or(MovementAction::SettleHit, MovementAction::Passengers),
+            Self::DoneFallOn(fall) => MovementAction::FallOn(*fall),
+            Self::Hurt { stop, .. } => match stop {
+                FallHurtStop::FallOn(fall, _) => MovementAction::FallOn(*fall),
+                _ => stop
+                    .passengers()
+                    .map_or(MovementAction::SettleHit, MovementAction::Passengers),
+            },
+        }
+    }
+
+    fn set_fall_on(&mut self, distance: f64, multiplier: f32) {
+        match self {
+            Self::DoneFallOn(fall)
+            | Self::Hurt {
+                stop: FallHurtStop::FallOn(fall, _),
+                ..
+            } => {
+                fall.distance = distance;
+                fall.multiplier = multiplier;
+            }
+            _ => {}
         }
     }
 }
@@ -495,16 +601,31 @@ impl ClientMovedFall {
     pub fn action(&self) -> MovementAction {
         self.0.action()
     }
+
+    pub fn set_fall_on(&mut self, distance: f64, multiplier: f32) {
+        self.0.set_fall_on(distance, multiplier);
+    }
 }
 
 #[derive(Debug)]
 struct FallenOn {
+    state: BlockStateId,
     pos: [i32; 3],
     tail: FallDamageTail,
 }
 
 #[derive(Clone, Copy, Debug)]
+enum MobFallAfter {
+    Canceled,
+    Continue {
+        source: super::DamageKind,
+        horse: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
 enum FallHurtStop {
+    FallOn(MobFallOn, MobFallAfter),
     BeforeOwnHurt(PassengerFall, super::DamageKind),
     AfterHurt(Option<PassengerFall>),
     AfterHorsePassengers(PassengerFall),
@@ -514,7 +635,7 @@ impl FallHurtStop {
     fn passengers(self) -> Option<PassengerFall> {
         match self {
             Self::BeforeOwnHurt(fall, _) | Self::AfterHorsePassengers(fall) => Some(fall),
-            Self::AfterHurt(_) => None,
+            Self::FallOn(..) | Self::AfterHurt(_) => None,
         }
     }
 }
@@ -1006,26 +1127,46 @@ impl Mob {
         let effect = self.restitution_contact(w);
         if let Some(fall) = self.species_check_fall_damage(w, level, moved, effect, events, owner) {
             return Some(MovePause {
-                fall,
+                stage: MoveStage::Fall(fall),
                 wanted,
                 moved,
                 effect,
             });
         }
-        self.finish_move(w, level, wanted, moved, effect, events);
+        if let Some(bounce) = self.finish_move_until_bounce(w, wanted, moved, effect, events, pause)
+        {
+            return Some(MovePause {
+                stage: MoveStage::Bounce(bounce),
+                wanted,
+                moved,
+                effect,
+            });
+        }
         None
     }
 
-    fn finish_move(
+    fn finish_move_until_bounce(
         &mut self,
         w: &MobWorld,
-        level: &mut DamageLevel<'_>,
         wanted: Vec3,
         moved: Vec3,
         effect: (BlockPos, BlockStateId),
         events: &mut Vec<MobEvent>,
+        pause: bool,
+    ) -> Option<MobBounceOn> {
+        if let Some(bounce) = self.restitute_captured(w, wanted, moved, effect, pause) {
+            return Some(bounce);
+        }
+        self.finish_move_after_restitution(w, moved, events);
+        None
+    }
+
+    fn finish_move_after_restitution(
+        &mut self,
+        w: &MobWorld,
+        moved: Vec3,
+        events: &mut Vec<MobEvent>,
     ) {
-        self.restitute_captured(w, level, wanted, moved, effect);
         self.movement_emission(w, moved, events);
         // Entity.move's last step: soul sand, honey and the like slow the
         // horizontal speed of whatever the mob stands in or on.
@@ -1042,14 +1183,31 @@ impl Mob {
     }
 
     /// `Entity.restituteMovementAfterCollisions`, shared by travel and piston pushes.
-    pub fn restitute_movement(
+    pub fn restitute_movement(&mut self, w: &MobWorld, wanted: Vec3, moved: Vec3) {
+        let _ = self.restitute_captured(w, wanted, moved, self.restitution_contact(w), false);
+    }
+
+    /// `Entity.restituteMovementAfterCollisions`, suspending before `BlockPart::bounce_on`
+    /// when `handoff` is true so Game can lend `&mut dyn ServerHost`.
+    pub fn restitute_movement_until_bounce(
         &mut self,
         w: &MobWorld,
-        level: &mut DamageLevel<'_>,
         wanted: Vec3,
         moved: Vec3,
-    ) {
-        self.restitute_captured(w, level, wanted, moved, self.restitution_contact(w));
+        handoff: bool,
+    ) -> Option<MobBounceOn> {
+        self.restitute_captured(w, wanted, moved, self.restitution_contact(w), handoff)
+    }
+
+    /// Complete a paused bounce after Game ran `BlockPart::bounce_on`.
+    pub fn finish_bounce_restitution(&mut self, w: &MobWorld, velocity: Vec3) {
+        let _ = finish_bounce_restitution(
+            &mut MobRestitution {
+                mob: self,
+                world: w,
+            },
+            velocity,
+        );
     }
     fn restitution_contact(&self, w: &MobWorld) -> (BlockPos, BlockStateId) {
         let [x, y, z] = self.block_on_legacy(w);
@@ -1058,11 +1216,11 @@ impl Mob {
     fn restitute_captured(
         &mut self,
         w: &MobWorld,
-        level: &mut DamageLevel<'_>,
         wanted: Vec3,
         moved: Vec3,
         (effect_position, block): (BlockPos, BlockStateId),
-    ) {
+        pause: bool,
+    ) -> Option<MobBounceOn> {
         let differs = |a: f64, b: f64| (b - a).abs() >= f64::from(1.0e-5_f32);
         let x_hit = differs(wanted.x, moved.x);
         let z_hit = differs(wanted.z, moved.z);
@@ -1085,15 +1243,23 @@ impl Mob {
             };
             // The port's phases cannot fail for a mob: a block outside the
             // registry reads as one with no bounce, never as an error.
-            let _ = restitute_movement(
+            if let Ok(Some(bounce)) = restitute_movement_until_bounce(
                 &mut MobRestitution {
                     mob: self,
                     world: w,
-                    level,
                 },
                 input,
-            );
+                |state| pause && crate::block_contact::bounce_listens(state),
+            ) {
+                return Some(MobBounceOn {
+                    state: bounce.block,
+                    position: bounce.position,
+                    fall_distance: bounce.fall_distance,
+                    movement: bounce.movement,
+                });
+            }
         }
+        None
     }
     /// `Entity.getBlockSpeedFactor` at the mob's feet.
     fn block_speed_factor(&self, w: &MobWorld) -> f32 {
@@ -1507,7 +1673,17 @@ impl Mob {
             owner != LandingOwner::Synchronous,
         );
         let call = match result {
-            Ok(BlockFall::Done) => return None,
+            Ok(BlockFall::Done) => {
+                if owner == LandingOwner::Borrowed && crate::block_contact::fall_listens(state) {
+                    return Some(FallPause::DoneFallOn(MobFallOn {
+                        state,
+                        position,
+                        distance,
+                        multiplier: 0.0,
+                    }));
+                }
+                return None;
+            }
             Ok(BlockFall::Trample(trample)) => return Some(FallPause::Trample(trample)),
             Ok(BlockFall::Damage(call)) => Some(call),
             // A block outside the landing registry falls back to a plain fall.
@@ -1517,6 +1693,7 @@ impl Mob {
             w,
             level,
             events,
+            state,
             pos,
             call,
             distance,
@@ -1524,11 +1701,13 @@ impl Mob {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn start_block_fall(
         &mut self,
         w: &MobWorld,
         level: &mut DamageLevel<'_>,
         events: &mut Vec<MobEvent>,
+        state: BlockStateId,
         pos: [i32; 3],
         call: Option<FallDamageCall>,
         distance: f64,
@@ -1549,11 +1728,11 @@ impl Mob {
             distance,
             modifier,
             events,
-            Some((w, pos)),
+            Some((w, pos, state)),
             source,
             handoff,
         );
-        self.finish_block_fall(w, level, events, FallenOn { pos, tail }, result)
+        self.finish_block_fall(w, level, events, FallenOn { state, pos, tail }, result)
     }
 
     fn finish_block_fall(
@@ -1596,14 +1775,16 @@ impl Mob {
                     w,
                     level,
                     events,
+                    trample.state,
                     [p.x, p.y, p.z],
                     Some(trample.damage_call()),
                     trample.distance,
                     true,
                 )
             }
+            FallPause::DoneFallOn(_) => None,
             FallPause::Hurt { block, stop } => {
-                let contact = Some((w, block.pos));
+                let contact = Some((w, block.pos, block.state));
                 let result = self.resume_fall_hurt(level, events, contact, stop, true);
                 self.finish_block_fall(w, level, events, block, result)
             }
@@ -1624,27 +1805,6 @@ impl Mob {
     ) -> Option<ClientMovedFall> {
         self.resume_fall(w, level, events, fall.0)
             .map(ClientMovedFall)
-    }
-    fn mod_block_fall(
-        &self,
-        level: &mut DamageLevel<'_>,
-        contact: Option<(&MobWorld, [i32; 3])>,
-        distance: f64,
-        multiplier: f32,
-    ) -> (f64, f32) {
-        contact.map_or((distance, multiplier), |(w, p)| {
-            crate::block_contact::fall(
-                level,
-                crate::block_contact::Contact {
-                    entity: self.id as i32,
-                    kind: &self.kind.id,
-                    state: w.world.block(p[0], p[1], p[2]),
-                    position: sunrise_core::position::BlockPos::new(p[0], p[1], p[2]),
-                },
-                distance,
-                multiplier,
-            )
-        })
     }
     /// `LivingEntity.causeFallDamage`: a fall of `distance` blocks at `modifier`
     /// (its own landing, or a vehicle's passed on by `propagateFallToPassengers`)
@@ -1721,13 +1881,21 @@ impl Mob {
         source: super::DamageKind,
     ) -> bool {
         match self.begin_fall_hurt(
-            context, level, distance, modifier, events, contact, source, false,
+            context,
+            level,
+            distance,
+            modifier,
+            events,
+            contact.map(|(w, p)| (w, p, BlockStateId(0))),
+            source,
+            false,
         ) {
             Ok(hurt) => hurt,
             Err(_) => unreachable!("a synchronous fall never yields to an owner"),
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn begin_fall_hurt(
         &mut self,
         context: &LoopContext,
@@ -1735,7 +1903,7 @@ impl Mob {
         distance: f64,
         modifier: f32,
         events: &mut Vec<MobEvent>,
-        contact: Option<(&MobWorld, [i32; 3])>,
+        contact: Option<(&MobWorld, [i32; 3], BlockStateId)>,
         source: super::DamageKind,
         handoff: bool,
     ) -> Result<bool, FallHurtStop> {
@@ -1769,6 +1937,8 @@ impl Mob {
         let landed = distance;
         let mut distance = distance;
         let mut modifier = modifier;
+        let fall_contact =
+            contact.filter(|&(_, _, state)| handoff && crate::block_contact::fall_listens(state));
         if !horse {
             let mut cancel = false;
             crate::landing::native_living_fall(
@@ -1780,23 +1950,61 @@ impl Mob {
                 &mut cancel,
             );
             if cancel {
-                self.mod_block_fall(level, contact, landed, 0.0);
+                if let Some((_, p, state)) = fall_contact {
+                    return Err(FallHurtStop::FallOn(
+                        MobFallOn {
+                            state,
+                            position: BlockPos::new(p[0], p[1], p[2]),
+                            distance: landed,
+                            multiplier: 0.0,
+                        },
+                        MobFallAfter::Canceled,
+                    ));
+                }
                 return Ok(false);
             }
         }
         // Entity.causeFallDamage: nothing happens to a fall immune entity, nor
         // to those on it.
         if self.kind.flags.fall_immune {
-            self.mod_block_fall(level, contact, landed, 0.0);
+            if let Some((_, p, state)) = fall_contact {
+                return Err(FallHurtStop::FallOn(
+                    MobFallOn {
+                        state,
+                        position: BlockPos::new(p[0], p[1], p[2]),
+                        distance: landed,
+                        multiplier: 0.0,
+                    },
+                    MobFallAfter::Canceled,
+                ));
+            }
             return Ok(false);
         }
-        let (distance, modifier) = self.mod_block_fall(level, contact, distance, modifier);
+        if let Some((_, p, state)) = fall_contact {
+            return Err(FallHurtStop::FallOn(
+                MobFallOn {
+                    state,
+                    position: BlockPos::new(p[0], p[1], p[2]),
+                    distance,
+                    multiplier: modifier,
+                },
+                MobFallAfter::Continue { source, horse },
+            ));
+        }
         let fall = PassengerFall { distance, modifier };
         // LivingEntity.causeFallDamage lets the riders fall first.
         if !horse && self.fall_to_passengers(fall, events, handoff) {
             return Err(FallHurtStop::BeforeOwnHurt(fall, source));
         }
-        self.hurt_from_fall(level, fall, events, contact, source, horse, handoff)
+        self.hurt_from_fall(
+            level,
+            fall,
+            events,
+            contact.map(|(w, p, _)| (w, p)),
+            source,
+            horse,
+            handoff,
+        )
     }
 
     fn hurt_from_fall(
@@ -1857,20 +2065,32 @@ impl Mob {
         &mut self,
         level: &mut DamageLevel<'_>,
         events: &mut Vec<MobEvent>,
-        contact: Option<(&MobWorld, [i32; 3])>,
+        contact: Option<(&MobWorld, [i32; 3], BlockStateId)>,
         stop: FallHurtStop,
         handoff: bool,
     ) -> Result<bool, FallHurtStop> {
+        let plain_contact = contact.map(|(w, p, _)| (w, p));
         match stop {
+            FallHurtStop::FallOn(_, MobFallAfter::Canceled) => Ok(false),
+            FallHurtStop::FallOn(fall_on, MobFallAfter::Continue { source, horse }) => {
+                let fall = PassengerFall {
+                    distance: fall_on.distance,
+                    modifier: fall_on.multiplier,
+                };
+                if !horse && self.fall_to_passengers(fall, events, handoff) {
+                    return Err(FallHurtStop::BeforeOwnHurt(fall, source));
+                }
+                self.hurt_from_fall(level, fall, events, plain_contact, source, horse, handoff)
+            }
             FallHurtStop::BeforeOwnHurt(fall, source) => {
-                self.hurt_from_fall(level, fall, events, contact, source, false, handoff)
+                self.hurt_from_fall(level, fall, events, plain_contact, source, false, handoff)
             }
             FallHurtStop::AfterHurt(Some(fall)) => {
-                self.finish_horse_fall(fall, events, contact, handoff)
+                self.finish_horse_fall(fall, events, plain_contact, handoff)
             }
             FallHurtStop::AfterHurt(None) => Ok(true),
             FallHurtStop::AfterHorsePassengers(_) => {
-                self.block_fall_sound(contact, events);
+                self.block_fall_sound(plain_contact, events);
                 Ok(true)
             }
         }
@@ -2691,12 +2911,11 @@ pub fn client_water_splash(mob: &mut Mob, out: &mut Vec<MobEvent>) {
 /// mob that never sneaks. The phases themselves are
 /// `movement_restitution::restitute_movement`, the same port the player and
 /// dropped items use.
-struct MobRestitution<'a, 'w, 'l> {
+struct MobRestitution<'a, 'w> {
     mob: &'a mut Mob,
     world: &'a MobWorld<'w>,
-    level: &'a mut DamageLevel<'l>,
 }
-impl<'a, 'w, 'l> MobRestitution<'a, 'w, 'l> {
+impl<'a, 'w> MobRestitution<'a, 'w> {
     /// The block's movement data: its coefficients and its bounce tag.
     fn movement(
         &self,
@@ -2705,7 +2924,7 @@ impl<'a, 'w, 'l> MobRestitution<'a, 'w, 'l> {
         self.world.movement.get(state).map_err(|_| ())
     }
 }
-impl RestitutionWorld for MobRestitution<'_, '_, '_> {
+impl RestitutionWorld for MobRestitution<'_, '_> {
     // The block data cannot fail here: a state the registry does not know
     // reads as a block with no bounce, never as an error.
     type Error = ();
@@ -2774,22 +2993,12 @@ impl RestitutionWorld for MobRestitution<'_, '_, '_> {
     /// player too and the game's sound code resolves neither).
     fn bounce_on(
         &mut self,
-        state: BlockStateId,
-        position: BlockPos,
-        fall_distance: f64,
+        _state: BlockStateId,
+        _position: BlockPos,
+        _fall_distance: f64,
         movement: Vec3,
     ) -> Result<Vec3, ()> {
-        Ok(crate::block_contact::bounce(
-            self.level,
-            crate::block_contact::Contact {
-                entity: self.mob.id as i32,
-                kind: &self.mob.kind.id,
-                state,
-                position,
-            },
-            fall_distance,
-            movement,
-        ))
+        Ok(movement)
     }
     fn bounce_event(&mut self) -> Result<(), ()> {
         Ok(())
@@ -3301,7 +3510,7 @@ mod tests {
             m.velocity = Vec3::new(0.0, -1.0, 0.0);
             assert_eq!(m.on_pos(0.2), [1, 0, 0]);
             assert_eq!(m.block_on_legacy(&w), [0, 0, 0]);
-            m.restitute_movement(&w, level, Vec3::new(0.0, -1.0, 0.0), Vec3::ZERO);
+            m.restitute_movement(&w, Vec3::new(0.0, -1.0, 0.0), Vec3::ZERO);
             assert!(
                 (m.velocity.y - expected).abs() < 1.0e-6,
                 "{ground}: {}",

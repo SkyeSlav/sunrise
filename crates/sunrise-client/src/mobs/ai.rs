@@ -123,8 +123,6 @@ mod inside_walk_tests {
             pass_listens: |_| false,
             fall_listens: |_| false,
             bounce_listens: |_| false,
-            fall_on: |_, _, _, _, _, _| {},
-            bounce_on: |_, _, _, _, _| {},
             // The production binding's own shape: the whole callback staged,
             // a panic contained with it.
             inside_fire: |_level,
@@ -1122,6 +1120,10 @@ pub enum Pause {
     AfterDamage(DamageResume),
     /// A landing's farmland decision, before its superclass hurt.
     Trample(sunrise_world::block_landing::FarmlandTrample),
+    /// A landing's live `BlockPart::fall_on`, before fall damage and ground hit.
+    FallOn(super::living::MobFallOn),
+    /// A bounce's live `BlockPart::bounce_on`, before `BOUNCE` event and velocity write.
+    BounceOn(super::living::MobBounceOn),
     /// A vehicle must propagate the selected fall before this move continues.
     FallToPassengers(super::living::PassengerFall),
 }
@@ -1213,6 +1215,22 @@ pub struct MobMovement {
     was_on_fire: bool,
 }
 
+impl MobMovement {
+    pub fn set_fall_on(&mut self, distance: f64, multiplier: f32) {
+        match &mut self.phase {
+            MovementPhase::Goal(_, goal) => goal.movement.set_fall_on(distance, multiplier),
+            MovementPhase::Travel(travel) => travel.set_fall_on(distance, multiplier),
+        }
+    }
+
+    pub fn set_bounce_on(&mut self, movement: Vec3) {
+        match &mut self.phase {
+            MovementPhase::Goal(_, goal) => goal.movement.set_bounce_on(movement),
+            MovementPhase::Travel(travel) => travel.set_bounce_on(movement),
+        }
+    }
+}
+
 fn pause_movement(
     m: &Mob,
     movement: &mut Option<MobMovement>,
@@ -1226,6 +1244,8 @@ fn pause_movement(
     use super::living::MovementAction;
     let pause = match travel.action() {
         MovementAction::Trample(trample) => Pause::Trample(trample),
+        MovementAction::FallOn(fall) => Pause::FallOn(fall),
+        MovementAction::BounceOn(bounce) => Pause::BounceOn(bounce),
         MovementAction::SettleHit => Pause::AfterDamage(DamageResume {
             join: m.join,
             tail: DamageTail::Movement,
@@ -1321,7 +1341,11 @@ pub fn tick(
                 resume_after_damage(m, w, level, events, resume, None)
             }
             TickProgress::Paused(
-                Pause::Equipment { .. } | Pause::Trample(_) | Pause::FallToPassengers(_),
+                Pause::Equipment { .. }
+                | Pause::Trample(_)
+                | Pause::FallOn(_)
+                | Pause::BounceOn(_)
+                | Pause::FallToPassengers(_),
             ) => unreachable!("a hostless tick cannot reach this pause"),
         };
     }

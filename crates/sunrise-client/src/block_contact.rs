@@ -8,10 +8,7 @@ use sunrise_core::{
     geometry::{Aabb, Axis, Direction, Vec3},
     position::BlockPos,
 };
-use sunrise_world::{
-    level::{InsideWrite, LandingWrite},
-    registry::BlockStateId,
-};
+use sunrise_world::{level::InsideWrite, registry::BlockStateId};
 
 /// `getEntityInsideCollisionShape` as the shared walk sees it: the whole block, boxes
 /// to sweep the move against, or nothing. This is the one point #1011 adds the Part's
@@ -450,12 +447,6 @@ pub struct Hooks {
     pub pass_listens: fn(BlockStateId) -> bool,
     pub fall_listens: fn(BlockStateId) -> bool,
     pub bounce_listens: fn(BlockStateId) -> bool,
-    /// `Block.fallOn`: change the distance and multiplier before calculating damage.
-    pub fall_on:
-        fn(&str, &mut DamageLevel<'_>, Contact<'_>, &mut f64, &mut f32, &mut Vec<LandingWrite>),
-    /// `Block.bounceOn`: change `movement`, the movement the bounce leaves the entity.
-    pub bounce_on:
-        fn(&str, &mut DamageLevel<'_>, Contact<'_>, f64, &mut sunrise_core::geometry::Vec3),
     /// `Block.entityInside` told mid-walk: the part's own contact on the level
     /// host, its whole callback staged into the fresh collector and write list,
     /// so only an answering callback's writes reach the walk.
@@ -487,30 +478,21 @@ pub static RESTITUTION_HOOKS: OnceLock<RestitutionHooks> = OnceLock::new();
 /// What a contact asked to keep until the entity's batch ends, delivered in
 /// the order it happened: the parts' `entity_inside` contacts themselves fire
 /// mid-walk now, on the shared inside sweep, so what stays here is the level
-/// writes they and the landings asked for, and the minecart passes.
+/// writes `entity_inside` and `step_on` asked for, and the minecart passes.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Pending {
-    Landed(Landed),
     MinecartPass(MinecartPass),
-    /// Level writes a mid-walk `entity_inside` part asked for, at the block it
+    /// Level writes a mid-walk `entity_inside` or `step_on` part asked for, at the block it
     /// touched: applied at the batch end, guarded on the touched state.
     InsideWritten(InsideWritten),
 }
 
-/// The level writes an `entity_inside` part asked for at one block.
+/// The level writes an `entity_inside` or `step_on` part asked for at one block.
 #[derive(Clone, Debug, PartialEq)]
 pub struct InsideWritten {
     pub state: BlockStateId,
     pub position: BlockPos,
     pub writes: Vec<InsideWrite>,
-}
-
-/// An entity that landed on a block whose Part asked for writes (`Block.fallOn`).
-#[derive(Clone, Debug, PartialEq)]
-pub struct Landed {
-    pub state: BlockStateId,
-    pub position: BlockPos,
-    pub writes: Vec<LandingWrite>,
 }
 
 /// A minecart on a rail whose Part listens to `minecart_pass`.
@@ -594,80 +576,11 @@ pub fn fall_listens(state: BlockStateId) -> bool {
     HOOKS.get().is_some_and(|hooks| (hooks.fall_listens)(state))
 }
 
-/// `Block.fallOn`: the fall inputs after the block Part's answer. Invalid numeric answers are ignored.
-/// Requested writes remain queued until the entity batch ends.
-pub fn fall(
-    level: &mut DamageLevel<'_>,
-    contact: Contact<'_>,
-    distance: f64,
-    multiplier: f32,
-) -> (f64, f32) {
-    let (Some(dimension), Some(hooks)) = (tick_level("fall"), HOOKS.get()) else {
-        return (distance, multiplier);
-    };
-    if !(hooks.fall_listens)(contact.state) {
-        return (distance, multiplier);
-    }
-    let mut answer_distance = distance;
-    let mut answer = multiplier;
-    let mut writes = Vec::new();
-    (hooks.fall_on)(
-        dimension,
-        level,
-        contact,
-        &mut answer_distance,
-        &mut answer,
-        &mut writes,
-    );
-    landed(contact.state, contact.position, writes);
-    (
-        if answer_distance.is_finite() {
-            answer_distance
-        } else {
-            distance
-        },
-        accepted_damage(answer, multiplier),
-    )
-}
-
-/// A part's multiplier answer: negative is zero, and a non-finite one is ignored.
-fn accepted_damage(answer: f32, kept: f32) -> f32 {
-    if answer.is_finite() {
-        answer.max(0.0)
-    } else {
-        kept
-    }
-}
-
-/// A contact Part's movement answer, ignored unless every component is finite.
-fn accepted_movement(
-    answer: sunrise_core::geometry::Vec3,
-    kept: sunrise_core::geometry::Vec3,
-) -> sunrise_core::geometry::Vec3 {
-    if answer.x.is_finite() && answer.y.is_finite() && answer.z.is_finite() {
-        answer
-    } else {
-        kept
-    }
-}
-
-/// `Block.bounceOn`: the movement a bounce off `contact`'s block leaves, after any part of
-/// that block changed it. A non-finite answer is ignored.
-pub fn bounce(
-    level: &mut DamageLevel<'_>,
-    contact: Contact<'_>,
-    fall_distance: f64,
-    movement: sunrise_core::geometry::Vec3,
-) -> sunrise_core::geometry::Vec3 {
-    let (Some(dimension), Some(hooks)) = (tick_level("bounce"), HOOKS.get()) else {
-        return movement;
-    };
-    if !(hooks.bounce_listens)(contact.state) {
-        return movement;
-    }
-    let mut answer = movement;
-    (hooks.bounce_on)(dimension, level, contact, fall_distance, &mut answer);
-    accepted_movement(answer, movement)
+/// Whether a part of the block `state` answers `bounce_on`.
+pub fn bounce_listens(state: BlockStateId) -> bool {
+    HOOKS
+        .get()
+        .is_some_and(|hooks| (hooks.bounce_listens)(state))
 }
 
 /// `Entity.getBlockBounciness`' `Block.getBounceRestitution` for the entity landing on
@@ -690,21 +603,7 @@ pub fn bounce_restitution(
     if answer.is_finite() { answer } else { own }
 }
 
-/// Keep the writes a landing on the block `state` at `position` asked for until the
-/// entity's batch ends; nothing is kept when none were asked.
-pub fn landed(state: BlockStateId, position: BlockPos, writes: Vec<LandingWrite>) {
-    if !writes.is_empty() {
-        PENDING.with_borrow_mut(|pending| {
-            pending.push(Pending::Landed(Landed {
-                state,
-                position,
-                writes,
-            }));
-        });
-    }
-}
-
-/// Keep the level writes a mid-walk `entity_inside` contact asked for until the
+/// Keep the level writes a mid-walk `entity_inside` or `step_on` contact asked for until the
 /// entity's batch ends; nothing is kept when none were asked.
 pub fn inside_written(state: BlockStateId, position: BlockPos, writes: Vec<InsideWrite>) {
     if !writes.is_empty() {

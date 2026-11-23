@@ -677,11 +677,24 @@ impl Game<'_> {
                         self.landing_dust(state, Vec3::new(at[0], at[1], at[2]), count, speed);
                     }
                 }
-                let Some(pause) = pause else {
+                let Some(mut pause) = pause else {
                     break;
                 };
                 match pause.action() {
                     MovementAction::Trample(trample) => self.trample_farmland(id, false, trample),
+                    MovementAction::FallOn(fall) => {
+                        let (distance, multiplier) = self.native_fall_on(
+                            id,
+                            fall.state,
+                            fall.position,
+                            fall.distance,
+                            fall.multiplier,
+                        );
+                        pause.set_fall_on(distance, multiplier);
+                    }
+                    MovementAction::BounceOn(_) => {
+                        unreachable!("client_moved_fall only runs fall damage, not restitution")
+                    }
                     MovementAction::SettleHit => {
                         self.finish_mob_damage_at(i);
                         self.settle_creaking_hurt(id);

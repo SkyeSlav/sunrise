@@ -4,8 +4,8 @@ use crate::game::minecarts::{CartKind, Minecart};
 use crate::game::native_entity_refs::tests::{with_client_game, with_game};
 use crate::game::remote_vehicles::PassengerSeat;
 use mod_api::{
-    BlockPart, BounceOnEvent, BounceRestitutionEvent, Flow, Hooks, LevelRandomHost, LevelSide,
-    Registrar, RegistrationContext,
+    BlockPart, BounceOnEvent, BounceRestitutionEvent, Flow, Hooks, LevelSide, Registrar,
+    RegistrationContext, ServerHost,
 };
 use std::sync::{Arc, Mutex};
 use sunrise_client::{chunk::Chunk, mobs::Mob};
@@ -27,11 +27,11 @@ impl BlockPart for PushBounce {
         event.factor = 1.0;
     }
 
-    fn bounce_on(&self, _: &mut dyn LevelRandomHost, event: &mut BounceOnEvent<'_>) {
+    fn bounce_on(&self, _: &mut dyn ServerHost, event: &mut BounceOnEvent<'_>) {
         self.landings
             .lock()
             .unwrap()
-            .push((event.entity, event.fall_distance));
+            .push((event.entity.id() as i32, event.fall_distance));
     }
 }
 

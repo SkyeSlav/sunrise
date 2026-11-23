@@ -293,31 +293,6 @@ impl FallEvent {
     }
 }
 impl MotionWorld<'_, '_, '_> {
-    fn mod_block_fall(
-        &mut self,
-        state: BlockStateId,
-        position: BlockPos,
-        distance: f64,
-        multiplier: f32,
-    ) -> (f64, f32) {
-        crate::block_contact::fall(
-            &mut crate::health::DamageLevel::of(
-                &mut *self.scene,
-                self.assets.registry,
-                self.tag_items,
-                self.block_registries,
-                self.damage_hooks,
-            ),
-            crate::block_contact::Contact {
-                entity: self.player.entity_id,
-                kind: "minecraft:player",
-                state,
-                position,
-            },
-            distance,
-            multiplier,
-        )
-    }
     fn fall_event(&mut self, event: FallEvent) {
         self.player.events.push(MotionEvent::Fall(event));
     }
@@ -326,14 +301,10 @@ impl MotionWorld<'_, '_, '_> {
         distance: f64,
         multiplier: f32,
         source: LandingDamage,
-        contact: Option<(BlockStateId, BlockPos, f64)>,
     ) -> Result<bool> {
         // Player.causeFallDamage exempts players with the mayfly ability,
         // including creative players who are currently walking.
         if self.player.may_fly {
-            if let Some((state, position, original_distance)) = contact {
-                self.mod_block_fall(state, position, original_distance, 0.0);
-            }
             // Only for mods' `player_flyable_fall`: without them the landing
             // stays as vanilla traces it.
             if !self.player.replaying && crate::native_client_hooks::has_mods() {
@@ -368,18 +339,13 @@ impl MotionWorld<'_, '_, '_> {
                 &mut cancel,
             );
         }
-        // A canceled fall still lands on the block (`Block.fallOn`).
         if cancel {
-            if let Some((state, position, original_distance)) = contact {
-                self.mod_block_fall(state, position, original_distance, 0.0);
-            }
             return Ok(false);
         }
         living_fall::cause_living_fall_damage(
             &mut FallCall {
                 world: self,
                 source,
-                contact,
             },
             distance,
             multiplier,
@@ -392,10 +358,36 @@ impl MotionWorld<'_, '_, '_> {
         BlockLandingWorld::cause_fall_damage(self, distance, multiplier, LandingDamage::Fall)
     }
 }
-/// The owner must handle the trample or settle the hurt before the landing can continue.
+/// The owner must handle the trample, live `fall_on`, or settle the hurt before the landing can continue.
 pub enum PlayerLandingPause {
     Trample(FarmlandTrample),
+    FallOn(PlayerFallOn),
     Damage(PlayerLandingTail),
+}
+
+/// A player landing suspended right before `BlockPart::fall_on` so Game can lend `&mut dyn ServerHost`.
+pub struct PlayerFallOn {
+    pub state: BlockStateId,
+    pub position: BlockPos,
+    pub distance: f64,
+    pub multiplier: f32,
+    continuation: PlayerFallContinuation,
+}
+
+enum PlayerFallContinuation {
+    Done,
+    Flyable {
+        distance: f64,
+        multiplier: f32,
+        tail: FallDamageTail,
+    },
+    Canceled {
+        tail: FallDamageTail,
+    },
+    Damage {
+        source: LandingDamage,
+        tail: FallDamageTail,
+    },
 }
 
 /// The selected block reaction and ground-hit tail, with no borrow of the player or level.
@@ -428,15 +420,21 @@ impl MotionWorld<'_, '_, '_> {
         {
             BlockFall::Done => {
                 // Some landing rules never call causeFallDamage.
-                if crate::block_contact::fall_listens(state) {
-                    self.mod_block_fall(state, position, distance, 0.0);
+                if handoff && crate::block_contact::fall_listens(state) {
+                    return Ok(Some(PlayerLandingPause::FallOn(PlayerFallOn {
+                        state,
+                        position,
+                        distance,
+                        multiplier: 0.0,
+                        continuation: PlayerFallContinuation::Done,
+                    })));
                 }
                 Ok(None)
             }
             BlockFall::Trample(trample) => Ok(Some(PlayerLandingPause::Trample(trample))),
-            BlockFall::Damage(call) => self
-                .apply_block_fall_damage(state, position, distance, call, handoff)
-                .map(|tail| tail.map(PlayerLandingPause::Damage)),
+            BlockFall::Damage(call) => {
+                self.apply_block_fall_damage(state, position, distance, call, handoff)
+            }
         }
     }
 
@@ -444,29 +442,140 @@ impl MotionWorld<'_, '_, '_> {
         &mut self,
         state: BlockStateId,
         position: BlockPos,
-        distance: f64,
+        original_distance: f64,
         call: FallDamageCall,
         handoff: bool,
-    ) -> Result<Option<PlayerLandingTail>> {
-        let contact =
-            crate::block_contact::fall_listens(state).then_some((state, position, distance));
-        let previous = std::mem::replace(&mut self.player.block_landing, contact);
-        let was_dead = self.player.health.dead;
-        let damaged = call.apply(self);
-        self.player.block_landing = previous;
-        let damaged = damaged.map_err(|err| err.to_string())?;
-        let tail = call.tail();
-        // Death still needs its owner when no mod listens to Post.
-        if handoff && (self.hit_needs_owner() || (!was_dead && self.player.health.dead)) {
-            return Ok(Some(PlayerLandingTail {
-                state,
-                tail,
-                damaged,
-            }));
+    ) -> Result<Option<PlayerLandingPause>> {
+        let listens = handoff && crate::block_contact::fall_listens(state);
+        if !listens {
+            let was_dead = self.player.health.dead;
+            let damaged = call.apply(self).map_err(|err| err.to_string())?;
+            let tail = call.tail();
+            if handoff && (self.hit_needs_owner() || (!was_dead && self.player.health.dead)) {
+                return Ok(Some(PlayerLandingPause::Damage(PlayerLandingTail {
+                    state,
+                    tail,
+                    damaged,
+                })));
+            }
+            tail.after_hurt(self, damaged)
+                .map_err(|err| err.to_string())?;
+            return Ok(None);
         }
-        tail.after_hurt(self, damaged)
-            .map_err(|err| err.to_string())?;
-        Ok(None)
+        let tail = call.tail();
+        let (mut distance, mut multiplier, source) =
+            call.resolve(self).map_err(|err| err.to_string())?;
+        if self.player.may_fly {
+            return Ok(Some(PlayerLandingPause::FallOn(PlayerFallOn {
+                state,
+                position,
+                distance: original_distance,
+                multiplier: 0.0,
+                continuation: PlayerFallContinuation::Flyable {
+                    distance,
+                    multiplier,
+                    tail,
+                },
+            })));
+        }
+        if distance >= 2.0 || distance.is_nan() {
+            let scaled = distance * 100.0;
+            let floor = scaled.floor();
+            let rounded = (if scaled - floor >= 0.5 {
+                floor + 1.0
+            } else {
+                floor
+            }) as i64;
+            self.fall_event(FallEvent::Statistic(rounded as i32));
+        }
+        let mut cancel = false;
+        if !self.player.replaying {
+            native_living_fall(
+                self.loop_context,
+                self.player.entity_id as u32,
+                "minecraft:player",
+                &mut distance,
+                &mut multiplier,
+                &mut cancel,
+            );
+        }
+        if cancel {
+            return Ok(Some(PlayerLandingPause::FallOn(PlayerFallOn {
+                state,
+                position,
+                distance: original_distance,
+                multiplier: 0.0,
+                continuation: PlayerFallContinuation::Canceled { tail },
+            })));
+        }
+        let distance = living_fall::apply_impulse_context(
+            &mut FallCall {
+                world: self,
+                source,
+            },
+            distance,
+        )?;
+        Ok(Some(PlayerLandingPause::FallOn(PlayerFallOn {
+            state,
+            position,
+            distance,
+            multiplier,
+            continuation: PlayerFallContinuation::Damage { source, tail },
+        })))
+    }
+
+    /// Resume after Game ran `BlockPart::fall_on` with live `ServerHost`, `LevelRef` and `EntityRef`.
+    pub fn finish_fall_on(&mut self, fall: PlayerFallOn) -> Result<Option<PlayerLandingTail>> {
+        match fall.continuation {
+            PlayerFallContinuation::Done => {
+                sunrise_world::living_landing::finish_living_landing(self, fall.state)?;
+                Ok(None)
+            }
+            PlayerFallContinuation::Flyable {
+                distance,
+                multiplier,
+                tail,
+            } => {
+                if !self.player.replaying && crate::native_client_hooks::has_mods() {
+                    self.fall_event(FallEvent::FlyableFall {
+                        distance,
+                        multiplier,
+                    });
+                }
+                tail.after_hurt(self, false)
+                    .map_err(|err| err.to_string())?;
+                sunrise_world::living_landing::finish_living_landing(self, fall.state)?;
+                Ok(None)
+            }
+            PlayerFallContinuation::Canceled { tail } => {
+                tail.after_hurt(self, false)
+                    .map_err(|err| err.to_string())?;
+                sunrise_world::living_landing::finish_living_landing(self, fall.state)?;
+                Ok(None)
+            }
+            PlayerFallContinuation::Damage { source, tail } => {
+                let was_dead = self.player.health.dead;
+                let damaged = living_fall::finish_living_fall_damage(
+                    &mut FallCall {
+                        world: self,
+                        source,
+                    },
+                    fall.distance,
+                    fall.multiplier,
+                )?;
+                if self.hit_needs_owner() || (!was_dead && self.player.health.dead) {
+                    return Ok(Some(PlayerLandingTail {
+                        state: fall.state,
+                        tail,
+                        damaged,
+                    }));
+                }
+                tail.after_hurt(self, damaged)
+                    .map_err(|err| err.to_string())?;
+                sunrise_world::living_landing::finish_living_landing(self, fall.state)?;
+                Ok(None)
+            }
+        }
     }
 
     /// Resume `FarmlandBlock.fallOn` after the game's lift and write (or refusal),
@@ -474,18 +583,18 @@ impl MotionWorld<'_, '_, '_> {
     pub fn finish_trample_fall(
         &mut self,
         trample: FarmlandTrample,
-    ) -> Result<Option<PlayerLandingTail>> {
-        let tail = self.apply_block_fall_damage(
+    ) -> Result<Option<PlayerLandingPause>> {
+        let pause = self.apply_block_fall_damage(
             trample.state,
             trample.position,
             trample.distance,
             trample.damage_call(),
             true,
         )?;
-        if tail.is_none() {
+        if pause.is_none() {
             sunrise_world::living_landing::finish_living_landing(self, trample.state)?;
         }
-        Ok(tail)
+        Ok(pause)
     }
 
     /// Finish the selected block reaction and the ground hit after death or protection and Post.
@@ -643,8 +752,7 @@ impl BlockLandingWorld for MotionWorld<'_, '_, '_> {
         multiplier: f32,
         source: LandingDamage,
     ) -> Result<bool> {
-        let contact = self.player.block_landing.take();
-        self.player_fall_damage(distance, multiplier, source, contact)
+        self.player_fall_damage(distance, multiplier, source)
     }
     fn known_sound(&self, s: LandingSound) -> SceneSound {
         SceneSound::Block(s)
@@ -737,7 +845,6 @@ impl BlockLandingWorld for MotionWorld<'_, '_, '_> {
 struct FallCall<'a, 'p, 'w, 'r> {
     world: &'a mut MotionWorld<'p, 'w, 'r>,
     source: LandingDamage,
-    contact: Option<(BlockStateId, BlockPos, f64)>,
 }
 impl LivingFallWorld for FallCall<'_, '_, '_, '_> {
     type Error = Box<dyn std::error::Error>;
@@ -769,14 +876,6 @@ impl LivingFallWorld for FallCall<'_, '_, '_, '_> {
         self.world
             .player
             .attribute("minecraft:fall_damage_multiplier")
-    }
-    fn modify_fall(&mut self, distance: f64, multiplier: f32) -> Result<(f64, f32)> {
-        Ok(self
-            .contact
-            .map_or((distance, multiplier), |(state, position, _)| {
-                self.world
-                    .mod_block_fall(state, position, distance, multiplier)
-            }))
     }
     fn fall_sound(&mut self, big: bool) -> Result<SceneSound> {
         self.world.living_fall_sound(big)

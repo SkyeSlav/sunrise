@@ -339,7 +339,7 @@ pub struct BlockClick<'a> {
 #[derive(Clone, Default)]
 pub struct StepOnWrites {
     server: bool,
-    block: Vec<LandingWrite>,
+    block: Vec<InsideWrite>,
     entity: Vec<EntityWrite>,
 }
 
@@ -357,7 +357,7 @@ impl StepOnWrites {
 impl StepOnEvent<'_> {
     // hidden: the game validates and drains one Part's outputs before invoking the next.
     #[doc(hidden)]
-    pub fn __take_writes(&mut self) -> (Vec<LandingWrite>, Vec<EntityWrite>) {
+    pub fn __take_writes(&mut self) -> (Vec<InsideWrite>, Vec<EntityWrite>) {
         (
             std::mem::take(&mut self.writes.block),
             std::mem::take(&mut self.writes.entity),
@@ -365,7 +365,7 @@ impl StepOnEvent<'_> {
     }
 
     /// Queue a write to the contacted block. Returns false on the client.
-    pub fn request(&mut self, write: LandingWrite) -> bool {
+    pub fn request(&mut self, write: InsideWrite) -> bool {
         if !self.writes.server {
             return false;
         }
@@ -383,14 +383,6 @@ impl StepOnEvent<'_> {
         }
         self.writes.entity.push(write);
         true
-    }
-}
-
-impl FallOnEvent<'_> {
-    /// Ask for a write at the block the entity landed on. It is applied once the entity's
-    /// batch has ticked, in the order asked, if the block is still the state it landed on.
-    pub fn request(&mut self, write: LandingWrite) {
-        self.writes.push(write);
     }
 }
 

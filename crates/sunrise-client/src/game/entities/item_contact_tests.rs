@@ -161,15 +161,11 @@ impl BlockPart for BounceProbe {
         event.factor = 0.67_f32;
     }
 
-    fn bounce_on(
-        &self,
-        _: &mut dyn mod_api::LevelRandomHost,
-        event: &mut mod_api::BounceOnEvent<'_>,
-    ) {
-        self.bounced
-            .lock()
-            .unwrap()
-            .push((event.entity, [event.pos.x, event.pos.y, event.pos.z]));
+    fn bounce_on(&self, _: &mut dyn mod_api::ServerHost, event: &mut mod_api::BounceOnEvent<'_>) {
+        self.bounced.lock().unwrap().push((
+            event.entity.id() as i32,
+            [event.pos.x, event.pos.y, event.pos.z],
+        ));
     }
 }
 
@@ -766,11 +762,11 @@ impl BlockPart for StepWrites {
             mod_api::LevelRandomSide::Server(level) => {
                 let state = level.block_state_id("minecraft:glass").unwrap();
                 assert!(event.write_entity(hurt));
-                assert!(event.request(mod_api::LandingWrite::SetBlock(state)));
+                assert!(event.request(mod_api::InsideWrite::SetBlock(state)));
             }
             mod_api::LevelRandomSide::Client(_) => {
                 assert!(!event.write_entity(hurt));
-                assert!(!event.request(mod_api::LandingWrite::DestroyBlock { drop: false }));
+                assert!(!event.request(mod_api::InsideWrite::DestroyBlock { drop: false }));
             }
         }
     }
@@ -1017,7 +1013,7 @@ struct StepAnswer<const ORDER: u8>(Option<mod_api::DamageTypeKey>);
 #[mod_api::sunrise_part]
 impl<const ORDER: u8> BlockPart for StepAnswer<ORDER> {
     fn step_on(&self, level: mod_api::LevelRandomSide<'_>, event: &mut mod_api::StepOnEvent<'_>) {
-        use mod_api::{EntityWrite, LandingWrite};
+        use mod_api::{EntityWrite, InsideWrite};
         let mod_api::LevelRandomSide::Server(level) = level else {
             return;
         };
@@ -1026,7 +1022,7 @@ impl<const ORDER: u8> BlockPart for StepAnswer<ORDER> {
                 event.movement[0] = 0.25;
                 let push = if event.pos.x == 9 { f64::MAX } else { 0.5 };
                 event.write_entity(EntityWrite::Push([push, 0.0, 0.0]));
-                event.request(LandingWrite::SetBlock(
+                event.request(InsideWrite::SetBlock(
                     level.block_state_id("minecraft:glass").unwrap(),
                 ));
             }
@@ -1037,14 +1033,14 @@ impl<const ORDER: u8> BlockPart for StepAnswer<ORDER> {
                     damage_type: self.0.unwrap(),
                     amount: 10.0,
                 });
-                event.request(LandingWrite::DestroyBlock { drop: false });
+                event.request(InsideWrite::DestroyBlock { drop: false });
                 match event.pos.x {
                     4 => {
                         let unknown = mod_api::__private::block_state_from_ordinal(
                             event.state.block(),
                             u16::MAX,
                         );
-                        event.request(LandingWrite::SetBlock(unknown));
+                        event.request(InsideWrite::SetBlock(unknown));
                     }
                     5 => {
                         event.write_entity(EntityWrite::SetMovement([f64::INFINITY, 0.0, 0.0]));

@@ -407,8 +407,6 @@ pub struct PlayerMotion {
     pub fall_distance: f64,
     /// The packet phase needs the first reset of a tracked server-player fall.
     pub record_fall_reset: bool,
-    /// The block fallOn currently running, consumed by its damage call.
-    pub(crate) block_landing: Option<(BlockStateId, BlockPos, f64)>,
     pub stuck_multiplier: Vec3,
     /// `Entity.pistonDeltas` and `pistonDeltasGameTime`: how far a moving
     /// block has pushed this entity this tick (0.51 at most on any axis).
@@ -1025,10 +1023,16 @@ pub struct MotionWorld<'p, 'w, 'r> {
     pub block_registries: Option<&'w crate::command::args::Registries>,
 }
 
-/// A player landing interrupted `Entity.move`, before restitution or auto-jump.
-pub struct PlayerMovePause {
-    pub landing: crate::landing::PlayerLandingPause,
-    pub movement: PlayerMoveTail,
+/// A player landing or bounce interrupted `Entity.move`, before restitution tail or auto-jump.
+pub enum PlayerMovePause {
+    Landing {
+        landing: crate::landing::PlayerLandingPause,
+        movement: PlayerMoveTail,
+    },
+    Bounce {
+        bounce: movement_restitution::BouncePause,
+        tail: PlayerBounceTail,
+    },
 }
 
 pub struct PlayerMoveTail {
@@ -1036,8 +1040,59 @@ pub struct PlayerMoveTail {
     auto_jump_from: Option<Vec3>,
 }
 
+pub struct PlayerBounceTail {
+    movement: entity_move::BounceTail,
+    auto_jump_from: Option<Vec3>,
+}
+
 impl PlayerMoveTail {
     pub fn finish(self, world: &mut MotionWorld<'_, '_, '_>) -> Result<()> {
+        self.movement.finish(world)?;
+        if let Some(before) = self.auto_jump_from {
+            world.auto_jump_after_move(before)?;
+        }
+        Ok(())
+    }
+
+    pub fn finish_until_bounce(
+        self,
+        world: &mut MotionWorld<'_, '_, '_>,
+        handoff: bool,
+    ) -> Result<Option<(movement_restitution::BouncePause, PlayerBounceTail)>> {
+        if let Some((bounce, movement)) =
+            self.movement
+                .finish_until_bounce(world, |world, state, p, x, z, resolved| {
+                    world.restitute_until_bounce(state, p, x, z, resolved, handoff)
+                })?
+        {
+            return Ok(Some((
+                bounce,
+                PlayerBounceTail {
+                    movement,
+                    auto_jump_from: self.auto_jump_from,
+                },
+            )));
+        }
+        if let Some(before) = self.auto_jump_from {
+            world.auto_jump_after_move(before)?;
+        }
+        Ok(None)
+    }
+}
+
+impl PlayerBounceTail {
+    pub fn finish(
+        self,
+        world: &mut MotionWorld<'_, '_, '_>,
+        bounce: movement_restitution::BouncePause,
+        velocity: Vec3,
+    ) -> Result<()> {
+        world.player.events.push(MotionEvent::Bounce {
+            state: bounce.block,
+            position: bounce.position,
+            fall_distance: bounce.fall_distance,
+        });
+        movement_restitution::finish_bounce_restitution(world, velocity)?;
         self.movement.finish(world)?;
         if let Some(before) = self.auto_jump_from {
             world.auto_jump_after_move(before)?;
@@ -2101,21 +2156,36 @@ impl MotionWorld<'_, '_, '_> {
         }
         let auto_jump_from = auto_jump.then_some(self.player.position);
         if handoff {
-            if let Some((landing, movement)) = entity_move::move_entity_until_landing(
+            match entity_move::move_entity_until(
                 self,
                 mover,
                 gate.delta(),
                 |world, dy, grounded, state, p| {
                     world.check_guest_fall_damage(dy, grounded, state, p)
                 },
+                |world, state, p, x, z, resolved| {
+                    world.restitute_until_bounce(state, p, x, z, resolved, true)
+                },
             )? {
-                return Ok(Some(PlayerMovePause {
-                    landing,
-                    movement: PlayerMoveTail {
-                        movement,
-                        auto_jump_from,
-                    },
-                }));
+                Some(entity_move::MovePause::Landing(landing, movement)) => {
+                    return Ok(Some(PlayerMovePause::Landing {
+                        landing,
+                        movement: PlayerMoveTail {
+                            movement,
+                            auto_jump_from,
+                        },
+                    }));
+                }
+                Some(entity_move::MovePause::Bounce(bounce, movement)) => {
+                    return Ok(Some(PlayerMovePause::Bounce {
+                        bounce,
+                        tail: PlayerBounceTail {
+                            movement,
+                            auto_jump_from,
+                        },
+                    }));
+                }
+                None => {}
             }
         } else {
             entity_move::move_entity(self, mover, gate.delta())?;
@@ -2130,6 +2200,43 @@ impl MotionWorld<'_, '_, '_> {
         let dx = (self.player.position.x - before.x) as f32;
         let dz = (self.player.position.z - before.z) as f32;
         self.update_auto_jump(dx, dz)
+    }
+
+    pub(crate) fn restitute_until_bounce(
+        &mut self,
+        state: BlockStateId,
+        position: BlockPos,
+        x: bool,
+        z: bool,
+        resolved: Vec3,
+        handoff: bool,
+    ) -> Result<Option<movement_restitution::BouncePause>> {
+        let input = RestitutionInput {
+            block: state,
+            effect_position: position,
+            collided_x: x,
+            collided_z: z,
+            vertical_collision: self.player.collision.vertical,
+            collision_below: self.player.collision.below,
+            living: true,
+            resolved_movement: resolved,
+            fall_distance: self.player.fall_distance,
+        };
+        let paused = movement_restitution::restitute_movement_until_bounce(self, input, |state| {
+            handoff && crate::block_contact::bounce_listens(state)
+        })?;
+        if let Some(ref bounce) = paused {
+            self.resources
+                .landing
+                .bounce_on(
+                    self,
+                    bounce.block,
+                    bounce.position,
+                    sunrise_world::block_landing::LandingEntityKind::Player,
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(paused)
     }
 }
 impl crate::auto_jump::AutoJumpWorld for MotionWorld<'_, '_, '_> {
@@ -2725,11 +2832,6 @@ impl RestitutionWorld for MotionWorld<'_, '_, '_> {
         fall_distance: f64,
         movement: Vec3,
     ) -> Result<Vec3> {
-        self.player.events.push(MotionEvent::Bounce {
-            state,
-            position,
-            fall_distance,
-        });
         self.resources
             .landing
             .bounce_on(
@@ -2739,23 +2841,12 @@ impl RestitutionWorld for MotionWorld<'_, '_, '_> {
                 sunrise_world::block_landing::LandingEntityKind::Player,
             )
             .map_err(|e| e.to_string())?;
-        Ok(crate::block_contact::bounce(
-            &mut crate::health::DamageLevel::of(
-                &mut *self.scene,
-                self.assets.registry,
-                self.tag_items,
-                self.block_registries,
-                self.damage_hooks,
-            ),
-            crate::block_contact::Contact {
-                entity: self.player.entity_id,
-                kind: "minecraft:player",
-                state,
-                position,
-            },
+        self.player.events.push(MotionEvent::Bounce {
+            state,
+            position,
             fall_distance,
-            movement,
-        ))
+        });
+        Ok(movement)
     }
     fn bounce_event(&mut self) -> Result<()> {
         Ok(())

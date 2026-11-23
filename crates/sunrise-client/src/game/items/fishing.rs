@@ -1464,14 +1464,7 @@ impl Game<'_> {
                 h.position.y + moved.y,
                 h.position.z + moved.z,
             );
-            self.move_bobber_response(
-                h.id,
-                h.position,
-                &mut h.ground,
-                wanted,
-                moved,
-                &mut h.velocity,
-            );
+            h = self.move_bobber_response(h, wanted, moved)?;
             h.yaw = sunrise_client::arrows::lerp_rotation(
                 old_yaw,
                 sunrise_core::geometry::trig::atan2_degrees(h.velocity.x, h.velocity.z),
@@ -1488,7 +1481,64 @@ impl Game<'_> {
         );
         Some(h)
     }
-    fn move_bobber_response(
+    fn move_bobber_response(&mut self, mut h: Hook, wanted: Vec3, moved: Vec3) -> Option<Hook> {
+        let id = h.id;
+        let position = h.position;
+        let side = game_side!(self);
+        let motion = self.body_motion(&side);
+        let authoritative =
+            motion.context.side() == sunrise_world::native_load_context::LoopSide::Server;
+        motion.record_move(
+            sunrise_client::motion::BodyCollision {
+                footprint: (position, bounds(position)),
+                movement: (wanted, moved),
+                authoritative,
+                context: sunrise_client::motion::BodyMotion::entity_context(id, position),
+                subject: None,
+            },
+            &mut h.ground,
+        );
+        let effect = motion.legacy_contact(position, &h.ground);
+        let entity = (id, "minecraft:fishing_bobber");
+        let response = motion.restitute(
+            entity,
+            sunrise_client::motion::BodyMove {
+                wanted,
+                moved,
+                effect,
+            },
+            f64::from(0.03_f32),
+            0.98_f32,
+            h.velocity,
+            0.0,
+        );
+        let velocity = if self.is_logical_server()
+            && response
+                .bounce
+                .as_ref()
+                .is_some_and(|b| sunrise_client::block_contact::bounce_listens(b.state))
+        {
+            self.hook.put_back(h);
+            let velocity = self.finish_body_restitution(entity, position, response);
+            h = self.hook.extract()?;
+            velocity
+        } else {
+            self.finish_body_restitution(entity, position, response)
+        };
+        h.velocity = velocity;
+        let side = game_side!(self);
+        let motion = self.body_motion(&side);
+        motion.apply_block_speed(h.position, &mut h.velocity);
+        let writes = self.body_step_on(
+            entity,
+            (h.position, bounds(h.position)),
+            &h.ground,
+            &mut h.velocity,
+        );
+        super::entity::apply_contact_writes(writes, &mut h.velocity, None, None, None);
+        Some(h)
+    }
+    fn move_remote_bobber_response(
         &mut self,
         id: u32,
         position: Vec3,
@@ -2465,7 +2515,14 @@ impl Game<'_> {
                 position.y + moved.y,
                 position.z + moved.z,
             );
-            self.move_bobber_response(id, position, &mut ground, wanted, moved, &mut velocity);
+            self.move_remote_bobber_response(
+                id,
+                position,
+                &mut ground,
+                wanted,
+                moved,
+                &mut velocity,
+            );
             if state == State::Flying && (ground.on_ground || ground.horizontal_collision) {
                 velocity = Vec3::ZERO;
             }

@@ -179,20 +179,20 @@ Non-finite edits are ignored; there is no veto. Keep movement answers consistent
 on replay.
 
 `LevelRandomSide::Client` lends a read-only level. Only the server arm accepts writes, and it
-lends the same level random host as `fall_on`. `event.write_entity(EntityWrite::Hurt { damage_type, amount })` applies damage to the stepping body through its own damage path, before the inside scan.
+lends a level random host. `event.write_entity(EntityWrite::Hurt { damage_type, amount })` applies damage to the stepping body through its own damage path, before the inside scan.
 For a magma-like Part, check `level.entity_type_is_living(event.kind) == Some(true)` and
 `!event.stepping_carefully` before requesting damage. The entity-type read is available on both
 sides and includes living mod types. Damage itself is not limited to living bodies: other Parts
 can still hurt dropped items.
-Use `bounds` to test overlap with a surface that is smaller than the block. `event.request(LandingWrite::…)`
-queues a write at `pos`. The `fall_on` drain applies the ordered block writes after the entity batch,
+Use `bounds` to test overlap with a surface that is smaller than the block. `event.request(InsideWrite::…)`
+queues a write at `pos`. The entity-inside drain applies the ordered block writes after the entity batch,
 only if the block still holds the contacted state. An invalid state or non-finite movement or damage
 refuses that Part's outputs. Other Parts' accepted writes and movement edits remain. This replaces `Hooks::block_step_on`, the former server-only notice.
 
 Boats and minecarts ([#4177](https://github.com/sunrise-org/sunrise/issues/4177)), armor stands and
 projectiles ignore `EntityWrite::Hurt` from both callbacks. Experience orbs accept it only from `step_on`.
 
-## Landing writes
+## Landing and bouncing
 
 `BlockPart::bounce_restitution` answers the block's coefficient for a qualifying downward collision,
 including those of dropped items and other nonliving bodies. `event.pos` and `event.state` are the paired
@@ -205,28 +205,22 @@ This runs on whichever side simulates the move. Keep it a pure read of `LevelSid
 prediction and replay produce the same answer. It does not run for packet interpolation, projectile
 impacts or a piston's direct slime launch.
 
-When the collision actually bounces, the server runs `BlockPart::bounce_on` before it posts
-`BOUNCE` and commits the returned movement. This is a separate callback, with the captured effect
-state and vanilla's movement-affecting position (which can differ from the legacy position).
-`event.fall_distance` is the distance stored after fall handling, so a body that has just landed can report zero.
+When the collision actually bounces, the server runs `BlockPart::bounce_on` on `&mut dyn ServerHost`
+with live `event.level: LevelRef` and `event.entity: EntityRef`, after any vanilla shelf-mushroom
+bounce sound and before posting `BOUNCE` and committing the returned movement. `event.pos` and
+`event.state` are the captured effect contact and `event.fall_distance` is the distance stored after
+fall handling, so a body that has just landed can report zero.
 
-`BlockPart::fall_on` runs at vanilla's landing moment on a read-only level random host.
-Hook version 2 exposes writable `event.distance` and `event.damage_multiplier`, not calculated
+`BlockPart::fall_on` runs at vanilla's landing moment on `&mut dyn ServerHost` with live
+`event.level: LevelRef` and `event.entity: EntityRef`, so block and entity writes apply synchronously
+before fall damage, `HIT_GROUND`, and later entities in the same tick.
+`FallOnEvent` exposes writable `event.distance` and `event.damage_multiplier`, not calculated
 damage. Vanilla blocks supply their own pair: hay uses 0.2, beds 0.5, slime 0,
 and pointed dripstone adds 2.5 to distance and uses 2.0. Other blocks start at 1.0.
 The engine applies `floor((distance + 1e-6 - safe_fall_distance) * damage_multiplier * fall_damage_multiplier_attribute)`.
 The safe fall distance attribute defaults to 3: halving distance is not halving damage.
 A zero multiplier or distance within the safe fall means no damage or generic fall sounds.
 Creative and fall-immune entities and items keep their immunity regardless of edits.
-
-Request a deferred write with `event.request(LandingWrite::SetBlock(state))`, where `state`
-is an API `BlockState`, or `LandingWrite::DestroyBlock { drop }`. The game checks the
-complete write batch before queuing it. An invalid block key or ordinal refuses that
-callback's writes and other outputs, including distance and multiplier; it never applies a valid prefix.
-After the entity batch ticks, writes apply in request order if the block still matches
-its original landed state. That guard runs once, so a first write can change the state
-without suppressing the next write. SetBlock notifies neighbors and clients; DestroyBlock
-preserves the requested resource-drop flag.
 
 ## Inside-block effects
 

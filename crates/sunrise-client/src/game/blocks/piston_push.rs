@@ -828,24 +828,63 @@ impl Game<'_> {
                 conn.is_some(),
             )
         )?;
-        if let Some(pause) = pause {
-            let landing = match pause.landing {
-                PlayerLandingPause::Trample(trample) => {
-                    self.trample_farmland(id as u32, true, trample);
-                    motion_phase!(world, world.finish_trample_fall(trample))?
+        if let Some(mut pause) = pause {
+            use sunrise_client::motion::PlayerMovePause;
+            loop {
+                match pause {
+                    PlayerMovePause::Landing { landing, movement } => {
+                        let mut step = Some(landing);
+                        while let Some(current) = step {
+                            match current {
+                                PlayerLandingPause::Trample(trample) => {
+                                    self.trample_farmland(id as u32, true, trample);
+                                    step =
+                                        motion_phase!(world, world.finish_trample_fall(trample))?;
+                                }
+                                PlayerLandingPause::FallOn(mut fall) => {
+                                    let (distance, multiplier) = self.native_fall_on(
+                                        id as u32,
+                                        fall.state,
+                                        fall.position,
+                                        fall.distance,
+                                        fall.multiplier,
+                                    );
+                                    fall.distance = distance;
+                                    fall.multiplier = multiplier;
+                                    step = motion_phase!(world, world.finish_fall_on(fall))?
+                                        .map(PlayerLandingPause::Damage);
+                                }
+                                PlayerLandingPause::Damage(tail) => {
+                                    if self.finish_guest_damage_before_resume().is_err() {
+                                        return Ok(None);
+                                    }
+                                    motion_phase!(world, world.finish_guest_landing(tail))?;
+                                    step = None;
+                                }
+                            }
+                        }
+                        match motion_phase!(
+                            world,
+                            movement.finish_until_bounce(&mut world, conn.is_some())
+                        )? {
+                            Some((bounce, tail)) => {
+                                pause = PlayerMovePause::Bounce { bounce, tail };
+                            }
+                            None => break,
+                        }
+                    }
+                    PlayerMovePause::Bounce { bounce, tail } => {
+                        let velocity = self.native_bounce_on(
+                            id as u32,
+                            bounce.block,
+                            bounce.position,
+                            bounce.fall_distance,
+                            bounce.movement,
+                        );
+                        motion_phase!(world, tail.finish(&mut world, bounce, velocity))?;
+                        break;
+                    }
                 }
-                PlayerLandingPause::Damage(landing) => Some(landing),
-            };
-            if let Some(landing) = landing {
-                if self.finish_guest_damage_before_resume().is_err() {
-                    return Ok(None);
-                }
-                motion_phase!(world, {
-                    world.finish_guest_landing(landing)?;
-                    pause.movement.finish(&mut world)
-                })?;
-            } else {
-                motion_phase!(world, pause.movement.finish(&mut world))?;
             }
         }
         Ok(self
@@ -1532,38 +1571,56 @@ impl Game<'_> {
                 self.drives(mob)
             };
             if authoritative || wanted.y.abs() > 0.0 {
-                let mut paused_hurt = None;
                 let mut mobs = self.mobs.lift();
-                let mut lent = sunrise_client::health::LentLevel::take(&mut self.world);
-                // Restitution may call a block Part. Return both loans, including
-                // their progressed state, before propagating a callback panic.
+                let handoff = self.is_logical_server();
+                let mut bounce = None;
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let world = self.mob_world_base(&[]);
-                    let mut level = sunrise_client::health::DamageLevel::lent(
-                        &self.world,
-                        self.pack.assets.registry,
-                        &mut lent,
-                        Some(world_items!(self)),
-                        Some(&self.pack.block_registries),
-                        &self.damage_hooks,
-                    )
-                    .with_mob_hurt_handoff(&mut paused_hurt);
                     mobs[i].update_pushed_support(&world, wanted, moved);
                     if authoritative {
-                        mobs[i].restitute_movement(&world, &mut level, wanted, moved);
+                        bounce =
+                            mobs[i].restitute_movement_until_bounce(&world, wanted, moved, handoff);
                     }
                 }));
-                lent.give_back(&mut self.world);
                 self.mobs
                     .restore(mobs, sunrise_client::join_seq::RestoreOrder::SurvivorsFirst);
                 if let Err(payload) = result {
                     std::panic::resume_unwind(payload);
                 }
-                if let Some(hit) = paused_hurt
-                    && let Some(index) = self.mob_index.find(&self.mobs, hit.victim)
-                {
-                    self.paused_mob_hurt = Some(hit);
-                    self.finish_mob_damage_at(index);
+                if let Some(bounce) = bounce {
+                    let id = selected.id;
+                    if self.motion.landing.has_shelf_bounce(bounce.state) {
+                        let pos = bounce.position;
+                        self.play_audio(
+                            "minecraft:block.shelf_mushroom.bounce",
+                            Some([
+                                f64::from(pos.x) + 0.5,
+                                f64::from(pos.y) + 0.5,
+                                f64::from(pos.z) + 0.5,
+                            ]),
+                            1.0,
+                            1.0,
+                        );
+                    }
+                    let velocity = self.native_bounce_on(
+                        id,
+                        bounce.state,
+                        bounce.position,
+                        bounce.fall_distance,
+                        bounce.movement,
+                    );
+                    if let Some(index) = self.mob_index.find(&self.mobs, id)
+                        && !self.mobs[index].removed
+                    {
+                        let feet = self.mobs[index].position;
+                        let context = self.entity_event_context(id, None);
+                        self.post_game_event("minecraft:bounce", [feet.x, feet.y, feet.z], context);
+                        let mut mobs = self.mobs.lift();
+                        let world = self.mob_world_base(&[]);
+                        mobs[index].finish_bounce_restitution(&world, velocity);
+                        self.mobs
+                            .restore(mobs, sunrise_client::join_seq::RestoreOrder::SurvivorsFirst);
+                    }
                 }
             }
             return self.resolve_push_target(selected);

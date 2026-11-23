@@ -12,13 +12,13 @@ pub trait Hooks {
     /// inside effects and later drag. There is no veto.
     /// `bounds` is the body's current world-space box, `[min, max]` in XYZ order.
     /// Only Parts on the contacted state run, after that block's vanilla step behavior.
-    /// The server lends the level random host as `fall_on` does, and accepts
+    /// The server lends the level random host and accepts
     /// `event.write_entity(EntityWrite::…)` for the stepping entity before the inside scan.
     /// Hurt writes apply to players, mobs, dropped items and experience orbs.
     /// Use `LevelHost::entity_type_is_living(event.kind)` when the block only affects living
     /// bodies, as magma does.
     /// Boats, minecarts, armor stands and projectiles ignore contact hurt.
-    /// `event.request(LandingWrite::…)` queues a change at `pos` through the `fall_on`
+    /// `event.request(InsideWrite::…)` queues a change at `pos` through the `entity_inside`
     /// drain: requests apply at the batch end if `pos` still holds `state`.
     /// A Part's invalid block state or non-finite movement or damage discards only its
     /// own outputs; earlier edits remain, and the next Part sees the last accepted movement.
@@ -26,7 +26,7 @@ pub trait Hooks {
     /// Keep movement answers consistent between the two sides and on replay.
     #[hook(
         side = "both",
-        version = 3,
+        version = 4,
         contract = "collect",
         out = "movement",
         scope = "block",

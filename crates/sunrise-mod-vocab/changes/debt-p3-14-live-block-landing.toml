@@ -1,0 +1,26 @@
+ids = [
+    "handle:FallOnEvent::request",
+    "handle:StepOnEvent::request",
+    "hook:bounce_on",
+    "hook:bounce_on.dimension",
+    "hook:bounce_on.entity",
+    "hook:bounce_on.kind",
+    "hook:fall_on",
+    "hook:fall_on.dimension",
+    "hook:fall_on.entity",
+    "hook:fall_on.kind",
+    "hook:fall_on.writes",
+    "method:BlockPart::bounce_on",
+    "method:BlockPart::fall_on",
+    "type:BounceOnEvent.dimension",
+    "type:BounceOnEvent.entity",
+    "type:BounceOnEvent.kind",
+    "type:FallOnEvent",
+    "type:FallOnEvent.dimension",
+    "type:FallOnEvent.entity",
+    "type:FallOnEvent.kind",
+    "type:FallOnEvent.writes",
+    "type:LandingWrite",
+]
+why = "BlockPart::fall_on and BlockPart::bounce_on now take a live ServerHost with LevelRef and EntityRef handles instead of deferred LandingWrite commands, so world and entity mutations run synchronously at vanilla's fallOn/bounceOn call sites. LandingWrite is retired; StepOnEvent::request now takes InsideWrite."
+migrate = "Update BlockPart::fall_on and BlockPart::bounce_on signatures to take &mut dyn ServerHost, use event.level and event.entity directly instead of event.request/dimension/kind, and pass InsideWrite to StepOnEvent::request."

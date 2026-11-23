@@ -99,7 +99,7 @@ impl StepOnView<'_> {
                 }
             },
         );
-        sunrise_client::block_contact::landed(c.state, c.position, blocks);
+        sunrise_client::block_contact::inside_written(c.state, c.position, blocks);
         entity_writes
     }
 }

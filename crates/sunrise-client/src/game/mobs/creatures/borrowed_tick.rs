@@ -574,7 +574,12 @@ impl Game<'_> {
                         let mut selection = resume_selection.take();
                         if matches!(
                             resume,
-                            Some(Pause::AfterDamage(_) | Pause::Equipment { .. })
+                            Some(
+                                Pause::AfterDamage(_)
+                                    | Pause::Equipment { .. }
+                                    | Pause::FallOn(_)
+                                    | Pause::BounceOn(_)
+                            )
                         ) && let Some(selection) = &mut selection
                         {
                             selection.refresh_views(|player| {
@@ -713,16 +718,19 @@ impl Game<'_> {
                                 &mut movement,
                             )
                         }
-                        Some(Pause::Trample(_) | Pause::FallToPassengers(_)) => {
-                            sunrise_client::mobs::riders::resume_movement(
-                                &mut mobs,
-                                i,
-                                &w,
-                                &mut level,
-                                &mut movement,
-                                &mut events,
-                            )
-                        }
+                        Some(
+                            Pause::Trample(_)
+                            | Pause::FallOn(_)
+                            | Pause::BounceOn(_)
+                            | Pause::FallToPassengers(_),
+                        ) => sunrise_client::mobs::riders::resume_movement(
+                            &mut mobs,
+                            i,
+                            &w,
+                            &mut level,
+                            &mut movement,
+                            &mut events,
+                        ),
                         Some(Pause::Consumption { was_on_fire, .. }) => {
                             sunrise_client::mobs::riders::resume_after_consumption(
                                 &mut mobs,
@@ -1148,6 +1156,59 @@ impl Game<'_> {
                         }
                         Pause::Trample(trample) => {
                             self.trample_farmland(id, false, *trample);
+                        }
+                        Pause::FallOn(fall) => {
+                            let before = events.split_off(resume_from);
+                            let _ = self.handle_mob_events(before);
+                            let (distance, multiplier) = self.native_fall_on(
+                                id,
+                                fall.state,
+                                fall.position,
+                                fall.distance,
+                                fall.multiplier,
+                            );
+                            if let Some(m) = movement.as_mut() {
+                                m.set_fall_on(distance, multiplier);
+                            }
+                        }
+                        Pause::BounceOn(bounce) => {
+                            let before = events.split_off(resume_from);
+                            let _ = self.handle_mob_events(before);
+                            if self.motion.landing.has_shelf_bounce(bounce.state) {
+                                let pos = bounce.position;
+                                self.play_audio(
+                                    "minecraft:block.shelf_mushroom.bounce",
+                                    Some([
+                                        f64::from(pos.x) + 0.5,
+                                        f64::from(pos.y) + 0.5,
+                                        f64::from(pos.z) + 0.5,
+                                    ]),
+                                    1.0,
+                                    1.0,
+                                );
+                            }
+                            let velocity = self.native_bounce_on(
+                                id,
+                                bounce.state,
+                                bounce.position,
+                                bounce.fall_distance,
+                                bounce.movement,
+                            );
+                            if let Some(m) = movement.as_mut() {
+                                m.set_bounce_on(velocity);
+                            }
+                            if let Some(i) = self.mob_index.find(&self.mobs, id)
+                                && self.mobs[i].join == join
+                                && !self.mobs[i].removed
+                            {
+                                let feet = self.mobs[i].position;
+                                let context = self.entity_event_context(id, None);
+                                self.post_game_event(
+                                    "minecraft:bounce",
+                                    [feet.x, feet.y, feet.z],
+                                    context,
+                                );
+                            }
                         }
                         Pause::FallToPassengers(fall) => {
                             self.fall_to_passengers(id, fall.distance, fall.modifier);

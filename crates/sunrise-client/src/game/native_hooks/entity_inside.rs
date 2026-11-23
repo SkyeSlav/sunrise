@@ -22,14 +22,14 @@ impl HitLevel<'_> {
 mod entity_inside_tests {
     use super::*;
 
-    /// Landing writes reach the level at the batch end, in the order asked, and only
-    /// where the block is still the state landed on.
+    /// Queued `InsideWrite` batches reach the level at the batch end, in the order asked,
+    /// and only where the block is still the state contacted.
     #[test]
     #[ignore = "daily"]
     fn landing_writes_apply_at_the_batch_end() {
         use crate::game::api_values::{TryIntoApi, TryIntoEngine};
-        use sunrise_client::block_contact::{landed, take_pending};
-        use sunrise_world::level::LandingWrite;
+        use sunrise_client::block_contact::{inside_written, take_pending};
+        use sunrise_world::level::InsideWrite;
         crate::game::native_entity_refs::tests::with_game(|game| {
             game.options.dedicated = Some(Vec::new());
             let state = |name| game.pack.assets.registry.default_state(name).unwrap();
@@ -51,28 +51,24 @@ mod entity_inside_tests {
             let drops_before = game.dropped.len();
             let at = |x| BlockPos::new(x, 64, 1);
             let requested = vec![
-                mod_api::LandingWrite::SetBlock(stone.try_into_api().unwrap()),
-                mod_api::LandingWrite::SetBlock(dirt.try_into_api().unwrap()),
+                mod_api::InsideWrite::SetBlock(stone.try_into_api().unwrap()),
+                mod_api::InsideWrite::SetBlock(dirt.try_into_api().unwrap()),
             ];
             // Exercise the same complete-batch boundary as generated dispatch before
             // entering the engine queue, then prove its ordered writes reach the world.
             let staged = requested.try_into_engine(&*game).unwrap();
-            landed(farmland, at(1), staged);
-            landed(dirt, at(4), vec![LandingWrite::DestroyBlock { drop: true }]);
-            landed(
-                dirt,
-                at(5),
-                vec![LandingWrite::DestroyBlock { drop: false }],
-            );
-            // The block changed after the landing: dropped.
-            landed(stone, at(2), vec![LandingWrite::SetBlock(dirt)]);
-            landed(
+            inside_written(farmland, at(1), staged);
+            inside_written(dirt, at(4), vec![InsideWrite::DestroyBlock { drop: true }]);
+            inside_written(dirt, at(5), vec![InsideWrite::DestroyBlock { drop: false }]);
+            // The block changed after the contact: dropped.
+            inside_written(stone, at(2), vec![InsideWrite::SetBlock(dirt)]);
+            inside_written(
                 stone,
                 at(3),
-                vec![LandingWrite::DestroyBlock { drop: false }],
+                vec![InsideWrite::DestroyBlock { drop: false }],
             );
             // Nothing asked: nothing kept.
-            landed(farmland, at(1), Vec::new());
+            inside_written(farmland, at(1), Vec::new());
             assert_eq!(
                 game.world.block(1, 64, 1),
                 farmland,

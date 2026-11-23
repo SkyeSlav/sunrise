@@ -35,4 +35,22 @@ impl Game<'_> {
         }
         result
     }
+
+    /// Temporarily release `id` while the caller has synced its local copy back into the
+    /// authoritative list, so a live `&mut dyn ServerHost` callback can observe and mutate it.
+    pub(in crate::game) fn with_held_entity_live<R>(
+        &mut self,
+        id: u32,
+        action: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let held = self.held_out.last() == Some(&id);
+        if held {
+            self.held_out.pop();
+        }
+        let result = action(self);
+        if held {
+            self.held_out.push(id);
+        }
+        result
+    }
 }

@@ -153,35 +153,64 @@ impl Game<'_> {
                     let state = w.block_state(pos)?;
                     w.check_guest_fall_damage(y, accepted.on_ground, state, pos)
                 })();
-                let tail = match landed {
-                    Ok(Some(PlayerLandingPause::Trample(trample))) => {
-                        let mut collected = std::mem::take(&mut w.player.events);
-                        game.trample_farmland(id, true, trample);
-                        let Some(player) =
-                            game.player.as_mut().filter(|p| p.entity_id as u32 == id)
-                        else {
-                            return collected;
-                        };
-                        collected.append(&mut player.events);
-                        player.events = collected;
-                        side = game_side!(game);
-                        w = motion_world!(game, side, player);
-                        w.finish_trample_fall(trample).ok().flatten()
+                let mut pause = landed.ok().flatten();
+                while let Some(step) = pause {
+                    match step {
+                        PlayerLandingPause::Trample(trample) => {
+                            let mut collected = std::mem::take(&mut w.player.events);
+                            game.trample_farmland(id, true, trample);
+                            let Some(player) =
+                                game.player.as_mut().filter(|p| p.entity_id as u32 == id)
+                            else {
+                                return collected;
+                            };
+                            collected.append(&mut player.events);
+                            player.events = collected;
+                            side = game_side!(game);
+                            w = motion_world!(game, side, player);
+                            pause = w.finish_trample_fall(trample).ok().flatten();
+                        }
+                        PlayerLandingPause::FallOn(mut fall) => {
+                            let mut collected = std::mem::take(&mut w.player.events);
+                            let (distance, multiplier) = game.native_fall_on(
+                                id,
+                                fall.state,
+                                fall.position,
+                                fall.distance,
+                                fall.multiplier,
+                            );
+                            fall.distance = distance;
+                            fall.multiplier = multiplier;
+                            let Some(player) =
+                                game.player.as_mut().filter(|p| p.entity_id as u32 == id)
+                            else {
+                                return collected;
+                            };
+                            collected.append(&mut player.events);
+                            player.events = collected;
+                            side = game_side!(game);
+                            w = motion_world!(game, side, player);
+                            pause = w
+                                .finish_fall_on(fall)
+                                .ok()
+                                .flatten()
+                                .map(PlayerLandingPause::Damage);
+                        }
+                        PlayerLandingPause::Damage(tail) => {
+                            if let Err(collected) = game.finish_guest_damage_before_resume() {
+                                return collected;
+                            }
+                            let Some(player) =
+                                game.player.as_mut().filter(|p| p.entity_id as u32 == id)
+                            else {
+                                return Vec::new();
+                            };
+                            side = game_side!(game);
+                            w = motion_world!(game, side, player);
+                            let _ = w.finish_guest_landing(tail);
+                            pause = None;
+                        }
                     }
-                    Ok(Some(PlayerLandingPause::Damage(tail))) => Some(tail),
-                    Ok(None) | Err(_) => None,
-                };
-                if let Some(tail) = tail {
-                    if let Err(collected) = game.finish_guest_damage_before_resume() {
-                        return collected;
-                    }
-                    let Some(player) = game.player.as_mut().filter(|p| p.entity_id as u32 == id)
-                    else {
-                        return Vec::new();
-                    };
-                    side = game_side!(game);
-                    w = motion_world!(game, side, player);
-                    let _ = w.finish_guest_landing(tail);
                 }
             }
             let player = w.player;

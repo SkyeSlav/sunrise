@@ -148,13 +148,49 @@ pub struct MoveTail {
     state: BlockStateId,
 }
 
+/// A move paused either during `checkFallDamage` or right before `bounce_on`.
+pub enum MovePause<P, B> {
+    Landing(P, MoveTail),
+    Bounce(B, BounceTail),
+}
+
 /// Run a move, pausing its tail only if the landing needs the owning level.
 pub fn move_entity_until_landing<W: EntityMoveWorld, P>(
     world: &mut W,
     mover: MoverType,
-    mut movement: Vec3,
+    movement: Vec3,
     check_fall: impl FnOnce(&mut W, f64, bool, BlockStateId, BlockPos) -> Result<Option<P>, W::Error>,
 ) -> Result<Option<(P, MoveTail)>, W::Error> {
+    match move_entity_until(
+        world,
+        mover,
+        movement,
+        check_fall,
+        |world, state, p, x, z, resolved| {
+            world.restitute(state, p, x, z, resolved)?;
+            Ok(None::<()>)
+        },
+    )? {
+        Some(MovePause::Landing(pause, tail)) => Ok(Some((pause, tail))),
+        Some(MovePause::Bounce((), _)) | None => Ok(None),
+    }
+}
+
+/// Run a move, pausing either at `checkFallDamage` or right before `bounce_on`.
+pub fn move_entity_until<W: EntityMoveWorld, P, B>(
+    world: &mut W,
+    mover: MoverType,
+    mut movement: Vec3,
+    check_fall: impl FnOnce(&mut W, f64, bool, BlockStateId, BlockPos) -> Result<Option<P>, W::Error>,
+    restitute: impl FnOnce(
+        &mut W,
+        BlockStateId,
+        BlockPos,
+        bool,
+        bool,
+        Vec3,
+    ) -> Result<Option<B>, W::Error>,
+) -> Result<Option<MovePause<P, B>>, W::Error> {
     if world.no_physics() {
         world.set_position(world.position().add_vector(movement))?;
         world.record_movement(mover, movement)?;
@@ -231,30 +267,26 @@ pub fn move_entity_until_landing<W: EntityMoveWorld, P>(
     if world.locally_authoritative()? {
         let grounded = world.on_ground()?;
         if let Some(pause) = check_fall(world, resolved.y, grounded, state, p)? {
-            return Ok(Some((pause, tail)));
+            return Ok(Some(MovePause::Landing(pause, tail)));
         }
     }
-    tail.finish(world)?;
-    Ok(None)
+    Ok(tail
+        .finish_until_bounce(world, restitute)?
+        .map(|(bounce, tail)| MovePause::Bounce(bounce, tail)))
 }
 
-impl MoveTail {
+/// The part of `Entity.move` after `restitute_movement` paused for a live `bounce_on`.
+pub struct BounceTail {
+    resolved: Vec3,
+    p: BlockPos,
+    state: BlockStateId,
+}
+
+impl BounceTail {
     pub fn finish<W: EntityMoveWorld>(self, world: &mut W) -> Result<(), W::Error> {
-        let Self {
-            resolved,
-            x,
-            z,
-            nonzero_y,
-            p,
-            state,
-        } = self;
+        let Self { resolved, p, state } = self;
         if world.removed()? {
             return Ok(());
-        }
-        if world.can_simulate()?
-            && (nonzero_y && world.collision_flags().vertical || world.collision_flags().horizontal)
-        {
-            world.restitute(state, p, x, z, resolved)?;
         }
         if !world.client_side()? || world.locally_authoritative()? {
             let emission = world.movement_emission()?;
@@ -265,6 +297,49 @@ impl MoveTail {
         let factor = world.block_speed_factor()?;
         let velocity = scale_by_block_speed(world.velocity()?, factor);
         world.set_velocity(velocity)
+    }
+}
+
+impl MoveTail {
+    pub fn finish<W: EntityMoveWorld>(self, world: &mut W) -> Result<(), W::Error> {
+        let _ = self.finish_until_bounce(world, |world, state, p, x, z, resolved| {
+            world.restitute(state, p, x, z, resolved)?;
+            Ok(None::<()>)
+        })?;
+        Ok(())
+    }
+
+    pub fn finish_until_bounce<W: EntityMoveWorld, B>(
+        self,
+        world: &mut W,
+        restitute: impl FnOnce(
+            &mut W,
+            BlockStateId,
+            BlockPos,
+            bool,
+            bool,
+            Vec3,
+        ) -> Result<Option<B>, W::Error>,
+    ) -> Result<Option<(B, BounceTail)>, W::Error> {
+        let Self {
+            resolved,
+            x,
+            z,
+            nonzero_y,
+            p,
+            state,
+        } = self;
+        if world.removed()? {
+            return Ok(None);
+        }
+        if world.can_simulate()?
+            && (nonzero_y && world.collision_flags().vertical || world.collision_flags().horizontal)
+            && let Some(bounce) = restitute(world, state, p, x, z, resolved)?
+        {
+            return Ok(Some((bounce, BounceTail { resolved, p, state })));
+        }
+        BounceTail { resolved, p, state }.finish(world)?;
+        Ok(None)
     }
 }
 /// The last step of `Entity.move`: the horizontal velocity is multiplied by

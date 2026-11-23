@@ -89,26 +89,29 @@ fn java_min(a: f64, b: f64) -> f64 {
         a.min(b)
     }
 }
-/// Default LivingEntity and Entity fall behavior. Entity-type overrides of the
-/// calculation/parent method are a separate dispatch layer. The same damage
-/// source must be retained by the provider for riders and the final hurt call.
-pub fn cause_living_fall_damage<W: LivingFallWorld>(
+pub fn apply_impulse_context<W: LivingFallWorld>(
     world: &mut W,
     distance: f64,
-    multiplier: f32,
-) -> Result<bool, W::Error> {
-    let distance = if let Some(impact) = world.impact_position() {
+) -> Result<f64, W::Error> {
+    if let Some(impact) = world.impact_position() {
         let distance = java_min(distance, impact.y - world.y());
         if distance <= 0.0 {
             world.reset_impulse()?;
         } else {
             world.try_reset_impulse()?;
         }
-        distance
+        Ok(distance)
     } else {
-        distance
-    };
-    let (distance, multiplier) = world.modify_fall(distance, multiplier)?;
+        Ok(distance)
+    }
+}
+
+/// Complete `LivingEntity.causeFallDamage` after impulse clamping and `modify_fall`.
+pub fn finish_living_fall_damage<W: LivingFallWorld>(
+    world: &mut W,
+    distance: f64,
+    multiplier: f32,
+) -> Result<bool, W::Error> {
     // Base Entity.causeFallDamage returns false, even after notifying riders.
     if !world.immune_to_fall_damage()? {
         world.propagate_fall_to_passengers(distance, multiplier)?;
@@ -124,6 +127,19 @@ pub fn cause_living_fall_damage<W: LivingFallWorld>(
     } else {
         Ok(false)
     }
+}
+
+/// Default LivingEntity and Entity fall behavior. Entity-type overrides of the
+/// calculation/parent method are a separate dispatch layer. The same damage
+/// source must be retained by the provider for riders and the final hurt call.
+pub fn cause_living_fall_damage<W: LivingFallWorld>(
+    world: &mut W,
+    distance: f64,
+    multiplier: f32,
+) -> Result<bool, W::Error> {
+    let distance = apply_impulse_context(world, distance)?;
+    let (distance, multiplier) = world.modify_fall(distance, multiplier)?;
+    finish_living_fall_damage(world, distance, multiplier)
 }
 
 #[cfg(test)]

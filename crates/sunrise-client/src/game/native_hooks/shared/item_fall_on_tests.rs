@@ -1,23 +1,37 @@
 use super::*;
-use mod_api::{BlockPart, FallOnEvent, Hooks, LevelRandomHost, ModEntry, Registrar};
+use mod_api::{BlockPart, FallOnEvent, Hooks, ModEntry, Registrar, ServerHost};
 use mod_platform::testing::with_mods;
 use std::sync::{Arc, Mutex};
 
 /// What the part on stone heard of a landing: entity, kind, block, fall and damage. It
-/// asks for the block to be destroyed.
+/// destroys the block immediately through the live server host.
 #[derive(Clone, Default)]
-struct Lands(Arc<Mutex<Vec<(i32, String, BlockPos, f64, f32)>>>);
+struct Lands(Arc<Mutex<Vec<(u32, String, BlockPos, f64, f32)>>>);
 #[mod_api::sunrise_part]
 impl BlockPart for Lands {
-    fn fall_on(&self, _: &mut dyn LevelRandomHost, event: &mut FallOnEvent<'_>) {
+    fn fall_on(&self, host: &mut dyn ServerHost, event: &mut FallOnEvent) {
+        let kind = event
+            .entity
+            .kind(host)
+            .unwrap()
+            .id(host)
+            .unwrap()
+            .as_str()
+            .to_owned();
         self.0.lock().unwrap().push((
-            event.entity,
-            event.kind.to_owned(),
+            event.entity.id(),
+            kind,
             event.pos,
             event.distance,
             event.damage_multiplier,
         ));
-        event.request(mod_api::LandingWrite::DestroyBlock { drop: false });
+        let _ = event.level.destroy_block(
+            host,
+            [event.pos.x, event.pos.y, event.pos.z],
+            false,
+            None,
+            false,
+        );
     }
 }
 struct Mod(Lands);
@@ -43,15 +57,15 @@ use sunrise_core::random::RandomSource as _;
 struct LoanPart(std::sync::Arc<()>);
 #[mod_api::sunrise_part]
 impl BlockPart for LoanPart {
-    fn fall_on(&self, host: &mut dyn LevelRandomHost, event: &mut FallOnEvent<'_>) {
-        let draw = host
-            .with_random(|random| random.next_int())
+    fn fall_on(&self, host: &mut dyn ServerHost, event: &mut FallOnEvent) {
+        let draw = event
+            .level
+            .with_random(host, |random| random.next_int())
             .expect("authoritative landing random");
         assert_eq!(draw, 1553932502);
         LOAN_VALUE
             .set(host.attachments(), mod_api::Holder::Level, 73)
             .unwrap();
-        event.request(mod_api::LandingWrite::DestroyBlock { drop: false });
         std::panic::panic_any(self.0.clone());
     }
 }
@@ -99,6 +113,17 @@ fn item_fall_on_returns_progressed_level_loan_after_part_panic() {
                     .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
                 let pos = BlockPos::new(1, 64, 1);
                 game.world.set(pos.x, pos.y, pos.z, stone).unwrap();
+                let level = game.level(game.dim.id()).unwrap();
+                let item = game
+                    .level_spawn_item(
+                        level,
+                        1.5,
+                        65.0,
+                        1.5,
+                        ItemStack::new("minecraft:apple", 1),
+                        10,
+                    )
+                    .unwrap();
                 *game.world.random = sunrise_core::random::LegacyRandom::new(12345);
                 LOAN_VALUE
                     .set(&mut game.world.attachments, mod_api::Holder::Level, 11)
@@ -108,7 +133,7 @@ fn item_fall_on_returns_progressed_level_loan_after_part_panic() {
                     sunrise_client::block_contact::in_level(
                         sunrise_client::parallel::TickThread::mint(),
                         Some(game.dim.id()),
-                        || game.item_fall_on(42, pos, 5.0),
+                        || game.item_fall_on(item.id(), pos, 5.0),
                     );
                 };
                 land(game);
@@ -200,11 +225,11 @@ fn a_dropped_item_lands_on_a_fall_on_part() {
                     assert_eq!(heard.len(), 1, "the write landed after the batch");
                 }
             }
-            assert_eq!(destructions, 1, "one observed landing-write destruction");
+            assert_eq!(destructions, 1, "one observed landing destruction");
             let heard = heard.0.lock().unwrap().clone();
             assert_eq!(heard.len(), 1, "one landing: {heard:?}");
             let (entity, kind, pos, distance, damage) = &heard[0];
-            assert_eq!(*entity, item.id() as i32);
+            assert_eq!(*entity, item.id());
             assert_eq!(kind, "minecraft:item");
             assert_eq!(*pos, BlockPos::new(1, 64, 1));
             // From rest at y 70 onto the stone's top at 65.

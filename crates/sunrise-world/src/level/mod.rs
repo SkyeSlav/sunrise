@@ -179,30 +179,16 @@ pub use fluids::{
     fluid_randomly_ticks, fluid_tick_delay,
 };
 
-/// A write a block's part asks for when an entity is inside it (`Block.entityInside`'s
-/// own `setBlockAndUpdate` or `destroyBlock`), at the block the entity touched. The
-/// level applies each once the entity's batch has ticked, in the order asked, if the
-/// block is still the state the entity touched: the same contract as [`LandingWrite`].
+/// A write a block's part asks for when an entity is inside or steps on it
+/// (`Block.entityInside` / `Block.stepOn`'s own `setBlockAndUpdate` or `destroyBlock`),
+/// at the block the entity touched. The level applies each once the entity's batch has
+/// ticked, in the order asked, if the block is still the state the entity touched.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum InsideWrite {
     /// `Level.setBlockAndUpdate(pos, state)`: a pressure plate a part pressed.
     SetBlock(BlockStateId),
     /// `Level.destroyBlock(pos, drop)`: the block gone, with its drops or without.
-    DestroyBlock {
-        /// Whether the block drops its resources.
-        drop: bool,
-    },
-}
-/// A write a block's part asks for when an entity lands on it (`Block.fallOn`'s own
-/// `setBlockAndUpdate` or `destroyBlock`), at the block the entity landed on. The level
-/// applies each once the entity's batch has ticked, in the order asked.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum LandingWrite {
-    /// `Level.setBlockAndUpdate(pos, state)`: farmland turned to dirt.
-    SetBlock(BlockStateId),
-    /// `Level.destroyBlock(pos, drop)`: a turtle egg broken, with its drops or without.
     DestroyBlock {
         /// Whether the block drops its resources.
         drop: bool,
