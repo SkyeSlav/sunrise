@@ -66,6 +66,9 @@ pub(in crate::game) struct ExecState {
     /// Function IDs in execution order, with the active frame last.
     pub functions: Vec<String>,
     pub prepared_function: Option<super::super::functions::PreparedFunctionCall>,
+    /// The line being run, the text the executable context's ranges index
+    /// (`CommandContext.getInput`).
+    pub line: Option<String>,
 }
 
 /// A modifier that brings the sources to `max_command_forks` ends the chain
@@ -262,7 +265,10 @@ impl Game<'_> {
         let (ctx, _) = parse.executable()?;
         let ctx = ctx.clone();
         let root = parse.context.clone();
-        self.with_source(source, |g| g.run_chain(&root, &ctx))
+        let outer = self.exec.line.replace(parse.input);
+        let result = self.with_source(source, |g| g.run_chain(&root, &ctx));
+        self.exec.line = outer;
+        result
     }
     /// Run a parsed command (`root` is the first context; `ctx` the one with
     /// the executable node): `execute` and `return` walk their own chains.

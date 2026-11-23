@@ -1,0 +1,3 @@
+ids = ["type:CommandInvocation", "type:CommandInvocation.input"]
+why = "CommandInvocation gains `input: Option<String>`, the executable part of the command line as written (CommandContext.getInput cut to the executable context's range). Its derived Wire schema now includes the field."
+migrate = "Rebuild against this SDK. Read `command.input` where the original leaf text is wanted; keep reading typed values through `command.argument(name)`."

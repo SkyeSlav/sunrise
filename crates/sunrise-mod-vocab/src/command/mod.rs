@@ -158,11 +158,18 @@ pub struct CommandInvocation {
     /// The execution position, after `execute at` or `positioned`; the console's is the
     /// world spawn's block corner.
     pub position: [f64; 3],
+    /// The text this command's own part of the line had as typed or written
+    /// (`CommandContext.getInput` sliced by the executable context's range): from the
+    /// registered name to the end of its last argument, without an `execute ... run` or
+    /// `return run` prefix or the line's leading slash. `None` when the invocation has no
+    /// source line. It is untrusted supplementary text: read typed values from
+    /// [`Self::arguments`].
+    pub input: Option<String>,
 }
 
 impl CommandInvocation {
     /// Build an invocation from its parsed literal path, resolved arguments and execution
-    /// level and position.
+    /// level and position, with no source line ([`Self::input`] is `None`).
     pub fn new(
         literals: Vec<String>,
         arguments: Vec<CommandArgument>,
@@ -174,6 +181,7 @@ impl CommandInvocation {
             arguments,
             dimension,
             position,
+            input: None,
         }
     }
 

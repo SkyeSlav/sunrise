@@ -251,6 +251,85 @@ mod tests {
         );
     }
 
+    /// `CommandContext.getInput` sliced by the executable context: the executor reads its own
+    /// part of the line as written, without the `execute ... run` before it, from the console
+    /// and from a line run as functions run theirs.
+    #[test]
+    #[ignore = "daily"]
+    fn registered_executors_receive_only_their_own_leaf_input() {
+        use crate::game::native_entity_refs::tests::run_fresh_cases;
+        use std::sync::{Arc, Mutex};
+
+        if run_fresh_cases(
+            "game::native_command_reads::tests::registered_executors_receive_only_their_own_leaf_input",
+            "SUNRISE_COMMAND_LEAF_INPUT_CASE",
+            &["leaf"],
+        ) {
+            return;
+        }
+        type Heard = Arc<Mutex<Vec<(Option<String>, Option<mod_api::CommandArgumentValue>)>>>;
+        struct Leaf(Heard);
+        #[mod_api::__subscriptions]
+        impl mod_api::Hooks for Leaf {
+            fn register_commands(
+                &self,
+                _: &mut dyn mod_api::ServerHost,
+                event: &mut mod_api::RegisterCommandsEvent<'_>,
+            ) {
+                let heard = self.0.clone();
+                event
+                    .commands
+                    .push(mod_api::Command::new("leafcapture <value:text>").executes(
+                        move |_, _, command| {
+                            heard
+                                .lock()
+                                .unwrap()
+                                .push((command.input.clone(), command.argument("value").cloned()));
+                            Ok(1)
+                        },
+                    ));
+            }
+        }
+        let heard: Heard = Arc::default();
+        mod_platform::testing::with_mods(
+            vec![mod_api::ModEntry::new(
+                "leaf",
+                Box::new(Leaf(heard.clone())),
+            )]
+            .into(),
+            || {
+                super::super::native_guest_turn_tests::with_guests(|game| {
+                    game.build_registries();
+                    game.register_native_commands();
+                    assert!(game.native_run_command("leafcapture two  spaces"));
+                    assert!(game.native_run_command(
+                        "execute positioned 2 64 3 run leafcapture café \"B\""
+                    ));
+                    let source = game.server_source();
+                    game.execute_line("execute as @s run leafcapture from a line", source)
+                        .unwrap();
+                });
+            },
+        );
+        let text = |value: &str| {
+            (
+                Some(format!("leafcapture {value}")),
+                Some(mod_api::CommandArgumentValue::String(value.to_owned())),
+            )
+        };
+        assert_eq!(
+            *heard.lock().unwrap(),
+            [text("two  spaces"), text("café \"B\""), text("from a line"),]
+        );
+        let none = CommandInvocation::new(
+            vec!["leafcapture".into()],
+            Vec::new(),
+            mod_api::DimensionKey::OVERWORLD,
+            [0.0; 3],
+        );
+        assert_eq!(none.input, None);
+    }
+
     #[test]
     #[ignore = "daily"]
     fn a_profile_keeps_its_login_properties() {

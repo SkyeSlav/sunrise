@@ -2287,7 +2287,13 @@ impl Game<'_> {
             .ok_or_else(|| err("command.unknown.command", &[]))?;
         let callback = executor.callback.clone();
         let call = Arc::clone(&executor.call);
-        let command = self.resolve_native_command(context)?;
+        // CommandContext.getInput sliced by the executable context's range.
+        let input = context.nodes.first().and_then(|&(_, (start, _))| {
+            let line = self.exec.line.as_deref()?;
+            line.get(start..context.range.1).map(str::to_owned)
+        });
+        let mut command = self.resolve_native_command(context)?;
+        command.input = input;
         let origin = self.native_command_origin(self.ui.registries.permission)?;
         // Isolate journaled writes when the caller already has a transaction. An ordinary
         // command is not implicitly transactional, and writes outside the journal stay put.

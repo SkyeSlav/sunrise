@@ -314,7 +314,10 @@ impl Game<'_> {
             Ok((ctx, _)) => {
                 let ctx = ctx.clone();
                 let root = parse.context.clone();
-                self.exec = Default::default();
+                self.exec = execute::ExecState {
+                    line: Some(parse.input.clone()),
+                    ..Default::default()
+                };
                 self.run_chain(&root, &ctx)
             }
         };

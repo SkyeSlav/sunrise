@@ -8,6 +8,14 @@ or a command path to route. Read named values through `command.argument(name)`
 and `CommandArgumentValue`. An integer is already an `i32`; a player argument is
 a live `PlayerRef`, not selector text.
 
+`command.input` is the command's own part of the line as it was typed or written
+(`CommandContext.getInput` cut to the executable context's range): from the
+registered name to the end of its last argument. An `execute ... run` or
+`return run` before it and the line's leading slash are not part of it, and
+spacing inside it is kept. It is `None` for an invocation built with no source
+line. Treat it as untrusted extra text, for logs or echoes; the typed arguments
+are what the command was validated against.
+
 Only the executor whose registration owns the parsed node runs, with its mod's
 identity. If the owner is disabled after registration, the command is refused.
 Return `Ok(n)` for success with integer result `n` (zero is also success), or
