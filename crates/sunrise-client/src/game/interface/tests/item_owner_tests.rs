@@ -451,6 +451,14 @@ fn item_display_passes_non_living_owner_with_position_and_yaw() {
 #[test]
 #[ignore = "daily"]
 fn item_moon_phase_follows_the_dimension_timeline() {
+    let plain = |game: &mut crate::game::Game<'_>, item: &str, owner: &OwnerState| {
+        game.resolve_item(
+            &ItemStack::new(item, 1),
+            DisplayContext::Ground,
+            Some(owner),
+            0,
+        )
+    };
     use std::sync::Arc;
     use sunrise_client::{chunk::Chunk, lan::data::json_to_nbt};
     use sunrise_protocol::{
@@ -530,14 +538,23 @@ fn item_moon_phase_follows_the_dimension_timeline() {
                 let dim_type = json!({
                     "timelines": ["test:server_moon"]
                 });
+                let no_timeline = json!({
+                    "timelines": []
+                });
                 registries.registries.insert(
                     "minecraft:dimension_type".into(),
-                    vec![("minecraft:the_end".into(), Some(json_to_nbt(&dim_type)))],
+                    vec![
+                        ("minecraft:the_end".into(), Some(json_to_nbt(&dim_type))),
+                        (
+                            "minecraft:overworld".into(),
+                            Some(json_to_nbt(&no_timeline)),
+                        ),
+                    ],
                 );
                 game.set_registries(Arc::new(registries));
-                let spawn = play::SpawnInfo {
-                    dimension_type: 0,
-                    dimension: "minecraft:the_end".into(),
+                let spawn_in = |dimension_type: i32, dimension: &str| play::SpawnInfo {
+                    dimension_type,
+                    dimension: dimension.into(),
                     seed: 0,
                     game_type: 1,
                     previous_game_type: None,
@@ -547,8 +564,23 @@ fn item_moon_phase_follows_the_dimension_timeline() {
                     portal_cooldown: 0,
                     sea_level: 63,
                 };
-                game.handle_packet(C::Respawn(play::Respawn { spawn, keep: 0 }))
-                    .unwrap();
+                let respawn =
+                    |game: &mut crate::game::Game<'_>, dimension_type: i32, dimension: &str| {
+                        game.handle_packet(C::Respawn(play::Respawn {
+                            spawn: spawn_in(dimension_type, dimension),
+                            keep: 0,
+                        }))
+                        .unwrap();
+                    };
+                let lay_biomes = |game: &mut crate::game::Game<'_>| {
+                    game.world.chunks.insert(
+                        (0, 0),
+                        Arc::new(Chunk::with_layout(0, 0, game.world.layout())),
+                    );
+                    assert!(game.set_biome_at([0, 64, 0], "test:moon_two"));
+                    assert!(game.set_biome_at([8, 64, 0], "test:moon_six"));
+                };
+                respawn(game, 0, "minecraft:the_end");
                 game.handle_packet(C::SetTime(play::SetTime {
                     game_time: 100,
                     clocks: vec![play::ClockState {
@@ -565,13 +597,8 @@ fn item_moon_phase_follows_the_dimension_timeline() {
                 assert_eq!(game.item_level().moon_phase, 3);
                 assert!(game.dim_environment().moon_phase_is_positional());
 
-                // Per-owner biome moon phase overrides in the same frame without advancing `frames`.
-                game.world.chunks.insert(
-                    (0, 0),
-                    Arc::new(Chunk::with_layout(0, 0, game.world.layout())),
-                );
-                assert!(game.set_biome_at([0, 64, 0], "test:moon_two"));
-                assert!(game.set_biome_at([8, 64, 0], "test:moon_six"));
+                // Per-owner lookups in the same frame, without advancing `frames`.
+                lay_biomes(game);
                 let leaf = |id| json!({"type": "minecraft:model", "model": id});
                 let moon_probe = ClientItem::from_json(
                     &json!({
@@ -604,8 +631,9 @@ fn item_moon_phase_follows_the_dimension_timeline() {
                 );
                 let owner_a = owner_at([0.5, 64.0, 0.5], 0.0, "minecraft:item");
                 let owner_b = owner_at([8.5, 64.0, 0.5], 0.0, "minecraft:item");
-                let state_a = game.resolve_item(&stack, DisplayContext::Ground, Some(&owner_a), 0);
-                let state_b = game.resolve_item(&stack, DisplayContext::Ground, Some(&owner_b), 0);
+                let resolved = |game: &mut crate::game::Game<'_>, owner: &OwnerState| {
+                    game.resolve_item(&stack, DisplayContext::Ground, Some(owner), 0)
+                };
                 // The chosen leaf is the layer's baked geometry: compare it with plain items
                 // that use the same models.
                 let quads_of = |state: &sunrise_client::item_render::ItemRenderState| match &state
@@ -615,19 +643,37 @@ fn item_moon_phase_follows_the_dimension_timeline() {
                     sunrise_client::item_render::LayerGeometry::Quads(baked) => baked.quads.clone(),
                     other => panic!("expected a plain model, got {other:?}"),
                 };
-                let plain = |item: &str, owner: &OwnerState| {
-                    game.resolve_item(
-                        &ItemStack::new(item, 1),
-                        DisplayContext::Ground,
-                        Some(owner),
-                        0,
-                    )
-                };
-                let diamond = quads_of(&plain("minecraft:diamond", &owner_a));
-                let gold = quads_of(&plain("minecraft:gold_ingot", &owner_b));
+                let diamond = quads_of(&plain(game, "minecraft:diamond", &owner_a));
+                let gold = quads_of(&plain(game, "minecraft:gold_ingot", &owner_b));
                 assert_ne!(diamond, gold);
-                assert_eq!(quads_of(&state_a), diamond);
-                assert_eq!(quads_of(&state_b), gold);
+
+                // A timeline track replaces what the layers before it gave:
+                // `Timeline.Builder.addTrack` is `AttributeModifier.override()`, and
+                // `addDefaultLayers` adds the dimension type's timelines after the biome
+                // layer. Both owners take the timeline's phase, whatever their biomes say.
+                assert_eq!(game.item_moon_phase(Some([0.5, 64.0, 0.5])), 3);
+                assert_eq!(game.item_moon_phase(Some([8.5, 64.0, 0.5])), 3);
+                assert_eq!(
+                    quads_of(&resolved(game, &owner_a)),
+                    diamond,
+                    "owner a takes the timeline's phase"
+                );
+                assert_eq!(
+                    quads_of(&resolved(game, &owner_b)),
+                    diamond,
+                    "owner b takes the timeline's phase"
+                );
+
+                // A dimension type without the track takes each owner's biome phase
+                // (`addBiomeLayerForAttribute`: the biome at the owner's position).
+                respawn(game, 1, "minecraft:overworld");
+                lay_biomes(game);
+                assert_eq!(game.item_level().moon_phase, 0, "no track: the default");
+                assert!(game.dim_environment().moon_phase_is_positional());
+                assert_eq!(game.item_moon_phase(Some([0.5, 64.0, 0.5])), 2);
+                assert_eq!(game.item_moon_phase(Some([8.5, 64.0, 0.5])), 7);
+                assert_eq!(quads_of(&resolved(game, &owner_a)), diamond);
+                assert_eq!(quads_of(&resolved(game, &owner_b)), gold);
             })
         },
     );
