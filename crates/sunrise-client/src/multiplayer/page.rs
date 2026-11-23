@@ -8,8 +8,8 @@
 //! it, as every field of its own) and tells the page each change before anything else reaches
 //! it ([`Act::Edit`]), then Enter in a field ([`Act::Submit`]) and the presses. A page joins a
 //! server with `sunrise_hooks::pages::connect`.
-use super::{centered_x, half, quarter, ButtonSpec, Outcome};
-use crate::hud::{rgba, HudAtlas, HudBatch};
+use super::{ButtonSpec, Outcome, centered_x, half, quarter};
+use crate::hud::{HudAtlas, HudBatch, rgba};
 use std::cell::RefCell;
 use std::time::Instant;
 use sunrise_hooks::pages::{self, Act, Page, Place, Row};

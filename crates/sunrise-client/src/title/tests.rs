@@ -106,10 +106,12 @@ fn without_a_resolver_the_friends_icon_is_inactive_and_opens_nothing() {
     // Same place and look as with one, only greyed; Language and Accessibility stay active.
     let friends = icons.iter().find(|(label, ..)| label == "Friends").unwrap();
     assert!(!friends.1);
-    assert!(icons
-        .iter()
-        .filter(|(label, ..)| label != "Friends")
-        .all(|(_, on, _)| *on));
+    assert!(
+        icons
+            .iter()
+            .filter(|(label, ..)| label != "Friends")
+            .all(|(_, on, _)| *on)
+    );
     assert_eq!(f.click("Friends"), Action::None);
     assert!(matches!(f.title.mode, Mode::Main));
     crate::net::JOINS_FRIENDS_IN_TEST.set(true);
@@ -2290,11 +2292,12 @@ fn optimizing_without_a_backup_upgrades_chunks_and_returns_to_the_list() {
     f.click("I Know What I'm Doing!");
     assert!(matches!(f.title.mode, Mode::Optimize { .. }));
     // Nothing but a press stops it: no pad button either.
-    assert!(f
-        .title
-        .buttons(427.0, 240.0)
-        .iter()
-        .all(|b| b.action.is_none()));
+    assert!(
+        f.title
+            .buttons(427.0, 240.0)
+            .iter()
+            .all(|b| b.action.is_none())
+    );
     // OptimizeWorldScreen ignores Escape.
     f.title.escape();
     wait_while_optimizing(&mut f);

@@ -1489,7 +1489,8 @@ impl Screen {
                 },
                 Some(40),
             ) => {
-                if let Some((address, name, lan)) = selected.and_then(|i| entry_address(servers, lan, i))
+                if let Some((address, name, lan)) =
+                    selected.and_then(|i| entry_address(servers, lan, i))
                 {
                     return Outcome::Connect { address, name, lan };
                 }
