@@ -51,6 +51,111 @@ fn id(value: &str) -> mod_api::Identifier {
     mod_api::Identifier::parse(value).unwrap()
 }
 
+struct RecipeTypeMod;
+#[mod_api::__subscriptions]
+impl Hooks for RecipeTypeMod {
+    fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
+        r.register_recipe_type("recipe_type_test:empty");
+        r.register_recipe_type("recipe_type_test:grinding");
+        r.register_raw_recipe_serializer(
+            "recipe_type_test:grinding_json",
+            "recipe_type_test:grinding",
+        );
+    }
+}
+
+#[test]
+#[ignore = "daily"]
+fn recipe_types_are_startup_registry_keys_on_both_sides() {
+    const CASE: &str = "SUNRISE_RECIPE_TYPE_REGISTRY_CHILD";
+    const REGISTRY: &str = "minecraft:recipe_type";
+    if run_fresh_cases(
+        "game::native_registry_entries_tests::recipe_types_are_startup_registry_keys_on_both_sides",
+        CASE,
+        &["client", "server", "empty"],
+    ) {
+        return;
+    }
+    let case = std::env::var(CASE).unwrap();
+    let empty = case == "empty";
+    let mods = if empty {
+        vec![]
+    } else {
+        vec![ModEntry::new("recipe_type_test", Box::new(RecipeTypeMod))]
+    };
+    mod_platform::testing::with_mods(mods.into(), || {
+        let check = |game: &mut super::Game<'_>| {
+            game.native_lifecycle = Default::default();
+            assert!(game.native_lifecycle.epoch().is_none());
+            assert!(game.remote.is_none());
+            assert_eq!(game.is_logical_server(), case != "client");
+            let host = host(game);
+            assert_eq!(host.registry_entries(REGISTRY), None);
+
+            let data = |registries| {
+                mod_api::__private::RegistrationData::new(
+                    registries,
+                    Default::default(),
+                    mod_api::InstanceDirectory::from_path(Path::new("unused")).unwrap(),
+                    mod_api::RuntimeEnvironment::new(
+                        mod_api::Dist::Client,
+                        "26.3".into(),
+                        "test".into(),
+                        false,
+                    ),
+                )
+            };
+            mod_platform::__private::with_test_registration_data(data(Default::default()), || {
+                assert_eq!(host.registry_entries(REGISTRY), None);
+            });
+
+            let (names, expected): (&[&str], &[&str]) = if empty {
+                (&[], &[])
+            } else {
+                (
+                    &[
+                        "minecraft:smelting",
+                        "",
+                        "minecraft:crafting",
+                        "minecraft:crafting",
+                    ],
+                    &[
+                        "minecraft:crafting",
+                        "minecraft:smelting",
+                        "recipe_type_test:empty",
+                        "recipe_type_test:grinding",
+                    ],
+                )
+            };
+            let registries = [(
+                REGISTRY.to_owned(),
+                names.iter().map(|&name| name.to_owned()).collect(),
+            )]
+            .into_iter()
+            .collect();
+            mod_platform::__private::with_test_registration_data(data(registries), || {
+                for registry in [REGISTRY, "recipe_type"] {
+                    let mut entries: Vec<_> = host
+                        .registry_entries(registry)
+                        .unwrap()
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect();
+                    entries.sort_unstable();
+                    assert_eq!(entries, expected);
+                }
+                assert_eq!(host.registry_entries("minecraft:recipe_type:bad"), None);
+                assert_eq!(host.registry_entries("minecraft:unknown_registry"), None);
+            });
+        };
+        if case == "client" {
+            with_client_game(check);
+        } else {
+            with_game(check);
+        }
+    });
+}
+
 // Feed the same server-built snapshot to both Host implementations.
 fn check_rejected_sync_tags(game: &super::Game<'_>) {
     for (registry, name) in [

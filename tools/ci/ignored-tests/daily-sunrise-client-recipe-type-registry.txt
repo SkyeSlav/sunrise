@@ -1,0 +1,1 @@
+sunrise-client game::native_registry_entries_tests::recipe_types_are_startup_registry_keys_on_both_sides lib daily child-process # uses prepared resources and installs fixture registries only in fresh processes

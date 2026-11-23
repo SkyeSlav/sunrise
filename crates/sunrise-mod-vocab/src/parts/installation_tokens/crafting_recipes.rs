@@ -11,6 +11,11 @@ pub fn recipe_serializer(name: &str) -> Option<(String, InstalledRecipeSerialize
     crate::parts::installed_recipe_serializer(name)
 }
 
+/// The registered mod recipe types, or `None` until the Parts table is installed.
+pub fn recipe_type_ids() -> Option<impl Iterator<Item = &'static str>> {
+    crate::parts::installed_recipe_type_ids()
+}
+
 /// All enabled serializers and the independently registered types they produce.
 pub fn recipe_serializers() -> Vec<(String, String)> {
     crate::parts::installed_recipe_serializers()

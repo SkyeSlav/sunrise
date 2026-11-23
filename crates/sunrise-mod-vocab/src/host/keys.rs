@@ -27,8 +27,14 @@ pub trait KeysHost {
     /// unknown registry or entry, or before that registry is available.
     fn registry_entry(&self, registry: &str, id: &str) -> Option<RegistryEntry>;
     /// Side: both.
-    /// Entry identifiers in the current table, each once. None for an unavailable or unknown
-    /// registry; an available empty registry returns an empty list.
+    /// Namespaced entry identifiers in the current table, each once, in no guaranteed order.
+    /// `None` for an unavailable or unknown registry; an available empty registry returns an
+    /// empty list.
+    ///
+    /// `minecraft:recipe_type` reads the local startup registry on either side once published,
+    /// even without a world or connection. It includes built-in and mod recipe types, even if
+    /// they have no recipes or serializer. Serializer IDs are not recipe types unless registered
+    /// separately as types. Listing types neither loads nor synchronizes recipes.
     fn registry_entries(&self, registry: &str) -> Option<Vec<Identifier>>;
     /// Side: both.
     /// Membership in the current side's merged tags. None for an unavailable registry or

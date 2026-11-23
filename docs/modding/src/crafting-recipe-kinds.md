@@ -94,6 +94,13 @@ r.register_recipe_type("my_mod:grinding");
 r.register_raw_recipe_serializer("my_mod:grinder_json", "my_mod:grinding");
 ```
 
+`host.registry_entries("minecraft:recipe_type")` lists `my_mod:grinding` once, but not
+`my_mod:grinder_json` unless it was also registered as a recipe type. This works on both sides
+once startup publishes the registry, even without a world or any recipes or serializers for the
+listed types. Convert an identifier to a string to pass it to `recipes_of_type` or add it to
+`datapack_sync`'s server-side `recipe_types` list. Listing the types does not load or send recipes;
+lookup and sync use the current recipe table.
+
 `{"type":"my_mod:grinder_json","duration":42}` is then published through
 `recipes_of_type("my_mod:grinding")`, with its source JSON intact. It never joins
 the crafting grid or a built-in station. The machine owns its matching and menu.

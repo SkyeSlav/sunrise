@@ -856,6 +856,10 @@ impl RegistrationData {
     pub fn initial_settings_snapshot() -> Option<Arc<[(String, Arc<[(String, String)]>)]>> {
         registration_data().map(|data| data.settings)
     }
+    /// Share a built-in registry from the published startup data without reading the report again.
+    pub fn initial_registry_snapshot(name: &str) -> Option<Arc<[String]>> {
+        registration_data()?.registry(name).cloned()
+    }
     /// Bind each package's checked runtime files, by mod ID: what
     /// [`RegistrationContext::runtime_files`] serves.
     pub fn with_runtime_files(
@@ -908,12 +912,12 @@ impl RegistrationData {
     fn instance_dir(&self) -> &crate::InstanceDirectory {
         &self.instance_dir
     }
-    fn registry(&self, name: &str) -> Option<&[String]> {
+    fn registry(&self, name: &str) -> Option<&Arc<[String]>> {
         let at = self
             .registries
             .binary_search_by(|(known, _)| known.as_str().cmp(name))
             .ok()?;
-        Some(self.registries[at].1.as_ref())
+        Some(&self.registries[at].1)
     }
     fn setting(&self, mod_id: &str, key: &str) -> Option<&str> {
         let mod_at = self
@@ -1110,7 +1114,7 @@ impl RegistrationContext {
     /// Borrows a built-in registry's names in ID order, or returns `None` if the registry
     /// is unavailable or no registration snapshot is installed.
     pub fn registry(&self, name: &str) -> Option<&[String]> {
-        self.data.as_ref()?.registry(name)
+        self.data.as_ref()?.registry(name).map(Arc::as_ref)
     }
 
     /// Borrows a mod's captured setting as it was when registration began, or returns `None`

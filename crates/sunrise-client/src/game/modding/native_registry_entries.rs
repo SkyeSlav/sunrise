@@ -193,9 +193,23 @@ impl Game<'_> {
         ))
     }
 
-    /// `HolderLookup.listElements`, from the same owners used by `registry_entry`.
+    /// Registry keys from their published owners (`Registry.keySet`).
     pub(super) fn registry_entries(&self, registry: &str) -> Option<Vec<Identifier>> {
         let registry = normalized(registry);
+        // Recipe types are registered at startup, independently of worlds and connections.
+        if registry == "minecraft:recipe_type" {
+            let builtin =
+                mod_api::__private::RegistrationData::initial_registry_snapshot(&registry)?;
+            let native = mod_api::__private::parts_installation::recipe_type_ids()?;
+            let mut entries: Vec<_> = builtin
+                .iter()
+                .filter_map(|name| Identifier::parse_namespaced(name))
+                .chain(native.filter_map(Identifier::parse_namespaced))
+                .collect();
+            entries.sort_unstable();
+            entries.dedup();
+            return Some(entries);
+        }
         if !self.is_logical_server() && self.remote.is_none() {
             return None;
         }

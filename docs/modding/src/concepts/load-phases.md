@@ -171,7 +171,14 @@ Both client and server hosts expose `registry_entry(registry, id)`,
 `registry_entries(registry)` and `registry_entry_in_tag(&entry, tag)`. These read the
 current side's live registry and merged tags, not pending reload data. Unknown or
 unavailable registries and entries return `None`; an absent tag or a tag that does
-not contain the entry returns `Some(false)`. Enumeration yields each identity once.
+not contain the entry returns `Some(false)`. Enumeration yields each namespaced identity once,
+with no guaranteed order. An available but empty registry enumerates as `Some(vec![])`.
+
+`registry_entries("minecraft:recipe_type")` reads the local startup registry on either side once
+published, without needing a world or connection. It includes built-in and mod recipe types, even
+ones with no recipes or serializer. It does not list serializer IDs unless they were separately
+registered as recipe types. [Recipe lookup and sync](../crafting-recipe-kinds.md) still use the
+current recipe table.
 
 `ConfigHost::setting` still returns `Option<String>` on an ordinary `Host`; it is not the
 captured `Option<&str>` read on a load, loop or worldgen context.
@@ -196,8 +203,9 @@ before publication; tags with missing required members are omitted. Synchronized
 snapshots carry those exact tag names and members (including empty tags);
 server-only and unnegotiated registries send neither entries nor tags. Clients
 validate membership before activating a snapshot.
-On clients, generic reads never fall back to prepared server-only datapack files:
-built-ins and the connection's currently synchronized registries are the entire view.
+On clients, generic reads never fall back to prepared server-only datapack files. They read
+built-ins and the connection's currently synchronized registries, with recipe type enumeration
+reading the local startup registry as described above.
 
 There is no separate common-setup, load-complete or intermod event. Registration and the first server
 reload cover common setup, `client_setup` covers client setup, and `server_about_to_start` covers

@@ -276,6 +276,11 @@ pub(crate) fn installed_crafting_recipe_kinds() -> Vec<String> {
     kinds
 }
 
+/// Enumerate registered mod type identities, independently of serializers or loaded recipes.
+pub(crate) fn installed_recipe_type_ids() -> Option<impl Iterator<Item = &'static str>> {
+    Some(installed()?.keys.recipe_types.keys().map(Box::as_ref))
+}
+
 /// Resolve a serializer and its separately registered recipe type.
 pub(crate) fn installed_recipe_serializer(
     name: &str,
