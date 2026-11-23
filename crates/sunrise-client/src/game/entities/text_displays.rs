@@ -545,7 +545,7 @@ impl RemoteTextDisplay {
             self.update_culling();
         }
     }
-    fn tick(&mut self) {
+    pub(in crate::game) fn tick(&mut self) {
         self.age = self.age.wrapping_add(1);
         self.previous = self.position;
         self.old_rotation = self.rotation;

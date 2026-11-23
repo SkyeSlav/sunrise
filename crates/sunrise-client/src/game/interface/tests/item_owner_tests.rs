@@ -304,7 +304,11 @@ fn item_draw_uses_the_stack_duration_even_when_its_model_is_replaced() {
                     .insert("test:third_person_use_probe".into(), probe);
                 let mut mob = sunrise_client::mobs::Mob::new(
                     77,
-                    Arc::new(game.res.mobs().types["minecraft:zombie"].clone()),
+                    game.res
+                        .mob_types()
+                        .get("minecraft:zombie")
+                        .unwrap()
+                        .clone(),
                     sunrise_core::geometry::Vec3::new(0.5, 64.0, 0.5),
                     0.0,
                 );
@@ -577,12 +581,12 @@ fn item_moon_phase_follows_the_dimension_timeline() {
                             "source": "moon_phase",
                             "wobble": false,
                             "entries": [
-                                {"threshold": 0.0, "model": leaf("test:phase_low")},
-                                {"threshold": 0.25, "model": leaf("test:phase_two")},
-                                {"threshold": 0.5, "model": leaf("test:phase_mid")},
-                                {"threshold": 0.75, "model": leaf("test:phase_six")}
+                                {"threshold": 0.0, "model": leaf("minecraft:item/iron_ingot")},
+                                {"threshold": 0.25, "model": leaf("minecraft:item/diamond")},
+                                {"threshold": 0.5, "model": leaf("minecraft:item/emerald")},
+                                {"threshold": 0.75, "model": leaf("minecraft:item/gold_ingot")}
                             ],
-                            "fallback": leaf("test:phase_low")
+                            "fallback": leaf("minecraft:item/iron_ingot")
                         }
                     })
                     .to_string(),
@@ -602,18 +606,28 @@ fn item_moon_phase_follows_the_dimension_timeline() {
                 let owner_b = owner_at([8.5, 64.0, 0.5], 0.0, "minecraft:item");
                 let state_a = game.resolve_item(&stack, DisplayContext::Ground, Some(&owner_a), 0);
                 let state_b = game.resolve_item(&stack, DisplayContext::Ground, Some(&owner_b), 0);
-                assert_eq!(
-                    state_a.layers[0].content,
-                    LayerContent::Model {
-                        model: "test:phase_two".into()
-                    }
-                );
-                assert_eq!(
-                    state_b.layers[0].content,
-                    LayerContent::Model {
-                        model: "test:phase_six".into()
-                    }
-                );
+                // The chosen leaf is the layer's baked geometry: compare it with plain items
+                // that use the same models.
+                let quads_of = |state: &sunrise_client::item_render::ItemRenderState| match &state
+                    .layers[0]
+                    .geometry
+                {
+                    sunrise_client::item_render::LayerGeometry::Quads(baked) => baked.quads.clone(),
+                    other => panic!("expected a plain model, got {other:?}"),
+                };
+                let plain = |item: &str, owner: &OwnerState| {
+                    game.resolve_item(
+                        &ItemStack::new(item, 1),
+                        DisplayContext::Ground,
+                        Some(owner),
+                        0,
+                    )
+                };
+                let diamond = quads_of(&plain("minecraft:diamond", &owner_a));
+                let gold = quads_of(&plain("minecraft:gold_ingot", &owner_b));
+                assert_ne!(diamond, gold);
+                assert_eq!(quads_of(&state_a), diamond);
+                assert_eq!(quads_of(&state_b), gold);
             })
         },
     );
