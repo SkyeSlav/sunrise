@@ -65,17 +65,21 @@ impl Game<'_> {
         self.attack_ticks = op["ticks"].as_u64().unwrap_or(20) as u32;
         self.world.game_time = 100;
         let at = Vec3::new(0.5, 1.0, 0.5);
+        // The fixture targets and the live drops from breaking them share one allocator.
         let center = match kind {
             "boat" => {
-                self.boats.push(Boat::new(1, "oak".into(), at, 0.0));
+                let id = self.take_entity_id();
+                self.boats.push(Boat::new(id, "oak".into(), at, 0.0));
                 self.boats[0].bounds().center()
             }
             "cart" => {
-                self.carts.push(Minecart::new(1, CartKind::Rideable, at));
+                let id = self.take_entity_id();
+                self.carts.push(Minecart::new(id, CartKind::Rideable, at));
                 self.carts[0].bounds().center()
             }
             "stand" => {
-                let mut stand = ArmorStand::new(1, Vec3::new(0.5, 0.0, 0.5), 0.0);
+                let id = self.take_entity_id();
+                let mut stand = ArmorStand::new(id, Vec3::new(0.5, 0.0, 0.5), 0.0);
                 stand.last_hit = if op["break"].as_bool().unwrap_or(false) {
                     100
                 } else {
@@ -96,10 +100,11 @@ impl Game<'_> {
                 self.special_targets()[0].1.center()
             }
             "painting" => {
+                let id = self.take_entity_id();
                 self.paintings.push(Painting {
                     attachment_lifetime: Default::default(),
                     join: Default::default(),
-                    id: 1,
+                    id,
                     pos: [0, 1, 0],
                     facing: 2,
                     variant: "minecraft:kebab".into(),
@@ -117,10 +122,11 @@ impl Game<'_> {
                 )
             }
             "frame" | "fixed_frame" | "filled_frame" => {
+                let id = self.take_entity_id();
                 self.item_frames.push(ItemFrame {
                     attachment_lifetime: Default::default(),
                     join: Default::default(),
-                    id: 1,
+                    id,
                     pos: [0, 1, 0],
                     facing: 2,
                     glow: false,

@@ -25,6 +25,15 @@ pub(super) enum Shows {
 }
 
 impl Shows {
+    pub(super) fn from_kind(kind: &str) -> Option<Self> {
+        match kind {
+            "minecraft:text_display" => Some(Self::Text),
+            "minecraft:block_display" => Some(Self::Block),
+            "minecraft:item_display" => Some(Self::Item),
+            _ => None,
+        }
+    }
+
     /// The display's entity type, as the tick hooks name it.
     fn kind(self) -> &'static str {
         match self {
@@ -37,6 +46,7 @@ impl Shows {
 
 pub(super) struct RemoteTextDisplay {
     pub data: TextDisplayData,
+    pub(super) join: sunrise_client::join_seq::JoinSeq,
     shows: Shows,
     /// Pending synced sub-state fields (`BlockDisplay` id 23, `ItemDisplay` ids 23-24).
     pending_block: Option<BlockStateId>,
@@ -254,6 +264,7 @@ impl RemoteTextDisplay {
         let pos = glam::DVec3::from(position);
         let mut display = Self {
             data: Default::default(),
+            join: sunrise_client::join_seq::JoinSeq::next(),
             shows,
             pending_block: None,
             pending_item: None,
@@ -734,6 +745,9 @@ impl Game<'_> {
             .text_displays
             .get_mut(&id)
             .is_some_and(|d| d.apply_position_sync(position, rotation, is_ticking));
+        if !interpolating {
+            self.file_snapped_display(id);
+        }
         if !interpolating && self.display_has_indirect_local_player(id as u32) {
             self.seat_local_player_after_display_snap();
         }
@@ -755,10 +769,20 @@ impl Game<'_> {
         if let Some(r) = self.remote.as_mut() {
             r.set_tracked_position(id, resolved);
         }
+        if !interpolated {
+            self.file_snapped_display(id);
+        }
         if !interpolated && self.display_has_indirect_local_player(id as u32) {
             self.seat_local_player_after_display_snap();
         }
         Some(resolved)
+    }
+    /// A display a packet moved without interpolation changes section at once (`Entity.setPos`
+    /// through the level callback), before its riders are seated.
+    fn file_snapped_display(&mut self, id: i32) {
+        if let Some(at) = self.text_displays.get(&id).map(RemoteTextDisplay::position) {
+            self.pick_section_move(id as u32, [at.x, at.y, at.z]);
+        }
     }
     /// Re-seats the local player and snaps `previous_position` after a non-interpolated vehicle
     /// snap (`handleEntityPositionSync` / `handleTeleportEntity`).
@@ -774,6 +798,9 @@ impl Game<'_> {
                 let (seat, _) = super::remote_vehicles::generic_player_seat(at, at, scale);
                 p.position = seat;
                 self.previous_position = seat;
+                // The rider's section follows its seat before the snap returns.
+                let rider = p.entity_id as u32;
+                self.pick_section_move(rider, seat.components());
             }
         }
     }
@@ -918,6 +945,17 @@ impl Game<'_> {
     /// The displays' tick on a client (`ClientLevel.tickEntities` + `tickPassenger`).
     /// EntityTickEvent: once for the family, or each alone of a type a mod named, right before
     /// and right after its own tick; a canceled one keeps its state.
+    fn tick_and_file_display(&mut self, id: i32) {
+        if let Some(display) = self.text_displays.get_mut(&id) {
+            let from = display.position();
+            display.tick();
+            let at = display.position();
+            if at != from {
+                self.pick_section_move(id as u32, at.to_array());
+            }
+        }
+    }
+
     pub(super) fn tick_text_displays(&mut self, running: bool) {
         let mut eligible = Vec::with_capacity(self.text_displays.len());
         for (&id, display) in &self.text_displays {
@@ -931,9 +969,8 @@ impl Game<'_> {
         let mut round = self.native_tick_round();
         if !round.listening() {
             for id in eligible {
-                if let Some(display) = self.text_displays.get_mut(&id) {
-                    display.tick();
-                }
+                self.count_client_tick(id as u32);
+                self.tick_and_file_display(id);
             }
             return;
         }
@@ -955,17 +992,23 @@ impl Game<'_> {
         }
         self.native_tick_pre_batch(&mut round);
         for id in batch {
-            if !round.canceled(id as u32)
-                && let Some(display) = self.text_displays.get_mut(&id)
-            {
-                display.tick();
+            let ticks = !round.canceled(id as u32);
+            self.count_told_client_tick(id as u32, ticks);
+            if ticks {
+                self.tick_and_file_display(id);
             }
         }
         for (id, kind) in alone {
+            // A passenger's ride visit counts it before its own Pre.
+            let passenger = self.client_passenger(id as u32);
+            if passenger {
+                self.count_client_tick(id as u32);
+            }
             if self.native_tick_pre_one(&mut round, id as u32, kind) {
-                if let Some(display) = self.text_displays.get_mut(&id) {
-                    display.tick();
+                if !passenger {
+                    self.count_client_tick(id as u32);
                 }
+                self.tick_and_file_display(id);
                 self.native_tick_post_one(&round, id as u32, kind);
             }
         }

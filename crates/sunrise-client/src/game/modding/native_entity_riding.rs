@@ -267,10 +267,10 @@ impl Game<'_> {
                         .then(|| LivingRef::new(first));
                 }
                 let rider = self.mobs.iter().find(|m| m.id == first.id())?;
-                let tagged = self
-                    .items()
-                    .entity_type_tags
-                    .contains("minecraft:non_controlling_rider", &rider.kind.id);
+                let tagged = self.items().entity_type_tags.has_bit(
+                    rider.kind.flags.entity_tag_slot,
+                    sunrise_client::items::EntityTypeTags::NON_CONTROLLING_RIDER,
+                );
                 (!mob.no_ai && !tagged).then(|| LivingRef::new(first))
             }
             _ => None,

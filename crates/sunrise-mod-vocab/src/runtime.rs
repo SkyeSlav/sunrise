@@ -703,11 +703,13 @@ pub(crate) fn listened(hook: generated::HookId) -> bool {
 }
 
 pub(crate) fn enabled_listened(hook: generated::HookId) -> bool {
-    installed().is_some_and(|installed| {
-        installed.subscribers.indices(hook as usize).any(|index| {
-            !installed.disabled[index].load(std::sync::atomic::Ordering::Relaxed)
-                && !is_poisoned(installed, hook, installed.mods[index].id)
-        })
+    installed().is_some_and(|installed| has_enabled_listener(installed, hook))
+}
+
+pub(crate) fn has_enabled_listener(installed: &Installed, hook: generated::HookId) -> bool {
+    installed.subscribers.indices(hook as usize).any(|index| {
+        !installed.disabled[index].load(std::sync::atomic::Ordering::Relaxed)
+            && !is_poisoned(installed, hook, installed.mods[index].id)
     })
 }
 

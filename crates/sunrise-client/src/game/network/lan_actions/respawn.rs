@@ -11,14 +11,15 @@ impl Game<'_> {
         let Some(host) = self.lan.as_mut() else {
             return;
         };
-        let Some(guest) = host.hub.guest(conn) else {
+        let Some((end_conquered, dead)) = host.hub.update_guest(conn, |guest| {
+            (
+                std::mem::take(&mut guest.won_game),
+                guest.dead && !guest.respawning,
+            )
+        }) else {
             return;
         };
-        let end_conquered = host
-            .play
-            .get_mut(&conn)
-            .is_some_and(|play| std::mem::take(&mut play.won_game));
-        if end_conquered || (guest.dead && !guest.respawning) {
+        if end_conquered || dead {
             self.queue_spawn_trip(
                 conn,
                 SpawnAction::Replace {
@@ -99,6 +100,7 @@ impl Game<'_> {
                 // Even a credits return constructs a new entity. Keep its restored attributes
                 // and health, not the old body's Entity.tickCount.
                 g.carried_tick_count = None;
+                g.carried_last_hurt_mob = None;
                 // Entity's constructor starts it at the origin; snapTo follows clone and copy.
                 g.place([0.0; 3]);
                 (g.yaw, g.pitch) = (0.0, 0.0);
@@ -333,9 +335,10 @@ impl Game<'_> {
         if !dying(self, guest) {
             return;
         }
-        // The killing blow, for the death hooks.
-        let blow = (!mod_api::__private::mods().is_empty()).then(|| self.guest_damage_source(conn));
-        if self.guest_death_canceled(gi, conn) {
+        // The fatal source, for the death hooks.
+        let fatal =
+            (!mod_api::__private::mods().is_empty()).then(|| self.guest_fatal_source(gi, conn));
+        if self.guest_death_canceled(gi, conn, fatal.as_ref()) {
             return;
         }
         // A dead player carries no mob a mod seated on it.
@@ -481,17 +484,16 @@ impl Game<'_> {
             );
             // LivingEntity.die: the death animation, the dying player included.
             host.hub.entity_event(id, 3);
-            let recently_hit = killing.is_some()
-                && self
-                    .guest_combat_record(conn)
-                    .is_some_and(|c| c.recently_hit_by_player(self.world.game_time));
+            // LivingDropsEvent: the source living_death heard, even with no
+            // combat entry (`/kill`), and the last-hurt-by-player memory.
+            let recently_hit = self
+                .guest_combat_record(conn)
+                .is_some_and(|c| c.recently_hit_by_player(self.world.game_time));
             let dropping = crate::game::creatures::DyingDrops {
                 entity: id as u32,
                 kind: "minecraft:player",
                 player: Some(uuid),
-                source: killing.as_ref().map(|(damage_type, attacker)| {
-                    crate::game::creatures::death_hurt_source(damage_type, attacker.unwrap_or(0))
-                }),
+                source: fatal.as_ref().map(|fatal| fatal.source()),
                 recently_hit,
             };
             // LivingEntity.die: the death is heard, and a sculk catalyst
@@ -554,13 +556,13 @@ impl Game<'_> {
                 game.stats.reset_death_timers();
             });
             // `ServerPlayer.die`'s `broadcastEntityEvent`, after the message,
-            // the loot and the experience: Fabric's AFTER_DEATH. The blow is
+            // the loot and the experience: Fabric's AFTER_DEATH. The source is
             // the one `living_death` heard, so a death it cancelled returns
             // above and is never told here.
-            if let Some((damage_type, attacker)) = &blow
+            if let Some(fatal) = &fatal
                 && mod_api::__private::listened(mod_api::HookId::LivingDeathPost)
             {
-                self.native_living_death_post(id as u32, damage_type, *attacker);
+                self.native_living_death_post(id as u32, &fatal.damage_type, fatal.causing);
             }
         }
     }

@@ -505,19 +505,31 @@ impl Renderer {
                     label: Some("Section uploads"),
                 })
         });
-        let meshes = self
-            .sections
-            .values_mut()
-            .chain(self.lods.values_mut().flat_map(|tile| tile.meshes_mut()));
+        // GPU culling's records move with the sections, sourced geometry's with its meshes.
+        let (sourced, sourced_ids) = self.sourced.moves();
+        let meshes = self.sections.values_mut().map(|s| (s, None)).chain(
+            self.lods
+                .iter_mut()
+                .flat_map(|(key, tile)| tile.recorded_meshes_mut(sourced_ids(*key))),
+        );
         let flat = self
             .flat
             .as_mut()
             .map(|f| (f, &self.device, &mut self.section_uploads));
-        // GPU culling's records move with the sections.
         let gpu = self.gpu_culling.as_mut().map(|g| &mut g.records);
         let split = self.translucent_arena.is_some();
         let (arena, part) = (&mut self.arena, Part::Section { split });
-        if !move_off_page(arena, encoder, flat, gpu, meshes, page, part, &mut budget) {
+        if !move_off_page(
+            arena,
+            encoder,
+            flat,
+            gpu,
+            sourced,
+            meshes,
+            page,
+            part,
+            &mut budget,
+        ) {
             // The other pages have no room after all.
             arena.reopen();
         }
@@ -575,7 +587,8 @@ impl Renderer {
         let meshes = self
             .sections
             .values_mut()
-            .chain(self.lods.values_mut().flat_map(|tile| tile.meshes_mut()));
+            .chain(self.lods.values_mut().flat_map(|tile| tile.meshes_mut()))
+            .map(|s| (s, None));
         // As many quads a frame either way: a quad's indices are a quarter of its bytes.
         let cap = match part {
             Part::Indices => COMPACT_BUDGET / 4,
@@ -589,7 +602,17 @@ impl Renderer {
         }
         .map(|f| (f, &self.device, &mut self.section_uploads));
         // GPU culling's records follow the section arena alone.
-        if !move_off_page(arena, encoder, flat, None, meshes, page, part, &mut budget) {
+        if !move_off_page(
+            arena,
+            encoder,
+            flat,
+            None,
+            None,
+            meshes,
+            page,
+            part,
+            &mut budget,
+        ) {
             // New ranges took the room: both pages stay, drawn, until a later try.
             arena.reopen();
             self.shrink_gate.wait(now, SHRINK_RETRY);
@@ -811,6 +834,7 @@ impl Renderer {
         self.lods.clear();
         self.lod_vertex_bytes = 0;
         self.lod_cells.clear();
+        self.sourced.clear();
         self.lod_cutout.clear();
         self.lod_retiring.clear();
         self.lod_leaving.clear();

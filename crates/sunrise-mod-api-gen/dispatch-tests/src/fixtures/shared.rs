@@ -853,3 +853,20 @@ mod stubs {
     pub(super) use super::generated::mod_api::LivingRef;
     pub(super) use crate::tests::mod_api::mod_api::DamageContainer;
 }
+mod crate_root {
+    // Dispatch fixtures isolate ordering; the vocabulary's own tests cover what the client
+    // validators refuse. One module for every client hook's validator.
+    mod client {
+        pub(crate) mod render_pipeline {
+            pub(crate) fn validate_render_pipelines<T>(_: &str, _: &[T], _: &mut Vec<T>) {}
+        }
+        pub(crate) mod hud_layout {
+            pub(crate) fn validate_hotbar_attack_indicator_progress(
+                _: &f32,
+                _: &f32,
+            ) -> Result<(), &'static str> {
+                Ok(())
+            }
+        }
+    }
+}

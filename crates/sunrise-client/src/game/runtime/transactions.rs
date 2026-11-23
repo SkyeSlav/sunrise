@@ -775,6 +775,9 @@ pub(super) enum DeferredEffect {
         volume: f32,
         pitch: f32,
     },
+    /// `PlayerRef::set_statistics` inside a transaction: the counters and their criterion
+    /// scores are replaced together at the root commit.
+    RestoreStatistics(mod_api::PlayerRef, Box<sunrise_gameplay::stats::StatValues>),
 }
 
 impl Level {
@@ -2416,6 +2419,9 @@ impl<'g> Game<'g> {
                     volume,
                     pitch,
                 } => self.audio.play(sound, Some(at), volume, pitch),
+                DeferredEffect::RestoreStatistics(player, values) => {
+                    self.restore_player_statistics(player, *values);
+                }
             },
             // Only reached through a root commit, which replays blocks and connection groups in order.
             After::Block(_) | After::BulkBlocks(..) | After::ConnectionGroup(..) => {}

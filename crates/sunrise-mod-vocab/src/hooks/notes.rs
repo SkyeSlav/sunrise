@@ -14,7 +14,7 @@ A native server tick hook can call `native_server_block` with its context, a dim
 
 ### Neighbour observations (draft)
 
-`neighbor_changed` observes each authoritative server `neighborChanged` before the block handles it. It supplies the dimension, position, current owned `BlockState`, changed `BlockKey` and moved flag. The changed block key comes from the source block's default state through the prepared state index, after the primary state's routing guard. No registry-name lookup or allocation occurs on this path. Use explicit immutable block metadata for property queries; the hook does not load chunks or change the update queue. Its host is the level with its ticks (`&mut dyn LevelTicksHost`), as vanilla's `neighborChanged` gets the level: a `BlockPart::neighbor_changed` can read its inputs there with `level.signal(pos, direction)`, `direct_signal`, `direct_signal_to`, `best_neighbor_signal` and `has_neighbor_signal`, the same reads as `LevelRef`'s (mods' parts included), and schedule its own tick with `level.schedule_block_tick`, as a diode does (`DiodeBlock.checkTickOnNeighbor`). The reads write nothing and draw nothing, so they leave the update as it was, and cost what the game's own call does. `tick_block` and the other hooks with a `LevelWriteHost` have them too. Contract version `2`: version `1` handed the hook a plain `&dyn LevelHost`. Diverges from upstream.
+`neighbor_changed` observes each authoritative server `neighborChanged` before the block handles it. It supplies the dimension, position, current owned `BlockState`, changed `BlockKey` and moved flag. The changed block key comes from the source block's default state through the prepared state index, after the primary state's routing guard. No registry-name lookup or allocation occurs on this path. Use explicit immutable block metadata for property queries; the hook does not load chunks. Its host is the level writer vanilla's `neighborChanged` gets (`&mut dyn LevelWriteHost`): a `BlockPart::neighbor_changed` can read its inputs there with `level.signal(pos, direction)`, `direct_signal`, `direct_signal_to`, `best_neighbor_signal` and `has_neighbor_signal`, the same reads as `LevelRef`'s (mods' parts included), schedule its own tick with `level.schedule_block_tick`, as a diode does (`DiodeBlock.checkTickOnNeighbor`), and set blocks with `level.set_block`, as `RedstoneLampBlock.neighborChanged` lights itself at once (`level.setBlock(pos, state.cycle(LIT), 2)`) and only schedules its tick to turn off. A write with neighbour-update flags queues those updates to run next, depth first, before the rest of the update that delivered the call, as `Level.setBlock` from inside `neighborChanged` does through `CollectingNeighborUpdater`; the block's own handling then runs with the state it was called with. Contract version `3`: version `2` handed the hook a `&mut dyn LevelTicksHost`, which could not set blocks, and version `1` a plain `&dyn LevelHost`. Diverges from upstream.
 
 ### Server commands and players
 
@@ -823,8 +823,8 @@ handle, an entity the client doesn't track and a level it doesn't show:
 - `living.drop(host, stack, throw_randomly, include_thrower_name)` throws a stack the mod holds from the eyes
   (`LivingEntity.drop`) and gives the item entity; it never touches a slot. `is_tamed(host)` and `owner(host)` read a
   tamable mob or a horse (`TamableAnimal.isTame`, its owner's UUID).
-- `entity.velocity(host)` (a player's is the move its client last reported), `set_velocity(host, v)` (not for players,
-  whose client moves them), `on_ground`, `bounding_box` (lowest and highest corner), `eye_height`, `eye_position`,
+- `entity.velocity(host)` (a player's is the move its client last reported), `set_velocity(host, v)` (for a player it
+  replaces the server's motion and sends that player's own client the motion packet), `on_ground`, `bounding_box` (lowest and highest corner), `eye_height`, `eye_position`,
   `view_vector` and `distance_to_sqr(host, pos)` read and move it.
 - `entity.up_vector(host)` is `Entity.getUpVector`, the view vector turned toward the zenith. `on_block(host)` is
   `Entity.getOnPos`: the supporting block of an entity on the ground (the solid block under its box nearest it),
@@ -2338,7 +2338,7 @@ registration path.
 
 - A player starting or stopping flight: `player_toggle_flight(player, name, flying, cancel)` is heard once for each change a player's client makes to its flying (vanilla honours it only for a player who may fly), on a server, with the player's state swapped in. A mod sets `cancel` to refuse it: the player keeps the state they had and the server sends their abilities back, so the client lands or flies again. Only what a client asks for is heard, not the flight a game-mode change starts or ends, and not a LAN host's own player.
 
-- `native_physical_window_size()`, the window's width and height in physical pixels, independent of GUI scale. It returns no size on a server or when no window exists.
+- `ClientHost::window_size()`, the window's width and height in framebuffer pixels (`Window.getWidth`, `getHeight`), independent of GUI scale: the size `window_resize` reports. It returns no size on a server or when no window exists.
 
 
 - A player changing dimension: `player_changed_dimension(player, name, from, to)` is heard once after a cross-dimension portal or command teleport lands, with `from` and `to` as dimension ids and the player's state swapped in. It is server-only. Same-level moves and replacement by `PlayerList.respawn` are not heard; use `player_respawned` for death or the return after the End credits.
@@ -2374,8 +2374,6 @@ registration path.
 - `native_server_event(name, uuid, message)` posts an `announce` event to a dedicated server's event stream (`GET /api/v1/events`); sunrise-server's Discord bridge relays it, in gold, when `[discord] events` lists `announce` (off by default). False elsewhere and for an empty message.
 
 - `native_state_block(state)` names the block a state belongs to (`BlockState.getBlock()`); a `state_for_placement` part compares it with its own block. On the server, `LevelRef::state_for_placement(host, block, &context)` asks those parts with an already-resolved context, without placing the candidate.
-
-- The helper `native_physical_window_size()`, which returns the window's width and height in physical pixels, independent of GUI scale. It returns no size on a server or when no window exists.
 
 - A recipe ingredient of a mod's own kind asks `ingredient(context, event)` once per occurrence in the owning recipe load, including nested occurrences and slots outside `ingredients`. The first `Some(IngredientDefinition::new(items, test))` wins. The candidate list is deduplicated in first-seen order and kept with the predicate, apart from recipe JSON. No answer refuses the recipe with its file and kind; an answered empty list keeps manual matching without supplying placement candidates. A reload asks again; a remote client does not perform `ServerDataLoad`.
 

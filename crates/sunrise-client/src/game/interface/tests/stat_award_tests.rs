@@ -5,6 +5,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
+use sunrise_gameplay::stats::StatScoreOp;
 
 struct Rewrite(Arc<AtomicUsize>);
 #[mod_api::__subscriptions]
@@ -79,7 +80,11 @@ fn rewritten_awards_update_counts_criteria_and_dirty_values_atomically() {
             assert_eq!(game.stats.get("mined", "minecraft:stone"), 2);
             assert_eq!(
                 game.stats.events.pop(),
-                Some(("minecraft:mined".into(), "minecraft:stone".into(), Some(2)))
+                Some((
+                    "minecraft:mined".into(),
+                    "minecraft:stone".into(),
+                    StatScoreOp::Add(2)
+                ))
             );
             assert_eq!(
                 game.stats.take_dirty(),
@@ -91,7 +96,11 @@ fn rewritten_awards_update_counts_criteria_and_dirty_values_atomically() {
             assert_eq!(game.stats.get("custom", "minecraft:jump"), 0);
             assert_eq!(
                 game.stats.events.pop(),
-                Some(("minecraft:custom".into(), "rewrite:steps".into(), Some(3)))
+                Some((
+                    "minecraft:custom".into(),
+                    "rewrite:steps".into(),
+                    StatScoreOp::Add(3)
+                ))
             );
             assert_eq!(
                 game.stats.take_dirty(),
@@ -107,7 +116,11 @@ fn rewritten_awards_update_counts_criteria_and_dirty_values_atomically() {
                 assert_eq!(game.stats.get("custom", "rewrite:steps"), 3);
                 assert_eq!(
                     game.stats.events.pop(),
-                    Some(("minecraft:custom".into(), "minecraft:jump".into(), Some(1)))
+                    Some((
+                        "minecraft:custom".into(),
+                        "minecraft:jump".into(),
+                        StatScoreOp::Add(1)
+                    ))
                 );
             }
             mode.store(5, Ordering::Relaxed);
@@ -495,7 +508,11 @@ fn lan_noncanonical_rewrite_keeps_the_entire_original_award() {
                     assert_eq!(game.stats.get("mined", "minecraft:stone"), 0);
                     assert_eq!(
                         game.stats.events.pop(),
-                        Some(("minecraft:mined".into(), "minecraft:dirt".into(), Some(4)))
+                        Some((
+                            "minecraft:mined".into(),
+                            "minecraft:dirt".into(),
+                            StatScoreOp::Add(4)
+                        ))
                     );
                     assert_eq!(
                         game.stats.take_dirty(),

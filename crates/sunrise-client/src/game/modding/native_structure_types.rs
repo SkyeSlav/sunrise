@@ -49,8 +49,8 @@ impl sunrise_world::worldgen::structure::start::NoiseColumnTarget for Column {
 }
 
 /// The engine's piece random, as a [`RandomSource`].
-struct Draws<'a>(&'a mut dyn PieceRandom);
-impl RandomSource for Draws<'_> {
+struct Draws<'a, R: PieceRandom + ?Sized>(&'a mut R);
+impl<R: PieceRandom + ?Sized> RandomSource for Draws<'_, R> {
     fn next_int_bound(&mut self, bound: i32) -> i32 {
         self.0.int(bound)
     }
@@ -77,10 +77,55 @@ impl RandomSource for Draws<'_> {
 /// The engine's start, as a [`GenerationContext`].
 struct Start<'a> {
     inner: &'a mut dyn sunrise_world::worldgen::structure::start::StartContext,
-    random: Draws<'a>,
+    random: Draws<'a, WorldgenRandom<LegacyRandom>>,
     chunk: ChunkPos,
     config: &'a Arc<Tag>,
     worker: &'a WorkerResources,
+    inputs: &'a sunrise_world::worldgen::structure::mod_types::StructureInputs<'a>,
+    /// The jigsaw pieces [`GenerationContext::assemble_jigsaw`] laid out, ahead of the type's own.
+    assembled: Vec<sunrise_world::worldgen::structure::start::Piece>,
+}
+
+/// A mod's alias bindings as the engine's; `None` when a weighted list is not one vanilla's
+/// codec accepts.
+fn engine_aliases(
+    bindings: &[mod_api::PoolAliasBinding],
+) -> Option<Vec<sunrise_world::worldgen::structure::start::PoolAliasBinding>> {
+    use mod_api::PoolAliasBinding as Api;
+    use sunrise_world::worldgen::{
+        structure::start::PoolAliasBinding as Engine, weighted::WeightedList,
+    };
+    bindings
+        .iter()
+        .map(|binding| {
+            Some(match binding {
+                Api::Direct { alias, target } => Engine::Direct {
+                    alias: alias.to_string(),
+                    target: target.to_string(),
+                },
+                Api::Random { alias, targets } => Engine::Random {
+                    alias: alias.to_string(),
+                    targets: WeightedList::new(
+                        targets
+                            .iter()
+                            .map(|(target, weight)| (target.to_string(), *weight))
+                            .collect(),
+                    )
+                    .ok()?,
+                },
+                Api::RandomGroup { groups } => Engine::RandomGroup {
+                    groups: WeightedList::new(
+                        groups
+                            .iter()
+                            .map(|(group, weight)| Some((engine_aliases(group)?, *weight)))
+                            .collect::<Option<_>>()?,
+                    )
+                    .ok()?,
+                },
+                _ => return None,
+            })
+        })
+        .collect()
 }
 
 impl GenerationContext for Start<'_> {
@@ -126,6 +171,49 @@ impl GenerationContext for Start<'_> {
     fn config(&self) -> Arc<Tag> {
         self.config.clone()
     }
+    fn assemble_jigsaw(
+        &mut self,
+        settings: &mod_api::JigsawSettings,
+        position: [i32; 3],
+    ) -> Option<mod_api::JigsawLayout> {
+        let bindings = engine_aliases(&settings.pool_aliases)?;
+        let aliases = sunrise_world::worldgen::structure::start::resolve_aliases(
+            &bindings,
+            position,
+            self.inner.seed(),
+        );
+        let start_pool = settings.start_pool.to_string();
+        let start_jigsaw = settings.start_jigsaw_name.as_ref().map(ToString::to_string);
+        let config = sunrise_world::worldgen::structure::jigsaw::JigsawConfig {
+            start_pool: &start_pool,
+            start_jigsaw: start_jigsaw.as_deref(),
+            max_depth: settings.max_depth,
+            use_expansion_hack: settings.use_expansion_hack,
+            project_to: settings.project_start_to_heightmap.map(engine_heightmap),
+            max_distance: [
+                settings.max_distance_from_center.horizontal,
+                settings.max_distance_from_center.vertical,
+            ],
+            aliases: &aliases,
+            padding: [
+                settings.dimension_padding.bottom,
+                settings.dimension_padding.top,
+            ],
+            waterlogging: settings.liquid_settings == mod_api::LiquidSettings::ApplyWaterlogging,
+        };
+        let (position, pieces) = self.inputs.assemble_jigsaw(
+            &config,
+            &mut *self.inner,
+            &mut *self.random.0,
+            position,
+        )?;
+        let layout = mod_api::__private::jigsaw_layout(
+            position,
+            pieces.iter().map(|piece| piece.bounding_box()).collect(),
+        );
+        self.assembled.extend(pieces);
+        Some(layout)
+    }
 }
 
 /// The engine's piece context, as a [`PieceContext`].
@@ -134,7 +222,7 @@ struct Placing<'a> {
     worker: &'a WorkerResources,
     resources: &'a sunrise_world::worldgen::structure::StructureResources,
     blocks: &'a dyn sunrise_world::worldgen::structure::legacy::SolidRender,
-    random: Draws<'a>,
+    random: Draws<'a, dyn PieceRandom + 'a>,
     chunk_box: BoundingBox,
     chunk: ChunkPos,
 }
@@ -248,38 +336,36 @@ impl ModStructureType for Adapter {
     fn find_generation_point(
         &self,
         context: &mut dyn sunrise_world::worldgen::structure::start::StartContext,
-        resources: &sunrise_world::worldgen::structure::StructureResources,
+        inputs: &sunrise_world::worldgen::structure::mod_types::StructureInputs<'_>,
         chunk: ChunkPos,
         config: &Arc<Tag>,
         random: &mut WorldgenRandom<LegacyRandom>,
     ) -> Option<(
         [i32; 3],
-        Vec<Box<dyn sunrise_world::worldgen::structure::legacy::LegacyPiece>>,
+        Vec<sunrise_world::worldgen::structure::start::Piece>,
     )> {
-        let worker = WorkerResources::get(resources.registry).ok()?;
+        let worker = WorkerResources::get(inputs.resources.registry).ok()?;
         let mut context = Start {
             worker,
             inner: context,
             random: Draws(random),
             chunk,
             config,
+            inputs,
+            assembled: Vec::new(),
         };
         let found = self.inner.find_generation_point(&mut context)?;
         let ty = self.inner.clone();
         let id = self.id;
-        let pieces = found
-            .pieces
-            .into_iter()
-            .map(|piece| {
-                Box::new(ModPiece {
-                    beardifier: piece.beardifier().and_then(engine_beardifier),
-                    piece,
-                    ty: ty.clone(),
-                    id,
-                })
-                    as Box<dyn sunrise_world::worldgen::structure::legacy::LegacyPiece>
-            })
-            .collect();
+        let mut pieces = context.assembled;
+        pieces.extend(found.pieces.into_iter().map(|piece| {
+            sunrise_world::worldgen::structure::start::Piece::Legacy(Box::new(ModPiece {
+                beardifier: piece.beardifier().and_then(engine_beardifier),
+                piece,
+                ty: ty.clone(),
+                id,
+            }))
+        }));
         Some((found.position, pieces))
     }
     fn load_piece(

@@ -29,17 +29,24 @@ and 0.8 for `Full`. There is no second hook dispatch. Two non-commuting listener
 in dispatch order, each completing its rewrites before the next; this does not simulate
 two separate passes over the listener list. Cancellation still leaves motion unchanged.
 
-Version 2 also supplies `kill_credit` and `kill_credit_main`: the pushed living entity's
-kill credit and that entity's current main-hand stack, read after accepted-hit memories
-are committed and before the push. A remembered player takes precedence over the last
-hurting mob, including a tame wolf's owner. An unresolved remembered player yields 0 and
-no stack, not a fallback to the mob. After the remembered player expires, the recent mob
-may receive credit. This context is distinct from `attacker` and its captured source weapon. Both fields are additions: NeoForge's
-`LivingKnockBackEvent` doesn't carry them.
+On the server, `living.knockback(host, strength, [x, z])` enters the short overload. The
+entity moves away from `[x, z]`, and a player's own client gets the resulting velocity.
+It returns `false` if the handle is unavailable, the input isn't finite, the hook cancels,
+or no push remains after resistance. This call deals no damage and adds no kill credit:
+its source is unattributed `minecraft:generic`, so any attacker fallback and kill credit
+come only from the victim's existing hurt memory.
 
-## Living death contract version 2
+`kill_credit` identifies who receives kill credit for the pushed living entity, and `kill_credit_main`
+is that credited entity's current main-hand stack (if any), both read after accepted-hit memories are
+committed and before the push. A remembered player takes precedence over the last hurting mob,
+including a tame wolf's owner. An unresolved remembered player yields 0 and no stack, not a fallback
+to the mob. After the remembered player expires, the recent mob may receive credit. This context is
+distinct from `attacker` and its captured source weapon, and the credited entity can differ from both
+the victim and the immediate attacker. NeoForge's `LivingKnockBackEvent` doesn't carry either field.
 
-[`living_death` version 2](https://github.com/sunrise-org/sunrise/blob/main/docs/native-mods.md#living-death-version-2) supplies
+## Living death
+
+`living_death` (see its rustdoc and [Hook notes](../reference/hook-notes.md)) supplies
 the accepted killing source and its captured weapon stack. Cancellation keeps the
 health a listener leaves, suppresses loot, experience and death messages, and does
 not heal the body. An unhealed cancelled body is removed at tick 20 without loot
@@ -50,6 +57,16 @@ lethal hit while the mob remains in the level. As in `LivingEntity.baseTick`,
 the player reference survives the tick that decrements its timer to zero and
 expires on the next tick. Death loot and experience still use the positive timer
 to determine whether a player hit the mob recently.
+
+### Last attacker and last hurt target
+
+On the server, `LivingRef::last_attacker(host)` reads who last hurt the entity,
+within its recent-attacker window. `LivingRef::last_hurt_mob(host)` instead
+reads the living target the entity last attacked, as `(EntityRef, i32)`. The
+number is the holder's `tick_count` at the hit, not level time. Melee records
+a successful hit; arrow and wind-charge impacts record the target before
+damage, even if damage is refused. There is no expiry window on this read.
+It returns `None` for a stale holder, an empty record, or a dead or gone target.
 
 ### Custom statistics
 
@@ -84,11 +101,7 @@ objective for this registered counter.
 A native mod gives an entity boxes that every other entity collides with:
 
 ```rust
-entity.set_collider(host, Some(Collider {
-    boxes: vec![ColliderBox { min: [-1.5, -1.0, -10.0], max: [1.5, 0.0, 10.0] }],
-    rotation: [0.0, 0.0, 0.0, 1.0],
-}))?;
-entity.set_collider_transform(host, turned)?; // the rotation alone, as the entity turns
+{{#include ../../examples/src/entity_and_native.rs:custom_collider}}
 ```
 
 The boxes are in the entity's own frame (its position is the origin), turned by `rotation`, a unit
@@ -97,7 +110,8 @@ the entity's box is swept against each turned box (a separating-axis test with t
 steps up onto a top within its step height, and standing on a tilted top follows the surface. The
 collider is solid to every mover except spectators, entities with no physics and the entities in its
 own vehicle stack (the root vehicle and every passenger, at any depth, the collider's entity among them).
-**Contact effects are not applied yet:** a box is solid ground and walls and nothing more, so standing or walking on one has no block's step sound, sprint particles, friction or bounce ([#1909](https://github.com/sunrise-org/sunrise/issues/1909)).
+Collider boxes are solid but do not supply block contact effects such as step sounds, sprint particles,
+friction or bounce.
 
 The game checks a collider when it is set and refuses by name (`ColliderError`), keeping the old one:
 every value finite, the rotation a unit quaternion within 1e-3, at most `Collider::MAX_BOXES` (32,768)
@@ -130,7 +144,7 @@ follows its vehicle. The server carries the entities it simulates, and each Sunr
 
 After carrying, a collider that translated without turning shoves bodies in the path of its boxes,
 in its direction of travel. This also uses `MoveCause::Carried`. Changing a box's bounds does not
-sweep that box between the old and new shape. Turning colliders still carry, but do not shove yet.
+sweep that box between the old and new shape. Turning colliders carry bodies but do not shove them.
 A shove does not cancel velocity into the collider; the ordinary entity move handles velocity when
 the body hits an obstacle. The client predicts a shove for its own player, and ordinary server movement
 checks still apply.

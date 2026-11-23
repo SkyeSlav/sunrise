@@ -354,6 +354,41 @@ impl LevelRef {
         let backend = crate::backend::backend_mut_of(host)?;
         crate::world::random::with_random_draw(draw, |draw| backend.with_level_random(self, draw))
     }
+    /// The loaded entity of this server level with `uuid`, as vanilla's
+    /// `ServerLevel.getEntity(UUID)` reads the level's entity lookup; NeoForge mods call the
+    /// same vanilla method, which NeoForge does not extend. It reads the named open level
+    /// whether it is the one in place for this hook or parked while the server ticks
+    /// another, through the level's UUID index: it never switches, loads or scans a level.
+    /// To search every level, as vanilla's `ServerLevel.getEntityInAnyDimension(UUID)`
+    /// does, ask the hook's own level first, then each other level of
+    /// [`Levels::list_levels`]:
+    ///
+    /// ```
+    /// use mod_api::prelude::*;
+    /// use mod_api::{EntityRef, EntityUuid, LevelRef, ServerHost};
+    /// fn find_anywhere(host: &dyn ServerHost, own: LevelRef, uuid: EntityUuid) -> Option<EntityRef> {
+    ///     own.entity_by_uuid(host, uuid).or_else(|| {
+    ///         let levels = host.levels().list_levels();
+    ///         levels
+    ///             .into_iter()
+    ///             .filter(|level| *level != own)
+    ///             .find_map(|level| level.entity_by_uuid(host, uuid))
+    ///     })
+    /// }
+    /// ```
+    ///
+    /// Returns `None` for an entity whose chunk is not loaded, one resident in another
+    /// level, a dragon part, an entity held out of lookup, taken from its resident storage,
+    /// unavailable under a scoped item loan or queued for removal, a vehicle being
+    /// destroyed, a stale handle, a level that is not open, and outside server world access.
+    /// The lookup leaves entity and level state alone.
+    ///
+    /// The handle it returns is an ordinary [`EntityRef`]: the calls that read an entity of a
+    /// parked level (`kind`, `uuid`, `level`) answer for it, and the others refuse it while
+    /// its level is parked, as they refuse any entity outside the level in place.
+    pub fn entity_by_uuid(self, host: &dyn ServerHost, uuid: EntityUuid) -> Option<EntityRef> {
+        crate::backend::backend_of(host)?.level_entity_by_uuid(self, uuid)
+    }
     /// The open of the world the handle belongs to.
     pub fn epoch(self) -> WorldEpoch {
         self.epoch
@@ -1769,6 +1804,22 @@ pub trait HitHost: LevelRandomHost {
     /// `bound` of 0 or less, which draws nothing.
     fn entity_next_int(&mut self, _entity: EntityRef, _bound: i32) -> Option<i32> {
         unimplemented!("HitHost::entity_next_int")
+    }
+    /// The entity the hit lands on, when it is living (`LivingIncomingDamageEvent.getEntity`), at
+    /// `living_incoming_damage`, `living_damage_pre` and `living_damage_post`: a mob, a player
+    /// or the dragon (an armor stand's own `hurtServer` never reaches these hooks). Its reads
+    /// answer from the live entity at the call. None at `living_shield_block` and
+    /// `living_use_totem`, which lend no view.
+    fn victim(&self) -> Option<LivingView<'_>> {
+        unimplemented!("HitHost::victim")
+    }
+    /// The hit's causing entity (`DamageSource.getEntity`), at the same three hooks, when the
+    /// hit already lends that entity (the attacking player or mob it lends for the entity's own
+    /// random) and the source names it: None where the source names another entity or none
+    /// (a wither skull whose shooter was removed), for a removed entity, at a damage site that
+    /// lends no entity, for a non-living causer and for a causer in another level.
+    fn causing(&self) -> Option<LivingView<'_>> {
+        unimplemented!("HitHost::causing")
     }
 }
 

@@ -34,7 +34,7 @@ Rust links.
 The [registry index and installers](../reference/registry-index.md#planning-installs-and-removals) use these
 same manifest declarations. A new submission must resolve with the listed dependencies on its Minecraft release.
 Optional dependencies never install automatically, but an installed or selected target must match the declared range.
-`cargo sunrise-mod check <file>` shows both kinds.
+[`cargo sunrise-mod check <file.smod>`](../reference/sdk/05-commands.md#check-a-released-package) shows both kinds for an attested release.
 
 A version such as `3.6.30-sunrise.1` is a SemVer prerelease, even when the mod author uses the suffix to name
 an ordinary port release. `^3.6` cannot select it. To require that release, declare `"=3.6.30-sunrise.1"`.

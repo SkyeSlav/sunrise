@@ -610,7 +610,11 @@ impl Mob {
     /// `dims` as vanilla computes them, without an `entity_size` answer: the `newSize`
     /// `EntityEvent.Size` starts from.
     pub fn vanilla_dims(&self) -> [f32; 3] {
-        dims_array(self.dims_in_pose(self.pose()))
+        self.vanilla_dims_in(self.pose())
+    }
+    /// [`Self::vanilla_dims`] in `pose` (`Entity.getDimensions(pose)`).
+    pub fn vanilla_dims_in(&self, pose: mod_api::Pose) -> [f32; 3] {
+        dims_array(self.dims_in_pose(pose))
     }
     /// The pose this mob is in (`Entity.getPose`): the stance its species
     /// keeps in its own fields — a villager's bed, a camel's sit flag, an
@@ -2361,7 +2365,10 @@ impl Mob {
         // in the water than its jump threshold rises 0.04 a tick, which is
         // what keeps a ridden horse and its rider afloat.
         if (self.rider.is_some() || self.extra.rider.is_some())
-            && w.entity_has("minecraft:can_float_while_ridden", &self.kind.id)
+            && w.entity_tag_bit(
+                &self.kind,
+                crate::items::EntityTypeTags::CAN_FLOAT_WHILE_RIDDEN,
+            )
             && self.fluids.water > self.fluid_jump_threshold()
         {
             self.velocity.y += f64::from(0.04_f32);

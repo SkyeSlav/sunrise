@@ -121,16 +121,22 @@ fn cycle(open: &mut Open, input: usize, delta: i32) {
     }
 }
 
-fn warning_texts() -> (Text, Text, [Text; 2]) {
-    let t = |key: &str| Text::translate(key, &[]);
-    (
-        t("menu.custom_screen_info.title"),
-        t("menu.custom_screen_info.contents"),
-        [t("menu.disconnect"), t("gui.back")],
-    )
-}
-
 impl Game<'_> {
+    /// `DialogScreen.WarningScreen` uses the local-server disconnect label.
+    fn warning_texts(&self) -> (Text, Text, [Text; 2]) {
+        let t = |key: &str| Text::translate(key, &[]);
+        let disconnect = if self.external_server() {
+            "menu.disconnect"
+        } else {
+            "menu.returnToMenu"
+        };
+        (
+            t("menu.custom_screen_info.title"),
+            t("menu.custom_screen_info.contents"),
+            [t(disconnect), t("gui.back")],
+        )
+    }
+
     /// Whether a dialog screen takes the input.
     pub(super) fn dialog_open(&self) -> bool {
         let d = &self.dialogs;
@@ -581,7 +587,7 @@ impl Game<'_> {
         let atlas = &self.gui.atlas;
         draw_background(batch, atlas, self.player.is_some());
         if self.dialogs.warning {
-            let (title, message, [disconnect, back]) = warning_texts();
+            let (title, message, [disconnect, back]) = self.warning_texts();
             // DialogScreen.WarningScreen, a ConfirmScreen: its title and its
             // message.
             widgets::begin_screen(|| {
@@ -935,7 +941,7 @@ impl Game<'_> {
     pub(super) fn dialog_click(&mut self) -> Result<bool> {
         let cursor = self.cursor;
         if self.dialogs.warning {
-            let (title, message, _) = warning_texts();
+            let (title, message, _) = self.warning_texts();
             let answer = Confirm::new(&self.gui.atlas.font, self.gui_size(), &title, &message)
                 .answer_at(cursor);
             match answer {
@@ -1364,6 +1370,43 @@ fn draw_background(batch: &mut HudBatch, atlas: &sunrise_client::hud::HudAtlas, 
     // Screen.extractBackground draws the panorama and blur before this menu overlay.
     // The frame renderer already supplies them while a server is configuring.
     ui::menu_background(batch, atlas, 0.0, 0.0, w, h, in_world);
+}
+
+#[cfg(test)]
+mod warning_tests {
+    use crate::game::{
+        in_own_process,
+        integrated::{Integrated, Serving},
+        native_entity_refs::tests::with_client_game,
+    };
+    use sunrise_protocol::connection::Pipe;
+
+    #[test]
+    #[ignore = "daily"]
+    fn warning_disconnect_label_follows_server_ownership() {
+        in_own_process(
+            "game::dialogs::warning_tests::warning_disconnect_label_follows_server_ownership",
+            || {
+                with_client_game(|game| {
+                    let (client, _server) = Pipe::pair();
+                    game.connect_local(client, "DialogWarning").unwrap();
+
+                    let (_, _, [disconnect, back]) = game.warning_texts();
+                    assert_eq!(disconnect.translation_key(), Some("menu.disconnect"));
+                    assert_eq!(back.translation_key(), Some("gui.back"));
+
+                    // The same client connection backs singleplayer, even after publishing to LAN.
+                    for port in [0, 25565] {
+                        let serving = Serving::fixture(port);
+                        game.integrated = Some(Integrated::fixture_for(&serving));
+                        let (_, _, [disconnect, back]) = game.warning_texts();
+                        assert_eq!(disconnect.translation_key(), Some("menu.returnToMenu"));
+                        assert_eq!(back.translation_key(), Some("gui.back"));
+                    }
+                });
+            },
+        );
+    }
 }
 
 #[cfg(test)]

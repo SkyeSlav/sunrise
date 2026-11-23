@@ -83,40 +83,43 @@ pub(super) fn apply_player_knockback(
     (xd, zd): (f64, f64),
     source: HurtSource<'_>,
 ) {
-    let resistance = p.attribute("minecraft:knockback_resistance").unwrap_or(0.0);
-    // The native hook runs first, on the raw strength (`LivingKnockBackEvent`), then the
-    // resistance scales what it left.
-    let mut knock = Knock {
+    let knock = Knock {
         strength: power,
         x: xd,
         z: zd,
     };
-    if level.knockback_canceled(Hurting::Player(p.entity_id, source), &mut knock) {
-        return;
+    // A clone is the owner's state, so it goes back whether or not the push lands.
+    let mut random = p.random.clone();
+    let pushed = player_knockback_velocity(p, &mut random, level, knock, source);
+    p.random = random;
+    if let Some(velocity) = pushed {
+        p.velocity = velocity;
     }
-    let Knock {
-        strength: power,
-        x: mut xd,
-        z: mut zd,
-    } = knock;
-    let power = power * (1.0 - resistance);
-    if power <= 0.0 {
-        return;
+}
+
+/// The full player path, shared with calls that borrow a guest's body in its own level.
+/// `random` is the player's own (`Entity.random`), which a short direction's retries draw from;
+/// the caller writes it back to the player.
+pub(in crate::game) fn player_knockback_velocity(
+    player: &sunrise_client::motion::PlayerMotion,
+    random: &mut sunrise_core::random::EntityRandom,
+    level: &mut sunrise_client::health::DamageLevel<'_>,
+    mut knock: Knock,
+    source: HurtSource<'_>,
+) -> Option<Vec3> {
+    let pushed = Hurting::Player(player.entity_id, source);
+    if level.knockback_canceled(pushed, &mut knock) {
+        return None;
     }
-    while xd * xd + zd * zd < f64::from(1.0e-5_f32) {
-        let random = level.random();
-        xd = (random.next_double() - random.next_double()) * 0.01;
-        zd = (random.next_double() - random.next_double()) * 0.01;
-    }
-    let l = (xd * xd + zd * zd).sqrt();
-    let v = p.velocity;
-    p.velocity = Vec3::new(
-        v.x / 2.0 - xd / l * power,
-        if p.ground.on_ground {
-            (v.y / 2.0 + power).min(0.4)
-        } else {
-            v.y
-        },
-        v.z / 2.0 - zd / l * power,
-    );
+    let resistance = player
+        .attributes
+        .value(
+            player.attributes.key("minecraft:knockback_resistance"),
+            sunrise_world::attribute_map::ValueKind::Computed,
+        )
+        .unwrap_or(0.0);
+    let mut velocity = player.velocity;
+    knock
+        .apply(&mut velocity, resistance, player.ground.on_ground, random)
+        .then_some(velocity)
 }

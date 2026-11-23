@@ -678,7 +678,8 @@ Rust and finds every host. It skips tests, placeholders (`example.com`, `*.test`
 
 - `homes`: the list file;
 - `vanilla`: vanilla's endpoints, allowed anywhere;
-- `not_addresses`: strings that look like hosts but are not contacted, each with its reason;
+- `not_addresses`: strings that look like hosts but are not contacted, each with its reason. A `path host`
+  entry applies only in that file;
 - `allowed`: today's addresses outside the list file, as "path host".
 
 `allowed` only shrinks. A branch may move an entry with its code, but it may not add a host or grow the list.

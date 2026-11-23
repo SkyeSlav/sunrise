@@ -15,7 +15,9 @@
 //! - an integer texel buffer (26.3's clouds read `uniform isamplerBuffer CloudFaces;`) becomes a
 //!   read-only storage buffer of `int`s (`uint`s for `usamplerBuffer`), and `texelFetch` on it
 //!   reads one into the first channel of an `ivec4`: wgpu has no texel buffers. Like any block a
-//!   pipeline gives, it is bound at [`other_binding`], and refused when not given.
+//!   pipeline gives, it is bound at [`other_binding`], and refused when not given;
+//! - every program is compiled, and its includes chosen, with the backend's
+//!   [`DEPTH_ZERO_TO_ONE`] before its pipeline's defines, as `GlslCompiler` compiles it.
 
 use std::collections::HashSet;
 use std::fmt::Write;
@@ -176,8 +178,8 @@ impl CoreProgram {
                         .as_ref()
                         .is_some_and(|b| b.group == 0 && b.binding == binding)
                 })
-                .all(|(_, g)| match &module.types[g.ty].inner {
-                    naga::TypeInner::Struct { members, .. } => {
+                .all(|(_, g)| match (g.space, &module.types[g.ty].inner) {
+                    (naga::AddressSpace::Uniform, naga::TypeInner::Struct { members, .. }) => {
                         matches!(
                             members.as_slice(),
                             [member] if matches!(
@@ -424,8 +426,9 @@ pub(crate) fn expand_imports(
     expand_with(text, dir, read, None)
 }
 
-/// Resolve only includes reached by this core pipeline. Macros defined by an included
-/// file also govern the rest of its caller. Post shaders keep their own preprocessing.
+/// Resolve only includes reached by this core pipeline under its `defines` and the backend's
+/// ([`program_defines`]), as the compiler sees them. Macros defined by an included file also
+/// govern the rest of its caller. Post shaders keep their own preprocessing.
 pub(crate) fn expand_core_imports(
     text: &str,
     dir: &str,
@@ -436,8 +439,33 @@ pub(crate) fn expand_core_imports(
         text,
         dir,
         read,
-        Some(import_conditions::Conditions::new(defines)),
+        Some(import_conditions::Conditions::new(&program_defines(
+            defines,
+        ))),
     )
+}
+
+/// What `GlslCompiler.createBaseShaderOptions` defines for every program it compiles, core and
+/// post alike, on a backend whose depth runs from 0 to 1, as wgpu's does.
+pub(crate) const DEPTH_ZERO_TO_ONE: &str = "RENDERPEARL_DEPTH_IS_ZERO_TO_ONE";
+
+/// A program's defines as vanilla's compiler gives them: the backend's ([`DEPTH_ZERO_TO_ONE`]),
+/// then the pipeline's `defines` (`NAME` or `NAME value`).
+fn program_defines<'a>(defines: &[&'a str]) -> Vec<&'a str> {
+    std::iter::once(DEPTH_ZERO_TO_ONE)
+        .chain(defines.iter().copied())
+        .collect()
+}
+
+/// naga's options for one `stage` of a program with the pipeline's `defines`: the backend's
+/// first ([`program_defines`]). The core shaders' and the post shaders' one way in.
+pub(crate) fn glsl_options(stage: ShaderStage, defines: &[&str]) -> Options {
+    let mut options = Options::from(stage);
+    for define in program_defines(defines) {
+        let (name, value) = define.split_once(' ').unwrap_or((define, ""));
+        options.defines.insert(name.to_owned(), value.to_owned());
+    }
+    options
 }
 
 mod import_conditions;
@@ -1006,11 +1034,7 @@ fn compile(
     names: &Names,
     provided: &dyn Fn(&str) -> bool,
 ) -> Result<(naga::Module, naga::valid::ModuleInfo), String> {
-    let mut options = Options::from(stage);
-    for define in defines {
-        let (name, value) = define.split_once(' ').unwrap_or((define, ""));
-        options.defines.insert(name.to_owned(), value.to_owned());
-    }
+    let options = glsl_options(stage, defines);
     let module = Frontend::default().parse(&options, code).map_err(|e| {
         e.errors
             .iter()

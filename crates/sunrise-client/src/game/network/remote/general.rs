@@ -29,7 +29,8 @@ pub(in crate::game) struct RemoteGeneral {
     /// Yaw, then pitch, in degrees.
     pub rotation: [f32; 2],
     pub previous_rotation: [f32; 2],
-    /// Client ticks since the spawn.
+    /// Client ticks since the spawn: `Entity.tickCount`, which wraps as Java's `int` does
+    /// (read as `i32`).
     pub age: u32,
     /// Frozen synced fields, initialized on spawn and rebuilt at each attachment sync boundary.
     pub render_attachments: mod_api::EntityRenderAttachments,
@@ -236,7 +237,7 @@ pub(super) fn tick_remote_general(
     for (id, row) in rows.iter_mut() {
         row.previous = row.position;
         row.previous_rotation = row.rotation;
-        row.age = row.age.saturating_add(1);
+        row.age = row.age.wrapping_add(1);
         let Some(l) = lerps.get_mut(id).filter(|l| l.steps > 0) else {
             continue;
         };

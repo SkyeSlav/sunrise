@@ -70,6 +70,11 @@ impl Game<'_> {
             self.persist.uuids.remove(&(id as u32));
             if let Some(r) = self.remote.as_mut() {
                 Self::forget_remote_general(r, id);
+                if let Some(old_uuid) = r.level_entity_uuids.remove(&id)
+                    && r.level_uuids.get(&old_uuid) == Some(&id)
+                {
+                    r.level_uuids.remove(&old_uuid);
+                }
                 r.glowing.remove(&id);
                 r.entities.remove(&id);
                 r.synced_attributes.remove(&id);

@@ -112,9 +112,8 @@ impl Game<'_> {
         self.remember_uuid(id, saved, &tag);
         // Entity.load's `setXRot` keeps the pitch in -90..90 and its `setRot`
         // takes both `% 360`; the save writes the rotation back from this tag.
-        let [yaw, pitch] = sunrise_client::entity_nbt::rotation(&tag);
-        let (yaw, pitch) = (yaw % 360.0, (pitch % 360.0).clamp(-90.0, 90.0));
-        let floats = [yaw, pitch].map(|v| sunrise_core::nbt::Tag::Float(v.to_bits()));
+        let floats = sunrise_client::entity_nbt::loaded_rotation(&tag)
+            .map(|v| sunrise_core::nbt::Tag::Float(v.to_bits()));
         if let sunrise_core::nbt::Tag::Compound(map) = &mut tag {
             map.insert(
                 "Rotation".into(),

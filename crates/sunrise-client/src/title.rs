@@ -403,6 +403,8 @@ pub enum Action {
     },
     Connect {
         address: String,
+        /// The saved server list row's name, when the join came from that row.
+        name: Option<String>,
         lan: bool,
         realm: bool,
     },
@@ -1455,6 +1457,7 @@ impl Title {
         let address = self.connect_request.take()?;
         Some(Action::Connect {
             address,
+            name: None,
             lan: false,
             realm: true,
         })
@@ -2480,6 +2483,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     }
                     crate::realms::Outcome::Connect(address) => Action::Connect {
                         address,
+                        name: None,
                         lan: false,
                         realm: true,
                     },
@@ -2505,8 +2509,9 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     self.set_mode(Mode::Main);
                     Action::None
                 }
-                crate::multiplayer::Outcome::Connect { address, lan } => Action::Connect {
+                crate::multiplayer::Outcome::Connect { address, name, lan } => Action::Connect {
                     address,
+                    name,
                     lan,
                     realm: false,
                 },
@@ -3061,6 +3066,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 crate::realms::Outcome::Connect(address) => (
                     Action::Connect {
                         address,
+                        name: None,
                         lan: false,
                         realm: true,
                     },
@@ -3089,13 +3095,14 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         }
         match &self.mode {
             Mode::Multiplayer(screen) => match screen.confirm() {
-                crate::multiplayer::Outcome::Connect { address, lan } => {
+                crate::multiplayer::Outcome::Connect { address, name, lan } => {
                     if matches!(screen, crate::multiplayer::Screen::Direct { .. }) {
                         crate::multiplayer::remember_direct_join(&self.saves, &address);
                     }
                     (
                         Action::Connect {
                             address,
+                            name,
                             lan,
                             realm: false,
                         },

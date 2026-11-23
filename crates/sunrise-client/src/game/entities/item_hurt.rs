@@ -33,10 +33,9 @@ impl Game<'_> {
             direct: entity_id(direct),
             position,
         };
-        let Some(kind) = self.item_damage_kind(id, source, causing) else {
-            return false;
-        };
-        if !self.item_stack_takes_damage(&self.dropped[index].stack, kind, damage_type) {
+        if self.item_damage_kind(id, source, causing).is_none()
+            || !self.item_stack_takes_damage(&self.dropped[index].stack, damage_type)
+        {
             return false;
         }
         let item = &mut self.dropped[index];
@@ -63,10 +62,9 @@ impl Game<'_> {
             direct: 0,
             position: None,
         };
-        let Some(kind) = self.item_damage_kind(item.id, source, None) else {
-            return;
-        };
-        if !self.item_stack_takes_damage(&item.stack, kind, source.damage_type) {
+        if self.item_damage_kind(item.id, source, None).is_none()
+            || !self.item_stack_takes_damage(&item.stack, source.damage_type)
+        {
             return;
         }
         mark_item_hurt(item, amount);
@@ -107,18 +105,11 @@ impl Game<'_> {
         Some(kind)
     }
 
-    fn item_stack_takes_damage(
-        &self,
-        stack: &ItemStack,
-        kind: DamageTypeId,
-        damage_type: &str,
-    ) -> bool {
+    /// The dropped item's `ItemStack.canBeHurtBy` for the source that hit it,
+    /// including the item's default `minecraft:damage_resistant` component.
+    /// Fire-tagged sources do not also ask `minecraft:in_fire`.
+    fn item_stack_takes_damage(&self, stack: &ItemStack, damage_type: &str) -> bool {
         self.stack_can_be_hurt_by(stack, damage_type) != Some(false)
-            && (!self
-                .health_resources
-                .damage
-                .in_tag(kind, "minecraft:is_fire")
-                || self.stack_can_be_hurt_by(stack, "minecraft:in_fire") != Some(false))
     }
 
     fn post_item_damage(&mut self, at: Vec3, causing: Option<Target>) {

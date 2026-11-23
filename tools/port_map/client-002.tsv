@@ -30,9 +30,10 @@ ClientPacketListener.handleAddTransientBlockPacket	port	crates/sunrise-client/sr
 ClientPacketListener.findTotem	port	crates/sunrise-client/src/game/items/totem.rs::Game::find_totem	the first hand's item with death_protection, else a new totem, then LocalPlayer.displayItemActivation
 ClientPacketListener.handleSetExperience	port	crates/sunrise-client/src/game/network/remote/packets_player.rs::Game::apply_set_experience_packet	SetExperience arm
 ClientPacketListener.determineLevelLoadingReason	port	crates/sunrise-client-render/src/level_loading.rs::reason_for_respawn	the reason of a Respawn packet: death, a Nether or an End crossing
+ClientPacketListener.handleExplosion	port	crates/sunrise-client/src/game/network/lan_particles.rs::Game::remote_explode	plays sound, queues burst and debris, then applies a finite impulse with an atomic finite velocity write
 ClientPacketListener.handleOpenScreen	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::remote_open_screen
 ClientPacketListener.handleSetCursorItem	port	crates/sunrise-client/src/game/network/remote/packets_player.rs::Game::apply_set_cursor_item_packet	SetCursorItem arm; gap: minor: sets the carried stack even while the creative screen is open
-ClientPacketListener.handleSetPlayerInventory	port	crates/sunrise-client/src/game/network/remote/packets_player.rs::Game::apply_set_player_inventory_packet	SetPlayerInventory arm: slots 0-35, armour 36-39, off hand 40
+ClientPacketListener.handleSetPlayerInventory	port	crates/sunrise-client/src/game/network/remote/packets_player.rs::Game::apply_set_player_inventory_packet	SetPlayerInventory arm: slots 0-35, armour 36-39, off hand 40, body 41, saddle 42
 ClientPacketListener.handleContainerContent	port	crates/sunrise-client/src/game/network/remote/packets_player.rs::Game::apply_container_set_content_packet	ContainerSetContent arm: each slot, then the carried stack
 ClientPacketListener.handleBlockEntityData	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::remote_block_entity_data
 ClientPacketListener.handleContainerSetData	port	crates/sunrise-client/src/game/network/remote/packets_player.rs::Game::apply_container_set_data_packet	ContainerSetData arms (lectern, furnace, crafter, brewing); station containers go to remote_stations.rs::Game::remote_station_data
@@ -70,7 +71,7 @@ ClientPacketListener.setTitleText	port	crates/sunrise-client/src/game/network/re
 ClientPacketListener.setSubtitleText	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::apply_packet	SetSubtitleText arm
 ClientPacketListener.setTitlesAnimation	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::apply_packet	SetTitlesAnimation arm
 ClientPacketListener.handleTabListCustomisation	port	crates/sunrise-client/src/game/network/remote/packets_player.rs::Game::apply_tab_list_packet	TabList arm: empty text clears the header or footer
-ClientPacketListener.handleRemoveMobEffect	port	crates/sunrise-client/src/game/network/remote/packets_entity.rs::Game::apply_remove_mob_effect_packet	RemoveMobEffect arm; gap: minor: only the player's own effects are removed
+ClientPacketListener.handleRemoveMobEffect	port	crates/sunrise-client/src/game/network/remote/packets_entity.rs::Game::apply_remove_mob_effect_packet	RemoveMobEffect arm: the player's own effects, a mob's or another player's, or an armor stand's
 ClientPacketListener.handlePlayerInfoRemove	port	crates/sunrise-client/src/game/network/remote/packets_player.rs::Game::apply_player_info_remove_packet	PlayerInfoRemove arm
 ClientPacketListener.handlePlayerInfoUpdate	port	crates/sunrise-client/src/game/network/remote/packets_player.rs::Game::apply_player_info_update_packet	PlayerInfoUpdate arm: new entries, then listing, latency, name, hat, list order and game mode for tab players
 ClientPacketListener.applyPlayerInfoUpdate	inline	crates/sunrise-client/src/game/network/remote/packets_player.rs::Game::apply_player_info_update_packet	gap: minor: the own player's game-mode update does not change the local mode; INITIALIZE_CHAT keeps each entry's chat session and drops that player's validator

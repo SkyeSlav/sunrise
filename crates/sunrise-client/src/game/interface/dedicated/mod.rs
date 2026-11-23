@@ -1585,8 +1585,7 @@ impl Game<'_> {
             .iter()
             .filter(|g| {
                 let idle_ticks = host.hub.ticks.saturating_sub(g.last_action_tick);
-                let won_game = host.play.get(&g.conn).is_some_and(|play| play.won_game);
-                g.participates_online() && idles_out(idle_ticks, minutes, won_game)
+                g.participates_online() && idles_out(idle_ticks, minutes, g.won_game)
             })
             .map(|g| g.conn)
             .collect();

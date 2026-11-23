@@ -142,7 +142,8 @@ pub fn menu_types(mods: &[ContentMod]) -> Vec<(&MenuType, &str)> {
 static FLUID_LOOKS: std::sync::RwLock<BTreeMap<String, FluidLook>> =
     std::sync::RwLock::new(BTreeMap::new());
 
-/// Remembers how the mods' fluids look (`data/<id>/sunrise/fluid/`), for what the client draws.
+/// Remembers how the mods' fluids look (`data/<id>/sunrise/fluid/`), for what the client draws,
+/// and their measures, for `FluidTypeProperties` on either side.
 pub fn set_fluid_looks(mods: &[ContentMod]) {
     let looks: BTreeMap<String, FluidLook> = mods
         .iter()
@@ -182,6 +183,16 @@ pub fn register_world_fluids(
 #[path = "mod_content_fluid_declarations.rs"]
 mod fluid_declarations;
 pub use fluid_declarations::{fluid_interactions, set_fluid_interactions};
+
+/// The temperature, density and viscosity a mod's fluid file states for `id`, copied without
+/// the rest of its look.
+pub fn fluid_measures(id: &str) -> Option<sunrise_mod_package::content::FluidMeasures> {
+    FLUID_LOOKS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(id)
+        .map(|look| look.measures)
+}
 
 /// How the fluid `id` looks, when a mod declares it.
 pub fn fluid_look(id: &str) -> Option<FluidLook> {

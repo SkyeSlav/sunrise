@@ -147,22 +147,33 @@ pub trait LevelBlocksBackendMut {
     /// The placement-state parts see `block`'s default state, as in a real placement.
     /// A registered answer belonging to another block is returned as given; an unknown
     /// answer falls back to the block's own rule, as in a real placement.
-    /// The context is taken as written, with no target or click re-resolution. Nothing is
+    /// The context is taken as written, with no target or click re-resolution, except that a
+    /// `PlacementSource::Directional` context's `replace_clicked` is worked out from the block
+    /// at `hit_pos`, as `DirectionalPlaceContext.replacingClickedOnBlock()` is. Nothing is
     /// written, notified or loaded. No additional survival, obstruction or permission check
     /// from `BlockItem.place` runs.
-    /// Only the level in play is queried. Returns `Err(LevelReadError::Stale)` for a
-    /// stale handle or closed level, and `Err(LevelReadError::Unavailable)` for a parked
+    /// Only the level in play is queried. Returns `Err(PlacementStateError::Stale)` for a
+    /// stale handle or closed level, and `Err(PlacementStateError::Unavailable)` for a parked
     /// level, an unavailable host or load phase, or a state that the API cannot represent.
+    /// A directional question vanilla throws on is refused, not answered:
+    /// `Err(PlacementStateError::NoVerticalLook)` when the block's own rule reads the
+    /// placer's vertical look (pointed dripstone), and
+    /// `Err(PlacementStateError::ReplacingClickedCycle)` when the clicked block's
+    /// `canBeReplaced` asks `replacingClickedOnBlock` (a single slab or a snow layer clicked
+    /// with its own item), which is settled before any Part is asked. A Part's answer
+    /// replaces the block's rule, so a block whose Part answers is never `NoVerticalLook`.
     ///
     /// Returns `Ok(None)` for vanilla's `null`, a part's `Some(None)`, an unknown block
     /// or item key, an unloaded or out-of-bounds destination, or a non-finite hit or
-    /// rotation. `None` in `context.item` means an empty hand.
+    /// player rotation. `context.source` selects between player (`BlockPlaceContext`)
+    /// and directional (`DirectionalPlaceContext`) placement rules. `None` in
+    /// `context.item` means an empty hand.
     fn level_state_for_placement(
         &mut self,
         level: LevelRef,
         block: BlockKey,
         context: &PlacementContext,
-    ) -> Result<Option<BlockState>, LevelReadError>;
+    ) -> Result<Option<BlockState>, PlacementStateError>;
     /// Side: server.
     /// Write `state` at `pos` as a placement does and run `Block.setPlacedBy` for it, with no
     /// player: a bed places its head, a door its upper half, a tall plant its top. The write

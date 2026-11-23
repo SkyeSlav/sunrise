@@ -655,9 +655,13 @@ impl Game<'_> {
             _ => None,
         }
     }
-    /// Ticks the entity has lived (`Entity.tickCount`): players, mobs, item
-    /// entities, experience orbs and minecarts. Wraps as vanilla's `int` does.
+    /// Ticks the entity has lived (`Entity.tickCount`): on a server, living entities, item
+    /// entities, experience orbs and minecarts; on a client, every entity of the level it
+    /// shows ([`Self::client_entity_tick_count`]). Wraps as vanilla's `int` does.
     pub(super) fn entity_tick_count(&self, entity: EntityRef) -> Option<i32> {
+        if !self.is_logical_server() {
+            return self.client_entity_tick_count(entity);
+        }
         Some(match self.native_entity_target(entity)? {
             Target::Player => self.player.as_ref()?.health.tick_count,
             Target::Guest(conn) => {
@@ -670,11 +674,29 @@ impl Game<'_> {
                     .unwrap_or(0)
             }
             Target::Mob(id) => self.mobs.iter().find(|m| m.id == id)?.age as i32,
+            Target::Stand(id) => self.armor_stands.iter().find(|s| s.id == id)?.tick_count,
+            Target::Dragon(id) => self.dragon.as_ref().filter(|d| d.id == id)?.ticks,
             Target::Item(id) => self.dropped.iter().find(|i| i.id == id)?.ticks as i32,
             Target::Orb(id) => self.orbs.iter().find(|o| o.id == id)?.ticks as i32,
             Target::Cart(id) => self.carts.iter().find(|c| c.id == id)?.tick_count,
             _ => return None,
         })
+    }
+    /// `Entity.tickCount` of a client's own copy: the local player's, or that of an entity the
+    /// server added to the level the client shows, whatever its kind, counted by the client's
+    /// entity pass (`Entity.commonTick`) since the client added it.
+    fn client_entity_tick_count(&self, entity: EntityRef) -> Option<i32> {
+        let (remote, id) = self.native_client_entity_context(entity)?;
+        // The local player from its admission (Login, Respawn), before the server's first
+        // teleport gives it a body.
+        if id == remote.entity_id {
+            return remote.has_logical_player.then_some(remote.own_tick_count);
+        }
+        remote
+            .entities
+            .get(&id)
+            .map(|tracked| tracked.tick_count)
+            .or_else(|| remote.general.rows.get(&id).map(|row| row.age as i32))
     }
     /// Sets the mob's persistent glowing tag (`Entity.setGlowingTag`). Returns false for players and guests.
     pub(super) fn entity_set_glowing(&mut self, entity: EntityRef, glowing: bool) -> bool {

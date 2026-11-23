@@ -32,11 +32,14 @@ fn valid_fov_modifier(modifier: f32, fallback: f32) -> f32 {
 }
 
 impl Game<'_> {
-    /// `Player.isScoping`: using a spyglass.
+    /// `Player.isScoping`: the active use began with a spyglass.
     pub(super) fn scoping(&self) -> bool {
-        self.using
-            .and_then(|(slot, _)| self.stack_in(slot))
-            .is_some_and(|s| &*s.item == "minecraft:spyglass")
+        self.using.is_some()
+            && self
+                .use_start
+                .item
+                .as_ref()
+                .is_some_and(|s| &*s.item == "minecraft:spyglass")
     }
     /// `options.fovEffectScale`.
     pub(super) fn fov_effect_scale(&self) -> f32 {
@@ -67,8 +70,8 @@ impl Game<'_> {
     /// What `AbstractClientPlayer.getFieldOfViewModifier` reads.
     pub(super) fn fov_player(&self) -> Option<FovPlayer> {
         let p = self.player.as_ref()?;
-        let using = self.using.and_then(|(slot, ticks)| {
-            let stack = self.stack_in(slot)?;
+        let using = self.using.and_then(|(_, ticks)| {
+            let stack = self.use_start.item.as_ref()?;
             let item = match &*stack.item {
                 "minecraft:bow" => UseItem::Bow,
                 "minecraft:spyglass" => UseItem::Spyglass,

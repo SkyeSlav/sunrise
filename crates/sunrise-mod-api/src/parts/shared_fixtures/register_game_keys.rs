@@ -1,7 +1,10 @@
 /// Register the game fixture's final block registry through the actual registrar, retaining
 /// its installed test mods and Parts. Production mods request only the entries they use.
+/// `mod_fluids` names the world fluids the loader admitted from mod files, source and flowing,
+/// which the game resolves after the engine's.
 pub fn register_game_keys(
     ids: impl IntoIterator<Item = String>,
+    mod_fluids: &[&str],
     schema: &mod_vocab::__private::RuleSchema<'_>,
     dimension_shape: fn(&crate::DimensionSettings) -> bool,
 ) {
@@ -16,14 +19,16 @@ pub fn register_game_keys(
             registrar.block_key(id);
         }
         super::install_registrar(registrar, schema)?;
+        let mut fluids = vec![
+            "minecraft:empty",
+            "minecraft:water",
+            "minecraft:flowing_water",
+            "minecraft:lava",
+            "minecraft:flowing_lava",
+        ];
+        fluids.extend(mod_fluids);
         mod_vocab::__private::resolve_fluids(
-            &[
-                "minecraft:empty",
-                "minecraft:water",
-                "minecraft:flowing_water",
-                "minecraft:lava",
-                "minecraft:flowing_lava",
-            ],
+            &fluids,
             // The engine's world fluids in vanilla registry order, as the game resolves them.
             &[
                 "minecraft:empty",

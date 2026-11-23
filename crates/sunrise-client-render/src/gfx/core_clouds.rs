@@ -54,16 +54,13 @@ pub(crate) struct OitStageSource {
 /// The stage samplers, in the order [`super::oit::CloudSamples::views`] gives their textures.
 const STAGE_SAMPLERS: [&str; 3] = ["DepthBoundsSampler", "Coeff0", "Coeff1"];
 
-/// What `GlslCompiler` defines for every program on a backend whose depth runs from 0 to 1, as
-/// wgpu's does.
-const DEPTH_ZERO_TO_ONE: &str = "RENDERPEARL_DEPTH_IS_ZERO_TO_ONE";
-
-/// The defines of `CLOUDS` and `FLAT_CLOUDS`: the backend's alone.
-pub(crate) const CLASSIC_DEFINES: [&str; 1] = [DEPTH_ZERO_TO_ONE];
+/// The defines of `CLOUDS` and `FLAT_CLOUDS`: none of their own. The backend's, which every
+/// program has, the translator adds (`core_shader::DEPTH_ZERO_TO_ONE`).
+pub(crate) const CLASSIC_DEFINES: [&str; 0] = [];
 
 /// `OitStage`'s order. `OIT_COEFF_COUNT` is `LevelRenderer.OIT_COEFFICIENT_COUNT` (8), its
-/// attachments `OIT_TRANSMITTANCE_TARGET_COUNT` (2), as `oit.rs` draws them; then the backend's
-/// [`DEPTH_ZERO_TO_ONE`].
+/// attachments `OIT_TRANSMITTANCE_TARGET_COUNT` (2), as `oit.rs` draws them. The backend's
+/// define, which every program has, the translator adds.
 pub(crate) const OIT_STAGES: [OitStageSource; 3] = [
     OitStageSource {
         pipeline: "minecraft:pipeline/oit_depth_bounds_clouds",
@@ -72,7 +69,6 @@ pub(crate) const OIT_STAGES: [OitStageSource; 3] = [
             "OIT_WAVELET_RANK 2",
             "OIT_COEFF_COUNT 8",
             "OIT_COEFF_ATTACHMENT_COUNT 2",
-            DEPTH_ZERO_TO_ONE,
             "OIT_ALPHA_ONLY",
             "OIT_DEPTH_BOUNDS",
         ],
@@ -85,7 +81,6 @@ pub(crate) const OIT_STAGES: [OitStageSource; 3] = [
             "OIT_WAVELET_RANK 2",
             "OIT_COEFF_COUNT 8",
             "OIT_COEFF_ATTACHMENT_COUNT 2",
-            DEPTH_ZERO_TO_ONE,
             "OIT_ALPHA_ONLY",
             "OIT_TRANSMITTANCE",
         ],
@@ -98,7 +93,6 @@ pub(crate) const OIT_STAGES: [OitStageSource; 3] = [
             "OIT_WAVELET_RANK 2",
             "OIT_COEFF_COUNT 8",
             "OIT_COEFF_ATTACHMENT_COUNT 2",
-            DEPTH_ZERO_TO_ONE,
             "OIT_ACCUMULATE",
         ],
         samplers: &STAGE_SAMPLERS,

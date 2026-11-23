@@ -263,6 +263,14 @@ impl Metadata {
                 continue;
             }
             let label = format!("{} {}", package.name, package.version);
+            // The game's own copy is reused, not compiled again, so it provides no second library.
+            if game
+                .packages
+                .keys()
+                .any(|id| id.name == package.name && id.version.to_string() == package.version)
+            {
+                continue;
+            }
             if let Some(library) = package
                 .links
                 .as_ref()
@@ -273,13 +281,6 @@ impl Metadata {
                     "Native library {library}: mod package {} {} would compile a second provider of SDK package {} {}; the prebuilt game cannot be relinked with a different provider",
                     package.name, package.version, existing.name, existing.version
                 ));
-            }
-            if game
-                .packages
-                .keys()
-                .any(|id| id.name == package.name && id.version.to_string() == package.version)
-            {
-                continue;
             }
             added.insert(label.clone());
             if package
@@ -383,6 +384,41 @@ mod tests {
             )
             .unwrap_err();
         for detail in ["native-sys", "2.0.0", "sdk-sys", "1.0.0", "example"] {
+            assert!(error.contains(detail), "{error}");
+        }
+    }
+
+    /// The SDK's lock and its claim on native library `example`, held by `native-sys` at `version`.
+    fn sdk_with_native_sys(
+        version: &str,
+    ) -> (super::super::registry_lock::RegistryLock, NativeLink) {
+        let lock = super::super::registry_lock::RegistryLock::parse(&format!(
+            "[[package]]\nname = \"native-sys\"\nversion = \"{version}\"\nsource = \"{}\"\nchecksum = \"{}\"\n",
+            sunrise_addresses::CARGO_CRATES_IO_SOURCE,
+            "0".repeat(64)
+        ))
+        .unwrap();
+        let link = NativeLink {
+            name: "native-sys".into(),
+            version: version.into(),
+            library: "example".into(),
+        };
+        (lock, link)
+    }
+
+    #[test]
+    fn the_sdks_own_native_provider_at_the_same_version_is_reused() {
+        let (game, link) = sdk_with_native_sys("2.0.0");
+        let inventory = metadata().inventory(&game, &[link]).unwrap();
+        assert_eq!(inventory.added_crates, 1);
+        assert!(inventory.build_scripts.is_empty());
+    }
+
+    #[test]
+    fn the_sdks_native_provider_at_another_version_is_refused() {
+        let (game, link) = sdk_with_native_sys("1.0.0");
+        let error = metadata().inventory(&game, &[link]).unwrap_err();
+        for detail in ["native-sys 2.0.0", "native-sys 1.0.0", "example"] {
             assert!(error.contains(detail), "{error}");
         }
     }

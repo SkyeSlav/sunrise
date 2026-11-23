@@ -1,13 +1,19 @@
 use super::*;
 
 impl Game<'_> {
-    /// Send one selected attack with the same prediction and charge bookkeeping as vanilla.
+    /// `AttackRange.isInRange` measures from the player's current eyes, not the pick ray's origin.
+    pub(in crate::game) fn attack_hit_distance(&self, [x, y, z]: [f64; 3]) -> Option<f64> {
+        let [eye_x, eye_y, eye_z] = self.eye_position()?;
+        Some(Vec3::new(x, y, z).distance(Vec3::new(eye_x, eye_y, eye_z)))
+    }
+
+    /// `Minecraft.startAttack`'s range check and `MultiPlayerGameMode.attack`'s send and prediction.
     pub(in crate::game) fn remote_attack_entity(&mut self, id: i32, distance: f64) -> bool {
+        if !self.held_range_allows(distance) {
+            return false;
+        }
+        self.send(S::Attack(play::Attack { id }));
         if let Some(index) = self.mobs.iter().position(|mob| mob.id as i32 == id) {
-            if !self.held_range_allows(distance) {
-                return false;
-            }
-            self.send(S::Attack(play::Attack { id }));
             let kind = format!(
                 "minecraft:{}",
                 self.mobs[index].kind.id.trim_start_matches("minecraft:")
@@ -15,42 +21,44 @@ impl Game<'_> {
             self.remote_sweep_event(&kind, true);
             self.pvp_attacked(id, distance);
             self.remote_player_attack(index);
-        } else {
-            self.send(S::Attack(play::Attack { id }));
-            if let Some(projectile) = self
-                .creatures
-                .projectiles
-                .iter()
-                .find(|p| p.id as i32 == id)
-            {
-                if !crate::game::deflect::redirectable(projectile) {
-                    let bullet = matches!(
-                        projectile.kind,
-                        sunrise_client::projectiles::ProjectileKind::ShulkerBullet { .. }
-                    );
-                    self.remote_sweep_event("minecraft:shulker_bullet", false);
-                    if bullet {
-                        self.remote_object_attack();
-                    }
-                }
-            } else if let Some((kind, living)) = self.remote_attacked_object(id) {
-                self.remote_sweep_event(&kind, living);
-                // A boat, a minecart or an End crystal; an armor stand is
-                // living, and its hurtClient is false.
-                if !living {
+        } else if let Some(projectile) = self
+            .creatures
+            .projectiles
+            .iter()
+            .find(|p| p.id as i32 == id)
+        {
+            if !crate::game::deflect::redirectable(projectile) {
+                let bullet = matches!(
+                    projectile.kind,
+                    sunrise_client::projectiles::ProjectileKind::ShulkerBullet { .. }
+                );
+                self.remote_sweep_event("minecraft:shulker_bullet", false);
+                if bullet {
                     self.remote_object_attack();
                 }
-            } else if let Some(kind) = self
-                .remote
-                .as_ref()
-                .and_then(|r| r.general.rows.get(&id))
-                .map(|row| row.kind())
-            {
-                // A row reaches Player.attack but hurtClient is false.
-                self.remote_sweep_event(kind, false);
             }
+        } else if let Some((kind, living)) = self.remote_attacked_object(id) {
+            self.remote_sweep_event(&kind, living);
+            // A boat, a minecart or an End crystal; an armor stand is
+            // living, and its hurtClient is false.
+            if !living {
+                self.remote_object_attack();
+            }
+        } else if let Some(kind) = self
+            .remote
+            .as_ref()
+            .and_then(|r| r.general.rows.get(&id))
+            .map(|row| row.kind())
+        {
+            // A row reaches Player.attack but hurtClient is false.
+            self.remote_sweep_event(kind, false);
         }
         self.reset_attack_strength();
+        if let Some(remote) = self.remote.as_mut()
+            && remote.abilities.instabuild
+        {
+            remote.destroy_delay = 5;
+        }
         true
     }
     /// `Player.attack`'s damage and `getAttackStrengthScale(0.5)` on this
@@ -132,17 +140,7 @@ mod tests {
             let at = Vec3::new(0.5, 65.0, 2.5);
             game.boats.push(Boat::new(101, Arc::from("oak"), at, 0.0));
             game.carts.push(Minecart::new(102, CartKind::Rideable, at));
-            game.crystals.push(Crystal {
-                attachment_lifetime: Default::default(),
-                join: Default::default(),
-                id: 103,
-                position: at,
-                show_bottom: false,
-                time: 0,
-                beam: None,
-                invulnerable: false,
-                fall: (false, 0.0),
-            });
+            game.crystals.push(Crystal::new(103, at, false, 0));
             let bullet = ProjectileKind::ShulkerBullet {
                 target: None,
                 dir: None,

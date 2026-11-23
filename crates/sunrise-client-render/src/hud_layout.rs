@@ -263,11 +263,9 @@ pub struct HotbarInputs {
     /// that holds an item, then the off hand.
     pub slots: [Option<f32>; 9],
     pub offhand_pop: f32,
-    /// `getAttackStrengthScale(0)` when the attack indicator is in HOTBAR mode.
-    pub attack: Option<f32>,
 }
 
-/// `Hud.extractItemHotbar`.
+/// The backgrounds and items from `Hud.extractItemHotbar`.
 pub fn hotbar(w: i32, h: i32, i: &HotbarInputs) -> Vec<GuiDraw> {
     let mut out = Vec::new();
     let center = w / 2;
@@ -341,11 +339,21 @@ pub fn hotbar(w: i32, h: i32, i: &HotbarInputs) -> Vec<GuiDraw> {
         };
         slot(40, x, h - 16 - 3, seed, i.offhand_pop, &mut out);
     }
-    if let Some(scale) = i.attack
-        && scale < 1.0
-    {
+    out
+}
+
+/// Append the Hotbar-mode attack indicator from `Hud.extractItemHotbar`, after the items.
+pub fn hotbar_attack_indicator(
+    w: i32,
+    h: i32,
+    right_handed: bool,
+    scale: f32,
+    out: &mut Vec<GuiDraw>,
+) {
+    if scale < 1.0 {
         let y = h - 20;
-        let x = if offhand_left {
+        let center = w / 2;
+        let x = if right_handed {
             center + 91 + 6
         } else {
             center - 91 - 22
@@ -367,7 +375,6 @@ pub fn hotbar(w: i32, h: i32, i: &HotbarInputs) -> Vec<GuiDraw> {
             progress,
         ));
     }
-    out
 }
 
 /// `Hud.extractCrosshair`'s full attack indicator: at full strength on a

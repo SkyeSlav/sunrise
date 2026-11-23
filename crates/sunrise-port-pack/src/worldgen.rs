@@ -14,11 +14,12 @@
 //! as it is is listed, so the coverage report can say what generates and how
 //! closely.
 //!
-//! YUNG's API's files are carried as written ([`crate::yung`]).
+//! YUNG's API's `yungsapi:yung_jigsaw` structures and their elements need YUNG's API
+//! itself, a mod that registers that structure type; they are listed as unsupported.
 //! Lithostitched's jigsaws, elements, modifiers and processors are carried by
 //! [`crate::lithostitched`]; the entries CTOV adds to vanilla's structure sets
 //! by `legacy_structure_mods`, called from [`crate::carry`].
-use crate::{lithostitched, yung};
+use crate::lithostitched;
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -274,10 +275,8 @@ fn upgrade_types(
     set_tags: &BTreeMap<String, Vec<String>>,
 ) -> bool {
     let lost = &mut report.rules_lost;
-    // YUNG's and Lithostitched's types are converted apart from this code.
-    if let Some(changed) =
-        yung::upgrade(kind, v, lost).or_else(|| lithostitched::upgrade(kind, v, lost))
-    {
+    // Lithostitched's types are converted apart from this code.
+    if let Some(changed) = lithostitched::upgrade(kind, v, lost) {
         report.mapped += usize::from(changed);
         return changed;
     }
@@ -419,9 +418,7 @@ fn upgrade_types(
                 }
             }
             for element in elements {
-                if yung::upgrade_pool_element(element, lost)
-                    || lithostitched::upgrade_pool_element(element, lost)
-                {
+                if lithostitched::upgrade_pool_element(element, lost) {
                     changed = true;
                     continue;
                 }
@@ -1003,6 +1000,32 @@ mod tests {
             BTreeMap::from([
                 ("somelib:element".into(), 1),
                 ("somelib:structure".into(), 1),
+            ])
+        );
+    }
+
+    /// YUNG's API's structure type and element need YUNG's API itself: each is left as written
+    /// and listed once as unsupported.
+    #[test]
+    fn yungs_jigsaw_and_element_are_unsupported() {
+        let mut report = Upgrade::default();
+        let mut structure = json!({"type": "yungsapi:yung_jigsaw", "start_pool": "m:start",
+            "size": 30, "biomes": "#minecraft:is_overworld"});
+        let written = structure.clone();
+        assert!(!upgrade("structure", &mut structure, &mut report, &NO_TAGS));
+        assert_eq!(structure, written);
+        let mut pool = json!({"fallback": "minecraft:empty", "elements": [
+            {"weight": 1, "element": {"element_type": "yungsapi:yung_single_element",
+                "location": "m:room", "projection": "rigid", "processors": "minecraft:empty"}}
+        ]});
+        let written = pool.clone();
+        assert!(!upgrade("template_pool", &mut pool, &mut report, &NO_TAGS));
+        assert_eq!(pool, written);
+        assert_eq!(
+            report.unsupported,
+            BTreeMap::from([
+                ("yungsapi:yung_jigsaw".into(), 1),
+                ("yungsapi:yung_single_element".into(), 1),
             ])
         );
     }

@@ -84,9 +84,6 @@ pub(super) struct GuestPlay {
     marks: super::advancements::TravelMarks,
     /// `Entity.portalProcess` and `portalCooldown` (game/world/server_travel.rs).
     pub(super) portal: sunrise_client::nether_portal::PortalState,
-    /// `ServerPlayer.wonGame`: the End poem is showing, the player waits for
-    /// its client's PERFORM_RESPAWN.
-    pub(super) won_game: bool,
     /// `Player.takeXpDelay`: ticks until the next orb can be taken.
     pub(super) xp_delay: u32,
     /// This player entity's age and level-up sound cooldown.

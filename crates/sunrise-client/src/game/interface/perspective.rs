@@ -192,6 +192,7 @@ pub(super) fn player_type_with_document(
 fn load_player_type(models: &sunrise_client::mobs::EntityModelDocument) -> Option<Arc<MobType>> {
     models.model("minecraft:player#main").map(|model| {
         Arc::new(MobType {
+            type_key: Default::default(),
             shadow: None,
             id: "minecraft:player".into(),
             // Players render as a humanoid; the species only drives local AI.

@@ -1,5 +1,9 @@
 use super::*;
 
+#[cfg(test)]
+#[path = "boss_darken_tests.rs"]
+mod boss_darken_tests;
+
 /// `ClientClockManager.tick` for one clock: it moves on by `delta` game ticks at its rate, the
 /// part of a tick it makes carried to the next. None, and the clock left as it was, when its total
 /// would pass the range of a long: a server's times must not wrap or panic the client.

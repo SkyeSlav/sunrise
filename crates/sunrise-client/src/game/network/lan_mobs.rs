@@ -297,10 +297,10 @@ mod tests {
     fn a_guests_view_keeps_who_hurt_them_and_who_they_hurt() {
         let mut v = view(0.0, false);
         v.hurt_by = Some((Who::Mob(7), 90));
-        v.last_hurt = Some((Who::Mob(8), 95));
+        v.last_hurt = Some((8, 95));
         let seen = guest_view(v, 5, [1.0, 0.0, 0.0]);
         assert_eq!(seen.hurt_by, Some((Who::Mob(7), 90)));
-        assert_eq!(seen.last_hurt, Some((Who::Mob(8), 95)));
+        assert_eq!(seen.last_hurt, Some((8, 95)));
         assert!(seen.remote);
         assert_eq!(seen.velocity, Vec3::new(1.0, 0.0, 0.0));
     }

@@ -486,3 +486,12 @@ NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FO
 OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
+
+## Sigstore attestation verification
+
+`sunrise-attestation` uses [`sigstore-verify` 0.17](https://crates.io/crates/sigstore-verify/0.17.0)
+(Apache-2.0) for offline verification, with [AWS-LC](https://github.com/aws/aws-lc) for cryptography.
+It bundles [Sigstore's public-good TUF target](https://github.com/sigstore/root-signing/blob/25b222a48cda4aa88e1af85605bdd193f5619a60/targets/trusted_root.json)
+unchanged, under [Apache-2.0](crates/sunrise-attestation/LICENSE-APACHE-SIGSTORE). Its offline test
+fixture is a public [Ruff release attestation](crates/sunrise-attestation/tests/fixtures/README.md)
+from the GitHub attestation API, not the release asset itself.

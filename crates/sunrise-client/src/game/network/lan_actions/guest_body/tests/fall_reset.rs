@@ -146,6 +146,31 @@ fn fall(g: &Game<'_>) -> (f64, Option<[f64; 3]>, [bool; 3]) {
 
 #[test]
 #[ignore = "daily"]
+fn fall_distance_handle_reads_the_guests_fall_and_landing() {
+    crate::game::in_own_process(
+        "game::lan_actions::guest_body::tests::fall_reset::fall_distance_handle_reads_the_guests_fall_and_landing",
+        || {
+            let mut resources = None;
+            let scratch = tempfile::tempdir().unwrap();
+            let mut game = scene(&mut resources, scratch.path());
+            let entity = game.player(1).unwrap().entity();
+            drain_moves(&mut game, [(109.0, 0)]);
+            assert_eq!(entity.fall_distance(&game), Some(1.0));
+            game.tick_lan(false);
+            drain_moves(&mut game, [(108.0, 0)]);
+            assert_eq!(entity.fall_distance(&game), Some(2.0));
+            game.tick_lan(false);
+            drain_moves(&mut game, [(100.0, 1)]);
+            let guest = game.lan.as_ref().unwrap().hub.guest(1).unwrap();
+            assert_eq!(guest.position, [12.5, 100.0, 12.5]);
+            assert!(guest.on_ground);
+            assert_eq!(entity.fall_distance(&game), Some(0.0));
+        },
+    );
+}
+
+#[test]
+#[ignore = "daily"]
 fn a_guest_move_that_goes_up_ends_its_fall() {
     crate::game::in_own_process(
         "game::lan_actions::guest_body::tests::fall_reset::a_guest_move_that_goes_up_ends_its_fall",

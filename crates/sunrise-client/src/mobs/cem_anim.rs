@@ -1074,6 +1074,7 @@ mod tests {
     fn a_fox_sits_by_its_own_flags() {
         let mut m = mob();
         m.kind = std::sync::Arc::new(crate::mobs::MobType {
+            type_key: Default::default(),
             species: crate::mobs::Species::Fox,
             ..(*m.kind).clone()
         });

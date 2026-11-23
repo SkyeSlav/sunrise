@@ -637,6 +637,8 @@ impl Game<'_> {
                     return;
                 };
                 host.hub.ack(conn, p.sequence);
+                let now = host.hub.ticks;
+                host.hub.guests.update(gi, |g| g.last_action_tick = now);
                 let hand = if p.hand == 1 { Hand::Off } else { Hand::Main };
                 let _ = self.guest_use_item(conn, gi, hand, Some((p.yaw, p.pitch)));
             }
@@ -644,6 +646,9 @@ impl Game<'_> {
                 let _ = self.guest_attack(conn, gi, p.id);
             }
             S::Interact(p) => {
+                self.lan.as_mut().unwrap().hub.guests.update(gi, |g| {
+                    g.sneaking = p.secondary;
+                });
                 let hand = if p.hand == 1 { Hand::Off } else { Hand::Main };
                 let _ = self.guest_interact(conn, gi, p.id, hand, p.location);
             }
@@ -1307,51 +1312,65 @@ impl Game<'_> {
         Some(out)
     }
 
-    /// `LivingEntity.tickDeath`: 20 ticks after dying the player is removed,
-    /// and `Player.remove`'s `inventoryMenu.removed` drops what the cursor
-    /// held (`dropOrPlaceInInventory` for a removed player). Respawning
-    /// sooner removes it too.
-    /// `ServerGamePacketListenerImpl.handleTeleportToEntityPacket` for a
-    /// player: the host's own, or a guest in the world.
+    /// `ServerGamePacketListenerImpl.handleTeleportToEntityPacket`: search the live levels in
+    /// server order, then teleport to the first matching entity's position and rotation.
     pub(super) fn guest_spectate_teleport(&mut self, gi: usize, uuid: u128) {
-        let Some(host) = self.lan.as_mut() else {
+        let Some(host) = self.lan.as_ref() else {
             return;
         };
-        let own = host.hub.guests[gi].conn;
-        let target = host
-            .hub
-            .guests
-            .iter()
-            .find(|g| g.placed && g.conn != own && g.uuid == uuid)
-            .map(|g| (g.position, g.yaw, g.pitch, Dim::from_id(&g.dimension)));
-        let Some((at, yaw, pitch, dim)) = target else {
+        let guest = &host.hub.guests[gi];
+        let (conn, from) = (guest.conn, Dim::from_id(&guest.dimension));
+        let uuid = sunrise_client::lan::playerdata::uuid_ints(uuid);
+        let Some((dim, target)) = Dim::all().into_iter().find_map(|dim| {
+            self.level_target_by_uuid(dim, uuid)
+                .map(|target| (dim, target))
+        }) else {
             return;
         };
-        if Dim::from_id(&host.hub.guests[gi].dimension) != dim {
+        // Only enter another level to read a found entity's pose, not to probe every level.
+        let back = if dim == self.dim {
+            None
+        } else if let Some(back) = self.enter_command_level(dim) {
+            Some(back)
+        } else {
+            return;
+        };
+        let at = self.target_position(target);
+        let [yaw, pitch] = self.target_rotation(target);
+        if let Some(back) = back
+            && self.enter_level(back).is_err()
+        {
+            return;
+        }
+        let Some(at) = at else {
+            return;
+        };
+        // ServerPlayer.teleportTo resets the spectator's camera before traveling.
+        self.guest_set_camera(gi, None);
+        if from != dim {
             if !self.server_player_travel_allowed(
-                own,
+                conn,
                 dim,
                 crate::game::server_travel::TravelCause::Teleport,
             ) {
                 return;
             }
-            self.level_teleports
-                .push(crate::game::server_travel::LevelTeleport {
-                    conn: own,
-                    dim,
-                    at,
-                    rotation: Some([yaw, pitch]),
-                    vehicle: None,
-                });
+            self.apply_direct_level_teleport(crate::game::server_travel::LevelTeleport {
+                conn,
+                dim,
+                at,
+                rotation: Some([yaw, pitch]),
+                vehicle: None,
+            });
             return;
         }
-        host.hub.guests.update(gi, |g| {
-            (g.yaw, g.pitch) = (yaw, pitch);
-            // A new body there: no fall distance or motion carried over, but the
-            // player's attributes (ServerPlayer.teleport keeps the entity).
-            g.new_body(true);
+        self.as_guest(conn, |game| {
+            game.place_player_teleport_in_level(
+                Vec3::new(at[0], at[1], at[2]),
+                Some([yaw, pitch]),
+                [false; 3],
+            )
         });
-        host.hub.teleport(gi, Some(at));
     }
 
     /// Ordinary click routing. A scoped override calls this inside its action on Continue;

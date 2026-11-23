@@ -12,6 +12,7 @@ use sunrise_core::geometry::Vec3;
 
 fn kind() -> Arc<MobType> {
     Arc::new(MobType {
+        type_key: Default::default(),
         shadow: None,
         id: "minecraft:allay".into(),
         species: Species::Allay,

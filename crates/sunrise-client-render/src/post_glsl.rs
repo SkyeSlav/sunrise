@@ -15,7 +15,7 @@
 //! wrapped so that clip y is negated: targets keep GL's rows (row 0 is the bottom edge),
 //! so `texCoord` reads the texel it would in vanilla.
 use naga::ShaderStage;
-use naga::front::glsl::{Frontend, Options};
+use naga::front::glsl::Frontend;
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 use sunrise_assets::resource_source::ResourceSource;
 
@@ -259,12 +259,14 @@ fn wrap_main(src: &str) -> Result<String, String> {
     Err("no main".into())
 }
 
+/// Parses and validates one stage, with the backend's defines every program has
+/// (`core_shader::glsl_options`: a post pass has none of its own).
 fn parse(
     stage: ShaderStage,
     text: &str,
 ) -> Result<(naga::Module, naga::valid::ModuleInfo), String> {
     let module = Frontend::default()
-        .parse(&Options::from(stage), text)
+        .parse(&crate::core_shader::glsl_options(stage, &[]), text)
         .map_err(|e| {
             e.errors
                 .iter()
@@ -609,6 +611,46 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// `GlslCompiler` compiles a post pass's stages, as every program, with
+    /// `RENDERPEARL_DEPTH_IS_ZERO_TO_ONE` on a backend whose depth runs from 0 to 1: of two
+    /// blocks the fragment stage declares, it reads the one its `#ifdef` keeps, in either stage.
+    #[test]
+    fn a_post_shader_has_the_zero_to_one_depth_define() {
+        use sunrise_assets::resource_source::Resource;
+        let branch = |out: &str| {
+            format!(
+                "layout(std140) uniform ZeroToOne {{\n    vec4 zeroToOne;\n}};\n\
+                 layout(std140) uniform MinusOneToOne {{\n    vec4 minusOneToOne;\n}};\n\
+                 {out}\nvoid main() {{\n\
+                 #ifdef RENDERPEARL_DEPTH_IS_ZERO_TO_ONE\n    v = zeroToOne;\n\
+                 #else\n    v = minusOneToOne;\n#endif\n"
+            )
+        };
+        let vsh = format!(
+            "#version 330\n{}    gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n}}",
+            branch("layout(location = 0) out vec4 v;")
+        );
+        let fsh = format!(
+            "#version 330\nlayout(location = 0) in vec4 w;\nlayout(location = 0) out vec4 fragColor;\n{}    fragColor = v + w;\n}}",
+            branch("vec4 v;")
+        );
+        let source = ResourceSource::indexed(std::collections::BTreeMap::from([
+            (
+                "assets/p/shaders/post/a.vsh".into(),
+                Resource::bytes(vsh.into_bytes()),
+            ),
+            (
+                "assets/p/shaders/post/a.fsh".into(),
+                Resource::bytes(fsh.into_bytes()),
+            ),
+        ]));
+        let program = translate(&source, "p:post/a", "p:post/a", ANY).unwrap();
+        let binding = |name: &str| program.blocks.iter().find(|(n, _)| n == name).unwrap().1;
+        let reading = |name: &str| crate::core_shader::stages_reading(&program.read, binding(name));
+        assert_eq!(reading("ZeroToOne"), wgpu::ShaderStages::VERTEX_FRAGMENT);
+        assert_eq!(reading("MinusOneToOne"), wgpu::ShaderStages::NONE);
     }
 
     #[test]

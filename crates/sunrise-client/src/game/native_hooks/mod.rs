@@ -12,8 +12,8 @@ pub(in crate::game) use block_entity_tick::ResidentBlockEntityAccess;
 pub(in crate::game) use build_creative_mode_tab_contents::CreativeCache;
 pub(in crate::game) use client_pick::ClientPick;
 pub(in crate::game) use fire::{
-    ConnectsToCall, EntityChangeBlockPreCall, ItemAfterVerticalCollisionCall,
-    PreRemoveSideEffectsCall, UpdateShapeCall,
+    ConnectsToCall, EntityChangeBlockPreCall, HotbarAttackIndicatorProgressCall,
+    ItemAfterVerticalCollisionCall, PlayerPongCall, PreRemoveSideEffectsCall, UpdateShapeCall,
 };
 use mod_api::{BlockEntityDataSource, BlockEntityRef, ClockAdjustment};
 
@@ -321,6 +321,7 @@ mod gui_render_post;
 mod gui_ticks;
 mod held_item_tint;
 mod highlight_tip;
+mod hotbar_attack_indicator_progress;
 mod hud_mode;
 mod humanoid_setup_anim;
 mod ignited_by_lava;
@@ -446,6 +447,7 @@ mod player_item_smithed;
 mod player_leave;
 mod player_move;
 mod player_passage_cross;
+mod player_pong;
 mod player_set_spawn;
 mod player_spawn_phantoms;
 mod player_start_spectating_entity;

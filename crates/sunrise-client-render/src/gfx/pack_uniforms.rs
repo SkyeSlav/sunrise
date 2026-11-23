@@ -5,7 +5,9 @@
 use super::*;
 use sunrise_render_core::{FogView, SkyView, UniformFrameView};
 // The client's `Frame` carries the game's values by this name.
-pub use sunrise_render_shaderpack::pack_uniforms::{PackInputs, PlayerStatus, cloud_height};
+pub use sunrise_render_shaderpack::pack_uniforms::{
+    PackInputs, PlayerStatus, ViewEntity, cloud_height,
+};
 // The shadow matrices and timings its own tests build here, beside the `Frame`s they read; the
 // frame timing is the game's too (a screenshot sequence replays a fixed clock through it).
 pub use sunrise_render_shaderpack::pack_uniforms::FrameTiming;

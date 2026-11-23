@@ -1221,7 +1221,6 @@ sunrise-client game::native_entity_motion::tests::on_block_picks_the_support_nea
 sunrise-client game::native_entity_motion::tests::only_a_mount_its_rider_controls_takes_the_riders_speed lib daily resources
 sunrise-client game::native_entity_motion::tests::reset_fall_distance_forgets_a_fall_for_mobs_carts_and_players lib daily resources
 sunrise-client game::native_entity_moves::tests::moves_and_pushes_a_live_mob lib daily resources
-sunrise-client game::native_entity_refs::dragon_query::tests::a_client_lists_the_dragon_and_its_parts_in_a_box lib daily resources
 sunrise-client game::native_entity_refs::dragon_query::tests::all_entities_uses_lookup_order_without_bounds_or_parts lib daily resources
 sunrise-client game::native_entity_refs::dragon_query::tests::entities_in_includes_dragon_and_separate_parts lib daily resources
 sunrise-client game::native_entity_refs::dragon_query::tests::entity_uuid_lookup_includes_the_dragon_and_excludes_its_parts lib daily resources
@@ -1236,9 +1235,6 @@ sunrise-client game::native_entity_refs::roll_loot_tests::component_stack_capaci
 sunrise-client game::native_entity_refs::roll_loot_tests::weighted_pools_conditions_and_functions_roll_as_the_table_says lib daily resources
 sunrise-client game::native_entity_refs::tests::a_block_part_changes_the_bounce_restitution_an_entity_reads lib daily resources
 sunrise-client game::native_entity_refs::tests::a_block_part_decides_whether_the_tool_harvests lib daily resources
-sunrise-client game::native_entity_refs::tests::a_client_finds_the_entities_it_tracks_and_its_own_player_in_a_box lib daily resources
-sunrise-client game::native_entity_refs::tests::a_client_lists_another_player_in_the_box_after_the_tracked_entities lib daily resources
-sunrise-client game::native_entity_refs::tests::a_client_refuses_a_box_with_a_bound_that_is_not_finite_and_swaps_an_inverted_one lib daily resources
 sunrise-client game::native_entity_refs::tests::a_fresh_case_whose_name_matches_no_test_fails lib daily child-process
 sunrise-client game::native_entity_refs::tests::a_level_bone_meals_a_block_and_sets_a_biome_cell lib daily resources
 sunrise-client game::native_entity_refs::tests::a_level_handle_reads_redstone_as_signal_getter_does lib daily resources

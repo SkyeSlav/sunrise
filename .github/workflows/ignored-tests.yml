@@ -173,9 +173,27 @@ jobs:
           SUNRISE_DATA_LEG_TIMING: '1'
           # The mesher and section-visibility tests read the prepared data from their own variable.
           SUNRISE_MESH_TEST_RESOURCES: ${{ github.workspace }}/.local/sunrise-client/26.3
+          IGNORED_TESTS_PRIVATE_LOGS: ${{ runner.temp }}/ignored-tests-private
         run: |
           export SUNRISE_TEST_RESOURCES="$PWD/.local/sunrise-client/26.3"
           python3 tools/ci/with_xvfb.py python3 tools/ci/ignored_tests.py --report "$RUNNER_TEMP/daily-report.json" "$SHARD"
+      # The public log withholds panic payloads (they can carry vanilla data); a failed run's full output is copied
+      # into this host's keep, as parity.yml keeps a failed share's logs, with the same three-day retention.
+      - name: Keep a failed run's full output beyond this slot
+        if: always()
+        env:
+          PRIVATE_LOGS: ${{ runner.temp }}/ignored-tests-private
+          NAME: ${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
+        run: |
+          [ -n "${DYNA_CI_KEEP:-}" ] || exit 0
+          root="$DYNA_CI_KEEP/ignored-tests-failed-logs"
+          if [ -d "$PRIVATE_LOGS" ] && [ -n "$(ls -A "$PRIVATE_LOGS")" ]; then
+            mkdir -p "$root"
+            rm -rf -- "${root:?}/$NAME"
+            cp -a "$PRIVATE_LOGS" "$root/$NAME"
+            echo "the failed tests' full output is kept in the host's keep: ignored-tests-failed-logs/$NAME"
+          fi
+          [ -d "$root" ] && find "$root" -mindepth 1 -maxdepth 1 -type d -mmin +4320 -exec rm -rf {} + || true
       # The leg's verdict for the daily summary: test names, panic locations and policy only (ignored_tests.py --report).
       - name: Upload the leg report
         if: always()

@@ -1417,6 +1417,25 @@ impl NoBackend for OpenMenuError {
     }
 }
 
+/// Why [`PlayerRef::send_ping`] did not queue a play ping.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub enum PlayerPingRefusal {
+    /// The handle no longer identifies a player on this server.
+    Stale,
+    /// The player has no open play connection of their own.
+    NoConnection,
+    /// The ping could not be encoded or admitted to the outbound queue or transaction batch.
+    SendFailed,
+}
+
+impl NoBackend for PlayerPingRefusal {
+    fn no_backend() -> Self {
+        Self::Stale
+    }
+}
+
 /// Why [`PlayerRef::respawn`] respawned nobody. Nothing changed when one comes back; the checks
 /// run in the order the variants are listed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

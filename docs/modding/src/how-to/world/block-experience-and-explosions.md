@@ -252,15 +252,7 @@ cell, unless every part on the block that answers `explosion_resistance`
 declares its answer pure:
 
 ```rust
-#[mod_api::sunrise_part]
-impl BlockPart for Reinforced {
-    fn explosion_resistance(&self, _: &dyn LevelHost, _: &mut ExplosionResistanceEvent<'_>) -> Option<f32> {
-        Some(5000.0)
-    }
-    fn explosion_resistance_is_pure(&self) -> bool {
-        true
-    }
-}
+{{#include ../../../examples/src/world_helpers.rs:explosion_resistance}}
 ```
 
 Then a batched read asks them once a state per call; one part that doesn't

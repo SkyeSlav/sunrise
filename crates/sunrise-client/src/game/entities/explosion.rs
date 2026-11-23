@@ -2672,6 +2672,7 @@ mod tests {
     fn zombie_type() -> std::sync::Arc<sunrise_client::mobs::MobType> {
         use sunrise_client::mobs::{Anim, Brain, MobType, Part, Species};
         std::sync::Arc::new(MobType {
+            type_key: Default::default(),
             shadow: None,
             id: "minecraft:zombie".into(),
             species: Species::Zombie,

@@ -1498,6 +1498,7 @@ mod tests {
         use crate::mobs::{Anim, Brain, Flags, MobType, Part, Species};
         use std::sync::Arc;
         let kind = Arc::new(MobType {
+            type_key: Default::default(),
             shadow: None,
             id: "minecraft:villager".into(),
             species: Species::Villager,

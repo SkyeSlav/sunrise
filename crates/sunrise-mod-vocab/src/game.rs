@@ -147,8 +147,10 @@ pub enum NbtUpgradeError {
     FutureVersion(i32),
     /// The chain has no source schema for that data version.
     UnsupportedVersion(i32),
-    /// The compound lacks the selected type's readable `id` (or `Name` for a block state),
-    /// or the fixers cannot read it. This is not a registry check.
+    /// The compound lacks the selected type's readable `id`, or the fixers cannot read it.
+    /// A block state names its block in `Name` when saved before data version 5006 and in
+    /// `id` from 5006 on, where vanilla's `BlockStateFieldNamesFix` renames the field. This
+    /// is not a registry check.
     MalformedCompound,
     /// The legacy fixers' tables could not be read from the prepared game resources.
     LegacyTablesUnavailable,
