@@ -665,6 +665,30 @@ impl<'a> From<ContainerLootFilled<'a>> for super::ContainerLootFilled<'a> {
 }
 // exhaustive: the game builds it with a literal; mods only read it
 #[derive(sunrise_mod_api_macros::Wire)]
+pub struct PacketCount {
+    pub direction: super::PacketDirection,
+    pub packet_type: String,
+    pub packets: u64,
+    pub bytes: u64,
+}
+impl From<PacketCount> for super::PacketCount {
+    fn from(v: PacketCount) -> Self {
+        let PacketCount {
+            direction,
+            packet_type,
+            packets,
+            bytes,
+        } = v;
+        Self {
+            direction,
+            packet_type,
+            packets,
+            bytes,
+        }
+    }
+}
+// exhaustive: the game builds it with a literal; mods only read it
+#[derive(sunrise_mod_api_macros::Wire)]
 pub struct MobTickCost {
     pub dimension: String,
     pub kind: String,

@@ -130,6 +130,35 @@ pub struct MobTickCost {
     pub mob_ticks: u64,
 }
 
+/// Which way a counted play packet went.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub enum PacketDirection {
+    /// From the server to the player's client.
+    Clientbound,
+    /// From the player's client to the server.
+    Serverbound,
+}
+
+/// One play packet type's totals on one player's connection, from
+/// [`PlayerRef::take_packet_counts`]: each packet's VarInt id and body, before compression,
+/// length prefix and encryption (what `PacketEncoder.encode` writes and `PacketDecoder.decode`
+/// reads).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub struct PacketCount {
+    /// Which way the packets went.
+    pub direction: PacketDirection,
+    /// The packet type's id in its direction (`minecraft:keep_alive`).
+    pub packet_type: String,
+    /// How many were counted.
+    pub packets: u64,
+    /// Their bodies' total length, in bytes.
+    pub bytes: u64,
+}
+
 /// A player on the server, as a server hook sees them.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]

@@ -13,6 +13,7 @@ pub struct PairingPayload {
     pub(super) epoch: Arc<Epoch>,
     pub(super) pending: Arc<AtomicUsize>,
     pub(super) cost: usize,
+    pub(super) origin: super::packet_counts::Origin,
 }
 impl Drop for PairingPayload {
     fn drop(&mut self) {
@@ -41,6 +42,13 @@ impl Body {
     /// Whether this body was already framed by `PreparedPayload`.
     pub fn is_prepared(&self) -> bool {
         matches!(self, Self::Prepared(_))
+    }
+    /// A prepared body's packet id and length before compression.
+    pub(super) fn origin(&self) -> Option<super::packet_counts::Origin> {
+        match self {
+            Self::Prepared(payload) => Some(payload.origin),
+            _ => None,
+        }
     }
     pub(super) fn pairing_epoch(&self) -> Option<&Arc<Epoch>> {
         match self {

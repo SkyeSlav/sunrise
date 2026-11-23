@@ -440,7 +440,23 @@ fn a_stale_handle_is_refused_latency_hide_level_and_nickname() {
     });
 }
 
-/// A client has no server list to read: all three name the client.
+/// A player's packet counts come from their own connection, empty before anything was counted;
+/// a stale handle and a fake player have none.
+#[test]
+#[ignore = "daily"]
+fn packet_counts_refuse_stale_or_connectionless_players() {
+    with_guests(|game| {
+        let player = game.player(12).unwrap();
+        let host: &mut dyn mod_api::ServerHost = game;
+        assert!(host.count_packets(true));
+        assert_eq!(player.take_packet_counts(game), Ok(Vec::new()));
+        assert_eq!(stale(player).take_packet_counts(game), Err(Refusal::Stale));
+        let machine = fake(game);
+        assert_eq!(machine.take_packet_counts(game), Err(Refusal::NoConnection));
+    });
+}
+
+/// A client has no server list to read: every read names the client, and it counts no packets.
 #[test]
 #[ignore = "daily"]
 fn a_client_is_refused_latency_hide_level_and_nickname() {
@@ -449,5 +465,8 @@ fn a_client_is_refused_latency_hide_level_and_nickname() {
         assert_eq!(player.latency(game), Err(Refusal::Client));
         assert_eq!(player.hidden(game), Err(Refusal::Client));
         assert_eq!(player.nickname(game), Err(Refusal::Client));
+        assert_eq!(player.take_packet_counts(game), Err(Refusal::Client));
+        let host: &mut dyn mod_api::ServerHost = game;
+        assert!(!host.count_packets(true));
     });
 }

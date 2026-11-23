@@ -37,6 +37,7 @@ pub mod import;
 mod io_pool;
 pub mod menu;
 pub mod menu_extra_rev;
+pub mod packet_counts;
 #[cfg(test)]
 mod payload_bounds_tests;
 pub mod player_shown;
@@ -485,6 +486,8 @@ pub struct Shared {
     turned_away: Mutex<(usize, Option<Instant>)>,
     /// A stop waits for a proxy to move the players out (`arrivals::StopWait`): no login comes in.
     shutting_down: AtomicBool,
+    /// Whether play connections count their packets for the mods (`count_packets`).
+    count_packets: Arc<AtomicBool>,
 }
 impl Shared {
     /// The registries and tags a new connection is sent.
@@ -569,6 +572,10 @@ impl Shared {
         }
         self.online.lock().unwrap().push((uuid, name.to_owned()));
         None
+    }
+    /// Start or stop counting every play connection's packets; what was counted stays.
+    pub fn count_packets(&self, on: bool) {
+        self.count_packets.store(on, Ordering::Relaxed);
     }
     /// A stop has begun: every login from now on is refused as the server's shutdown.
     pub fn refuse_logins(&self) {
@@ -795,6 +802,7 @@ impl Lan {
             closing: AtomicUsize::new(0),
             turned_away: Mutex::new((0, None)),
             shutting_down: AtomicBool::new(false),
+            count_packets: Arc::default(),
             random: Mutex::new(sunrise_java_properties::now_millis() as u64 | 1),
             config,
         });

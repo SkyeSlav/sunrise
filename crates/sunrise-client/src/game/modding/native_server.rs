@@ -1762,6 +1762,48 @@ impl Game<'_> {
             .then_some(0)
             .ok_or(Refusal::Stale)
     }
+    /// That player's connection's play packet totals since the last take.
+    pub(super) fn player_take_packet_counts(
+        &mut self,
+        player: PlayerRef,
+    ) -> Result<Vec<mod_api::PacketCount>, mod_api::PlayerWorldRefusal> {
+        use mod_api::PlayerWorldRefusal as Refusal;
+        use sunrise_client::lan::packet_counts::Direction;
+        if !self.is_logical_server() {
+            return Err(Refusal::Client);
+        }
+        let Some(guest) = self.online_player_record(player) else {
+            return Err(
+                if self.native_acting_player() == Some(player)
+                    || self.player_handle_read(player).is_some()
+                {
+                    Refusal::NoConnection
+                } else {
+                    Refusal::Stale
+                },
+            );
+        };
+        // A test's channel counts nothing.
+        let totals = guest
+            .sender
+            .packet_counts()
+            .map_or_else(Vec::new, |counts| counts.take());
+        Ok(totals
+            .into_iter()
+            .map(|total| {
+                mod_api::__private::built::PacketCount {
+                    direction: match total.direction {
+                        Direction::Clientbound => mod_api::PacketDirection::Clientbound,
+                        Direction::Serverbound => mod_api::PacketDirection::Serverbound,
+                    },
+                    packet_type: format!("minecraft:{}", total.name),
+                    packets: total.packets,
+                    bytes: total.bytes,
+                }
+                .into()
+            })
+            .collect())
+    }
     /// The permission level `player_hide` set, `None` when shown: kept by UUID, and read as
     /// stored before the world is opened to others (an unpublished single-player world runs a
     /// hub for its owner too), where it applies once it is.

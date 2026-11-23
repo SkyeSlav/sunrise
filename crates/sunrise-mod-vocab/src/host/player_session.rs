@@ -101,6 +101,21 @@ pub trait PlayerSessionBackend {
 #[sunrise_mod_api_macros::host_area]
 pub trait PlayerSessionBackendMut {
     /// Side: server.
+    /// That player's play packets counted since the last take, by direction and packet type,
+    /// and clears them: clientbound first, then by packet type id. While
+    /// [`count_packets`](ConfigServerHost::count_packets) is on, each play packet the
+    /// connection sends or reads whole counts once, maintenance packets (keep-alives, bundle
+    /// delimiters, disconnects) and an integrated server's own player included; a packet the
+    /// server can't read counts nothing. Status, login and configuration packets are never
+    /// counted, and nothing of a packet's contents is kept. Every mod drains the same totals,
+    /// and a player who reconnects starts from none. Refuses with `PlayerWorldRefusal`:
+    /// `Client`, `Stale` for a handle that no longer identifies a player, and `NoConnection`
+    /// for a fake player.
+    fn player_take_packet_counts(
+        &mut self,
+        player: PlayerRef,
+    ) -> Result<Vec<PacketCount>, PlayerWorldRefusal>;
+    /// Side: server.
     /// Disconnects that player with `reason`, as `/kick` does
     /// (`ServerGamePacketListenerImpl.disconnect`): their client shows it, the log's "lost
     /// connection" line names it, `player_kicked` hears it and a dedicated server records a

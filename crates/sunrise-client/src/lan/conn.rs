@@ -488,6 +488,13 @@ impl PlayerSender {
         }
         self.reserve(cost)
     }
+    /// The connection's play packet totals; none for a test's channel.
+    pub fn packet_counts(&self) -> Option<&super::packet_counts::PacketCounts> {
+        match &self.to {
+            To::Pool(outbox, _) => Some(&outbox.packets),
+            _ => None,
+        }
+    }
     /// Prepare a whole encoded packet without publishing it. The channel is diagnostic only;
     /// its wire identifier must already be included in `body`.
     pub fn prepare_payload(
@@ -501,6 +508,7 @@ impl PlayerSender {
         if !outbox.alive() {
             return Err(PayloadSendError::Disconnected);
         }
+        let origin = super::packet_counts::Origin::of(&body);
         let bytes = self
             .framing
             .contents_owned(body)
@@ -529,6 +537,7 @@ impl PlayerSender {
             sender: self.clone(),
             bytes: Some(bytes),
             cost,
+            origin,
         })
     }
     pub fn send(&self, body: Vec<u8>) {
@@ -729,6 +738,7 @@ pub struct PreparedPayload {
     sender: PlayerSender,
     bytes: Option<Vec<u8>>,
     cost: usize,
+    origin: super::packet_counts::Origin,
 }
 impl PreparedPayload {
     /// Publish exactly the bytes prepared earlier, after the transaction commits.
@@ -738,7 +748,7 @@ impl PreparedPayload {
         let To::Pool(outbox, _) = &self.sender.to else {
             unreachable!()
         };
-        if outbox.publish(bytes, self.cost) {
+        if outbox.publish(bytes, self.cost, self.origin) {
             Ok(())
         } else {
             Err(PayloadSendError::Disconnected)
@@ -755,6 +765,7 @@ impl PreparedPayload {
             epoch,
             pending: self.sender.pending.clone(),
             cost: self.cost,
+            origin: self.origin,
         }))
     }
 }
@@ -2076,6 +2087,7 @@ fn play(
     {
         outbox.attach_droppable(queue.clone());
     }
+    outbox.packets.switch_with(shared.count_packets.clone());
     let latency = Arc::new(AtomicI32::new(0));
     let watch = Arc::new(KeepAliveWatch {
         start: Instant::now(),
@@ -2194,7 +2206,7 @@ impl io_pool::Session for PlayConn {
         if let Some(average) = self.rate.as_mut().and_then(|r| r.received(now)) {
             return kick(rate_exceeded(&self.shared, average));
         }
-        match play::Serverbound::decode_reader(
+        let decoded = play::Serverbound::decode_reader(
             id,
             sunrise_protocol::buf::Reader::with_payload_codecs(
                 &payload,
@@ -2202,8 +2214,18 @@ impl io_pool::Session for PlayConn {
             )
             .with_names(&self.sync.dynamic),
         )
-        .and_then(checked_play)
+        .and_then(checked_play);
+        // `PacketDecoder.decode`: a packet the play codec read whole, its id and payload.
+        if decoded.is_ok()
+            && let Some(counts) = self.payload_sender.packet_counts()
         {
+            counts.add(
+                super::packet_counts::Direction::Serverbound,
+                id,
+                super::packet_counts::varint_len(id) + payload.len(),
+            );
+        }
+        match decoded {
             // ServerCommonPacketListenerImpl.handleKeepAlive: only the pending one counts.
             Ok(play::Serverbound::KeepAlive(k)) => {
                 if let Some((sent, at)) = self.sent_at

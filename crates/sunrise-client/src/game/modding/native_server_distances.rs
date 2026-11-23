@@ -1,5 +1,5 @@
 //! What a server mod reads of the tick times, the mob tick costs and of whether the server is
-//! published, and sets of the view and simulation distance.
+//! published, and sets of the view and simulation distance and of what the server counts.
 use super::{Game, tick_profile};
 
 impl Game<'_> {
@@ -32,6 +32,17 @@ impl Game<'_> {
                 .into()
             })
             .collect()
+    }
+    /// A mod's play packet counting switch, shared by every connection; refused off a running
+    /// server.
+    pub(super) fn count_packets(&mut self, on: bool) -> bool {
+        match self.lan.as_ref().filter(|_| self.is_logical_server()) {
+            Some(lan) => {
+                lan.hub.lan.shared.count_packets(on);
+                true
+            }
+            None => false,
+        }
     }
     /// `PlayerList.getViewDistance`.
     pub(super) fn server_view_distance(&self) -> Option<i32> {

@@ -1,0 +1,3 @@
+ids = ["method:prelude::ConfigServerHost::count_packets", "handle:PlayerRef::take_packet_counts", "type:PacketCount", "type:PacketDirection"]
+why = "Server mods can switch on counting of every player's play packets and take one player's totals since the last take, one PacketCount per direction and packet type: packets and their bodies' bytes before compression, as vanilla's packet encoder and decoder see them."
+migrate = "Nothing to migrate: the methods are new."

@@ -96,6 +96,13 @@ pub trait ConfigServerHost {
     /// totals; `sunrise-report`'s own sampling is separate, and neither clears the other.
     fn take_mob_costs(&mut self) -> Vec<MobTickCost>;
     /// Side: server.
+    /// Start or stop counting every player's play packets on this server, for
+    /// [`PlayerRef::take_packet_counts`]; off when a server starts. True when the server took the
+    /// change, false off a running server. The switch is shared by every mod. Turning it off
+    /// keeps the counts no one took; a connection's counts end with it, and stopping the server
+    /// ends everything.
+    fn count_packets(&mut self, on: bool) -> bool;
+    /// Side: server.
     /// The server's view distance in chunks (`PlayerList.getViewDistance`, `view-distance`):
     /// how far players are sent chunks at most. None off a server open to players.
     fn server_view_distance(&self) -> Option<i32>;

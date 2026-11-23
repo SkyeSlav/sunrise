@@ -8,6 +8,7 @@
 //! integrated server's own player, over an in-memory pipe, is served the same
 //! way: the pipe tells the thread when bytes arrive.
 use super::Body;
+use super::packet_counts::{Direction, Origin, PacketCounts};
 use mio::{Events, Interest, Poll, Registry, Token, Waker};
 use std::{
     io::{ErrorKind, Read, Write},
@@ -98,7 +99,8 @@ pub(super) fn body_charge(body: &Body) -> usize {
 
 pub(super) struct Queued {
     body: Body,
-    prepared: bool,
+    /// Set for a body `PreparedPayload` already framed.
+    prepared: Option<Origin>,
     pending: Arc<AtomicUsize>,
     cost: usize,
 }
@@ -117,6 +119,8 @@ pub(super) struct Outbox {
     // Body-framing calls are frames for raw payloads, not necessarily adapters.
     probe: [AtomicUsize; 8],
     queue: Mutex<Queue>,
+    /// The connection's play packet totals, counted as its thread frames and reads them.
+    pub(super) packets: PacketCounts,
     /// The connection's `Droppable` sends, framed by its thread when it has room.
     droppable: OnceLock<Arc<crate::raw_payloads::droppable::Queue>>,
     /// The bytes queued and not framed yet (`PlayerSender::pending`).
@@ -161,6 +165,7 @@ impl Outbox {
             #[cfg(any(test, feature = "test-payload-probe"))]
             probe: std::array::from_fn(|_| AtomicUsize::new(0)),
             queue: Mutex::default(),
+            packets: PacketCounts::default(),
             droppable: OnceLock::new(),
             pending,
             capped,
@@ -183,7 +188,7 @@ impl Outbox {
             .into_iter()
             .map(|body| Queued {
                 cost: body_charge(&body),
-                prepared: body.is_prepared(),
+                prepared: body.origin(),
                 body,
                 pending: self.pending.clone(),
             })
@@ -238,11 +243,11 @@ impl Outbox {
         let q = self.queue();
         !matches!(q.at, At::Closed) && q.end.is_none()
     }
-    pub(super) fn publish(&self, body: Vec<u8>, cost: usize) -> bool {
+    pub(super) fn publish(&self, body: Vec<u8>, cost: usize, origin: Origin) -> bool {
         let packet = Queued {
             body: body.into(),
             cost,
-            prepared: true,
+            prepared: Some(origin),
             pending: self.pending.clone(),
         };
         let mut q = self.queue();
@@ -654,22 +659,26 @@ impl Conn {
         for body in &bodies {
             // Do not insert a droppable packet between a bundle's delimiters.
             if self.outbox.droppable.get().is_some()
-                && !body.prepared
+                && body.prepared.is_none()
                 && body.body.first()
                     == Some(&(sunrise_protocol::ids::play::clientbound::BUNDLE_DELIMITER as u8))
             {
                 self.bundling = !self.bundling;
             }
-            let result = if body.prepared {
+            let origin = if let Some(origin) = body.prepared {
                 self.writer.frame_into(&body.body, &mut self.out);
-                Ok(())
+                origin
             } else {
-                super::conn::frame_body(&mut self.writer, &body.body, &mut self.out)
+                if let Err(e) = super::conn::frame_body(&mut self.writer, &body.body, &mut self.out)
+                {
+                    self.end(now, e.to_string());
+                    return false;
+                }
+                Origin::of(&body.body)
             };
-            if let Err(e) = result {
-                self.end(now, e.to_string());
-                return false;
-            }
+            self.outbox
+                .packets
+                .add(Direction::Clientbound, origin.id, origin.len);
             #[cfg(any(test, feature = "test-payload-probe"))]
             {
                 self.outbox.probe[6].fetch_add(1, Ordering::Relaxed);
@@ -696,7 +705,7 @@ impl Conn {
                     ours.into_iter()
                         .map(|body| Queued {
                             body,
-                            prepared: false,
+                            prepared: None,
                             pending: self.outbox.pending.clone(),
                             cost: 0,
                         })
@@ -727,11 +736,13 @@ impl Conn {
                 && let Some(queue) = self.outbox.droppable.get().cloned()
                 && let Some(body) = queue.pop(now)
             {
-                if let Err(e) =
-                    super::conn::frame_body(&mut self.writer, &Body::from(body), &mut self.out)
-                {
+                if let Err(e) = super::conn::frame_body(&mut self.writer, &body, &mut self.out) {
                     return self.end(now, e.to_string());
                 }
+                let origin = Origin::of(&body);
+                self.outbox
+                    .packets
+                    .add(Direction::Clientbound, origin.id, origin.len);
                 continue;
             }
             let (bodies, end) = self.outbox.take(room);
@@ -828,7 +839,7 @@ impl Conn {
                 now,
                 vec![Queued {
                     body: body.into(),
-                    prepared: false,
+                    prepared: None,
                     pending: self.outbox.pending.clone(),
                     cost: 0,
                 }],
@@ -1012,6 +1023,56 @@ mod tests {
             }
             all.push(packet);
         }
+    }
+
+    #[test]
+    fn framed_play_packets_count_their_bodies_once_while_counting_is_on() {
+        use super::super::packet_counts::{Direction, PacketTotal};
+        use std::sync::atomic::AtomicBool;
+        use sunrise_protocol::ids::play::clientbound;
+        let (a, b) = Pipe::pair();
+        let mut client = Connection::local(a);
+        let served = serve(Connection::local(b), quiet, Duration::from_secs(30));
+        let on = Arc::new(AtomicBool::new(true));
+        served.outbox.packets.switch_with(on.clone());
+        let delimiter = vec![clientbound::BUNDLE_DELIMITER as u8];
+        let keep_alive: Vec<u8> = std::iter::once(clientbound::KEEP_ALIVE as u8)
+            .chain(7i64.to_be_bytes())
+            .collect();
+        // The first id past the play registry, as its two-byte VarInt.
+        let past = clientbound::NAMES.len();
+        let unknown = vec![(past & 0x7f) as u8 | 0x80, (past >> 7) as u8, 1];
+        served.send(
+            vec![
+                delimiter.clone(),
+                keep_alive.clone(),
+                delimiter.clone(),
+                unknown,
+            ],
+            None,
+        );
+        assert!(
+            served
+                .outbox
+                .publish(keep_alive.clone(), 0, Origin::of(&keep_alive))
+        );
+        for _ in 0..5 {
+            client.recv().unwrap();
+        }
+        on.store(false, Ordering::Relaxed);
+        served.send(vec![keep_alive.clone()], None);
+        client.recv().unwrap();
+        let total = |name, packets, bytes| PacketTotal {
+            direction: Direction::Clientbound,
+            name,
+            packets,
+            bytes,
+        };
+        assert_eq!(
+            served.outbox.packets.take(),
+            [total("bundle_delimiter", 2, 2), total("keep_alive", 2, 18)]
+        );
+        assert!(served.outbox.packets.take().is_empty());
     }
 
     #[test]

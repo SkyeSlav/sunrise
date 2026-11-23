@@ -257,6 +257,24 @@ server starts with it off and stopping the server discards everything. Both retu
 empty list off a running server. `sunrise-report`'s own sampling is separate: neither clears the
 other's totals.
 
+## Packet counts
+
+`host.count_packets(true)` starts counting every player's play packets on the running server;
+`player.take_packet_counts(host)` returns that player's `PacketCount` rows counted since the last
+take (direction, packet type, packets, bytes), clientbound first, then by packet type, and clears
+them. A packet's bytes are its id and body before compression, the length prefix and encryption,
+as vanilla's packet encoder writes them and its decoder reads them. Every play packet counts,
+keep-alives, bundle delimiters and disconnects included, and so does an integrated server's own
+player; status, login and configuration packets never do, and a packet the server can't read
+counts nothing. No packet's contents are kept, and nothing here can change or stop a packet.
+
+The switch and the rows are shared by every mod: one mod's take empties them for all.
+`count_packets(false)` stops counting and keeps the rows no one took. A connection's rows end
+with it, so a player who reconnects starts from none, and stopping the server ends everything.
+`count_packets` returns `false` off a running server; `take_packet_counts` refuses with
+`PlayerWorldRefusal::Client` on a client, `Stale` for a player who left and `NoConnection` for a
+fake player.
+
 ## Finding blocks in a chunk
 
 `chunk.sections_with_block(host, block)` names the sections of a loaded chunk whose block palette may hold any
