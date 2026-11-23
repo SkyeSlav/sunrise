@@ -241,9 +241,13 @@ pub trait DrawContext {
     /// a mob page, an entity icon or a data model's mob shows it. It is drawn by
     /// its type's renderer as in the world (a mod's `register_entity_renderers`
     /// renderer and `register_entity_layers` layers included, else the vanilla
-    /// model), full bright, lit by `Lighting.ENTITY_IN_UI`'s two lights, with a
-    /// depth of its own and cut off at the box. A client's call, available
-    /// with [`crate::MenuScreen::with_draw`] or `gui_render_post`.
+    /// model), full bright, with a depth of its own and cut off at the box.
+    /// The render type controls back-face culling separately from lighting.
+    /// `Lighting.ENTITY_IN_UI` shades normal-lit faces, flipping the normal
+    /// on retained backs only for per-face lighting. Baked colours are kept.
+    /// Both sides use the same quad diagonal and texture coordinates.
+    /// A client's call, available with [`crate::MenuScreen::with_draw`] or
+    /// `gui_render_post`.
     fn entity(&mut self, entity: &GuiEntity, view: GuiEntityView) -> Result<(), GuiEntityError> {
         Err(GuiEntityError::Unavailable)
     }

@@ -45,8 +45,10 @@ have grown, except one copy of an existing entity a frame (vanilla's `createRend
 - **Drawn as in the world.** A mod's renderer for the type ([entity renderers](entity-renderers.md)) draws in place of
   the model, else the type's model; then, either way, the layers mods added ([entity layers](entity-layers.md)). Custom entity
   model animations see `is_in_gui`.
-- **Lit as vanilla's.** Full bright, shaded by `Lighting.ENTITY_IN_UI`'s two lights, back faces culled, with a
-  depth of its own.
+- **Lit as vanilla's.** The preview is full bright and has a depth of its own. The render type controls
+  whether back faces are culled. Normal-lit faces use `Lighting.ENTITY_IN_UI`'s two lights, with the normal
+  flipped on retained back faces only for per-face lighting; baked colours are kept. A quad keeps the same
+  diagonal and texture coordinates from either side.
 
 ## Refusals
 

@@ -295,8 +295,8 @@ impl Game<'_> {
     }
 }
 
-/// `verts` seen through `gui`, into `quads` far to near, each lit by
-/// `Lighting.ENTITY_IN_UI` (`entity_in_ui_shade`). A face that looks away is
+/// `verts` seen through `gui`, into `quads` far to near, using the render
+/// type's lighting mode under `Lighting.ENTITY_IN_UI`. A face that looks away is
 /// left out only when its render type culls (`culls_back_faces`): living
 /// models draw as `entityCutoutNoCull`, as in the world, and their art can sit
 /// on such a face (a chicken's legs are painted on their back and bottom
@@ -304,26 +304,31 @@ impl Game<'_> {
 fn seen_quads(verts: &[Vertex], gui: Mat4, quads: &mut Vec<SeenQuad>) {
     quads.clear();
     for q in verts.as_chunks::<4>().0 {
-        let p: [Vec3; 4] =
-            std::array::from_fn(|i| gui.transform_point3(Vec3::from_array(q[i].pos)));
+        let p = q
+            .each_ref()
+            .map(|v| gui.transform_point3(Vec3::from_array(v.pos)));
         let n = (p[1] - p[0]).cross(p[2] - p[0]);
         // The winding gives inward normals: faces with n.z >= 0 point away.
         let back = n.z >= 0.0;
-        if back && sunrise_client_render::mesher::culls_back_faces(q[0].normal[3]) {
+        let w = q[0].normal[3];
+        if back && sunrise_client_render::mesher::culls_back_faces(w) {
             continue;
         }
-        // Lit by its outward normal, whichever way it faces, as vanilla's vertex normals.
-        let shade = super::perspective::entity_in_ui_shade(-n.normalize_or_zero());
-        let c = q[0].color;
-        let ch = |s: u32| ((((c >> s) & 255) as f32 * shade) as u32) << s;
-        let color = (c & 0xFF00_0000) | ch(0) | ch(8) | ch(16);
+        // As in entity.wgsl, only normal-lit faces are shaded, and only per-face
+        // lighting (negative w in that mode) reverses the lighting normal on the back.
+        let color = if w.unsigned_abs() >= 64 {
+            let outward = -n.normalize_or_zero();
+            let normal = if back && w < 0 { -outward } else { outward };
+            let shade = super::perspective::entity_in_ui_shade(normal);
+            super::native_scene::shaded(q[0].color, shade)
+        } else {
+            q[0].color
+        };
         let depth = p.iter().map(|v| v.z).sum::<f32>() / 4.0;
-        let (mut corners, mut uv) = (p.map(|v| v.to_array()), std::array::from_fn(|i| q[i].uv));
-        if back {
-            // Seen from behind: the same quad wound towards the viewer, as the player preview's.
-            corners.reverse();
-            uv.reverse();
-        }
+        // The HUD depth pipeline draws both windings. Keep the submitted order
+        // so quad_3d splits along the same diagonal from either side.
+        let corners = p.map(|v| v.to_array());
+        let uv = q.each_ref().map(|v| v.uv);
         quads.push((depth, corners, uv, color, quads.len()));
     }
     // Far to near for translucent faces. Equal depths keep their emission order (the ordinal),
@@ -408,23 +413,79 @@ mod tests {
         assert!(depths[0] < depths[1]);
     }
 
-    /// A living model's faces draw both sides (`entityCutoutNoCull`, normal w
-    /// -127), as in the world: a chicken's legs are painted on faces that look
-    /// away. Such a face is kept and wound towards the viewer.
+    fn half_turn_y() -> Mat4 {
+        // Exact 180-degree rotation about Y without trigonometric roundoff.
+        Mat4::from_scale(Vec3::new(-1.0, 1.0, -1.0))
+    }
+
     #[test]
-    fn no_cull_faces_looking_away_are_kept_and_turned_to_the_viewer() {
+    fn retained_back_faces_keep_the_diagonal_and_corner_uvs() {
+        let positions = [
+            [0.0, 0.0, 1.0],
+            [1.0, 3.0, 1.0],
+            [4.0, 4.0, 1.0],
+            [5.0, 1.0, 3.0],
+        ];
+        let uvs = [
+            [0.125, 0.125],
+            [0.25, 0.625],
+            [0.875, 0.875],
+            [0.625, 0.375],
+        ];
+        let verts: [Vertex; 4] = std::array::from_fn(|i| Vertex {
+            uv: uvs[i],
+            ..vertex(positions[i], -127, 0.0)
+        });
         let mut quads = Vec::new();
-        seen_quads(&face(0.0, -127, 0.5, true), Mat4::IDENTITY, &mut quads);
-        assert_eq!(quads.len(), 1);
-        let p = quads[0].1.map(Vec3::from_array);
-        assert!(
-            (p[1] - p[0]).cross(p[2] - p[0]).z < 0.0,
-            "wound towards the viewer"
-        );
-        // A face the model culls still goes.
-        let cull = sunrise_client_render::mesher::SHADED_CULL_W;
-        seen_quads(&face(0.0, cull, 0.5, true), Mat4::IDENTITY, &mut quads);
-        assert!(quads.is_empty());
+        for (gui, positions) in [
+            (Mat4::IDENTITY, positions),
+            (half_turn_y(), positions.map(|[x, y, z]| [-x, y, -z])),
+        ] {
+            seen_quads(&verts, gui, &mut quads);
+            let mut batch = HudBatch::scratch([320, 240]);
+            for &(_, corners, uv, color, _) in &quads {
+                batch.quad_3d(corners, uv, color);
+            }
+            assert_eq!(batch.vertices.len(), 6);
+            let mut triangles = [[0; 3]; 2];
+            for (triangle, vertices) in triangles.iter_mut().zip(batch.vertices.as_chunks::<3>().0)
+            {
+                *triangle = vertices.each_ref().map(|v| {
+                    let corner = positions
+                        .iter()
+                        .position(|&p| p == [v.pos[0], v.pos[1], v.depth])
+                        .expect("the emitted vertex has its original corner's position");
+                    assert_eq!(v.uv, uvs[corner]);
+                    corner
+                });
+                triangle.sort_unstable();
+            }
+            triangles.sort_unstable();
+            // The shared edge joins the first and third corners, regardless of winding.
+            assert_eq!(triangles, [[0, 1, 2], [0, 2, 3]]);
+        }
+    }
+
+    #[test]
+    fn preview_lighting_follows_the_material_on_both_sides() {
+        let mut quads = Vec::new();
+        // With vanilla's UI lights, +Z gets ambient plus the first light's +Z
+        // contribution; -Z gets ambient alone. Alpha is unchanged in every mode.
+        for (w, front, back) in [
+            (-127, 0x80D1_D1D1, 0x80D1_D1D1),
+            (127, 0x80D1_D1D1, 0x8066_6666),
+            (0, 0x80FF_FFFF, 0x80FF_FFFF),
+        ] {
+            let verts = face(0.0, w, 0.0, false).map(|v| Vertex {
+                color: 0x80FF_FFFF,
+                ..v
+            });
+            for (gui, color) in [(Mat4::IDENTITY, front), (half_turn_y(), back)] {
+                seen_quads(&verts, gui, &mut quads);
+                assert_eq!(quads.len(), 1, "normal.w = {w}");
+                assert_eq!(quads[0].3, color, "normal.w = {w}");
+            }
+        }
     }
 
     /// A layer drawn again over the same faces (a villager's clothes over its
