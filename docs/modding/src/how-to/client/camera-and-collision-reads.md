@@ -197,9 +197,13 @@ and when to keep the ordered all-hit query.
 
 A client `EntityRef` supports `bounding_box(host)`, `eye_height(host)` and
 `eye_position(host)`. For the local player these use the current predicted body and pose;
-for a tracked target they use the client's displayed body. End crystals expose their 2 x 2 box;
-dragon parts expose their own box. Stale handles and entities the
-client cannot read return `None`.
+for a tracked target they use the client's live body. Block, item and text displays
+have coincident box corners at the tick position returned by `position(host)`. That
+position follows the tick's movement interpolation, not the packet destination or
+the draw-frame pose. A display intersects a box query only strictly inside all faces;
+its render culling box does not count, and the ordinary crosshair pick still ignores it.
+End crystals expose their 2 x 2 box; dragon parts expose their own box. Stale handles
+and entities the client cannot read return `None`.
 
 The local `PlayerRef` also supports `within_entity_reach(host, target, rule)`: it reads the
 predicted eyes, the target's displayed bounding box, the synchronized interaction-range

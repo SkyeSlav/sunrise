@@ -65,13 +65,15 @@ pub trait LevelEntitiesBackend {
     /// or unavailable world access return [`LevelReadError::Unavailable`]. A refused
     /// visit does not call the visitor.
     ///
-    /// The walk uses entity-list order, then item frames and paintings in join order
-    /// (frames first on ties), then the dragon's body. On the server, block, item and text
-    /// displays, markers, interactions and fishing hooks come next, then placed guests
-    /// other than spectators. Displays and markers use zero-sized physical boxes,
-    /// not rendering bounds. The client walks the entities it tracks, including tracked
-    /// players, then its own player if not spectating. The dragon's intersecting parts
-    /// come last on either side, in vanilla part-table order.
+    /// Ordinary entities are visited in level section order, and in entry order within
+    /// each section. This includes block, item and text displays on both sides, as well as
+    /// the client's own player if not spectating and placed non-spectator guests on the
+    /// server. The dragon's intersecting parts come last, in vanilla part-table order.
+    ///
+    /// Displays have zero-sized physical boxes: their position must be strictly between
+    /// the query's faces on all axes. The client uses the display's current tick position
+    /// after movement interpolation, not the last destination or its render culling box.
+    /// Ordinary crosshair picking still ignores displays.
     ///
     /// Unresolved handles are skipped, including held-out server entities. Tridents
     /// that do not resolve, eyes of ender and leash knots are not visited. The projectile
