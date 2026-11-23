@@ -31,7 +31,11 @@ mod motion_tests {
     fn a_push_adds_to_the_velocity_as_given_in_any_mode() {
         with_game(|game| {
             game.player = Some(
-                sunrise_client::motion::PlayerMotion::new(game.motion, Default::default()).unwrap(),
+                sunrise_client::motion::PlayerMotion::new(
+                    game.motion,
+                    sunrise_core::geometry::Vec3::ZERO,
+                )
+                .unwrap(),
             );
             game.player.as_mut().unwrap().spectator = true;
             game.player.as_mut().unwrap().velocity =
