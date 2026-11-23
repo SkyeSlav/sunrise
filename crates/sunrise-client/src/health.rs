@@ -2471,15 +2471,23 @@ impl ImmunityWorld for Environment<'_> {
             .into_iter()
             .map(|stack| stack.map_or(&[][..], ItemStack::enchantments))
             .zip(sunrise_items::equipment::SLOT_NAMES);
-        let source = self
-            .level
-            .attack()
-            .player_source(&self.source.definition().name, self.causing);
+        let attack = self.level.attack();
+        let source = attack.player_source(&self.source.definition().name, self.causing);
+        let direct_attacker = (source.direct != 0)
+            .then(|| {
+                attack.direct_type.as_deref().or_else(|| {
+                    (attack.projectile == Some(source.direct))
+                        .then_some(attack.projectile_type)
+                        .flatten()
+                })
+            })
+            .flatten();
         let context = crate::enchant::EffectContext {
             items: Some(items),
             damage_type: Some(source.damage_type),
             is_direct: source.causing == source.direct,
             this: Some("minecraft:player"),
+            direct_attacker,
             ..Default::default()
         };
         Ok(items.enchantments.is_damage_immune(

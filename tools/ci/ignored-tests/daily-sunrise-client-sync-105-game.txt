@@ -54,6 +54,7 @@ sunrise-client game::potions::potion_contents_tests::a_lingering_potion_of_custo
 sunrise-client game::potions::potion_contents_tests::a_splash_potion_applies_its_custom_effects_and_duration_scale lib daily resources
 sunrise-client game::potions::potion_contents_tests::a_water_potion_refills_an_axolotl_once lib daily resources
 sunrise-client game::potions::potion_contents_tests::a_water_potion_with_custom_effects_does_not_douse_fire lib daily resources
+sunrise-client game::potions::potion_contents_tests::live_cloud_and_splash_potion_carry_direct_entity_to_worn_immunity lib daily child-process
 sunrise-client game::raids::bar_players_tests::the_raid_bar_keeps_a_viewer_until_the_next_twenty_tick_beat lib daily resources
 sunrise-client game::scoreboard::selector_option_tests::gamemode_compares_the_real_mode lib daily resources
 sunrise-client game::scoreboard::selector_option_tests::name_compares_the_plain_name lib daily resources

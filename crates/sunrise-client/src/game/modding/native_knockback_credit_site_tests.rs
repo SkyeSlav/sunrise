@@ -46,6 +46,7 @@ fn a_harming_splash_potion_credits_its_thrower_and_its_sword() {
             None,
             0,
             &owner,
+            None,
             true,
             Vec3::ZERO,
         );
@@ -63,7 +64,7 @@ fn a_harming_area_cloud_credits_its_owner_and_its_sword() {
             (&[], &[], 1.0),
             [0.0, 0.0, 0.0],
             &text,
-            (Some(Who::Mob(50)), None),
+            (Some(Who::Mob(50)), None, None),
         );
     });
 }

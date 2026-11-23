@@ -3312,9 +3312,9 @@ impl Game<'_> {
                 .map(|m| (m.id, m.bounds(), m.position))
                 .collect()
         };
-        let mut harmed: Vec<(FightWho, f32)> = Vec::new();
+        let mut harmed: Vec<(u32, FightWho, f32)> = Vec::new();
         self.end_dragon_flame();
-        let mut harmed_mobs: Vec<(u32, i32, [f64; 3])> = Vec::new();
+        let mut harmed_mobs: Vec<(u32, u32, i32, [f64; 3])> = Vec::new();
         let ticking = self.entity_ticking_area();
         let mut clouds = self.breath_clouds.lift();
         #[cfg(test)]
@@ -3367,21 +3367,36 @@ impl Game<'_> {
                 );
             for victim in breath_victims(c.age, &mut c.victims, inside) {
                 match victim {
-                    Victim::Player(who) => harmed.push((who, amount)),
-                    Victim::Mob(id) => harmed_mobs.push((id, i32::from(!c.from_dragon), c.at)),
+                    Victim::Player(who) => harmed.push((c.id, who, amount)),
+                    Victim::Mob(id) => {
+                        harmed_mobs.push((c.id, id, i32::from(!c.from_dragon), c.at));
+                    }
                 }
             }
             true
         });
         self.breath_clouds
             .restore(clouds, sunrise_client::join_seq::RestoreOrder::SpawnsFirst);
-        for (who, amount) in harmed {
+        for (cloud_id, who, amount) in harmed {
+            let mut attack = self
+                .dragon
+                .as_ref()
+                .map_or_else(sunrise_client::health::Attack::default, |d| {
+                    self.attack_of(d.id as i32)
+                });
+            if cloud_id != 0 {
+                attack.direct = Some(cloud_id as i32);
+                attack.direct_kind = Some(sunrise_client::health::DirectEntity::Other);
+                attack.direct_type = Some("minecraft:area_effect_cloud".to_owned());
+            }
             self.as_fight_player(who, |g| {
-                g.dragon_hurts_player("minecraft:indirect_magic", amount);
+                g.with_attack(attack, |g| {
+                    g.dragon_hurts_player("minecraft:indirect_magic", amount);
+                });
             });
         }
-        for (id, amplifier, at) in harmed_mobs {
-            self.breath_affect_mob(id, amplifier, at);
+        for (cloud_id, id, amplifier, at) in harmed_mobs {
+            self.breath_affect_mob(cloud_id, id, amplifier, at);
         }
     }
     /// `EnderDragon.knockBack` on the player in a wing's zone: pushed away

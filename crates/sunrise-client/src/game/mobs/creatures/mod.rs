@@ -7328,6 +7328,7 @@ impl Game<'_> {
                     block,
                     p.age,
                     &owner,
+                    Some((p.id, p.entity_type())),
                     self.entity_silent(p.id),
                     p.velocity,
                 );

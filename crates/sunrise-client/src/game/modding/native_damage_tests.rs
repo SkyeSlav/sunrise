@@ -913,7 +913,7 @@ fn splash_water_finishes_a_lethal_hit_before_the_next_target() {
             game.mobs.push(first);
             game.mobs.push(second);
             let water = ItemStack::new("minecraft:splash_potion", 1).with_potion("minecraft:water");
-            game.affect_entities_around(&water, Vec3::ZERO, false);
+            game.affect_entities_around(&water, Vec3::ZERO, false, None);
             assert_eq!(
                 *trace.heard.lock().unwrap(),
                 [
