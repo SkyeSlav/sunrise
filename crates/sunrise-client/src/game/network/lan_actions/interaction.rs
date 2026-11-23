@@ -425,7 +425,7 @@ impl Game<'_> {
         if !self
             .creative_screen
             .catalog()
-            .item_enabled(held, self.enabled_feature_ids())
+            .is_item_enabled(&held.item, self.enabled_feature_ids())
         {
             return Ok(false);
         }
