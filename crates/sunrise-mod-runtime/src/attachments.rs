@@ -908,7 +908,6 @@ impl<T: Send + Sync + 'static> AttachmentOps<'_, T> {
             write: AttachmentWrite::Decoded,
         };
         let value = Arc::new(value);
-        let value = Arc::new(value);
         // A read-only holder's saved value decodes for this read alone, never stored.
         if !store.read_only(holder)? {
             store.store(
@@ -974,13 +973,19 @@ impl<T: Send + Sync + 'static> AttachmentOps<'_, T> {
     where
         T: Clone,
     {
-        if !self.has(store, holder)? {
-            return Ok(None);
-        }
+        let held = self.has(store, holder)?;
         if store.read_only(holder)? {
-            return Err(AttachmentError::ReadOnlyHolder);
+            return if held {
+                Err(AttachmentError::ReadOnlyHolder)
+            } else {
+                Ok(None)
+            };
         }
-        let value = self.existing(store, holder, T::clone);
+        let value = if held {
+            self.existing(store, holder, T::clone)
+        } else {
+            Ok(None)
+        };
         store.discard(holder, &self.key())?;
         value
     }
