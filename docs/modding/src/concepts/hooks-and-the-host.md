@@ -135,30 +135,6 @@ parts on these paths must not write before returning `None` or false. If a mod t
 these paths skip the part and log the refusal, leaving the template's answer. Both hosts calculate
 `container_signal` from stored slots without generating deferred loot.
 
-## Dispenser behaviour
-
-A dispenser chooses what to do with the stack it picked at vanilla's
-`DispenserBlock.getDispenseMethod`. An item the world's feature flags disable is dropped, with the
-click and smoke, and no mod is asked. Otherwise every mod subscribed to `dispenser_acts` is asked
-first, in order and without a key. The first answer the game accepts wins; an answer with another
-event than 0, 1000 or 1001, or a remainder the game can't hold, is refused with a warning naming
-the mod, and the next mod is asked. With no accepted answer, the faced block's `dispense_method`
-Part, the item's `dispense_item` Part and vanilla's behaviour decide, in that order.
-
-```rust,ignore
-fn dispenser_acts(&self, host: &mut dyn ServerHost, event: &mut DispenserActsEvent<'_>)
-    -> Option<Dispensed> {
-    if event.dimension != "minecraft:the_nether" {
-        return None;
-    }
-    // Every dispenser in the Nether only drops what it holds, one item at a time.
-    let left = host
-        .dispense_default(event.dimension, event.pos, event.facing, event.stack.clone())
-        .ok()?;
-    Some((left, 1000))
-}
-```
-
 ## Saving and game events
 
 To save from inside a hook, use `level.request_save(host)` so the save runs at the next settled
