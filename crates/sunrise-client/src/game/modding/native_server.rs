@@ -38,6 +38,7 @@ use mod_api::{
     PlayerActionSetup, PlayerFood, PlayerRef, PlayerRespawnConfig, ScopedActionResult,
 };
 use serde_json::{Map, Value, json};
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::{
     LazyLock, Mutex, PoisonError,
     atomic::{AtomicBool, Ordering},
@@ -645,12 +646,27 @@ impl Game<'_> {
     }
 
     /// A machine's one use on the persistent actor, with its private state put back even
-    /// when the action refuses. Only the existing guest turn runs gameplay and its hooks.
+    /// when the action refuses or unwinds. Only the existing guest turn runs gameplay and its hooks.
     pub(super) fn player_perform_action_scoped(
         &mut self,
         player: PlayerRef,
         action: PlayerAction,
         setup: PlayerActionSetup,
+    ) -> Result<ScopedActionResult, ActionRefused> {
+        self.player_perform_action_scoped_with(player, action, setup, Self::perform_fake_action)
+    }
+
+    fn player_perform_action_scoped_with(
+        &mut self,
+        player: PlayerRef,
+        action: PlayerAction,
+        setup: PlayerActionSetup,
+        run_action: impl FnOnce(
+            &mut Self,
+            usize,
+            u32,
+            PlayerAction,
+        ) -> Result<ActionOutcome, ActionRefused>,
     ) -> Result<ScopedActionResult, ActionRefused> {
         let (gi, conn) = self.fake_action_actor(player, action)?;
         if !setup.eye.iter().all(|v| v.is_finite())
@@ -665,38 +681,29 @@ impl Game<'_> {
         host.hub.guests.update(gi, |guest| state.swap(guest));
         let play = host.play.insert(conn, Default::default());
         let menus = host.menus.insert(conn, Default::default());
-        // This body is created with the setup's equipment and never reaches a body tick.
-        // Install its modifiers before the first action or calculation of attack charge.
-        let initialized = self.as_guest_at(gi, conn, |game| {
-            game.put_equipment_modifiers();
-            if full_attack_charge {
-                game.charge_attack_fully();
-            }
-        });
-        let outcome = if initialized.is_ok() {
-            self.perform_fake_action(gi, conn, action)
-        } else {
-            Err(ActionRefused::Busy)
-        };
+        let click = (
+            self.forced_hit,
+            self.guest_use,
+            self.hand,
+            self.use_failed,
+            self.sculk.actor,
+        );
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            // This body is created with the setup's equipment and never reaches a body tick.
+            // Install its modifiers before the first action or calculation of attack charge.
+            self.as_guest_at(gi, conn, |game| {
+                game.put_equipment_modifiers();
+                if full_attack_charge {
+                    game.charge_attack_fully();
+                }
+            })
+            .map_err(|_| ActionRefused::Busy)?;
+            run_action(self, gi, conn, action)
+        }));
+        // as_guest_at has put back its loan. Detach the temporary state from the fake before
+        // processing any remainder or propagating the unwind.
         let host = self.lan.as_mut().expect("guest turns retain the host");
-        let (held, other, position) = host.hub.guests.update(gi, |guest| {
-            let held = guest
-                .inventory
-                .get_mut(guest.selected)
-                .and_then(Option::take)
-                .filter(|s| s.count > 0);
-            let other: Vec<sunrise_items::items::ItemStack> = guest
-                .inventory
-                .iter_mut()
-                .chain([&mut guest.offhand, &mut guest.carried])
-                .chain(guest.armor.iter_mut())
-                .filter_map(Option::take)
-                .filter(|s| s.count > 0)
-                .collect();
-            let position = guest.position;
-            state.swap(guest);
-            (held, other, position)
-        });
+        host.hub.guests.update(gi, |guest| state.swap(guest));
         host.menus.remove(&conn);
         if let Some(menus) = menus {
             host.menus.insert(conn, menus);
@@ -705,6 +712,25 @@ impl Game<'_> {
         if let Some(play) = play {
             host.play.insert(conn, play);
         }
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(payload) => {
+                // The ordinary click wrappers didn't get to put back their scratch state.
+                (
+                    self.forced_hit,
+                    self.guest_use,
+                    self.hand,
+                    self.use_failed,
+                    self.sculk.actor,
+                ) = click;
+                resume_unwind(payload);
+            }
+        };
+        let position = state.position;
+        let held = state
+            .inventory
+            .get_mut(state.selected)
+            .and_then(Option::take);
         // A stack the API can't represent (a saved item this build doesn't have, #1364) is never
         // destroyed or replaced: it goes back into the world where the actor stood, with
         // vanilla's default pickup delay so a repeating action doesn't take it again next tick.
@@ -722,8 +748,16 @@ impl Game<'_> {
                 None
             }
         };
-        let held = held.and_then(&mut represent);
-        let other = other.into_iter().filter_map(&mut represent).collect();
+        let held = held.filter(|s| s.count > 0).and_then(&mut represent);
+        let other = state
+            .inventory
+            .into_iter()
+            .chain([state.offhand, state.carried])
+            .chain(state.armor)
+            .flatten()
+            .filter(|s| s.count > 0)
+            .filter_map(&mut represent)
+            .collect();
         outcome.map(|outcome| ScopedActionResult::new(outcome, held, other, unrepresentable))
     }
 
@@ -5380,6 +5414,133 @@ pub(super) mod fake_action_tests {
                     .is_on_cooldown("minecraft:bucket")
             );
             assert_eq!(game.lan.as_ref().unwrap().hub.guests.len(), 2);
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn scoped_fake_action_restores_persistent_state_before_resuming_unwind() {
+        use super::super::{
+            GuestUse, Hit,
+            native_entity_refs::tests::{run_fresh_cases, with_game},
+        };
+        use mod_api::{GameMode, PlayerActionSetup};
+        use std::panic::{AssertUnwindSafe, catch_unwind, panic_any};
+
+        if run_fresh_cases(
+            "game::native_server::fake_action_tests::scoped_fake_action_restores_persistent_state_before_resuming_unwind",
+            "SUNRISE_SCOPED_FAKE_UNWIND_CASE",
+            &["action"],
+        ) {
+            return;
+        }
+        struct ActionPanic(u32);
+        with_game(|game| {
+            let (player, conn, _) = fake(game, None, 1);
+            let host = game.lan.as_mut().unwrap();
+            host.hub
+                .update_guest(conn, |guest| {
+                    guest.selected = 3;
+                    guest.inventory[3] = Some(ItemStack::new("minecraft:emerald", 4));
+                    guest.offhand = Some(ItemStack::new("minecraft:apple", 2));
+                })
+                .unwrap();
+            host.play
+                .get_mut(&conn)
+                .unwrap()
+                .cooldowns
+                .add("minecraft:bucket".into(), 100);
+            let mut menu = Box::new(sunrise_client::menu::Menu::new(
+                sunrise_client::menu::Kind::Inventory,
+            ));
+            menu.carried = Some(ItemStack::new("minecraft:stick", 3));
+            host.menus.entry(conn).or_default().crafting.inventory = Some(menu);
+
+            let temp_position = [1.5, 64.0, 0.5];
+            let setup = PlayerActionSetup::new(
+                Some(crate::game::api_values::test_snapshot(&ItemStack::new(
+                    "minecraft:bucket",
+                    1,
+                ))),
+                [
+                    temp_position[0],
+                    64.0 + f64::from(1.62_f32),
+                    temp_position[2],
+                ],
+                0.0,
+                0.0,
+                false,
+            );
+            let stone = game
+                .pack
+                .assets
+                .registry
+                .default_state("minecraft:stone")
+                .unwrap();
+            assert_ne!(game.world.block(3, 64, 2), stone);
+            let dropped = game.dropped.len();
+            game.use_failed = true;
+            let payload = catch_unwind(AssertUnwindSafe(|| {
+                game.player_perform_action_scoped_with(
+                    player,
+                    on_top([1, 63, 0]),
+                    setup,
+                    |game, gi, conn, _| {
+                        let _acting = Acting::start(&game.fake_action);
+                        game.as_guest_at(gi, conn, |game| {
+                            assert!(game.fake_action.acting());
+                            assert_eq!(player.game_mode(game), Some(GameMode::Survival));
+                            assert_eq!(player.entity().position(game), Some(temp_position));
+                            assert_eq!(game.selected, 0);
+                            assert_eq!(
+                                game.inventory[0],
+                                Some(ItemStack::new("minecraft:bucket", 1))
+                            );
+                            game.world.set(3, 64, 2, stone).unwrap();
+                            game.inventory[0] = Some(ItemStack::new("test:missing", 1));
+                            game.forced_hit = Some(Hit {
+                                pos: [1, 63, 0],
+                                face: [0, 1, 0],
+                                point: [1.5, 64.0, 0.5],
+                                inside: false,
+                            });
+                            game.guest_use = Some(GuestUse::on_block(Hand::Off));
+                            game.use_failed = false;
+                            game.with_player_actor(|game| {
+                                game.with_hand(Hand::Off, |_| panic_any(ActionPanic(17)))
+                            })
+                        })
+                        .unwrap()
+                    },
+                )
+            }))
+            .expect_err("the scoped action must propagate the panic");
+            assert_eq!(payload.downcast_ref::<ActionPanic>().map(|p| p.0), Some(17));
+            assert!(game.lan_guest_swaps.is_empty());
+            assert!(!game.fake_action.acting());
+            assert!(game.forced_hit.is_none() && game.guest_use.is_none());
+            assert_eq!(game.hand, Hand::Main);
+            assert!(game.use_failed);
+            assert!(game.sculk.actor.is_none());
+            assert_eq!(player.game_mode(game), Some(GameMode::Creative));
+            assert_eq!(player.entity().position(game), Some([0.5, 64.0, 0.5]));
+            let host = game.lan.as_ref().unwrap();
+            let guest = host.hub.guest(conn).unwrap();
+            assert_eq!(guest.selected, 3);
+            assert_eq!(
+                guest.inventory[3],
+                Some(ItemStack::new("minecraft:emerald", 4))
+            );
+            assert_eq!(guest.offhand, Some(ItemStack::new("minecraft:apple", 2)));
+            let menu = host.menus[&conn].crafting.inventory.as_ref().unwrap();
+            assert_eq!(menu.carried, Some(ItemStack::new("minecraft:stick", 3)));
+            assert!(
+                host.play[&conn]
+                    .cooldowns
+                    .is_on_cooldown("minecraft:bucket")
+            );
+            assert_eq!(game.dropped.len(), dropped);
+            assert_eq!(game.world.block(3, 64, 2), stone);
         });
     }
 

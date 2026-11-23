@@ -83,8 +83,12 @@ to the caller, not kept by the fake. `unrepresentable` counts the stacks the act
 represent, such as a saved item this game build doesn't have: they are never destroyed or replaced, but go back
 into the world where the fake stood, as item entities with the default pickup delay, and appear in neither
 `held` nor `other`. Such an item entity joins the level as any drop does: an `entity_join_level` listener that
-keeps it out discards it, and it is then not counted. The fake's persistent body, inventory, game mode, look, secondary-use state
-and action timers are restored even on refusal; world changes and the usual interaction/Parts hooks remain.
+keeps it out discards it, and it is then not counted. The fake's persistent state, including its body, inventory,
+menus and action timers, is restored even on refusal. If a panic escapes the action, the engine restores that
+state before resuming the unwind. No temporary remainder stacks are returned or spawned on that path, and
+committed world effects stand. The usual interaction and Parts hooks are unchanged. A typed hook listener
+panic contained by the dispatcher does not unwind the action.
+
 The ordinary fake safety rules apply: no screens, sleep, rides, dimension travel, online participation,
 statistics, advancement credit or network connection. Neither action method can run inside another player turn
 or an open transaction; the action's own ordinary write paths run transactionally.

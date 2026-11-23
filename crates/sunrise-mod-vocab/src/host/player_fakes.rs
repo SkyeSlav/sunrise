@@ -31,8 +31,12 @@ pub trait PlayerFakesBackendMut {
         action: PlayerAction,
     ) -> Result<ActionOutcome, ActionRefused>;
     /// Side: server.
-    /// A machine's one use on the persistent actor, with its private state put back even
-    /// when the action refuses. Only the existing guest turn runs gameplay and its hooks.
+    /// Run one action with temporary state on the persistent fake player. Only the existing
+    /// guest turn runs gameplay and its hooks. The fake's private state is restored even on
+    /// refusal. If a panic escapes the action, the engine restores that state before resuming
+    /// the unwind. No temporary remainder stacks are returned or spawned on that path, and
+    /// committed world effects stand. Typed listener panics contained by the dispatcher do
+    /// not unwind the action.
     /// For placement, choose an eye position that keeps the temporary standing body
     /// clear of the block's collision shape.
     fn player_perform_action_scoped(
