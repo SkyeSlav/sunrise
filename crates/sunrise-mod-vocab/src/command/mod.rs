@@ -166,8 +166,9 @@ pub struct CommandInvocation {
     pub entity: Option<EntityRef>,
     /// The execution rotation in degrees, **[yaw, pitch]** as entity rotations and
     /// [`CommandArgumentValue::Rotation`] are (`CommandSourceStack.getRotation`, whose `Vec2`
-    /// holds pitch first), after `execute rotated` or `facing`. The console and command blocks
-    /// start at zero.
+    /// holds pitch first), after `execute rotated` or `facing`. The console starts at zero, a
+    /// command block at the yaw it faces with pitch zero (`CommandBlockEntity`'s source stack,
+    /// `facing.toYRot()`), and an entity at its own rotation.
     pub rotation: [f32; 2],
     player: Option<PlayerRef>,
 }

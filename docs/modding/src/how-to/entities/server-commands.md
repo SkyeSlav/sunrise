@@ -112,7 +112,8 @@ function permission; blocks and carts use game-master permission. `execute as`,
 function's caller, or the one `execute as` or `on` selected, and `None` for the console, a
 command block or an entity that no longer resolves. `command.player()` is that entity when it
 is a player; a command that needs one refuses `None` itself. `command.rotation` is the
-execution rotation, `[yaw, pitch]` in degrees, after `execute rotated` or `facing`.
+execution rotation, `[yaw, pitch]` in degrees, after `execute rotated` or `facing`: zero for
+the console, and the yaw it faces for a command block.
 
 Two reads work in a command and elsewhere on the server. `player.profile(host)` returns
 the player's `GameProfile<'_>`: UUID, borrowed name and login properties such as the signed

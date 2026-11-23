@@ -4445,8 +4445,9 @@ mod tests {
     }
 
     /// `CommandSourceStack.getEntity` and `getRotation`: `execute as` changes only the
-    /// executing entity and `rotated` only the rotation, never the origin; the console and a
-    /// command block run as no entity at zero rotation, and a command block minecart as itself.
+    /// executing entity and `rotated` only the rotation, never the origin; the console runs as
+    /// no entity at zero rotation, a command block as no entity at the yaw it faces, and a
+    /// command block minecart as itself.
     #[test]
     #[ignore = "daily"]
     fn native_commands_see_the_executing_entity_and_rotation() {
@@ -4540,7 +4541,9 @@ mod tests {
                             ));
                             let (source, block) = last();
                             assert!(matches!(source, CommandSource::CommandBlock { .. }));
-                            assert_eq!((block.entity, block.rotation), (None, [0.0, 0.0]));
+                            // `CommandBlockEntity`'s source stack: `Vec2(0, facing.toYRot())`, and
+                            // the fixture's block faces north (yaw 180).
+                            assert_eq!((block.entity, block.rotation), (None, [180.0, 0.0]));
                             assert!(game.perform_cart_command(99));
                             let (_, cart) = last();
                             assert_eq!(cart.entity.map(|entity| entity.id()), Some(99));
