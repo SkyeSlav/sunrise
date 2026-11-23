@@ -33,10 +33,8 @@ impl Game<'_> {
     /// The actual direct projectile's family and saved weapon, also for explicit damage sources.
     pub(in crate::game) fn set_projectile_attack(attack: &mut Attack, shot: &Projectile) {
         attack.projectile = Some(shot.id as i32);
-        attack.projectile_is_arrow = matches!(
-            shot.kind,
-            ProjectileKind::Arrow { .. } | ProjectileKind::Trident
-        );
+        attack.projectile_kind = Self::projectile_direct_entity(&shot.kind);
+        attack.projectile_type = Some(shot.entity_type());
         let weapon = shot.arrow.as_ref().and_then(|arrow| {
             if matches!(shot.kind, ProjectileKind::Trident) {
                 Some(&arrow.pickup_item)
@@ -45,6 +43,20 @@ impl Game<'_> {
             }
         });
         Self::set_projectile_weapon(attack, weapon);
+    }
+    /// Classify a projectile's vanilla `DamageSource.getDirectEntity()` family.
+    pub(in crate::game) fn projectile_direct_entity(
+        kind: &ProjectileKind,
+    ) -> sunrise_client::health::DirectEntity {
+        match kind {
+            ProjectileKind::Arrow { .. } | ProjectileKind::Trident => {
+                sunrise_client::health::DirectEntity::Arrow
+            }
+            ProjectileKind::LargeFireball { .. } => {
+                sunrise_client::health::DirectEntity::LargeFireball
+            }
+            _ => sunrise_client::health::DirectEntity::Projectile,
+        }
     }
     /// Only listeners need a saved weapon copy; physical family classification never does.
     pub(in crate::game) fn set_projectile_weapon(attack: &mut Attack, weapon: Option<&ItemStack>) {
@@ -55,7 +67,8 @@ impl Game<'_> {
             attack.projectile_weapon = weapon.cloned();
         }
     }
-    /// Commit the weapon only after hurtServer committed this projectile's source.
+    /// Hurt and settle a living target before the projectile resumes its on-hit work.
+    /// The weapon is committed only when hurtServer accepts this projectile's source.
     pub(in crate::game) fn damage_projectile_with_weapon(
         &mut self,
         projectile: &Projectile,
@@ -70,39 +83,39 @@ impl Game<'_> {
                 game.damage_projectile_with_weapon(projectile, id, amount, source, aim)
             });
         }
+        let Some(index) = self
+            .mob_index
+            .find(&self.mobs, id)
+            .filter(|&i| !self.mobs[i].removed)
+        else {
+            return false;
+        };
         let plan = self.prepare_knockback_credit(id as i32, source.attacker, self.combat.attack());
         let mut credit = plan.lend(&mut self.last_hurt_by_player);
-        self.mobs
-            .iter_mut()
-            .find(|mob| mob.id == id)
-            .is_some_and(|mob| {
-                mob.damage_projectile(
-                    crate::game::entity::damage_level_of!(
-                        self,
-                        self.combat.attack(),
-                        &mut credit,
-                        None
-                    ),
-                    amount,
-                    source,
-                    aim,
-                    [projectile.velocity.x, projectile.velocity.z],
-                )
-            })
+        let hurt = self.mobs[index].damage_projectile(
+            crate::game::entity::damage_level_of!(self, self.combat.attack(), &mut credit, None),
+            amount,
+            source,
+            aim,
+            [projectile.velocity.x, projectile.velocity.z],
+        );
+        let Some((index, hurt)) = self.complete_mob_hurt(index, hurt) else {
+            return false;
+        };
+        self.finish_mob_damage_at(index);
+        self.settle_creaking_hurt(id);
+        hurt
     }
-    /// What an arrow or a thrown trident hits an entity of type `victim`
-    /// for (`AbstractArrow.onHitEntity`, `ThrownTrident.onHitEntity`): a
-    /// trident's 8 through `EnchantmentHelper.modifyDamage` of the trident
-    /// (Impaling's `minecraft:damage` on `#sensitive_to_impaling`).
-    pub(in crate::game) fn shot_damage(
+    /// Evaluate weapon `minecraft:damage` modifier for `shot` without drawing crit RNG.
+    pub(in crate::game) fn shot_damage_base(
         &mut self,
-        shot: &mut Projectile,
+        shot: &Projectile,
         victim: Option<&str>,
         who: Who,
-    ) -> f32 {
+    ) -> f64 {
         let trident = matches!(shot.kind, ProjectileKind::Trident);
-        let base = match shot.kind {
-            ProjectileKind::Arrow { base_damage, .. } => base_damage as f32,
+        let base_f64 = match shot.kind {
+            ProjectileKind::Arrow { base_damage, .. } => base_damage,
             _ => 8.0,
         };
         let weapon = shot.arrow.as_ref().and_then(|a| {
@@ -113,11 +126,7 @@ impl Game<'_> {
             }
         });
         let Some(weapon) = weapon else {
-            return if trident {
-                base
-            } else {
-                shot.arrow_damage() + shot.bonus.damage
-            };
+            return base_f64;
         };
         let attacker_kind = match shot.owner {
             Some(Who::Player) => Some("minecraft:player".to_owned()),
@@ -158,22 +167,33 @@ impl Game<'_> {
             Who::Player => player,
             Who::Mob(id) => id,
         };
-        let victim =
-            if (crate::game::dragon::SPECIAL..crate::game::dragon::CRYSTAL_IDS).contains(&victim) {
-                self.dragon.as_ref().map_or(victim, |dragon| dragon.id)
-            } else if victim >= crate::game::dragon::CRYSTAL_IDS {
-                self.crystals
-                    .get((victim - crate::game::dragon::CRYSTAL_IDS) as usize)
-                    .map_or(victim, |crystal| crystal.id)
-            } else {
-                victim
-            };
-        let enchanted =
-            self.evaluate_weapon_damage(weapon, attacker.map(|id| (id, victim)), ctx, base);
-        if trident {
-            enchanted
+        let victim = if victim >= crate::game::dragon::SPECIAL {
+            self.dragon.as_ref().map_or(victim, |dragon| dragon.id)
         } else {
-            shot.arrow_damage_with_base(f64::from(enchanted)) + shot.bonus.damage
+            victim
+        };
+        f64::from(self.evaluate_weapon_damage(
+            weapon,
+            attacker.map(|id| (id, victim)),
+            ctx,
+            base_f64 as f32,
+        ))
+    }
+    /// What an arrow or a thrown trident hits an entity of type `victim`
+    /// for (`AbstractArrow.onHitEntity`, `ThrownTrident.onHitEntity`): a
+    /// trident's 8 through `EnchantmentHelper.modifyDamage` of the trident
+    /// (Impaling's `minecraft:damage` on `#sensitive_to_impaling`).
+    pub(in crate::game) fn shot_damage(
+        &mut self,
+        shot: &mut Projectile,
+        victim: Option<&str>,
+        who: Who,
+    ) -> f32 {
+        let base = self.shot_damage_base(shot, victim, who);
+        if matches!(shot.kind, ProjectileKind::Trident) {
+            base as f32
+        } else {
+            shot.arrow_damage_with_base(base) + shot.bonus.damage
         }
     }
     pub(super) fn drop_death_loot(
@@ -231,8 +251,8 @@ impl Game<'_> {
                 Some(Who::Mob(id)) => self
                     .mobs
                     .iter()
-                    .find(|o| o.id == id)
-                    .map(|o| drops::loot_entity(o, None))
+                    .any(|mob| mob.id == id)
+                    .then(|| self.target_loot_entity(crate::game::commands::Target::Mob(id)))
                     // A charged creeper's blast kills after the creeper left the list.
                     .or_else(|| {
                         self.combat
@@ -277,6 +297,12 @@ impl Game<'_> {
             .map(|o| LootEntity::new(&o.kind.id));
         let kind = crate::game::native_hooks::mob_kind(m);
         let death = drops::Death {
+            this_nbt: if loot.copies_entity_nbt() {
+                self.command_target_nbt(crate::game::commands::Target::Mob(m.id))
+                    .map(std::sync::Arc::new)
+            } else {
+                None
+            },
             loot: &loot,
             damage,
             player: player_uuid.is_some().then(player),

@@ -729,29 +729,63 @@ impl PacketNames<'_> {
     /// The stacks a slot display shows, in order (`SlotDisplay.resolveForStacks`):
     /// what a display builds from a component or a dye is not reproduced, it
     /// shows its source.
-    fn stacks(&self, display: &SlotDisplay, out: &mut Vec<ItemStack>) {
+    fn stacks(
+        &self,
+        display: &SlotDisplay,
+        out: &mut Vec<ItemStack>,
+        decode_stack: &impl Fn(&sunrise_protocol::item::Stack) -> Option<ItemStack>,
+    ) {
         match display {
             SlotDisplay::Empty | SlotDisplay::AnyFuel => {}
             SlotDisplay::Item(id) => out.extend((self.item)(*id).map(|n| ItemStack::new(&n, 1))),
-            SlotDisplay::ItemStack(stack) => out.extend(
-                (self.item)(stack.item).map(|n| ItemStack::new(&n, stack.count.max(1) as u32)),
-            ),
+            SlotDisplay::ItemStack(stack) => out.extend(decode_stack(stack)),
             SlotDisplay::Tag(set) => {
                 out.extend(self.holder_set(set).iter().map(|n| ItemStack::new(n, 1)))
             }
             SlotDisplay::WithAnyPotion(source) | SlotDisplay::OnlyWithComponent(source, _) => {
-                self.stacks(source, out)
+                self.stacks(source, out, decode_stack)
             }
-            SlotDisplay::Dyed { target, .. } => self.stacks(target, out),
-            SlotDisplay::SmithingTrim { base, .. } => self.stacks(base, out),
-            SlotDisplay::WithRemainder { input, .. } => self.stacks(input, out),
-            SlotDisplay::Composite(list) => list.iter().for_each(|d| self.stacks(d, out)),
+            SlotDisplay::Dyed { target, .. } => self.stacks(target, out, decode_stack),
+            SlotDisplay::SmithingTrim { base, .. } => self.stacks(base, out, decode_stack),
+            SlotDisplay::WithRemainder { input, .. } => self.stacks(input, out, decode_stack),
+            SlotDisplay::Composite(list) => {
+                list.iter().for_each(|d| self.stacks(d, out, decode_stack))
+            }
         }
     }
+    /// The stonecutter list a server sent (`SelectableRecipe.SingleInputSet`s), as recipes in its
+    /// order: the menu lists and numbers its buttons by it. An item this client's registry
+    /// lacks keeps its entry's place, so the numbers stay the server's.
+    pub fn stonecutting(
+        &self,
+        sent: &[(HolderSet, SlotDisplay)],
+        decode_stack: impl Fn(&sunrise_protocol::item::Stack) -> Option<ItemStack>,
+    ) -> Vec<crate::stations::Stonecutting> {
+        sent.iter()
+            .enumerate()
+            .map(|(index, (input, result))| {
+                let mut shown = Vec::new();
+                self.stacks(result, &mut shown, &decode_stack);
+                crate::stations::Stonecutting {
+                    id: format!("server:{index}"),
+                    input: Ingredient::of(self.holder_set(input)),
+                    result: shown
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(|| ItemStack::new("minecraft:air", 1)),
+                }
+            })
+            .collect()
+    }
+    /// A recipe-book preview without item contents (the book filters by item ID).
+    fn bare_stack(&self, stack: &sunrise_protocol::item::Stack) -> Option<ItemStack> {
+        (self.item)(stack.item).map(|name| ItemStack::new(&name, stack.count.max(1) as u32))
+    }
+
     /// A slot display as an ingredient: the items it shows, without repeats.
     fn ingredient(&self, display: &SlotDisplay) -> Ingredient {
         let mut stacks = Vec::new();
-        self.stacks(display, &mut stacks);
+        self.stacks(display, &mut stacks, &|stack| self.bare_stack(stack));
         let mut items: Vec<String> = Vec::new();
         for stack in stacks {
             if !items.iter().any(|i| **i == *stack.item) {
@@ -816,7 +850,7 @@ fn shown(e: &RecipeBookEntry, names: &PacketNames, category_name: &str) -> Optio
         RecipeDisplay::Stonecutter { .. } | RecipeDisplay::Smithing { .. } => return None,
     };
     let mut results = Vec::new();
-    names.stacks(result, &mut results);
+    names.stacks(result, &mut results, &|stack| names.bare_stack(stack));
     let first = results.first()?.clone();
     let variants = if results.len() > 1 {
         results
@@ -1013,6 +1047,17 @@ pub struct RecipeIndex {
     recipes: std::collections::BTreeMap<String, Known>,
 }
 #[derive(Clone, Debug)]
+pub(crate) struct KnownEntry {
+    pub(crate) special: bool,
+    pub(crate) displays: usize,
+    /// `RecipeDisplay.craftingStation`: the workstation item of its displays.
+    pub(crate) station: &'static str,
+    /// `Recipe.showNotification`: unlocking it shows the `RecipeToast`.
+    pub(crate) notify: bool,
+    /// `result.id`, for the recipes the book doesn't list.
+    pub(crate) result: Option<String>,
+}
+#[derive(Clone, Debug)]
 struct Known {
     special: bool,
     displays: usize,
@@ -1059,66 +1104,46 @@ impl RecipeIndex {
         )
     }
 
-    /// Build book displays only from retained recipes with placement candidates.
+    /// Build book displays only from retained recipes with placement candidates,
+    /// using the metadata derived once during source decoding.
     pub(crate) fn from_recipes(recipes: &Recipes) -> Self {
-        Self::from_source_refs(recipes.by_type.values().flat_map(|entries| {
+        Self::from_known_entries(recipes.by_type.values().flat_map(|entries| {
             entries
                 .iter()
-                .filter(|entry| entry.has_placement_candidates())
-                .map(|entry| (entry.id.clone(), &*entry.json))
+                .filter_map(|entry| Some((entry.id.clone(), entry.book.clone()?)))
         }))
     }
 
-    pub(crate) fn from_serialized(recipes: &std::collections::BTreeMap<String, Box<str>>) -> Self {
-        let values: Vec<_> = recipes
-            .iter()
-            .filter_map(|(id, text)| serde_json::from_str(text).ok().map(|value| (id, value)))
-            .collect();
-        Self::from_source_refs(values.iter().map(|(id, value)| ((*id).clone(), value)))
+    /// Build book displays directly from the already-decoded resolved cohort,
+    /// sharing the exact same placement decision and display counts as `from_recipes`.
+    pub(crate) fn from_resolved(sources: &crate::crafting::ResolvedSources) -> Self {
+        Self::from_known_entries(sources.recipes.iter().filter_map(|recipe| {
+            Some((
+                crate::crafting::qualified(&recipe.name),
+                recipe.book_known()?,
+            ))
+        }))
     }
 
-    fn from_source_refs<'a>(
-        sources: impl IntoIterator<Item = (String, &'a serde_json::Value)>,
+    pub(crate) fn from_known_entries(
+        entries: impl IntoIterator<Item = (String, KnownEntry)>,
     ) -> Self {
-        let mut recipes = std::collections::BTreeMap::new();
-        let mut insert = |id: String, v: &serde_json::Value| {
-            let kind = v["type"].as_str().unwrap_or_default();
-            let special = mod_api::__private::parts_installation::crafting_recipe(kind).is_some()
-                || kind.starts_with("minecraft:crafting_special_")
-                || kind == "minecraft:crafting_decorated_pot"
-                // A brewing recipe has no recipe book display of its own
-                // (`BrewingRecipe`), so it never takes display numbers.
-                || kind == "minecraft:brewing";
-            let displays = if special {
-                0
-            } else if kind == "minecraft:crafting_transmute" {
-                // TransmuteRecipe.display: one per material count.
-                match &v["material_count"] {
-                    serde_json::Value::Object(o) => {
-                        let min = o.get("min").and_then(|m| m.as_u64()).unwrap_or(1);
-                        let max = o.get("max").and_then(|m| m.as_u64()).unwrap_or(8);
-                        (max.saturating_sub(min) + 1) as usize
-                    }
-                    _ => 1,
-                }
-            } else {
-                1
-            };
-            recipes.insert(
-                id,
-                Known {
-                    special,
-                    displays,
-                    first_display: 0,
-                    station: crafting_station(kind),
-                    notify: v["show_notification"].as_bool().unwrap_or(true),
-                    result: sunrise_world::loot::recipe_result_id(&v["result"]).map(str::to_owned),
-                },
-            );
-        };
-        for (id, value) in sources {
-            insert(id, value);
-        }
+        let mut recipes: std::collections::BTreeMap<String, Known> = entries
+            .into_iter()
+            .map(|(id, entry)| {
+                (
+                    id,
+                    Known {
+                        special: entry.special,
+                        displays: entry.displays,
+                        first_display: 0,
+                        station: entry.station,
+                        notify: entry.notify,
+                        result: entry.result,
+                    },
+                )
+            })
+            .collect();
         // RecipeManager.unpackRecipeInfo numbers the displays in registration
         // order (path, then namespace), not in the order of the ids' text.
         let mut order: Vec<_> = recipes
@@ -1132,6 +1157,44 @@ impl RecipeIndex {
             next += r.displays as i32;
         }
         Self { recipes }
+    }
+
+    fn from_source_refs<'a>(
+        sources: impl IntoIterator<Item = (String, &'a serde_json::Value)>,
+    ) -> Self {
+        Self::from_known_entries(sources.into_iter().filter_map(|(id, v)| {
+            if !Ingredient::validate_persistence(v, &id) {
+                return None;
+            }
+            let kind = v["type"].as_str().unwrap_or_default();
+            let special = mod_api::__private::parts_installation::recipe_serializer(kind)
+                .is_some_and(|(recipe_type, _)| recipe_type == "minecraft:crafting")
+                || kind.starts_with("minecraft:crafting_special_")
+                || kind == "minecraft:crafting_decorated_pot"
+                // A brewing recipe has no recipe book display of its own
+                // (`BrewingRecipe`), so it never takes display numbers.
+                || kind == "minecraft:brewing";
+            let displays = if special {
+                0
+            } else if kind == "minecraft:crafting_transmute" {
+                // TransmuteRecipe.display: one per material count.
+                let (min, max) =
+                    crate::crafting::transmute_material_bounds(v.get("material_count"));
+                (max + 1).saturating_sub(min)
+            } else {
+                1
+            };
+            Some((
+                id,
+                KnownEntry {
+                    special,
+                    displays,
+                    station: crafting_station(kind),
+                    notify: v["show_notification"].as_bool().unwrap_or(true),
+                    result: sunrise_world::loot::recipe_result_id(&v["result"]).map(str::to_owned),
+                },
+            ))
+        }))
     }
     pub fn contains(&self, id: &str) -> bool {
         self.recipes.contains_key(id)
@@ -1471,7 +1534,7 @@ mod tests {
 
     #[test]
     fn content_recipe_condition_gates_crafting_and_index() {
-        let recipe = r#"{"type":"minecraft:crafting_shapeless","ingredients":["minecraft:flint"],"result":{"id":"minecraft:stick"},"neoforge:conditions":[{"type":"neoforge:not","value":{"type":"neoforge:true"}}]}"#;
+        let recipe = r#"{"type":"minecraft:crafting_shapeless","ingredients":["minecraft:flint"],"result":{"id":"minecraft:stick"},"neoforge:conditions":[{"type":"neoforge:not","value":{"type":"neoforge:always"}}]}"#;
         let root = content_recipe_root("condition", recipe);
         let items = crate::items::Items::for_tests(HashMap::new());
         let recipes = Recipes::load(
@@ -2457,5 +2520,39 @@ mod tests {
         assert!(!book.collection_matches(&[custom_index], "rod", &lines));
         assert!(book.collection_matches(&[custom_index], "minecraft:blaze", &lines));
         assert!(!book.collection_matches(&[custom_index], "iron", &lines));
+    }
+
+    /// A transmute recipe's displays are counted over crafting's bounded
+    /// material range, so an out-of-range `material_count` (a pack's or a
+    /// server's) neither overflows nor misnumbers the recipes after it.
+    #[test]
+    fn transmute_displays_follow_the_bounded_material_range() {
+        let transmute = |count: serde_json::Value| serde_json::json!({"type": "minecraft:crafting_transmute", "material_count": count});
+        let source = |id: &str, v| (id.to_owned(), v);
+        let index = RecipeIndex::load_from_sources(&[
+            source(
+                "minecraft:a_in_range",
+                transmute(serde_json::json!({"min": 2, "max": 4})),
+            ),
+            source(
+                "minecraft:b_huge",
+                transmute(serde_json::json!({"min": 0, "max": 18446744073709551615u64})),
+            ),
+            source(
+                "minecraft:c_reversed",
+                transmute(serde_json::json!({"min": 5, "max": 2})),
+            ),
+            source("minecraft:d_exact", transmute(serde_json::json!(3))),
+            source(
+                "minecraft:e_shaped",
+                serde_json::json!({"type": "minecraft:crafting_shaped"}),
+            ),
+        ]);
+        let first = |id| index.first_display(id);
+        // 3 displays, then 8 (1..=8), then none, then 1.
+        assert_eq!(first("minecraft:a_in_range"), Some(0));
+        assert_eq!(first("minecraft:b_huge"), Some(3));
+        assert_eq!(first("minecraft:d_exact"), Some(11));
+        assert_eq!(first("minecraft:e_shaped"), Some(12));
     }
 }

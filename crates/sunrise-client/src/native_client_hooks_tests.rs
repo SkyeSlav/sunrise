@@ -9,16 +9,57 @@ use sunrise_world::native_load_context::{
     DataLoadOrigin, LoadContext, LoadInputs, LoopContext, LoopSide,
 };
 
-/// The server-side jumps the installed `living_jump` heard.
-pub(crate) static JUMPS: AtomicUsize = AtomicUsize::new(0);
-/// The asks the installed `menu_still_valid` heard.
-pub(crate) static STILL_VALID_ASKED: AtomicUsize = AtomicUsize::new(0);
+/// What the installed `collision_shape` answers a query on this thread.
+pub(crate) type CollisionAnswer = Box<dyn Fn(&mod_api::CollisionQuery) -> Option<Vec<[f64; 6]>>>;
 
 thread_local! {
+    /// The server-side jumps the installed `living_jump` heard on this thread. Per thread,
+    /// because every test whose mob or player jumps on a server loop context reaches it once
+    /// the callbacks are installed; a test that counts sets it to zero first.
+    pub(crate) static JUMPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The asks the installed `menu_still_valid` heard on this thread, per thread for the same
+    /// reason.
+    pub(crate) static STILL_VALID_ASKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The position the installed `menu_still_valid` last heard on this thread.
+    pub(crate) static STILL_VALID_POS: std::cell::Cell<Option<[i32; 3]>> =
+        const { std::cell::Cell::new(None) };
+    /// How many times this thread asked the installed `collision_shape`.
+    pub(crate) static COLLISION_ASKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The states whose answers the installed `collision_shape_refused` heard on this thread, in
+    /// order. A state in it is not asked again, as the game's adapter switches its block off.
+    pub(crate) static COLLISION_REFUSED: std::cell::RefCell<Vec<u32>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// The answer the installed `collision_shape` gives this thread; none leaves the shape be.
+    pub(crate) static COLLISION_ANSWER: std::cell::RefCell<Option<CollisionAnswer>> =
+        const { std::cell::RefCell::new(None) };
     /// The item hooks this thread asked: the hook, the stack's item, and the answer it arrived
     /// with.
     static ITEM_ASKS: std::cell::RefCell<Vec<(&'static str, String, bool)>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// The jumps the installed `living_jump` heard on this thread while a [`record_jumps`]
+    /// guard lives: the entity and its velocity. `None` when no test records.
+    static JUMPED: std::cell::RefCell<Option<Vec<(u32, [f64; 3])>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Records this thread's jumps until it is dropped; recorded jumps leave [`JUMPS`] alone.
+pub(crate) struct JumpRecording;
+
+impl Drop for JumpRecording {
+    fn drop(&mut self) {
+        JUMPED.set(None);
+    }
+}
+
+/// Starts recording the jumps the installed `living_jump` hears on this thread.
+pub(crate) fn record_jumps() -> JumpRecording {
+    JUMPED.set(Some(Vec::new()));
+    JumpRecording
+}
+
+/// The jumps recorded on this thread since the last call, oldest first.
+pub(crate) fn jumps() -> Vec<(u32, [f64; 3])> {
+    JUMPED.with_borrow_mut(|jumps| jumps.as_mut().map(std::mem::take).unwrap_or_default())
 }
 
 /// The item hooks this thread asked since the last call, oldest first: the hook, the stack's
@@ -60,13 +101,21 @@ fn item_part(context: &LoopContext, hook: &'static str, stack: &ItemStack, answe
     }
 }
 
+/// A server loop context with no settings.
+pub(crate) fn loop_context() -> LoopContext {
+    let inputs = std::sync::Arc::new(LoadInputs::new(Default::default(), std::env::temp_dir()));
+    LoadContext::new(DataLoadOrigin::ServerDataLoad, inputs, [])
+        .loop_context(LoopSide::Server, [] as [&str; 0])
+}
+
 /// Install the test callbacks, once for the process.
 pub(crate) fn install() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         let installed = super::install(NativeClientHooks {
-            menu_still_valid: |context, player, menu, _, eye, valid| {
-                STILL_VALID_ASKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            menu_still_valid: |context, player, menu, pos, eye, _, valid| {
+                STILL_VALID_ASKED.set(STILL_VALID_ASKED.get() + 1);
+                STILL_VALID_POS.set(pos);
                 if menu == "test:rules" && player == 2 && eye[2] == 0.0 {
                     *valid = context.setting("rules_mod", "stack").is_some();
                 }
@@ -80,29 +129,17 @@ pub(crate) fn install() {
                     *amount += 1.0;
                 }
             },
-            living_breathe: |context, _, kind, can_breathe, consume, _| {
-                if context.setting("rules_mod", "stack").is_some() {
-                    // A cod breathes on land; a salmon loses all its air at once.
-                    *can_breathe = kind == "minecraft:cod";
-                    *consume = match kind {
-                        "minecraft:salmon" => i32::MAX,
-                        _ => *consume + 4,
-                    };
-                }
-            },
-            farmland_trample: |context, _, _, _, _, cancel| {
-                *cancel = context.setting("rules_mod", "stack").is_some();
-            },
+            living_breathe_heard: || false,
             has_mods: || false,
             player_name_format: |context, _, displayname| {
                 if let Some(value) = context.setting("rules_mod", "stack") {
-                    *displayname = crate::text::Text::literal(&value);
+                    *displayname = crate::text::Text::literal(value);
                 }
             },
             player_tab_list_name_format: |context, _, _, display_name| {
                 *display_name = context
                     .setting("rules_mod", "stack")
-                    .map(|value| crate::text::Text::literal(&value));
+                    .map(crate::text::Text::literal);
             },
             living_drown: |context, _, _, drowning, damage, bubbles, _| {
                 if context.setting("rules_mod", "stack").is_some() {
@@ -117,11 +154,16 @@ pub(crate) fn install() {
                     *multiplier *= 2.0;
                 }
             },
-            living_jump: |context, _, _| {
-                JUMPS.fetch_add(
-                    usize::from(context.side() == LoopSide::Server),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
+            living_jump: |context, entity, _, velocity| {
+                let recorded = JUMPED.with_borrow_mut(|jumps| {
+                    jumps
+                        .as_mut()
+                        .map(|jumps| jumps.push((entity, velocity)))
+                        .is_some()
+                });
+                if !recorded && context.side() == LoopSide::Server {
+                    JUMPS.set(JUMPS.get() + 1);
+                }
             },
             living_jump_power: |context, _, _, power| {
                 *power += context.setting("rules_mod", "stack").map_or(0.0, |_| 1.0);
@@ -144,14 +186,29 @@ pub(crate) fn install() {
             makes_open_trapdoor_above_climbable: |context, _, _, _, climbable| {
                 *climbable |= context.setting("rules_mod", "stack").is_some();
             },
-            friction: |context, _, kind, _, _, friction| {
-                if context.setting("rules_mod", "stack").is_some() {
-                    *friction = match kind {
-                        "minecraft:player" => 0.98,
-                        "minecraft:cow" => f32::NAN,
+            friction: |level, entity, _, _, friction| {
+                if level.context.setting("rules_mod", "stack").is_some() {
+                    *friction = match entity.map(|(_, kind)| kind) {
+                        Some("minecraft:player") => 0.98,
+                        Some("minecraft:cow") => f32::NAN,
                         _ => 3.0,
                     };
                 }
+                true
+            },
+            collision_shape: |_, _, state, query, shape| {
+                if COLLISION_REFUSED.with_borrow(|refused| refused.contains(&state.0)) {
+                    return;
+                }
+                COLLISION_ASKS.with(|asks| asks.set(asks.get() + 1));
+                COLLISION_ANSWER.with_borrow(|answer| {
+                    if let Some(answer) = answer {
+                        *shape = answer(query);
+                    }
+                });
+            },
+            collision_shape_refused: |state, _| {
+                COLLISION_REFUSED.with_borrow_mut(|refused| refused.push(state.0));
             },
             player_stays_on_ground_surface: |context, _, staying| {
                 *staying |= context.setting("rules_mod", "stack").is_some();
@@ -183,6 +240,7 @@ pub(crate) fn install() {
             can_fit_inside_container_items: |context, stack, fits| {
                 item_part(context, "can_fit_inside_container_items", stack, fits);
             },
+            item_name: |_, _, _| {},
         });
         assert!(
             installed,

@@ -573,9 +573,9 @@ impl Dim {
 impl Game<'_> {
     /// The cap on open runtime levels `server.properties` sets (`sunrise-max-runtime-levels`,
     /// docs/hosting.md): the default, 64, for a missing or unreadable value.
-    pub(in crate::game) fn read_runtime_level_cap<'a>(
+    pub(in crate::game) fn read_runtime_level_cap(
         &mut self,
-        property: impl Fn(&str) -> Option<&'a str>,
+        property: impl Fn(&str) -> Option<String>,
     ) {
         if let Some(cap) = property("sunrise-max-runtime-levels")
             .and_then(|value| value.trim().parse::<usize>().ok())
@@ -827,11 +827,12 @@ impl Game<'_> {
         if self.levels.runtime.fail_open_after_publication {
             return Err("injected level construction failure".into());
         }
-        let mut parked = self.open_level(dim)?;
+        let mut parked = self.open_runtime_level(dim)?;
         parked.world.game_time = self.world.game_time;
         self.levels.parked.insert(dim, parked);
         self.levels.runtime.mark_open(id);
         self.native_level_opened(dim);
+        self.validate_mod_chunk_tickets(dim);
         Ok(())
     }
 

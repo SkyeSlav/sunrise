@@ -1,6 +1,5 @@
 use super::*;
 use crate::game::native_entity_refs::tests::with_game;
-use mod_api::HostTransaction;
 use sunrise_client::{chunk::Chunk, containers::BlockEntity};
 use sunrise_core::nbt::Tag;
 use sunrise_mod_runtime::attachments::{
@@ -75,7 +74,7 @@ fn block_entity_rows_follow_load_restore_replacement_and_chunk_unload_in_their_d
                 .unwrap()
         ));
         let keep = game.world.block_entities.chunk_attachments(0, 0);
-        let aborted: Result<(), AttachmentError> = game.transaction(|host, _| {
+        let aborted: Result<(), AttachmentError> = game.storage_transaction(|host, _| {
             VALUE.set(host, Holder::BlockEntity([1, 64, 1]), 9)?;
             let tentative = index.lock().unwrap().snapshot(&key);
             assert_eq!(tentative[0].entry.read(&VALUE), Ok(&9));

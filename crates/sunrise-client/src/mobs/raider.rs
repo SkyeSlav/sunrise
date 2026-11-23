@@ -114,10 +114,6 @@ pub fn state(m: &Mob) -> Option<&State> {
 pub fn state_mut(m: &mut Mob) -> &mut State {
     m.extra.raider.get_or_insert_with(Box::default)
 }
-/// `Raider.getCurrentRaid() != null`.
-pub fn in_raid(m: &Mob) -> bool {
-    state(m).is_some_and(|s| s.raid_id.is_some())
-}
 pub fn has_active_raid(m: &Mob) -> bool {
     state(m).is_some_and(|s| s.active_raid)
 }
@@ -707,7 +703,7 @@ impl Goal for HoldGroundAttack {
 }
 
 /// The saved fields (`PatrollingMonster` and `Raider.addAdditionalSaveData`).
-pub fn write_nbt(m: &Mob, map: &mut sunrise_core::nbt::Compound) {
+pub fn write_nbt(m: &Mob, map: &mut crate::entity_nbt::EntityTagWriter) {
     let Some(s) = state(m) else { return };
     match s.patrol_target {
         Some(p) => {
@@ -792,6 +788,7 @@ mod tests {
         assert!(
             with_test_world(&seen, |w, _| {
                 let indexed = MobWorld {
+                    side: sunrise_client::motion::dry_side(),
                     others_grid: Some(&grid),
                     ..w.clone()
                 };
@@ -946,7 +943,7 @@ mod tests {
                     Vec3::new(0.5, 1.0, 0.5),
                     0.0,
                 );
-                m.on_ground = true;
+                m.ground.on_ground = true;
                 m.extra.raider = Some(Box::default());
                 let s = state_mut(&mut m);
                 s.active_raid = true;

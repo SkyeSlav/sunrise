@@ -128,9 +128,6 @@ impl Game<'_> {
             .plan
             .in_grid(width, height, grid, clear, session.before.size)?;
         for &slot in plan.cleared_slots() {
-            if session.before.hidden.contains(&slot) {
-                return Err(format!("slot {slot} is hidden"));
-            }
             if !session.graph.stores(slot) {
                 return Err(format!("slot {slot} has no storage"));
             }

@@ -20,10 +20,6 @@ impl Game<'_> {
             return None;
         }
         let read = self.player_handle_read(player)?;
-        // 1.8.9 had no attack cooldown.
-        if self.legacy_rules() {
-            return Some(1.0);
-        }
         Some(match read {
             PlayerRead::Acting { .. } => return self.attack_strength_scale_at(partial),
             PlayerRead::Guest(guest) => {

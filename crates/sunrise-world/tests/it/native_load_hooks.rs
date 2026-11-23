@@ -4,12 +4,6 @@ use sunrise_world::{
     native_load_context::{DataLoadOrigin, LoadContext, LoadInputs},
     native_load_hooks::{self, NativeLoadHooks},
 };
-struct EmptyTags;
-impl loot::LootTags for EmptyTags {
-    fn members(&self, _: &str, _: &str) -> Vec<String> {
-        Vec::new()
-    }
-}
 
 #[test]
 fn load_hooks_are_noops_before_install_and_use_first_callbacks_after() {
@@ -20,11 +14,11 @@ fn load_hooks_are_noops_before_install_and_use_first_callbacks_after() {
         [],
     );
     let server_context = context.for_load(DataLoadOrigin::ServerDataLoad, []);
-    let mut table = json!([]);
+    let mut table = json!({"markers":[]});
     let mut components = Map::new();
     loot::native_loot_table_load(&server_context, "table", &mut table);
     item_defaults::native_modify_default_components(&context, "item", &mut components);
-    assert_eq!(table, json!([]));
+    assert_eq!(table, json!({"markers":[]}));
     assert!(components.is_empty());
 
     let hooks = || NativeLoadHooks {
@@ -37,16 +31,16 @@ fn load_hooks_are_noops_before_install_and_use_first_callbacks_after() {
                     "type": "minecraft:tag",
                     "items": {"type": "neoforge:or", "values": 42}
                 }]}]});
+            } else if id == "minecraft:bad_codec" {
+                table["modifier"] = json!({"type":"missing:codec"});
             } else {
-                table.as_array_mut().unwrap().push(id.into());
+                table["markers"].as_array_mut().unwrap().push(id.into());
             }
         },
         modify_default_components: |context, item, components| {
             assert_eq!(context.origin(), DataLoadOrigin::ClientPreload);
             components.insert("item".into(), Value::String(item.into()));
         },
-        loot_function: |_, _, _, stack, _| stack.count += 1,
-        loot_condition: |kind, _, _, holds, _| *holds = kind == "mymod:held",
     };
     assert!(native_load_hooks::install(hooks()).is_ok());
     assert!(
@@ -55,14 +49,12 @@ fn load_hooks_are_noops_before_install_and_use_first_callbacks_after() {
             loot_ability: |_, _, _| {},
             loot_table_load: |_, _, table| *table = json!("second"),
             modify_default_components: |_, _, components| components.clear(),
-            loot_function: |_, _, _, stack, _| stack.count = 0,
-            loot_condition: |_, _, _, holds, _| *holds = false,
         })
         .is_err()
     );
     loot::native_loot_table_load(&server_context, "table", &mut table);
     item_defaults::native_modify_default_components(&context, "item", &mut components);
-    assert_eq!(table, json!(["table"]));
+    assert_eq!(table, json!({"markers":["table"]}));
     assert_eq!(components["item"], json!("item"));
 
     // Client/shared loads keep raw tables; each server load gets exactly one
@@ -70,7 +62,7 @@ fn load_hooks_are_noops_before_install_and_use_first_callbacks_after() {
     let dir = root.join("data/minecraft/loot_table");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(root.join("items.json"), r#"{"probe:token":{}}"#).unwrap();
-    std::fs::write(dir.join("test.json"), "[]").unwrap();
+    std::fs::write(dir.join("test.json"), r#"{"markers":[]}"#).unwrap();
     let item_data = item_defaults::ItemData::load(&root, context).unwrap();
     // The server loot load owns its context even when the item data came from a client preload.
     assert_eq!(
@@ -78,17 +70,20 @@ fn load_hooks_are_noops_before_install_and_use_first_callbacks_after() {
         "probe:token"
     );
     let raw = loot::shared_tables(&root, &loot::PackOverlay::NONE).unwrap();
-    assert_eq!(raw["minecraft:test"], json!([]));
+    assert_eq!(raw["minecraft:test"], json!({"markers":[]}));
     for _ in 0..2 {
         let mut server =
             loot::LootData::load(&root, &loot::PackOverlay::NONE, item_data.defaults()).unwrap();
         server.apply_native_table_loads(&server_context).unwrap();
-        assert_eq!(server.tables()["minecraft:test"], json!(["minecraft:test"]));
-        assert_eq!(raw["minecraft:test"], json!([]));
+        assert_eq!(
+            server.tables()["minecraft:test"],
+            json!({"markers":["minecraft:test"]})
+        );
+        assert_eq!(raw["minecraft:test"], json!({"markers":[]}));
     }
     // A malformed native replacement refuses the whole candidate, not just
     // the bad field, and leaves the previously usable table snapshot intact.
-    std::fs::write(dir.join("malformed.json"), r#"["original"]"#).unwrap();
+    std::fs::write(dir.join("malformed.json"), r#"{"markers":["original"]}"#).unwrap();
     let mut server =
         loot::LootData::load(&root, &loot::PackOverlay::NONE, item_data.defaults()).unwrap();
     let previous = server.tables().clone();
@@ -103,27 +98,32 @@ fn load_hooks_are_noops_before_install_and_use_first_callbacks_after() {
         "{error}"
     );
     assert!(std::sync::Arc::ptr_eq(server.tables(), &previous));
-    assert_eq!(server.tables()["minecraft:malformed"], json!(["original"]));
-    assert_eq!(server.tables()["minecraft:test"], json!([]));
-    assert_eq!(raw["minecraft:test"], json!([]));
+    assert_eq!(
+        server.tables()["minecraft:malformed"],
+        json!({"markers":["original"]})
+    );
+    assert_eq!(server.tables()["minecraft:test"], json!({"markers":[]}));
+    assert_eq!(raw["minecraft:test"], json!({"markers":[]}));
+    std::fs::remove_file(dir.join("malformed.json")).unwrap();
+    std::fs::write(dir.join("bad_codec.json"), r#"{"markers":[]}"#).unwrap();
+    let mut server =
+        loot::LootData::load(&root, &loot::PackOverlay::NONE, item_data.defaults()).unwrap();
+    let previous = server.tables().clone();
+    let error = server
+        .apply_native_table_loads(&server_context)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("loot_table minecraft:bad_codec")
+            && error.contains("[data/minecraft/loot_table/bad_codec.json]")
+            && error.contains("$.modifier")
+            && error.contains("missing:codec"),
+        "{error}"
+    );
+    assert!(std::sync::Arc::ptr_eq(server.tables(), &previous));
+    assert_eq!(
+        server.tables()["minecraft:bad_codec"],
+        json!({"markers":[]})
+    );
     std::fs::remove_dir_all(&root).unwrap();
-
-    let ctx = loot::LootContext {
-        queried_table_id: None,
-        queried_stack: None,
-        entity: None,
-        damage: None,
-        player: None,
-        tool: None,
-        block: None,
-        luck: 0.0,
-        biome: None,
-        seed: 0,
-        place: None,
-    };
-    for (kind, expected) in [("mymod:held", true), ("mymod:other", false)] {
-        let mut holds = !expected;
-        loot::native_invoke_loot_condition(kind, &json!({}), &ctx, &mut holds, &EmptyTags);
-        assert_eq!(holds, expected, "{kind}");
-    }
 }

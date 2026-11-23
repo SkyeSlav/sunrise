@@ -63,11 +63,33 @@ The result goes through the `fluid_place_block` hook, which may veto or replace
 it, then level event 1501 plays the fizz, and the liquid stops spreading. A veto writes nothing
 and still fizzes and stops the spread.
 
+## Asking the table without changing anything
+
+`host.fluid_interaction_result(source, neighbour, below)` (server side) answers what a liquid
+cell of `source` (a `FluidState`) would become beside one neighbour, with `below` under it:
+`Some(block state)`, or `None` for no interaction. It reads the same table the liquid walks, with
+the same tag and fluid matching and the same source or flowing result, and changes no world, asks
+no `fluid_place_block` listener and plays no fizz. The neighbour is a block state; its fluid is
+read through it, so a waterlogged block holds water.
+
+A liquid checks its neighbours in vanilla's order: above, north, south, west, east, never below.
+The read takes one neighbour, so to ask the same question loop over the five yourself, in that
+order, and keep the first answer.
+
+This is the question a cobblestone-generator shortcut asks (what do this lava source and the
+fluid beside it make?) without running the interaction on a level that records its writes:
+
+```rust
+{{#include ../../../examples/src/world_helpers.rs:makes_stone}}
+```
+
 ## Diverges from NeoForge
 
 - NeoForge runs its registry only on `neighborChanged`; `onPlace`, which covers a fluid spreading
   into a cell, keeps vanilla's hard-coded lava check. So there a mod's interaction waits for a
   later neighbour update. Sunrise runs the table at both moments.
+- NeoForge has no pure read: a mod that wants to know the result has to run the interaction against
+  a level that records writes. `fluid_interaction_result` answers it from the table directly.
 - NeoForge's `FluidPlaceBlockEvent` ignores cancellation; Sunrise's `fluid_place_block` can
   veto, as it already does.
 

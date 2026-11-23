@@ -162,6 +162,7 @@ impl LevelAccess for Cells {
             Some(PreRemove::Beacon) => self.events.push(LevelEvent::Sound {
                 pos,
                 sound: "minecraft:block.beacon.deactivate".into(),
+                source: None,
                 volume: 1.0,
                 pitch: 1.0,
             }),

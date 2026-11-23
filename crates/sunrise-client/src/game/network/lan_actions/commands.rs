@@ -55,24 +55,6 @@ impl Game<'_> {
             );
             return;
         }
-        // The chat filter's mute commands (game/interface/chat_filter.rs), on servers that filter.
-        if crate::game::chat_filter::MUTE_COMMANDS.contains(&words[0]) && host.hub.chat_filter_on()
-        {
-            if let Some(mut host) = self.lan.take() {
-                self.guest_mute_command(&mut host, conn, &words);
-                self.lan = Some(host);
-            }
-            return;
-        }
-        // Sunrise's `/tempban` (game/administration/tempban.rs), on dedicated servers.
-        if crate::game::tempban::TEMPBAN_COMMANDS.contains(&words[0]) && self.server_lists.is_some()
-        {
-            if let Some(mut host) = self.lan.take() {
-                self.guest_tempban_command(&mut host, conn, &words);
-                self.lan = Some(host);
-            }
-            return;
-        }
         // A native mod's command, for every player its level allows,
         // whether the world allows commands or not (game/modding/native_server.rs).
         let allowed = self.options.dedicated.is_some() || self.allow_commands();
@@ -148,19 +130,17 @@ impl Game<'_> {
         &mut self,
         c: GuestCommand,
     ) -> Option<(bool, Vec<sunrise_client::text::Text>)> {
-        let swap = self.enter_guest(c.conn)?;
-        self.chat_capture = Some(Vec::new());
-        let level = std::mem::replace(&mut self.ui.registries.permission, c.permission);
-        let ok = if self.perform_native_command(c.conn, c.permission, &c.command) {
-            true
-        } else if c.quiet {
-            self.run_command_quietly(&c.command)
-        } else {
-            self.run_command(&c.command)
-        };
-        self.ui.registries.permission = level;
-        let mut lines = self.chat_capture.take().unwrap_or_default();
-        self.leave_guest(swap);
+        let (ok, mut lines) = self.with_guest_swap(c.conn, self.dim, |game| {
+            game.chat_capture = Some(Vec::new());
+            let level = std::mem::replace(&mut game.ui.registries.permission, c.permission);
+            let ok = match game.perform_native_command(c.conn, c.permission, &c.command, c.quiet) {
+                Some(ok) => ok,
+                None if c.quiet => game.run_command_quietly(&c.command),
+                None => game.run_command(&c.command),
+            };
+            game.ui.registries.permission = level;
+            (ok, game.chat_capture.take().unwrap_or_default())
+        })?;
         if std::mem::take(&mut self.save_after_guest_turn) {
             lines.push(self.save_all_reply());
         }
@@ -337,7 +317,7 @@ impl Game<'_> {
         // ServerCommandSuggestionsProvider.limitSuggestionCount.
         suggestions.truncate(1000);
         let utf16 = |byte: usize| command[..byte.min(command.len())].encode_utf16().count() as i32;
-        let mut w = sunrise_protocol::buf::Writer::new();
+        let mut w = ::sunrise_core::vanilla_bytes::Writer::new();
         w.varint(id);
         w.varint(utf16(start) + skip as i32);
         w.varint(utf16(end) - utf16(start));

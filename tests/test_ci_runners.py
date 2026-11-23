@@ -169,20 +169,21 @@ class OwnRunnerTests(unittest.TestCase):
                     with self.assertRaises(AssertionError):
                         self.test_no_deployment_environment_on_our_runners()
 
-    def test_checks_split_between_both_pools(self):
-        ci = dict(jobs((WORKFLOWS / "ci.yml").read_text()))
-        value = runs_on(ci["launcher"])
-        # A pull request by the last digit of its number unless SELF_HOSTED_CI=all; main's pushes keep GitHub's cache.
-        self.assertIn("github.event_name == 'pull_request' && ", value)
-        self.assertIn("vars.SELF_HOSTED_CI == 'all'", value)
-        self.assertIn("endsWith(format('{0}', github.event.pull_request.number), '0')", value)
-        self.assertIn(FORK_GUARD, value)
-        # verify's parts go where the launcher goes; verify itself only waits for them.
+    def test_checks_verify_runs_on_main_not_on_pull_requests(self):
+        text = (WORKFLOWS / "ci.yml").read_text()
+        # A push gets dyna-checks; a fork's push held GitHub's runners ahead of the release jobs (2026-11-18). A pull
+        # request runs verify only when a maintainer labels it, and never with a token that writes.
+        self.assertEqual(triggers(text), {"pull_request", "schedule", "workflow_dispatch"})
+        self.assertIn("  pull_request:\n    types: [labeled]\n", text)
+        self.assertNotRegex(text, r":\s*write")
+        ci = dict(jobs(text))
         for part in ("verify-tree", "verify-lint", "verify-test"):
             with self.subTest(part=part):
-                self.assertEqual(runs_on(ci[part]), value)
+                self.assertIn("needs: changes", ci[part])
+                self.assertIn("github.event_name == 'schedule' || inputs.verify ||", ci[part])
+                self.assertIn("github.event.label.name == 'ci:verify' &&", ci[part])
         self.assertIn("needs: [verify-tree, verify-lint, verify-test]", ci["verify"])
-        # Never skipped: GitHub counts a skipped required check as passed.
+        # Never skipped where its parts ran: GitHub counts a skipped required check as passed.
         self.assertIn("if: always()", ci["verify"])
 
     def test_the_light_runners_refuse_forks_themselves(self):

@@ -6,6 +6,9 @@ Match the hook's `HostSide` to distinguish the requests; the event's sound,
 source, volume and pitch describe that side's request, and original volume and
 pitch remain available after edits. Returning `Flow::Cancel` suppresses that
 request. A server cancellation sends no packet, so there is no client request.
+Sounds played from inside a `play_level_sound_at_position` or
+`play_level_sound_at_entity` listener are not re-dispatched to level-sound
+listeners; they are validated and delivered or journaled normally in call order.
 
 Incoming sound packets, including `/playsound`, ask the client level hooks.
 An entity-sound packet stays bound to its emitter. UI clicks, engine-local
@@ -29,12 +32,33 @@ plays at the requested position; only a genuinely entity-bound sound
 | Block-breaking/level-event effects, explosions, pickup packets | None | Client-level `playLocalSound` or direct sound manager playback |
 | Dragon/fang/sniffer local effects, ticking ambience, UI | None | Entity-local effects, sound instances or widgets, not `playSeededSound` |
 
+## Block hit sounds
+
+Use a block part's `play_hit_sound` for client mining sounds. The event supplies the
+block state, position and face. Play your sound through the supplied `ClientHost` and
+return `Flow::Cancel` to suppress the vanilla sound for that hit.
+
+The default plays the state's hit sound at volume `(volume + 1) / 8` and pitch
+`pitch * 0.5`. Sculk growth sounds do not use this hook.
+
 ## Playing a level sound from a server mod
 
 `LevelRef::play_sound(host, sound, at, source, volume, pitch, except)` is `ServerLevel.playSound(except, ...)`:
 every player in range hears it, except the player in `except`. Pass the player whose own client already played the
 sound for its action; pass `None` to play it to everyone. The game finds that player's connection itself. A fake
 player has no client, so it leaves no one out; a stale player handle queues nothing and the call returns `false`.
+
+Inside an open transaction, `LevelRef::play_sound`, `EntityRef::play_sound`, `EntityRef::play_bound_sound`,
+`PlayerRef::play_sound`, and `PlayerRef::stop_sound` validate arguments at the call and defer delivery according to
+[the owning level's transaction](../../concepts/transactions.md#deferred-level-entity-and-player-effects).
+For transactional server requests, `play_level_sound_at_position` and `play_level_sound_at_entity` run
+synchronously at the call; only the resolved sound is deferred. Commit replays no mod callbacks and delivers
+packets in journal order. For directed sounds, `true` means accepted, not that a client received or played it.
+A deferred directed request is discarded on abort or if the player no longer resolves at commit.
+
+Outside a transaction, a queued level sound draws its seed at the call even if a later hook cancels it. Inside
+one, it draws a seed only when the resolved sound is published. A directed play request draws from the request
+level's random when published. The `HitHost::play_sound_at` and `play_sound_from` calls below always queue at the call.
 
 ## Engine playback and live parameters
 

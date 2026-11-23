@@ -2,7 +2,8 @@
 //! world opened again shows them without generating them again. One append-only
 //! file per 32x32 chunk region; a file written by another build, block registry
 //! or format is cleared on first use.
-use super::{Column, Span, Surface};
+use super::{Column, Span};
+use crate::columns::Surface;
 use crate::fast_hash::FxHashMap;
 use std::{
     fs::{File, OpenOptions},

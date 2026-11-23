@@ -50,7 +50,7 @@ use std::fmt;
 /// the default.
 pub trait EntityPartState: EntityPart + Sized {
     /// The value each entity of the Part's type keeps.
-    type Data: Clone + Send + Sync + crate::wire::Wire + 'static;
+    type Data: Clone + Send + Sync + 'static;
     /// Its attachment key, default and codec. The owner declares the key at registration;
     /// without a codec the value is kept for the session only.
     const DATA: &'static AttachmentType<Self::Data>;
@@ -70,6 +70,8 @@ pub trait EntityPartState: EntityPart + Sized {
 
     /// Changes the entity's value with `edit`, starting from the default when it has none,
     /// and stores the result: see [`edit_part_state`]. A stale handle never creates a map.
+    /// If the host cannot open a transaction, returns [`PartStateError::Unavailable`] without
+    /// calling `edit`.
     fn edit_state<R>(
         host: &mut dyn ServerHost,
         entity: EntityRef,
@@ -81,7 +83,15 @@ pub trait EntityPartState: EntityPart + Sized {
 
 /// Where the entity an [`EntityRef`] names is now, as its Part state checks it
 /// ([`EntitiesHost::entity_residency`]).
-#[derive(sunrise_mod_api_macros::Wire, Clone, Copy, Debug, Default, PartialEq, Eq)]
+///
+/// This is a process-local residency snapshot, not a `Wire` type.
+///
+/// ```compile_fail,E0277
+/// fn requires_wire<T: mod_api::wire::Wire>() {}
+/// requires_wire::<mod_api::EntityResidency>();
+/// ```
+// no wire: local handle residency state for EntityPartState.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum EntityResidency {
     /// Resident in the level this host is in, and reachable.
@@ -112,8 +122,14 @@ impl PartStateHolder for EntityRef {
 }
 
 /// An entity Part with state could not be attached: its state declaration was refused.
-#[derive(sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
+///
+/// This is a process-local registration error, not a `Wire` type.
+///
+/// ```compile_fail,E0277
+/// fn requires_wire<T: mod_api::wire::Wire>() {}
+/// requires_wire::<mod_api::EntityPartStateError>();
+/// ```
+// no wire: local entity Part state registration error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum EntityPartStateError {
@@ -159,9 +175,9 @@ impl std::error::Error for EntityPartStateError {}
 
 /// One entity Part state declaration as registration kept it, for the game to check its
 /// entity type once every type is known.
+// no wire: internal startup registration record embedding PartStateDeclaration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
 pub struct EntityPartStateDeclaration {
     /// The mod that declared it.
     pub mod_id: String,

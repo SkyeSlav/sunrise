@@ -25,6 +25,14 @@ pub(crate) struct Vanilla {
     pub motion: MotionResources,
 }
 
+impl Vanilla {
+    /// A collision binding of this test's own, for a test that marks part states: the marks live
+    /// in the binding, so tests that share `collision` would see each other's.
+    pub fn own_collision(&self) -> BlockCollisionRegistry<'static> {
+        crate::collisions::load(&self.root, self.assets.registry).unwrap()
+    }
+}
+
 /// The prepared vanilla data at `SUNRISE_TEST_RESOURCES`, or the checkout's
 /// `.local/sunrise-client/<version>`; `None` when neither has it (CI).
 pub(crate) fn vanilla() -> Option<&'static Vanilla> {
@@ -88,4 +96,17 @@ pub(crate) fn report_missing() {
             .write_all(line.as_bytes())
             .expect("writing missing-data skip report");
     }
+}
+
+/// A state table containing just air, for tests that don't need prepared resources.
+pub(crate) fn air_registry() -> &'static sunrise_world::registry::BlockRegistry {
+    use sunrise_world::registry::BlockRegistry;
+    static REGISTRY: std::sync::OnceLock<BlockRegistry> = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        BlockRegistry::from_facts_json(
+            br#"{"defaults":{"minecraft:air":0},"states":[["air",true,false,"","minecraft:air"]]}"#
+                .as_slice(),
+        )
+        .unwrap()
+    })
 }

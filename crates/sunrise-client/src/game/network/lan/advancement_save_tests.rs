@@ -60,7 +60,6 @@ mod connected_advancement_save_tests {
             player_idle_timeout: 0,
             stop: false,
             autosave: true,
-            whitelist_bypass: Vec::new(),
         })));
         game.set_allow_commands(true);
         let _rx = super::world_spawn_sync_tests::host_for(&mut game);
@@ -228,7 +227,6 @@ mod connected_advancement_preservation_tests {
             player_idle_timeout: 0,
             stop: false,
             autosave: true,
-            whitelist_bypass: Vec::new(),
         })));
         game.set_allow_commands(true);
         let _rx = super::world_spawn_sync_tests::host_for(&mut game);

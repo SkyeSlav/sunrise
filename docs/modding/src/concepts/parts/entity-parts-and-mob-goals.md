@@ -1,15 +1,51 @@
 # Entity parts and mob goals
 
-Entity Parts run in native mods in full. A wasm mod may also register one with `r.entity_part`, but
-only the part's `general_entity_tick` crosses: the goal, behavior, spawn-size and shear methods
-(`register_goals`, `register_behaviors`, `spawn_cluster_size`, `is_shearable`, `on_sheared`) are native-only.
-A wasm part that overrides one of them is refused at load by name, as
-`EntityPart::<method>: a wasm entity part crosses with its general_entity_tick alone`, instead of the
-override being silently never called.
+Register an `EntityPart` with `r.entity_part` to attach code to an entity type. Individual
+entities of that type share the part, not their attachments.
 
-On wasm each general row keeps its own attachments, so two rows of one type share the part but not
-their state. A trap in a row's tick rolls that row's writes back and stops the mod's dependency group (the
-mod and the mods linked to it); the game keeps it stopped, and mods outside that group go on ticking.
+## Picking while riding
+
+`can_rider_interact` mirrors NeoForge's `IEntityExtension.canRiderInteract`. Attach an
+`EntityPart` to the candidate's entity type and set `event.allowed = true` to let a
+rider pick it like an unrelated entity. The output starts false; parts run in
+dependency order and the last write wins. The hook exposes `event.subject: EntityClientScope<'_>`
+(borrow the candidate's read-only `EntityClientView` with `with_view`, or `&mut dyn ClientHost`
+sequentially with `host()`) and a writable `event.allowed: bool`.
+
+The ordinary client pick excludes entities sharing the camera's root vehicle,
+including other passengers, not just the directly ridden entity. The shared
+accumulator preserves vanilla's running-nearest-zero exception: picking from
+inside a box sets nearest to zero, and a later same-root intersection can replace
+the hovered entity without changing nearest. The hook is asked only when a
+non-inside candidate reaches that same-vehicle branch; true applies ordinary
+nearest selection instead. No part subscription means no hook-buffer work or
+dispatch. Subscribed picks reuse a retained candidate buffer. Tick and frame picks
+both use it. Attack-range component rays do not exclude root-vehicle relatives
+and never ask this hook. Server interaction checks remain reach-only.
+
+The existing family traversal order is retained; exact vanilla section and
+within-section insertion ordering is a separate engine correction.
+
+## Entity tags
+
+On the server, `entity.tags(host)` lends an `EntityTags<'_>` view of the entity's scoreboard
+tags (`Entity.entityTags()`), not its entity-type registry tags. A live entity without tags
+gives an empty view (`tags.is_empty()`); a stale handle, client or snapshot without live tags
+gives `None`. A goal can read its own mob's tags and the tags of other live mobs lent to the tick.
+
+Use `entity.tags(host).is_some_and(|tags| tags.contains("mymod:marked"))` for an exact match
+without allocating. View equality compares exact UTF-16 tag membership, ignoring order and
+repeated entries. `tags.iter_utf16()` still yields tags in saved order, so use
+`a.iter_utf16().eq(b.iter_utf16())` when the order matters. To keep the old `Vec<String>`
+equality, including replacement characters for unpaired surrogates, compare
+`a.iter_utf16().map(String::from_utf16_lossy).eq(b.iter_utf16().map(String::from_utf16_lossy))`.
+
+Use `String::from_utf16(units)` to reject unpaired surrogates, `String::from_utf16_lossy(units)`
+for the same replacement characters as `/tag ... list`, or `units.to_vec()` to keep the exact
+units after the host borrow ends. For the old replacement-character membership check, use
+`tags.iter_utf16().any(|units| String::from_utf16_lossy(units) == name)`.
+
+## Goals
 
 `r.entity_part("minecraft:zombie", ZombieGoals)` attaches an `EntityPart` to one entity type, a mod's
 own or vanilla's. Its method `register_goals` runs at every `Mob` construction of that type —
@@ -60,6 +96,12 @@ Clearing a fox's target ends defending without changing its trusted entities. An
 target controls its creepy flag and attacking speed modifier; clearing it also clears its stared-at
 flag. A zombified piglin schedules its first anger sound and next alert when it acquires a target
 from none, not when switching between targets. Targeting a player does not count as player damage.
+A goal moves its own mob with `set_delta_movement([x, y, z])` and `add_delta_movement([x, y, z])`
+(`Entity.setDeltaMovement` and `addDeltaMovement`, in blocks a tick), and reads the current value with
+`delta_movement()`, as `LeapAtTargetGoal` and `DolphinJumpGoal` do. The write applies at once, inside the
+mob's AI step, so the travel that follows in the same tick uses it, and clients see it through ordinary motion
+tracking. A component that is not finite (in the delta or the sum) answers false and leaves the velocity
+unchanged; nothing is clamped.
 
 
 ## Part state
@@ -84,7 +126,8 @@ let full = Robot::edit_state(host, robot, |_, charge| {
 ```
 
 - `state` and `state_existing` read a snapshot and insert nothing; `edit_state` runs in a nested
-  transaction of its own, as for block entities.
+  transaction of its own, as for block entities. If the transaction cannot open, it returns
+  `PartStateError::Unavailable` without calling the edit closure.
 - Every call checks the handle first:
   - a handle of another world open, or of an entity that was removed (or whose removal waits for
     the root commit), unloaded or moved under a new id, gives `PartStateError::Stale`, and
@@ -104,8 +147,9 @@ let full = Robot::edit_state(host, robot, |_, charge| {
   `minecraft:player` (a player's respawn identity is not decided yet), every other vanilla family
   (boats, minecarts, items, projectiles, armor stands...) and an unknown id refuse the load with
   `PartStateRefusal::EntityKind`, naming the type. `entity_part` itself checks no type.
-- The declaration is refused at the call as for block entities, copying on death included. Like
-  `entity_part`, `entity_part_with_state` is native-only; Part state is server-side for now.
+- The declaration is refused at the call as for block entities, copying on death included. Part
+  state is server-side. Its registration errors, residency checks and state errors are
+  local values; only the attachment's state value is saved through its codec.
 
 ## Brain behaviors
 

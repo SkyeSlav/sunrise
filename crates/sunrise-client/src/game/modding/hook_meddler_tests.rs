@@ -115,6 +115,9 @@ pub(in crate::game) fn with_meddler(
                 },
             )
             .unwrap();
+            // Scene-building commands need an operator source: dedicated options do not
+            // grant permission, and this fixture has not opened a world with Allow Commands.
+            game.set_allow_commands(true);
             game.build_registries();
             test(game, &gate);
         })

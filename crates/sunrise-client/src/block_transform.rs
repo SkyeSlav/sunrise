@@ -243,27 +243,40 @@ impl Transformers {
     /// the axe's wax-off transforms (`WAX_OFF_BY_BLOCK` is the inverse of
     /// `WAXABLES`).
     pub fn waxed(&self, registry: &BlockRegistry, old: &BlockState) -> Option<BlockState> {
-        for transform in self.transformers.get("minecraft:axe")? {
-            if transform.particle != "wax_off" {
-                continue;
-            }
-            let Provider::Rules(rules) = &transform.provider else {
-                continue;
-            };
-            for (predicate, then) in rules {
-                if let (Predicate::Blocks(names), Provider::Copy(source)) = (predicate, then)
-                    && let Provider::State(unwaxed) = &**source
-                    && unwaxed.name == old.name
-                    && let Some(waxed) = names.first()
-                {
-                    let target = registry
-                        .default_state(waxed)
-                        .and_then(|id| registry.state(id))?
-                        .clone();
-                    return with_properties_of(registry, target, old);
-                }
-            }
-        }
-        None
+        let (names, _) = self
+            .wax_pairs()
+            .find(|(_, unwaxed)| unwaxed.name == old.name)?;
+        let target = registry.state(registry.default_state(names.first()?)?)?;
+        with_properties_of(registry, target.clone(), old)
+    }
+
+    /// `HoneycombItem.WAX_OFF_BY_BLOCK`: the unwaxed twin of `old`, read
+    /// from the same axe rules as `waxed`, with shared properties copied.
+    pub fn unwaxed(&self, registry: &BlockRegistry, old: &BlockState) -> Option<BlockState> {
+        let (_, target) = self
+            .wax_pairs()
+            .find(|(names, _)| names.contains(&old.name))?;
+        with_properties_of(registry, target.clone(), old)
+    }
+
+    fn wax_pairs(&self) -> impl Iterator<Item = (&[String], &BlockState)> {
+        self.transformers
+            .get("minecraft:axe")
+            .into_iter()
+            .flatten()
+            .filter_map(|transform| match &transform.provider {
+                Provider::Rules(rules) if transform.particle == "wax_off" => Some(rules),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|(predicate, then)| {
+                let (Predicate::Blocks(names), Provider::Copy(source)) = (predicate, then) else {
+                    return None;
+                };
+                let Provider::State(unwaxed) = &**source else {
+                    return None;
+                };
+                (!names.is_empty()).then_some((names.as_slice(), unwaxed))
+            })
     }
 }

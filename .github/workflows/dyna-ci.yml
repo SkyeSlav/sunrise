@@ -1,7 +1,7 @@
 name: dyna-checks
-# What the run tests, readable in the run list: a dispatch with `pr` runs on ref main but tests that pull request's head,
-# so it is named for it and never read as main's CI; the prepared-output dispatch likewise.
-run-name: "${{ inputs.pr && inputs.parity && format('PR #{0} vanilla parity', inputs.pr) || inputs.pr && format('PR #{0} gate', inputs.pr) || inputs.parity && 'vanilla parity' || inputs.prepare-output-check && 'prepared output check' || github.event.pull_request.title || github.event.head_commit.message || github.workflow }}"
+# What the run tests, readable in the run list: a dispatch with `pr` runs on ref main but tests that pull request's
+# test merge with its base, so it is named for it and never read as main's CI; the prepared-output dispatch likewise.
+run-name: "${{ inputs.pr && format('PR #{0} gate', inputs.pr) || inputs.prepare-output-check && 'prepared output check' || github.event.pull_request.title || github.event.head_commit.message || github.workflow }}"
 # A contributor's pull request (its head in a fork) gets the cheap checks (verify-static, format); the heavy ones
 # (everything that compiles) run on main's pushes, dispatches, and same-repository rollup or sync pull requests
 # (tools/ci/pr_gate.py, docs/ci-runners.md).
@@ -10,7 +10,9 @@ run-name: "${{ inputs.pr && inputs.parity && format('PR #{0} vanilla parity', in
 # Scheduled events run only the hosted dispatcher and the churn report; the dispatched run uses Dyna.
 on:
   push:
-    branches: [main]
+    # release/26.3 too: a break-glass patch release needs the gate passed on a push of its exact commit
+    # (release_train.break_glass_problems).
+    branches: [main, release/26.3]
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   schedule:
@@ -26,15 +28,7 @@ on:
         type: boolean
         default: false
       pr:
-        description: Run the heavy checks on this pull request's head (a fork's too) and post them on it
-        type: string
-        default: ''
-      parity:
-        description: Run only the vanilla parity harnesses (with pr, on that pull request's head; never a fork's), not the gate
-        type: boolean
-        default: false
-      harnesses:
-        description: With parity, these harnesses (names as tools/parity.py takes them, space-separated) instead of the fixed set
+        description: Run the heavy checks on this pull request's test merge with its base (a fork's too) and post them on its head
         type: string
         default: ''
 defaults:
@@ -48,10 +42,12 @@ concurrency:
   # main head needs a gate, and a burst of merges otherwise held a Dyna runner per job of every merge's run, ahead
   # of the rollup gates queued behind them. None of its jobs publishes or writes shared state.
   # A dispatch for a pull request (`pr`) is grouped by that pull request, never by main's head; any other dispatch
-  # (a snapshot's gate) by its commit, and it always finishes.
-  # A parity dispatch has a group of its own, so it never replaces a waiting gate dispatch for the same head.
-  group: dyna-checks-${{ github.event.pull_request.number || inputs.pr && format('pr-{0}', inputs.pr) || github.event_name == 'push' && github.ref || github.sha }}${{ inputs.parity && '-parity' || '' }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+  # (for a Dev build) by its commit, and it always finishes.
+  # A main push run started again (a later attempt) is a release's gate: release.yml re-runs a commit's gate that the
+  # next push cancelled before it publishes that commit (tools/release_train.py gate_again). It is grouped by its
+  # commit and always finishes.
+  group: dyna-checks-${{ github.event.pull_request.number || inputs.pr && format('pr-{0}', inputs.pr) || github.event_name == 'push' && github.run_attempt == '1' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' && github.run_attempt == '1' }}
 env:
   # Test runs never reach the telemetry server: no live-count ping, no uploads (docs/telemetry.md).
   SUNRISE_TELEMETRY_URL: "off"
@@ -84,23 +80,28 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository && (
       startsWith(github.head_ref, 'sunrise-review-rollup-') || startsWith(github.head_ref, 'fork-review-rollup-') ||
       startsWith(github.head_ref, 'rollup-') || startsWith(github.head_ref, 'sync-') ||
+      startsWith(github.head_ref, 'sync/upstream-') ||
       contains(github.event.pull_request.labels.*.name, 'rollup') || contains(github.event.pull_request.labels.*.name, 'sync'))) &&
       'dyna-small' || 'ubuntu-latest' }}
-    # Selection normally finishes in two minutes; allow two bounded history fetches.
-    timeout-minutes: 13
+    # Selection normally finishes in seconds; allow the file list and two bounded history fetches.
+    timeout-minutes: 15
     permissions:
       contents: read
       actions: read
       pull-requests: read
     outputs:
-      # Whether the heavy jobs run (tools/ci/pr_gate.py); a dispatch with `pr` runs them on that head.
-      heavy: ${{ steps.gate.outputs.heavy }}
+      # Whether the heavy jobs run (tools/ci/pr_gate.py); a dispatch with `pr` runs them on that pull request's test
+      # merge with its base, and reports them on its head (`pr_sha`).
+      heavy: ${{ steps.gate.outputs.heavy == 'false' && 'false' || 'true' }}
       pr_sha: ${{ steps.gate.outputs.pr_sha }}
+      pr_merge: ${{ steps.gate.outputs.pr_merge }}
       # Whether this run's code may use our own runners: never a fork's pull request, dispatched or not.
       trusted: ${{ steps.gate.outputs.trusted || ((github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'true' || 'false') }}
-      rust_required: ${{ steps.selection.outputs.rust_required || 'true' }}
-      launcher_required: ${{ steps.selection.outputs.launcher_required || 'true' }}
-      tooling_required: ${{ steps.selection.outputs.tooling_required || 'true' }}
+      # Off where selection needs none, and on a main push whose tree its merged head's pull_request run already
+      # passed (tools/ci/gate_reuse.py): the jobs then run only what doesn't depend on them, on the small runner.
+      rust_required: ${{ steps.reuse.outputs.reused == 'true' && 'false' || steps.selection.outputs.rust_required || 'true' }}
+      tooling_required: ${{ steps.reuse.outputs.reused == 'true' && 'false' || steps.selection.outputs.tooling_required || 'true' }}
+      reused_run: ${{ steps.reuse.outputs.run }}
       # Only a gate (heavy) uses Dyna's runners; a pull request outside it runs where a pool-down run would.
       self_hosted: ${{ steps.gate.outputs.heavy == 'true' && !inputs.github-fallback && steps.hosted.outputs.forced_github != 'true' && steps.runner.outputs.self_hosted || 'false' }}
       # Where lint and verify run when they don't go to Dyna's pool: boat-large for listed outside contributors
@@ -123,20 +124,51 @@ jobs:
           PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: python3 tools/ci/pr_gate.py >> "$GITHUB_OUTPUT"
+      # Only an ordinary pull request narrows its checks: a rollup or sync (heavy, tools/ci/pr_gate.py) skips the
+      # three selection steps, so its outputs stay 'true' and it takes the full gate, as main's pushes do.
+      # The pull request's files from the API for this run's base and head, exactly as the history's diff lists them,
+      # or listed=false whenever they might differ (tools/ci/pr_files.py); then the history is fetched as before.
+      - name: List this pull request's files
+        if: github.event_name == 'pull_request' && steps.gate.outputs.heavy == 'false'
+        id: files
+        timeout-minutes: 2
+        # A list that can't be read in time is only a fallback to the history, never a failure.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+        run: python3 tools/ci/pr_files.py "$RUNNER_TEMP/pr-files" >> "$GITHUB_OUTPUT"
       - name: Fetch this commit's history for selection
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && steps.gate.outputs.heavy == 'false' && steps.files.outputs.listed != 'true'
         timeout-minutes: 11
         env:
           FETCH_STEP: Fetch this commit's history for selection
-        # On our runners the slot's history mirror makes this a short fetch (tools/ci/history_fetch.sh).
+          # Selection diffs the base against the head (their merge base and two trees), so it takes the commits
+          # alone, and Git fetches the trees the diff reads. The whole history took 80 to 220 s on a slot whose
+          # mirror was cold, and every gate job waits for this one.
+          HISTORY_FILTER: tree:0
         run: bash tools/ci/history_fetch.sh
       - name: Select checks once for this pull request
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && steps.gate.outputs.heavy == 'false'
         id: selection
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python3 tools/ci/rust_changes.py --all "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          FILES: ${{ steps.files.outputs.listed == 'true' && format('{0}/pr-files', runner.temp) || '' }}
+          # The records pr_files.py wrote: a listing that lost one selects everything.
+          ENTRIES: ${{ steps.files.outputs.entries }}
+        run: python3 tools/ci/rust_changes.py --all ${FILES:+--files "$FILES" --entries "$ENTRIES"} "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+      # Best-effort: any failure leaves `reused` unset, and the push runs the whole gate.
+      - name: Reuse the merged head's passed gate
+        if: github.event_name == 'push'
+        id: reuse
+        continue-on-error: true
+        timeout-minutes: 3
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/ci/gate_reuse.py >> "$GITHUB_OUTPUT"
       # workflow_run omits pull_requests for fork runs. Record only immutable IDs;
       # the trusted controller reads this as bounded data, never as executable code.
       - name: Record the original PR base for boat recovery
@@ -158,8 +190,8 @@ jobs:
           name: boat-base-1
           path: boat-base.json
           retention-days: 2
-      # The pool's switch and lease (tools/ci/dyna_ci_route.sh): live when readable, else the run's snapshot judged
-      # at the run's creation and for an hour after it. Fork pull requests remain on GitHub's runners.
+      # The pool's switch and lease (tools/ci/dyna_ci_route.sh): live when readable, else the attempt's snapshot judged
+      # at the attempt's creation or start and for an hour after it. Fork pull requests remain on GitHub's runners.
       - id: runner
         env:
           GH_TOKEN: ${{ github.token }}
@@ -256,9 +288,9 @@ jobs:
     # build folder persists, so clippy re-checks only what changed. A fork's pull request, or a run while the
     # pool is down, stays on GitHub's runners with the snapshot cache below.
     needs: changes
-    if: ${{ always() && !cancelled() && needs.changes.result != 'skipped' && (needs.changes.result != 'success' || needs.changes.outputs.heavy == 'true') && !inputs.parity }}
+    if: ${{ always() && !cancelled() && needs.changes.result != 'skipped' && (needs.changes.result != 'success' || needs.changes.outputs.heavy == 'true') }}
     runs-on: ${{ needs.changes.outputs.rust_required == 'false' && (needs.changes.outputs.self_hosted == 'true' && needs.changes.outputs.trusted == 'true' && 'dyna-small' || 'ubuntu-latest') || needs.changes.outputs.self_hosted == 'true' && needs.changes.outputs.trusted == 'true' && 'dyna-large' || needs.changes.outputs.hosted_label || 'ubuntu-latest' }}
-    # Recent green lint peaked at 53.5 minutes on a cold runner (including the wasm check).
+    # Recent green lint peaked at 53.5 minutes on a cold runner.
     # Cold GitHub/boat lint was not represented in that sample; retain its previous allowance.
     timeout-minutes: ${{ needs.changes.outputs.self_hosted == 'true' && needs.changes.outputs.trusted == 'true' && 60 || github.event_name == 'pull_request' && 75 || 100 }}
     env:
@@ -270,12 +302,39 @@ jobs:
         run: exit 1
       - name: Documentation needs no Rust lint
         if: needs.changes.outputs.rust_required == 'false'
-        run: echo 'Rust lint is not selected; repository hygiene still runs.'
+        env:
+          REUSED: ${{ needs.changes.outputs.reused_run }}
+        run: |
+          if [ -n "$REUSED" ]; then
+            echo "This tree passed the gate in run $REUSED; repository hygiene still runs." | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Rust lint is not selected; repository hygiene still runs.'
+          fi
       # Not diff-selected: any tracked file can contain a captured tool notice.
       - uses: actions/checkout@v4
         with:
-          # A dispatch with `pr`: that pull request's head; otherwise this event's commit.
-          ref: ${{ needs.changes.outputs.pr_sha }}
+          # A dispatch with `pr`: that pull request's test merge with its base, as a pull_request run checks out;
+          # otherwise this event's commit.
+          ref: ${{ needs.changes.outputs.pr_merge }}
+      # The tree this gate checks, so a main push of the same tree can take its verdict (tools/ci/gate_reuse.py). Only
+      # where the tree's own dyna-ci.yml runs (a push, a pull_request's test merge): a `pr` dispatch runs main's
+      # definition on another tree. Best-effort: a failed record only loses the saving.
+      - name: Record the checked tree
+        id: tree
+        if: needs.changes.outputs.rust_required != 'false' && github.event_name != 'workflow_dispatch'
+        continue-on-error: true
+        run: |
+          mkdir -p "$RUNNER_TEMP/gate-tree"
+          git rev-parse 'HEAD^{tree}' | tee "$RUNNER_TEMP/gate-tree/tree"
+          echo "tree=$(cat "$RUNNER_TEMP/gate-tree/tree")" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: steps.tree.outcome == 'success'
+        continue-on-error: true
+        with:
+          name: gate-tree-${{ steps.tree.outputs.tree }}
+          path: ${{ runner.temp }}/gate-tree/tree
+          retention-days: 3
+          overwrite: true
       - name: Check Dyna dependencies (install fallback without root)
         if: needs.changes.outputs.rust_required != 'false' && env.RUNNER_KIND == 'dyna'
         run: bash tools/ci/dyna_ci_deps.sh
@@ -294,10 +353,10 @@ jobs:
             # The slot's build folder persists between jobs; point the checkout's target at it.
             mkdir -p "$CARGO_TARGET_DIR"
             ln -s "$CARGO_TARGET_DIR" target
-            # Keep clippy-driver direct, but reuse sccache for ordinary dependency compilations.
+            # sccache for every compile, Clippy runs on workspace crates included (tools/ci/compiler-cache.sh).
             echo "RUSTC_WRAPPER=$GITHUB_WORKSPACE/tools/ci/compiler-cache.sh" >> "$GITHUB_ENV"
           fi
-          bash tools/ci/rustup_install.sh --profile minimal --component rustfmt --component clippy --target wasm32-unknown-unknown
+          bash tools/ci/rustup_install.sh --profile minimal --component rustfmt --component clippy
       # No lint snapshot on GitHub's runners: ci-cache.yml's 2 GB every 6 hours pushed the release caches (the SDK's and
       # the launcher's) out of the repository's 10 GB, and those come first. A GitHub-hosted lint builds from cold.
       # A Dyna runner builds as many crates at once as its CPU quota allows within its memory, about 3 GiB
@@ -351,10 +410,6 @@ jobs:
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && (needs.changes.outputs.rust_required != 'false') }}
         id: server-lint
         run: python3 tools/ci/check_warnings.py cargo clippy $JOBS --keep-going -p sunrise-client -p sunrise-game -p sunrise-mod-host --all-targets --no-default-features
-      - name: The mod API builds for wasm32
-        id: the_mod_api_builds_for_wasm32
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (needs.changes.outputs.rust_required != 'false') }}
-        run: cargo check $JOBS --keep-going -p sunrise-mod-api --target wasm32-unknown-unknown --locked
       # The prebuilt SDK's own feature graph: a release --lib build with prefer-dynamic and warnings rejected, as
       # tools/prebuilt_game.py builds it, for the host and for the Windows archive (system-allocator there,
       # cargo_features). The checks above unify test and dev features (test-support) into one host build, which hid
@@ -427,19 +482,16 @@ jobs:
 
   verify:
     needs: changes
-    if: ${{ always() && !cancelled() && needs.changes.result != 'skipped' && (needs.changes.result != 'success' || needs.changes.outputs.heavy == 'true') && !inputs.parity }}
+    if: ${{ always() && !cancelled() && needs.changes.result != 'skipped' && (needs.changes.result != 'success' || needs.changes.outputs.heavy == 'true') }}
     runs-on: ${{ needs.changes.outputs.rust_required == 'false' && (needs.changes.outputs.self_hosted == 'true' && needs.changes.outputs.trusted == 'true' && 'dyna-small' || 'ubuntu-latest') || needs.changes.outputs.self_hosted == 'true' && 'dyna-large' || !inputs.github-fallback && needs.changes.outputs.forced_github != 'true' && vars.SELF_HOSTED_CI == 'all' && needs.changes.outputs.trusted == 'true' && fromJSON('["self-hosted", "linux", "playsunrise-ci"]') || needs.changes.outputs.hosted_label || 'ubuntu-latest' }}
     timeout-minutes: ${{ needs.changes.outputs.self_hosted == 'true' && 50 || 45 }}
-    # Dyna's runner image now carries lavapipe, Mesa's software Vulkan driver, for ignored-tests' `gpu` tests.
-    # verify's tests were written to skip GPU work when no adapter exists, and one of them
-    # (gfx::frame_gen::optical_flow, horizon-rust/horizon#8627) fails on lavapipe, so verify hides the driver and runs
-    # exactly as before. ignored-tests is where the GPU tests run.
+    # GPU device tests belong in the daily on lavapipe, not in verify. Hide Vulkan and disallow GL so that
+    # a stray plain GPU test fails on every runner rather than running or silently skipping.
     env:
       VK_ICD_FILENAMES: /nonexistent/no-vulkan-in-verify.json
       VK_DRIVER_FILES: /nonexistent/no-vulkan-in-verify.json
-      # With Vulkan hidden, a runner with Mesa's GL software adapter (boat's image) would still run the GPU tests,
-      # on GL, and fail (#2841); Vulkan only leaves every runner with no adapter, so GPU tests skip here everywhere.
       WGPU_BACKEND: vulkan
+      SUNRISE_GPU_TESTS_REQUIRE_ADAPTER: '1'
       RUNNER_KIND: ${{ needs.changes.outputs.self_hosted == 'true' && 'dyna' || !inputs.github-fallback && needs.changes.outputs.forced_github != 'true' && vars.SELF_HOSTED_CI == 'all' && needs.changes.outputs.trusted == 'true' && 'other' || startsWith(needs.changes.outputs.hosted_label, 'boat') && 'boat' || 'github' }}
     steps:
       - name: Require successful check selection
@@ -447,8 +499,9 @@ jobs:
         run: exit 1
       - uses: actions/checkout@v4
         with:
-          # A dispatch with `pr`: that pull request's head; otherwise this event's commit.
-          ref: ${{ needs.changes.outputs.pr_sha }}
+          # A dispatch with `pr`: that pull request's test merge with its base, as a pull_request run checks out;
+          # otherwise this event's commit.
+          ref: ${{ needs.changes.outputs.pr_merge }}
       - uses: actions/setup-python@v5
         if: needs.changes.outputs.tooling_required != 'false' && (env.RUNNER_KIND == 'github' || env.RUNNER_KIND == 'boat')
         with:
@@ -540,7 +593,7 @@ jobs:
       # sunrise-client rustc processes take several GB each; $JOBS (chosen above) fits them in the runner's
       # memory. Formatting and lint run in parallel (the lint job), so this job only tests.
       # Libraries, binaries and integration tests, then doc tests: not the ~275 examples, which the lint job already
-      # type-checks and the parity job builds and runs (they were most of this step's build and link time).
+      # type-checks.
       # cargo test, not nextest: nextest's process per test reloads each binary's shared tables for every test, and on
       # these 4-core runners it was no faster (#4978).
       - name: Setup done
@@ -588,11 +641,6 @@ jobs:
         continue-on-error: true
         run: |
           python3 tools/ci/cargo_timings.py target/cargo-timings/cargo-timing.html | tee -a "$GITHUB_STEP_SUMMARY"
-          # The points build script's phases (seconds since it started), from the file it writes beside its output.
-          for timing in target/debug/build/sunrise-mod-points-*/out/points-timing.txt; do
-            [ -f "$timing" ] || continue
-            { echo "points build script phases:"; cat "$timing"; } | tee -a "$GITHUB_STEP_SUMMARY"
-          done
       # Binaries run normally, three at a time, under the inet/resolver preload guard. Only a binary
       # recording a violation is rerun per test to name culprits, even if they swallow the refusal.
       # The guard library is built here only; the daily run does not preload it. Unix sockets remain available.
@@ -604,15 +652,14 @@ jobs:
           python3 tools/ci/run_test_binaries.py --jobs 3 --time-limits 2,5 --network-guard target/network_guard.so --no-data-skips -- cargo test $JOBS --profile test --workspace --lib --bins --tests
       # Prepared-data content-root tests stay in the existing client-lib data leg.
       # Running them again here without the data only rebuilds targets before they return early.
-      # One genuine pinned export also validates source staging and listed slots.
-      # Outside tests/ discovery: the later offline suite must not stage it again.
-      # Keep this before doc tests so their failures cannot hide stale slots.
+      # The surface report's tool. The staging pass itself is proven on a clean checkout by the SDK's Linux leg in
+      # the daily run (prebuilt-game-build.yml, tools/ci/test_stage_catalog.py), not here: it takes minutes.
       - name: Build the source stage generator (test profile)
         id: stage
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (needs.changes.outputs.rust_required != 'false') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (needs.changes.outputs.rust_required != 'false' && (github.event_name == 'pull_request' || inputs.pr != '')) }}
         run: |
           started=$SECONDS
-          cargo build $JOBS --locked --profile test -p sunrise-mod-api-gen --bin sunrise-stage --message-format=json-render-diagnostics > "$RUNNER_TEMP/stage-artifacts.jsonl"
+          cargo build $JOBS --locked --profile test -p sunrise-stage --bin sunrise-stage --message-format=json-render-diagnostics > "$RUNNER_TEMP/stage-artifacts.jsonl"
           echo "Stage generator build: $((SECONDS - started))s"
           python3 - <<'PY'
           import json
@@ -635,20 +682,15 @@ jobs:
           PY
       - name: Report the mod API surface change
         id: report_the_mod_api_surface_change
-        # What this pull request changes in what mods can name, in the job summary: the head's sunrise-stage exports
-        # the merge base and this tree, then classifies the diff (tools/ci/surface_report.py). It fails when this
-        # tree cannot be exported, for a stale or unreadable new change note, and, with tools/ci/surface.toml's
-        # gate on, for a breaking change no new note declares.
+        # Each tree's own sunrise-stage exports its stable API; the head's tool reads both engine catalogs and
+        # classifies the diff in the job summary. The report fails if either surface cannot be exported or compared,
+        # for a stale or unreadable new change note, and, with tools/ci/surface.toml's gate on, for a breaking change
+        # no new note declares.
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && (needs.changes.outputs.rust_required != 'false' && (github.event_name == 'pull_request' || inputs.pr != '')) && steps.stage.outcome == 'success' }}
         env:
           EVENT: ${{ github.event_name }}
           PR: ${{ inputs.pr }}
-          GH_TOKEN: ${{ github.token }}
         run: python3 tools/ci/surface_report.py
-      - name: Validate prebuilt source stage and listed slots
-        id: validate_prebuilt_source_stage_and_listed_slots
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (needs.changes.outputs.rust_required != 'false') && steps.stage.outcome == 'success' }}
-        run: python3 tools/ci/test_stage_catalog.py -v
       - name: Test Rust documentation examples
         id: test_rust_documentation_examples
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && (needs.changes.outputs.rust_required != 'false') }}
@@ -677,7 +719,7 @@ jobs:
   # compiles. Formatting alone never blocks a merge (room rule); lint repeats it on the heavy runs.
   format:
     needs: changes
-    if: needs.changes.result == 'success' && needs.changes.outputs.heavy != 'true' && !inputs.parity
+    if: needs.changes.result == 'success' && needs.changes.outputs.heavy == 'false'
     # Only pull requests outside the gate run it, so it is never a gate job: GitHub's runner, leaving Dyna's to gates.
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -688,7 +730,9 @@ jobs:
       - name: Check mod API boundary
         if: needs.changes.outputs.rust_required != 'false'
         run: python3 tools/ci/check_api_boundary.py --source-only
+      # A change with no Rust in it (tools/ci/rust_changes.py) has nothing to format.
       - name: Install rustfmt on the pinned Rust
+        if: needs.changes.outputs.rust_required != 'false'
         env:
           DYNA: ${{ runner.environment != 'github-hosted' }}
         run: |
@@ -701,31 +745,27 @@ jobs:
           fi
           bash tools/ci/rustup_install.sh --profile minimal --component rustfmt
       - name: Check formatting
+        if: needs.changes.outputs.rust_required != 'false'
         run: |
           python3 tools/ci/format_scan.py
-          (cd launcher && cargo fmt --check)
 
   verify-static:
     needs: changes
-    if: ${{ always() && !cancelled() && needs.changes.result != 'skipped' && !inputs.parity }}
+    if: ${{ always() && !cancelled() && needs.changes.result != 'skipped' }}
     # A contributor's pull request gets GitHub's runners: these checks compile nothing heavy, and
     # its only two checks must not depend on a paid pool's balance.
     # A pull request outside the gate: GitHub's runner, never a paid pool or our own (it gates nothing).
     # On our pool, dyna-medium: the work is serial Python, git and small fixture compiles, which GitHub's 4-CPU runner
     # finishes in 8 to 11 minutes, so eight CPUs only took a large slot from the gate's compiling jobs.
-    runs-on: ${{ needs.changes.outputs.heavy != 'true' && 'ubuntu-latest' || needs.changes.outputs.rust_required == 'false' && (needs.changes.outputs.self_hosted == 'true' && needs.changes.outputs.trusted == 'true' && 'dyna-small' || 'ubuntu-latest') || needs.changes.outputs.trusted != 'true' && 'ubuntu-latest' || needs.changes.outputs.self_hosted == 'true' && 'dyna-medium' || !inputs.github-fallback && needs.changes.outputs.forced_github != 'true' && vars.SELF_HOSTED_CI == 'all' && needs.changes.outputs.trusted == 'true' && fromJSON('["self-hosted", "linux", "playsunrise-ci"]') || needs.changes.outputs.hosted_label || 'ubuntu-latest' }}
+    runs-on: ${{ needs.changes.outputs.heavy == 'false' && 'ubuntu-latest' || needs.changes.outputs.rust_required == 'false' && (needs.changes.outputs.self_hosted == 'true' && needs.changes.outputs.trusted == 'true' && 'dyna-small' || 'ubuntu-latest') || needs.changes.outputs.trusted != 'true' && 'ubuntu-latest' || needs.changes.outputs.self_hosted == 'true' && 'dyna-medium' || !inputs.github-fallback && needs.changes.outputs.forced_github != 'true' && vars.SELF_HOSTED_CI == 'all' && needs.changes.outputs.trusted == 'true' && fromJSON('["self-hosted", "linux", "playsunrise-ci"]') || needs.changes.outputs.hosted_label || 'ubuntu-latest' }}
     timeout-minutes: ${{ needs.changes.outputs.self_hosted == 'true' && needs.changes.outputs.trusted == 'true' && 20 || 45 }}
-    # Dyna's runner image now carries lavapipe, Mesa's software Vulkan driver, for ignored-tests' `gpu` tests.
-    # verify's tests were written to skip GPU work when no adapter exists, and one of them
-    # (gfx::frame_gen::optical_flow, horizon-rust/horizon#8627) fails on lavapipe, so verify hides the driver and runs
-    # exactly as before. ignored-tests is where the GPU tests run.
+    # Use verify's hidden-GPU environment so a stray plain GPU test fails instead of silently skipping.
     env:
       VK_ICD_FILENAMES: /nonexistent/no-vulkan-in-verify.json
       VK_DRIVER_FILES: /nonexistent/no-vulkan-in-verify.json
-      # With Vulkan hidden, a runner with Mesa's GL software adapter (boat's image) would still run the GPU tests,
-      # on GL, and fail (#2841); Vulkan only leaves every runner with no adapter, so GPU tests skip here everywhere.
       WGPU_BACKEND: vulkan
-      RUNNER_KIND: ${{ needs.changes.outputs.heavy != 'true' && 'github' || needs.changes.outputs.trusted != 'true' && 'github' || needs.changes.outputs.self_hosted == 'true' && 'dyna' || !inputs.github-fallback && needs.changes.outputs.forced_github != 'true' && vars.SELF_HOSTED_CI == 'all' && needs.changes.outputs.trusted == 'true' && 'other' || startsWith(needs.changes.outputs.hosted_label, 'boat') && 'boat' || 'github' }}
+      SUNRISE_GPU_TESTS_REQUIRE_ADAPTER: '1'
+      RUNNER_KIND: ${{ needs.changes.outputs.heavy == 'false' && 'github' || needs.changes.outputs.trusted != 'true' && 'github' || needs.changes.outputs.self_hosted == 'true' && 'dyna' || !inputs.github-fallback && needs.changes.outputs.forced_github != 'true' && vars.SELF_HOSTED_CI == 'all' && needs.changes.outputs.trusted == 'true' && 'other' || startsWith(needs.changes.outputs.hosted_label, 'boat') && 'boat' || 'github' }}
     steps:
       - name: Require successful check selection
         if: needs.changes.result != 'success'
@@ -733,15 +773,20 @@ jobs:
       - uses: actions/checkout@v4
         id: checkout
         with:
-          # A dispatch with `pr`: that pull request's head; otherwise this event's commit.
-          ref: ${{ needs.changes.outputs.pr_sha }}
+          # A dispatch with `pr`: that pull request's test merge with its base, as a pull_request run checks out;
+          # otherwise this event's commit.
+          ref: ${{ needs.changes.outputs.pr_merge }}
       # Public-tree ranges and sync ancestry need full history of this exact commit,
       # not every branch and tag. The Rust job only needs its checkout's HEAD and tracked files.
       - name: Fetch this commit's history
         timeout-minutes: 11
         env:
           FETCH_STEP: Fetch this commit's history
-        # On our runners the slot's history mirror makes this a short fetch (tools/ci/history_fetch.sh).
+          # A pull request's checks read commits and trees (the range's paths, merge bases, ancestry) and only a few
+          # files' contents, which Git then fetches one by one: a pull request off our pool takes the history without
+          # file contents. Main's pushes (--history), and our pool with the host's history mirror, take all of it.
+          HISTORY_FILTER: ${{ github.event_name == 'pull_request' && env.RUNNER_KIND != 'dyna' && 'blob:none' || '' }}
+        # On our runners the host's shared history mirror makes this a short fetch (tools/ci/history_fetch.sh).
         run: bash tools/ci/history_fetch.sh
       - uses: actions/setup-python@v5
         if: needs.changes.outputs.tooling_required != 'false' && (env.RUNNER_KIND == 'github' || env.RUNNER_KIND == 'boat')
@@ -749,8 +794,11 @@ jobs:
           python-version: '3.12'
       # Offline tooling compiles tiny standalone fixtures even when no game Rust changed.
       # Install their tools explicitly rather than making missing compilers turn cases into skips.
+      # Dyna's image has no Cargo, and checks that always run need it (the ignored-test inventory builds
+      # sunrise-game-discovery; a main push's mod-host map reads `cargo metadata`), so it installs there even when
+      # neither is selected, as on a main push whose tree already passed the gate (tools/ci/gate_reuse.py).
       - name: Install Rust tools for isolated tooling fixtures
-        if: needs.changes.outputs.rust_required != 'false' || needs.changes.outputs.tooling_required != 'false'
+        if: needs.changes.outputs.rust_required != 'false' || needs.changes.outputs.tooling_required != 'false' || env.RUNNER_KIND == 'dyna'
         env:
           DYNA: ${{ needs.changes.outputs.self_hosted }}
         run: |
@@ -762,9 +810,21 @@ jobs:
             echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
           fi
           bash tools/ci/rustup_install.sh --profile minimal --component rustfmt --component clippy
+      # Dyna's runner builds in its persistent target (CARGO_TARGET_DIR) here too: the ignored-test inventory builds
+      # sunrise-game-discovery and its path dependencies (sunrise-mod-surface among them). Without the snapshot, a
+      # build of this tree left artifacts that a later job of another tree judged fresh (R55's verify, 2026-11-19).
+      - name: Restore unchanged source timestamps
+        if: env.RUNNER_KIND == 'dyna'
+        run: python3 tools/ci/source_mtimes.py "${CARGO_TARGET_DIR:-target}/ci-source-mtimes-v2.json"
       - name: Setup done
         id: setup
         run: 'true'
+      - name: Check generated extension tag catalog
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: python3 tools/ci/surface_extension_tags.py --check
+      - name: Check native hook wiring
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && needs.changes.outputs.rust_required != 'false' }}
+        run: bash tools/ci/check_hook_wiring.sh
       # A pull request adds only its own commits to main, so it reads those; main's pushes read every ref's history.
       - name: Keep game artifacts out of Git
         id: keep_game_artifacts_out_of_git
@@ -791,24 +851,14 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: python3 tools/check_addresses.py ${BASE_SHA:+--base "$BASE_SHA" --pull-request-merge}
-      # Fixed conflict hotspots stay fixed: no SUMMARY.md line for a discovered book page, at most 5 launcher
-      # language files outside a rollup or sync, no growth of hooks/notes.rs. Measured against the base as above.
-      # The branch name counts only from this repository: a fork could name its branch like a rollup.
+      # Fixed conflict hotspots stay fixed: no SUMMARY.md line for a discovered book page, no growth of hooks/notes.rs.
+      # Measured against the base as above.
       - name: Fixed hotspots stay fixed
         id: fixed_hotspots_stay_fixed
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          BRANCH: ${{ needs.changes.outputs.trusted == 'true' && github.head_ref || '' }}
-          LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
-        run: python3 tools/hotspots/check_guards.py ${BASE_SHA:+--base "$BASE_SHA" --pull-request-merge} --branch "$BRANCH" --labels "$LABELS"
-      # sunrise-mod-wasm-wire-loopback's build.rs declares tests/wire_loopback/*.rs: its root gains no module line and no test.
-      - name: wire_loopback root does not grow
-        id: wire_loopback_root_does_not_grow
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: python3 tools/hotspots/check_wire_loopback.py ${BASE_SHA:+--base "$BASE_SHA" --pull-request-merge}
+        run: python3 tools/hotspots/check_guards.py ${BASE_SHA:+--base "$BASE_SHA" --pull-request-merge}
       - name: Vocabulary state has explicit ownership
         id: vocabulary_state_has_explicit_ownership
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
@@ -819,6 +869,27 @@ jobs:
         id: ignored_test_policy_files_read_cleanly
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: python3 tools/ci/check_ignored_test_rows.py
+      # Modules are plain mod items: a file under a crate's src/ that nothing declares is never compiled.
+      - name: Every crate source file is compiled
+        id: every_crate_source_file_is_compiled
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: python3 tools/ci/check_unreached_sources.py
+      # tools/port_map/: a row that names a Sunrise function still finds it, or is listed in
+      # tools/ci/port_map_known_stale.txt, which only shrinks (tools/ci/check_port_map_paths.py).
+      - name: Port-map rows find their function
+        id: port_map_rows_find_their_function
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python3 tools/ci/check_port_map_paths.py ${BASE_SHA:+--base "$BASE_SHA"}
+      - name: Fetch locked Cargo dependencies for the vanilla build check
+        id: extras_fetch
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && runner.os == 'Linux' && needs.changes.outputs.rust_required != 'false' }}
+        run: cargo fetch --locked --target host-tuple
+      - name: The vanilla build reuses the default build's dependencies
+        id: extras_features
+        if: ${{ !cancelled() && steps.extras_fetch.outcome == 'success' }}
+        run: python3 tools/ci/check_extras_features.py
       # The unit tier: a test that boots the game is #[ignore = "daily"]; the fixtures are in tools/ci/game-boot-fixtures.txt.
       - name: Game-boot tests are daily tests
         id: game_boot_tests_are_daily_tests
@@ -834,6 +905,12 @@ jobs:
         id: test_reruns_select_ignored_tests_too
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: python3 tools/ci/reexec_include_ignored.py --check
+      # The nested workspaces (telemetry server, registry and probes) take game crates by path: a crate that
+      # gains a dependency must refresh their own Cargo.lock too, or their --locked builds refuse after merge.
+      - name: Nested workspaces' lockfiles are current
+        id: nested_workspaces_lockfiles_are_current
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (needs.changes.outputs.rust_required != 'false') }}
+        run: python3 tools/ci/check_nested_locks.py
       # docs/layers.md: a crate depends only on its own layer or a lower one; today's exceptions only shrink.
       - name: Crates follow the layers
         id: crates_follow_the_layers
@@ -841,20 +918,14 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: python3 tools/check_layers.py ${BASE_SHA:+--base "$BASE_SHA" --pull-request-merge}
-      # The prebuilt game's second dylib, the wasm runtime, holds no C library: one there is hidden from the game's
-      # library, whose link then fails (#1596's mimalloc). Reads `cargo metadata` only, compiles nothing.
-      - name: The wasm runtime links no native library
-        id: wasm_runtime_links_no_native_library
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (needs.changes.outputs.rust_required != 'false') }}
-        run: python3 tools/prebuilt_game.py links
       # tools/hotspots/README.md: a `pub use` brace list under the vocabulary's exports/ names at most 12 items, so two
       # PRs adding names don't conflict on rustfmt's re-wrap; today's longer lists only shrink.
       - name: Export lists stay short
         id: export_lists_stay_short
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: python3 tools/hotspots/check_lists.py
-      # tools/hotspots/check_stand_ins.py: hand-written stand-ins of the dispatch tests and the wire loopback keep up
-      # with the hooks and vocabulary traits they mirror, on the member PR itself instead of in a rollup's build.
+      # tools/hotspots/check_stand_ins.py: hand-written stand-ins of the dispatch tests keep up
+      # with the hooks they mirror, on the member PR itself instead of in a rollup's build.
       - name: Test stand-ins keep up with the API
         id: test_stand_ins_keep_up_with_the_api
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
@@ -897,108 +968,11 @@ jobs:
           GATE_STEPS: ${{ toJSON(steps) }}
         run: python3 tools/ci/gate_summary.py
 
-  # The launcher is its own workspace (launcher/Cargo.toml), so verify's cargo runs never build it. A pull request that
-  # changes it or a crate it builds is checked here, and so is every push to main: two pull requests can each pass
-  # alone and break it together (#2059 and the registry ratings did, 2026-10-26).
-  launcher:
-    needs: changes
-    if: needs.changes.outputs.launcher_required != 'false' && needs.changes.outputs.heavy == 'true' && !inputs.parity
-    runs-on: ${{ needs.changes.outputs.self_hosted == 'true' && 'dyna-medium' || !inputs.github-fallback && needs.changes.outputs.forced_github != 'true' && vars.SELF_HOSTED_CI == 'all' && needs.changes.outputs.trusted == 'true' && fromJSON('["self-hosted", "linux", "playsunrise-ci"]') || 'ubuntu-latest' }}
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # A dispatch with `pr`: that pull request's head; otherwise this event's commit.
-          ref: ${{ needs.changes.outputs.pr_sha }}
-      - name: Check Dyna dependencies (install fallback without root)
-        if: needs.changes.outputs.launcher_required != 'false' && needs.changes.outputs.self_hosted == 'true'
-        run: bash tools/ci/dyna_ci_deps.sh
-      - name: Install Rust and the headers GPUI links against
-        if: needs.changes.outputs.launcher_required != 'false'
-        env:
-          HOSTED: ${{ runner.environment == 'github-hosted' }}
-          DYNA: ${{ needs.changes.outputs.self_hosted }}
-        run: |
-          if [ "$HOSTED" = true ]; then
-            bash tools/ci/install_launcher_deps.sh libxkbcommon-x11-dev libwayland-dev \
-              libx11-xcb-dev libfontconfig-dev libvulkan-dev libasound2-dev libudev-dev
-          elif [ "$DYNA" = true ]; then
-            if [ ! -x "$CARGO_HOME/bin/rustup" ]; then
-              curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal
-            fi
-            export PATH="$CARGO_HOME/bin:$PATH"
-          fi
-          bash tools/ci/rustup_install.sh --profile minimal --component rustfmt --component clippy
-      - uses: Swatinem/rust-cache@v2
-        if: needs.changes.outputs.launcher_required != 'false' && runner.environment == 'github-hosted'
-        with:
-          workspaces: launcher
-          shared-key: launcher
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      # Every job that builds in this runner's persistent target keeps its source snapshot true: a
-      # build of another tree without it left artifacts that a later job judged fresh (stale generated
-      # sources, 2026-11-13). Only byte-identical Git objects regain their previous timestamps.
-      - name: Restore unchanged source timestamps
-        run: python3 tools/ci/source_mtimes.py "${CARGO_TARGET_DIR:-target}/ci-source-mtimes-v2.json"
-      # Every build and test in this job runs at the runner's size, not the host's (tools/ci/cargo_jobs.py).
-      - name: Cap build parallelism to the runner
-        run: python3 tools/ci/cargo_jobs.py --job-mib 3072 --cap
-      - name: Setup done
-        id: setup
-        run: 'true'
-      - name: Check launcher formatting
-        id: check_launcher_formatting
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
-        working-directory: launcher
-        env:
-          JOBS: ${{ needs.changes.outputs.self_hosted == 'true' && '-j2' || '' }}
-        run: cargo fmt --check
-      - name: Lint launcher
-        id: lint_launcher
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
-        working-directory: launcher
-        env:
-          JOBS: ${{ needs.changes.outputs.self_hosted == 'true' && '-j2' || '' }}
-        run: python3 ../tools/ci/check_warnings.py cargo clippy $JOBS --keep-going --all-targets --locked
-      - name: Test launcher library and binaries
-        id: test_launcher_library_and_binaries
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
-        working-directory: launcher
-        env:
-          JOBS: ${{ needs.changes.outputs.self_hosted == 'true' && '-j2' || '' }}
-        run: cargo test $JOBS --no-fail-fast --locked --lib --bins
-      - name: Test launcher storage
-        id: test_launcher_storage
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
-        working-directory: launcher
-        env:
-          JOBS: ${{ needs.changes.outputs.self_hosted == 'true' && '-j2' || '' }}
-        run: cargo test $JOBS --no-fail-fast --locked --test storage
-      - name: Build launcher runtime holder test actor
-        id: build_launcher_runtime_holder_test_actor
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
-        working-directory: launcher
-        env:
-          JOBS: ${{ needs.changes.outputs.self_hosted == 'true' && '-j2' || '' }}
-        run: python3 ../tools/ci/ignored_shards.py --prepare sunrise-mod-package $JOBS
-      - name: Test launcher runtime package
-        id: test_launcher_runtime_package
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && steps.build_launcher_runtime_holder_test_actor.outcome == 'success' }}
-        working-directory: launcher
-        env:
-          JOBS: ${{ needs.changes.outputs.self_hosted == 'true' && '-j2' || '' }}
-        run: cargo test $JOBS --no-fail-fast --manifest-path ../Cargo.toml --locked -p sunrise-mod-package --features runtime-process --lib
-      - name: Summarize failed gate steps
-        if: ${{ failure() && !cancelled() && steps.setup.outcome == 'success' }}
-        env:
-          GATE_STEPS: ${{ toJSON(steps) }}
-        run: python3 tools/ci/gate_summary.py
-
   # A dispatch with `pr`: posts the heavy jobs' results on that pull request's head. It runs none of its code, so it
   # alone holds the write permission, and only for commit statuses.
   pr-status:
-    needs: [changes, lint, verify, verify-static, launcher]
-    if: always() && github.event_name == 'workflow_dispatch' && inputs.pr != '' && !inputs.parity && needs.changes.outputs.pr_sha != ''
+    needs: [changes, lint, verify, verify-static]
+    if: always() && github.event_name == 'workflow_dispatch' && inputs.pr != '' && needs.changes.outputs.pr_sha != ''
     # Five seconds of status posts after the gate: nothing waits on it, so it takes none of Dyna's counted runners.
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1009,16 +983,17 @@ jobs:
       - env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ needs.changes.outputs.pr_sha }}
+          MERGE: ${{ needs.changes.outputs.pr_merge }}
           RESULTS: ${{ toJSON(needs) }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python3 - <<'PY'
           import json, os, urllib.request
           states = {"success": "success", "skipped": "success", "failure": "failure", "cancelled": "error"}
-          for job in ("lint", "verify", "verify-static", "launcher"):
+          for job in ("lint", "verify", "verify-static"):
               result = json.loads(os.environ["RESULTS"])[job]["result"]
               body = {"state": states.get(result, "error"), "context": f"dispatched/{job}",
-                      "description": f"dyna-checks dispatched on this head: {result}", "target_url": os.environ["RUN"]}
+                      "description": f"{result} on test merge {os.environ['MERGE']}", "target_url": os.environ["RUN"]}
               request = urllib.request.Request(
                   f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}/statuses/{os.environ['SHA']}",
                   data=json.dumps(body).encode(), method="POST",
@@ -1076,440 +1051,3 @@ jobs:
           expected=$(awk '!/^#/ && NF == 2 { value=$2 } END { print value }' crates/sunrise-prepare/output-versions.txt)
           { echo "prepared output check: $([ "$result" -eq 0 ] && echo pass || echo fail)"; echo "actual: $actual"; echo "expected: $expected"; } | tee -a "$GITHUB_STEP_SUMMARY"
           exit "$result"
-
-  # Main's daily dispatch runs the fixed set below; a dispatch with `parity` runs it (or `harnesses`) on `pr`'s head.
-  # Vanilla's data and the harnesses' output (vanilla's values) stay on the runner: the log gets PASS/FAIL lines only.
-  vanilla-parity:
-    needs: changes
-    if: github.repository == 'sunrise-org/sunrise' && github.event_name == 'workflow_dispatch' && !inputs.prepare-output-check && !inputs.github-fallback && (!inputs.pr || inputs.parity && needs.changes.outputs.pr_sha != '') && needs.changes.outputs.trusted == 'true'
-    runs-on: dyna-large
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.changes.outputs.pr_sha || github.sha }}
-          persist-credentials: false
-      - name: Check Dyna dependencies (install fallback without root)
-        run: bash tools/ci/dyna_ci_deps.sh
-      # Written from this workflow's own revision, never from the tested tree: an older head's helper would stream a
-      # harness's output (vanilla's values) into the public log. Every `python` this job's steps run goes to a log on
-      # the runner's slot; the job log gets the harness names with PASS or FAIL, and the exit status is kept. A failure's
-      # logs (a failing script's, and each failing harness's from tools/parity.py) are copied to the slot's parity-keep,
-      # per run and attempt, which the next job's setup does not wipe, so they can still be read on the host after the slot is reused.
-      # A failure's cause in the compiler's, Cargo's or the test runner's fixed forms (a crate that did not compile, a
-      # process killed by a signal, an error code's source line, a failed test's name, a panic's location, a timeout)
-      # is printed too, rebuilt from parts that match only names, numbers and source paths, so no other text of the log
-      # (a value a harness printed) can pass.
-      - name: Keep harness output on the runner
-        run: |
-          mkdir -p "$DYNA_CI_BUILD/bin"
-          # The slot persists: an older job left bin/python as a link into its own checkout, which `cat >` would follow.
-          rm -f "$DYNA_CI_BUILD/bin/python"
-          cat > "$DYNA_CI_BUILD/bin/python" <<'SH'
-          #!/usr/bin/env bash
-          set -uo pipefail
-          mkdir -p "$DYNA_CI_BUILD/parity-logs"
-          name=$(basename "${1:-python}" .py)
-          log="$DYNA_CI_BUILD/parity-logs/$name.log"
-          /usr/bin/python3 "$@" > "$log" 2>&1
-          status=$?
-          rm -rf "$DYNA_CI_BUILD"/parity-out/rust-*
-          causes() {
-            sed -nE \
-              -e 's/.*could not compile `([A-Za-z0-9_-]+)` \(([a-z ]+)\).*/could not compile \1 (\2)/p' \
-              -e 's/.*--crate-name ([A-Za-z0-9_]+) .*\(signal: ([0-9]+), (SIG[A-Z]+).*/rustc for \1 killed by signal \2 (\3)/p' \
-              -e 's/.*process didn.t exit successfully: `[^ `]*\/deps\/([A-Za-z0-9_]+)-[0-9a-f]+[ `].*\(signal: ([0-9]+), (SIG[A-Z]+).*/test binary \1 killed by signal \2 (\3)/p' \
-              -e 's/^(error\[E[0-9]{4}\]).*/\1/p' \
-              -e 's/^ *--> ([A-Za-z0-9_.\/-]+\.rs:[0-9]+:[0-9]+)$/  at \1/p' \
-              -e 's/^test ([A-Za-z0-9_:]+) \.\.\. FAILED$/test \1 FAILED/p' \
-              -e 's/.*panicked at ([A-Za-z0-9_.\/-]+\.rs:[0-9]+:[0-9]+).*/panicked at \1/p' \
-              -e 's/^--- [a-z0-9_#]+: timed out after ([0-9]+)s$/timed out after \1 s/p' \
-              "$1" | awk '!seen[$0]++' | head -n 12 | sed "s/^/  $2: /"
-          }
-          if [ "$name" = parity ]; then grep -aoE '^(PASS|FAIL|RETRIED|FLAKY) [a-z0-9_#]+' "$log" || true; fi
-          if [ "$status" -eq 0 ]; then echo "PASS $name"; exit 0; fi
-          keep="$DYNA_CI_BUILD/parity-keep/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          mkdir -p "$keep"
-          cp "$log" "$keep/"
-          if [ "$name" = parity ]; then
-            for harness in $(grep -aoE '^FAIL [a-z0-9_#]+' "$log" | cut -d' ' -f2 | sort -u); do
-              cp "$GITHUB_WORKSPACE/.local/parity-runner/logs/$harness.log" "$keep/" 2>/dev/null || true
-              [ -f "$keep/$harness.log" ] && causes "$keep/$harness.log" "$harness"
-            done
-          else
-            causes "$log" "$name"
-          fi
-          echo "FAIL $name (exit $status; its logs are kept on runner $RUNNER_NAME in $keep)"
-          exit "$status"
-          SH
-          chmod +x "$DYNA_CI_BUILD/bin/python"
-          echo "$DYNA_CI_BUILD/bin" >> "$GITHUB_PATH"
-      - name: Install Rust toolchain
-        run: |
-          if [ ! -x "$CARGO_HOME/bin/rustup" ]; then
-            curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal
-          fi
-          bash tools/ci/rustup_install.sh --profile minimal
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '25'
-      # Every job that builds in this runner's persistent target keeps its source snapshot true: a
-      # build of another tree without it left artifacts that a later job judged fresh (stale generated
-      # sources, 2026-11-13). Only byte-identical Git objects regain their previous timestamps.
-      - name: Restore unchanged source timestamps
-        run: python3 tools/ci/source_mtimes.py "${CARGO_TARGET_DIR:-target}/ci-source-mtimes-v2.json"
-      # Every build and test in this job runs at the runner's size, not the host's (tools/ci/cargo_jobs.py).
-      - name: Cap build parallelism to the runner
-        run: python3 tools/ci/cargo_jobs.py --job-mib 3072 --cap
-      - name: Set up disk-backed parity scratch and prepared vanilla data
-        run: |
-          rm -rf "$DYNA_CI_BUILD/parity-out" "$DYNA_CI_BUILD/parity-tmp" "$DYNA_CI_BUILD/parity-logs"
-          mkdir -p "$DYNA_CI_BUILD/parity-out" "$DYNA_CI_BUILD/parity-tmp" "$DYNA_CI_BUILD/parity-logs"
-          ln -s "$DYNA_CI_BUILD/parity-out" .local
-          # The probes' build folder (tools/parity.py's .local/parity-target) lives under the slot's persistent target,
-          # so a run rebuilds only what changed instead of the whole game from cold (a harness's own 900 s build limit
-          # ran out on that, 2026-11-16). The source snapshot step above keeps it true across trees.
-          mkdir -p "$CARGO_TARGET_DIR/parity"
-          ln -s "$CARGO_TARGET_DIR/parity" .local/parity-target
-          echo "TMPDIR=$DYNA_CI_BUILD/parity-tmp" >> "$GITHUB_ENV"
-          # tools/parity.py keeps pass records beside .local/minecraft, which is the read-only cache and holds
-          # other trees' passes: this run's records start empty, on the slot.
-          echo "PARITY_SHARED=$DYNA_CI_BUILD/parity-out/shared" >> "$GITHUB_ENV"
-          SUNRISE_DYNA_CACHE=true SUNRISE_PREPARED_CACHE="$DYNA_CI_BUILD/vanilla" SUNRISE_SHARED_SOURCE=/cache/sunrise-local bash tools/ci/vanilla-data.sh
-      # The game opens a window even with --offscreen, and the runner has no display: a virtual X display for every
-      # harness, started from this workflow and left running for the job.
-      - name: Virtual display
-        run: |
-          Xvfb -displayfd 3 -screen 0 1280x1024x24 -nolisten tcp 3> "$RUNNER_TEMP/xvfb-display" > /dev/null 2>&1 &
-          for _ in $(seq 60); do [ -s "$RUNNER_TEMP/xvfb-display" ] && break; sleep 0.5; done
-          [ -s "$RUNNER_TEMP/xvfb-display" ] || { echo "::error::Xvfb did not report a display within 30 seconds"; exit 1; }
-          echo "DISPLAY=:$(tr -d '[:space:]' < "$RUNNER_TEMP/xvfb-display")" | tee -a "$GITHUB_ENV"
-          echo "WAYLAND_DISPLAY=" >> "$GITHUB_ENV"
-      # The game-probe builds the named harnesses run, built here first, as tools/parity.py runs them (its target and
-      # profile), so a cold build never counts against a harness's own build limit.
-      - name: Build the named harnesses' game probes
-        if: inputs.harnesses != ''
-        env:
-          HARNESSES: ${{ inputs.harnesses }}
-          CARGO_PROFILE_RELEASE_LTO: 'false'
-          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
-          CARGO_PROFILE_RELEASE_INCREMENTAL: 'true'
-          CARGO_PROFILE_DEV_OPT_LEVEL: '3'
-        run: |
-          export CARGO_TARGET_DIR="$PWD/.local/parity-target"
-          read -ra names <<< "$HARNESSES"
-          scripts=()
-          for name in "${names[@]}"; do
-            [[ "$name" =~ ^[a-z0-9_]+(#[0-9]+)?$ ]] || { echo "::error::not a harness name: $name"; exit 1; }
-            script="tools/test_${name%%#*}_parity.py"
-            [ -f "$script" ] && scripts+=("$script")
-          done
-          [ "${#scripts[@]}" -gt 0 ] || exit 0
-          started=$SECONDS
-          if grep -q "'--example', 'client_probe'" "${scripts[@]}"; then
-            cargo build --profile fast -p sunrise-client-lib --example client_probe
-          fi
-          if grep -q "'sunrise-game', '-p', 'sunrise-client-lib', '--bins'" "${scripts[@]}"; then
-            cargo build --locked --profile fast -p sunrise-game -p sunrise-client-lib --bins
-          fi
-          if grep -Eq "[\"']sunrise-game[\"'], [\"']--bin[\"'], [\"']sunrise-client[\"']" "${scripts[@]}"; then
-            cargo build --profile fast -p sunrise-game --bin sunrise-client
-          fi
-          # The client lib tests harnesses run (`cargo test -p <package> --lib`, the dev profile as parity.py sets it),
-          # one at a time and before any oracle starts: one rustc of up to 12 GiB each, which a 16 GiB runner
-          # killed beside the harnesses (signal 9: mount_control and damage_catalog on main, 2026-11-16).
-          for package in sunrise-client-lib sunrise-client; do
-            if grep -Eq "[\"']test[\"'], ([\"']--locked[\"'], )?[\"']-p[\"'], [\"']$package[\"'], [\"']--lib[\"']" "${scripts[@]}"; then
-              cargo test --locked --no-run -p "$package" --lib
-            fi
-          done
-          echo "Game probe builds: $((SECONDS - started)) s" | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Named harnesses
-        if: inputs.harnesses != ''
-        env:
-          HARNESSES: ${{ inputs.harnesses }}
-          PARITY_HOSTS: ''
-        run: |
-          read -ra names <<< "$HARNESSES"
-          for name in "${names[@]}"; do
-            [[ "$name" =~ ^[a-z0-9_]+(#[0-9]+)?$ ]] || { echo "::error::not a harness name: $name"; exit 1; }
-          done
-          python tools/parity.py -j 4 --timeout 2400 "${names[@]}"
-      # Harness subprocess timeouts can be shorter than a cold release build. Match their build commands and target dir.
-      - name: Build parity probes
-        if: inputs.harnesses == ''
-        run: |
-          cargo build --release --bin sunrise-parity
-          cargo build --release --bin sunrise-tick-parity
-          cargo build --release --bin sunrise-geometry-parity
-          cargo build --release --bin sunrise-noise-parity
-          cargo build --release --bin sunrise-density-parity
-          cargo build --release --bin sunrise-worldgen-parity
-          cargo build --release --bin sunrise-float-log-parity
-          cargo build --release -p sunrise-core --example generation_tick_fixture
-          cargo build --release -p sunrise-core --example biome_zoom_fixture
-          cargo build --release -p sunrise-world --bin sunrise-world --example world_probe
-          cargo build --release -p sunrise-world --example world_probe
-      - name: Compare Rust foundations with pinned vanilla client and server bytecode
-        if: inputs.harnesses == ''
-        run: python tools/test_rust_parity.py
-      - name: Check Rust world-data interoperability with pinned vanilla client and server
-        if: inputs.harnesses == ''
-        run: python tools/test_world_parity.py
-      - name: Compare scheduled ticks and saved tick data with pinned vanilla client and server
-        if: inputs.harnesses == ''
-        run: python tools/test_tick_parity.py
-      - name: Compare simulation geometry and cached block collision shapes
-        if: inputs.harnesses == ''
-        run: |
-          python tools/test_geometry_parity.py
-          python tools/test_collision_parity.py
-      - name: Compare noise samplers and density kernels with pinned vanilla client and server
-        if: inputs.harnesses == ''
-        run: python tools/test_noise_parity.py
-      - name: Compare compiled density samplers with pinned vanilla client and server
-        if: inputs.harnesses == ''
-        run: python tools/test_density_parity.py
-      - name: Compare world-generation JSON codecs with pinned vanilla client and server
-        if: inputs.harnesses == ''
-        run: python tools/test_worldgen_parity.py
-      - name: Compare heightmap predicates and chunk mutations with pinned vanilla client and server
-        if: inputs.harnesses == ''
-        run: python tools/test_heightmap_parity.py
-      - name: Compare pre-light chunk status transitions and block writes
-        if: inputs.harnesses == ''
-        run: python tools/test_chunk_stage_parity.py
-      - name: Compare feature placement into resident neighboring chunks
-        if: inputs.harnesses == ''
-        run: python tools/test_feature_region_parity.py
-      - name: Compare nested feature selectors and sequences
-        if: inputs.harnesses == ''
-        run: python tools/test_feature_graph_parity.py
-      - name: Compare named feature holders and placed-feature tags
-        if: inputs.harnesses == ''
-        run: python tools/test_feature_catalog_parity.py
-      - name: Compare configured fill-layer block placement
-        if: inputs.harnesses == ''
-        run: python tools/test_fill_layer_parity.py
-      - name: Compare replacement-rule codecs and evaluation
-        if: inputs.harnesses == ''
-        run: python tools/test_rule_test_parity.py
-      - name: Compare simple-block placement and feature composition
-        if: inputs.harnesses == ''
-        run: python tools/test_simple_block_parity.py
-      - name: Compare block-column sampling and obstruction
-        if: inputs.harnesses == ''
-        run: python tools/test_block_column_parity.py
-      - name: Compare vertical pillars and cap feature placement
-        if: inputs.harnesses == ''
-        run: python tools/test_pillar_parity.py
-      - name: Compare exactly-one-neighbor feature spreading
-        if: inputs.harnesses == ''
-        run: python tools/test_neighbor_spread_parity.py
-      - name: Compare block-pile support and placement
-        if: inputs.harnesses == ''
-        run: python tools/test_block_pile_parity.py
-      - name: Compare disk replacement and postprocessing
-        if: inputs.harnesses == ''
-        run: python tools/test_disk_parity.py
-      - name: Compare block-blob support search and geometry
-        if: inputs.harnesses == ''
-        run: python tools/test_block_blob_parity.py
-      - name: Compare spring placement and fluid tick scheduling
-        if: inputs.harnesses == ''
-        run: python tools/test_spring_parity.py
-      - name: Compare vine attachment priority and placement
-        if: inputs.harnesses == ''
-        run: python tools/test_vines_parity.py
-      - name: Compare underwater magma floor scans and occlusion
-        if: inputs.harnesses == ''
-        run: python tools/test_underwater_magma_parity.py
-      - name: Compare blue-ice seeding and growth attempts
-        if: inputs.harnesses == ''
-        run: python tools/test_blue_ice_parity.py
-      - name: Compare spike geometry and discontinuous roots
-        if: inputs.harnesses == ''
-        run: python tools/test_spike_parity.py
-      - name: Compare End podium construction and destruction requests
-        if: inputs.harnesses == ''
-        run: python tools/test_end_podium_parity.py
-      - name: Rust End gateway parity
-        if: inputs.harnesses == ''
-        run: python tools/test_end_gateway_parity.py
-      - name: Compare bonus chest placement and conditional loot seeding
-        if: inputs.harnesses == ''
-        run: python tools/test_bonus_chest_parity.py
-      - name: Compare recursive chorus generation and connection refreshes
-        if: inputs.harnesses == ''
-        run: python tools/test_chorus_plant_parity.py
-      - name: Compare small speleothem patches and waterlogged points
-        if: inputs.harnesses == ''
-        run: python tools/test_speleothem_parity.py
-      - name: Compare replacement blob search and Manhattan shells
-        if: inputs.harnesses == ''
-        run: python tools/test_replace_blobs_parity.py
-      - name: Compare bamboo stalks, podzol patches and leafy caps
-        if: inputs.harnesses == ''
-        run: python tools/test_bamboo_parity.py
-      - name: Compare Nether delta rims and shifted contents
-        if: inputs.harnesses == ''
-        run: python tools/test_delta_parity.py
-      - name: Compare biome freezing and snow eligibility
-        if: inputs.harnesses == ''
-        run: python tools/test_biome_weather_parity.py
-      - name: Compare frozen top layers and snowy ground updates
-        if: inputs.harnesses == ''
-        run: python tools/test_snow_freeze_parity.py
-      - name: Compare generation-stage tick storage and routing
-        if: inputs.harnesses == ''
-        run: python tools/test_generation_tick_parity.py
-      - name: Compare below-zero upgrade metadata codecs
-        if: inputs.harnesses == ''
-        run: python tools/test_retrogen_data_parity.py
-      - name: Compare below-zero upgrade lifecycle and block transformations
-        if: inputs.harnesses == ''
-        run: python tools/test_retrogen_chunk_parity.py
-      - name: Compare chunk-status metadata, ordering and codecs
-        if: inputs.harnesses == ''
-        run: python tools/test_chunk_status_parity.py
-      - name: Compare proto-chunk block-entity storage and coordinates
-        if: inputs.harnesses == ''
-        run: python tools/test_block_entity_storage_parity.py
-      - name: Compare ordered single-block replacement features
-        if: inputs.harnesses == ''
-        run: python tools/test_replace_block_parity.py
-      - name: Compare scattered ore placement and air-exposure checks
-        if: inputs.harnesses == ''
-        run: python tools/test_scattered_ore_parity.py
-      - name: Compare resident bulk-section access and raw writes
-        if: inputs.harnesses == ''
-        run: python tools/test_bulk_section_parity.py
-      - name: Compare biome feature ordering and cycle detection
-        if: inputs.harnesses == ''
-        run: python tools/test_feature_sort_parity.py
-      - name: Compare world-generation random wrappers and seeding
-        if: inputs.harnesses == ''
-        run: python tools/test_worldgen_random_parity.py
-      - name: Compare biome filtering and top-level feature context
-        if: inputs.harnesses == ''
-        run: python tools/test_biome_placement_parity.py
-      - name: Compare biome decoration feature scheduling and seeding
-        if: inputs.harnesses == ''
-        run: python tools/test_decoration_parity.py
-      - name: Compare decoration against resident biome and terrain sections
-        if: inputs.harnesses == ''
-        run: python tools/test_decoration_region_parity.py
-      - name: Compare block-state provider choices and rotation
-        if: inputs.harnesses == ''
-        run: python tools/test_state_provider_parity.py
-      - name: Compare contained fluids and height queries with pinned vanilla client and server
-        if: inputs.harnesses == ''
-        run: python tools/test_fluid_parity.py
-      - name: Compare entity obstruction with pinned vanilla client and server
-        if: inputs.harnesses == ''
-        run: python tools/test_entity_obstruction_parity.py
-      - name: Compare block solidity and replaceability with pinned vanilla client and server
-        if: inputs.harnesses == ''
-        run: python tools/test_block_properties_parity.py
-      - name: Compare face slicing and block support with pinned vanilla client and server
-        if: inputs.harnesses == ''
-        run: python tools/test_face_support_parity.py
-      - name: Compare cached block support with pinned vanilla client and server
-        if: inputs.harnesses == ''
-        run: python tools/test_block_support_parity.py
-      - name: Compare dynamic block support with pinned vanilla client and server
-        if: inputs.harnesses == ''
-        run: python tools/test_dynamic_support_parity.py
-      - name: Compare moving-piston collision and interpolation with pinned vanilla
-        if: inputs.harnesses == ''
-        run: python tools/test_piston_shape_parity.py
-      - name: Compare supported block survival rules with pinned vanilla
-        if: inputs.harnesses == ''
-        run: python tools/test_block_survival_parity.py
-      - name: Compare noise-stage chunk filling with pinned vanilla client and server
-        if: inputs.harnesses == ''
-        run: python tools/test_terrain_parity.py
-      - name: Compare structure terrain-adaptation density with pinned vanilla client and server
-        if: inputs.harnesses == ''
-        run: python tools/test_structure_density_parity.py
-      - name: Compare seeded material bands and surface queries with pinned vanilla client and server
-        if: inputs.harnesses == ''
-        run: python tools/test_material_surface_parity.py
-      - name: Compare material condition codecs and rule evaluation with pinned vanilla client and server
-        if: inputs.harnesses == ''
-        run: python tools/test_material_condition_parity.py
-      - name: Compare biome temperatures and cache behavior with pinned vanilla client and server
-        if: inputs.harnesses == ''
-        run: python tools/test_biome_temperature_parity.py
-      - name: Compare badlands and frozen-ocean extensions with pinned vanilla
-        if: inputs.harnesses == ''
-        run: python tools/test_material_extension_parity.py
-      - name: Compare bundled material-rule libraries with pinned vanilla client and server
-        if: inputs.harnesses == ''
-        run: python tools/test_material_rule_library_parity.py
-      - name: Compare fixed, checkerboard and End biome sources with pinned vanilla
-        if: inputs.harnesses == ''
-        run: python tools/test_biome_source_parity.py
-      - name: Compare seeded cave paths and failure state with pinned vanilla
-        if: inputs.harnesses == ''
-        run: python tools/test_cave_carver_parity.py
-      - name: Compare seeded canyon paths and width factors with pinned vanilla
-        if: inputs.harnesses == ''
-        run: python tools/test_canyon_carver_parity.py
-      - name: Compare initial block-writing feature algorithms with pinned vanilla
-        if: inputs.harnesses == ''
-        run: python tools/test_basic_feature_parity.py
-      - name: Compare feature placement chains with pinned vanilla
-        if: inputs.harnesses == ''
-        run: python tools/test_feature_placement_parity.py
-      - name: Compare feature placement primitives with pinned vanilla
-        if: inputs.harnesses == ''
-        run: python tools/test_placement_parity.py
-      - name: Compare anchored height providers with pinned vanilla
-        if: inputs.harnesses == ''
-        run: python tools/test_height_provider_parity.py
-      - name: Compare scalar value providers with pinned vanilla
-        if: inputs.harnesses == ''
-        run: python tools/test_value_provider_parity.py
-      - name: Compare cave and canyon geometric primitives with pinned vanilla
-        if: inputs.harnesses == ''
-        run: python tools/test_carving_geometry_parity.py
-      - name: Compare carving-mask traversal and callback mutations with pinned vanilla
-        if: inputs.harnesses == ''
-        run: python tools/test_carving_mask_parity.py
-      - name: Compare registry-bound biome-source codecs with pinned vanilla
-        if: inputs.harnesses == ''
-        run: python tools/test_biome_source_codec_parity.py
-      - name: Compare all four biome-source kinds in chunk generation with pinned vanilla
-        if: inputs.harnesses == ''
-        run: python tools/test_biome_generation_parity.py
-      - name: Compare chunk biome filling and failure state with pinned vanilla
-        if: inputs.harnesses == ''
-        run: python tools/test_biome_chunk_parity.py
-      - name: Compare biome zoom and seed obfuscation with pinned vanilla
-        if: inputs.harnesses == ''
-        run: python tools/test_biome_zoom_parity.py
-      - name: Compare surface-stage chunks with pinned vanilla client and server
-        if: inputs.harnesses == ''
-        run: python tools/test_material_stage_parity.py
-      - name: Compare block-state JSON codecs with pinned vanilla client and server
-        if: inputs.harnesses == ''
-        run: python tools/test_block_state_codec_parity.py
-      - name: Compare vertical anchors with pinned vanilla client and server
-        if: inputs.harnesses == ''
-        run: python tools/test_anchor_parity.py
-      - name: Compare float logarithms at domain and rounding boundaries
-        if: inputs.harnesses == ''
-        run: python tools/test_float_log_parity.py
-      # Failure logs kept on the slot (see "Keep harness output on the runner") stay three days, then go.
-      - name: Prune kept failure logs
-        if: always()
-        run: |
-          keep="$DYNA_CI_BUILD/parity-keep"
-          [ -d "$keep" ] || exit 0
-          find "$keep" -mindepth 1 -maxdepth 1 -type d -mmin +4320 -exec rm -rf {} +
-          if [ -d "$keep/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" ]; then
-            echo "Failure logs of run $GITHUB_RUN_ID attempt $GITHUB_RUN_ATTEMPT are kept on runner $RUNNER_NAME in $keep/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" | tee -a "$GITHUB_STEP_SUMMARY"
-          fi

@@ -14,6 +14,7 @@ mod kept;
 mod mesh;
 pub mod packed;
 mod samples;
+use crate::columns::Surface;
 use std::{
     collections::VecDeque,
     sync::{
@@ -41,39 +42,42 @@ const SAMPLE_JOBS: usize = 4;
 const QUEUED_PER_SAMPLER: usize = 32;
 /// The last `refresh`es `Lod::refreshed_since` tells apart by area.
 const MAX_REFRESHED: usize = 64;
-/// Threads that sample far tiles beside the mesher. Sampling is the cold-load
-/// bottleneck (each task evaluates a shared density lattice for 256 columns),
-/// so medium machines use two thirds of their cores, not half.
+/// Threads that sample far tiles beside the mesher: a quarter of the cores,
+/// at most eight. Sampling is the cold-load bottleneck (each task evaluates a
+/// shared density lattice for 256 columns).
 ///
-/// The mesher has little to do until tiles are sampled, so its threads sit
-/// idle through the part of a cold build that waits on sampling. Measured on
-/// a 12-thread machine building 4336 tiles at LOD distance 256, from the game
-/// answering the control socket until every target tile is sampled, four runs
-/// a configuration:
+/// The three far pools ([`sampling_threads`], [`meshing_threads`],
+/// [`decoration_threads`]) were once sized for the shortest build, taking more
+/// threads than the machine had beside the near chunks' workers. While far
+/// terrain built, the frame ran on a machine that was busy everywhere: every
+/// render thread span, the HUD's too, took three to ten times its idle time,
+/// and the near chunks loaded slower. Sampling and meshing now stay under
+/// half the cores, and decoration takes a fifth. Measured with `--benchmark travel` at render distance 12 and
+/// `lodDistance` 256 on a 16-thread laptop (Ryzen 7 6800H):
 ///
-/// | samplers / meshers | sampling | whole build |
-/// |---|---|---|
-/// | 6 / 5 (before) | 15.0 s | 23.9 s |
-/// | 8 / 3 | 11.8 s | 18.6 s |
-/// | 9 / 2 | 10.6 s | 19.1 s |
+/// | samplers / meshers / decoration | flight 1% low | near chunks in | far terrain in |
+/// |---|---|---|---|
+/// | 8 / 7 / 6 (before) | 46 fps | 5.6 s | 90 s |
+/// | 4 / 3 / 3 | 126 fps | 4.4 s | 115 s |
+/// | 3 / 2 / 2 | 143 fps | 3.4 s | 160 s |
 ///
-/// Nine samplers finish sampling sooner still, but leave the mesher two
-/// threads and the whole build ends later. The cap keeps a large machine
-/// from starving its mesher, and `meshing_threads` keeps the frame and the
-/// ticks a core either way.
+/// Fewer threads still raise the lows a little more, but the far build then
+/// takes much longer.
 fn sampling_threads(cores: usize) -> usize {
-    if cores >= 8 {
-        (cores * 2 / 3).min(8)
-    } else {
-        (cores / 4).clamp(1, 3)
-    }
+    (cores / 4).clamp(1, 8)
 }
-/// Tile meshing used to be one worker with a whole selection batch at a time.
-/// It now has its own pool, sized so ticks and the frame keep a core.
+/// Tile meshing has its own pool: the rest of half the cores after the
+/// samplers and one core for the far terrain worker itself.
 fn meshing_threads(cores: usize) -> usize {
-    cores
+    (cores / 2)
         .saturating_sub(sampling_threads(cores) + 1)
         .clamp(1, 16)
+}
+/// Far decoration's threads (`vanillagen::lod`): a fifth of the cores. They
+/// run at idle priority, but on the same cores as the frame and the near
+/// chunks all the same.
+pub fn decoration_threads(cores: usize) -> usize {
+    (cores / 5).clamp(1, 12)
 }
 /// While the near terrain loads on a machine with four threads or fewer, far
 /// terrain starts one sample job at most this often and no detail: it would
@@ -156,8 +160,7 @@ impl ZoomAim {
         // player faces, and there is no direction to compare it with. Tested
         // on the box rather than on the circle below, whose radius a camera
         // on a corner matches exactly -- a float coin-toss.
-        // In i64: a level 22 tile is 67 million blocks wide, so the sum
-        // at the far edge of the world overflows an i32.
+        // In i64, so a tile at the world's edge never overflows.
         let (ox64, oz64, size64) = (i64::from(ox), i64::from(oz), i64::from(size));
         if (ox64..ox64 + size64).contains(&i64::from(camera[0]))
             && (oz64..oz64 + size64).contains(&i64::from(camera[1]))
@@ -187,19 +190,13 @@ impl ZoomAim {
 }
 
 /// The coarsest tile level: `Plan` roots cover at most `MAX_CHUNKS` chunks
-/// around (a level-22 tile is 67 million blocks wide: the whole world).
-pub(crate) const MAX_LEVEL: u8 = 22;
-/// Tiles this far from the camera (1024 chunks, as far as far terrain went
-/// before it covered the world) are planned with `WORLD_SPLIT`.
-const WORLD_START: i32 = 1024 * 16;
-/// How many tile widths away from the camera a tile of the world-wide terrain
-/// splits (`Plan::visit`: cells then span about 1/48 of the distance).
-const WORLD_SPLIT: i32 = 3;
+/// around (a level-10 tile is 16,384 blocks wide).
+pub(crate) const MAX_LEVEL: u8 = 10;
 /// A split tile stays split until its distance passes the threshold by this
 /// ratio (`Plan::visit`): 1 / 0.95.
 const RETURN: (i64, i64) = (20, 19);
 /// The farthest `Plan` reaches, in chunks.
-pub const MAX_CHUNKS: u32 = 1 << 22;
+pub const MAX_CHUNKS: u32 = 1 << MAX_LEVEL;
 /// The coarsest tile level whose chunks are generated in full (trees,
 /// structures) rather than sampled: cells of up to 4 blocks, out to about
 /// 1024 blocks at Full far detail.
@@ -227,14 +224,6 @@ const DETAIL_REQUEST: usize = 512;
 /// percentile, where the median frame was 6 ms. What the budget leaves waits
 /// in `Lod::detail_backlog` for the frames after it.
 const DETAIL_BUDGET: std::time::Duration = std::time::Duration::from_millis(3);
-/// Top solid face and optional fluid face, in absolute block coordinates.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Surface {
-    pub height: i32,
-    pub state: BlockStateId,
-    pub water: Option<(i32, BlockStateId)>,
-    pub biome: u16,
-}
 /// A half-open material run; gaps between runs remain air.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Span {
@@ -797,31 +786,19 @@ impl Plan {
         // blocks. Reduced keeps them twice as large (a quarter of the cells).
         let held = previous.split.contains(&key);
         let split = if held { 10 } else { 8 };
-        // Beyond the old 1024-chunk limit the cells are as large as `reduced`'s:
-        // the whole world is 22 levels, not all of them worth full cells.
-        let world = key.distance(camera) >= WORLD_START;
         // A zoomed view magnifies the tiles its cone covers, so those split
         // further; every other tile keeps the plan it would have had
-        // ([`ZoomAim`]). The world-wide threshold is boosted too: the horizon is
-        // where a spyglass shows the coarsest cells of all.
+        // ([`ZoomAim`]).
         let boost = match self.aim {
             Some(aim) if aim.covers(key, camera) => i64::from(aim.boost),
             _ => 1,
         };
-        let threshold = i64::from(key.size())
-            * i64::from(if world {
-                WORLD_SPLIT
-            } else if reduced {
-                split / 2
-            } else {
-                split
-            })
-            * boost;
+        let threshold =
+            i64::from(key.size()) * i64::from(if reduced { split / 2 } else { split }) * boost;
         // The 8 to 10 band above is wide already. The ring of full detail
-        // around the camera and the world-wide threshold have none: a tile
-        // split last plan stays split until it is 5% past them, or it
-        // flickered between two levels as the camera moved a block to and
-        // fro across the line.
+        // around the camera has none: a tile split last plan stays split
+        // until it is 5% past it, or it flickered between two levels as the
+        // camera moved a block to and fro across the line.
         let hold = |bound: i64| {
             if held {
                 bound * RETURN.0 / RETURN.1
@@ -832,8 +809,7 @@ impl Plan {
         let distance = i64::from(key.distance(camera));
         if key.level > 0
             && (distance < hold(i64::from(detail) * 16 + 16)
-                || distance.max(i64::from(self.elevation))
-                    < if world { hold(threshold) } else { threshold })
+                || distance.max(i64::from(self.elevation)) < threshold)
         {
             self.split.insert(key);
             for child in key.children() {
@@ -1106,9 +1082,9 @@ enum Job {
     RequestDetail {
         chunks: Vec<(i32, i32)>,
         center: [i32; 2],
-        /// `Lod::refreshes` when asked: what was read before a later
-        /// `refresh` may be older than what it announced.
-        refreshes: u64,
+        /// `Lod::refreshes` when asking for detail. An empty request clears
+        /// queued decoration without retagging any results still in flight.
+        refreshes: Option<u64>,
     },
 }
 /// A chunk's columns on their way to the tiles over it: what `Lod::receive`
@@ -1617,7 +1593,9 @@ impl Lod {
                                     center,
                                     refreshes,
                                 } => {
-                                    asked = refreshes;
+                                    if let Some(refreshes) = refreshes {
+                                        asked = refreshes;
+                                    }
                                     sampler.request_detail(&chunks, center);
                                     Done::DetailRequested
                                 }
@@ -1710,25 +1688,6 @@ impl Lod {
             returned_at: std::time::Instant::now(),
             keeps_observed,
         }
-    }
-    /// The solid ground at block column (x, z): its top face's height and
-    /// its block, from the finest tile sampled there. For aiming past the
-    /// resident chunks (`game.raycast`); water is passed, as the view's ray
-    /// passes it.
-    pub fn ground(&self, x: i32, z: i32) -> Option<(i32, BlockStateId)> {
-        (0..=MAX_LEVEL).find_map(|level| {
-            let size = 16 << level;
-            let key = TileKey {
-                x: x.div_euclid(size),
-                z: z.div_euclid(size),
-                level,
-            };
-            let columns = self.ready.get(&key).filter(|c| c.len() == CELLS * CELLS)?;
-            let cell = size / CELLS as i32;
-            let (cx, cz) = ((x - key.x * size) / cell, (z - key.z * size) / cell);
-            let surface = columns[cz as usize * CELLS + cx as usize].surface?;
-            Some((surface.height, surface.state))
-        })
     }
     pub fn stats(&self) -> (usize, usize) {
         (self.active.len(), self.ready.len())
@@ -2455,19 +2414,18 @@ impl Lod {
             dx * dx + dz * dz
         });
         chunks.truncate(DETAIL_REQUEST);
-        if !chunks.is_empty() {
-            self.detail_request_pending = true;
-            self.shared
-                .jobs
-                .lock()
-                .unwrap()
-                .push_back(Job::RequestDetail {
-                    chunks,
-                    center: camera,
-                    refreshes: self.refreshes,
-                });
-            self.shared.wake.notify_all();
-        }
+        let refreshes = (!chunks.is_empty()).then_some(self.refreshes);
+        self.detail_request_pending = true;
+        self.shared
+            .jobs
+            .lock()
+            .unwrap()
+            .push_back(Job::RequestDetail {
+                chunks,
+                center: camera,
+                refreshes,
+            });
+        self.shared.wake.notify_all();
     }
     /// `aim` asks the tiles a zoomed view magnifies for finer detail
     /// ([`ZoomAim`]); `None` plans exactly as before.
@@ -3630,56 +3588,6 @@ mod tests {
         );
     }
     #[test]
-    fn world_wide_plans_stay_small_and_cover_every_level() {
-        // About 10 000 nodes at a corner of the world, 9 000 at its centre.
-        const WORLD_PLAN_NODES: usize = 16_384;
-        for (camera, elevation) in [
-            ([0, 0], 0),
-            ([115, 135], 49_000_000),
-            ([-30_000_000, 29_999_000], 90),
-        ] {
-            let plan = Plan::with_previous(
-                camera,
-                12,
-                MAX_CHUNKS,
-                &Plan::default(),
-                elevation,
-                false,
-                None,
-            );
-            let reduced = Plan::with_previous(
-                camera,
-                12,
-                MAX_CHUNKS,
-                &Plan::default(),
-                elevation,
-                true,
-                None,
-            );
-            let top = plan.nodes.iter().map(|k| k.level).max().unwrap();
-            assert_eq!(top, MAX_LEVEL, "{camera:?} y={elevation}: roots stop short");
-            assert!(
-                plan.nodes.len() < WORLD_PLAN_NODES,
-                "{camera:?} y={elevation}: {} nodes",
-                plan.nodes.len()
-            );
-            assert!(
-                reduced.nodes.len() <= plan.nodes.len(),
-                "{camera:?} y={elevation}: reduced has {} nodes, full {}",
-                reduced.nodes.len(),
-                plan.nodes.len()
-            );
-            // Every level from the finest planned one up to the roots has tiles.
-            let finest = plan.nodes.iter().map(|k| k.level).min().unwrap();
-            for level in finest..=MAX_LEVEL {
-                assert!(
-                    plan.nodes.iter().any(|k| k.level == level),
-                    "{camera:?} y={elevation}: no level-{level} tile"
-                );
-            }
-        }
-    }
-    #[test]
     fn aerial_distance_avoids_unseen_full_detail_outside_the_near_area() {
         let ground = Plan::new([0, 0], 12, 1024);
         let high = Plan::with_previous([0, 0], 12, 1024, &Plan::default(), 1024, false, None);
@@ -3985,10 +3893,7 @@ mod tests {
         assert!(!lod.saved.contains_key(&(9, 9)));
 
         // Nothing new is asked for while summaries wait, whatever the
-        // request interval allows. Asserted on `detail_request_at`, which
-        // `request_detail` records once it is past its guards: a test
-        // scheduler has no active tile wanting detail, so `pending` would
-        // stay false either way and prove nothing.
+        // request interval allows.
         let long_ago = std::time::Instant::now() - std::time::Duration::from_secs(10);
         lod.detail_request_at = long_ago;
         lod.detail_request_pending = false;
@@ -4002,13 +3907,40 @@ mod tests {
         assert!(lod.saved.contains_key(&(9, 9)), "nothing was dropped");
         assert!(lod.saved.contains_key(&(10, 9)));
 
-        // Drained, requests resume.
+        // Drained, requests resume for visible detail.
+        let key = TileKey {
+            x: 0,
+            z: 0,
+            level: 0,
+        };
+        lod.active.insert(key);
+        let requested_at = lod.refreshes;
         lod.detail_request_at = long_ago;
         lod.request_detail([0, 0]);
-        assert!(
-            lod.detail_request_at > long_ago,
-            "asked once the backlog drained"
-        );
+        let Some(Job::RequestDetail {
+            chunks, refreshes, ..
+        }) = lod.shared.jobs.lock().unwrap().pop_front()
+        else {
+            panic!("detail was not requested after the backlog drained");
+        };
+        assert_eq!(chunks, [(0, 0)]);
+        assert_eq!(refreshes, Some(requested_at));
+
+        // The worker acknowledged the request, but may still have work in flight.
+        // The view wants nothing now: replace the queue without retagging that work.
+        lod.detail_request_pending = false;
+        lod.active.clear();
+        lod.refreshes += 1;
+        lod.detail_request_at = long_ago;
+        lod.request_detail([0, 0]);
+        let Some(Job::RequestDetail {
+            chunks, refreshes, ..
+        }) = lod.shared.jobs.lock().unwrap().pop_front()
+        else {
+            panic!("the empty view did not clear queued detail");
+        };
+        assert!(chunks.is_empty());
+        assert_eq!(refreshes, None);
     }
     /// `warm` builds exactly the levels asked for, off the render thread, and
     /// `get` then finds them built.
@@ -4843,22 +4775,18 @@ mod tests {
         }
     }
     #[test]
-    fn extra_sampling_threads_only_on_large_machines() {
-        // Small machines are unchanged: a quarter of their cores, never more
-        // than three, so the near chunks and the frame keep theirs.
-        assert_eq!([1, 2, 4].map(sampling_threads), [1, 1, 1]);
-        // From eight, two thirds rather than half, still capped at eight.
-        assert_eq!([8, 11, 12].map(sampling_threads), [5, 7, 8]);
-        assert_eq!([16, 64].map(sampling_threads), [8, 8]);
-        assert_eq!([2, 8, 12, 16].map(meshing_threads), [1, 2, 3, 7]);
-        // From four cores up the two pools together leave one for the frame
-        // and the ticks. Below that both clamp to one and there is nothing
-        // to spare, which is the existing behaviour.
-        for cores in [4usize, 8, 11, 12, 16, 64] {
-            assert!(
-                sampling_threads(cores) + meshing_threads(cores) < cores,
-                "{cores} cores leaves nothing for the frame"
-            );
+    fn far_terrain_pools_stay_within_half_the_cores() {
+        assert_eq!(
+            [1, 2, 4, 8, 12, 16, 64].map(sampling_threads),
+            [1, 1, 1, 2, 3, 4, 8]
+        );
+        assert_eq!([2, 4, 8, 12, 16].map(meshing_threads), [1, 1, 1, 2, 3]);
+        assert_eq!([2, 4, 8, 12, 16].map(decoration_threads), [1, 1, 1, 2, 3]);
+        // From eight cores sampling and meshing stay under half of them, so
+        // the frame, the ticks and the near chunks keep the other half.
+        for cores in [8usize, 11, 12, 16, 24, 32] {
+            let busy = sampling_threads(cores) + meshing_threads(cores);
+            assert!(busy < cores / 2, "{cores} cores: far terrain takes {busy}");
         }
     }
 

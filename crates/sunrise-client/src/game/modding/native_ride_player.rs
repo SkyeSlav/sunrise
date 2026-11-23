@@ -52,7 +52,9 @@ impl Game<'_> {
     pub(in crate::game) fn vehicle_of_any(&self, id: u32) -> Option<u32> {
         match self.player_vehicle(id) {
             Some(player) => self.native_player_vehicle_id(player),
-            None => self.mob_object(id).filter(|m| !m.removed)?.extra.mount,
+            None => self
+                .native_vehicle_id(Target::Mob(id))
+                .or_else(|| self.native_vehicle_id(Target::General(id))),
         }
     }
 
@@ -173,7 +175,7 @@ impl Game<'_> {
     /// Whether `player` rides the mob `rider`, through any number of vehicles.
     fn player_rides(&self, player: Target, rider: u32) -> bool {
         let mut current = self.native_player_vehicle_id(player);
-        for _ in 0..=self.mobs.len() + self.persist.off_level.len() + 1 {
+        for _ in 0..=self.riding_link_limit() {
             let Some(id) = current else {
                 return false;
             };
@@ -214,7 +216,7 @@ impl Game<'_> {
         sunrise_client::mobs::living::teleports::set_pos(m, Vec3::new(x, high[1] - offset, z));
         m.velocity = Vec3::ZERO;
         m.fall_distance = 0.0;
-        m.on_ground = false;
+        m.ground.on_ground = false;
         m.extra.passenger = true;
         m.ai.nav.stop();
         true
@@ -369,6 +371,11 @@ mod tests {
     #[ignore = "daily"]
     fn a_staged_save_ejects_a_mob_riding_a_player() {
         ejected(|game, _| {
+            // The entity stage runs once per loaded chunk, as the unload save's fixture has one.
+            game.world.chunks.insert(
+                (0, 0),
+                std::sync::Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)),
+            );
             let (reply, _answer) = std::sync::mpsc::channel();
             game.begin_control_save(true, reply).unwrap();
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
@@ -426,7 +433,7 @@ mod tests {
     #[ignore = "daily"]
     fn a_dimension_change_ejects_a_mob_riding_the_player() {
         ejected(|game, conn| {
-            game.start_server_trip(conn, super::super::Dim::Nether, None, false);
+            game.start_server_trip(conn, super::super::Dim::Nether, None);
         });
     }
 

@@ -122,6 +122,66 @@ mod tests {
     }
 
     #[test]
+    fn native_block_container_refuses_slots_it_cannot_save() {
+        struct Container {
+            block: &'static str,
+            slots: usize,
+        }
+
+        #[mod_api::__subscriptions]
+        impl Hooks for Container {
+            fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
+                let block = r.block_key(self.block);
+                r.block_container(
+                    &block,
+                    crate::ModContainer {
+                        slots: self.slots,
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+
+        let registrar = super::super::register_all(
+            &[
+                ModEntry::new(
+                    "fitting",
+                    Box::new(Container {
+                        block: "fitting:machine",
+                        slots: 256,
+                    }),
+                ),
+                ModEntry::new(
+                    "oversized",
+                    Box::new(Container {
+                        block: "oversized:machine",
+                        slots: 257,
+                    }),
+                ),
+            ],
+            |_| false,
+        );
+        assert_eq!(
+            registrar.parts.default_block_containers["fitting:machine"][0]
+                .1
+                .slots,
+            256
+        );
+        assert!(
+            !registrar
+                .parts
+                .default_block_containers
+                .contains_key("oversized:machine")
+        );
+        let [refusal] = registrar.refused.as_slice() else {
+            panic!("expected one refusal, got {:?}", registrar.refused);
+        };
+        for field in ["oversized:machine", "257", "256"] {
+            assert!(refusal.contains(field), "{refusal}");
+        }
+    }
+
+    #[test]
     fn requested_entity_type_slots_resolve_without_renumbering_and_refuse_unknown_ids() {
         let mut registrar = super::super::PartRegistrar::new("requester");
         let registrar_api = &mut registrar as &mut dyn Registrar;
@@ -130,7 +190,8 @@ mod tests {
         assert_ne!(zombie, pig);
         super::super::install_registrar(registrar, &crate::__private::part_tests::rule_schema())
             .unwrap();
-        mod_vocab::__private::resolve_entity_types(["minecraft:pig", "minecraft:zombie"]).unwrap();
+        mod_vocab::__private::resolve_entity_types(["minecraft:pig", "minecraft:zombie"], |_| None)
+            .unwrap();
         assert_eq!(
             mod_vocab::__private::entity_type_key_id(zombie).as_deref(),
             Some("minecraft:zombie")
@@ -140,7 +201,8 @@ mod tests {
             Some("minecraft:pig")
         );
         assert_eq!(mod_vocab::__private::entity_type_keys(), [pig, zombie]);
-        let errors = mod_vocab::__private::resolve_entity_types(["minecraft:pig"]).unwrap_err();
+        let errors =
+            mod_vocab::__private::resolve_entity_types(["minecraft:pig"], |_| None).unwrap_err();
         assert_eq!(
             errors,
             ["mod requester requested unknown entity type minecraft:zombie"]

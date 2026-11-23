@@ -123,21 +123,14 @@ pub(super) fn pack_stack(
     }
 }
 
-/// The world's enabled packs' content files (`recipe/`, `loot_table/`,
-/// `advancement/`, `tags/…`) for the tables to merge over the resource
-/// root's own. Empty when the world has no packs.
-pub(super) fn content_overlay(stack: &PackStack) -> Vec<(String, Vec<Vec<u8>>)> {
-    let packs: Vec<&DataPack> = std::iter::once(&stack.content)
-        .chain(stack.enabled_packs())
-        .collect();
-    if packs.is_empty() {
-        return Vec::new();
-    }
-    DataStore::load(&packs).files.into_iter().collect()
+pub(super) struct OverlayFiles {
+    pub(super) files: Vec<(String, Vec<Vec<u8>>)>,
+    pub(super) read_errors: std::collections::BTreeMap<String, String>,
+    pub(super) priority_layers: Vec<sunrise_world::loot::RecipePriorityLayer>,
 }
 
-/// The files the content tables load from: the world's enabled packs'
-/// (`content_overlay`) with what native mods contribute for this load
+/// The files the content tables load from: the world's enabled packs
+/// with what native mods contribute for this load
 /// (`native_data_pack_files`) below them. `PackOverlay::top` is a path's last
 /// file, so a pack's file still overrides a mod's for the same path, and a
 /// later contribution overrides an earlier one, as packs do. `Game` builds
@@ -146,25 +139,33 @@ pub(super) fn content_overlay(stack: &PackStack) -> Vec<(String, Vec<Vec<u8>>)> 
 pub(super) fn overlay_files(
     stack: &PackStack,
     contributed: Vec<(String, Vec<u8>)>,
-) -> Vec<(String, Vec<Vec<u8>>)> {
-    if contributed.is_empty() {
-        return content_overlay(stack);
-    }
+) -> OverlayFiles {
     // Passive content replaces prepared data, native contributions sit over
     // it, and the world's selected packs retain the highest priority.
-    let mut files = DataStore::load(&[&stack.content]).files;
+    let mut store = DataStore::load(&[&stack.content]);
     for (path, bytes) in contributed {
-        if let Err(e) = serde_json::from_slice::<Box<serde_json::value::RawValue>>(&bytes) {
+        if !sunrise_client::lan::data::is_pack_registry_file(&path)
+            && let Err(e) = serde_json::from_slice::<Box<serde_json::value::RawValue>>(&bytes)
+        {
             log::warn!("Sunrise: a native mod's data pack file {path} is not JSON, skipped: {e}");
             continue;
         }
-        files.entry(path).or_default().push(bytes);
+        store.file_errors.remove(&path);
+        store.files.entry(path).or_default().push(bytes);
     }
     let packs = stack.enabled_packs().collect::<Vec<_>>();
-    for (path, versions) in DataStore::load(&packs).files {
-        files.entry(path).or_default().extend(versions);
+    let world = DataStore::load(&packs);
+    for (path, versions) in world.files {
+        store.file_errors.remove(&path);
+        store.files.entry(path).or_default().extend(versions);
     }
-    files.into_iter().collect()
+    store.file_errors.extend(world.file_errors);
+    store.priority_layers.extend(world.priority_layers);
+    OverlayFiles {
+        files: store.files.into_iter().collect(),
+        read_errors: store.file_errors,
+        priority_layers: store.priority_layers,
+    }
 }
 
 impl FnState {
@@ -217,7 +218,9 @@ impl Game<'_> {
         if self.fns.loaded || self.world_root.as_os_str().is_empty() {
             return;
         }
-        let _ = self.reload_datapacks(false, &self.level.enabled_features.clone());
+        if let Err(error) = self.reload_datapacks(false, &self.level.enabled_features.clone()) {
+            log::warn!("Sunrise: {}", error.diagnostic());
+        }
     }
     pub(super) fn open_world_datapacks(
         &mut self,
@@ -279,16 +282,42 @@ impl Game<'_> {
         } else {
             None
         };
+        let initial = if opening_world {
+            // This load warns again about saved attribute bases clamped to their bounds (#3728).
+            sunrise_client::living_attributes::LOAD_CLAMPS.begin_load();
+            let tables = self
+                .stage_world_tables(&stack, false, &resources)
+                .map_err(|error| ReloadStageError::DataSource(error.to_string()))?;
+            let wire = super::lan::sync::prepare_world_sync_data(
+                &resources,
+                &self.res.core.item_data,
+                &super::pack_files(&tables.tables),
+                &tables.health.damage,
+                tables
+                    .tables
+                    .as_ref()
+                    .map_or_else(|| self.res.shared_items(), |tables| tables.items.clone()),
+                tables
+                    .tables
+                    .as_ref()
+                    .map(|tables| tables.packed_registries.clone()),
+                tables.advancements.clone(),
+            )
+            .map_err(|error| ReloadStageError::DataSource(format!("world registries: {error}")))?;
+            Some((tables, wire))
+        } else {
+            None
+        };
         if let Some(world) = &world {
             prepared.bind_loot(world);
         }
         // Every candidate, including world tables, must prepare successfully
         // before any listener publishes its new state.
-        let prepared = self.apply_server_reload_callbacks(prepared);
         if let Some(root) = next_root {
             self.options.resources = root.prepared().to_owned();
             self.pack.data_source = root.data().clone();
             self.pack.data_changes = root.data_changes().clone();
+            self.pack.mod_layers = root.mod_layers().clone();
             self.mods.data_switched = true;
         }
         self.install_loop_context(context);
@@ -305,12 +334,12 @@ impl Game<'_> {
         // also install its tables before function admission validates inline holders.
         if let Some(world) = world {
             self.install_world_tables(world);
-        } else if opening_world {
-            self.open_world_tables(&stack, &resources)
+        } else if let Some((initial, wire)) = initial {
+            self.open_world_tables(initial)
                 .map_err(|error| ReloadStageError::DataSource(error.to_string()))?;
+            super::lan::sync::install_world_sync_data(wire);
         }
-        self.build_native_commands(enabled_features);
-        self.apply_server_reload(prepared, &stack);
+        self.apply_server_reload(prepared, &stack, enabled_features);
         self.run_native_advancement_grants();
         // The schedule is the world's live `TimerQueue` `SavedData`, not pack
         // content: firing an event (`TimerQueue.tick`) and `/schedule clear`
@@ -328,9 +357,18 @@ impl Game<'_> {
     /// only after substitution, but ordinary lines in a macro file still
     /// have to compile (`CommandFunction.fromLines`).
     pub(super) fn admit_store(&mut self, mut store: DataStore, stack: &PackStack) {
-        // On explicit reload the actual content tables have already refreshed.
-        // The candidate's named predicates/modifiers must also be available to
-        // argument codecs before any of its functions can be exposed.
+        // The installed candidate already selected and checked the same winners
+        // gameplay uses, including the native contributions.
+        if let Some(tables) = &self.world_tables {
+            let copy = |entries: &std::collections::HashMap<String, serde_json::Value>| {
+                entries
+                    .iter()
+                    .map(|(id, value)| (id.clone(), value.clone()))
+                    .collect()
+            };
+            store.predicates = copy(tables.loot.predicates());
+            store.item_modifiers = copy(tables.loot.item_modifiers());
+        }
         self.sync_enchantment_registries();
         // A function's `loot ... loot <id>` names the reloaded packs' tables.
         self.sync_loot_table_ids();
@@ -1232,11 +1270,12 @@ impl Game<'_> {
         let previous_vanilla_disabled = self.cmds.vanilla_disabled;
         // `DataPackCommand.listAvailablePacks`: a feature pack the world's
         // features do not cover is not available.
-        let available: Vec<String> = std::iter::once("vanilla".to_owned())
+        let mut available: Vec<String> = std::iter::once("vanilla".to_owned())
             .chain(self.fns.packs.iter().map(|p| p.id.clone()))
             .filter(|p| !selected.contains(p))
             .filter(|p| self.missing_pack_features(p).is_empty())
             .collect();
+        available.sort_by(|a, b| datapack::compare_ids(a, b));
         let known = |g: &Self, n: &str| n == "vanilla" || g.fns.packs.iter().any(|p| p.id == n);
         match id {
             "datapack.create" => self.create_pack(ctx),
@@ -1438,7 +1477,6 @@ impl Game<'_> {
             }
         };
         prepared.bind_loot(&world);
-        let prepared = self.apply_server_reload_callbacks(prepared);
         self.install_loop_context(context);
         self.fns.packs = stack.packs.clone();
         self.fns.enabled = stack.enabled.clone();
@@ -1446,17 +1484,17 @@ impl Game<'_> {
         self.save_datapack_settings();
         self.fns.load_pending = true;
         self.install_world_tables(world);
-        self.build_native_commands(&self.level.enabled_features.clone());
-        self.apply_server_reload(prepared, &stack);
+        self.apply_server_reload(prepared, &stack, &self.level.enabled_features.clone());
         self.run_native_advancement_grants();
         Ok(())
     }
 
     fn reload_failure(error: ReloadStageError) -> sunrise_client::command::CommandError {
-        log::warn!("Sunrise: {error}");
+        let diagnostic = error.diagnostic();
+        log::warn!("Sunrise: {diagnostic}");
         sunrise_client::command::CommandError::new(
             Text::translate("commands.reload.failure", &[])
-                .append(Text::literal(format!("\n{error}"))),
+                .append(Text::literal(format!("\n{diagnostic}"))),
         )
     }
 
@@ -1471,7 +1509,10 @@ impl Game<'_> {
         let json = if id.starts_with('{') {
             let (tag, _) = sunrise_core::nbt::parse_snbt(id)
                 .map_err(|e| err("argument.nbt.invalid", &[&e]))?;
-            sunrise_client::scoreboard::tag_to_json(&tag)
+            let value = sunrise_client::scoreboard::tag_to_json(&tag);
+            sunrise_world::loot::validate_loot_condition(&value)
+                .map_err(|e| err("argument.nbt.invalid", &[&e]))?;
+            value
         } else {
             self.fns.store.predicates.get(id).cloned().ok_or_else(|| {
                 let id = if id.contains(':') {
@@ -1486,19 +1527,7 @@ impl Game<'_> {
             })?
         };
         let source = self.command_source.unwrap_or_else(|| self.player_source());
-        let view = source.entity.map(|t| {
-            let scores = self.holder_name(t).map(|holder| {
-                self.score
-                    .board
-                    .holder_scores(&holder)
-                    .into_iter()
-                    .map(|(objective, value)| (objective.name.clone(), value))
-                    .collect()
-            });
-            let mut view = self.entity_view_asked(t, &json);
-            view.scores = scores;
-            view
-        });
+        let view = source.entity.map(|t| self.entity_view_scored(t, &json));
         Ok(self.command_conditions_hold(&json, view.as_ref(), source.pos))
     }
 }
@@ -1506,6 +1535,104 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reload_failure_formats_nested_listener_error_source_chain() {
+        #[derive(Debug)]
+        struct Inner;
+        impl std::fmt::Display for Inner {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("inner cause")
+            }
+        }
+        impl std::error::Error for Inner {}
+
+        #[derive(Debug)]
+        struct Middle(Inner);
+        impl std::fmt::Display for Middle {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("middle cause")
+            }
+        }
+        impl std::error::Error for Middle {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        #[derive(Debug)]
+        struct Outer(Middle);
+        impl std::fmt::Display for Outer {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("outer cause")
+            }
+        }
+        impl std::error::Error for Outer {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        let source = mod_api::ReloadResourceError::new(
+            mod_api::Identifier::parse("test_mod:machine").unwrap(),
+            Outer(Middle(Inner)),
+        );
+        let reply = Game::reload_failure(ReloadStageError::Listener {
+            listener: mod_api::Identifier::parse("test_mod:listener").unwrap(),
+            source,
+        })
+        .message
+        .plain();
+        assert!(
+            reply.contains(
+                "reload listener test_mod:listener: test_mod:machine: outer cause: middle cause: inner cause"
+            ),
+            "{reply}"
+        );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn mob_entity_membership_follows_world_pack_reload() {
+        crate::game::in_own_process(
+            "game::functions::tests::mob_entity_membership_follows_world_pack_reload",
+            || {
+                crate::game::native_entity_refs::tests::with_game(|game| {
+                    let world = tempfile::tempdir().unwrap();
+                    game.world_root = world.path().to_owned();
+                    let pack = world.path().join("datapacks/snow_walkers");
+                    let tags = pack.join("data/minecraft/tags/entity_type");
+                    std::fs::create_dir_all(&tags).unwrap();
+                    let f = sunrise_core::version::DATA_PACK_FORMAT;
+                    std::fs::write(
+                        pack.join("pack.mcmeta"),
+                        serde_json::json!({"pack": {
+                            "description": "Snow walkers", "pack_format": f.0,
+                            "min_format": [f.0, f.1], "max_format": [f.0, f.1]
+                        }})
+                        .to_string(),
+                    )
+                    .unwrap();
+                    let tag_file = tags.join("powder_snow_walkable_mobs.json");
+                    std::fs::write(&tag_file, r#"{"replace":true,"values":["minecraft:cow"]}"#)
+                        .unwrap();
+                    game.reload_datapacks(false, &[]).unwrap();
+                    let walkable = "minecraft:powder_snow_walkable_mobs";
+                    let world = game.mob_world_base(&[]);
+                    assert!(world.entity_has(walkable, "minecraft:cow"));
+                    assert!(!world.entity_has(walkable, "minecraft:fox"));
+
+                    std::fs::write(&tag_file, r#"{"replace":true,"values":["minecraft:fox"]}"#)
+                        .unwrap();
+                    // This unopened-world fixture has no operator player. Run at console authority.
+                    assert!(game.as_console(|game| game.run_command("reload")));
+                    let world = game.mob_world_base(&[]);
+                    assert!(!world.entity_has(walkable, "minecraft:cow"));
+                    assert!(world.entity_has(walkable, "minecraft:fox"));
+                });
+            },
+        );
+    }
 
     #[test]
     #[ignore = "daily"]
@@ -1568,121 +1695,125 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn functions_name_mod_commands_from_the_first_world_open() {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, AtomicU32, Ordering},
-        };
-        struct Commands {
-            offered: Arc<AtomicBool>,
-            ran: Arc<AtomicU32>,
-        }
-        #[mod_api::__subscriptions]
-        impl mod_api::Hooks for Commands {
-            fn register_commands(
-                &self,
-                _: &mut dyn mod_api::ServerHost,
-                event: &mut mod_api::RegisterCommandsEvent<'_>,
-            ) {
-                if self.offered.load(Ordering::Relaxed) {
-                    event
-                        .commands
-                        .push(mod_api::Command::new("fnmod [n:integer]"));
-                }
-            }
-            fn run_mod_command(
-                &self,
-                _: &mut dyn mod_api::ServerHost,
-                _: &mut mod_api::RunModCommandEvent<'_>,
-            ) -> mod_api::Flow {
-                self.ran.fetch_add(1, Ordering::Relaxed);
-                mod_api::Flow::Cancel
-            }
-        }
-        let offered = Arc::new(AtomicBool::new(true));
-        let ran = Arc::new(AtomicU32::new(0));
-        let mods = vec![mod_api::ModEntry::new(
-            "fnmod",
-            Box::new(Commands {
-                offered: offered.clone(),
-                ran: ran.clone(),
-            }),
-        )];
-        mod_platform::testing::with_mods(mods.into(), || {
-            crate::game::native_entity_refs::tests::with_game(|game| {
-                let scratch = tempfile::tempdir().unwrap();
-                let folder = "functions-name-mod-commands";
-                let world = scratch.path().join(folder);
-                let pack = world.join("datapacks/fnmod");
-                let functions = pack.join("data/fnmod/function");
-                std::fs::create_dir_all(&functions).unwrap();
-                let f = sunrise_core::version::DATA_PACK_FORMAT;
-                std::fs::write(
-                    pack.join("pack.mcmeta"),
-                    serde_json::json!({"pack":{
-                        "description":"Mod commands in functions", "pack_format":f.0,
-                        "min_format":[f.0,f.1], "max_format":[f.0,f.1]
-                    }})
-                    .to_string(),
-                )
-                .unwrap();
-                for (name, line) in [
-                    ("plain", "fnmod 1"),
-                    ("macro", "$fnmod $(n)"),
-                    ("unknown", "nosuchmodcommand"),
-                ] {
-                    std::fs::write(functions.join(format!("{name}.mcfunction")), line).unwrap();
-                }
-                let mut request = crate::game::world_loading::WorldRequest::new(
-                    folder,
-                    None,
-                    Some(3042),
-                    true,
-                    None,
-                    game.level.rule_registry.clone(),
-                )
-                .unwrap();
-                request.save_root = world;
-                game.load_world(request).unwrap();
-                let store = &game.fns.store;
-                assert!(
-                    store.functions.contains_key("fnmod:plain"),
-                    "{:?}",
-                    store.errors
-                );
-                assert!(
-                    store.functions.contains_key("fnmod:macro"),
-                    "{:?}",
-                    store.errors
-                );
-                assert!(!store.functions.contains_key("fnmod:unknown"));
-                let refusal = |game: &Game<'_>, id: &str| {
-                    game.fns
-                        .store
-                        .errors
-                        .iter()
-                        .find(|(f, _)| f == id)
-                        .map(|(_, e)| e.clone())
+        crate::game::in_own_process(
+            "game::functions::tests::functions_name_mod_commands_from_the_first_world_open",
+            || {
+                use std::sync::{
+                    Arc,
+                    atomic::{AtomicBool, AtomicU32, Ordering},
                 };
-                assert!(
-                    refusal(game, "fnmod:unknown")
-                        .unwrap()
-                        .starts_with("Invalid command \"nosuchmodcommand\": ")
-                );
-                game.ui.registries.permission = 4;
-                assert!(game.run_command("function fnmod:plain"));
-                assert!(game.run_command("function fnmod:macro {n:3}"));
-                assert_eq!(ran.load(Ordering::Relaxed), 2);
-                offered.store(false, Ordering::Relaxed);
-                let features = game.level.enabled_features.clone();
-                game.reload_datapacks(false, &features).unwrap();
-                assert!(!game.fns.store.functions.contains_key("fnmod:plain"));
-                assert!(
-                    refusal(game, "fnmod:plain")
-                        .unwrap()
-                        .starts_with("Invalid command \"fnmod 1\": ")
-                );
-            });
-        });
+                struct Commands {
+                    offered: Arc<AtomicBool>,
+                    ran: Arc<AtomicU32>,
+                }
+                #[mod_api::__subscriptions]
+                impl mod_api::Hooks for Commands {
+                    fn register_commands(
+                        &self,
+                        _: &mut dyn mod_api::ServerHost,
+                        event: &mut mod_api::RegisterCommandsEvent<'_>,
+                    ) {
+                        if self.offered.load(Ordering::Relaxed) {
+                            let ran = self.ran.clone();
+                            event.commands.push(
+                                mod_api::Command::new("fnmod [n:integer]").executes(
+                                    move |_, _, _| {
+                                        ran.fetch_add(1, Ordering::Relaxed);
+                                        Ok(1)
+                                    },
+                                ),
+                            );
+                        }
+                    }
+                }
+                let offered = Arc::new(AtomicBool::new(true));
+                let ran = Arc::new(AtomicU32::new(0));
+                let mods = vec![mod_api::ModEntry::new(
+                    "fnmod",
+                    Box::new(Commands {
+                        offered: offered.clone(),
+                        ran: ran.clone(),
+                    }),
+                )];
+                mod_platform::testing::with_mods(mods.into(), || {
+                    crate::game::native_entity_refs::tests::with_game(|game| {
+                        let scratch = tempfile::tempdir().unwrap();
+                        let folder = "functions-name-mod-commands";
+                        let world = scratch.path().join(folder);
+                        let pack = world.join("datapacks/fnmod");
+                        let functions = pack.join("data/fnmod/function");
+                        std::fs::create_dir_all(&functions).unwrap();
+                        let f = sunrise_core::version::DATA_PACK_FORMAT;
+                        std::fs::write(
+                            pack.join("pack.mcmeta"),
+                            serde_json::json!({"pack":{
+                                "description":"Mod commands in functions", "pack_format":f.0,
+                                "min_format":[f.0,f.1], "max_format":[f.0,f.1]
+                            }})
+                            .to_string(),
+                        )
+                        .unwrap();
+                        for (name, line) in [
+                            ("plain", "fnmod 1"),
+                            ("macro", "$fnmod $(n)"),
+                            ("unknown", "nosuchmodcommand"),
+                        ] {
+                            std::fs::write(functions.join(format!("{name}.mcfunction")), line)
+                                .unwrap();
+                        }
+                        let mut request = crate::game::world_loading::WorldRequest::new(
+                            folder,
+                            None,
+                            Some(3042),
+                            true,
+                            None,
+                            game.level.rule_registry.clone(),
+                        )
+                        .unwrap();
+                        request.save_root = world;
+                        game.load_world(request).unwrap();
+                        let store = &game.fns.store;
+                        assert!(
+                            store.functions.contains_key("fnmod:plain"),
+                            "{:?}",
+                            store.errors
+                        );
+                        assert!(
+                            store.functions.contains_key("fnmod:macro"),
+                            "{:?}",
+                            store.errors
+                        );
+                        assert!(!store.functions.contains_key("fnmod:unknown"));
+                        let refusal = |game: &Game<'_>, id: &str| {
+                            game.fns
+                                .store
+                                .errors
+                                .iter()
+                                .find(|(f, _)| f == id)
+                                .map(|(_, e)| e.clone())
+                        };
+                        assert!(
+                            refusal(game, "fnmod:unknown")
+                                .unwrap()
+                                .starts_with("Invalid command \"nosuchmodcommand\": ")
+                        );
+                        game.ui.registries.permission = 4;
+                        assert!(game.run_command("function fnmod:plain"));
+                        assert!(game.run_command("function fnmod:macro {n:3}"));
+                        assert_eq!(ran.load(Ordering::Relaxed), 2);
+                        offered.store(false, Ordering::Relaxed);
+                        let features = game.level.enabled_features.clone();
+                        game.reload_datapacks(false, &features).unwrap();
+                        assert!(!game.fns.store.functions.contains_key("fnmod:plain"));
+                        assert!(
+                            refusal(game, "fnmod:plain")
+                                .unwrap()
+                                .starts_with("Invalid command \"fnmod 1\": ")
+                        );
+                    });
+                });
+            },
+        );
     }
 
     #[test]
@@ -2534,9 +2665,11 @@ mod tests {
                     .tags
                     .contains(&"test:feature_marker".to_owned())
             );
-            (game.world_tables, game.health_resources, _) = game
+            let staged = game
                 .stage_world_tables(&stack, false, &game.options.resources.clone())
                 .unwrap();
+            game.world_tables = staged.tables;
+            game.health_resources = staged.health;
             assert!(game.items().item_tags["test:sample"].contains("minecraft:diamond"));
         });
         std::fs::remove_dir_all(root).unwrap();
@@ -2944,7 +3077,10 @@ mod tests {
                 &[],
                 &[],
             );
-            let files = content_overlay(&stack);
+            let OverlayFiles {
+                files, read_errors, ..
+            } = overlay_files(&stack, Vec::new());
+            assert!(read_errors.is_empty());
             let (_, versions) = files.iter().find(|(id, _)| id == "recipe/x:r").unwrap();
             let last = versions.last().unwrap();
             assert_eq!(
@@ -3007,7 +3143,7 @@ mod tests {
             &[],
             &[],
         );
-        let files = overlay_files(
+        let OverlayFiles { files, .. } = overlay_files(
             &stack,
             vec![
                 ("tags/pkg:item/both".to_owned(), tag("pkg:from_mod")),
@@ -3046,7 +3182,7 @@ mod tests {
             ["pkg:only_mod"]
         );
         // The next load asks again: the new contribution, not the first's.
-        let files = overlay_files(
+        let OverlayFiles { files, .. } = overlay_files(
             &stack,
             vec![("tags/pkg:item/mod_only".to_owned(), tag("pkg:second_load"))],
         );
@@ -3057,7 +3193,7 @@ mod tests {
             ["pkg:second_load"]
         );
         // A file that isn't JSON is skipped alone, not the whole load.
-        let files = overlay_files(
+        let OverlayFiles { files, .. } = overlay_files(
             &stack,
             vec![
                 ("tags/pkg:item/mod_only".to_owned(), b"{not json".to_vec()),
@@ -3068,8 +3204,6 @@ mod tests {
         let tags = sunrise_items::items::load_tags(&dir, "item", &overlay).unwrap();
         assert!(!tags.contains_key("pkg:mod_only"));
         assert!(tags["pkg:good"].contains("pkg:good"));
-        // With nothing contributed the overlay is the packs' own.
-        assert_eq!(overlay_files(&stack, Vec::new()), content_overlay(&stack));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -3675,29 +3809,35 @@ mod required_tag_tests {
             assert!(game.check_predicate("h121:absent").is_err());
             game.command_source = previous;
             // Defensive evaluator controls only. Java rejects these graphs at
-            // world load, so this does not establish startup/availability parity.
-            write(
-                "missing",
+            // world load (a reload refuses a dangling or cyclic reference, so they cannot come from a
+            // pack): they are put in the loaded store directly. This does not establish
+            // startup/availability parity.
+            let mut defensive_graphs = Vec::new();
+            let mut defensive = |name: &str, value: serde_json::Value| {
+                defensive_graphs.push((name.to_owned(), value));
+            };
+            defensive(
+                "h121:missing",
                 serde_json::json!({"type":"minecraft:all_of","terms":["h121:absent"]}),
             );
-            write(
-                "nested_missing",
+            defensive(
+                "h121:nested_missing",
                 serde_json::json!({"type":"minecraft:all_of","terms":["h121:missing"]}),
             );
-            write(
-                "not_missing",
+            defensive(
+                "h121:not_missing",
                 serde_json::json!({"type":"minecraft:inverted","term":"h121:absent"}),
             );
-            write(
-                "cycle_a",
+            defensive(
+                "h121:cycle_a",
                 serde_json::json!({"type":"minecraft:all_of","terms":["h121:cycle_b"]}),
             );
-            write(
-                "cycle_b",
+            defensive(
+                "h121:cycle_b",
                 serde_json::json!({"type":"minecraft:all_of","terms":["h121:cycle_a"]}),
             );
-            write(
-                "not_cycle",
+            defensive(
+                "h121:not_cycle",
                 serde_json::json!({"type":"minecraft:inverted","term":"h121:cycle_a"}),
             );
             for invalid in ["h121:absent", "h121:cycle_a"] {
@@ -3707,20 +3847,18 @@ mod required_tag_tests {
                     ("all_skip", "minecraft:all_of", "h121:cow"),
                     ("all_reach", "minecraft:all_of", "h121:pig"),
                 ] {
-                    write(
-                        &format!("{label}_{}", invalid.split(':').next_back().unwrap()),
+                    defensive(
+                        &format!("h121:{label}_{}", invalid.split(':').next_back().unwrap()),
                         serde_json::json!({"type":kind,"terms":[first,invalid]}),
                     );
                 }
             }
-            let canonical = pack.join("data/minecraft/predicate/h121_canonical.json");
-            std::fs::create_dir_all(canonical.parent().unwrap()).unwrap();
-            std::fs::write(
-                canonical,
-                r#"{"type":"minecraft:all_of","terms":["h121_canonical"]}"#,
-            )
-            .unwrap();
-            game.reload_datapacks(false, &[]).unwrap();
+            // A predicate naming itself by its short id: the same cycle, under its canonical name.
+            defensive(
+                "minecraft:h121_canonical",
+                serde_json::json!({"type":"minecraft:all_of","terms":["h121_canonical"]}),
+            );
+            game.fns.store.predicates.extend(defensive_graphs);
             let mut source = game.player_source();
             source.entity = Some(Target::Mob(actors[0].0));
             source.pos = game.target_position(Target::Mob(actors[0].0)).unwrap();

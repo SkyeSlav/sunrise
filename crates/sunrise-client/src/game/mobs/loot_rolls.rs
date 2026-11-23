@@ -112,8 +112,8 @@ impl Game<'_> {
             Target::Mob(id) => self
                 .mobs
                 .iter()
-                .find(|mob| mob.id == id)
-                .map(|mob| sunrise_client::mobs::drops::loot_entity(mob, None)),
+                .any(|mob| mob.id == id)
+                .then(|| self.target_loot_entity(target)),
             _ => None,
         };
         let loot = live_target.as_ref().and_then(|_| self.server_loot.get());
@@ -247,17 +247,26 @@ impl Game<'_> {
         &mut self,
         target: Target,
     ) -> sunrise_world::loot::LootEntity {
-        match target {
-            Target::Mob(id) => {
-                if let Some(mob) = self.mobs.iter().find(|mob| mob.id == id) {
-                    return sunrise_client::mobs::drops::loot_entity(mob, None);
-                }
-            }
-            Target::Player => return self.killer_loot_entity(None),
-            Target::Guest(conn) => return self.killer_loot_entity(Some(conn)),
-            _ => {}
+        let mut entity = match target {
+            Target::Mob(id) => self
+                .mobs
+                .iter()
+                .find(|mob| mob.id == id)
+                .map(|mob| sunrise_client::mobs::drops::loot_entity(mob, None))
+                .unwrap_or_else(|| sunrise_world::loot::LootEntity::new(&self.target_type(target))),
+            Target::Player => self.killer_loot_entity(None),
+            Target::Guest(conn) => self.killer_loot_entity(Some(conn)),
+            _ => sunrise_world::loot::LootEntity::new(&self.target_type(target)),
+        };
+        if entity.nbt.is_none()
+            && self
+                .server_loot
+                .get()
+                .is_some_and(|data| data.copies_entity_nbt())
+        {
+            entity.nbt = self.command_target_nbt(target).map(std::sync::Arc::new);
         }
-        sunrise_world::loot::LootEntity::new(&self.target_type(target))
+        entity
     }
 
     /// One roll of `table` (`LootTable.getRandomItems`) with `origin` as ORIGIN (a

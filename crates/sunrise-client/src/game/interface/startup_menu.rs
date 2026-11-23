@@ -7,6 +7,7 @@ use sunrise_client::{
     clipboard::{self, AppendSelection, SystemClipboard},
     options_ui::{Event, OptionsUi, Page},
     widgets::{Kind, Target},
+    window::{GuiSize, PointerProjection, PointerSample, PointerSpace},
 };
 use winit::{event::KeyEvent, keyboard::ModifiersState};
 
@@ -19,7 +20,8 @@ pub(super) struct StartupMenu {
     win: Option<(sunrise_client::win_screen::WinScreen, Instant)>,
     root: PathBuf,
     cursor: (f32, f32),
-    pointer: (f64, f64),
+    pointer: PointerSample,
+    window_pointer_space: std::cell::OnceCell<PointerSpace>,
     modifiers: ModifiersState,
     physical_keys: HashSet<KeyCode>,
     dragging: bool,
@@ -51,6 +53,8 @@ pub(super) struct StartupMenu {
     focus_screen: u64,
     pub pending: Option<PendingWorldEntry>,
     pub reload_packs: bool,
+    /// A committed client pack selection, independent of other reload requests.
+    pub(super) pack_selection_revision: u64,
     /// Browse mods' worker (`mod_browser`).
     mod_jobs: super::mod_browser::Jobs,
     perf: sunrise_client::telemetry::Session,
@@ -62,6 +66,7 @@ impl StartupMenu {
             Some(PendingWorldEntry::Server {
                 address: address.clone(),
                 name: options.player_name(),
+                list_name: None,
                 cookies: None,
                 lan: false,
                 realm: false,
@@ -98,9 +103,6 @@ impl StartupMenu {
         additional_data: Arc<[Arc<sunrise_client::datapack::DataPack>]>,
         splashes: &str,
     ) {
-        sunrise_client::ui::load_metadata(
-            &sunrise_assets::resource_source::ResourceSource::directory(root.to_path_buf()),
-        );
         sunrise_client::lang::set(sunrise_client::lang::Language::load(
             &[&sunrise_assets::resource_source::ResourceSource::directory(
                 root.clone(),
@@ -151,14 +153,16 @@ impl StartupMenu {
         game.perf = std::mem::take(&mut self.perf);
         game.mod_jobs = std::mem::take(&mut self.mod_jobs);
         game.cursor = self.cursor;
+        if self.key_focus.is_none() {
+            game.window_cursor = Some(self.pointer);
+        }
         game.modifiers = self.modifiers;
         game.physical_keys = std::mem::take(&mut self.physical_keys);
         game.clipboard = std::mem::take(&mut self.clipboard);
         game.text_selection = std::mem::take(&mut self.selection);
-        game.narrator_toast = self
-            .pending_narrator_toast
-            .take()
-            .and_then(|toast| game.add_system_toast(toast));
+        if let Some(toast) = self.pending_narrator_toast.take() {
+            game.add_system_toast(Some(super::toast_manager::SystemToastId::Narrator), toast);
+        }
         game.narration = std::mem::take(&mut self.narration);
         // Preserve an existing resource-error screen opened by start_game.
         if self.options_open {
@@ -168,7 +172,10 @@ impl StartupMenu {
                 game.ui.options.resource_error.take().or(resource_error);
             game.set_screen(Screen::Options);
             game.options_from_title = true;
-            game.dragging = self.dragging;
+            if self.dragging {
+                game.physical_buttons.insert(MouseButton::Left);
+                game.track_drag_button(MouseButton::Left, true);
+            }
         }
         if let Some(focus) = self.key_focus.take() {
             game.key_focus_adopt(focus, self.key_slider_edit);
@@ -252,11 +259,13 @@ impl StartupMenu {
             },
             Action::Connect {
                 address,
+                name,
                 lan,
                 realm,
             } => PendingWorldEntry::Server {
                 address,
                 name: player_name,
+                list_name: name,
                 cookies: None,
                 lan,
                 realm,
@@ -389,6 +398,7 @@ fn panic_text(payload: &(dyn std::any::Any + Send)) -> &str {
 pub(super) fn spawn_loader(
     options: &Options,
     settings: &Settings,
+    pack_selection_revision: u64,
     load_role: mods::LoadRole,
     vanilla_root: &std::path::Path,
     started: Instant,
@@ -401,39 +411,42 @@ pub(super) fn spawn_loader(
     mod_sources.capture_code_switches(&settings.mods.disabled);
     let world = launch_world(options).map(str::to_owned);
     let progress = progress.clone();
-    let handle = sunrise_guest_stack::builder()
+    let handle = std::thread::Builder::new()
+        .stack_size(sunrise_threads::GAME_THREAD_STACK_BYTES)
         .name("resource-loader".into())
         .spawn(move || {
-            let mut pack_error = None;
-            let root =
+            let result =
                 packs::startup_root(&vanilla_root, &settings.resource_packs, &[], &mod_sources)
-                    .or_else(|error| {
-                        pack_error = Some(error.to_string());
-                        mods::content_root(&vanilla_root, &mod_sources)
+                    .and_then(|roots| {
+                        load_resources_for_mods(
+                            roots,
+                            super::pack_finders::data_packs(&mod_sources),
+                            world.as_deref(),
+                            &vanilla_root,
+                            &settings,
+                            started,
+                            true,
+                            load_role,
+                            &progress,
+                            &mut |gui, root| {
+                                let _ = sender.send(LoaderMsg::Ui(gui, root.to_path_buf()));
+                            },
+                            &mut || {
+                                // The menu owns live settings; do not save the worker's snapshot.
+                                let (ack, wait) = std::sync::mpsc::channel();
+                                sender
+                                    .send(LoaderMsg::ClearPackSelection {
+                                        revision: pack_selection_revision,
+                                        ack,
+                                    })
+                                    .map_err(|_| "loading screen closed during pack recovery")?;
+                                wait.recv()?;
+                                Ok(())
+                            },
+                            &mod_sources,
+                        )
                     });
-            let result = root
-                .and_then(|root| {
-                    load_resources(
-                        root,
-                        super::pack_finders::data_packs(&mod_sources),
-                        world.as_deref(),
-                        &vanilla_root,
-                        &settings,
-                        started,
-                        true,
-                        load_role,
-                        &progress,
-                        &mut |gui, root| {
-                            let _ = sender.send(LoaderMsg::Ui(gui, root.to_path_buf()));
-                        },
-                    )
-                })
-                .map(|mut loaded| {
-                    loaded.pack_error = loaded.pack_error.or(pack_error);
-                    loaded
-                })
-                .map_err(|error| error.to_string());
-            let _ = sender.send(LoaderMsg::Done(result));
+            let _ = sender.send(LoaderMsg::done(result));
         })?;
     Ok((receiver, handle))
 }
@@ -446,6 +459,14 @@ impl Loading {
             loop {
                 match self.receiver.try_recv() {
                     Ok(LoaderMsg::Ui(gui, root)) => self.set_ui(gui, root),
+                    Ok(LoaderMsg::ClearPackSelection { revision, ack }) => {
+                        if revision == self.menu.pack_selection_revision {
+                            packs::clear_selection(&mut self.settings);
+                            self.menu.options.set_resource_pack_selection(&[]);
+                        }
+                        // Let even a superseded worker finish so the queued load can start.
+                        let _ = ack.send(());
+                    }
                     Ok(LoaderMsg::Done(result)) => {
                         self.loaded = Some(result);
                         self.delivered = true;
@@ -486,7 +507,7 @@ impl Loading {
     }
     pub(super) fn apply_menu_settings(&mut self) {
         if let Some(renderer) = &mut self.renderer {
-            renderer.gamma = self.settings.gamma;
+            renderer.gamma = self.settings.gamma as f32;
             renderer.set_present_mode(self.settings.vsync, self.settings.sunrise.present_mode);
         }
 
@@ -522,12 +543,31 @@ impl Loading {
         self.update_menu_cursor();
     }
 
-    fn update_menu_cursor(&mut self) {
-        let batch = HudBatch::new(self.menu_size(), self.settings.gui_scale_inputs());
-        self.menu.cursor = (
-            self.menu.pointer.0 as f32 / batch.scale,
-            self.menu.pointer.1 as f32 / batch.scale,
+    fn menu_pointer_projection(&self) -> PointerProjection {
+        let inputs = self.settings.gui_scale_inputs();
+        let size = self.menu_size();
+        let window = self.window.as_deref().map_or_else(
+            || PointerSpace::new(size, 1.0),
+            |window| {
+                *self
+                    .menu
+                    .window_pointer_space
+                    .get_or_init(|| PointerSpace::from_window(window))
+            },
         );
+        PointerProjection {
+            gui: GuiSize::new(size, inputs.requested, inputs.unicode),
+            window,
+        }
+    }
+
+    fn projected_menu_pointer(&self) -> sunrise_client::window::GuiPointer {
+        self.menu_pointer_projection()
+            .project_pointer(self.menu.pointer)
+    }
+
+    fn update_menu_cursor(&mut self) {
+        self.menu.cursor = self.projected_menu_pointer().subpixel();
     }
 
     fn menu_size(&self) -> [u32; 2] {
@@ -569,8 +609,9 @@ impl Loading {
             super::pack_finders::discover(mod_api::PackType::ClientResources, &options.mods)
         });
         self.menu.options.pack_infos = packs::pack_infos(&self.vanilla_root, &[], &additional);
-        self.menu.options.pack_selection = self.settings.resource_packs.clone();
-        self.menu.options.pack_screen = None;
+        self.menu
+            .options
+            .set_resource_pack_selection(&self.settings.resource_packs);
         self.menu.options_open = true;
     }
 
@@ -603,6 +644,12 @@ impl Loading {
                     self.save_menu_settings();
                 }
                 Event::Packs(_) => {
+                    self.menu.pack_selection_revision =
+                        self.menu.pack_selection_revision.wrapping_add(1);
+                    self.save_menu_settings();
+                    self.menu.reload_packs = true;
+                }
+                Event::ReloadTextures => {
                     self.save_menu_settings();
                     self.menu.reload_packs = true;
                 }
@@ -722,11 +769,7 @@ impl Loading {
                         self.menu.win = Some((screen, Instant::now()));
                     }
                 }
-                Event::Narrator => super::narrator::update_status(
-                    self.settings.narrator(),
-                    &mut self.menu.pending_narrator_toast,
-                    Some,
-                ),
+                Event::Narrator => self.menu_narrator_status_changed(),
                 // The startup menu has no screen stack for ConfirmLinkScreen;
                 // the link opens directly, as the menu's other links do.
                 Event::AccessibilityHelp => {
@@ -756,6 +799,15 @@ impl Loading {
                     self.menu.pending = Some(PendingWorldEntry::StudioReplay(path));
                 }
             }
+        }
+    }
+
+    fn menu_narrator_status_changed(&mut self) {
+        if let Some(toast) = super::narrator::update_status(
+            self.settings.narrator(),
+            self.menu.pending_narrator_toast.as_mut(),
+        ) {
+            self.menu.pending_narrator_toast = Some(toast);
         }
     }
 
@@ -793,11 +845,7 @@ impl Loading {
         }
         let was_disabled = super::narrator::cycle_status(&mut self.settings);
         self.menu.options.layout_changed();
-        super::narrator::update_status(
-            self.settings.narrator(),
-            &mut self.menu.pending_narrator_toast,
-            Some,
-        );
+        self.menu_narrator_status_changed();
         self.save_menu_settings();
         self.menu
             .narration
@@ -831,6 +879,15 @@ impl Loading {
             .and_then(Title::take_connect_request)
         {
             self.menu_action(event_loop, action);
+        }
+    }
+
+    /// The title's installed-package count: the buttons crates add to the title screen
+    /// (`sunrise_hooks::title`) show by it, with the same eligibility the game's own title
+    /// screen uses. Before the menu draws or takes input.
+    fn sync_title_mods(&mut self) {
+        if let Some(title) = &mut self.menu.title {
+            title.mods = self.settings.mods.installed.len();
         }
     }
 
@@ -1087,6 +1144,9 @@ impl Loading {
         event_loop: &dyn EventLoopCtl,
         event: WindowEvent,
     ) -> Result<()> {
+        // The buttons crates add to the title screen show by what is installed now
+        // (`sunrise_hooks::title`), as on the game's own title screen.
+        self.sync_title_mods();
         if let WindowEvent::KeyboardInput { event, .. } = &event
             && let PhysicalKey::Code(key) = event.physical_key
         {
@@ -1136,10 +1196,15 @@ impl Loading {
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
+                self.menu.window_pointer_space.take();
                 if let Some(r) = &mut self.renderer {
                     r.resize(size.width, size.height);
                 }
                 self.apply_menu_settings();
+            }
+            WindowEvent::ScaleFactorChanged { .. } => {
+                self.menu.window_pointer_space.take();
+                self.update_menu_cursor();
             }
             WindowEvent::RedrawRequested => self.draw(),
             WindowEvent::ModifiersChanged(modifiers) => self.menu.modifiers = modifiers.state(),
@@ -1193,8 +1258,9 @@ impl Loading {
             WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. }
                 if self.menu.win.is_some() => {}
             WindowEvent::CursorMoved { position, .. } => {
-                self.menu.pointer = (position.x, position.y);
-                self.update_menu_cursor();
+                let projection = self.menu_pointer_projection();
+                self.menu.pointer = projection.window.os_sample(position);
+                self.menu.cursor = projection.project_pointer(self.menu.pointer).subpixel();
                 if self.menu.options_open && self.menu.dragging {
                     self.menu_options_click(true, false);
                 } else if let Some(title) = &mut self.menu.title {
@@ -1279,7 +1345,7 @@ impl Loading {
                     sunrise_client::mouse::java_signum(f64::from(raw)) as f32
                 } else {
                     raw
-                } * self.settings.mouse_wheel_sensitivity;
+                } * self.settings.mouse_wheel_sensitivity as f32;
                 let size = self.menu_size();
                 let batch = HudBatch::new(size, self.settings.gui_scale_inputs());
                 if self.menu.options_open {
@@ -1339,12 +1405,20 @@ impl Loading {
     }
 
     pub(super) fn draw_menu(&mut self, batch: &mut HudBatch) {
+        // The buttons crates add to the title screen show by what is installed now
+        // (`sunrise_hooks::title`), as on the game's own title screen.
+        self.sync_title_mods();
         let logs = sunrise_client::logging::recent_lines();
         let Some(gui) = &self.gui else {
             // The pack's screens do not exist yet: the boot screen holds the
             // window, the wordmark and the console's lines while they load.
             sunrise_client::ui_theme::draw_boot(&self.boot, batch, &logs);
             return;
+        };
+        let cursor = if self.menu.key_focus.is_some() {
+            self.menu.cursor
+        } else {
+            self.projected_menu_pointer().pixel()
         };
         // `Gui.setScreen` clears the focus of the screen it leaves
         // (`Screen.clearFocus`): the title behind the options, and the one
@@ -1359,11 +1433,13 @@ impl Loading {
             }
         }
         if self.menu.pending.is_some() {
+            self.bar =
+                sunrise_client::level_loading::ease_overlay(self.bar, self.progress.fraction());
             sunrise_client::level_loading::draw_loading_overlay(
                 batch,
                 &gui.atlas,
-                self.progress.line(),
-                self.progress.fraction(),
+                self.bar,
+                sunrise_client::level_loading::OverlayFade::OPAQUE,
                 self.settings.file.bool("darkMojangStudiosBackground"),
             );
             let (bars, lines) = super::startup_progress::shown();
@@ -1389,10 +1465,8 @@ impl Loading {
                 .draw_background(&self.settings, output, batch, &gui.atlas);
             self.menu
                 .options
-                .draw_contents(&self.settings, batch, &gui.atlas, self.menu.cursor);
-            self.menu
-                .options
-                .draw_overlays(batch, &gui.atlas, self.menu.cursor);
+                .draw_contents(&self.settings, batch, &gui.atlas, cursor);
+            self.menu.options.draw_overlays(batch, &gui.atlas, cursor);
         } else if let Some(title) = &mut self.menu.title {
             title.poll_backup();
             if std::mem::take(&mut title.onboarding_finished) {
@@ -1414,7 +1488,7 @@ impl Loading {
                 &gui.atlas,
                 items,
                 batch,
-                self.menu.cursor,
+                cursor,
                 self.settings.file.bool("hideSplashTexts"),
                 self.settings.file.bool("hideServerAddress"),
                 &mut |_, _| {},
@@ -1458,6 +1532,7 @@ impl Loading {
         let (receiver, handle) = spawn_loader(
             options,
             &self.settings,
+            self.menu.pack_selection_revision,
             options.execution_role.into(),
             &self.vanilla_root,
             self.started,
@@ -1499,15 +1574,21 @@ mod tests {
     use super::*;
 
     fn gui(root: &std::path::Path) -> UiResources {
-        UiResources {
-            atlas: HudAtlas::fonts(&sunrise_assets::resource_source::ResourceSource::directory(
+        let atlas = if root.exists() {
+            HudAtlas::fonts(&sunrise_assets::resource_source::ResourceSource::directory(
                 root.to_path_buf(),
             ))
-            .unwrap(),
+            .unwrap()
+        } else {
+            HudAtlas::boot()
+        };
+        UiResources {
+            atlas,
             panorama: Arc::new(sunrise_client::gfx::panorama::Faces::colour([
                 96, 110, 111, 255,
             ])),
             splashes: Arc::from(""),
+            plain_texts: Default::default(),
         }
     }
 
@@ -1526,6 +1607,7 @@ mod tests {
             started: Instant::now(),
             panorama_rotation: Default::default(),
             progress: Progress::new(),
+            bar: 0.0,
             receiver,
             loaded: None,
             delivered: false,
@@ -1629,7 +1711,10 @@ mod tests {
             assert_eq!(view(&second), (4.0, 240.0, 180.0));
         });
         first.settings.force_unicode = true;
-        first.menu.pointer = (400.0, 200.0);
+        first.menu.pointer = first
+            .menu_pointer_projection()
+            .window
+            .physical_sample(winit::dpi::PhysicalPosition::new(400.0, 200.0));
         first.apply_menu_settings();
         assert_eq!(view(&first), (4.0, 240.0, 180.0));
         assert_eq!(first.menu.cursor, (100.0, 50.0));
@@ -1725,6 +1810,8 @@ mod tests {
             game.handle_window_event_inner(
                 &Loop,
                 WindowEvent::DroppedFile(source.join("Game pack")),
+                None,
+                None,
             );
             assert!(game.ui.options.pack_screen.as_ref().unwrap().confirming());
             assert!(!packs::packs_dir().join("Game pack").exists());
@@ -1754,6 +1841,195 @@ mod tests {
         std::env::set_current_dir(previous_dir).unwrap();
     }
 
+    fn saved_pack_options() -> sunrise_client::options_file::OptionsFile {
+        sunrise_client::options_file::OptionsFile::parse(
+            &std::fs::read_to_string(Game::options_path()).unwrap(),
+        )
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn startup_pack_recovery_only_clears_the_failed_selection_revision() {
+        use sunrise_client::options_file::V;
+
+        const CASE: &str = "SUNRISE_STARTUP_PACK_RECOVERY_REVISION_CASE";
+        const OBSOLETE: &str = "file/old";
+        const REPLACEMENT: &str = "file/replacement";
+        const ASSET: &str = "assets/fixture/texts/replacement.txt";
+        if super::super::native_entity_refs::tests::run_fresh_cases(
+            "game::startup_menu::tests::startup_pack_recovery_only_clears_the_failed_selection_revision",
+            CASE,
+            &["current", "superseded"],
+        ) {
+            return;
+        }
+        let superseded = std::env::var(CASE).unwrap() == "superseded";
+        let (send, recv) = std::sync::mpsc::channel();
+        let mut loading = loading(recv);
+        loading.settings.resource_packs = vec![OBSOLETE.into()];
+        loading
+            .settings
+            .file
+            .set("incompatibleResourcePacks", V::List(vec![OBSOLETE.into()]));
+        loading.settings.save(&Game::options_path());
+        let revision = loading.menu.pack_selection_revision;
+        if superseded {
+            // OptionsUi applies the new selection before emitting Event::Packs.
+            loading.settings.resource_packs = vec![REPLACEMENT.into()];
+            loading.settings.file.set(
+                "incompatibleResourcePacks",
+                V::List(vec![REPLACEMENT.into()]),
+            );
+            loading.menu_option_events(vec![Event::Packs(vec![REPLACEMENT.into()])]);
+        }
+        // Drive the graphical handshake before delivering the worker's later
+        // error from the required-only rebuild.
+        let (ack, acknowledged) = std::sync::mpsc::channel();
+        send.send(LoaderMsg::ClearPackSelection { revision, ack })
+            .unwrap();
+        loading.poll_menu_resources().unwrap();
+        acknowledged.try_recv().unwrap();
+        assert!(loading.loaded.is_none());
+        let expected: &[&str] = if superseded { &[REPLACEMENT] } else { &[] };
+        assert_eq!(loading.settings.resource_packs.as_slice(), expected);
+        let options = saved_pack_options();
+        assert_eq!(options.list("resourcePacks").as_slice(), expected);
+        assert_eq!(
+            options.list("incompatibleResourcePacks").as_slice(),
+            expected
+        );
+
+        send.send(LoaderMsg::done(Err("required pack failed".into())))
+            .unwrap();
+        if !superseded {
+            loading.poll_menu_resources().unwrap();
+            assert!(matches!(loading.take_worker_result(), Some(Err(error))
+                if error.to_string() == "required pack failed"));
+            assert!(saved_pack_options().list("resourcePacks").is_empty());
+            return;
+        }
+
+        // Run the queued generation with the replacement, in a private prepared
+        // folder: the world tail may write its prepared-data cache.
+        fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+            std::fs::create_dir_all(to).unwrap();
+            for entry in std::fs::read_dir(from).unwrap() {
+                let entry = entry.unwrap();
+                let target = to.join(entry.file_name());
+                if entry.path().is_dir() {
+                    copy_tree(&entry.path(), &target);
+                } else {
+                    std::fs::copy(entry.path(), target).unwrap();
+                }
+            }
+        }
+        let vanilla = PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
+        let scratch = tempfile::tempdir().unwrap();
+        copy_tree(&vanilla, scratch.path());
+        let pack = packs::packs_dir().join("replacement");
+        std::fs::create_dir_all(pack.join(ASSET).parent().unwrap()).unwrap();
+        std::fs::write(
+            pack.join("pack.mcmeta"),
+            br#"{"pack":{"description":"Replacement","min_format":[97,0],"max_format":[97,1]}}"#,
+        )
+        .unwrap();
+        std::fs::write(pack.join(ASSET), b"replacement was loaded").unwrap();
+        mod_platform::__private::part_tests::install_parts_fixture(&[]).unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = scratch.path().to_path_buf();
+        loading.vanilla_root = options.resources.clone();
+        loading.options = Some(options);
+        loading.poll_menu_resources().unwrap();
+        assert!(loading.loaded.is_none(), "discard the failed generation");
+        assert!(!loading.menu.reload_packs, "start the queued generation");
+        let mut loaded = loop {
+            match loading.receiver.recv().unwrap() {
+                LoaderMsg::Ui(..) => {}
+                LoaderMsg::Done(result) => {
+                    break result.map_err(Box::<dyn std::error::Error>::from).unwrap();
+                }
+                LoaderMsg::ClearPackSelection { .. } => {
+                    panic!("replacement unexpectedly failed to load")
+                }
+            }
+        };
+        loading.handle.take().unwrap().join().unwrap();
+        loaded.rest_loader.take().unwrap().finish().unwrap();
+        assert_eq!(
+            loaded.pack.source.read(ASSET).unwrap(),
+            b"replacement was loaded"
+        );
+        assert_eq!(saved_pack_options().list("resourcePacks"), [REPLACEMENT]);
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn startup_client_pack_recovery_preserves_pending_world_pack_edits() {
+        if super::super::native_entity_refs::tests::run_fresh_cases(
+            "game::startup_menu::tests::startup_client_pack_recovery_preserves_pending_world_pack_edits",
+            "SUNRISE_STARTUP_PACK_RECOVERY_WORLD_EDITOR_CASE",
+            &["data-packs"],
+        ) {
+            return;
+        }
+        let (send, recv) = std::sync::mpsc::channel();
+        let mut loading = loading(recv);
+        loading.settings.resource_packs = vec!["file/client".into()];
+        let dir = tempfile::tempdir().unwrap();
+        let data_pack = dir.path().join("example");
+        std::fs::create_dir(&data_pack).unwrap();
+        std::fs::write(
+            data_pack.join("pack.mcmeta"),
+            br#"{"pack":{"description":"World pack","min_format":[121,0],"max_format":[121,0]}}"#,
+        )
+        .unwrap();
+        loading.menu.options_open = true;
+        let ui = &mut loading.menu.options;
+        ui.open_data_packs(
+            dir.path().to_path_buf(),
+            vec!["vanilla".into()],
+            loading.vanilla_root.clone(),
+            Vec::new(),
+        );
+        let mut screen = sunrise_client::pack_screen::PackScreen::new(
+            &sunrise_client::screen_draw::Measure(&loading.boot.font),
+            sunrise_client::text::Text::translate("dataPack.title", &[]),
+            480,
+            270,
+            false,
+            ui.pack_infos.clone(),
+            &ui.pack_selection,
+        );
+        let example = screen
+            .model
+            .unselected
+            .iter()
+            .position(|pack| pack.id == "file/example")
+            .unwrap();
+        assert!(screen.model.activate(false, example, true));
+        screen.changed = true;
+        ui.pack_screen = Some(screen);
+        let (ack, acknowledged) = std::sync::mpsc::channel();
+        send.send(LoaderMsg::ClearPackSelection {
+            revision: loading.menu.pack_selection_revision,
+            ack,
+        })
+        .unwrap();
+        loading.poll_menu_resources().unwrap();
+        acknowledged.try_recv().unwrap();
+        assert!(loading.settings.resource_packs.is_empty());
+        assert!(saved_pack_options().list("resourcePacks").is_empty());
+        assert_eq!(loading.menu.options.pack_selection, ["vanilla"]);
+        assert!(loading.menu.options_open);
+        let events = loading.menu.options.back(&mut loading.settings);
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, Event::DataPacks(ids)
+            if ids.as_slice() == ["vanilla", "file/example"]))
+        );
+    }
+
     #[test]
     fn the_world_renderer_waits_for_the_first_title_frame() {
         let (_send, receiver) = std::sync::mpsc::channel();
@@ -1772,8 +2048,18 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn menu_is_usable_while_the_core_worker_is_blocked() {
-        let root = std::env::temp_dir().join("sunrise-startup-menu-no-world-resources");
+        // Publishing the empty root's language must not replace another game's language.
+        if super::super::native_entity_refs::tests::run_fresh_cases(
+            "game::startup_menu::tests::menu_is_usable_while_the_core_worker_is_blocked",
+            "SUNRISE_STARTUP_BLOCKED_WORKER_CASE",
+            &["blocked"],
+        ) {
+            return;
+        }
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_path_buf();
         let (sender, receiver) = std::sync::mpsc::channel();
         let (release, wait) = std::sync::mpsc::channel();
         let (published, published_rx) = std::sync::mpsc::channel();
@@ -1785,7 +2071,7 @@ mod tests {
             published.send(()).unwrap();
             wait.recv().unwrap();
             sender
-                .send(LoaderMsg::Done(Err("core failure".into())))
+                .send(LoaderMsg::done(Err("core failure".into())))
                 .unwrap();
         });
         published_rx.recv().unwrap();
@@ -1822,7 +2108,9 @@ mod tests {
         release.send(()).unwrap();
         worker.join().unwrap();
         loading.poll_menu_resources().unwrap();
-        assert!(matches!(loading.loaded, Some(Err(ref error)) if error == "core failure"));
+        assert!(
+            matches!(loading.take_worker_result(), Some(Err(error)) if error.to_string() == "core failure")
+        );
     }
 
     #[test]
@@ -1831,6 +2119,7 @@ mod tests {
         menu.queue_entry(
             Action::Connect {
                 address: "localhost:25565".into(),
+                name: None,
                 lan: true,
                 realm: false,
             },
@@ -1848,7 +2137,7 @@ mod tests {
         let (sender, receiver) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
             sender
-                .send(LoaderMsg::Done(Err("missing facts.json".into())))
+                .send(LoaderMsg::done(Err("missing facts.json".into())))
                 .unwrap();
         });
         let mut loading = loading(receiver);
@@ -1858,12 +2147,48 @@ mod tests {
         }
         // App::about_to_wait takes the result to report it; the loop may poll
         // once more before it exits, with the loader gone.
-        assert!(matches!(loading.loaded.take(), Some(Err(e)) if e == "missing facts.json"));
+        assert!(
+            matches!(loading.take_worker_result(), Some(Err(error)) if error.to_string() == "missing facts.json")
+        );
         while !loading.handle.as_ref().is_none_or(JoinHandle::is_finished) {
             std::thread::yield_now();
         }
         loading.poll_menu_resources().unwrap();
         assert!(loading.loaded.is_none());
+    }
+
+    #[test]
+    fn native_declaration_failures_survive_the_graphical_loader() {
+        use mod_api::__private::{DeclarationKind, DeclarationRefusal};
+        let report = mods::DeclarationFailures::new(vec![
+            DeclarationRefusal::new(
+                "maker",
+                DeclarationKind::Block,
+                mod_api::DeclarationError::InvalidId {
+                    id: "maker:Bad Key".into(),
+                },
+            ),
+            DeclarationRefusal::new(
+                "porter",
+                DeclarationKind::Item,
+                mod_api::DeclarationError::UnownedNamespace {
+                    id: "foreign:wrench".into(),
+                    namespace: "foreign".into(),
+                },
+            ),
+        ]);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || sender.send(LoaderMsg::done(Err(report.into()))).unwrap())
+            .join()
+            .unwrap();
+        let mut loading = loading(receiver);
+        loading.poll_menu_resources().unwrap();
+        let error = loading.take_worker_result().unwrap().err().unwrap();
+        // Entry can log each refusal instead of treating the worker failure as one string.
+        let report = error.downcast::<mods::DeclarationFailures>().unwrap();
+        let lines = report.lines();
+        assert!(matches!(lines.as_slice(), [first, second]
+            if first.contains("maker:Bad Key") && second.contains("foreign:wrench")));
     }
 
     #[test]

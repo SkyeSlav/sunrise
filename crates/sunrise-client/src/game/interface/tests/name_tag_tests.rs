@@ -13,12 +13,13 @@
 use super::super::sculk::TEST_POSTED_EVENTS;
 use super::super::*;
 use super::name_tag_at;
+use crate::game::creatures::render_fixture::mob;
 use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_client::entities::ArmorStand;
 use sunrise_client::hud::HudBatch;
 use sunrise_client::items::ItemStack;
-use sunrise_client::mobs::{Anim, Brain, Mob, MobType, Part, Species, Who};
+use sunrise_client::mobs::{Mob, Species, Who};
 use sunrise_client::motion::PlayerMotion;
 use sunrise_client::save::uuid_text;
 use sunrise_client::scoreboard as sb;
@@ -26,63 +27,6 @@ use sunrise_client::text::Text;
 use sunrise_core::geometry::Vec3;
 use sunrise_core::nbt::Tag;
 use sunrise_core::position::ChunkPos;
-
-/// A mob of `species` with the box of its vanilla type, built without the
-/// prepared resources a test machine may not have.
-fn mob(id: u32, entity: &str, species: Species, width: f64, height: f64) -> Mob {
-    let part = Part {
-        name: "root".into(),
-        pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
-        polygons: Vec::new(),
-        children: Vec::new(),
-    };
-    let kind = MobType {
-        id: entity.into(),
-        species,
-        width,
-        height,
-        eye_height: height * 0.6,
-        category: "creature".into(),
-        max_health: 10.0,
-        speed: 0.2,
-        flying_speed: 0.02,
-        attack_damage: 1.0,
-        attack_knockback: 0.0,
-        follow_range: 16.0,
-        step_height: 0.6,
-        armor: 0.0,
-        armor_toughness: 0.0,
-        knockback_resistance: 0.0,
-        jump_strength: 0.42,
-        attributes: Default::default(),
-        item_stack_limits: Default::default(),
-        gravity: 0.08,
-        safe_fall_distance: 3.0,
-        fall_damage_multiplier: 1.0,
-        water_efficiency: 0.0,
-        water_slowdown: 0.8,
-        air_speed: 0.02,
-        baby_scale: 0.5,
-        head_rot_speed: 10.0,
-        max_head_x_rot: 40.0,
-        max_head_y_rot: 75.0,
-        ambient_interval: 80,
-        flags: Default::default(),
-        model: Arc::new(part),
-        layers: Default::default(),
-        texture: String::new(),
-        brain: Brain::Passive,
-        anim: Anim::Humanoid { zombie_arms: false },
-        sounds: ["entity.cow.hurt", "entity.cow.hurt", "entity.cow.death"],
-        food: Default::default(),
-        tempt: Default::default(),
-        shadow: None,
-        attribute_bounds: Default::default(),
-        sound_overrides: Default::default(),
-        passenger_attachments: Vec::new(),
-    };
-    Mob::new(id, Arc::new(kind), Vec3::new(0.0, 64.0, 0.0), 0.0)
-}
 
 /// `EntityTypes.SNIFFER`: `.sized(1.9F, 1.75F).nameTagOffset(2.05F)`. The tag
 /// hangs 2.05 above the feet where every other type hangs it at its box
@@ -122,7 +66,7 @@ fn a_sniffers_tag_hangs_from_its_name_tag_attachment() {
     );
 }
 
-fn game() -> Game<'static> {
+fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -> Game<'a> {
     let root = std::path::PathBuf::from(
         std::env::var_os("SUNRISE_TEST_RESOURCES")
             .expect("set SUNRISE_TEST_RESOURCES to prepared resources"),
@@ -144,7 +88,7 @@ fn game() -> Game<'static> {
     let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
     options.resources = root.clone();
     options.execution_role = execution_role::ExecutionRole::IntegratedServer;
-    let res: &'static _ = Box::leak(Box::new(loaded.resources));
+    let res = &*resources.insert(loaded.resources);
     let mut game = Game::new(
         res,
         loaded.pack,
@@ -208,7 +152,8 @@ fn take_interacts() -> Vec<(&'static str, [f64; 3], Option<Who>)> {
 #[test]
 #[ignore = "daily"]
 fn naming_posts_entity_interact_at_the_named_entity() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     TEST_POSTED_EVENTS.with(|events| *events.borrow_mut() = Some(Vec::new()));
     // A mob names itself in `Mob.interact`: the event goes out at the mob,
     // from the player who used the tag.
@@ -251,7 +196,8 @@ fn naming_posts_entity_interact_at_the_named_entity() {
 #[test]
 #[ignore = "daily"]
 fn an_armour_stands_name_ignores_f1_and_team_visibility() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     let mut stand = ArmorStand::new(42, Vec3::new(0.0, 64.0, 4.0), 0.0);
     stand.custom_name = Some(Text::literal("Holo"));
     stand.name_visible = true;
@@ -294,7 +240,10 @@ fn an_armour_stands_name_ignores_f1_and_team_visibility() {
 #[test]
 #[ignore = "daily"]
 fn a_trades_title_draws_the_names_style() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
+    // This test draws the merchant screen; the server fixture only has font metrics.
+    game.gui = UiResources::load(&game.pack.source, &game.options.resources).unwrap();
     // `MerchantScreen.extractLabels` draws the menu's title, the merchant's
     // `getDisplayName()`: a name with a colour keeps it, instead of coming out
     // in the screen's grey (-12566464).
@@ -324,7 +273,8 @@ fn a_trades_title_draws_the_names_style() {
 #[test]
 #[ignore = "daily"]
 fn a_creative_player_keeps_the_tag_it_names_a_stand_with() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     game.armor_stands
         .push(ArmorStand::new(9, Vec3::new(0.5, 64.0, 0.5), 0.0));
     let mut tag = ItemStack::new("minecraft:name_tag", 2);

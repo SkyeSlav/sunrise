@@ -14,8 +14,10 @@ use winit::keyboard::KeyCode;
 
 /// A game whose selected hotbar slot holds a book and quill, its editor open,
 /// `text` typed on the page.
-fn editing(text: &str) -> Game<'static> {
-    let resources = Box::leak(Box::new(None));
+fn editing<'a>(
+    resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>,
+    text: &str,
+) -> Game<'a> {
     let mut game = server_game(resources);
     *game.held_mut() = Some(ItemStack::new("minecraft:writable_book", 1));
     let stack = game.held().expect("a book in hand").clone();
@@ -37,7 +39,8 @@ fn saved_pages(game: &Game<'_>) -> Vec<String> {
 #[test]
 #[ignore = "daily"]
 fn escape_in_the_editor_saves_nothing() {
-    let mut game = editing("hello");
+    let mut resources = None;
+    let mut game = editing(&mut resources, "hello");
     game.book_input(Some(KeyCode::Escape), None);
     assert!(game.book.is_none(), "Escape left the editor open");
     assert!(saved_pages(&game).is_empty(), "Escape saved the page");
@@ -48,7 +51,8 @@ fn escape_in_the_editor_saves_nothing() {
 #[test]
 #[ignore = "daily"]
 fn escape_on_the_sign_screen_closes_the_book() {
-    let mut game = editing("hi");
+    let mut resources = None;
+    let mut game = editing(&mut resources, "hi");
     game.book_control(Some("sign")).expect("the Sign button");
     assert!(matches!(
         game.book,
@@ -68,7 +72,8 @@ fn escape_on_the_sign_screen_closes_the_book() {
 #[test]
 #[ignore = "daily"]
 fn enter_signs_a_title_of_spaces_but_not_an_empty_one() {
-    let mut game = editing("hi");
+    let mut resources = None;
+    let mut game = editing(&mut resources, "hi");
     game.book_control(Some("sign")).expect("the Sign button");
     game.book_input(Some(KeyCode::Enter), None);
     assert!(

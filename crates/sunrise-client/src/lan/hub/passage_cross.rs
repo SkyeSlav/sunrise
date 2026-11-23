@@ -74,7 +74,7 @@ impl Hub {
             self.refuse_passage(i, cross.id, why);
             return false;
         }
-        // No client tick: the prediction's record starts again at the confirmation.
+        // No client tick's move: the player's ground flag and look stay as the server has them.
         let g = &self.guests[i];
         let flags = u8::from(g.on_ground);
         let rot = (g.yaw, g.pitch);
@@ -139,7 +139,7 @@ impl Hub {
         });
         use play::relative::{DELTA_X, DELTA_Y, DELTA_Z, ROTATE_DELTA, X, X_ROT, Y, Y_ROT, Z};
         let all = X | Y | Z | Y_ROT | X_ROT | DELTA_X | DELTA_Y | DELTA_Z | ROTATE_DELTA;
-        self.teleport_relative(i, Some(to), all);
+        self.teleport_relative(i, Some(to), all, [0.0; 3]);
     }
 
     /// Refuses guest `i`'s crossing of passage `id`: the client is told `why`, then put back

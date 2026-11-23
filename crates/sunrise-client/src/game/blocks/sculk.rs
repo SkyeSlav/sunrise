@@ -351,6 +351,19 @@ impl Game<'_> {
             self.sculk.tracker = WardenSpawnTracker::from_nbt(tag);
         }
     }
+    /// Whether a mod canceled the `ServerPlayer.tick` of the world's owner, whose warden spawn
+    /// tracker this is: looked up only when a Pre canceled a player.
+    fn owner_tick_canceled(&self) -> bool {
+        !self.creatures.canceled_players.is_empty()
+            && self
+                .lan
+                .as_ref()
+                .and_then(|host| {
+                    let uuid = host.owner.as_ref()?.uuid;
+                    host.hub.guests.iter().find(|g| g.uuid == uuid)
+                })
+                .is_some_and(|g| self.player_tick_canceled(g.conn))
+    }
     /// The tracker as saved, once it has been loaded.
     pub(super) fn warden_tracker_tag(&self) -> Option<sunrise_core::nbt::Tag> {
         self.sculk
@@ -587,7 +600,7 @@ impl Game<'_> {
             owner_uuid: None,
             dampening_state: self.state_dampens(state),
             spectator: self.spectator(),
-            stepping_carefully: self.keys.held(Action::Sneak),
+            stepping_carefully: self.held_mapping(Action::Sneak),
             dampens: false,
             targetable: !dead && !creative && !self.spectator(),
             living: true,
@@ -704,6 +717,17 @@ impl Game<'_> {
         TEST_POSTED_EVENTS.with(|events| {
             if let Some(events) = events.borrow_mut().as_mut() {
                 events.push((event, pos, ctx.source.and_then(|source| source.actor())));
+            }
+        });
+        #[cfg(test)]
+        TEST_POSTED_EVENT_ORDER.with(|order| {
+            if let Some(order) = order.borrow_mut().as_mut() {
+                order.push((
+                    event,
+                    ctx.source.and_then(|source| source.actor()),
+                    self.lan_entity_events.len(),
+                    self.audio.capture.as_ref().map_or(0, Vec::len),
+                ));
             }
         });
         #[cfg(test)]
@@ -1085,7 +1109,11 @@ impl Game<'_> {
         self.sculk_prepare();
         laps.lap("sculk_prepare");
         self.load_warden_tracker();
-        self.sculk.tracker.tick();
+        // ServerPlayer.tick's wardenSpawnTracker: the owner's, which a mod's Pre that canceled
+        // the owner's tick stops this tick (game/network/lan_actions/tick.rs).
+        if !self.owner_tick_canceled() {
+            self.sculk.tracker.tick();
+        }
         self.tick_darkness_blend();
         laps.lap("sculk_wardens");
         self.sculk_step_on();
@@ -1295,7 +1323,7 @@ impl Game<'_> {
         self.sculk_step_on_player();
         let mut standing: Vec<(Who, [f64; 3])> = Vec::new();
         for m in &self.mobs {
-            if m.alive() && m.on_ground {
+            if m.alive() && m.ground.on_ground {
                 standing.push((Who::Mob(m.id), [m.position.x, m.position.y, m.position.z]));
             }
         }
@@ -1578,8 +1606,7 @@ impl Game<'_> {
     }
     /// The darkness effect's blend factor at the partial tick.
     pub(super) fn darkness_blend(&self, partial: f32) -> f32 {
-        let (previous, current) = self.sculk.darkness;
-        previous + (current - previous) * partial
+        darkness_blend_at(self.sculk.darkness, partial)
     }
     /// The fog's view of the darkness effect, while it is on.
     pub(super) fn darkness_fog(&self) -> Option<f32> {
@@ -1591,12 +1618,17 @@ impl Game<'_> {
     /// `LightmapRenderStateExtractor`: (brightness taken off the gamma
     /// option, the pulsing light scale).
     pub(super) fn darkness_lighting(&self, partial: f32) -> (f32, f32) {
-        let scale = self.settings.file.double("darknessEffectScale") as f32;
+        let scale = self.darkness_effect_scale();
         let modifier = self.darkness_blend(partial) * scale;
         let pulse = ((self.visual_ticks() as f32 - partial) * std::f32::consts::PI * 0.025).cos()
             * 0.45
             * modifier;
         (modifier, pulse.max(0.0) * scale)
+    }
+
+    /// The Darkness Effect option (`darknessEffectScale`), 0..1.
+    pub(super) fn darkness_effect_scale(&self) -> f32 {
+        self.settings.file.double("darknessEffectScale") as f32
     }
 
     /// `LightmapRenderStateExtractor`: the night vision effect's intensity
@@ -1649,7 +1681,7 @@ impl Game<'_> {
         let effect =
             sunrise_client::effects::EffectInstance::new("darkness", warden::DARKNESS_DURATION, 0)
                 .with_flags(false, false);
-        self.potions.effects.add(effect);
+        self.apply_player_effect(effect);
     }
 
     // ---- catalysts ----
@@ -1952,6 +1984,47 @@ impl Game<'_> {
         };
         self.post_game_event("minecraft:projectile_land", at, ctx);
     }
+    /// `Projectile.onHit`: entity hits post at the ray point with no affected state;
+    /// block hits post at the block center with the post-callback block state.
+    pub(in crate::game) fn projectile_hit_landed_event(
+        &mut self,
+        id: u32,
+        owner: Option<Who>,
+        hit: sunrise_client::projectiles::Hit,
+    ) {
+        match hit {
+            sunrise_client::projectiles::Hit::Entity { at, .. } => {
+                self.projectile_landed_event(id, owner, [at.x, at.y, at.z]);
+            }
+            sunrise_client::projectiles::Hit::Block { pos, .. } => {
+                self.projectile_block_landed_event(id, owner, pos);
+            }
+            sunrise_client::projectiles::Hit::None => {}
+        }
+    }
+    /// `Projectile.onHit` on a block: `PROJECTILE_LAND` at block center with post-callback state.
+    pub(in crate::game) fn projectile_block_landed_event(
+        &mut self,
+        id: u32,
+        owner: Option<Who>,
+        pos: [i32; 3],
+    ) {
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let at = [
+            f64::from(pos[0]) + 0.5,
+            f64::from(pos[1]) + 0.5,
+            f64::from(pos[2]) + 0.5,
+        ];
+        let ctx = Context {
+            source: (id != 0).then_some(EventSource::Entity(id)),
+            owner,
+            player: owner == Some(Who::Player) || self.rides_player(owner),
+            dampening_state: self.state_dampens(Some(state)),
+            affected_state: Some(state),
+            ..Context::default()
+        };
+        self.post_game_event("minecraft:projectile_land", at, ctx);
+    }
     /// A projectile's own event (`gameEvent(event)`, `Context.of(this, state)`):
     /// its owner as the projectile's owner, `state` the affected state. A
     /// guest's projectile posts as theirs, or with no owner once they have left
@@ -2024,7 +2097,8 @@ impl Game<'_> {
             .dropped
             .iter()
             .filter(|i| {
-                i.on_ground && ticking(i.position.x.floor() as i32, i.position.z.floor() as i32)
+                i.ground.on_ground
+                    && ticking(i.position.x.floor() as i32, i.position.z.floor() as i32)
             })
             .map(|i| [i.position.x, i.position.y, i.position.z])
             .collect();
@@ -2093,7 +2167,7 @@ impl Game<'_> {
             )
         });
         if let Some((at, on_ground, health, flying)) = player {
-            let crouch = self.keys.held(Action::Sneak);
+            let crouch = self.held_mapping(Action::Sneak);
             if on_ground && !self.spectator() {
                 self.step_on_redstone_ore(at, crouch, true);
             }
@@ -2237,7 +2311,7 @@ impl Game<'_> {
                 (
                     m.id,
                     [m.position.x, m.position.y, m.position.z],
-                    m.on_ground,
+                    m.ground.on_ground,
                     m.fluids.in_water,
                     m.species(),
                     m.last_damage.map(|(_, t)| t),
@@ -2425,8 +2499,7 @@ impl Game<'_> {
             Who::Player => self.player.as_ref()?.ground.supporting_block,
             Who::Mob(id) => {
                 let slot = self.mob_slot(id)?;
-                let mob = &self.mobs[slot];
-                self.supporting_block(mob.position, mob.bounds())
+                self.mobs[slot].ground.supporting_block
             }
         }
     }
@@ -2649,6 +2722,23 @@ pub(in crate::game) fn darkness_blend_tick(
         None => 0.0,
     };
     (current, next)
+}
+
+/// The darkness effect's blend factor at the partial tick, from its (previous, current)
+/// factors (`Mth.lerp(partial, previous, current)`).
+pub(in crate::game) fn darkness_blend_at((previous, current): (f32, f32), partial: f32) -> f32 {
+    previous + (current - previous) * partial
+}
+
+/// `GameRenderer.nightVisionScale` of another entity's night vision instance with `duration`
+/// ticks left: 1, or over its last 200 ticks (`MobEffectInstance.endsWithin(200)`: only -1 is
+/// infinite) a flicker on `Mth.sin`'s table, in vanilla's float order.
+pub(in crate::game) fn night_vision_scale(duration: i32, partial: f32) -> f32 {
+    if duration == -1 || duration > 200 {
+        return 1.0;
+    }
+    let angle = (duration as f32 - partial) * std::f32::consts::PI * 0.2;
+    0.7 + sunrise_core::geometry::trig::sin(f64::from(angle)) * 0.3
 }
 
 /// A new darkness instance's `BlendState`: from nothing, or, when the server
@@ -2956,6 +3046,8 @@ mod tests {
 #[cfg(test)]
 thread_local! {
     pub(super) static TEST_POSTED_EVENTS: std::cell::RefCell<Option<Vec<(&'static str, [f64; 3], Option<Who>)>>> = const { std::cell::RefCell::new(None) };
+    // Observe how many entity flashes and sounds have been delivered when the game event posts.
+    pub(super) static TEST_POSTED_EVENT_ORDER: std::cell::RefCell<Option<Vec<(&'static str, Option<Who>, usize, usize)>>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]

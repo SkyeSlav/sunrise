@@ -55,6 +55,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         self.emit(LevelEvent::Sound {
             pos,
             sound: Arc::from(sound),
+            source: None,
             volume,
             pitch,
         });

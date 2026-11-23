@@ -110,8 +110,8 @@ fn cart_index_finds_what_a_scan_finds() {
     }
     assert!(index.carts.is_some(), "the index was used");
 }
-/// The cart index hands a cart every mob a scan finds in its box, and
-/// knows whether a mob rides it, however the mob list changed since.
+/// The cart grid and passenger query agree with the mob list after moves,
+/// boarding, insertions and removals.
 #[test]
 #[ignore = "daily"]
 fn cart_index_finds_the_mobs_a_scan_finds() {
@@ -152,12 +152,18 @@ fn cart_index_finds_the_mobs_a_scan_finds() {
                     .filter(|&j| area.intersects(game.mobs[j as usize].bounds()))
                     .collect();
                 let ridden = game.mobs.iter().any(|m| m.extra.mount == Some(c.id));
-                let mounted = index.mobs_near(&game.mobs, c.id, area, &mut near);
-                assert_eq!(mounted, Some(ridden), "{what}: cart {}", c.id);
+                assert_eq!(
+                    game.has_seated_passengers(c.id),
+                    ridden,
+                    "{what}: cart {}",
+                    c.id
+                );
+                assert!(index.mobs_near(&game.mobs, area, &mut near));
                 near.retain(|&j| area.intersects(game.mobs[j as usize].bounds()));
                 assert_eq!(near, scan, "{what}: cart {}", c.id);
             }
         };
+        game.vehicles_ticking(true);
         check(game, "as placed");
         game.mobs[10].position = carts[3].position;
         game.mobs[11].extra.mount = Some(carts[4].id);
@@ -551,7 +557,7 @@ fn a_command_cart_saves_its_base_command_block() {
     assert_eq!(cart.command.success_count, 0);
     // readAdditionalSaveData syncs both values.
     assert_eq!(cart.synced_command, "say hi");
-    assert_eq!(cart.synced_output, "[12:00:00] hi");
+    assert_eq!(cart.synced_output.as_ref(), saved.get("LastOutput"));
     let out = cart.to_nbt([0; 4], Some(&saved), &Default::default());
     assert_eq!(out.get("SuccessCount"), Some(&Tag::Int(0)));
     for key in ["Command", "TrackOutput", "LastOutput", "LastExecution"] {
@@ -621,4 +627,34 @@ fn a_mounted_shulker_does_not_push_a_cart() {
     assert!(!pickup_instead_of_push(Species::Shulker, true, false));
     assert!(!takes_push_from_cart(Species::Shulker));
     assert!(takes_push_from_cart(Species::Cow));
+}
+
+/// `OldMinecartBehavior.tick` writes `onRails` every tick before the track
+/// move: a cart on a rail reads true after its tick, one off the track false.
+#[test]
+#[ignore = "daily"]
+fn an_old_behaviour_cart_writes_is_on_rails_each_tick() {
+    super::super::native_entity_refs::tests::with_game(|game| {
+        game.world.chunks.insert(
+            (0, 0),
+            std::sync::Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)),
+        );
+        let rail = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:rail")
+            .unwrap();
+        for z in 0..16 {
+            game.world.set(0, 64, z, rail).unwrap();
+        }
+        let mut on = Minecart::new(1, CartKind::Rideable, Vec3::new(0.5, 64.0625, 2.5));
+        let mut off = Minecart::new(2, CartKind::Rideable, Vec3::new(8.5, 80.0, 8.5));
+        on.first_tick = false;
+        off.on_rails = true;
+        game.tick_cart(&mut on, [0.0; 2], 0, &mut CartIndex::default());
+        game.tick_cart(&mut off, [0.0; 2], 0, &mut CartIndex::default());
+        assert!(on.on_rails);
+        assert!(!off.on_rails);
+    });
 }

@@ -174,10 +174,14 @@ impl ViewedCaps {
     /// The caps `server.properties` sets (sunrise-server writes them from `server.toml`), the
     /// defaults for the others: `property` reads a key. A per-player `Loaded` cap over
     /// [`MAX_LOADED_PER_PLAYER`] is clamped to it; the value asked comes back with the caps.
-    pub fn from_properties<'a>(property: impl Fn(&str) -> Option<&'a str>) -> (Self, Option<u32>) {
+    pub fn from_properties<V: AsRef<str>>(
+        property: impl Fn(&str) -> Option<V>,
+    ) -> (Self, Option<u32>) {
         let mut caps = Self::default();
         for cap in ChunkCap::ALL {
-            if let Some(n) = property(cap.property()).and_then(|v| v.trim().parse::<u32>().ok()) {
+            if let Some(n) =
+                property(cap.property()).and_then(|v| v.as_ref().trim().parse::<u32>().ok())
+            {
                 *caps.slot(cap) = n;
             }
         }

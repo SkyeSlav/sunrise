@@ -5,8 +5,7 @@
 use super::*;
 use crate::game::game_tests::tests::server_game;
 
-fn game() -> Game<'static> {
-    let resources = Box::leak(Box::new(None));
+fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -> Game<'a> {
     let mut game = server_game(resources);
     game.build_registries();
     game.set_allow_commands(true);
@@ -33,7 +32,8 @@ fn bar(game: &Game<'_>) -> (i32, i32) {
 #[test]
 #[ignore = "daily"]
 fn bossbar_store_keeps_the_number_it_is_given() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     assert!(game.run_command("bossbar add demo:bar Demo"));
     assert!(game.run_command("bossbar set demo:bar max 10"));
     // CustomBossEvent.setValue stores the number and clamps only the progress.
@@ -59,7 +59,8 @@ fn bossbar_store_keeps_the_number_it_is_given() {
 #[test]
 #[ignore = "daily"]
 fn bossbar_name_compares_components_not_their_spelling() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     assert!(game.run_command("bossbar add demo:bar Demo"));
     // `{"text":"Demo"}` is the component `Demo`, so the name is unchanged
     // (BossBarCommands.setName compares with Component.equals).

@@ -142,3 +142,100 @@ fn a_client_cannot_place_features() {
         );
     });
 }
+
+/// `oak_checked` is `oak` behind a `would_survive` filter for an oak sapling: on dirt it places, and
+/// on stone the filter leaves no position, so it answers `Ok(false)` and writes nothing.
+#[test]
+#[ignore = "daily"]
+fn a_placed_feature_runs_its_modifiers_before_the_feature() {
+    with_game(|game| {
+        ground(game, false);
+        let level = game.level(game.dim.id()).unwrap();
+        assert_eq!(
+            level.place_placed_feature(game, "minecraft:oak_checked", AT),
+            Ok(true)
+        );
+        let log = game.world.block(AT[0], AT[1], AT[2]);
+        assert_eq!(game.res.facts().get(log).name.as_ref(), "minecraft:oak_log");
+    });
+    with_game(|game| {
+        ground(game, true);
+        let level = game.level(game.dim.id()).unwrap();
+        let before = game.world.block(AT[0], AT[1], AT[2]);
+        assert_eq!(
+            level.place_placed_feature(game, "minecraft:oak_checked", AT),
+            Ok(false)
+        );
+        assert_eq!(game.world.block(AT[0], AT[1], AT[2]), before);
+    });
+}
+
+/// Iceberg blue has rarity 200, in-square, biome: seed 5133 passes rarity;
+/// seed 0 rejects it. Only the reached filter refuses, after the expected draws.
+#[test]
+#[ignore = "daily"]
+fn a_biome_filter_refuses_only_when_reached() {
+    use sunrise_core::random::{LegacyRandom, RandomSource};
+    for (seed, reached) in [(5133, true), (0, false)] {
+        with_game(|game| {
+            ground(game, false);
+            let level = game.level(game.dim.id()).unwrap();
+            *game.world.random = LegacyRandom::new(seed);
+            let before = game.world.chunks.clone();
+            assert_eq!(
+                level.place_placed_feature(game, "minecraft:iceberg_blue", AT),
+                if reached {
+                    Err(PlaceFeatureRefusal::BiomeFilter)
+                } else {
+                    Ok(false)
+                }
+            );
+            // Compare every resident block: no feature writes preceded the filter.
+            assert_eq!(game.world.chunks.len(), before.len());
+            for (pos, chunk) in &before {
+                let after = &game.world.chunks[pos];
+                for y in sunrise_client::chunk::MIN_Y
+                    ..sunrise_client::chunk::MIN_Y + sunrise_client::chunk::HEIGHT
+                {
+                    for z in 0..16 {
+                        for x in 0..16 {
+                            assert_eq!(after.get(x, y, z), chunk.get(x, y, z));
+                        }
+                    }
+                }
+            }
+            let mut expected = LegacyRandom::new(seed);
+            let rarity = expected.next_float();
+            assert_eq!(rarity < 1.0 / 200.0, reached);
+            if reached {
+                expected.next_int_bound(16).unwrap();
+                expected.next_int_bound(16).unwrap();
+            }
+            assert_eq!(
+                <(u64, Option<f64>)>::from(&*game.world.random),
+                <(u64, Option<f64>)>::from(&expected)
+            );
+        });
+    }
+}
+
+/// Registry-exclusive feature ids must not resolve through the other registry.
+#[test]
+#[ignore = "daily"]
+fn a_placed_feature_id_is_checked_in_its_own_registry() {
+    with_game(|game| {
+        ground(game, false);
+        let level = game.level(game.dim.id()).unwrap();
+        for id in ["mymod:no_such_tree", "oak_checked", "minecraft:azalea_tree"] {
+            assert_eq!(
+                level.place_placed_feature(game, id, AT),
+                Err(PlaceFeatureRefusal::UnknownFeature),
+                "{id}"
+            );
+        }
+        assert_eq!(
+            level.place_feature(game, "minecraft:oak_checked", AT),
+            Err(PlaceFeatureRefusal::UnknownFeature)
+        );
+    });
+}

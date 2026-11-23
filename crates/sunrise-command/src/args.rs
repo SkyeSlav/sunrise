@@ -7,7 +7,8 @@ use sunrise_client_core::text::Text;
 pub use sunrise_client_core::registries::{
     CustomCompletionAction, Registries, RegistryIds, modify_custom_completions,
 };
-pub use sunrise_core::game_mode::GameMode;
+use sunrise_core::java_float_parse::{parse_java_double, parse_java_float};
+pub use sunrise_core::{game_mode::GameMode, text::parse_java_integer as java_parse_int};
 
 /// How much of the command line a registered custom argument takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -17,6 +18,12 @@ pub enum CustomArgumentKind {
     Word,
     /// The rest of the line, spaces included.
     Greedy,
+    /// A Brigadier `integer` within its bounds (`IntegerArgumentType.integer(min, max)`):
+    /// refused below `min` or above `max` with `argument.integer.low` / `big`.
+    Integer { min: i32, max: i32 },
+    /// A Brigadier `long` within its bounds (`LongArgumentType.longArg(min, max)`): refused
+    /// below `min` or above `max` with `argument.long.low` / `big`.
+    Long { min: i64, max: i64 },
 }
 
 /// One completion a registered custom argument offers.
@@ -151,6 +158,11 @@ pub enum ArgType {
     Integer {
         min: i32,
         max: i32,
+    },
+    /// Brigadier's `LongArgumentType.longArg(min, max)`.
+    Long {
+        min: i64,
+        max: i64,
     },
     Float {
         min: f32,
@@ -543,6 +555,7 @@ pub struct ItemInput {
 pub enum Arg {
     Bool(bool),
     Int(i32),
+    Long(i64),
     Float(f32),
     Double(f64),
     Str(String),
@@ -558,6 +571,8 @@ pub enum Arg {
     ScoreHolder(ScoreHolderArg),
     IntRange(IntRange),
     DoubleRange(DoubleRange),
+    /// Options already decoded by a registered common particle type.
+    Particle(Box<mod_vocab::ParticleOptions>),
     /// A custom argument: the id of its registered type and its canonical value.
     Custom {
         kind: Arc<str>,
@@ -635,11 +650,7 @@ fn parsed_arguments(context: &Context, input: &str, start: usize) -> Vec<ParsedA
 /// The bytes a text occupies in Java modified UTF-8: a tooltip's NBT string limit counts those.
 fn modified_utf8_len(text: &str) -> usize {
     text.encode_utf16()
-        .map(|unit| match unit {
-            1..=0x7f => 1,
-            0..=0x7ff => 2,
-            _ => 3,
-        })
+        .map(sunrise_core::modified_utf8::unit_len)
         .sum()
 }
 
@@ -805,7 +816,7 @@ pub fn read_int_bounds(reader: &mut Reader) -> CmdResult<IntRange> {
 /// MinMaxBounds.Doubles.fromReader.
 pub fn read_double_bounds(reader: &mut Reader) -> CmdResult<DoubleRange> {
     let start = reader.cursor;
-    let b = read_bounds(reader, java_parse_double, "parsing.double.invalid")?;
+    let b = read_bounds(reader, parse_java_double, "parsing.double.invalid")?;
     if let (Some(l), Some(h)) = b
         && l > h
     {
@@ -816,75 +827,7 @@ pub fn read_double_bounds(reader: &mut Reader) -> CmdResult<DoubleRange> {
 }
 /// MinMaxBounds.FloatDegrees.fromReader (no swap check).
 pub fn read_float_bounds(reader: &mut Reader) -> CmdResult<(Option<f32>, Option<f32>)> {
-    read_bounds(
-        reader,
-        |s| java_parse_double(s).map(|v| v as f32),
-        "parsing.float.invalid",
-    )
-}
-/// Integer.parseInt over number characters.
-pub fn java_parse_int(s: &str) -> Option<i32> {
-    let digits = s.strip_prefix(['-', '+']).unwrap_or(s);
-    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    s.parse().ok()
-}
-/// Double.parseDouble over the characters StringReader reads as a number.
-pub fn java_parse_double(s: &str) -> Option<f64> {
-    let t = s.trim_matches(|c: char| c <= ' ');
-    let body = t.strip_prefix(['-', '+']).unwrap_or(t);
-    if body.is_empty() || body == "." {
-        return None;
-    }
-    let body = body.strip_suffix(['d', 'D', 'f', 'F']).unwrap_or(body);
-    if body == "NaN" || body == "Infinity" {
-        return t.parse::<f64>().ok().or(Some(if t.starts_with('-') {
-            f64::NEG_INFINITY
-        } else if body == "NaN" {
-            f64::NAN
-        } else {
-            f64::INFINITY
-        }));
-    }
-    let mut chars = body.chars().peekable();
-    let mut digits = 0;
-    while chars.peek().is_some_and(char::is_ascii_digit) {
-        chars.next();
-        digits += 1;
-    }
-    if chars.peek() == Some(&'.') {
-        chars.next();
-        while chars.peek().is_some_and(char::is_ascii_digit) {
-            chars.next();
-            digits += 1;
-        }
-    }
-    if digits == 0 {
-        return None;
-    }
-    if matches!(chars.peek(), Some('e' | 'E')) {
-        chars.next();
-        if matches!(chars.peek(), Some('+' | '-')) {
-            chars.next();
-        }
-        let mut exp = 0;
-        while chars.peek().is_some_and(char::is_ascii_digit) {
-            chars.next();
-            exp += 1;
-        }
-        if exp == 0 {
-            return None;
-        }
-    }
-    if chars.next().is_some() {
-        return None;
-    }
-    let clean: String = t
-        .trim_end_matches(['d', 'D', 'f', 'F'])
-        .trim_start_matches('+')
-        .to_owned();
-    clean.parse::<f64>().ok()
+    read_bounds(reader, parse_java_float, "parsing.float.invalid")
 }
 fn parse_coord_int(reader: &mut Reader) -> CmdResult<Coord> {
     if reader.can_read() && reader.peek() == '^' {
@@ -1207,7 +1150,49 @@ fn particle_options(id: &str, t: &sunrise_core::nbt::Tag) -> Result<(), String> 
         let _ = snbt;
         return Err(super::codec::either(first, "Not a string".into()));
     }
+    if id == "minecraft:item"
+        && let Some(item) = get(map, "item")
+    {
+        sunrise_world::item_defaults::validate_stack_tag(item)?;
+    }
     Ok(())
+}
+/// `IntegerArgumentType.parse`: an `int` within `min..=max`, or `argument.integer.low` / `big` with
+/// the cursor back at its start.
+fn read_integer(reader: &mut Reader, min: i32, max: i32) -> CmdResult<i32> {
+    let start = reader.cursor;
+    let v = reader.read_int()?;
+    bounded(reader, start, "integer", v, min, max)
+}
+/// `LongArgumentType.parse`: a `long` within `min..=max`, or `argument.long.low` / `big` with the
+/// cursor back at its start.
+fn read_long(reader: &mut Reader, min: i64, max: i64) -> CmdResult<i64> {
+    let start = reader.cursor;
+    let v = reader.read_long()?;
+    bounded(reader, start, "long", v, min, max)
+}
+/// Brigadier's `<kind>TooLow` / `<kind>TooBig`: the bound, then the value found.
+fn bounded<T: PartialOrd + fmt::Display>(
+    reader: &mut Reader,
+    start: usize,
+    kind: &str,
+    v: T,
+    min: T,
+    max: T,
+) -> CmdResult<T> {
+    let (key, bound) = if v < min {
+        ("low", &min)
+    } else if v > max {
+        ("big", &max)
+    } else {
+        return Ok(v);
+    };
+    reader.cursor = start;
+    Err(CommandError::tr_at(
+        &format!("argument.{kind}.{key}"),
+        &[bound, &v],
+        reader,
+    ))
 }
 /// TimeArgument units.
 fn time_unit(unit: &str) -> Option<i32> {
@@ -1224,26 +1209,8 @@ impl ArgType {
         let start = reader.cursor;
         Ok(match self {
             ArgType::Bool => Arg::Bool(reader.read_boolean()?),
-            ArgType::Integer { min, max } => {
-                let v = reader.read_int()?;
-                if v < *min {
-                    reader.cursor = start;
-                    return Err(CommandError::tr_at(
-                        "argument.integer.low",
-                        &[min, &v],
-                        reader,
-                    ));
-                }
-                if v > *max {
-                    reader.cursor = start;
-                    return Err(CommandError::tr_at(
-                        "argument.integer.big",
-                        &[max, &v],
-                        reader,
-                    ));
-                }
-                Arg::Int(v)
-            }
+            ArgType::Integer { min, max } => Arg::Int(read_integer(reader, *min, *max)?),
+            ArgType::Long { min, max } => Arg::Long(read_long(reader, *min, *max)?),
             ArgType::Float { min, max } => {
                 let v = reader.read_float()?;
                 if v < *min {
@@ -1793,10 +1760,19 @@ impl ArgType {
                 } else {
                     sunrise_core::nbt::Tag::Compound(Default::default())
                 };
-                if let Err(m) = particle_options(&id, &options) {
-                    return Err(CommandError::tr("particle.invalidOptions", &[&m]));
+                if let sunrise_core::nbt::Tag::Compound(fields) = &options
+                    && let Some(result) =
+                        reg.particle_options.and_then(|decode| decode(&id, fields))
+                {
+                    Arg::Particle(Box::new(
+                        result.map_err(|m| CommandError::tr("particle.invalidOptions", &[&m]))?,
+                    ))
+                } else {
+                    if let Err(m) = particle_options(&id, &options) {
+                        return Err(CommandError::tr("particle.invalidOptions", &[&m]));
+                    }
+                    Arg::Str(reader.string[start..reader.cursor].to_owned())
                 }
-                Arg::Str(reader.string[start..reader.cursor].to_owned())
             }
             ArgType::Enum(words) => {
                 let word = reader.read_unquoted_string();
@@ -1880,6 +1856,16 @@ impl ArgType {
                         let text = reader.remaining().to_owned();
                         reader.cursor = reader.string.len();
                         text
+                    }
+                    // The number is checked as Brigadier's own type first; the mod's parser sees
+                    // the digits it accepted.
+                    CustomArgumentKind::Integer { min, max } => {
+                        read_integer(reader, min, max)?;
+                        reader.string[start..reader.cursor].to_owned()
+                    }
+                    CustomArgumentKind::Long { min, max } => {
+                        read_long(reader, min, max)?;
+                        reader.string[start..reader.cursor].to_owned()
                     }
                 };
                 match (custom.parse)(&text) {

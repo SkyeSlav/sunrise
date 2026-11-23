@@ -1,8 +1,6 @@
 //! The client's world data, rendering and screens: chunks, meshing, light, streaming, the renderer,
 //! the HUD, menus and settings. Gameplay (sunrise-client) builds on it; nothing here reaches gameplay.
 #![forbid(unsafe_code)]
-pub mod android_gamepad;
-pub mod android_runtime;
 pub mod assets;
 pub mod atlas_sources;
 pub mod audio;
@@ -16,11 +14,11 @@ pub mod block_edit;
 pub mod block_entities;
 pub mod block_entity_anim;
 pub mod block_entity_cem;
+pub mod block_entity_reach;
 pub mod block_entity_render;
 pub mod block_sprites;
 pub mod block_states;
 pub mod bluemap;
-pub mod bluemap_detect;
 pub mod border_render;
 pub mod breaking;
 pub mod brewing;
@@ -36,6 +34,7 @@ pub mod cit_glint;
 pub mod client_resources;
 pub mod clouds;
 pub mod collisions;
+pub mod columns;
 pub mod command_block;
 pub mod connected;
 pub mod containers;
@@ -68,7 +67,7 @@ pub mod inventory_effects;
 pub mod java_text;
 mod jei_sprites;
 pub mod jigsaw_block;
-pub mod keypad;
+pub mod moving_colliders;
 pub mod terrain_model;
 pub use sunrise_polytone::creative_tabs as polytone_creative_tabs;
 pub use sunrise_world::json_folder;
@@ -76,13 +75,15 @@ pub mod dimension_transition;
 pub mod fluid_models;
 pub mod level_loading;
 pub mod light;
+pub mod light_border;
+#[cfg(test)]
+mod light_storage_tests;
 pub mod lod;
 pub mod logging;
 pub mod mark_sprite;
 pub mod menu_blur;
 pub mod menu_style;
 pub mod mesher;
-pub mod minimap;
 pub mod mipmap;
 pub mod mod_animations;
 pub mod mod_block_state_models;
@@ -150,10 +151,6 @@ pub mod sound_engine;
 pub mod sound_events;
 pub mod sound_preview;
 pub mod spans;
-pub mod split_layout;
-pub mod split_map;
-pub mod split_profiles;
-pub mod split_ui;
 mod sprite_cache;
 pub mod sprites;
 pub mod streaming;
@@ -163,8 +160,6 @@ pub mod tab_list;
 pub mod test_block;
 pub mod test_instance_block;
 pub mod testgen;
-pub mod title_edition;
-pub mod touch;
 pub mod trims;
 pub mod ui;
 pub mod vault;
@@ -211,3 +206,5 @@ pub mod render_views;
 
 #[cfg(test)]
 mod test_log;
+#[cfg(test)]
+mod test_process;

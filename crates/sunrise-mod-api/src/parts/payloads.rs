@@ -41,6 +41,20 @@ impl PartRegistrar {
             if declaration.version.trim().is_empty() {
                 return Err("payload version must not be blank".to_owned());
             }
+            if declaration.delivery == PayloadDelivery::Droppable
+                && declaration.protocol != PayloadProtocol::Play
+            {
+                return Err("a droppable payload exists in play only".to_owned());
+            }
+            if declaration
+                .version
+                .contains(crate::PAYLOAD_DROPPABLE_MARKER)
+            {
+                return Err(format!(
+                    "payload version must not contain {:?}, which marks a droppable delivery",
+                    crate::PAYLOAD_DROPPABLE_MARKER
+                ));
+            }
             if declaration.version.contains(crate::PAYLOAD_SCHEMA_MARKER) {
                 return Err(format!(
                     "payload version must not contain {:?}, which marks a typed schema",
@@ -98,6 +112,15 @@ impl PartRegistrar {
         }
         let (owner, owner_index) = (self.mod_id, self.mod_index);
         let payloads = self.payloads_table();
+        if declaration.delivery == PayloadDelivery::Droppable {
+            // The delivery is negotiated with the version: a peer declaring the other one
+            // refuses like another version, never a silent loss on a channel its handler
+            // counts on.
+            declaration
+                .version
+                .push_str(crate::PAYLOAD_DROPPABLE_MARKER);
+            payloads.drops.entry(declaration.id.0.clone()).or_default();
+        }
         let slot = schema.map(|schema| {
             declaration.version = crate::typed_payload_version(&declaration.version, schema);
             payloads.typed.push(TypedSlot {
@@ -165,12 +188,19 @@ impl PayloadsRegistrar for PartRegistrar {
     fn add_typed_payload(
         &mut self,
         declaration: PayloadDeclaration,
-        schema: u64,
+        schema: Option<u64>,
         server: Option<Arc<dyn IPayloadHandler>>,
         client: Option<Arc<dyn IPayloadHandler>>,
     ) -> PayloadToken {
         let (protocol, direction) = (declaration.protocol, declaration.direction);
         let requested = declaration.id.clone();
+        let Some(schema) = schema else {
+            self.refused.push(format!(
+                "{} declared typed payload {} with an ordinary-only Wire form",
+                self.mod_id, requested.0
+            ));
+            return PayloadToken::new(requested, u32::MAX, 0, protocol, direction, 0);
+        };
         let (id, slot, load) = match self.declare_payload(declaration, server, client, Some(schema))
         {
             Some((id, slot)) => (

@@ -27,8 +27,8 @@ One malformed recipe of a known type refuses the **whole recipe load**, with an
 error naming its file and the reason. A failed reload keeps the previous active
 recipes and does not publish a partial table; a dedicated server stops startup
 with that error. A file whose load conditions are false is skipped quietly before
-its recipe type is looked up. An unregistered condition type in a registered
-namespace is a load error; foreign-namespace condition handling is unchanged.
+its recipe type is looked up. An unregistered condition type anywhere in the
+conditions list is a load error, regardless of its namespace or nesting.
 Unregistered recipe types retain their existing behavior pending owner registration.
 
 `LevelRef::recipe_for` returns `Ok(None)` when no recipe matches. Mod-defined
@@ -59,4 +59,6 @@ change: query it when you use it, rather than keeping an answer from
 `recipes_received`. A viewer's "+" needs no book id: `transfer_recipe_id`
 moves any recipe the server knows by its id, and `transfer_recipe_check` (the
 same id) says beforehand what it would do, for a recipe the player's book holds
-or not.
+or not. Call it while the answer is wanted, for example while hovering the
+"+". On a remote server the client asks again when the cached answer is one
+second old, even if the menu has not changed.

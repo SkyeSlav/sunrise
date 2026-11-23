@@ -125,14 +125,6 @@ impl Op {
         }
     }
 
-    /// Ops that read the samples section.
-    pub fn reads_samples(self) -> bool {
-        matches!(
-            self,
-            Op::Hot | Op::Tree | Op::Callers | Op::Callees | Op::Split | Op::Group | Op::Frames
-        )
-    }
-
     pub fn answered() -> String {
         let names: Vec<&str> = Op::ALL
             .iter()

@@ -1,0 +1,14 @@
+{
+  "sprite": "fluid_full:block/brine",
+  "tint": 2427112703,
+  "temperature": 295,
+  "density": 1100,
+  "viscosity": 1200,
+  "world": {
+    "tick_delay": 11,
+    "drop_off": 2,
+    "slope_find_distance": 3,
+    "source_conversion": true,
+    "bucket": false
+  }
+}

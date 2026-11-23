@@ -14,7 +14,15 @@
 //!
 //! The loaders need no mod code, vanilla state ids never move, and with no
 //! content mod the root is the base root itself.
-use crate::{Result, blocks::MAP_COLORS};
+use crate::{
+    Result,
+    blocks::MAP_COLORS,
+    mobs::data::{PartAnswers, PathComputationType, VALID_EMPTY_SPAWN},
+};
+use mod_api::{
+    __private::{DeclarationKind, DeclarationRefusal},
+    DeclarationError,
+};
 use serde::{Deserialize, Serialize, de};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -28,13 +36,17 @@ use sunrise_core::{
     nbt::{Compound, JavaString, Limits, Tag},
 };
 use sunrise_mod_package::content::{
-    Block, BlockEntityType, BlockShapes, Content, CreativeTab, EntityType, FluidLook, MenuType,
-    MobEffect, Rarity, StateProperty, StateValues,
+    Block, BlockEntityType, BlockShapes, Content, ContextCollision, CreativeTab, EntityType,
+    FluidLook, Item, LocalDeclaration, MenuType, MobEffect, Rarity, StateProperty, StateValues,
 };
 use sunrise_mod_package::manifest::{
     JarInputsError, JarRef, collect_jar_requirements, missing_jars,
 };
-use sunrise_world::block_properties::BlockDefinitionProperties;
+use sunrise_world::{
+    block_collision::ScaffoldingCollision,
+    block_properties::BlockDefinitionProperties,
+    fluid::{FluidKind, FluidState},
+};
 
 /// A content mod to put in the root: its id, its content, and the Java jars
 /// it lists in manifest order — each an asset/data layer under the mod's own
@@ -50,36 +62,42 @@ pub struct ContentMod {
 /// overlay would fail on it and no content mod at all would load. Returns what was left out.
 pub fn drop_dangling_remainders(mods: &mut Vec<ContentMod>) -> Vec<String> {
     let mut dropped = Vec::new();
-    mods.retain(|m| {
-        // The mod's items and its blocks that have an item (`Content::read`'s own rule).
-        let ids: BTreeSet<&str> = m
-            .content
-            .items
+    loop {
+        let all_ids: BTreeSet<String> = mods
             .iter()
-            .map(|i| i.id.as_str())
-            .chain(
-                m.content
-                    .blocks
-                    .iter()
-                    .filter(|b| b.item)
-                    .map(|b| b.id.as_str()),
-            )
+            .flat_map(|m| {
+                m.content.items.iter().map(|i| i.id.clone()).chain(
+                    m.content
+                        .blocks
+                        .iter()
+                        .filter(|b| b.item)
+                        .map(|b| b.id.clone()),
+                )
+            })
             .collect();
-        let dangling = m.content.items.iter().find(|i| {
-            i.crafting_remainder
-                .as_deref()
-                .is_some_and(|r| !r.starts_with("minecraft:") && !ids.contains(r))
+        let before = mods.len();
+        mods.retain(|m| {
+            // Every item or item-bearing block admitted into the overlay; per-package ownership
+            // was already enforced by `Content::read_declaring` and `accept_declared`.
+            let dangling = m.content.items.iter().find(|i| {
+                i.crafting_remainder
+                    .as_deref()
+                    .is_some_and(|r| !r.starts_with("minecraft:") && !all_ids.contains(r))
+            });
+            if let Some(item) = dangling {
+                dropped.push(format!(
+                    "mod {} content not loaded: {}: crafting_remainder {:?} is not one of its items",
+                    m.id,
+                    item.id,
+                    item.crafting_remainder.as_deref().unwrap_or_default()
+                ));
+            }
+            dangling.is_none()
         });
-        if let Some(item) = dangling {
-            dropped.push(format!(
-                "mod {} content not loaded: {}: crafting_remainder {:?} is not one of its items",
-                m.id,
-                item.id,
-                item.crafting_remainder.as_deref().unwrap_or_default()
-            ));
+        if mods.len() == before {
+            break;
         }
-        dangling.is_none()
-    });
+    }
     dropped
 }
 
@@ -106,17 +124,26 @@ pub fn entity_types(mods: &[ContentMod]) -> Vec<&EntityType> {
     types
 }
 
-/// the mods' menu types in registry order, by id as effects are.
-pub fn menu_types(mods: &[ContentMod]) -> Vec<&MenuType> {
-    let mut menus: Vec<&MenuType> = mods.iter().flat_map(|m| &m.content.menu_types).collect();
-    menus.sort_by(|a, b| a.id.cmp(&b.id));
+/// The mods' menu types and their owning package IDs, sorted by menu ID.
+pub fn menu_types(mods: &[ContentMod]) -> Vec<(&MenuType, &str)> {
+    let mut menus: Vec<_> = mods
+        .iter()
+        .flat_map(|m| {
+            m.content
+                .menu_types
+                .iter()
+                .map(|menu| (menu, m.id.as_str()))
+        })
+        .collect();
+    menus.sort_by(|(a, _), (b, _)| a.id.cmp(&b.id));
     menus
 }
 
 static FLUID_LOOKS: std::sync::RwLock<BTreeMap<String, FluidLook>> =
     std::sync::RwLock::new(BTreeMap::new());
 
-/// Remembers how the mods' fluids look (`data/<id>/sunrise/fluid/`), for what the client draws.
+/// Remembers how the mods' fluids look (`data/<id>/sunrise/fluid/`), for what the client draws,
+/// and their measures, for `FluidTypeProperties` on either side.
 pub fn set_fluid_looks(mods: &[ContentMod]) {
     let looks: BTreeMap<String, FluidLook> = mods
         .iter()
@@ -155,7 +182,17 @@ pub fn register_world_fluids(
 
 #[path = "mod_content_fluid_declarations.rs"]
 mod fluid_declarations;
-pub use fluid_declarations::{accept_world_fluids, fluid_interactions, set_fluid_interactions};
+pub use fluid_declarations::{fluid_interactions, set_fluid_interactions};
+
+/// The temperature, density and viscosity a mod's fluid file states for `id`, copied without
+/// the rest of its look.
+pub fn fluid_measures(id: &str) -> Option<sunrise_mod_package::content::FluidMeasures> {
+    FLUID_LOOKS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(id)
+        .map(|look| look.measures)
+}
 
 /// How the fluid `id` looks, when a mod declares it.
 pub fn fluid_look(id: &str) -> Option<FluidLook> {
@@ -619,6 +656,22 @@ fn encode_shape(shape: &VoxelShape) -> Tag {
     Tag::Compound(c)
 }
 
+/// A state's value of property `name`: its declared combination's, else its template state's.
+fn state_value<'a>(
+    combo: &'a [(String, String)],
+    template: Option<&'a J>,
+    name: &str,
+) -> Option<&'a str> {
+    combo
+        .iter()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.as_str())
+        .or_else(|| match template?.get(name) {
+            Some(J::Str(value)) => Some(value.as_str()),
+            _ => None,
+        })
+}
+
 fn resolve_state_values<'a, 's, T>(
     spec: &'s StateValues<T>,
     block: &str,
@@ -634,17 +687,12 @@ fn resolve_state_values<'a, 's, T>(
         let values = names
             .iter()
             .map(|name| {
-                combos[combo as usize]
-                    .iter()
-                    .find(|(key, _)| key == name)
-                    .map(|(_, value)| value.as_str())
-                    .or_else(|| {
-                        match properties(states.start + state).and_then(|props| props.get(name)) {
-                            Some(J::Str(value)) => Some(value.as_str()),
-                            _ => None,
-                        }
-                    })
-                    .ok_or_else(|| format!("{block}: state lacks property {name}"))
+                state_value(
+                    &combos[combo as usize],
+                    properties(states.start + state),
+                    name,
+                )
+                .ok_or_else(|| format!("{block}: state lacks property {name}"))
             })
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let key = values.join(",");
@@ -735,6 +783,7 @@ enum SkylightRule {
 
 /// A block being added: its declaration and where its states go.
 struct NewBlock<'a> {
+    stew_effects: Option<J>,
     decl: &'a Block,
     base_block: Option<KnownBlock<'a>>,
     rename: Rename,
@@ -742,10 +791,16 @@ struct NewBlock<'a> {
     item: Option<String>,
     shapes: Option<Vec<VoxelShape>>,
     collision_shapes: Option<Vec<VoxelShape>>,
+    /// The template's `isAir` property, which precedes the fluid check in the walk evaluator.
+    is_air: bool,
     /// Whether each shaped state contains fluid, including intrinsic template fluids.
     has_fluid: Vec<bool>,
+    /// Resolved per-state limits; template inheritance is resolved once at load.
+    offset_limits: Vec<Option<(f32, f32)>>,
     skylight: SkylightRule,
     custom_dampening: bool,
+    /// Fullness of the published occlusion shape when explicitly enabling occlusion.
+    template_occlusion_full: Vec<bool>,
     /// The template's `forceSolidOn` (`Some(true)`) or `forceSolidOff` (`Some(false)`), which keeps
     /// its answer over the declared shape's.
     force_solid: Option<bool>,
@@ -773,6 +828,17 @@ impl NewBlock<'_> {
             Some(item) => Some(item),
             None => (!self.decl.item && self.wall_of.is_none()).then_some("minecraft:air"),
         }
+    }
+
+    /// Vanilla caches occlusion using the outline at BlockPos.ZERO, not the block-local outline.
+    fn declared_occlusion(&self, index: usize, shape: &VoxelShape) -> VoxelShape {
+        self.offset_limits[index].map_or_else(
+            || shape.clone(),
+            |limits| {
+                let [x, y, z] = sunrise_core::random::column_offset(limits, 0, 0);
+                shape.moved(Vec3::new(x, y, z))
+            },
+        )
     }
 
     /// Template states and declared combinations in registry order.
@@ -844,89 +910,165 @@ fn component_types(map: &J) -> BTreeSet<String> {
     }
 }
 
-/// Code declarations, joined to their manifest owner. Each owner's namespaces
-/// validate together, independent of namespace order, with all-or-nothing refusal.
-/// Unknown namespaces become synthetic content-only mods. Checked as files are
-/// ([`sunrise_mod_package::Content::declare`], [`accept_mod`]).
+/// A native package's staged declarations. Its dispatch owner is the map key,
+/// regardless of the namespaces used in these entries.
+#[derive(Clone, Default)]
+pub struct DeclaredContent {
+    pub blocks: Vec<LocalDeclaration<Block>>,
+    pub items: Vec<LocalDeclaration<Item>>,
+    pub types: Vec<BlockEntityType>,
+    pub fluids: Vec<FluidLook>,
+}
+
+/// Join code declarations to their manifest owner, even when no files were admitted.
+/// Validate the independent checks before deciding whether to add the owner's batch.
 pub fn accept_declared(
     mods: &mut Vec<ContentMod>,
-    blocks: &[sunrise_mod_package::content::Block],
-    items: &[sunrise_mod_package::content::Item],
-    types: &[BlockEntityType],
+    declared: &BTreeMap<&'static str, DeclaredContent>,
+    manifests: &[&sunrise_mod_package::Manifest],
     known: &BTreeSet<String>,
-) -> Vec<String> {
-    let owners: BTreeMap<_, _> = mods
-        .iter()
-        .flat_map(|m| {
-            m.content
-                .namespaces
-                .iter()
-                .map(|ns| (ns.clone(), m.id.clone()))
-        })
-        .collect();
-    let owner = |id: &str| {
-        let ns = id.split_once(':').map_or("", |(ns, _)| ns);
-        owners.get(ns).cloned().unwrap_or_else(|| ns.to_owned())
-    };
-    let mut by_owner: BTreeMap<String, (Vec<_>, Vec<_>)> = Default::default();
-    for block in blocks {
-        by_owner
-            .entry(owner(&block.id))
-            .or_default()
-            .0
-            .push(block.clone());
-    }
-    for item in items {
-        by_owner
-            .entry(owner(&item.id))
-            .or_default()
-            .1
-            .push(item.clone());
-    }
-    for kind in types {
-        by_owner.entry(owner(&kind.id)).or_default();
-    }
-    let mut errors = Vec::new();
-    for (id, (blocks, items)) in by_owner {
-        let types = types.iter().filter(|t| owner(&t.id) == id).cloned();
-        let result = match mods.iter().position(|m| m.id == id) {
-            Some(i) => {
-                let mut content = sunrise_mod_package::Content::declared(&mods[i].id);
-                content.namespaces.clone_from(&mods[i].content.namespaces);
-                content.blocks.clone_from(&mods[i].content.blocks);
-                content.items.clone_from(&mods[i].content.items);
-                content
-                    .declare(&blocks, &items)
-                    .and_then(|()| {
-                        let mut added = sunrise_mod_package::Content::declared(&id);
-                        added.blocks.clone_from(&blocks);
-                        added.items.clone_from(&items);
-                        validate_components(&added, known).map_err(|e| e.to_string())
+    errors: &mut Vec<DeclarationRefusal>,
+) -> Result<()> {
+    let mut namespace_error = None;
+    for (&id, batch) in declared {
+        let already_refused = errors.iter().any(|refusal| refusal.mod_id == id);
+        let before = errors.len();
+        let existing = mods.iter().position(|m| m.id == id);
+        let mut content = Content::declared(id);
+        if let Some(manifest) = manifests.iter().find(|m| m.id == id) {
+            content.namespaces = manifest.owned_namespaces().map(str::to_owned).collect();
+        }
+        if let Some(i) = existing {
+            content.blocks.clone_from(&mods[i].content.blocks);
+            content.items.clone_from(&mods[i].content.items);
+        }
+        let served_item_ids: Vec<&str> = mods
+            .iter()
+            .filter(|m| {
+                m.id != id
+                    && manifests.iter().any(|manifest| {
+                        manifest.id == m.id && manifest.served_by.as_deref() == Some(id)
                     })
-                    .map(|()| {
-                        mods[i].content.blocks.extend(blocks);
-                        mods[i].content.items.extend(items);
-                        mods[i].content.block_entity_types.extend(types);
-                    })
+            })
+            .flat_map(|m| {
+                m.content.items.iter().map(|i| i.id.as_str()).chain(
+                    m.content
+                        .blocks
+                        .iter()
+                        .filter(|b| b.item)
+                        .map(|b| b.id.as_str()),
+                )
+            })
+            .collect();
+        if let Err(refusals) =
+            content.declare_validated(&batch.blocks, &batch.items, &served_item_ids)
+        {
+            errors.extend(
+                refusals
+                    .into_iter()
+                    .map(|(kind, error)| DeclarationRefusal::new(id, kind, error)),
+            );
+        }
+        for block in &batch.blocks {
+            let block_id = block.get().id.as_str();
+            if let Some(other) = mods.iter().find(|m| {
+                m.id != id
+                    && (m.content.blocks.iter().any(|b| b.id == block_id)
+                        || (block.get().item && m.content.items.iter().any(|i| i.id == block_id)))
+            }) {
+                errors.push(DeclarationRefusal::new(
+                    id,
+                    DeclarationKind::Block,
+                    DeclarationError::Rejected {
+                        id: block_id.to_owned(),
+                        reason: format!("declared twice (already declared by mod {})", other.id),
+                    },
+                ));
             }
-            None => {
-                let mut content = sunrise_mod_package::Content::declared(&id);
-                content.declare(&blocks, &items).and_then(|()| {
-                    content.block_entity_types.extend(types);
-                    let candidate = ContentMod {
-                        id: id.clone(),
-                        content,
-                        jars: Vec::new(),
-                    };
-                    accept_mod(mods, candidate, known).map_err(|e| e.to_string())
-                })
+        }
+        for item in &batch.items {
+            let item_id = item.get().id.as_str();
+            if let Some(other) = mods.iter().find(|m| {
+                m.id != id
+                    && (m.content.items.iter().any(|i| i.id == item_id)
+                        || m.content.blocks.iter().any(|b| b.item && b.id == item_id))
+            }) {
+                errors.push(DeclarationRefusal::new(
+                    id,
+                    DeclarationKind::Item,
+                    DeclarationError::Rejected {
+                        id: item_id.to_owned(),
+                        reason: format!(
+                            "declared twice, or is also a block's item (already declared by mod {})",
+                            other.id
+                        ),
+                    },
+                ));
             }
+        }
+        for (kind, name, components) in batch
+            .items
+            .iter()
+            .map(|i| i.get())
+            .map(|i| (DeclarationKind::Item, &i.id, &i.components))
+            .chain(
+                batch
+                    .blocks
+                    .iter()
+                    .map(|b| b.get())
+                    .filter(|b| b.item)
+                    .map(|b| (DeclarationKind::Block, &b.id, &b.components)),
+            )
+        {
+            if let Err(reason) = validate_components_for(components, known) {
+                errors.push(DeclarationRefusal::new(
+                    id,
+                    kind,
+                    DeclarationError::Rejected {
+                        id: name.clone(),
+                        reason: reason.to_string(),
+                    },
+                ));
+            }
+        }
+        if already_refused || errors.len() != before {
+            continue;
+        }
+        let target = if let Some(i) = existing {
+            let target = &mut mods[i].content;
+            target.blocks = content.blocks;
+            target.items = content.items;
+            target
+        } else {
+            if let Some(error) = mods.iter().find_map(|m| {
+                sunrise_mod_package::content::clash(
+                    (&m.id, &m.content.namespaces),
+                    (id, &content.namespaces),
+                )
+            }) {
+                namespace_error.get_or_insert(error);
+                continue;
+            }
+            mods.push(ContentMod {
+                id: id.into(),
+                content,
+                jars: vec![],
+            });
+            &mut mods.last_mut().unwrap().content
         };
-        if let Err(e) = result {
-            errors.push(format!("native blocks and items of {id}: {e}"));
+        target.block_entity_types.extend_from_slice(&batch.types);
+        // A file's fluid look still says how the code-declared fluid looks.
+        for fluid in &batch.fluids {
+            match target.fluids.iter_mut().find(|f| f.id == fluid.id) {
+                Some(look) => look.world = fluid.world,
+                None => target.fluids.push(fluid.clone()),
+            }
         }
     }
-    errors
+    match namespace_error {
+        Some(error) => Err(error.into()),
+        None => Ok(()),
+    }
 }
 
 /// Check and accept one mod without disturbing previously accepted mods.
@@ -961,11 +1103,17 @@ fn validate_components(
             .filter(|b| b.item)
             .map(|b| (&b.id, &b.components)),
     ) {
-        let patch = component_patch(id, components)?;
-        patch_components(&mut J::Obj(Vec::new()), &patch, known)
-            .map_err(|e| format!("{id}: {e}"))?;
+        validate_components_for(components, known).map_err(|error| format!("{id}: {error}"))?;
     }
     Ok(())
+}
+
+fn validate_components_for(
+    components: &BTreeMap<String, serde_json::Value>,
+    known: &BTreeSet<String>,
+) -> Result<()> {
+    let patch = component_patch(components)?;
+    Ok(patch_components(&mut J::Obj(Vec::new()), &patch, known)?)
 }
 
 /// An item's component patch on its entry; `known` holds every type a vanilla item has, so typos fail.
@@ -989,22 +1137,16 @@ fn patch_components(
 }
 
 /// A declared component patch, as the overlay's JSON.
-fn component_patch(
-    id: &str,
-    components: &BTreeMap<String, serde_json::Value>,
-) -> Result<Vec<(String, J)>> {
+fn component_patch(components: &BTreeMap<String, serde_json::Value>) -> Result<Vec<(String, J)>> {
     components
         .iter()
         .map(|(key, value)| {
             if !key.starts_with('!') && sunrise_protocol::item::custom::id(key).is_some() {
                 let tag = sunrise_client_core::scoreboard::json_to_tag(value);
                 sunrise_core::nbt::validate_component_value(&tag)
-                    .map_err(|error| format!("{id}: component {key}: {error}"))?;
+                    .map_err(|error| format!("component {key}: {error}"))?;
             }
-            Ok((
-                key.clone(),
-                serde_json::from_value(value.clone()).map_err(|error| format!("{id}: {error}"))?,
-            ))
+            Ok((key.clone(), serde_json::from_value(value.clone())?))
         })
         .collect()
 }
@@ -1065,8 +1207,33 @@ impl<'a> Plan<'a> {
         // use the resolved state's fluid, not the template's cached dry answer.
         let mut skylight_rules = BTreeMap::new();
         let mut custom_dampening = BTreeSet::new();
+        let needs_waterlogging = mods.iter().any(|m| {
+            m.content
+                .blocks
+                .iter()
+                .any(|b| b.state_properties.contains_key("waterlogged"))
+        });
+        let mut water_states = Vec::new();
+        let mut liquid_templates = BTreeSet::new();
+        let mut speleothems = BTreeSet::new();
         if base.join("block-behaviours.json").exists() {
             let behaviors = read_json(&base.join("block-behaviours.json"))?;
+            if needs_waterlogging {
+                let Some(J::Arr(states)) = behaviors.get("states") else {
+                    return Err("block-behaviours.json has no state fluids".into());
+                };
+                for state in states {
+                    // Compact state row column 2 is the exported fluid registry ordinal,
+                    // also decoded by sunrise_world::level::data::build_with_gameplay.
+                    let kind = match state {
+                        J::Arr(row) => row.get(2).and_then(J::as_u32),
+                        _ => None,
+                    }
+                    .and_then(|index| FluidKind::ALL.get(index as usize))
+                    .ok_or("block-behaviours.json has an invalid state fluid")?;
+                    water_states.push(matches!(kind, FluidKind::Water | FluidKind::FlowingWater));
+                }
+            }
             let Some(J::Arr(blocks)) = behaviors.get("blocks") else {
                 return Err("block-behaviours.json has no blocks".into());
             };
@@ -1083,6 +1250,9 @@ impl<'a> Plan<'a> {
                         _ => None,
                     })
                     .collect();
+                if classes.contains(&"SpeleothemBlock") {
+                    speleothems.insert(name.clone());
+                }
                 if let Some(rule) = classes.iter().find_map(|class| match *class {
                     "BarrierBlock"
                     | "CrossCollisionBlock"
@@ -1103,6 +1273,9 @@ impl<'a> Plan<'a> {
                 {
                     custom_dampening.insert(name.clone());
                 }
+                if needs_waterlogging && classes.contains(&"LiquidBlock") {
+                    liquid_templates.insert(name.clone());
+                }
             }
         }
         let mut force_solid = BTreeMap::new();
@@ -1122,7 +1295,10 @@ impl<'a> Plan<'a> {
                 }
             }
         }
-        let mut facts = read_json(&base.join("facts.json"))?;
+        let facts_path = base.join("facts.json");
+        let facts_bytes = fs::read(&facts_path)?;
+        let mut facts: J = serde_json::from_slice(&facts_bytes)
+            .map_err(|e| format!("{}: {e}", facts_path.display()))?;
         let names: Vec<String> = match facts.at("states") {
             Some(J::Arr(states)) => states
                 .iter()
@@ -1211,15 +1387,61 @@ impl<'a> Plan<'a> {
                 }
             }
         }
+        let effects = mob_effects(mods);
+        let mut stew_effect_ids = BTreeSet::new();
+        if mods.iter().flat_map(|m| &m.content.blocks).any(|b| {
+            b.suspicious_stew_effects
+                .as_ref()
+                .is_some_and(|effects| !effects.is_empty())
+        }) {
+            let registry = read_json(&base.join("registries.json"))?;
+            let Some(J::Obj(entries)) = registry
+                .get("minecraft:mob_effect")
+                .and_then(|r| r.get("entries"))
+            else {
+                return Err("no minecraft:mob_effect entries".into());
+            };
+            stew_effect_ids.extend(entries.iter().map(|(id, _)| id.clone()));
+            stew_effect_ids.extend(effects.iter().map(|effect| effect.id.clone()));
+        }
         let mut blocks = Vec::new();
         let mut next = names.len() as u32;
         let mut sorted: Vec<&ContentMod> = mods.iter().collect();
         sorted.sort_by(|a, b| a.id.cmp(&b.id));
         let mut wanted_sounds = Vec::new();
+        let template_registry = std::cell::OnceCell::new();
+        let mut template_occlusion = None;
         for m in &sorted {
             let mut declared: Vec<&Block> = m.content.blocks.iter().collect();
             declared.sort_by(|a, b| a.id.cmp(&b.id));
             for decl in declared {
+                let stew_effects = decl
+                    .suspicious_stew_effects
+                    .as_ref()
+                    .map(|effects| {
+                        effects
+                            .iter()
+                            .map(|effect| {
+                                let id = sunrise_core::identifier::Identifier::parse(&effect.id)
+                                    .ok()
+                                    .map(|id| id.to_string());
+                                let id = id.filter(|id| stew_effect_ids.contains(id)).ok_or_else(
+                                    || {
+                                        format!(
+                                            "{}: suspicious_stew_effects: unknown mob effect {:?}",
+                                            decl.id, effect.id
+                                        )
+                                    },
+                                )?;
+                                Ok::<_, String>(J::Obj(vec![
+                                    ("id".into(), J::Str(id)),
+                                    ("duration".into(), J::Num(effect.duration.into())),
+                                ]))
+                            })
+                            .collect::<std::result::Result<Vec<_>, _>>()
+                            .map(J::Arr)
+                    })
+                    .transpose()?;
                 let base_block = match decl.base_block.as_deref() {
                     Some(base) if defaults.contains_key(base) || declared_ids.contains(base) => {
                         Some(KnownBlock(base))
@@ -1274,19 +1496,52 @@ impl<'a> Plan<'a> {
                 let Some(J::Arr(rows)) = facts.get("states") else {
                     unreachable!()
                 };
+                let is_air = matches!(
+                    rows.get(default as usize),
+                    Some(J::Arr(row)) if matches!(row.get(1), Some(J::Bool(true)))
+                );
                 let properties = |id: u32| -> Option<&J> {
                     let J::Arr(row) = rows.get(id as usize)? else {
                         return None;
                     };
                     row.get(4)?.get("properties")
                 };
+                let declaration_source = || {
+                    // File declarations take their id from this path. A code declaration
+                    // in the same mod has no file, so name only its block id.
+                    if let Some((namespace, path)) = decl.id.split_once(':') {
+                        let file = format!("data/{namespace}/sunrise/block/{path}.json");
+                        if m.content.files.binary_search(&file).is_ok() {
+                            return format!("{file}: {}", decl.id);
+                        }
+                    }
+                    decl.id.clone()
+                };
                 for key in decl.state_properties.keys() {
                     if properties(default).is_some_and(|p| p.get(key).is_some()) {
                         return Err(format!(
-                            "{}: state property {key} is already on {}",
-                            decl.id, decl.template
+                            "{}: state_properties.{key} is already on {}",
+                            declaration_source(),
+                            decl.template
                         )
                         .into());
+                    }
+                }
+                if decl.state_properties.contains_key("waterlogged") {
+                    if liquid_templates.contains(&decl.template) {
+                        return Err(format!(
+                            "{}: state_properties.waterlogged cannot be added: template {} is a standalone liquid block",
+                            declaration_source(), decl.template
+                        ).into());
+                    }
+                    let template_water = water_states
+                        .get(states.start as usize..states.end as usize)
+                        .ok_or("block-behaviours.json is missing template state fluids")?;
+                    if template_water.iter().all(|water| *water) {
+                        return Err(format!(
+                            "{}: state_properties.waterlogged cannot be added: every state of template {} already holds water",
+                            declaration_source(), decl.template
+                        ).into());
                     }
                 }
                 let combos = combinations(&decl.state_properties, &decl.default_state)
@@ -1352,6 +1607,21 @@ impl<'a> Plan<'a> {
                     .map(|(name, property)| (name.clone(), property.values().len() as u32))
                     .collect();
                 let order = block_order(&states, properties, &declared, combos.len() as u32);
+                if decl.context_collision == Some(ContextCollision::Scaffolding) {
+                    for &(state, combo) in &order {
+                        let value = |name| {
+                            state_value(
+                                &combos[combo as usize],
+                                properties(states.start + state),
+                                name,
+                            )
+                        };
+                        ScaffoldingCollision::from_values(value("distance"), value("bottom"))
+                            .map_err(|e| {
+                                format!("{}: context_collision scaffolding: {e}", decl.id)
+                            })?;
+                    }
+                }
                 let resolve = |spec: &BlockShapes| {
                     resolve_shapes(spec, &decl.id, &states, &order, &combos, properties)
                 };
@@ -1366,6 +1636,31 @@ impl<'a> Plan<'a> {
                     })
                 };
                 let collision_shapes = decl.collision_shapes.as_ref().map(resolve).transpose()?;
+                let mut template_occlusion_full = Vec::new();
+                if decl.properties.occludes == Some(true) && shapes.is_none() {
+                    use sunrise_world::{
+                        collision::CachedCollisionRegistry,
+                        registry::{BlockRegistry, BlockStateId, BlockTableFile},
+                    };
+                    let cached = match &template_occlusion {
+                        Some(cached) => cached,
+                        None => {
+                            let (registry, _) = BlockRegistry::from_facts_json_bytes(&facts_bytes)?;
+                            let registry = template_registry.get_or_init(|| registry);
+                            let file = BlockTableFile::open(&base.join("occlusion.nbt"), registry)?;
+                            template_occlusion.insert(CachedCollisionRegistry::from_table(
+                                file.table("occlusion")?,
+                            )?)
+                        }
+                    };
+                    for &(state, _) in &order {
+                        let shape = cached
+                            .cached_shape(BlockStateId(states.start + state))?
+                            .ok_or("template has no published occlusion shape")?;
+                        template_occlusion_full
+                            .push(!shape.join_is_not_empty(&VoxelShape::block(), ShapeOp::XOR)?);
+                    }
+                }
                 let mut has_fluid = Vec::new();
                 if shapes.is_some() {
                     for &(state, combo) in &order {
@@ -1425,13 +1720,17 @@ impl<'a> Plan<'a> {
                     wanted_sounds.push(s.clone());
                 }
                 blocks.push(NewBlock {
+                    stew_effects,
                     decl,
                     base_block,
                     rename,
                     item: None,
                     shapes,
                     collision_shapes,
+                    is_air,
                     has_fluid,
+                    offset_limits: Vec::new(),
+                    template_occlusion_full,
                     skylight: skylight_rules
                         .get(&decl.template)
                         .copied()
@@ -1486,6 +1785,43 @@ impl<'a> Plan<'a> {
         }
         let mut items = Vec::new();
         for b in &mut blocks {
+            let p = &b.decl.properties;
+            let inherited = crate::blocks::inherited_offset_limits(
+                &b.decl.template,
+                speleothems.contains(&b.decl.template),
+            );
+            b.offset_limits = b
+                .order
+                .iter()
+                .map(|(state, _)| {
+                    use sunrise_mod_package::content::OffsetType;
+                    let enabled = match p.offset {
+                        Some(OffsetType::None) => false,
+                        Some(_) => true,
+                        None => matches!(
+                            rows[(b.rename.states.start + state) as usize].get("offset"),
+                            Some(J::Bool(true))
+                        ),
+                    };
+                    enabled.then(|| {
+                        let defaults = match p.offset {
+                            Some(OffsetType::Xz) => (0.25, 0.0),
+                            Some(OffsetType::Xyz) => (0.25, 0.2),
+                            _ => inherited,
+                        };
+                        (
+                            p.max_horizontal_offset.unwrap_or(defaults.0),
+                            if p.offset == Some(OffsetType::Xz)
+                                || (p.offset.is_none() && inherited.1 == 0.0)
+                            {
+                                0.0
+                            } else {
+                                p.max_vertical_offset.unwrap_or(defaults.1)
+                            },
+                        )
+                    })
+                })
+                .collect();
             let row = &rows[b.rename.states.start as usize];
             b.item = match row.get("item") {
                 Some(J::Str(i)) if i != "minecraft:air" => Some(i.clone()),
@@ -1499,7 +1835,8 @@ impl<'a> Plan<'a> {
                     rename: Rename::new(item, &b.decl.id),
                     max_stack_size: None,
                     rarity: None,
-                    components: component_patch(&b.decl.id, &b.decl.components)?,
+                    components: component_patch(&b.decl.components)
+                        .map_err(|error| format!("{}: {error}", b.decl.id))?,
                     crafting_remainder: None,
                     block: None,
                     arm_pose: None,
@@ -1520,7 +1857,8 @@ impl<'a> Plan<'a> {
                     rename: Rename::new(&i.template, &i.id),
                     max_stack_size: i.max_stack_size,
                     rarity: i.rarity,
-                    components: component_patch(&i.id, &i.components)?,
+                    components: component_patch(&i.components)
+                        .map_err(|error| format!("{}: {error}", i.id))?,
                     crafting_remainder: i.crafting_remainder.clone(),
                     block: i.block.clone(),
                     arm_pose: i.arm_pose,
@@ -1549,7 +1887,7 @@ impl<'a> Plan<'a> {
             blocks,
             items,
             vanilla_items,
-            effects: mob_effects(mods),
+            effects,
             fluids: fluids(mods),
             entity_types: entity_types(mods),
             block_entity_types: block_entity_types
@@ -1557,7 +1895,7 @@ impl<'a> Plan<'a> {
                 .map(|(_, kind)| kind)
                 .collect(),
             block_entity_factories,
-            menu_types: menu_types(mods),
+            menu_types: menu_types(mods).into_iter().map(|(menu, _)| menu).collect(),
             states: names.len(),
             defaults,
             sounds,
@@ -1581,9 +1919,9 @@ impl<'a> Plan<'a> {
         out
     }
 
-    /// Appends each new block's copies of the template's states to `list`;
-    /// `gameplay` rows get their index and the declared overrides.
-    fn states(&self, list: &mut Vec<J>, ids: bool, gameplay: bool) -> Result<()> {
+    /// Appends each new block's copies of the template's states to `list`,
+    /// writing the declared overrides in the table's row format.
+    fn states(&self, list: &mut Vec<J>, ids: bool, name: &str) -> Result<()> {
         if list.len() != self.states {
             return Err(format!("{} states, not {}", list.len(), self.states).into());
         }
@@ -1600,7 +1938,57 @@ impl<'a> Plan<'a> {
                 if !combo.is_empty() {
                     set_state_properties(&mut row, combo);
                 }
-                if gameplay {
+                if matches!(
+                    name,
+                    "block-behaviours.json"
+                        | "facts.json"
+                        | "mob-data.json"
+                        | "worldgen/block_flags.json"
+                ) && combo
+                    .iter()
+                    .any(|(key, value)| key == "waterlogged" && value == "true")
+                {
+                    let J::Arr(columns) = &mut row else {
+                        return Err(format!("{name}: missing state row {id}").into());
+                    };
+                    if name == "block-behaviours.json" {
+                        let fluid = columns
+                            .get_mut(2..5)
+                            .ok_or("block-behaviours.json: missing state fluid")?;
+                        let water = FluidState::WATER;
+                        let ordinal = FluidKind::ALL
+                            .iter()
+                            .position(|&kind| kind == water.kind())
+                            .expect("source water belongs to the vanilla fluid registry");
+                        fluid.clone_from_slice(&[
+                            J::Num(ordinal.into()),
+                            J::Num(water.amount().into()),
+                            J::Bool(water.falling()),
+                        ]);
+                    } else if name == "mob-data.json" {
+                        let [path, flags, ..] = columns.as_mut_slice() else {
+                            return Err("mob-data.json: missing state pathfinding data".into());
+                        };
+                        // Only the walk evaluator's generic OPEN result looks at the fluid here.
+                        // Air, blocked and special paths keep their template's answer.
+                        if !b.is_air && path.as_str() == Some("OPEN") {
+                            *path = J::Str("WATER".into());
+                        }
+                        let mask = flags.as_u32().ok_or("mob-data.json: invalid state flags")?;
+                        // Inherited waterlogged properties never take this branch: their exported
+                        // WATER answer is kept. For a new declaration use BlockBehaviour's default.
+                        let water =
+                            u32::from(PartAnswers::pathfindable_bit(PathComputationType::Water));
+                        *flags = J::Num(((mask | water) & !u32::from(VALID_EMPTY_SPAWN)).into());
+                    } else {
+                        let has_fluid = if name == "facts.json" { 2 } else { 1 };
+                        *columns
+                            .get_mut(has_fluid)
+                            .ok_or_else(|| format!("{name}: missing state fluid flag"))? =
+                            J::Bool(true);
+                    }
+                }
+                if name == "gameplay-facts.json" {
                     row.set("id", J::Num(next.into()));
                     if let Some(item) = b.item_row() {
                         row.set("item", J::Str(item.into()));
@@ -1631,8 +2019,10 @@ impl<'a> Plan<'a> {
                             })
                             .collect();
                         // BlockState.initCache and BlockBehaviour.getLightDampening:
-                        // the declared outline is the block's occlusion shape.
-                        let full = !shape.join_is_not_empty(&VoxelShape::block(), ShapeOp::XOR)?;
+                        // the occlusion shape uses the offset at the cache's origin.
+                        let occlusion = b.declared_occlusion(state_index, shape);
+                        let full =
+                            !occlusion.join_is_not_empty(&VoxelShape::block(), ShapeOp::XOR)?;
                         let can_occlude = matches!(row.get("can_occlude"), Some(J::Bool(true)));
                         let solid = can_occlude && full;
                         let down = match b.skylight {
@@ -1691,6 +2081,23 @@ impl<'a> Plan<'a> {
         row: &mut J,
     ) {
         let p = &b.decl.properties;
+        let offset = b.offset_limits[state_index];
+        row.set("offset", J::Bool(offset.is_some()));
+        if let Some((horizontal, vertical)) = offset {
+            row.set(
+                "offset_limits",
+                J::Arr(vec![J::f64(horizontal as f64), J::f64(vertical as f64)]),
+            );
+        }
+        if b.shapes.is_some() || p.offset == Some(sunrise_mod_package::content::OffsetType::None) {
+            row.set("outline_offset", J::Bool(offset.is_some()));
+        }
+        if let Some(value) = p.ignited_by_lava {
+            row.set("ignited_by_lava", J::Bool(value));
+        }
+        if let Some(value) = p.replaceable {
+            row.set("replaceable", J::Bool(value));
+        }
         if let Some(ticks) = &p.random_ticks {
             row.set("random_ticks", J::Bool(ticks.applies(combo)));
         }
@@ -1706,6 +2113,20 @@ impl<'a> Plan<'a> {
         // `noOcclusion`: a block that can't occlude is never a solid render either, and a solid
         // render's full light dampening becomes a non-solid block's (`getLightDampening`: 0 when
         // skylight passes down, else 1, as for leaves and spawners).
+        if let Some(can_occlude) = p.occludes {
+            row.set("can_occlude", J::Bool(can_occlude));
+        }
+        if p.occludes == Some(true) && b.shapes.is_none() {
+            let solid = b.template_occlusion_full[state_index];
+            row.set("solid_render", J::Bool(solid));
+            if !b.custom_dampening {
+                let down = matches!(row.get("skylight_down"), Some(J::Bool(true)));
+                row.set(
+                    "dampening",
+                    J::Num((if solid { 15 } else { i64::from(!down) }).into()),
+                );
+            }
+        }
         if p.occludes == Some(false) {
             let solid = matches!(row.get("solid_render"), Some(J::Bool(true)));
             if solid {
@@ -1780,6 +2201,14 @@ impl<'a> Plan<'a> {
             };
             let mut v = v.clone();
             v.rename(&i.rename, false);
+            if !components
+                && i.template.is_none()
+                && let Some(fields) = v.get_mut("fields")
+            {
+                // The generated BlockItem points to its new block, not to the
+                // template's main block if the template shared another item.
+                fields.set("block", J::Str(i.rename.to.clone()));
+            }
             if let Some(wall) = &i.wall_block
                 && let Some(fields) = v.get_mut("fields")
             {
@@ -1856,15 +2285,15 @@ impl<'a> Plan<'a> {
 
     /// One JSON table, rewritten.
     fn json(&self, name: &str, doc: &mut J) -> Result<()> {
-        let states = |doc: &mut J, path: &str, ids: bool, gameplay: bool| -> Result<()> {
+        let states = |doc: &mut J, path: &str, ids: bool| -> Result<()> {
             match doc.at(path) {
-                Some(J::Arr(a)) => self.states(a, ids, gameplay),
+                Some(J::Arr(a)) => self.states(a, ids, name),
                 _ => Err(format!("no list at /{path}").into()),
             }
         };
         match name {
             "facts.json" => {
-                states(doc, "states", false, false)?;
+                states(doc, "states", false)?;
                 let defaults = doc.at("defaults").ok_or("no defaults")?;
                 for b in &self.blocks {
                     let default = b.default;
@@ -1872,10 +2301,27 @@ impl<'a> Plan<'a> {
                     defaults.set(&b.decl.id, J::Num(id.into()));
                 }
             }
-            "gameplay-facts.json" => states(doc, "states", false, true)?,
+            "gameplay-facts.json" => states(doc, "states", false)?,
             "creative-inventory.json" => self.creative_tabs(doc)?,
             "block-behaviours.json" => {
-                states(doc, "states", false, false)?;
+                states(doc, "states", false)?;
+                if let Some(J::Arr(rows)) = doc.at("states") {
+                    for b in &self.blocks {
+                        if let Some(instrument) = b.decl.properties.instrument {
+                            for (id, _) in (b.rename.first..).zip(b.state_combinations()) {
+                                let J::Arr(row) = &mut rows[id as usize] else {
+                                    return Err(
+                                        "block-behaviours.json: expected a compact state row"
+                                            .into(),
+                                    );
+                                };
+                                row.resize(row.len().max(9), J::Null);
+                                // Instrument column, read by sunrise_world::level::data's state facts decoder.
+                                row[8] = J::Str(instrument.name().to_ascii_uppercase());
+                            }
+                        }
+                    }
+                }
                 self.declared_solid(doc);
                 let Some(J::Arr(blocks)) = doc.at("blocks") else {
                     return Err("no blocks".into());
@@ -1891,6 +2337,14 @@ impl<'a> Plan<'a> {
                         if let Some(item) = b.item_row() {
                             v.set("item", J::Str(item.into()));
                         }
+                        if b.decl.state_properties.contains_key("waterlogged") {
+                            if let Some(J::Arr(interfaces)) = v.at("interfaces") {
+                                interfaces.push(J::Str("SimpleWaterloggedBlock".into()));
+                            }
+                            if let Some(fields) = v.at("fields") {
+                                fields.set("declaredWaterlogged", J::Bool(true));
+                            }
+                        }
                         // `SignBlock.getWoodType`: the wood's name is what
                         // the editor reads of it.
                         if let Some(wood) = &b.decl.wood_type
@@ -1898,13 +2352,39 @@ impl<'a> Plan<'a> {
                         {
                             *name = J::Str(wood.clone());
                         }
-                        // `new FenceGateBlock(woodType, ..)`: the gate's own sounds replace its wood's.
-                        if let Some(fields) = v.at("fields/type") {
-                            if let Some(sound) = &b.decl.open_sound {
-                                fields.set("fenceGateOpen", J::Str(sound.clone()));
-                            }
-                            if let Some(sound) = &b.decl.close_sound {
-                                fields.set("fenceGateClose", J::Str(sound.clone()));
+                        // Resolve each gate site against the untouched template wood sound.
+                        if let Some(fields) = v.at("fields") {
+                            for (key, sound) in [
+                                ("gateOpenSounds", &b.decl.open_sound),
+                                ("gateCloseSounds", &b.decl.close_sound),
+                            ] {
+                                let Some(sound) = sound else { continue };
+                                use sunrise_mod_package::content::GateSound;
+                                let sites = match sound {
+                                    GateSound::All(sound) => {
+                                        [Some(sound), Some(sound), Some(sound)]
+                                    }
+                                    GateSound::Sites {
+                                        on_use,
+                                        on_explosion,
+                                        on_redstone,
+                                    } => [
+                                        on_use.as_ref(),
+                                        on_explosion.as_ref(),
+                                        on_redstone.as_ref(),
+                                    ],
+                                };
+                                fields.set(
+                                    key,
+                                    J::Arr(
+                                        sites
+                                            .into_iter()
+                                            .map(|sound| {
+                                                sound.map_or(J::Null, |sound| J::Str(sound.clone()))
+                                            })
+                                            .collect(),
+                                    ),
+                                );
                             }
                         }
                         // `createDefaultSignText`: the colour and glow a new sign's text starts with.
@@ -1940,6 +2420,12 @@ impl<'a> Plan<'a> {
                             fields.set("connectsTo", J::Str(tag.clone()));
                             v.set("fields", fields);
                         }
+                        if b.decl.properties.vegetation {
+                            v.set("declared_vegetation", J::Bool(true));
+                        }
+                        if let Some(effects) = &b.stew_effects {
+                            v.set("suspicious_stew_effects", effects.clone());
+                        }
                         blocks.push(v);
                     }
                 }
@@ -1957,9 +2443,15 @@ impl<'a> Plan<'a> {
                     let Some(entry) = doc.get_mut(&b.decl.id) else {
                         continue;
                     };
+                    if !model && let Some(skip) = b.decl.properties.skip_same_block_faces {
+                        entry.set(
+                            "rule",
+                            J::Str(if skip { "same_block" } else { "never" }.into()),
+                        );
+                    }
                     // Faces beside a block that occludes nothing are drawn (`Block.shouldRenderFace`).
-                    if !model && b.decl.properties.occludes == Some(false) {
-                        entry.set("can_occlude", J::Bool(false));
+                    if !model && let Some(can_occlude) = b.decl.properties.occludes {
+                        entry.set("can_occlude", J::Bool(can_occlude));
                     }
                     if model && let Some(schema) = entry.get_mut("schema") {
                         for (property_name, property) in &b.decl.state_properties {
@@ -2116,11 +2608,11 @@ impl<'a> Plan<'a> {
                     ids.extend(new_types());
                 }
             }
-            "mob-data.json" => states(doc, "states", false, false)?,
-            "worldgen/block_flags.json" => states(doc, "", false, false)?,
+            "mob-data.json" => states(doc, "states", false)?,
+            "worldgen/block_flags.json" => states(doc, "", false)?,
             "worldgen/blocks/structure-blocks.json" => {
                 for key in ["rotate", "mirror", "full_block"] {
-                    states(doc, key, true, false)?;
+                    states(doc, key, true)?;
                 }
                 let added: usize = self
                     .blocks
@@ -2137,10 +2629,25 @@ impl<'a> Plan<'a> {
     /// The states whose block entity publishes their shapes (`shapes_from_block_entity`), in
     /// the collision and support tables, which mark such states in their scan metadata.
     fn published_states(&self, tag: &mut Tag) -> Result<()> {
+        self.list_states(tag, "published_shapes", |decl| {
+            decl.shapes_from_block_entity
+        })
+    }
+
+    /// The states whose block takes scaffolding's context collision (`context_collision`), in
+    /// the collision tables.
+    fn scaffolding_states(&self, tag: &mut Tag) -> Result<()> {
+        self.list_states(tag, "scaffolding_collision", |decl| {
+            decl.context_collision == Some(ContextCollision::Scaffolding)
+        })
+    }
+
+    /// Lists under `key` the states of the blocks `wanted` picks; no list when it picks none.
+    fn list_states(&self, tag: &mut Tag, key: &str, wanted: impl Fn(&Block) -> bool) -> Result<()> {
         let states: Vec<i32> = self
             .blocks
             .iter()
-            .filter(|block| block.decl.shapes_from_block_entity)
+            .filter(|block| wanted(block.decl))
             .flat_map(|block| {
                 (0..block.order.len())
                     .map(move |offset| (block.rename.first as usize + offset) as i32)
@@ -2152,7 +2659,7 @@ impl<'a> Plan<'a> {
         let Tag::Compound(root) = tag else {
             return Err("collision table is not a compound".into());
         };
-        root.insert("published_shapes".into(), Tag::IntArray(states));
+        root.insert(key.into(), Tag::IntArray(states));
         Ok(())
     }
 
@@ -2173,6 +2680,13 @@ impl<'a> Plan<'a> {
             if let Some(shapes) = shapes {
                 let mut encoded = BTreeMap::new();
                 for (offset, shape) in shapes.iter().enumerate() {
+                    let occlusion;
+                    let shape = if collision {
+                        shape
+                    } else {
+                        occlusion = block.declared_occlusion(offset, shape);
+                        &occlusion
+                    };
                     let key: Vec<_> = shape
                         .boxes()
                         .iter()
@@ -2239,6 +2753,51 @@ impl<'a> Plan<'a> {
         if !contexts.is_empty() {
             root.insert("context_shapes".into(), Tag::List(contexts));
         }
+        if collision {
+            let mut offsets = Vec::new();
+            for block in &self.blocks {
+                let mut channels = 0;
+                if block.shapes.is_some() || block.collision_shapes.is_some() {
+                    channels |= 1;
+                }
+                if block
+                    .context_shapes
+                    .keys()
+                    .any(|key| key.starts_with("collision_"))
+                {
+                    channels |= 2;
+                }
+                if block
+                    .context_shapes
+                    .keys()
+                    .any(|key| key.starts_with("outline_"))
+                {
+                    channels |= 4;
+                }
+                if block.context_shapes.contains_key("interaction") {
+                    channels |= 8;
+                }
+                if channels == 0 {
+                    continue;
+                }
+                for (index, limits) in block.offset_limits.iter().enumerate() {
+                    if let Some((horizontal, vertical)) = limits {
+                        offsets.push(Tag::compound([
+                            (
+                                "state",
+                                Tag::Int((block.rename.first as usize + index) as i32),
+                            ),
+                            ("channels", Tag::Byte(channels)),
+                            ("horizontal", Tag::Float(horizontal.to_bits())),
+                            ("vertical", Tag::Float(vertical.to_bits())),
+                        ]));
+                    }
+                }
+            }
+            if !offsets.is_empty() {
+                root.insert("shape_offsets".into(), Tag::List(offsets));
+            }
+        }
         let Some(Tag::IntArray(mapping)) = root.get_mut(&JavaString::from("cached_shapes")) else {
             return Err("collision table has no mapping".into());
         };
@@ -2276,14 +2835,22 @@ impl<'a> Plan<'a> {
             row.set("page", J::Num((1 + i / 10).into()));
             row.set("title", J::Str(tab.title.clone()));
             row.set("icon", stack(&tab.icon));
-            row.set("visible", J::Bool(true));
-            let items = tab
-                .items
-                .iter()
-                .filter(|id| known(id))
-                .map(|id| stack(id))
-                .collect();
-            row.set("items", J::Arr(items));
+            row.set(
+                "build",
+                J::Arr(
+                    tab.items
+                        .iter()
+                        .filter(|id| known(id))
+                        .map(|id| {
+                            J::Obj(vec![
+                                ("kind".into(), J::Str("stack".into())),
+                                ("visibility".into(), J::Str("PARENT_AND_SEARCH_TABS".into())),
+                                ("snbt".into(), stack(id)),
+                            ])
+                        })
+                        .collect(),
+                ),
+            );
             tabs.push(row);
         }
         if let Some(search) = search {
@@ -2295,21 +2862,14 @@ impl<'a> Plan<'a> {
                     .cloned()
                     .unwrap_or_else(|| path.to_owned())
             };
-            let tab = &mut tabs[search];
-            for (key, add) in [
-                ("items", new.iter().map(|id| stack(id)).collect::<Vec<_>>()),
-                (
-                    "lines",
-                    new.iter()
-                        .map(|id| J::Arr(vec![J::Str(name(id))]))
-                        .collect(),
-                ),
-                // shortcut: a mod item's tags aren't searched by (#tag) yet.
-                ("tags", new.iter().map(|_| J::Arr(Vec::new())).collect()),
-            ] {
-                if let Some(J::Arr(list)) = tab.get_mut(key) {
-                    list.extend(add);
-                }
+            if let Some(J::Arr(metadata)) = tabs[search].get_mut("search_metadata") {
+                metadata.extend(new.into_iter().map(|id| {
+                    J::Obj(vec![
+                        ("stack".into(), stack(id)),
+                        ("lines".into(), J::Arr(vec![J::Str(name(id))])),
+                        ("ungrouped".into(), J::Bool(true)),
+                    ])
+                }));
             }
         }
         Ok(())
@@ -2320,7 +2880,7 @@ impl<'a> Plan<'a> {
         let Tag::Compound(c) = tag else {
             return;
         };
-        for (key, value) in c.iter_mut() {
+        c.for_each_mut(|key, value| {
             match (key.to_string_lossy().as_str(), value) {
                 ("states", Tag::List(list)) if list.len() == self.states => {
                     for b in &self.blocks {
@@ -2360,10 +2920,14 @@ impl<'a> Plan<'a> {
                         else {
                             continue;
                         };
-                        if b.decl.properties.occludes == Some(false)
-                            && let Tag::Byte(flags) = &mut v
-                        {
-                            *flags &= !16;
+                        if let Tag::Byte(flags) = &mut v {
+                            if let Some(can_occlude) = b.decl.properties.occludes {
+                                *flags = (*flags & !16) | if can_occlude { 16 } else { 0 };
+                            }
+                            if let Some(replaceable) = b.decl.properties.replaceable {
+                                // `BlockPropertiesRegistry` reads replaceable from bit 2.
+                                *flags = (*flags & !4) | (i8::from(replaceable) << 2);
+                            }
                         }
                         if let (Some(f), Some(slot)) =
                             (b.decl.properties.friction, v.get_mut("friction"))
@@ -2376,7 +2940,7 @@ impl<'a> Plan<'a> {
                 (_, inner @ Tag::Compound(_)) => self.nbt(inner),
                 _ => {}
             }
-        }
+        });
     }
 }
 
@@ -2421,9 +2985,11 @@ const TAG_BUNDLES: [&str; 2] = ["block-tags.json", "worldgen/block_tags.json"];
 const BIOME_TAGS: &str = "worldgen/biome_tags.json";
 /// Worldgen registries a content mod may add to, and the bundle the
 /// worldgen loader reads each from (id → the file's text): what structure
-/// mods hold. Biomes, noise and density functions change the terrain and
+/// mods hold, and a mod's own biomes (any namespace but `minecraft`, which
+/// no mod can replace). Noise and density functions change the terrain and
 /// are not read from mods.
-const WORLDGEN_BUNDLES: [(&str, &str); 6] = [
+const WORLDGEN_BUNDLES: [(&str, &str); 7] = [
+    ("biome", "worldgen/biomes.json"),
     ("structure", "worldgen/structures.json"),
     ("structure_set", "worldgen/structure_sets.json"),
     ("template_pool", "worldgen/template_pools.json"),
@@ -2434,7 +3000,8 @@ const WORLDGEN_BUNDLES: [(&str, &str); 6] = [
 
 /// The registry of `command-registries.json` that each bundle's ids join,
 /// for the commands that suggest them (`/locate`, `/place`).
-const COMMAND_REGISTRIES: [(&str, &str); 6] = [
+const COMMAND_REGISTRIES: [(&str, &str); 7] = [
+    ("worldgen/biomes.json", "minecraft:worldgen/biome"),
     ("worldgen/structures.json", "minecraft:worldgen/structure"),
     (
         "worldgen/structure_sets.json",
@@ -2457,9 +3024,12 @@ const COMMAND_REGISTRIES: [(&str, &str); 6] = [
 
 /// A mod file that adds to a worldgen bundle: (bundle, id).
 fn worldgen_entry(file: &str) -> Option<(&'static str, String)> {
-    let (ns, rest) = file.strip_prefix("data/")?.split_once("/worldgen/")?;
-    let (kind, path) = rest.split_once('/')?;
+    let (ns, rest) = file.strip_prefix("data/")?.split_once('/')?;
+    let (kind, path) = rest.strip_prefix("worldgen/")?.split_once('/')?;
     let (_, bundle) = WORLDGEN_BUNDLES.iter().find(|(k, _)| *k == kind)?;
+    if *bundle == BIOMES && ns == "minecraft" {
+        return None;
+    }
     Some((bundle, format!("{ns}:{}", path.strip_suffix(".json")?)))
 }
 
@@ -2560,7 +3130,7 @@ const PLACED_FEATURES: &str = "worldgen/placed_features.json";
 const CARVERS: &str = "worldgen/carvers.json";
 
 /// Rewrites the biome bundle with the mods' biome modifiers. `biome_tags`
-/// and `placed` are the bundles as the mods left them (`None`: the base's).
+/// `placed` and `biome_doc` are the bundles as the mods left them (`None`: the base's).
 fn place_in_biomes(
     base: &Path,
     overlay: &Overlay<'_>,
@@ -2568,6 +3138,7 @@ fn place_in_biomes(
     enabled_mods: Vec<String>,
     biome_tags: Option<J>,
     placed: Option<J>,
+    biome_doc: Option<J>,
     tags: &BTreeMap<String, TagMerge>,
     warnings: &mut Vec<String>,
 ) -> Result<()> {
@@ -2591,7 +3162,10 @@ fn place_in_biomes(
     if !base.join(BIOMES).exists() {
         return Err(format!("biome modifiers need {BIOMES}").into());
     }
-    let mut doc = read_json(&base.join(BIOMES))?;
+    let mut doc = match biome_doc {
+        Some(doc) => doc,
+        None => read_json(&base.join(BIOMES))?,
+    };
     let biome_tags = bundle(biome_tags, BIOME_TAGS)?;
     let placed: BTreeSet<String> = bundle(placed, PLACED_FEATURES)?.into_keys().collect();
     let feature_tags = bundle(None, FEATURE_TAGS)?;
@@ -2961,9 +3535,18 @@ struct Known {
     biome_tags: std::collections::BTreeSet<String>,
     /// `data/<ns>/tags/<kind>/<path>.json` files the mods add.
     tag_files: std::collections::BTreeSet<String>,
+    /// Block and item tag paths, by kind. A missing kind means the base has no folder to consult.
+    vanilla_tags: BTreeMap<&'static str, BTreeSet<String>>,
 }
 impl Known {
-    fn new(base: &Path, plan: &Plan, tags: &BTreeMap<String, TagMerge>) -> Result<Self> {
+    fn new(
+        base: &Path,
+        plan: &Plan,
+        tags: &BTreeMap<String, TagMerge>,
+        mod_biomes: impl Iterator<Item = String>,
+    ) -> Result<Self> {
+        use std::io::ErrorKind::{NotADirectory, NotFound};
+
         let mut blocks: std::collections::BTreeSet<String> =
             plan.defaults.keys().cloned().collect();
         blocks.extend(plan.blocks.iter().map(|b| b.decl.id.clone()));
@@ -2981,19 +3564,41 @@ impl Known {
                 false => Default::default(),
             })
         };
+        let mut biomes = keys(BIOMES)?;
+        biomes.extend(mod_biomes);
+        let mut vanilla_tags = BTreeMap::new();
+        for kind in ["block", "item"] {
+            let dir = base.join(format!("data/minecraft/tags/{kind}"));
+            let names = if let Some(files) =
+                sunrise_core::prepared_files::files_under(&dir).filter(|files| !files.is_empty())
+            {
+                files
+                    .into_iter()
+                    .filter_map(|name| name.strip_suffix(".json").map(str::to_owned))
+                    .collect()
+            } else {
+                match sunrise_world::json_folder::list(&dir) {
+                    Ok(files) => files.into_iter().map(|(name, _)| name).collect(),
+                    Err(e) if matches!(e.kind(), NotFound | NotADirectory) => continue,
+                    Err(e) => return Err(format!("{}: {e}", dir.display()).into()),
+                }
+            };
+            vanilla_tags.insert(kind, names);
+        }
         Ok(Known {
             blocks,
             items,
-            biomes: keys("worldgen/biomes.json")?,
+            biomes,
             biome_tags: keys(BIOME_TAGS)?,
             tag_files: tags.keys().cloned().collect(),
+            vanilla_tags,
         })
     }
     /// Whether tag `file` keeps entry `v`: a known id or an existing tag,
     /// for block, item and biome tags (other registries are kept as they
     /// are). The worldgen loader refuses a biome tag naming what it lacks
     /// (another mod's biomes, a loader's tags), so those entries go.
-    fn keeps(&self, file: &str, v: &J) -> bool {
+    fn keeps(&self, file: &str, v: &J, warnings: &mut Vec<String>) -> bool {
         let id = match v {
             J::Str(s) => s.as_str(),
             J::Obj(_) => match v.get("id") {
@@ -3002,16 +3607,18 @@ impl Known {
             },
             _ => return true,
         };
-        let Some(rest) = file
+        let Some((ns, rest)) = file
             .strip_prefix("data/")
             .and_then(|r| r.split_once("/tags/"))
-            .map(|(_, rest)| rest)
         else {
             return true;
         };
-        let kind = match rest.strip_prefix("worldgen/biome/") {
-            Some(_) => "worldgen/biome",
-            None => rest.split_once('/').map_or("", |(k, _)| k),
+        let Some((kind, tag_path)) = rest.strip_suffix(".json").and_then(|rest| {
+            rest.strip_prefix("worldgen/biome/")
+                .map(|path| ("worldgen/biome", path))
+                .or_else(|| rest.split_once('/'))
+        }) else {
+            return true;
         };
         let ids = match kind {
             "block" => &self.blocks,
@@ -3023,11 +3630,28 @@ impl Known {
             Some(tag) => {
                 let (tns, path) = tag.split_once(':').unwrap_or(("minecraft", tag));
                 let rel = format!("data/{tns}/tags/{kind}/{path}.json");
-                self.tag_files.contains(&rel)
-                    || match kind {
-                        "worldgen/biome" => self.biome_tags.contains(&format!("{tns}:{path}")),
-                        _ => tns == "minecraft",
+                if self.tag_files.contains(&rel) {
+                    return true;
+                }
+                match kind {
+                    "worldgen/biome" => self.biome_tags.contains(&format!("{tns}:{path}")),
+                    _ if tns != "minecraft" => false,
+                    _ => {
+                        let known = self
+                            .vanilla_tags
+                            .get(kind)
+                            .is_none_or(|tags| tags.contains(path));
+                        if !known
+                            && v.get("required") != Some(&J::Bool(false))
+                            && v.get("remove") != Some(&J::Bool(true))
+                        {
+                            warnings.push(format!(
+                                "{file}: skipped {id} in tag {ns}:{tag_path}: no such tag in the base or installed mods"
+                            ));
+                        }
+                        known
                     }
+                }
             }
             None => ids.contains(id),
         }
@@ -3077,6 +3701,7 @@ fn tables(base: &Path, plan: &Plan, overlay: &Overlay<'_>, jobs: &[(&str, u64)])
             if name == "cached-collision.nbt" || name == "worldgen/blocks/cached-collision.nbt" {
                 plan.declared_shapes(&mut named.tag, true)?;
                 plan.published_states(&mut named.tag)?;
+                plan.scaffolding_states(&mut named.tag)?;
             } else if name == "worldgen/blocks/cached-support.nbt" {
                 plan.published_states(&mut named.tag)?;
             } else if name == "occlusion.nbt" {
@@ -3157,16 +3782,48 @@ fn load_layers<'a>(jar_store: &Path, mods: &'a [ContentMod]) -> Result<Vec<ModLa
             )?);
         }
         if !m.content.files.is_empty() {
-            let source = m.content.source().to_owned();
-            layers.push(ModLayer::new(
-                m.id.clone(),
+            use crate::packs::Source;
+            let source = if let Some(content) = m.content.admitted_source() {
+                use std::hash::{DefaultHasher, Hash, Hasher};
+                use sunrise_assets::resource_source::ResourceSource;
+                use sunrise_mod_package::content::ReadError;
+                let reader = content.clone();
+                Source::Opened(ResourceSource::fixed(
+                    content.names(),
+                    move |name, limit| {
+                        let reader = reader.reader();
+                        limit
+                            .map_or_else(|| reader.read(name), |max| reader.read_head(name, max))
+                            .map_err(|error| {
+                                let kind = match error {
+                                    ReadError::NotFound(_) => std::io::ErrorKind::NotFound,
+                                    ReadError::Other(_) => std::io::ErrorKind::InvalidData,
+                                };
+                                std::io::Error::new(kind, error)
+                            })
+                    },
+                    move |name| {
+                        let mut hash = DefaultHasher::new();
+                        if content.is_archive() {
+                            content.reader().read(name).ok()?.hash(&mut hash);
+                        } else {
+                            let path = content.reader().path(name).ok()??;
+                            let meta = fs::metadata(path).ok()?;
+                            meta.len().hash(&mut hash);
+                            meta.modified().ok()?.hash(&mut hash);
+                        }
+                        Some(hash.finish())
+                    },
+                ))
+            } else {
+                let source = m.content.source().to_owned();
                 if source.is_dir() {
-                    crate::packs::Source::Dir(source)
+                    Source::Dir(source)
                 } else {
-                    crate::packs::Source::Zip(source)
-                },
-                None,
-            )?);
+                    Source::Zip(source)
+                }
+            };
+            layers.push(ModLayer::new(m.id.clone(), source, None)?);
         }
         loaded.push(ModLayers { source: m, layers });
     }
@@ -3177,7 +3834,8 @@ fn load_layers<'a>(jar_store: &Path, mods: &'a [ContentMod]) -> Result<Vec<ModLa
 /// Asset layers remain in their sources and are resolved by `resolved_resources`.
 /// Each jar's file is `<sha512>.jar` in `jar_store`, where the launcher
 /// puts it. A missing file refuses the load before decoded output is written.
-/// Returns warnings for shared tag replacements and duplicate asset paths.
+/// Returns warnings for shared tag replacements, missing required vanilla tag
+/// references and duplicate asset paths.
 pub fn build(
     base: &Path,
     jar_store: &Path,
@@ -3262,6 +3920,15 @@ pub fn resolved_resources(
             assets_base = ResourceSource::indexed(files);
         }
     }
+    let data_layers: std::sync::Arc<[(String, ResourceSource)]> = loaded
+        .iter()
+        .flat_map(|group| &group.layers)
+        .map(|layer| (layer.data.id.clone(), layer.data.source().clone()))
+        .collect();
+    let mod_layers = data_layers
+        .iter()
+        .map(|(_, source)| source.clone())
+        .collect();
     let layers = loaded
         .into_iter()
         .flat_map(|group| group.layers.into_iter().map(|layer| layer.assets))
@@ -3283,10 +3950,12 @@ pub fn resolved_resources(
     }
     let assets = crate::packs::resources(assets_base, &layers)?;
     data.extend(changes.clone());
-    Ok(ResourceRoot::new(prepared, cache, assets).with_data(
-        ResourceSource::indexed(data),
-        ResourceSource::indexed(changes),
-    ))
+    Ok(ResourceRoot::new(prepared, cache, assets)
+        .with_data(
+            ResourceSource::indexed(data),
+            ResourceSource::indexed_with_sources(changes, data_layers),
+        )
+        .with_mod_layers(mod_layers))
 }
 
 /// The root to load: `base` itself with no content, else the mods' overlay
@@ -3453,7 +4122,7 @@ fn stamp(
             .clone()?,
     };
     let mut parts = vec![
-        "sunrise mod content 8".to_owned(),
+        "sunrise mod content 10".to_owned(),
         serde_json::to_string(inventory)?,
     ];
     parts.push(exe);
@@ -3483,11 +4152,20 @@ fn stamp(
             "{:?} {:?} {:?}",
             m.content.blocks, m.content.items, m.content.block_entity_types
         ));
-        let source = m.content.source();
         if m.content.files.is_empty() {
             // Declared in code only: nothing to read.
-        } else if source.is_dir() {
-            for file in &m.content.files {
+            continue;
+        }
+        let source = m.content.source();
+        let admitted = m.content.admitted_source();
+        if let Some(content) = admitted.as_ref().filter(|content| content.is_archive()) {
+            let reader = content.reader();
+            for file in m.content.files.iter() {
+                let digest = Sha256::digest(reader.read(file)?);
+                parts.push(format!("{file} {digest:x}"));
+            }
+        } else if admitted.is_some() || source.is_dir() {
+            for file in m.content.files.iter() {
                 parts.push(format!("{file} {}", hash(&source.join(file))?));
             }
         } else {

@@ -2,7 +2,6 @@ use super::*;
 
 /// Helpers for native mods, kept as stable as the hook points.
 // Native mods use these; nothing in Sunrise does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// A snapshot of the current graphics preferences.
     pub(in crate::game) fn graphics_options(&self) -> ClientGraphicsOptions {
@@ -11,14 +10,14 @@ impl Game<'_> {
             fov: s.fov,
             render_distance: s.render_distance,
             simulation_distance: s.simulation_distance,
-            brightness: s.gamma,
+            brightness: s.gamma as f32,
             max_fps: s.max_fps,
             vsync: s.vsync,
             fullscreen: s.fullscreen,
             view_bobbing: s.view_bobbing,
             smooth_lighting: s.smooth_lighting,
             particles: s.particles,
-            entity_distance: s.entity_distance,
+            entity_distance: s.entity_distance as f32,
             biome_blend: s.biome_blend,
         }
     }
@@ -44,6 +43,12 @@ impl Game<'_> {
             self.settings.force_unicode,
         )
     }
+    /// `Window.getWidth` and `getHeight`: the window's framebuffer pixels, the size
+    /// `window_resize` reports; none on a server or when no window exists.
+    pub(in crate::game) fn window_size(&self) -> Option<[u32; 2]> {
+        let size = self.window.as_ref()?.inner_size();
+        Some([size.width, size.height])
+    }
     /// A snapshot of the current chat preferences.
     pub(in crate::game) fn chat_options(&self) -> ClientChatOptions {
         let s = &self.settings;
@@ -51,19 +56,19 @@ impl Game<'_> {
             visibility: s.chat_visibility,
             colors: s.chat_colors,
             links: s.chat_links,
-            opacity: s.chat_opacity,
-            scale: s.chat_scale,
-            width: s.chat_width,
-            height_focused: s.chat_height_focused,
-            height_unfocused: s.chat_height_unfocused,
-            line_spacing: s.chat_line_spacing,
+            opacity: s.chat_opacity as f32,
+            scale: s.chat_scale as f32,
+            width: s.chat_width as f32,
+            height_focused: s.chat_height_focused as f32,
+            height_unfocused: s.chat_height_unfocused as f32,
+            line_spacing: s.chat_line_spacing as f32,
             delay: s.chat_delay,
         }
     }
     /// A snapshot of the current audio preferences.
     pub(in crate::game) fn audio_options(&self) -> ClientAudioOptions {
         ClientAudioOptions {
-            master_volume: self.settings.master_volume,
+            master_volume: self.settings.master_volume as f32,
         }
     }
 }
@@ -78,9 +83,11 @@ fn gui_options_snapshot(s: &sunrise_client::settings::Settings) -> ClientGuiOpti
         advanced_item_tooltips: s.file.bool("advancedItemTooltips"),
         high_contrast: s.high_contrast,
         show_subtitles: s.show_subtitles,
-        notification_display_time: s.notification_display_time,
-        text_background_opacity: s.text_background_opacity,
+        notification_display_time: s.notification_display_time as f32,
+        text_background_opacity: s.text_background_opacity as f32,
         menu_blur: s.menu_blur,
+        // The factor the engine's own hurt tilt reads (`fov.rs`, `bob_hurt`).
+        damage_tilt_strength: s.file.double("damageTiltStrength"),
     }
 }
 
@@ -105,6 +112,23 @@ mod tests {
             assert_eq!(
                 gui_options_snapshot(&settings).advanced_item_tooltips,
                 enabled
+            );
+        }
+    }
+
+    /// The snapshot carries the Damage Tilt option as the player sets it, off and full included.
+    #[test]
+    fn gui_snapshot_follows_the_damage_tilt_option() {
+        let mut settings = sunrise_client::settings::Settings::default();
+        assert_eq!(gui_options_snapshot(&settings).damage_tilt_strength, 1.0);
+        for strength in [0.0, 0.35, 1.0] {
+            settings.file.set(
+                "damageTiltStrength",
+                sunrise_client::options_file::V::Double(strength),
+            );
+            assert_eq!(
+                gui_options_snapshot(&settings).damage_tilt_strength,
+                strength
             );
         }
     }

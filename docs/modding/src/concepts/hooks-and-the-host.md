@@ -1,233 +1,125 @@
 # Hooks and the Host
 
-A **hook** is one moment in the game: a tick, a block broken, a player joining. Your mod implements the hooks it
-needs as methods of `mod_api::Hooks`, and the game calls each subscribed mod with the moment's **event** and a
-**host**, its typed view of the game. A moment that belongs to one object is a method of a [Part](parts.md)
-instead, called only for the objects your mod attached it to.
+A **hook** is a moment in the game, such as a tick, a block break or a player joining. Implement
+that moment on `mod_api::Hooks` to receive its **event** and, where the signature provides one,
+a **host**: the game's typed interface for that call. Use a [Part](parts.md) instead when the
+behaviour belongs to particular registered objects rather than all matching objects.
 
 ![The game calls every mod that implements a hook, and a Part only for its own objects. Both receive an event and
 reach the game through the Host, its handles, capabilities and attachments.](../images/hooks-parts.svg)
 
 ## Dispatch
 
-Mods run in order of their listener priority, highest first, then in dependency order: a mod after the mods it
-depends on. When a mod cancels an event, the mods after it are skipped, unless they receive cancelled events
-([Listener priority and cancellation](#listener-priority-and-cancellation)).
+| Hook kind | What the listener supplies |
+| --- | --- |
+| Listen | A reaction to a notice; every subscribed mod is called. |
+| Cancellable | `Flow::Cancel` stops the action; on hooks whose contract permits it, a later `receive_cancelled` listener can clear cancellation (`entity_move` and `living_travel` keep an accepted veto sticky). |
+| Replacement | The first accepted `Some` wins; `None` passes to the next listener. |
+| Collection | Each listener can contribute to the event's list. |
 
-What a hook's return value means depends on its kind:
+Read the signature before choosing a hook: it tells you which side runs it, what you can change,
+and whether you are observing a decision or participating in it. For exact signatures and return
+rules, see the [generated API reference](../reference/api.md); [Hook notes](../reference/hook-notes.md)
+explains how related hooks fit together. For a concrete tour, see [Entity hooks](../how-to/entities/entity-hooks.md).
 
-- **Listen** hooks are notices: every subscribed mod is called.
-- **Cancellable** hooks return `Flow`: `Flow::Cancel` stops the game's action and skips later mods.
-- **Replacement** hooks return an `Option`: the first mod to answer `Some` wins.
-- **Collection** hooks call every mod, each adding to a list in the event.
+## Failures and panics
 
-A hook with no receiver gets no `Host`.
+A panic disables only that mod's callback for that hook for the session. The game names the mod
+and hook in the log and, on a client, in a [diagnostic toast](../how-to/client/toast-notifications.md#admission-rules)
+that mods cannot cancel or rewrite. Ordinary refusals are reported without disabling the callback.
 
-## Player tick hooks
-
-`player_tick_pre` and `player_tick_post` bracket the player's body tick on both
-logical sides. On the server, neither hook fires for a spectator whose bounds
-touch an unloaded chunk: that player's body tick is skipped. Connection and
-level upkeep and outgoing state updates still run. The server resolves whether
-the body runs before the pre hook; a listener changing the player's position
-does not change that decision for the current tick.
-
-## Explosion membership
-
-`explosion_detonate` version 2 exposes mutable `blocks` and `entities` lists
-before an explosion applies its effects. The initial entity query excludes the
-exploding source. Remove entries to spare them, or add live handles to make them
-eligible; additions still obey normal distance, exposure and immunity checks.
-Stale or invalid handles are dropped and repeated IDs are visited once. A mod
-can explicitly add a valid source handle back; per-kind immunity still applies.
-
-The final list controls membership, not global effect ordering. Its order is
-used for ordinary storage targets. Crystals/dragon and players retain their
-earlier separate passes, while frames and other decorations run last in storage
-order. Block positions are shuffled before destruction. An empty entity list
-spares direct entity effects, not indirect consequences of destroying support
-blocks. With no subscriber the game does not build a target list.
-
-## Saving and game events
-
-To save from inside a hook, use `level.request_save(host)` so the save runs at the next settled
-start-of-tick boundary. A synchronous `save-all` while an entity pass or held-out row is borrowed
-fails with vanilla's `commands.save.failed` feedback and a failed command result, without saving.
-
-To emit a vibration-producing game event, use `level.game_event(host, event, at, context)`.
-`GameEventContext` carries an optional source entity and affected block state; see
-[game events with context](../how-to/world/game-events.md) for listener semantics and refusals.
+A failed proposal is not a cancellation or replacement. Later eligible listeners see the last
+accepted event state, not the original request. [Staged registration](load-phases.md#registration-and-setup)
+discards the failed callback's declarations. On a journaled action its failed writes do not join
+the action; this is not a rollback of arbitrary external or mod-owned side effects. A failed
+[chunk-disk job](../how-to/chunk-data-load.md) cannot publish that job's edits.
 
 ## Listener priority and cancellation
 
-`#[listener]` on a hook method sets both, as NeoForge's `EventPriority` and `receiveCanceled` do. Two mods, each
-its own crate:
+`#[listener(priority = 100)]` runs before default-priority listeners. Higher `i32` priorities run
+first; the default is zero and ties keep dependency order. This order is fixed at installation.
 
-```rust,ignore
-#[mod_api::sunrise_mod]
-impl Hooks for Protection {
-    // Runs before mods at the default priority, 0; higher runs first.
-    #[listener(priority = 100)]
-    fn break_block(&self, host: &mut dyn ServerHost, event: &mut BreakBlockEvent<'_>) -> Flow {
-        if self.protected(host, event.pos) { Flow::Cancel } else { Flow::Continue }
-    }
-}
+A listener normally skips an already-cancelled event. Add `receive_cancelled` to inspect it; on
+hooks whose contract permits clearing cancellation, setting `event.cancelled = false` and returning
+`Flow::Continue` lets later listeners and the vanilla action proceed. Some hooks keep an accepted
+veto sticky (`entity_move` and `living_travel`) and preserve the earlier veto even if a later
+listener clears the field. `receive_cancelled` is only valid on cancellable hooks. These attributes
+order global hook listeners, not Parts; see [Parts](parts.md) for their dispatch rules.
 
-#[mod_api::sunrise_mod]
-impl Hooks for Override {
-    // Receives cancelled events and may clear cancellation.
-    #[listener(priority = -100, receive_cancelled)]
-    fn break_block(&self, host: &mut dyn ServerHost, event: &mut BreakBlockEvent<'_>) -> Flow {
-        if event.cancelled && self.allowed(host, event.pos) {
-            event.cancelled = false;
-        }
-        Flow::Continue
-    }
-}
-```
-
-`priority` is an `i32`, 0 when omitted; mods of equal priority keep dependency order, as `[[inject]]`
-priorities do ([Injections](injections.md#ordering)). Each hook's order is fixed once, when the mods are
-installed. Every cancellable hook's event has a `cancelled` field: a mod without `receive_cancelled` always sees
-`false`, since it is not called once the event is cancelled. A mod that receives cancelled events and sets it back to
-`false` lets the game's behaviour run, and the mods after it are told again. An event the game hands over already
-cancelled reaches only mods that receive cancelled events. `receive_cancelled` on a hook without a cancel does not
-compile, and `#[listener]` is for a mod's hooks only: a part is called for its own thing, in no order.
-
-Native and wasm mods use the same listener ordering and cancellation rules. Wasm subscription records carry the hook name, signed priority, and receive-cancelled flag through the shared-memory Wire boundary at load time. The event's `cancelled` field crosses with its other writable fields.
+Cancellation controls the current action, not all its side effects. For example, cancelling a
+projectile impact suppresses the hit without itself discarding the projectile. If a listener
+also discards the projectile, a later listener clearing cancellation does not bring it back.
 
 ## Events and shared state
 
-Each hook method takes its host, where it has one, and one event:
+The game constructs the generated event and lends it to each listener. The public fields describe
+what you may read or edit; the struct is `#[non_exhaustive]`, so use `..` when destructuring. Mutable
+scalar fields are written back after dispatch, even after cancellation; mutable lists and other
+compound fields are borrowed. Later listeners see accepted edits. When an edited stack-list output
+is refused, that field keeps its preceding accepted value; valid scalar edits and cancellation still apply.
 
-```rust,ignore
-fn living_incoming_damage(
-    &self,
-    _level: &mut dyn HitHost,
-    event: &mut LivingIncomingDamageEvent<'_>,
-) -> Flow {
-    if event.kind == "minecraft:pig" {
-        let halved = event.container.new_damage() * 0.5;
-        event.container.set_new_damage(halved);
-    }
-    Flow::Continue
-}
-```
+Some events lend the live subject instead of handing out a snapshot. Borrow the view only while
+using it; a later borrow can fail if the subject is no longer resident. For journaled writes through
+both the subject and the host, use the scope's [transaction](transactions.md). For example, a damage
+container belongs to one hit: its Post runs after that hit resolves, before the caller resumes. Copy
+facts you need later rather than trying to keep the view. To exercise dispatch, see [Testing](testing.md).
 
-For incoming damage, `event.weapon` is the direct entity's weapon, including a projectile's
-saved firing weapon. `event.causing_weapon` is instead the causing living entity's current
-main-hand weapon (`DamageSource.getEntity().getWeaponItem()`): an off-hand crossbow shot can
-name the saved crossbow in `weapon` and the shooter's main-hand sword in `causing_weapon`.
-An absent, unknown or non-living cause has no `causing_weapon`.
+Hook and Part methods use `&self` and require `Send + Sync`. The same mod instance serves both
+logical sides in single player. A host write may also call another hook of the same mod before it
+returns. Release your locks before calling the host: otherwise a re-entrant listener can deadlock.
+Use an [attachment](attachments.md) for data that belongs to one game object.
 
-The event is a generated struct named after the catalog hook, in CamelCase plus `Event`, with
-the hook point's arguments as public fields: values as values and borrowed ones as references (`event.kind`). A
-number or `bool` a mod may change is a plain field, written back once every mod has run, even after a `Cancel`;
-anything else a mod may change, a game struct or a list, is a `&mut` field. A cancellation or replacement is
-the return value; a collection hook's list is a field (`event.lines`). One event goes through every mod, so each
-sees the changes before it. To exercise dispatch behavior, use the hook's dispatch function
-([Testing a mod](testing.md)).
+## Which thread runs a hook
 
-The generator validates edited stack-list outputs inside each listener's owning scope. A refused stack
-output retains the immediately preceding accepted value, not the event's initial value. Scalar
-outputs and cancellation still commit; later listeners see the accepted stacks and run independently
-under the usual cancellation rules. Each refused output logs one warning naming the mod, hook,
-output and conversion error. This policy is identical for native and wasm listeners.
+Most hooks run on the thread that owns their side: the server thread or the client window's thread.
+`thread_local!` is thread-local, not world-local or mod-local. Consult the hook or Part's docs for
+exceptions, including these:
 
-Hook methods take `&self` and require `Send + Sync`. The process-wide mod list is installed once, like mixin module statics. One mod instance serves both
-the window's game and the server-thread game. A hook can also fire again inside
-the same mod: for example, `LevelRef::set_block` fires `block_changed`. Mods keep mutable
-state with interior mutability so these calls can share the instance safely. Data-load
-hooks can run on any loading thread; item default changes must be identical on every side.
+- **World generation:** placement and sampling can run concurrently on worker threads; some
+  placement also runs on the server thread. These calls get a `WorldgenHost` or no host, not a live
+  `Host`. Generation must not depend on which worker reaches your code first.
+- **Rendering:** startup can register meshing and tint callbacks that later run on workers without
+  a host. Answer from the inputs and immutable registration data, not mutable render state.
+- **Loading and chunk I/O:** data callbacks may run on a loader thread. Chunk-disk callbacks get a
+  restricted job-local view, not live chunks. See [Load phases and access](load-phases.md).
 
-`Hooks` contains global hooks. Scoped hooks belong to `BlockPart`, `BlockEntityPart`,
-`ItemPart`, `MenuPart` or `FluidPart` and run for the registered object.
+For ordinary shared state, use synchronized mod fields or publish immutable snapshots. A lock
+makes access safe; it does not make an order-dependent algorithm deterministic.
 
 ## Level hosts
 
-Level hooks use access-specific hosts rather than `Host`. `LevelHost` provides
-`block_state` through `LevelAccess::block_state`, client-side detection and
-`state_with_property`. `state_string(state)` serializes the full name and properties, or returns `None`
-for an unknown state; `min_y()` and `height()` read the level's build range. It also reads light and loaded state, through the game's own queries:
-`brightness(LightLayer::Block | Sky, pos)` (`getBrightness`, the stored 0 to 15),
-`raw_brightness(pos, sky_darken)` (`getRawBrightness`, which `CropBlock.randomTick` asks with 0)
-and `is_loaded(pos)` (`Level.isLoaded`: inside the build height and in a loaded chunk),
-`is_raining_at(pos)` (`Level.isRainingAt`, false where `pos` is not loaded) and `enabled_features()`
-(`LevelReader.enabledFeatures`, a borrowed `FeatureFlags<'_>`). These queries do not allocate.
-None of them loads a chunk. Light above the build height reads as full sky and below it as
-none, and a chunk that isn't loaded reads as the game's query does (full sky, no block light),
-so check `is_loaded` first. It also answers tag and fluid questions without a `Host`: `block_in_tag(block_key, tag)`,
-`fluid_state(pos)` (`getFluidState`, `None` where the block read is),
-`state_fluid_state(state)` and `fluid_in_tag(fluid_name, tag)`. Fluid reads return `FluidState` with a
-`FluidKey`, amount, falling flag and engine-derived source flag; `is_empty()` and `is_source()` report
-those states without a registry lookup. `block_state_id(name)` parses a block and properties, and `block_state_default(block)` gives a block's default state, as on `Host`; both return `None` for invalid input or unavailable context. Tag reads are `None` when authoritative tags are unavailable, including on a client before its server's tags are applied. For item membership and member lists, use `Host::tags()`: resolve a `TagKey` with `Tags::key`, then call `Tags::is_in_tag`, `Tags::items` or `Tags::fluids`. Membership reads return `None` on clients until server-sent tags are applied, which `tags_updated` announces; they never substitute local resource-pack tags.
-`default_components_bound` precedes `tags_updated` after item defaults are published and readable.
-Both notices carry `TagsUpdateCause`: `ServerDataLoad { reload }` for the server's initial data
-load or reload, and `ClientPacketReceived { integrated_server }` for a client's applied tags.
-`should_update_static_data()` is true on the server and a remote client, but false on an
-integrated client, whose server already updated the shared static data. Installing client tags
-announces the bound defaults; it does not rebind those defaults.
+`Host` exposes services and handles. A handle identifies a live object; using it still requires the
+right host and can fail if its target has gone away. A `ServerHost` can make authoritative writes;
+a `ClientHost` reads the client's own state and provides client services. Match `HostSide` when a
+hook can run on either side. A host can exist even when its world does not.
 
-Redstone and shape reads on `LevelHost`, for placement and survival: `signal(pos, direction)`
-(`SignalGetter.getSignal`), `direct_signal`, `direct_signal_to`, `best_neighbor_signal(pos)`,
-`has_neighbor_signal(pos)` (what a lamp's or a door's placement reads) and `collision_shape(pos)` (the block's
-collision boxes at `pos`, block-local, a block entity's published shape included, empty for no collision, `None`
-for an unloaded position). The signal reads are the game's own, `block_signal` and `should_check_weak_power`
-listeners included, and are the same ones `LevelRef` and the tick hooks give. `state_for_placement` and
-`can_survive` receive a level that answers them, so a block can place or survive by what powers it or what shape
-sits beside it. The levels of `state_for_placement`, `can_survive` and the level tick and shape-update hooks answer all of them;
-the levels other callbacks get (a damage hit's, a part's read view) may return `None` for any of them, signal reads
-and `collision_shape` alike.
-A signal read never asks `state_for_placement` or `can_survive`, so it cannot re-enter the hook it was read in.
-`LevelTicksHost`'s signal reads moved here and now return `Option`.
+A restricted level hook lends only the access its signature needs. `LevelHost` is a read view of the
+owning level. `LevelRandomHost` adds a loan of the live random stream; `LevelTicksHost` provides
+scheduling, and `LevelWriteHost` permits local writes and effects. `HitHost` lends hit-scoped
+operations, not block writes; at `living_incoming_damage`, `living_damage_pre` and
+`living_damage_post` it also lends read-only `LivingView`s of the victim and the causing entity
+(`host.victim()`, `host.causing()`), whose attachments it reads but never writes. Random draws
+from a live stream are not undone by an abort; see [Randomness](randomness.md#borrow-the-live-level-stream).
 
-`LevelHost` has no random access: a draw from a read-only hook inside a level write would shift the level's random sequence away from vanilla's order. A hook that may draw is given a `LevelRandomHost`.
-`LevelRandomHost` provides vanilla's `Level.random` so
-mod draws come in vanilla's order. `LevelTicksHost` adds scheduling through
-`schedule_block_tick` and `schedule_fluid_tick`, while
-`LevelWriteHost` adds random access, `set_block`, `set_block_property`, `play_sound` and
-`send_particles` and `level_event` (`levelEvent`, queued in order with the write's own events).
-A damage hit's listeners (`living_incoming_damage`, `living_damage_pre`, `living_damage_post`,
-`living_shield_block`, `living_use_totem`) are given a `HitHost`: a `LevelRandomHost` that also plays level
-sounds and draws from an entity's own random, and writes no block. `host.play_sound_at(sound, at, source,
-volume, pitch)` is `Level.playSound(null, x, y, z, ...)` and `host.play_sound_from(entity, ...)` is
-`Level.playSound(null, entity, ...)`: every player in range hears it, and a cancelled hit still plays what was
-queued. The seed is drawn at the call from the level's sound-seed stream, not from the level's random.
-`entity.next_float(host)`, `next_double`, `next_bool` and `next_int(host, bound)` draw from the entity's actual
-random stream, in listener order. A hit lends its attacker where the game applies a melee hit (the attacking player or mob, for player → mob, mob → mob and mob → player) and no entity at any other damage site (environment, projectiles, explosions, potions and the like); the attacking mob's own random is the one its AI draws from, and a hit built inside a mob's own tick lends none. Any other entity, a stale handle, a client and an out-of-range `bound` answer `None` (`false` for a sound).
-Outside a write, a `LevelRef` plays level events, and their global form for every player on the server
-([Playing level events](../how-to/world/level-events.md)).
-`set_block(pos, state, flags)` is `Level.setBlock` on a whole state, as `LevelRef::set_block` takes it: it
-removes the old block's block entity and creates the new block's in the write (`LevelChunk.setBlockState`), runs
-the neighbour and shape updates `flags` ask for, and queues the write's level events in order. A mod block entity
-it creates starts with the data the `block_entity` hook gives, which is fired in the write and receives the level
-(`LevelSide`, read-only: vanilla's `newBlockEntity` gets no level), as the `Host`'s `native_set_block` fires it. It returns true when the block
-changed, and false off an authoritative server, for a position that is not loaded or outside the build height,
-an invalid state, or the state the block already has. It never loads a chunk. The game owns
-the tick queue; mods do not pass it back to these helpers.
+Reads such as collision, light, signals and block entities use the owning side's available data.
+They do not load chunks. Light or a vanilla air result is not proof of residency; check `is_loaded`
+when you need a resident position. Treat `None` as unavailable where the reference says a view
+cannot answer. A client's placement or shape query must not treat unavailable server-only data
+as a server answer. Read-only slot snapshots don't open pending loot; an engine comparator read
+through a `LevelRandomHost` can. For concrete examples see
+[Camera and collision reads](../how-to/client/camera-and-collision-reads.md),
+[Block-state facts](../how-to/world/block-state-facts.md) and [Capabilities](capabilities.md).
 
-## Drawing
-
-Frame drawing through `DrawContext`, `BlockEntityDrawContext` and `WorldDrawContext` stays
-in `mod_api`. Raw GPU access is native-only, unstable and outside that API, in
-`mod_render::render` (`sunrise-mod-render`). Replace its frame functions with native HEAD mixins compiled against the prebuilt game.
-`render_needs` collects requests; `world_drawn` runs before the hand and HUD, and
-`hand_drawn` runs after the hand, on the render thread. Use API draw contexts for API-typed drawing.
+Use a [transaction](transactions.md) for related journaled writes, passing the host and context
+from the same closure. To save from a hook, request a save at the next settled tick boundary
+rather than saving synchronously while a subject can be borrowed. Use the supplied draw context
+for drawing: it is scoped to the render call, not a way to reach the live renderer. See
+[Model drawing](../how-to/client/model-drawing.md).
 
 ## After a hook that can change the world
 
-A listener of a hook that gets a mutable host may remove, move or change objects. After such a hook
-returns without cancelling, the game does not use the list position or the state it worked out before
-the hook. It finds the object again by its entity id, checks the facts the action was decided on, and
-abandons the action if the object is gone or a fact changed; it never works the action out again. The
-hook still fires at its usual moment, and the check runs straight after it returns, before anything
-moves. Stack checks are shallow: they compare the item id and the count, not components. Each hook's
-doc names what it checks (`armor_stand_manipulate`, `entity_mount`, `cauldron_level_changed`,
-`hanging_break`, `player_shear_entity`, `living_change_target`). The effect writes on a living handle
-treat a mob that is marked removed but still listed as absent: they return false and change nothing.
-
-## Hooks and injections
-
-A hook is not an injection point: an `[[inject]]` never runs inside a hook's dispatch. A `head` injection that
-cancels the game function which calls a hook keeps that hook from firing at all
-([Injections](injections.md)).
+A listener can remove, move or change objects before the engine applies an action. For decisions
+that must still hold, the engine re-resolves the target by identity and checks the facts it used; if
+those facts changed, it abandons the decision rather than recomputing it. The hook's own documentation
+names the facts it checks. Do not retain a list position or assume a handle remains live across a call
+that can dispatch another hook.

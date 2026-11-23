@@ -58,6 +58,16 @@ impl ModSounds {
         self.queued.borrow_mut().push((id, sound.clone(), after));
         sound_ref(id)
     }
+    pub(super) fn pending_checkpoint(&self) -> (usize, usize) {
+        (self.queued.borrow().len(), self.changes.borrow().len())
+    }
+
+    pub(super) fn discard_pending_since(&self, (plays, changes): (usize, usize)) {
+        self.queued.borrow_mut().truncate(plays);
+        self.changes.borrow_mut().truncate(changes);
+        // Do not rewind `last`: a mod might have retained a handle to a discarded play.
+    }
+
     /// Forgets every mod sound: the queued plays, the changes asked of them and the started
     /// ones' instances, as a level change stops every sound. Their handles read `Stopped`;
     /// handles are still never reused.

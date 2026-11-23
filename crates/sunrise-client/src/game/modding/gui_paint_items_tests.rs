@@ -7,7 +7,7 @@ use mod_api::client::hud_layout::{Blend, GuiDraw};
 use mod_api::{ComponentHoverEvent, GuiPaintError, Hooks, ModEntry};
 use mod_platform::testing::with_mods;
 use std::sync::Mutex;
-use sunrise_client::hud::{Blend as Run, HudBatch, MINIMAP_SPRITE};
+use sunrise_client::hud::{Blend as Run, HudBatch, map_slot_sprite};
 use sunrise_client::items::ItemStack;
 use sunrise_client::text::{Style, Text};
 
@@ -27,7 +27,7 @@ fn item(slot: u32, scale: [f32; 2]) -> GuiDraw {
 
 fn vignette() -> GuiDraw {
     GuiDraw::Blit {
-        texture: MINIMAP_SPRITE.into(),
+        texture: map_slot_sprite(0).unwrap().into(),
         blend: Blend::Vignette,
         x: 100,
         y: 0,
@@ -66,7 +66,7 @@ fn a_mods_paint_draws_hotbar_items_and_blits_and_refuses_what_it_cannot_draw() {
     let mods: mod_api::Mods = vec![ModEntry::new("painter", Box::new(Painter))].into();
     let (mut scaled, mut plain) = (HudBatch::scratch([320, 240]), HudBatch::scratch([320, 240]));
     with_mods(mods, || {
-        crate::game::native_entity_refs::tests::with_game(|game| {
+        crate::game::native_entity_refs::tests::with_client_game(|game| {
             game.inventory[0] = Some(ItemStack::new("minecraft:stone", 5));
             game.component_hover_effect(&mut scaled, &style, (40.0, 30.0));
             // The same stack as `DrawContext::item_stack` would draw it, unscaled, for comparison.

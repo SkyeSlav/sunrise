@@ -240,7 +240,7 @@ impl LevelAccess for TestLevel {
             .unwrap_or(vanilla)
     }
     fn adjust_analog_output(
-        &self,
+        &mut self,
         pos: BlockPos,
         _state: BlockStateId,
         _direction: Direction,
@@ -499,11 +499,12 @@ macro_rules! world {
     }};
 }
 #[test]
+#[ignore = "daily"]
 fn block_observation_follows_successful_commits_only() {
     use std::cell::RefCell;
     #[derive(Debug, PartialEq)]
     enum Observation {
-        Block(BlockPos, BlockStateId, BlockStateId),
+        Block(BlockPos, BlockStateId, BlockStateId, i32),
         Neighbor,
     }
     struct Observer {
@@ -528,14 +529,20 @@ fn block_observation_follows_successful_commits_only() {
         fn game_time(&self) -> i64 {
             self.inner.game_time()
         }
-        fn observe_block_changed(&self, pos: BlockPos, old: BlockStateId, new: BlockStateId) {
+        fn observe_block_changed(
+            &self,
+            pos: BlockPos,
+            old: BlockStateId,
+            new: BlockStateId,
+            flags: i32,
+        ) {
             assert_eq!(self.block_state(pos), new);
             self.seen
                 .borrow_mut()
-                .push(Observation::Block(pos, old, new));
+                .push(Observation::Block(pos, old, new, flags));
         }
         fn observe_neighbor_changed(
-            &self,
+            &mut self,
             _: &mut Ticks,
             _: BlockPos,
             _: BlockStateId,
@@ -545,7 +552,7 @@ fn block_observation_follows_successful_commits_only() {
             self.seen.borrow_mut().push(Observation::Neighbor);
         }
     }
-    let Some(f) = fixture() else { return };
+    let f = fixture().expect("prepared resources for the block observation test");
     let b = &f.behaviours;
     let mut level = Observer {
         inner: TestLevel::new(b),
@@ -557,7 +564,7 @@ fn block_observation_follows_successful_commits_only() {
     let stone = f.registry.default_state("minecraft:stone").unwrap();
     assert!(b.set_block(&mut level, &mut ticks, pos, stone, flags::UPDATE_ALL));
     let seen = level.seen.borrow();
-    assert_eq!(seen[0], Observation::Block(pos, b.air(), stone));
+    assert_eq!(seen[0], Observation::Block(pos, b.air(), stone, 3));
     assert!(seen[1..].contains(&Observation::Neighbor));
     drop(seen);
     level.seen.borrow_mut().clear();
@@ -573,10 +580,16 @@ fn block_observation_follows_successful_commits_only() {
         flags::UPDATE_ALL
     ));
     assert!(level.seen.borrow().is_empty());
-    assert!(b.set_block(&mut level, &mut ticks, pos, b.air(), flags::UPDATE_ALL));
+    assert!(b.set_block(
+        &mut level,
+        &mut ticks,
+        pos,
+        b.air(),
+        flags::UPDATE_CLIENTS | flags::UPDATE_KNOWN_SHAPE,
+    ));
     assert_eq!(
-        level.seen.borrow()[0],
-        Observation::Block(pos, stone, b.air())
+        *level.seen.borrow(),
+        [Observation::Block(pos, stone, b.air(), 18)]
     );
 }
 
@@ -626,7 +639,7 @@ fn neighbor_observation_follows_dispatch_order() {
             self.inner.game_time()
         }
         fn observe_neighbor_changed(
-            &self,
+            &mut self,
             _: &mut Ticks,
             pos: BlockPos,
             state: BlockStateId,
@@ -692,7 +705,7 @@ impl LevelAccess for Asker {
         self.inner.game_time()
     }
     fn observe_neighbor_changed(
-        &self,
+        &mut self,
         _: &mut Ticks,
         pos: BlockPos,
         _: BlockStateId,
@@ -897,7 +910,7 @@ fn random_tick_hook_can_change_the_block_and_skip_its_own_tick() {
             self.inner.game_time()
         }
         fn observe_neighbor_changed(
-            &self,
+            &mut self,
             _: &mut Ticks,
             _pos: BlockPos,
             _state: BlockStateId,
@@ -1625,6 +1638,90 @@ fn wire_connects_only_to_the_block_that_answers_should_redstone_wire_connect_to(
     assert_eq!(connection(&mut w), before);
 }
 
+/// `affectNeighborsAfterRemoval` calls `updatePowerStrength` with the wire's
+/// REMOVED state: the power that state still carries decides whether the
+/// position's six neighbours are updated again (the write itself already
+/// updated them once). Reading the level's power — air by then — skipped that
+/// fan-out inside a neighbour-update run's wire cache (#3230).
+#[test]
+fn a_dropped_wire_notifies_its_neighbours_from_its_removed_state() {
+    use std::cell::RefCell;
+    struct Observer {
+        inner: TestLevel,
+        seen: RefCell<Vec<BlockPos>>,
+    }
+    impl crate::level::BlockEntityNeighbors for Observer {}
+    impl LevelAccess for Observer {
+        fn block_state(&self, pos: BlockPos) -> BlockStateId {
+            self.inner.block_state(pos)
+        }
+        fn set_raw(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId> {
+            self.inner.set_raw(pos, state)
+        }
+        fn is_loaded(&self, pos: BlockPos) -> bool {
+            self.inner.is_loaded(pos)
+        }
+        fn random(&mut self) -> &mut LegacyRandom {
+            self.inner.random()
+        }
+        fn game_time(&self) -> i64 {
+            self.inner.game_time()
+        }
+        fn observe_neighbor_changed(
+            &mut self,
+            _: &mut Ticks,
+            pos: BlockPos,
+            _: BlockStateId,
+            _: BlockId,
+            _: bool,
+        ) {
+            self.seen.borrow_mut().push(pos);
+        }
+    }
+    let Some(f) = fixture() else {
+        return;
+    };
+    let b = &f.behaviours;
+    let mut level = Observer {
+        inner: TestLevel::new(b),
+        seen: RefCell::new(Vec::new()),
+    };
+    let mut ticks = Ticks::new(0);
+    let pos = BlockPos::new(0, 1, 0);
+    let support = BlockPos::new(0, 0, 0);
+    let stone = f.registry.default_state("minecraft:stone").unwrap();
+    let wire = b.table.set_int(
+        f.registry.default_state("minecraft:redstone_wire").unwrap(),
+        b.props.power,
+        7,
+    );
+    level.set_raw(support, stone);
+    level.set_raw(pos, wire);
+    // Removing the support drops the wire mid-run, so the removal cascade is
+    // processed with the run's wire cache open.
+    b.set_block(&mut level, &mut ticks, support, b.air(), flags::UPDATE_ALL);
+    assert_eq!(
+        level.block_state(pos),
+        b.air(),
+        "the unsupported wire drops"
+    );
+    let heard = |at: BlockPos| level.seen.borrow().iter().filter(|&&pos| pos == at).count();
+    for (dx, dy, dz) in [
+        (0, -1, 0),
+        (0, 1, 0),
+        (0, 0, -1),
+        (0, 0, 1),
+        (-1, 0, 0),
+        (1, 0, 0),
+    ] {
+        assert_eq!(
+            heard(BlockPos::new(pos.x + dx, pos.y + dy, pos.z + dz)),
+            2,
+            "heard at ({dx}, {dy}, {dz}) of the wire"
+        );
+    }
+}
+
 #[test]
 fn connections_follow_connects_to_both_ways() {
     // Each kind with its block and the side values for connected and not.
@@ -1794,6 +1891,78 @@ fn a_fence_gate_plays_the_open_and_close_sound_of_its_data() {
 }
 
 #[test]
+#[ignore = "daily"]
+fn fence_gate_sites_play_distinct_sounds() {
+    let root = std::env::var_os("SUNRISE_RESOURCES")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../.local/sunrise-client")
+                .join(sunrise_core::VANILLA_VERSION)
+        });
+    let registry = data::load_registry(&root).expect("prepared registry");
+    let mut behaviours = Behaviours::load(&registry, &root).expect("prepared behaviours");
+    let state = registry.default_state("minecraft:oak_fence_gate").unwrap();
+    let block = behaviours.table.block(state);
+    behaviours.blocks[block.0 as usize].gate_open =
+        ["gate:use.open", "gate:blast.open", "gate:wire.open"].map(|s| Some(s.into()));
+    behaviours.blocks[block.0 as usize].gate_close =
+        ["gate:use.close", "gate:blast.close", "gate:wire.close"].map(|s| Some(s.into()));
+    let f = Fixture {
+        registry,
+        behaviours,
+    };
+    let mut w = World::new(&f);
+    w.floor(0, 10, "stone");
+    let gate = w.id("oak_fence_gate", &[("facing", "north")]);
+    let sounds = |w: &World| {
+        w.level
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                LevelEvent::Sound { sound, source, .. } => {
+                    assert_eq!(*source, Some(LevelSoundSource::Blocks), "{sound}");
+                    Some(sound.to_string())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let pos = BlockPos::new(0, 1, 0);
+    w.put(pos, gate);
+    w.use_block(pos);
+    assert_eq!(sounds(&w), ["gate:use.open"]);
+    w.level.events.clear();
+    w.use_block(pos);
+    assert_eq!(sounds(&w), ["gate:use.close"]);
+    w.level.events.clear();
+    let powered = BlockPos::new(1, 1, 0);
+    w.set(powered, w.id("redstone_block", &[]));
+    assert_eq!(sounds(&w), ["gate:wire.open"]);
+    w.level.events.clear();
+    // Powered gates ignore explosions, with no sound or random pitch draw.
+    assert!(
+        !w.f.behaviours
+            .fence_gate_exploded(&mut w.level, &mut w.ticks, pos)
+    );
+    assert!(sounds(&w).is_empty());
+    w.set(powered, w.b().air());
+    assert_eq!(sounds(&w), ["gate:wire.close"]);
+    w.level.events.clear();
+    assert!(
+        w.f.behaviours
+            .fence_gate_exploded(&mut w.level, &mut w.ticks, pos)
+    );
+    assert_eq!(sounds(&w), ["gate:blast.open"]);
+    w.level.events.clear();
+    assert!(
+        w.f.behaviours
+            .fence_gate_exploded(&mut w.level, &mut w.ticks, pos)
+    );
+    assert_eq!(sounds(&w), ["gate:blast.close"]);
+}
+
+#[test]
 fn crops_grow_and_leaves_decay() {
     let mut w = world!();
     let farmland = w.id("farmland", &[("moisture", "7")]);
@@ -1841,9 +2010,11 @@ impl World<'_> {
             face,
             hit,
             inside: false,
-            yaw,
-            pitch,
-            sneaking: false,
+            source: PlacementSource::Player {
+                yaw,
+                pitch,
+                sneaking: false,
+            },
             item: format!("minecraft:{item}"),
             can_use_game_master_blocks: false,
         };
@@ -4036,7 +4207,160 @@ fn update_shape_hook_can_answer_for_the_block() {
     ));
 }
 
+/// A directional placement (`DirectionalPlaceContext`) answers `replacingClickedOnBlock` from the
+/// clicked block whatever the context claims, and refuses the questions vanilla throws on: a
+/// speleothem's vertical look, and a slab or snow layer clicked with its own item.
 #[test]
+#[ignore = "daily"]
+fn a_directional_placement_reads_the_clicked_block_and_refuses_what_vanilla_throws_on() {
+    let mut w = World::new(fixture().expect("prepared resources"));
+    let b = w.b();
+    let at = BlockPos::new(0, 64, 0);
+    let air = w.id("air", &[]);
+    let stone = w.id("stone", &[]);
+    let prop = |w: &World, state: BlockStateId, key: &str| {
+        w.f.registry.state(state).unwrap().properties[key].clone()
+    };
+    // What `PlacementContext::directional` builds for a mod: it claims the clicked block is
+    // replaced, which only the level can say.
+    let directional = |direction, face, item: &str| PlacementContext {
+        pos: at,
+        hit_pos: at,
+        face,
+        hit: sunrise_core::geometry::Vec3::new(0.5, 64.0, 0.5),
+        inside: false,
+        source: PlacementSource::Directional { direction },
+        item: item.into(),
+        replace_clicked: true,
+    };
+    let placing = |direction, face, item: &str| PlaceContext {
+        clicked_pos: at,
+        face,
+        hit: sunrise_core::geometry::Vec3::new(0.5, 64.0, 0.5),
+        inside: false,
+        source: PlacementSource::Directional { direction },
+        item: item.into(),
+        can_use_game_master_blocks: false,
+    };
+
+    // `TrapDoorBlock.getStateForPlacement`: into stone, which can't be replaced, the trapdoor
+    // takes the clicked face and the click's half; into air, which is replaced, it faces
+    // away from the horizontal direction, on the half opposite the clicked face.
+    let trapdoor = b.block(w.id("oak_trapdoor", &[]));
+    let east = directional(Direction::East, Direction::East, "minecraft:oak_trapdoor");
+    w.put(at, stone);
+    let into_stone = b
+        .state_for_resolved_placement(&mut w.level, &w.ticks, trapdoor, &east)
+        .unwrap()
+        .unwrap();
+    assert_eq!(prop(&w, into_stone, "facing"), "east");
+    assert_eq!(prop(&w, into_stone, "half"), "bottom");
+    let place_east = placing(Direction::East, Direction::East, "minecraft:oak_trapdoor");
+    assert_eq!(
+        b.state_for_placement(&mut w.level, &mut w.ticks, trapdoor, &place_east),
+        Ok(Some(into_stone)),
+        "the read and the dispenser's own resolution agree"
+    );
+    assert_eq!(
+        b.directional_can_place(&mut w.level, &mut w.ticks, &place_east),
+        Ok(false)
+    );
+    w.put(at, air);
+    let mut claims_kept = east.clone();
+    claims_kept.replace_clicked = false;
+    for ctx in [&east, &claims_kept] {
+        let into_air = b
+            .state_for_resolved_placement(&mut w.level, &w.ticks, trapdoor, ctx)
+            .unwrap()
+            .unwrap();
+        assert_eq!(prop(&w, into_air, "facing"), "west");
+        assert_eq!(prop(&w, into_air, "half"), "top");
+    }
+    assert_eq!(
+        b.directional_can_place(&mut w.level, &mut w.ticks, &place_east),
+        Ok(true)
+    );
+
+    // `SpeleothemBlock.getStateForPlacement` reads the vertical look first, which a
+    // directional context has no player for, whatever the supports: refused, and not placed.
+    let dripstone = b.block(w.id("pointed_dripstone", &[]));
+    w.put(at.offset(0, 1, 0), stone);
+    w.put(at.offset(0, -1, 0), stone);
+    for direction in Direction::ALL {
+        let ctx = directional(direction, Direction::Up, "minecraft:pointed_dripstone");
+        assert_eq!(
+            b.state_for_resolved_placement(&mut w.level, &w.ticks, dripstone, &ctx),
+            Err(DirectionalRefusal::NoVerticalLook),
+            "{direction:?}"
+        );
+        let place = placing(direction, Direction::Up, "minecraft:pointed_dripstone");
+        assert_eq!(
+            b.place_block(&mut w.level, &mut w.ticks, &place),
+            PlaceOutcome::Failed,
+            "{direction:?}"
+        );
+        assert_eq!(w.get(at), air, "{direction:?}");
+    }
+    // A player with both supports: level or looking down puts the tip up, looking up down.
+    for (pitch, tip) in [(0.0, "up"), (30.0, "up"), (-30.0, "down")] {
+        let ctx = PlacementContext {
+            source: PlacementSource::Player {
+                yaw: 0.0,
+                pitch,
+                sneaking: false,
+            },
+            ..directional(
+                Direction::Down,
+                Direction::Up,
+                "minecraft:pointed_dripstone",
+            )
+        };
+        let state = b
+            .state_for_resolved_placement(&mut w.level, &w.ticks, dripstone, &ctx)
+            .unwrap()
+            .unwrap();
+        assert_eq!(prop(&w, state, "vertical_direction"), tip, "{pitch}");
+        assert_eq!(prop(&w, state, "thickness"), "tip", "{pitch}");
+    }
+
+    // `SlabBlock` and `SnowLayerBlock.canBeReplaced` ask `replacingClickedOnBlock` when they
+    // are clicked with their own item, and a directional context's answer is that same
+    // `canBeReplaced`: refused. Another item never asks, so it gets its answer.
+    for (block, props, item) in [
+        ("oak_slab", &[("type", "bottom")][..], "minecraft:oak_slab"),
+        ("snow", &[("layers", "1")][..], "minecraft:snow"),
+    ] {
+        let state = w.id(block, props);
+        w.put(at, state);
+        let ctx = directional(Direction::Down, Direction::Up, item);
+        assert_eq!(
+            b.state_for_resolved_placement(&mut w.level, &w.ticks, b.block(state), &ctx),
+            Err(DirectionalRefusal::ReplacingClickedCycle),
+            "{block}"
+        );
+        let place = placing(Direction::Down, Direction::Up, item);
+        assert_eq!(
+            b.directional_can_place(&mut w.level, &mut w.ticks, &place),
+            Err(DirectionalRefusal::ReplacingClickedCycle),
+            "{block}"
+        );
+        assert_eq!(
+            b.place_block(&mut w.level, &mut w.ticks, &place),
+            PlaceOutcome::Failed,
+            "{block}"
+        );
+        assert_eq!(w.get(at), state, "{block}");
+        let shulker = placing(Direction::Down, Direction::Up, "minecraft:shulker_box");
+        assert_eq!(
+            b.directional_can_place(&mut w.level, &mut w.ticks, &shulker),
+            Ok(block == "snow"),
+            "one snow layer is replaceable by anything else"
+        );
+    }
+}
+
+#[test]
+#[ignore = "daily"]
 fn the_level_chooses_the_state_a_block_is_placed_in() {
     use crate::fluid::{FluidKind, FluidState};
     use std::cell::RefCell;
@@ -4049,7 +4373,7 @@ fn the_level_chooses_the_state_a_block_is_placed_in() {
         clicked: BlockPos,
         face: Direction,
         item: String,
-        sneaking: bool,
+        source: PlacementSource,
         replace_clicked: bool,
         fluid: FluidState,
     }
@@ -4061,6 +4385,9 @@ fn the_level_chooses_the_state_a_block_is_placed_in() {
         /// What it answers for that block.
         answer: Option<Option<BlockStateId>>,
         asked: RefCell<Vec<Asked>>,
+        unloaded: Option<BlockPos>,
+        max_y: i32,
+        rewrite_on_update: Option<(BlockPos, BlockStateId)>,
     }
     impl crate::level::BlockEntityNeighbors for Placer {}
     impl LevelAccess for Placer {
@@ -4070,8 +4397,21 @@ fn the_level_chooses_the_state_a_block_is_placed_in() {
         fn set_raw(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId> {
             self.inner.set_raw(pos, state)
         }
+        fn send_block_updated(&mut self, pos: BlockPos) {
+            // Model a side effect after the chunk accepts the write, but
+            // before Level.setBlock returns to BlockItem.
+            if let Some((at, state)) = self.rewrite_on_update
+                && at == pos
+            {
+                self.rewrite_on_update = None;
+                self.inner.set_raw(pos, state);
+            }
+        }
         fn is_loaded(&self, pos: BlockPos) -> bool {
-            self.inner.is_loaded(pos)
+            self.unloaded != Some(pos)
+        }
+        fn max_y(&self) -> i32 {
+            self.max_y
         }
         fn random(&mut self) -> &mut LegacyRandom {
             self.inner.random()
@@ -4085,6 +4425,7 @@ fn the_level_chooses_the_state_a_block_is_placed_in() {
         fn before_state_for_placement(
             &self,
             _: &Ticks,
+            _: Option<&PreviewBlocks>,
             state: BlockStateId,
             context: &PlacementContext,
             fluid: FluidState,
@@ -4096,7 +4437,7 @@ fn the_level_chooses_the_state_a_block_is_placed_in() {
                 clicked: context.hit_pos,
                 face: context.face,
                 item: context.item.clone(),
-                sneaking: context.sneaking,
+                source: context.source,
                 replace_clicked: context.replace_clicked,
                 fluid,
             });
@@ -4114,7 +4455,7 @@ fn the_level_chooses_the_state_a_block_is_placed_in() {
         BlockPos,
         Direction,
         String,
-        bool,
+        PlacementSource,
         bool,
         FluidState,
     ) {
@@ -4126,12 +4467,12 @@ fn the_level_chooses_the_state_a_block_is_placed_in() {
             first.clicked,
             first.face,
             first.item.clone(),
-            first.sneaking,
+            first.source,
             first.replace_clicked,
             first.fluid,
         )
     }
-    let Some(f) = fixture() else { return };
+    let f = fixture().expect("prepared resources");
     let b = &f.behaviours;
     let stone = f.registry.default_state("minecraft:stone").unwrap();
     let furnace = f.registry.default_state("minecraft:furnace").unwrap();
@@ -4148,6 +4489,9 @@ fn the_level_chooses_the_state_a_block_is_placed_in() {
         block: furnace_block,
         answer: Some(Some(facing("east"))),
         asked: RefCell::new(Vec::new()),
+        unloaded: None,
+        max_y: 320,
+        rewrite_on_update: None,
     };
     let mut ticks = Ticks::new(0);
     ticks.add_empty_chunk(ChunkPos::new(0, 0)).unwrap();
@@ -4159,28 +4503,37 @@ fn the_level_chooses_the_state_a_block_is_placed_in() {
         face: Direction::Up,
         hit: Vec3::new(0.5, 1.0, 0.5),
         inside: false,
-        yaw: 0.0,
-        pitch: 0.0,
-        sneaking: false,
+        source: PlacementSource::Player {
+            yaw: 0.0,
+            pitch: 0.0,
+            sneaking: false,
+        },
         item: "minecraft:furnace".into(),
         can_use_game_master_blocks: false,
     };
     // The hook's state, not the one vanilla's furnace placement computes.
     assert_eq!(
         b.state_for_placement(&mut level, &mut ticks, furnace_block, &ctx),
-        Some(facing("east"))
+        Ok(Some(facing("east")))
     );
     // It was asked with the block it decides for, where the block would go
     // (above the stone), the block clicked, the face clicked, the item in
     // hand, and the fluid of the position it goes in (none: dry stone).
-    let (state, pos, clicked, face, item, sneaking, replace_clicked, fluid) = asked(&level);
+    let (state, pos, clicked, face, item, source, replace_clicked, fluid) = asked(&level);
     assert_eq!(state, furnace);
     assert_eq!(pos, BlockPos::new(0, 1, 0));
     assert_eq!(clicked, ground);
     assert_eq!(face, Direction::Up);
     assert_eq!(item, "minecraft:furnace");
     assert!(!replace_clicked);
-    assert!(!sneaking);
+    assert_eq!(
+        source,
+        PlacementSource::Player {
+            yaw: 0.0,
+            pitch: 0.0,
+            sneaking: false,
+        }
+    );
     assert_eq!(fluid, FluidState::EMPTY);
     // Clicking a block that can be replaced: the block goes into it, and the
     // fluid already there (water) reaches the hook, which a waterlogged block
@@ -4189,29 +4542,40 @@ fn the_level_chooses_the_state_a_block_is_placed_in() {
     let water = f.registry.default_state("minecraft:water").unwrap();
     level.set_raw(BlockPos::new(0, 1, 0), water);
     ctx.clicked_pos = BlockPos::new(0, 1, 0);
-    ctx.sneaking = true;
+    ctx.source = PlacementSource::Player {
+        yaw: 0.0,
+        pitch: 0.0,
+        sneaking: true,
+    };
     assert_eq!(
         b.state_for_placement(&mut level, &mut ticks, furnace_block, &ctx),
-        Some(facing("east"))
+        Ok(Some(facing("east")))
     );
-    let (_, pos, _, _, _, sneaking, replace_clicked, fluid) = asked(&level);
+    let (_, pos, _, _, _, source, replace_clicked, fluid) = asked(&level);
     assert_eq!(pos, BlockPos::new(0, 1, 0));
     assert!(replace_clicked);
-    assert!(sneaking);
+    assert_eq!(
+        source,
+        PlacementSource::Player {
+            yaw: 0.0,
+            pitch: 0.0,
+            sneaking: true,
+        }
+    );
     assert_eq!(fluid.kind(), FluidKind::Water);
     // Refused (vanilla's `null` return): there is no state, so the placement
     // fails and the stack is kept.
     level.answer = Some(None);
     assert_eq!(
         b.state_for_placement(&mut level, &mut ticks, furnace_block, &ctx),
-        None
+        Ok(None)
     );
     // Without an answer the block's own `getStateForPlacement` runs: a furnace
     // placed with yaw 0 faces north, which is its default state.
     level.answer = None;
     assert_eq!(
         b.state_for_placement(&mut level, &mut ticks, furnace_block, &ctx),
-        Some(furnace)
+        Ok(Some(furnace))
     );
     // And a block the hook does not answer for is unaffected.
     let stairs = b.block(f.registry.default_state("minecraft:oak_stairs").unwrap());
@@ -4223,22 +4587,25 @@ fn the_level_chooses_the_state_a_block_is_placed_in() {
     );
     // A dispenser places through the same state computation
     // (`ShulkerBoxDispenseBehavior`'s `DirectionalPlaceContext`): it places
-    // the hook's state too, with the dispenser's own view of the click.
+    // the hook's state too, with the dispenser's own directional source.
     level.answer = Some(Some(facing("east")));
     level.asked.borrow_mut().clear();
     let front = BlockPos::new(3, 1, 1);
     let dispenser = PlaceContext {
         clicked_pos: front,
         face: Direction::East,
-        hit: Vec3::new(3.0, 1.0, 1.5),
+        hit: Vec3::new(3.5, 1.0, 1.5),
         inside: false,
-        yaw: 270.0,
-        pitch: 0.0,
-        sneaking: false,
+        source: PlacementSource::Directional {
+            direction: Direction::East,
+        },
         item: "minecraft:furnace".into(),
         can_use_game_master_blocks: false,
     };
-    assert!(b.directional_can_place(&mut level, &mut ticks, &dispenser));
+    assert_eq!(
+        b.directional_can_place(&mut level, &mut ticks, &dispenser),
+        Ok(true)
+    );
     let outcome = b.place_block(&mut level, &mut ticks, &dispenser);
     assert_eq!(
         outcome,
@@ -4248,23 +4615,188 @@ fn the_level_chooses_the_state_a_block_is_placed_in() {
         }
     );
     assert_eq!(level.block_state(front), facing("east"));
-    let (state, pos, _, _, item, _, replace_clicked, _) = asked(&level);
+    let (state, pos, _, _, item, source, replace_clicked, _) = asked(&level);
     assert_eq!(state, furnace);
     assert_eq!(pos, front);
     assert_eq!(item, "minecraft:furnace");
+    assert_eq!(
+        source,
+        PlacementSource::Directional {
+            direction: Direction::East,
+        }
+    );
     assert!(replace_clicked, "the front block is air: it is replaced");
-    // A made-up id is not trusted, nor is another block's state: the block
-    // places as vanilla's would.
+    // Vanilla `DirectionalPlaceContext`: vertical direction resolves
+    // `getHorizontalDirection()` to North (so a furnace faces South) and
+    // `getNearestLookingDirection()` to Down (so an observer faces Down).
+    level.answer = None;
+    let vertical_dispenser = PlaceContext {
+        clicked_pos: BlockPos::new(4, 1, 1),
+        face: Direction::Up,
+        hit: Vec3::new(4.5, 1.0, 1.5),
+        inside: false,
+        source: PlacementSource::Directional {
+            direction: Direction::Up,
+        },
+        item: "minecraft:furnace".into(),
+        can_use_game_master_blocks: false,
+    };
+    assert_eq!(
+        b.state_for_placement(&mut level, &mut ticks, furnace_block, &vertical_dispenser),
+        Ok(Some(facing("south")))
+    );
+    let observer = b.block(f.registry.default_state("minecraft:observer").unwrap());
+    let observer_state = b
+        .state_for_placement(&mut level, &mut ticks, observer, &vertical_dispenser)
+        .unwrap()
+        .unwrap();
+    assert_eq!(b.facing(observer_state), Direction::Down);
+    // A made-up id is not trusted: the fallback remains vanilla's state.
     level.answer = Some(Some(BlockStateId(u32::MAX)));
     assert_eq!(
         b.state_for_placement(&mut level, &mut ticks, furnace_block, &ctx),
-        Some(furnace)
+        Ok(Some(furnace))
     );
-    level.answer = Some(Some(b.default_of(stairs)));
+    // The resolved candidate can belong to another block. Place that block,
+    // including its companion and sound, even though the item is a furnace.
+    let door = f.registry.default_state("minecraft:oak_door").unwrap();
+    let mut upper = f.registry.state(door).unwrap().clone();
+    upper.properties.insert("half".into(), "upper".into());
+    let upper = f.registry.resolve(&upper).unwrap();
+    level.answer = Some(Some(door));
+    level.inner.events.clear();
+    ctx.clicked_pos = ground;
+    let placed = b
+        .place_block_with_context(&mut level, &mut ticks, &ctx)
+        .unwrap();
+    let pos = BlockPos::new(0, 1, 0);
+    assert_eq!(placed.context.pos, pos);
+    assert!(placed.matches_candidate);
+    assert_eq!(level.block_state(pos), door);
+    let top = BlockPos::new(0, 2, 0);
+    assert_eq!(level.block_state(top), upper);
+    assert!(level.inner.events.iter().any(|event| matches!(
+        event,
+        LevelEvent::Sound { pos: at, sound, .. }
+            if *at == pos && &**sound == "minecraft:block.wood.place"
+    )));
+
+    // A held door asks for space above. A furnace selecting a door does not
+    // call the door's getStateForPlacement, so its placed-by writes there anyway.
+    level.set_raw(pos, b.air());
+    level.set_raw(top, stone);
+    let mut held_door = ctx.clone();
+    held_door.item = "minecraft:oak_door".into();
+    assert!(
+        b.placement_preview(&mut level, &mut ticks, &held_door)
+            .is_none()
+    );
+    level.asked.borrow_mut().clear();
+    assert!(
+        b.place_block_with_context(&mut level, &mut ticks, &ctx)
+            .is_some()
+    );
+    assert_eq!(level.asked.borrow().len(), 1);
+    assert_eq!(level.block_state(top), upper);
+
+    // An unloaded or out-of-height companion's write can fail; BlockItem still
+    // placed the lower half, and must report success so its caller consumes it.
+    for (at, max_y) in [(Some(top), 320), (None, 2)] {
+        level.set_raw(pos, b.air());
+        level.set_raw(top, b.air());
+        level.unloaded = at;
+        level.max_y = max_y;
+        assert!(
+            b.place_block_with_context(&mut level, &mut ticks, &ctx)
+                .is_some()
+        );
+        assert_eq!(level.block_state(pos), door);
+        assert_eq!(level.block_state(top), b.air());
+    }
+    level.max_y = 320;
+    level.set_raw(pos, b.air());
+
+    level.answer = Some(Some(
+        f.registry.default_state("minecraft:command_block").unwrap(),
+    ));
+    assert!(
+        b.place_block_with_context(&mut level, &mut ticks, &ctx)
+            .is_none()
+    );
+    ctx.can_use_game_master_blocks = true;
+    assert!(b.placement_preview(&mut level, &mut ticks, &ctx).is_some());
+
+    // A command block item cannot get around its operator gate by selecting stone.
+    let mut other_item = ctx.clone();
+    other_item.item = "minecraft:command_block".into();
+    other_item.can_use_game_master_blocks = false;
+    level.block = b.block(f.registry.default_state(&other_item.item).unwrap());
+    level.answer = Some(Some(stone));
+    level.asked.borrow_mut().clear();
+    assert!(
+        b.placement_preview(&mut level, &mut ticks, &other_item)
+            .is_none()
+    );
+    assert!(level.asked.borrow().is_empty());
+    other_item.can_use_game_master_blocks = true;
     assert_eq!(
-        b.state_for_placement(&mut level, &mut ticks, furnace_block, &ctx),
-        Some(furnace)
+        b.placement_preview(&mut level, &mut ticks, &other_item)
+            .unwrap()
+            .state,
+        stone
     );
+
+    // A cactus won't survive on stone, but the scaffolding item does not require
+    // the selected candidate to survive; a furnace item does.
+    let cactus = f.registry.default_state("minecraft:cactus").unwrap();
+    other_item.item = "minecraft:scaffolding".into();
+    level.block = b.block(f.registry.default_state(&other_item.item).unwrap());
+    level.answer = Some(Some(cactus));
+    assert_eq!(
+        b.placement_preview(&mut level, &mut ticks, &other_item)
+            .unwrap()
+            .state,
+        cactus
+    );
+    level.block = furnace_block;
+    assert!(b.placement_preview(&mut level, &mut ticks, &ctx).is_none());
+
+    // Replacing the primary during its write is still a successful item use,
+    // but the door's tag and companion are not applied to that other block.
+    level.set_raw(top, b.air());
+    level.answer = Some(Some(door));
+    level.rewrite_on_update = Some((pos, stone));
+    let placed = b
+        .place_block_with_state(&mut level, &mut ticks, &ctx, |state| {
+            assert_eq!(
+                state, door,
+                "item data must not act on the substituted post-write block"
+            );
+            (state, state)
+        })
+        .unwrap();
+    assert!(!placed.matches_candidate);
+    assert_eq!(placed.state, stone);
+    assert_eq!(level.block_state(top), b.air());
+
+    // A same-block rewrite still calls setPlacedBy, using the state that actually
+    // landed, not the facing that the placement Part supplied before the write.
+    let bed = f.registry.default_state("minecraft:red_bed").unwrap();
+    let mut foot = f.registry.state(bed).unwrap().clone();
+    foot.properties.insert("facing".into(), "east".into());
+    let east_foot = f.registry.id(&foot).unwrap();
+    foot.properties.insert("part".into(), "head".into());
+    let east_head = f.registry.id(&foot).unwrap();
+    level.set_raw(pos, b.air());
+    level.answer = Some(Some(bed));
+    level.rewrite_on_update = Some((pos, east_foot));
+    let placed = b
+        .place_block_with_context(&mut level, &mut ticks, &ctx)
+        .unwrap();
+    assert!(placed.matches_candidate);
+    assert_eq!(level.block_state(pos), east_foot);
+    assert_eq!(level.block_state(BlockPos::new(1, 1, 0)), east_head);
+    assert_eq!(level.block_state(BlockPos::new(0, 1, -1)), b.air());
 }
 
 #[test]
@@ -4303,29 +4835,34 @@ fn survive_hooks_answer_for_the_block() {
         fn before_can_survive(
             &self,
             _: &Ticks,
+            _: Option<&PreviewBlocks>,
             _pos: BlockPos,
             state: BlockStateId,
             survives: &mut Option<bool>,
-        ) {
+        ) -> bool {
             self.asked.set(self.asked.get() + 1);
             if let Some((block, answer)) = self.survive
                 && self.b.block(state) == block
             {
                 *survives = Some(answer);
             }
+            false
         }
         fn before_may_place_on(
             &self,
+            _: &Ticks,
+            _: Option<&PreviewBlocks>,
             state: BlockStateId,
             ground: BlockStateId,
             _ground_pos: BlockPos,
             may: &mut Option<bool>,
-        ) {
+        ) -> bool {
             if let Some((plant, on)) = self.ground
                 && self.b.block(state) == plant
             {
                 *may = Some(self.b.block(ground) == on);
             }
+            false
         }
     }
     let Some(f) = fixture() else { return };
@@ -4353,9 +4890,11 @@ fn survive_hooks_answer_for_the_block() {
             face: Direction::Up,
             hit: sunrise_core::geometry::Vec3::new(1.5, 2.0, 1.5),
             inside: false,
-            yaw: 0.0,
-            pitch: 0.0,
-            sneaking: false,
+            source: PlacementSource::Player {
+                yaw: 0.0,
+                pitch: 0.0,
+                sneaking: false,
+            },
             item: item.into(),
             can_use_game_master_blocks: false,
         };
@@ -4422,9 +4961,11 @@ fn a_level_can_answer_what_makes_a_campfire_signal() {
             face: Direction::Up,
             hit: sunrise_core::geometry::Vec3::new(0.5, 1.0, 0.5),
             inside: false,
-            yaw: 0.0,
-            pitch: 0.0,
-            sneaking: false,
+            source: PlacementSource::Player {
+                yaw: 0.0,
+                pitch: 0.0,
+                sneaking: false,
+            },
             item: "minecraft:campfire".into(),
             can_use_game_master_blocks: false,
         };
@@ -4850,7 +5391,7 @@ fn a_shulker_lid_updates_the_shapes_and_redstone_of_its_neighbours() {
             self.inner.game_time()
         }
         fn observe_neighbor_changed(
-            &self,
+            &mut self,
             _ticks: &mut Ticks,
             pos: BlockPos,
             state: BlockStateId,

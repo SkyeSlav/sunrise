@@ -267,6 +267,10 @@ impl ClientPerf {
         self.perf.memory_snapshot(t, label, rows)
     }
 
+    pub fn memory_cost(&self) -> Option<crate::server_perf::MemoryCost> {
+        self.perf.memory_cost()
+    }
+
     /// Records `code` in the running capture; false when none runs.
     pub fn warn(&mut self, t: f64, code: WarningCode) -> bool {
         self.perf.warn(t, code)
@@ -274,11 +278,6 @@ impl ClientPerf {
 
     pub fn status(&self, t: f64) -> Option<CaptureStatus> {
         self.perf.status(t)
-    }
-
-    /// The seconds left in the running capture's window.
-    pub fn remaining_s(&self, t: f64) -> Option<f64> {
-        self.window.map(|(end, _)| (end - t).max(0.0))
     }
 }
 

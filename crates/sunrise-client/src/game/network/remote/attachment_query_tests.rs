@@ -2,7 +2,7 @@ use super::*;
 use crate::game::native_entity_refs::tests::with_client_game;
 use mod_api::{AttachmentCodec, AttachmentType, Host};
 use sunrise_mod_runtime::attachments::AttachmentSync;
-use sunrise_protocol::attachment_sync::{Message, encode};
+use sunrise_protocol::attachment_sync::Message;
 
 static VALUE: AttachmentType<i32> = AttachmentType {
     namespace: "mirror",
@@ -20,30 +20,32 @@ static VALUE: AttachmentType<i32> = AttachmentType {
 };
 fn values(game: &Game<'_>) -> Vec<i32> {
     let host: &dyn Host = game;
-    host.attachment_query("mirror", "value")
+    let query = host
+        .attachment_query("mirror", "value")
         .unwrap()
         .query(&VALUE)
-        .unwrap()
-        .iter()
-        .map(|r| *r.unwrap().value)
+        .unwrap();
+    let mut rows = query.iter();
+    std::iter::from_fn(|| rows.try_next().unwrap())
+        .map(|row| {
+            row.with_value(game.attachment_frame_borrow(), |value| *value)
+                .unwrap()
+        })
         .collect()
 }
 fn client<'a>(game: &'a mut Game<'_>) -> &'a mut Remote {
     game.remote.as_mut().unwrap()
 }
 fn sync(game: &mut Game<'_>, holder: Holder, value: i32) {
-    game.remote_attachment_sync(
-        &encode(&Message {
-            holder,
-            replace: true,
-            changes: vec![AttachmentSync {
-                namespace: "mirror".into(),
-                name: "value".into(),
-                value: Some([("n".into(), Tag::Int(value))].into()),
-            }],
-        })
-        .unwrap(),
-    );
+    game.remote_attachment_sync(Message {
+        holder,
+        replace: true,
+        changes: vec![AttachmentSync {
+            namespace: "mirror".into(),
+            name: "value".into(),
+            value: Some([("n".into(), Tag::Int(value))].into()),
+        }],
+    });
 }
 #[test]
 #[ignore = "daily"]
@@ -63,7 +65,11 @@ fn synced_client_queries_follow_replacement_retirement_and_level_changes() {
             portal_cooldown: 0,
             sea_level: 63,
         };
-        game.enter_remote_dimension(&spawn, false, sunrise_client::level_loading::Reason::Other);
+        game.enter_remote_dimension(
+            &spawn,
+            RemoteDimensionEntry::Login,
+            sunrise_client::level_loading::Reason::Other,
+        );
         client(game).logged_in = true;
         assert!(values(game).is_empty());
         let host: &mut dyn Host = game;
@@ -78,15 +84,19 @@ fn synced_client_queries_follow_replacement_retirement_and_level_changes() {
         assert_eq!(values(game), [41]);
         let captured = game.attachment_query("mirror", "value").unwrap();
         let query = captured.query(&VALUE).unwrap();
-        let row = query.iter().next().unwrap().unwrap();
+        let row = query.iter().try_next().unwrap().unwrap();
         assert_eq!(
             row.holder,
             mod_api::AttachmentHolder::Level(game.level("test:pocket").unwrap())
         );
-        let token = mod_api::AttachmentWriteToken::from(row.write_token());
+        let token = row.write_token();
         sync(game, Holder::Level, 42);
         assert_eq!(values(game), [42]);
-        assert_eq!(*row.value, 41);
+        assert_eq!(
+            row.with_value(game.attachment_frame_borrow(), |value| *value)
+                .unwrap(),
+            41
+        );
         client(game).attachments.remove(&Holder::Level);
         assert!(values(game).is_empty());
         assert_eq!(
@@ -102,7 +112,11 @@ fn synced_client_queries_follow_replacement_retirement_and_level_changes() {
         assert!(values(game).is_empty());
         sync(game, Holder::Level, 71);
         spawn.dimension = "minecraft:the_nether".into();
-        game.enter_remote_dimension(&spawn, false, sunrise_client::level_loading::Reason::Other);
+        game.enter_remote_dimension(
+            &spawn,
+            RemoteDimensionEntry::Login,
+            sunrise_client::level_loading::Reason::Other,
+        );
         assert!(values(game).is_empty());
         assert!(game.remote.as_ref().unwrap().attachments.is_empty());
         sync(game, Holder::Level, 81);

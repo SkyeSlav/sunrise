@@ -15,10 +15,12 @@ pub trait Hooks {
     /// weapon; None for an absent, unknown or non-living cause, or once the shooter
     /// is gone. It is an addition: NeoForge's `LivingIncomingDamageEvent` doesn't
     /// carry it, and mods there read the source entity's main hand themselves.
-    /// `container` is an API-owned snapshot before any reduction; engine sequencing
-    /// remains game-owned. Change its `new_damage`, the invulnerability ticks a fresh hit
-    /// leaves (vanilla's 20), or add an ordered reduction modifier with
-    /// `add_reduction_modifier`. Set `canceled` and nothing
+    /// `container` is a live mutable borrow of the hit's damage container before any
+    /// reduction; engine sequencing and normalization remain game-owned. Change its
+    /// `new_damage`, the invulnerability ticks a fresh hit leaves (vanilla's 20), or
+    /// install an owned reduction modifier closure with `add_reduction_modifier` (run in
+    /// registration order when that reduction stage executes, receiving a read-only view
+    /// of the live container and the preceding reduction value). Set `canceled` and nothing
     /// of `hurtServer` happens (no damage, hurt sound, knockback, cooldown, statistics or
     /// criteria); a canceled hit on the ender dragon still counts as landed (`EnderDragon.hurt`
     /// returns true whatever `reallyHurt` did). It fires on every damage route, for players,
@@ -26,13 +28,13 @@ pub trait Hooks {
     /// attachments, level sounds, and the own random of the entities the hit lends; the hurt entity
     /// is in the middle of its hit.
     #[hook(
+        dispatch = "api_carrier",
         side = "server",
-        version = 2,
         contract = "cancel",
         out = "canceled",
         host = "hit",
         neoforge = "LivingIncomingDamageEvent",
-        version = 3,
+        version = 5,
         target = "sunrise_client::game::native_hooks::base::HitLevel<'_>::native_living_incoming_damage"
     )]
     fn living_incoming_damage(
@@ -42,7 +44,7 @@ pub trait Hooks {
         victim: &Victim,
         weapon: Option<&ItemStack>,
         causing_weapon: Option<&ItemStack>,
-        container: &mut DamageContainer,
+        container: mod_api::DamageContainer<'_>,
         canceled: &mut bool,
     );
 }

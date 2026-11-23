@@ -35,7 +35,7 @@ pub struct Unpacked {
     pub target: String,
     /// The Cargo home of builds.
     pub cargo_home: PathBuf,
-    /// `--config` values every cargo command gets (the launcher's Windows ARM64 flags).
+    /// `--config` values every cargo command gets.
     #[serde(default)]
     pub cargo_config: Vec<String>,
     /// The folder of its C and link programs, when it brings them (Windows).
@@ -67,7 +67,11 @@ impl Toolchain for Unpacked {
         }
         cmd.env("PATH", std::env::join_paths(paths).unwrap_or(path))
             .env("RUSTC", self.rustc())
-            .env("CARGO_HOME", &self.cargo_home);
+            .env("CARGO_HOME", &self.cargo_home)
+            // Nix's compiler wrapper, told to enforce purity, drops every `-I` and `-L` outside
+            // the Nix store. This build's sources are in `cargo_home`, never there, so a C or C++
+            // dependency would lose its own include folders.
+            .env("NIX_ENFORCE_PURITY", "0");
         for (name, _) in std::env::vars_os() {
             if name.to_str().is_some_and(scrubbed) {
                 cmd.env_remove(name);
@@ -203,6 +207,33 @@ no build and work with it on.")
     .to_string()
 }
 
+/// What to install when the link of a native build cannot find udev or ALSA, which the game
+/// links on Linux: the linker only names the missing `-l` flags.
+pub fn system_libraries() -> String {
+    crate::host::tr(
+        "The build could not find udev or ALSA, system libraries the game links on \
+Linux. Install their development files, then build again: `libudev-dev` and `libasound2-dev` on \
+Debian and Ubuntu, `systemd-devel` and `alsa-lib-devel` on Fedora, `udev` and `alsa-lib` in the \
+shell's packages on NixOS.",
+    )
+    .to_string()
+}
+
+/// Whether `text` (a line of a build's output) is a linker not finding udev or ALSA: rust-lld's
+/// `unable to find library -ludev`, or GNU ld's `cannot find -ludev: No such file or directory`.
+pub fn missing_system_libraries(text: &str) -> bool {
+    ["unable to find library ", "cannot find "]
+        .iter()
+        .any(|said| {
+            text.match_indices(said).any(|(at, _)| {
+                let flag = text[at + said.len()..].split_whitespace().next();
+                // GNU ld ends the flag with one colon; a colon inside it names another library.
+                let flag = flag.map(|flag| flag.strip_suffix(':').unwrap_or(flag));
+                matches!(flag, Some("-ludev" | "-lasound"))
+            })
+        })
+}
+
 /// Whether `text` (a build's output, or the error starting one of its programs) is Windows
 /// refusing a program under an Application Control policy, Smart App Control's.
 pub fn blocked_by_app_control(text: &str) -> bool {
@@ -214,12 +245,10 @@ pub(crate) mod tests {
     use super::*;
 
     /// Every host the launcher ships a toolchain for: commands are checked for each, on any machine.
-    pub const HOSTS: [&str; 5] = [
+    pub const HOSTS: [&str; 3] = [
         "aarch64-apple-darwin",
-        "x86_64-apple-darwin",
         "x86_64-unknown-linux-gnu",
         WINDOWS_X64_TARGET,
-        "aarch64-pc-windows-gnullvm",
     ];
 
     pub fn unpacked(dir: impl Into<PathBuf>, target: &str) -> Unpacked {
@@ -245,6 +274,41 @@ pub(crate) mod tests {
             .find_map(|line| line.strip_prefix("host: "))
             .unwrap();
         unpacked(dir, host)
+    }
+
+    /// Under `NIX_ENFORCE_PURITY=1` Nix's compiler wrapper drops the include folders of a C++
+    /// dependency in the build's own Cargo home, so every build command turns it off.
+    #[test]
+    fn build_commands_turn_off_nix_purity_filtering() {
+        let cmd = unpacked("toolchain", HOSTS[1]).command(Path::new("cargo"));
+        let purity = cmd
+            .get_envs()
+            .find(|(name, _)| *name == "NIX_ENFORCE_PURITY")
+            .and_then(|(_, value)| value);
+        assert_eq!(purity, Some(std::ffi::OsStr::new("0")));
+    }
+
+    #[test]
+    fn only_a_linker_missing_exactly_udev_or_alsa_is_recognised() {
+        for line in [
+            "  = note: rust-lld: error: unable to find library -ludev",
+            "          rust-lld: error: unable to find library -lasound",
+            "/usr/bin/ld: cannot find -ludev: No such file or directory",
+            "/usr/bin/ld: cannot find -lasound: No such file or directory",
+        ] {
+            assert!(missing_system_libraries(line), "{line}");
+        }
+        for line in [
+            "rust-lld: error: unable to find library -lasound_extra",
+            "/usr/bin/ld: cannot find -ludev2: No such file or directory",
+            "rust-lld: error: unable to find library -lasound:plugin",
+            "/usr/bin/ld: cannot find -ludev:plugin: No such file or directory",
+            "/usr/bin/ld: cannot find -ludev:plugin:: No such file or directory",
+            "rust-lld: error: unable to find library -lz",
+            "error: linking with `cc` failed: exit status: 1",
+        ] {
+            assert!(!missing_system_libraries(line), "{line}");
+        }
     }
 
     #[cfg(target_os = "linux")]

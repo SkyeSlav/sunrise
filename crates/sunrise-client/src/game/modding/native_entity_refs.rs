@@ -13,6 +13,9 @@ pub(in crate::game) mod dragon_parts_table;
 #[path = "native_entity_refs/dragon_query.rs"]
 mod dragon_query;
 #[cfg(test)]
+#[path = "native_entity_refs/level_uuid_tests.rs"]
+mod level_uuid_tests;
+#[cfg(test)]
 #[path = "native_entity_refs/roll_loot_tests.rs"]
 mod roll_loot_tests;
 #[path = "native_entity_refs/save_lending.rs"]
@@ -20,12 +23,23 @@ mod save_lending;
 use super::{
     Game,
     commands::Target,
-    entity::{Entity as _, entity_lists_of, for_each_entity},
+    entity::Entity,
+    pick_entity::{
+        aabb_extents,
+        pick_sections::{PickKind, PickMember},
+    },
+    remote::Remote,
+    text_displays::{RemoteTextDisplay, Shows},
     transactions::After,
 };
+use core::ops::ControlFlow;
 use mod_api::{
     BlockFace, BlockShapeKind, BlockUpdateFlags, ClipBlock, ClipFluid, ClipHit, DimensionKey,
-    EntityRayHit, EntityRef, LevelRef, NeighbourUpdate,
+    EntityRayHit, EntityRef, LevelReadError, LevelRef, NeighbourUpdate,
+};
+use sunrise_client::join_seq::{
+    JoinList, JoinSeq, Joined,
+    residency::table::{EntityLookup, Location, SectionSearch},
 };
 use sunrise_core::geometry::{Aabb, Vec3};
 use sunrise_items::items::ItemStack;
@@ -45,79 +59,142 @@ pub(super) fn block_face_direction(face: BlockFace) -> sunrise_core::geometry::D
     }
 }
 
-/// `ProjectileUtil.getEntityHitResult`'s test on each candidate: its box grown by `margin`
-/// and clipped against the segment. Every hit, nearest first; a segment that starts inside a
-/// box does not hit it (`AABB.clip`).
-fn entity_ray_hits(
-    from: [f64; 3],
-    to: [f64; 3],
-    margin: f64,
-    candidates: impl IntoIterator<Item = (EntityRef, [[f64; 3]; 2])>,
-) -> Vec<EntityRayHit> {
-    let start = Vec3::new(from[0], from[1], from[2]);
-    let end = Vec3::new(to[0], to[1], to[2]);
-    let mut hits: Vec<EntityRayHit> = candidates
-        .into_iter()
-        .filter_map(|(entity, [lo, hi])| {
-            let grown = Aabb::new(
-                Vec3::new(lo[0], lo[1], lo[2]),
-                Vec3::new(hi[0], hi[1], hi[2]),
-            )
-            .inflate(Vec3::new(margin, margin, margin));
-            let at = grown.clip(start, end)?;
-            let location = [at.x, at.y, at.z];
-            let distance = (0..3)
-                .map(|i| (location[i] - from[i]).powi(2))
-                .sum::<f64>()
-                .sqrt();
-            Some(EntityRayHit {
-                entity,
-                location,
-                distance,
-            })
-        })
-        .collect();
-    hits.sort_by(|a, b| a.distance.total_cmp(&b.distance));
-    hits
+/// `ProjectileUtil.getEntityHitResult`'s test on a candidate: grow its box and clip it
+/// against the segment. A segment starting inside the grown box finds no entry (`AABB.clip`).
+fn clip_entity_ray(
+    start: Vec3,
+    end: Vec3,
+    padding: Vec3,
+    entity: EntityRef,
+    [lo, hi]: [[f64; 3]; 2],
+) -> Option<(EntityRayHit, f64)> {
+    let grown = Aabb::new(
+        Vec3::new(lo[0], lo[1], lo[2]),
+        Vec3::new(hi[0], hi[1], hi[2]),
+    )
+    .inflate(padding);
+    let location = grown.clip(start, end)?.components();
+    let from = start.components();
+    let distance_squared = (0..3).map(|i| (location[i] - from[i]).powi(2)).sum::<f64>();
+    Some((
+        EntityRayHit {
+            entity,
+            location,
+            distance: distance_squared.sqrt(),
+        },
+        distance_squared,
+    ))
+}
+
+fn list_query_body<T: Entity + Joined, const DIRECT: bool>(
+    list: &JoinList<T, DIRECT>,
+    join: JoinSeq,
+) -> Option<Aabb> {
+    let entity = list.get(list.locate(join)?)?;
+    (!entity.is_removed()).then(|| entity.bounds())
 }
 
 impl Game<'_> {
+    /// The logged-in window and network id for an entity handle in its current world.
+    pub(super) fn native_client_entity_context(&self, entity: EntityRef) -> Option<(&Remote, i32)> {
+        let remote = self.remote.as_ref().filter(|r| r.logged_in)?;
+        (self.native_lifecycle.epoch() == Some(entity.epoch())).then_some(())?;
+        Some((remote, entity.id() as i32))
+    }
+
     /// An entity tracked by the remote client but absent from local entity lists.
-    fn native_client_tracked(&self, entity: EntityRef) -> Option<(&str, [f64; 3])> {
-        let remote = self.remote.as_ref()?;
-        if !remote.logged_in || self.native_lifecycle.epoch() != Some(entity.epoch()) {
+    pub(super) fn native_client_tracked(&self, entity: EntityRef) -> Option<(&str, [f64; 3])> {
+        let (remote, id) = self.native_client_entity_context(entity)?;
+        let (kind, position) = remote.tracked_entity(id)?;
+        if Shows::from_kind(kind).is_some() {
+            let display = self.live_client_display(remote, id)?;
+            return Some((kind, display.position().to_array()));
+        }
+        Some((kind, position))
+    }
+
+    pub(super) fn native_client_display(&self, entity: EntityRef) -> Option<&RemoteTextDisplay> {
+        let (remote, id) = self.native_client_entity_context(entity)?;
+        Shows::from_kind(remote.tracked(id)?.0)?;
+        self.live_client_display(remote, id)
+    }
+
+    fn live_client_display(&self, remote: &Remote, id: i32) -> Option<&RemoteTextDisplay> {
+        if !remote.has_level() {
             return None;
         }
-        remote.tracked_entity(i32::try_from(entity.id()).ok()?)
+        self.text_displays.get(&id)
     }
 
     /// What a handle names now, or None for a stale or foreign one.
     pub(super) fn native_entity_target(&self, entity: EntityRef) -> Option<Target> {
-        if self.block_entity_tick_items.is_some() {
-            return self.scoped_native_entity_target(entity);
+        self.native_entity_target_with_location(entity)
+            .map(|(target, _)| target)
+    }
+
+    /// Resolve the handle and return its resident location, if admitted to the level.
+    pub(super) fn native_entity_target_with_location(
+        &self,
+        entity: EntityRef,
+    ) -> Option<(Target, Option<Location>)> {
+        self.native_entity_target_in(entity, self.dim.key())
+    }
+
+    /// [`Self::native_entity_target_with_location`] for an entity resident in the open server
+    /// level `dimension`, the one in place or a parked one.
+    fn native_entity_target_in(
+        &self,
+        entity: EntityRef,
+        dimension: DimensionKey,
+    ) -> Option<(Target, Option<Location>)> {
+        if self.held_out.contains(&entity.id())
+            || !self.is_logical_server()
+            || self.native_lifecycle.epoch() != Some(entity.epoch())
+        {
+            return None;
         }
-        self.unscoped_native_entity_target(entity)
+        let EntityLookup::Found { location, value } = self.server_resident_entity(entity.id())
+        else {
+            // A lifecycle event lends the body without admitting it to the level.
+            let &(_, conn, _) = self
+                .player_state
+                .cloning_players
+                .iter()
+                .rev()
+                .find(|&&(_, _, id)| id == entity.id())?;
+            return if self.lan_acting == Some(conn) {
+                Some((Target::Player, None))
+            } else if self.lan_guest_swaps.contains(&conn) {
+                None
+            } else {
+                Some((Target::Guest(conn), None))
+            };
+        };
+        // Players are server-wide records. Ordinary body operations retain
+        // their existing current-level domain; source membership is global.
+        (matches!(value, Target::Player | Target::Guest(_))
+            || location.owner.dimension == dimension)
+            .then_some((value, Some(location)))
     }
     /// What a handle names on a client: the local player, or an entity the
     /// server told this client of (`ClientLevel.getEntity`, whose entities are
     /// the ones the server tracks to it). None for a stale handle, with no
     /// login, or for an entity the client doesn't have.
     pub(super) fn native_client_entity_target(&self, entity: EntityRef) -> Option<Target> {
-        let remote = self.remote.as_ref().filter(|r| r.logged_in)?;
-        (self.native_lifecycle.epoch() == Some(entity.epoch())).then_some(())?;
-        let id = i32::try_from(entity.id()).ok()?;
+        let (remote, id) = self.native_client_entity_context(entity)?;
         if id == remote.entity_id {
             return self.player.as_ref().map(|_| Target::Player);
         }
         // The server tracks the dragon alone; its parts are the client's own copies of it.
-        if let Some(part) = self.level_dragon_part(entity.id()) {
-            return Some(part);
+        if self.resident_dragon_part(entity.id()).is_some() {
+            return Some(Target::DragonPart(entity.id()));
         }
-        remote.tracked(id)?;
-        match self.level_entity(id)? {
-            Target::Mob(mob) if !self.mobs.iter().any(|m| m.id == mob && !m.removed) => None,
-            target => Some(target),
+        let (kind, _) = remote.tracked(id)?;
+        if Shows::from_kind(kind).is_some() {
+            // Displays have their own client bodies; never resolve one through another store.
+            return None;
         }
+        self.level_entity(id)
     }
     /// What a handle names for a read that works on both sides: the server's
     /// entity (`native_entity_target`) or, on a client, its own copy of it.
@@ -139,12 +216,15 @@ impl Game<'_> {
             || self.native_client_tracked(entity).is_some())
         .then_some(entity)
     }
-    pub(super) fn entity_by_uuid(&self, uuid: mod_api::EntityUuid) -> Option<EntityRef> {
-        if !self.is_logical_server() {
-            return None;
-        }
-        let epoch = self.native_lifecycle.epoch()?;
-        let dimension = self.dim.key();
+    /// `ServerLevel.getEntity(UUID)` for [`LevelRef::entity_by_uuid`]: the level's UUID index,
+    /// in place or parked, then the same resolution and visibility as any handle of that level.
+    pub(super) fn level_entity_by_uuid(
+        &self,
+        level: LevelRef,
+        uuid: mod_api::EntityUuid,
+    ) -> Option<EntityRef> {
+        self.native_level_world(level)?;
+        let dimension = level.dimension();
         let uuid = sunrise_client::lan::playerdata::uuid_ints(uuid.0);
         let mut after = None;
         loop {
@@ -153,10 +233,10 @@ impl Game<'_> {
                 .table
                 .borrow_mut()
                 .level_uuid_candidate(dimension, uuid, after)?;
-            let entity = EntityRef::new(epoch, id.get());
+            let entity = EntityRef::new(level.epoch(), id.get());
             if self
-                .native_entity_target(entity)
-                .is_some_and(|target| self.resident_source_target_visible(dimension, target))
+                .native_entity_target_in(entity, dimension)
+                .is_some_and(|(target, _)| self.resident_source_target_visible(dimension, target))
             {
                 return Some(entity);
             }
@@ -187,7 +267,7 @@ impl Game<'_> {
     /// the level it shows, whatever the server calls it, or one the server opened
     /// for viewing (`client_level_key`). None with no world open, or for a
     /// dimension the server hasn't loaded. API 373.
-    pub(super) fn level(&self, dimension: &str) -> Option<LevelRef> {
+    pub(in crate::game) fn level(&self, dimension: &str) -> Option<LevelRef> {
         let epoch = self.native_lifecycle.epoch()?;
         if !self.is_logical_server() {
             return Some(LevelRef::new(epoch, self.client_level_key(dimension)?));
@@ -199,14 +279,21 @@ impl Game<'_> {
     }
     /// The client level in place as a handle: the level this window shows and
     /// ticks. None before login, while reconfiguring, or with no world open.
-    pub(super) fn native_client_level(&self) -> Option<LevelRef> {
+    pub(in crate::game) fn native_client_level(&self) -> Option<LevelRef> {
         let epoch = self.native_lifecycle.epoch()?;
         let remote = self.remote.as_ref().filter(|r| r.has_level())?;
         Some(LevelRef::new(epoch, remote.level_key))
     }
+    /// The current world on its owning side, as a handle for a native query.
+    pub(super) fn native_current_level(&self) -> Option<LevelRef> {
+        if self.is_logical_server() {
+            return Some(self.level_ref(self.native_lifecycle.epoch()?, self.dim.key()));
+        }
+        self.native_client_level()
+    }
     /// The name of a dimension's key.
-    pub(in crate::game) fn dimension_key_id(&self, key: DimensionKey) -> Option<String> {
-        mod_api::__private::dimension_id(key).map(str::to_owned)
+    pub(in crate::game) fn dimension_key_id(&self, key: DimensionKey) -> Option<&str> {
+        mod_api::__private::dimension_id(key)
     }
     /// The key of the level in place: on a client the level it shows, which
     /// `Dim` may have no name for.
@@ -225,167 +312,258 @@ impl Game<'_> {
             .filter_map(|dim| self.level(dim.id()))
             .collect()
     }
-    /// All lookup members of the active server level, without spatial filtering.
-    /// Parts are not lookup members. Refuses remote, stale and parked levels.
-    pub(super) fn level_all_entities(&self, level: LevelRef) -> Option<Vec<EntityRef>> {
-        if self.block_entity_tick_items.is_some() {
-            return self.scoped_level_all_entities(level);
-        }
-        self.unscoped_level_all_entities(level)
+    fn level_entity_candidates(&self, level: LevelRef) -> impl Iterator<Item = EntityRef> + '_ {
+        let mut after = None;
+        std::iter::from_fn(move || {
+            // Copy the key and release the residency borrow before resolution or a visitor.
+            let key = self
+                .resident_entities
+                .table
+                .borrow_mut()
+                .level_entity_candidate_after(level.dimension(), after)?;
+            after = Some(key);
+            Some(key.1.get())
+        })
+        .filter(move |id| {
+            !self
+                .persist
+                .removals
+                .iter()
+                .chain(self.persist.destroying_vehicles.iter())
+                .any(|target| matches!(*target, Target::Boat(n) | Target::Cart(n) if n == *id))
+        })
+        .map(move |id| EntityRef::new(level.epoch(), id))
     }
-    /// Entities whose bounding boxes intersect this box (`Level.getEntities`).
-    /// Face-only contact does not intersect; spectator players are excluded.
-    /// Returns None for a stale handle or a parked level: its entity handles
-    /// cannot resolve until the level is in place, and for a bound that is not
-    /// finite (NaN or infinite). A minimum above its maximum is the same box
-    /// with the two swapped, as vanilla's `AABB`. On a client, see
-    /// `client_entities_in`. The walk
-    /// is in entity-list order, then item frames and paintings, followed by
-    /// players; each overlap requires a handle lookup, so cost grows with the
-    /// box's contents. Tridents cannot yet resolve; displays, markers and
-    /// interactions follow the listed entities. Other special entities
-    /// are not on the entity-list walk. The dragon follows ordinary entities;
-    /// its eight intersecting parts follow players (`Level.getEntities`).
-    /// During `hears_projectile_impacts`, the projectile list is taken out of
-    /// the game and is not visible; it is restored for `projectile_impact`.
+
+    /// Visit lookup members of the active server level, without spatial filtering.
+    pub(super) fn level_visit_all_entities(
+        &self,
+        level: LevelRef,
+        visit: &mut dyn FnMut(EntityRef) -> ControlFlow<()>,
+    ) -> Result<ControlFlow<()>, LevelReadError> {
+        if !self.is_logical_server() {
+            return Err(LevelReadError::Unavailable);
+        }
+        if !self.level_handle_current(level) {
+            return Err(LevelReadError::Stale);
+        }
+        if level.dimension() != self.dim.key() {
+            return Err(LevelReadError::Unavailable);
+        }
+
+        for entity in self.level_entity_candidates(level) {
+            if self.native_entity_target(entity).is_some() && visit(entity).is_break() {
+                return Ok(ControlFlow::Break(()));
+            }
+        }
+        Ok(ControlFlow::Continue(()))
+    }
+    /// Engine callers that mutate after querying need a snapshot of the matching handles.
     pub(super) fn level_entities_in(
         &self,
         level: LevelRef,
         min: [f64; 3],
         max: [f64; 3],
     ) -> Option<Vec<EntityRef>> {
-        if !self.level_handle_current(level) || !min.iter().chain(&max).all(|v| v.is_finite()) {
-            return None;
+        let mut entities = Vec::new();
+        let _ = self
+            .level_visit_entities_in(level, min, max, &mut |entity| {
+                entities.push(entity);
+                ControlFlow::Continue(())
+            })
+            .ok()?;
+        Some(entities)
+    }
+
+    /// Visit intersecting, readable entities in `Level.getEntities` query order.
+    pub(super) fn level_visit_entities_in(
+        &self,
+        level: LevelRef,
+        min: [f64; 3],
+        max: [f64; 3],
+        visit: &mut dyn FnMut(EntityRef) -> ControlFlow<()>,
+    ) -> Result<ControlFlow<()>, LevelReadError> {
+        if !self.level_handle_current(level) {
+            return Err(LevelReadError::Stale);
+        }
+        if !min.iter().chain(&max).all(|v| v.is_finite()) {
+            return Err(LevelReadError::Unavailable);
+        }
+        let server = self.is_logical_server();
+        if (server && level.dimension() != self.dim.key())
+            || (!server && self.native_client_level() != Some(level))
+        {
+            return Err(LevelReadError::Unavailable);
         }
         let bounds = Aabb::new(
             Vec3::new(min[0], min[1], min[2]),
             Vec3::new(max[0], max[1], max[2]),
         );
-        if !self.is_logical_server() {
-            return self.client_entities_in(level, bounds);
-        }
-        if level.dimension() != self.dim.key() {
-            return None;
-        }
-        let mut ids = self.listed_entities_in(bounds);
-        self.append_hanging_query_ids(bounds, &mut ids);
-        self.append_dragon_query_ids(bounds, false, &mut ids);
-        ids.extend(
-            self.others
-                .iter()
-                .filter(|e| {
-                    e.display_marker_or_interaction_bounds()
+        let search = SectionSearch::new(bounds);
+        if server {
+            self.file_server_section_members(level);
+            let mut after = None;
+            loop {
+                let candidate = self
+                    .resident_entities
+                    .table
+                    .borrow()
+                    .level_section_candidate_after(level.dimension(), search, after);
+                let Some(key) = candidate else { break };
+                after = Some(key);
+                let (_, (_, id)) = key;
+                let entity = EntityRef::new(level.epoch(), id.get());
+                if let Some((target, Some(at))) = self.native_entity_target_with_location(entity)
+                    && self
+                        .query_body(target, at.join, true)
                         .is_some_and(|body| bounds.intersects(body))
-                })
-                .map(|e| e.id),
-        );
-        ids.extend(
-            self.fishing_hooks_here()
-                .filter(|(hook, _)| bounds.intersects(hook.bounds()))
-                .map(|(hook, _)| hook.id()),
-        );
-        for guest in self.lan.iter().flat_map(|h| &h.hub.guests) {
-            if !guest.participates_in_player_simulation()
-                || !guest.placed
-                || guest.dimension != level.dimension_id()
-            {
-                continue;
-            }
-            let body = if self.lan_acting == Some(guest.conn)
-                && let Some(player) = &self.player
-            {
-                if self.mode_id() == 3 {
-                    continue;
+                    && visit(entity).is_break()
+                {
+                    return Ok(ControlFlow::Break(()));
                 }
-                player.bounds()
+            }
+        } else {
+            for member in self.client_section_candidates(search) {
+                let entity = EntityRef::new(level.epoch(), member.id);
+                if self
+                    .client_query_body(entity, member)
+                    .is_some_and(|body| bounds.intersects(body))
+                    && visit(entity).is_break()
+                {
+                    return Ok(ControlFlow::Break(()));
+                }
+            }
+        }
+        Ok(self.visit_dragon_query_parts(bounds, &mut |id| {
+            let entity = EntityRef::new(level.epoch(), id);
+            if self.native_entity_read_target(entity).is_some() {
+                visit(entity)
             } else {
-                if guest.game_mode == 3 {
-                    continue;
-                }
-                guest.bounds()
-            };
-            if bounds.intersects(body)
-                && let Ok(id) = u32::try_from(guest.entity_id)
-            {
-                ids.push(id);
+                ControlFlow::Continue(())
             }
-        }
-        self.append_dragon_query_ids(bounds, true, &mut ids);
-        Some(
-            ids.into_iter()
-                .map(|id| EntityRef::new(level.epoch(), id))
-                .filter(|handle| self.native_entity_target(*handle).is_some())
-                .collect(),
-        )
+        }))
     }
-    /// The entity lists' entities whose boxes meet `bounds`, in list order.
-    fn listed_entities_in(&self, bounds: Aabb) -> Vec<u32> {
-        let mut ids = Vec::new();
-        for_each_entity!(entity_lists_of!(self), entity => {
-            // The join flush assigns zero IDs later; a handle could alias another entity.
-            if entity.id() != 0 && !entity.is_removed() && bounds.intersects(entity.bounds()) {
-                ids.push(entity.id());
-            }
-        });
-        ids
-    }
-    /// The item frames and paintings whose boxes meet `bounds` (`HangingEntity`s are entities
-    /// of the level's list in vanilla; here they are lists of their own), in join order.
-    fn append_hanging_query_ids(&self, bounds: Aabb, ids: &mut Vec<u32>) {
-        let meets = |(lo, hi): ([f64; 3], [f64; 3])| {
-            bounds.intersects(Aabb::new(
-                Vec3::new(lo[0], lo[1], lo[2]),
-                Vec3::new(hi[0], hi[1], hi[2]),
-            ))
-        };
-        let mut hanging: Vec<(_, u32)> = Vec::new();
-        hanging.extend(
-            self.item_frames
-                .iter()
-                .filter(|f| f.id != 0 && meets(f.bounds()))
-                .map(|f| (f.join, f.id)),
-        );
-        hanging.extend(
-            self.paintings
-                .iter()
-                .filter(|p| p.id != 0 && meets(p.bounds()))
-                .map(|p| (p.join, p.id)),
-        );
-        hanging.sort_by_key(|&(join, _)| join);
-        ids.extend(hanging.into_iter().map(|(_, id)| id));
-    }
-    /// `ClientLevel.getEntities` for `level_entities_in`: the entities the server
-    /// tracks to this client in entity-list order, other players among them (a
-    /// tracked player has a client copy, so its handle resolves), the dragon and
-    /// then the window's own player unless it spectates, then the dragon's parts.
-    /// None before login or for a level the client does not show.
-    fn client_entities_in(&self, level: LevelRef, bounds: Aabb) -> Option<Vec<EntityRef>> {
-        let remote = self.remote.as_ref().filter(|r| r.logged_in)?;
-        if level.dimension() != self.native_level_key() {
-            return None;
-        }
-        let mut ids = self.listed_entities_in(bounds);
-        self.append_hanging_query_ids(bounds, &mut ids);
-        self.append_dragon_query_ids(bounds, false, &mut ids);
-        if self.mode_id() != 3
-            && let Some(player) = &self.player
-            && bounds.intersects(player.bounds())
-            && let Ok(id) = u32::try_from(remote.entity_id)
+
+    /// File the rows admitted since the last query. One walk over the families files every
+    /// member they hold at its position; only the rows no family walk reaches resolve one by one.
+    fn file_server_section_members(&self, level: LevelRef) {
+        let table = &self.resident_entities.table;
+        if !table
+            .borrow_mut()
+            .has_unfiled_section_members(level.dimension())
         {
-            ids.push(id);
+            return;
         }
-        self.append_dragon_query_ids(bounds, true, &mut ids);
-        Some(
-            ids.into_iter()
-                .map(|id| EntityRef::new(level.epoch(), id))
-                .filter(|handle| self.native_entity_read_target(*handle).is_some())
-                .collect(),
-        )
+        {
+            let mut table = table.borrow_mut();
+            crate::game::pick_entity::pick_sections::visit_section_members(
+                self,
+                &mut |_, _, id, position| {
+                    if let Some(id) = std::num::NonZeroU32::new(id) {
+                        table.file_section_member(id, position);
+                    }
+                },
+            );
+        }
+        let mut after = None;
+        loop {
+            let next = table
+                .borrow_mut()
+                .unfiled_section_candidate_after(level.dimension(), after);
+            let Some(id) = next else { break };
+            after = Some(id);
+            let entity = EntityRef::new(level.epoch(), id.get());
+            if let Some(target) = self.native_entity_target(entity)
+                && let Some(position) = self.target_position(target)
+            {
+                table.borrow_mut().file_section_member(id, position);
+            }
+        }
     }
-    /// Every entity the segment `from`..`to` passes through, nearest first, each box grown by
-    /// `margin` (`ProjectileUtil.getEntityHitResult`'s test, without its filter: the caller
-    /// takes the first hit it accepts). `exclude` is skipped. None for a bad margin or point,
-    /// and where `level_entities_in` is None.
+
+    fn client_query_body(&self, entity: EntityRef, member: PickMember) -> Option<Aabb> {
+        match member.kind {
+            PickKind::RemoteDisplay => {
+                let p = self.native_client_display(entity)?.position();
+                let p = Vec3::new(p.x, p.y, p.z);
+                Some(Aabb::new(p, p))
+            }
+            // These are indexed only for picking; they were not readable box-query bodies.
+            PickKind::Cushion
+            | PickKind::Interaction
+            | PickKind::RemoteGeneral
+            | PickKind::RemoteKnot
+            | PickKind::LocalKnot
+            | PickKind::Crystal => None,
+            PickKind::LocalPlayer if self.mode_id() != 3 => {
+                self.player.as_ref().map(|p| p.bounds())
+            }
+            PickKind::LocalPlayer => None,
+            _ => {
+                let remote = self.remote.as_ref()?;
+                remote.tracked(member.id as i32)?;
+                let EntityLookup::Found { location, value } =
+                    self.server_resident_entity(member.id)
+                else {
+                    return None;
+                };
+                if location.owner.dimension != self.dim.key() {
+                    return None;
+                }
+                self.query_body(value, location.join, false)
+            }
+        }
+    }
+
+    fn query_body(&self, target: Target, join: JoinSeq, server: bool) -> Option<Aabb> {
+        match target {
+            Target::Player if self.mode_id() != 3 => {
+                let guest = self.native_target_guest(target)?;
+                if !guest.participates_in_player_simulation() || !guest.placed {
+                    return None;
+                }
+                self.player.as_ref().map(|p| p.bounds())
+            }
+            Target::Guest(conn) => self
+                .command_guest(conn)
+                .filter(|guest| {
+                    guest.participates_in_player_simulation()
+                        && guest.placed
+                        && guest.game_mode != 3
+                })
+                .map(|guest| guest.bounds()),
+            Target::Other(_) if server => self
+                .others
+                .get(self.others.locate(join)?)?
+                .display_marker_or_interaction_bounds(),
+            Target::Hook(id) if server => self
+                .fishing_hooks_here()
+                .find_map(|(hook, _)| (hook.id() == id).then(|| hook.bounds())),
+            Target::Dragon(_) => self.dragon.as_ref().map(|d| d.body_bounds()),
+            Target::Frame(_) => self
+                .item_frames
+                .get(self.item_frames.locate(join)?)
+                .map(|f| aabb_extents(f.bounds())),
+            Target::Painting(_) => self
+                .paintings
+                .get(self.paintings.locate(join)?)
+                .map(|p| aabb_extents(p.bounds())),
+            Target::Mob(_) => list_query_body(&self.mobs, join),
+            Target::Item(_) => list_query_body(&self.dropped, join),
+            Target::Orb(_) => list_query_body(&self.orbs, join),
+            Target::Boat(_) => list_query_body(&self.boats, join),
+            Target::Cart(_) => list_query_body(&self.carts, join),
+            Target::Stand(_) => list_query_body(&self.armor_stands, join),
+            Target::Tnt(_) => list_query_body(&self.tnts, join),
+            Target::Falling(_) => list_query_body(&self.falling, join),
+            Target::Projectile(_) => list_query_body(&self.creatures.projectiles, join),
+            Target::Rocket(_) => list_query_body(&self.rockets, join),
+            Target::Trident(_) => list_query_body(&self.tridents, join),
+            Target::General(_) => list_query_body(&self.resident_entities.general.rows, join),
+            _ => None,
+        }
+    }
+    /// Every geometric hit, stably sorted nearest first. None for a refused walk.
     pub(super) fn level_ray_trace_entities(
         &self,
         level: LevelRef,
@@ -394,22 +572,83 @@ impl Game<'_> {
         margin: f64,
         exclude: Option<EntityRef>,
     ) -> Option<Vec<EntityRayHit>> {
-        if !(margin.is_finite() && margin >= 0.0 && from.iter().chain(&to).all(|v| v.is_finite())) {
-            return None;
-        }
-        // Every box the grown test can hit meets the segment's own box grown the same way.
-        let min = std::array::from_fn(|i| from[i].min(to[i]) - margin);
-        let max = std::array::from_fn(|i| from[i].max(to[i]) + margin);
-        let candidates = self.level_entities_in(level, min, max)?;
-        Some(entity_ray_hits(
+        let mut hits = Vec::new();
+        self.visit_entity_ray_hits(
+            level,
             from,
             to,
             margin,
-            candidates
-                .into_iter()
-                .filter(|entity| Some(*entity) != exclude)
-                .filter_map(|entity| Some((entity, self.entity_bounding_box(entity)?))),
-        ))
+            exclude,
+            |_| true,
+            |hit, _| hits.push(hit),
+        )
+        .ok()?;
+        hits.sort_by(|a, b| a.distance.total_cmp(&b.distance));
+        Some(hits)
+    }
+
+    pub(super) fn level_ray_trace_nearest_entity(
+        &self,
+        level: LevelRef,
+        from: [f64; 3],
+        to: [f64; 3],
+        margin: f64,
+        exclude: Option<EntityRef>,
+        accept: &mut dyn FnMut(EntityRef) -> bool,
+    ) -> Result<Option<EntityRayHit>, LevelReadError> {
+        let mut nearest = None;
+        self.visit_entity_ray_hits(
+            level,
+            from,
+            to,
+            margin,
+            exclude,
+            accept,
+            |hit, distance_squared| {
+                if nearest.is_none_or(|(_, best)| distance_squared < best) {
+                    nearest = Some((hit, distance_squared));
+                }
+            },
+        )?;
+        Ok(nearest.map(|(hit, _)| hit))
+    }
+
+    fn visit_entity_ray_hits(
+        &self,
+        level: LevelRef,
+        from: [f64; 3],
+        to: [f64; 3],
+        margin: f64,
+        exclude: Option<EntityRef>,
+        mut accept: impl FnMut(EntityRef) -> bool,
+        mut visit: impl FnMut(EntityRayHit, f64),
+    ) -> Result<(), LevelReadError> {
+        if !(margin.is_finite() && from.iter().chain(&to).all(|v| v.is_finite())) {
+            return Err(LevelReadError::Unavailable);
+        }
+        // Every box the inflated or deflated test can hit meets the segment's own box
+        // padded by `margin.abs()` (including over-deflated boxes swapped by `Aabb::new`).
+        let pad = margin.abs();
+        let min = std::array::from_fn(|i| from[i].min(to[i]) - pad);
+        let max = std::array::from_fn(|i| from[i].max(to[i]) + pad);
+        let start = Vec3::new(from[0], from[1], from[2]);
+        let end = Vec3::new(to[0], to[1], to[2]);
+        let padding = Vec3::new(margin, margin, margin);
+        let _ = self.level_visit_entities_in(level, min, max, &mut |entity| {
+            // Match `ProjectileUtil.getEntityHitResult`: filter candidates before reading and
+            // clipping their bounding boxes. The walk releases any residency borrow before
+            // calling mod code.
+            if Some(entity) != exclude
+                && accept(entity)
+                && let Some(bounds) = self.entity_bounding_box(entity)
+                && let Some((hit, distance_squared)) =
+                    clip_entity_ray(start, end, padding, entity, bounds)
+            {
+                visit(hit, distance_squared);
+            }
+            ControlFlow::Continue(())
+        })?;
+        Ok(())
     }
     /// What the block at `pos` would drop (`Block.getDrops`) with `tool` and `entity` as the
     /// breaker, without breaking it: the level's `block_drops_of`, which draws from the random
@@ -477,7 +716,24 @@ impl Game<'_> {
         if !self.native_level_write_position(level, pos)? {
             return Ok(false);
         }
+        if let Some(mut host) = super::journal_level_write::JournalLevelWrite::new(self, level) {
+            return Ok(host.write_block(pos, state, flags.bits()));
+        }
         Ok(self.native_set_block(level.dimension_id(), pos, state, flags.bits()))
+    }
+    /// Set or clear the mod-published connection group at `pos`.
+    /// Returns `Ok(true)` if changed, `Ok(false)` if unchanged, unloaded, out of height, or
+    /// fenced, and `Err(LevelWriteError::Stale | Unavailable)` for stale or non-writable levels.
+    pub(super) fn level_set_connection_group(
+        &mut self,
+        level: LevelRef,
+        pos: [i32; 3],
+        group: Option<u64>,
+    ) -> Result<bool, mod_api::LevelWriteError> {
+        if !self.native_level_write_position(level, pos)? {
+            return Ok(false);
+        }
+        Ok(self.journal_set_connection_group(pos, group))
     }
     /// `Block.updateFromNeighbourShapes` for `state` at `pos`, nothing written: the state
     /// fitted to the loaded blocks around it. A position that is not loaded or outside the
@@ -507,8 +763,11 @@ impl Game<'_> {
         if !self.native_level_write_allowed(level, pos) || self.dim.key() != level.dimension() {
             return false;
         }
-        let changed =
-            self.with_level(|_, level, ticks| level.remove_block_write(ticks, pos, moved));
+        if let Some(mut host) = super::journal_level_write::JournalLevelWrite::new(self, level) {
+            return mod_api::LevelWriteHost::remove_block(&mut host, pos, moved);
+        }
+        let (state, flags) = self.level_removal_write(pos, moved);
+        let changed = self.set_block_live(pos, state, flags, false);
         let _ = self.process_level_events();
         changed
     }
@@ -570,7 +829,11 @@ impl Game<'_> {
         tool: Option<&ItemStack>,
         collect: bool,
     ) -> Option<Vec<ItemStack>> {
-        if !self.native_level_write_allowed(level, pos) || self.dim.key() != level.dimension() {
+        // Loot and break effects cannot be rolled back by the level journal.
+        if self.has_open_transaction()
+            || !self.native_level_write_allowed(level, pos)
+            || self.dim.key() != level.dimension()
+        {
             return None;
         }
         let at = sunrise_core::position::BlockPos::new(pos[0], pos[1], pos[2]);
@@ -673,7 +936,7 @@ impl Game<'_> {
         self.set_biome_at(pos, biome)
     }
     /// One residency boundary for state-bearing block writes; position refusal is vanilla.
-    fn native_level_write_position(
+    pub(super) fn native_level_write_position(
         &self,
         level: LevelRef,
         pos: [i32; 3],
@@ -697,7 +960,7 @@ impl Game<'_> {
     }
     /// The supplied state's block-local outline or collision boxes at a level
     /// position with an empty context. The world is never modified. Returns None
-    /// on a client, for a stale handle or for a closed level. Unloaded neighbors
+    /// for a stale or unavailable level. Unloaded neighbors
     /// read as air; collision errors return no boxes, like `block_collision`.
     pub(super) fn level_block_shape(
         &self,
@@ -706,7 +969,11 @@ impl Game<'_> {
         pos: [i32; 3],
         kind: BlockShapeKind,
     ) -> Option<Vec<[f64; 6]>> {
-        if !self.is_logical_server() || !self.level_handle_current(level) {
+        if !self.is_logical_server() {
+            return (self.native_client_level() == Some(level))
+                .then(|| self.state_shape_boxes(&self.world, &self.be_anims, state, pos, kind));
+        }
+        if !self.level_handle_current(level) {
             return None;
         }
         let (world, anims) = if self.dim.key() == level.dimension() {
@@ -725,9 +992,9 @@ impl Game<'_> {
         Some(self.state_shape_boxes(world, anims, state, pos, kind))
     }
 
-    /// Gameplay's face support in the current or a parked server level, including
-    /// live block entities for dynamic shapes. None for stale or closed levels,
-    /// unloaded blocks, unsupported states or a shape query error.
+    /// The local face support in an open server level or the current client level,
+    /// including shapes published by local block entities. None for unavailable
+    /// levels, unloaded or out-of-height blocks, or a shape query error.
     pub(super) fn level_block_face_sturdy(
         &self,
         level: LevelRef,
@@ -735,41 +1002,14 @@ impl Game<'_> {
         face: BlockFace,
         support: mod_api::SupportType,
     ) -> Option<bool> {
-        let state = self.level_block_state(level, pos)?;
-        let direction = block_face_direction(face);
-        let b = self.res.behaviours();
-        let binding = self.res.collision();
-        if !b.has_cached_support(state) || binding.publishes_shapes(state) {
-            use sunrise_client::collisions::SceneCollisions;
-            use sunrise_world::{block_support::SupportType, dynamic_support::DynamicSupport};
-            let world = self.native_level_world(level)?;
-            let mut scene = SceneCollisions {
-                world,
-                binding,
-                subject: None,
-            };
-            let support = match support {
-                mod_api::SupportType::Full => SupportType::Full,
-                mod_api::SupportType::Center => SupportType::Center,
-                mod_api::SupportType::Rigid => SupportType::Rigid,
-                _ => unreachable!("mod_api::SupportType: unhandled variant"),
-            };
-            // A state that may publish takes its block entity's shape, else its declared one.
-            if binding.publishes_shapes(state) {
-                let shape = binding.collision_shape(&mut scene, state, pos).ok()?;
-                return support.is_supporting(&shape, direction).ok();
-            }
-            let dynamic = DynamicSupport::from_state(binding.registry().state(state)?).ok()??;
-            return dynamic
-                .is_face_sturdy(&mut scene, pos, direction, support)
-                .ok();
-        }
-        Some(match support {
-            mod_api::SupportType::Full => b.is_face_sturdy(state, direction),
-            mod_api::SupportType::Center => b.is_face_sturdy_center(state, direction),
-            mod_api::SupportType::Rigid => b.is_face_sturdy_rigid(state, direction),
-            _ => unreachable!("mod_api::SupportType: unhandled variant"),
-        })
+        super::native_world_read::block_face_sturdy(
+            self.native_level_read_world(level)?,
+            self.res.behaviours(),
+            self.res.collision(),
+            pos,
+            face,
+            support,
+        )
     }
 
     /// Clip an empty-context ray against collider or outline shapes, without fluids, in the
@@ -843,7 +1083,7 @@ impl Game<'_> {
     }
 
     /// The entity's position (`Entity.position`): its feet, the middle of
-    /// its box for a painting or an item frame.
+    /// its box for a painting or an item frame. Client displays use their committed tick pose.
     pub(super) fn entity_position(&self, entity: EntityRef) -> Option<[f64; 3]> {
         if self.native_lifecycle.epoch() == Some(entity.epoch())
             && let Some((id, position)) = self.native_lifecycle.entity_sections.write_position
@@ -869,15 +1109,52 @@ impl Game<'_> {
     pub(super) fn entity_rotation(&self, entity: EntityRef) -> Option<[f32; 2]> {
         Some(self.target_rotation(self.native_entity_read_target(entity)?))
     }
+
+    pub(super) fn native_client_general(
+        &self,
+        entity: EntityRef,
+    ) -> Option<&super::remote::RemoteGeneral> {
+        let (remote, id) = self.native_client_entity_context(entity)?;
+        remote.general.rows.get(&id)
+    }
     /// The entity's type (`Entity.getType`): `minecraft:zombie`. API
     /// 373.
     pub(super) fn entity_kind(&self, entity: EntityRef) -> Option<mod_api::EntityTypeKey> {
         match self.native_entity_read_target(entity) {
             Some(target) => self.native_entity_kind_key(target),
             None => {
+                if self.native_lifecycle.epoch() == Some(entity.epoch())
+                    && let Some((_, mob)) = self.mob_in_other_level(entity.id())
+                {
+                    return mob.kind.type_key;
+                }
                 mod_api::__private::resolved_entity_type_key(self.native_client_tracked(entity)?.0)
             }
         }
+    }
+    /// A mob of this game that is resident in a loaded level other than the
+    /// one in place, as a kill credit can name one (`getEntityInAnyDimension`):
+    /// its identity reads (`entity_kind`, `entity_uuid`, `entity_level`)
+    /// answer from there. None on a client or for anything else.
+    pub(super) fn mob_in_other_level(&self, id: u32) -> Option<(super::Dim, &super::Mob)> {
+        use sunrise_client::join_seq::residency::table::EntityLookup;
+        if !self.is_logical_server() {
+            return None;
+        }
+        let EntityLookup::Found {
+            location,
+            value: Target::Mob(_),
+        } = self.server_resident_entity(id)
+        else {
+            return None;
+        };
+        let (dim, parked) = self
+            .levels
+            .parked
+            .iter()
+            .find(|(dim, _)| dim.key() == location.owner.dimension)?;
+        let mob = parked.mobs.get(parked.mobs.locate(location.join)?)?;
+        Some((*dim, mob))
     }
     /// The entity's UUID (`Entity.getUUID`), the one it is saved with; an
     /// entity that has none yet gets it now, as a new vanilla entity does.
@@ -906,6 +1183,16 @@ impl Game<'_> {
                 .copied()
                 .map(uuid_from_words);
         }
+        if self.native_lifecycle.epoch() == Some(entity.epoch())
+            && self.mob_in_other_level(entity.id()).is_some()
+        {
+            return self
+                .resident_entities
+                .table
+                .borrow_mut()
+                .resident_uuid(entity.id())
+                .map(uuid_from_words);
+        }
         let words = match self.native_entity_target(entity)? {
             Target::Player => {
                 let dimension = self.current_player_resident_location()?.owner.dimension;
@@ -924,9 +1211,15 @@ impl Game<'_> {
         let key = match self.native_entity_read_target(entity) {
             Some(t) if self.is_logical_server() => self.target_level(t).key(),
             Some(_) => self.native_level_key(),
-            None => self
-                .native_client_tracked(entity)
-                .map(|_| self.native_level_key())?,
+            None if self.native_lifecycle.epoch() == Some(entity.epoch()) => {
+                match self.mob_in_other_level(entity.id()) {
+                    Some((dim, _)) => dim.key(),
+                    None => self
+                        .native_client_tracked(entity)
+                        .map(|_| self.native_level_key())?,
+                }
+            }
+            None => return None,
         };
         Some(self.level_ref(entity.epoch(), key))
     }
@@ -939,8 +1232,104 @@ fn uuid_from_words(words: [i32; 4]) -> u128 {
         .fold(0, |uuid, w| (uuid << 32) | u128::from(*w as u32))
 }
 
-include!("native_entity_refs/tick_item_read.rs");
-include!("native_entity_refs/tick_item_selector.rs");
+#[cfg(test)]
+mod general_handle_tests {
+    use super::tests::with_game;
+    use crate::game::commands::Target;
+    use crate::game::general::GeneralRow;
+    use mod_api::{EntityRef, WorldEpoch};
+    use sunrise_core::geometry::Vec3;
+
+    fn row(id: u32, uuid: [i32; 4], fall: f64) -> GeneralRow {
+        GeneralRow {
+            id,
+            uuid,
+            join: sunrise_client::join_seq::JoinSeq::UNJOINED,
+            type_slot: 0,
+            position: Vec3::new(0.5, 64.0, 0.5),
+            previous: Vec3::new(0.5, 64.0, 0.5),
+            velocity: Vec3::ZERO,
+            rotation: [0.0, 0.0],
+            owner: None,
+            fall_distance: fall,
+            payload_version: 1,
+            payload_bytes: Vec::new(),
+            mount: None,
+            vehicle_order: 0,
+            boarding_cooldown: 0,
+            attachment_lifetime: Default::default(),
+        }
+    }
+
+    /// #792's stale-handle row, as the id counter really behaves: a removed
+    /// row's handle refuses, and the next row never reuses the id — ids come
+    /// from the game's one monotonic counter (`take_entity_id`,
+    /// game/network/lan_entities.rs:25: `next_entity += 1`, never decreased,
+    /// and `EntityRef`'s contract says ids are never reused while the world
+    /// is open), so the old handle has nothing to latch onto. Red without
+    /// the resident lookup refusing a gone id: the old handle would resolve.
+    #[test]
+    #[ignore = "daily"]
+    fn removed_general_row_refuses_its_handle_and_the_next_row_takes_a_new_id() {
+        with_game(|game| {
+            let uuid = [21, 22, 23, 24];
+            game.resident_entities.general.rows.push(row(42, uuid, 7.0));
+            let handle = game.entity(42).expect("the row became a handle");
+            assert_eq!(handle.id(), 42);
+            assert!(game.native_entity_target(handle).is_some());
+
+            // The row leaves; the handle refuses.
+            game.resident_entities
+                .general
+                .rows
+                .retain(|row| row.id != 42);
+            assert!(game.entity(42).is_none());
+            assert!(game.native_entity_target(handle).is_none());
+
+            // The next row is id 43 — the counter moved on, the same UUID
+            // notwithstanding — and the old handle still refuses.
+            game.resident_entities.general.rows.push(row(43, uuid, 7.0));
+            let fresh = game.entity(43).expect("the next row became a handle");
+            assert_ne!(fresh.id(), handle.id());
+            assert!(
+                game.native_entity_target(handle).is_none(),
+                "the old handle resolved the next row"
+            );
+            let target = game
+                .native_entity_target(fresh)
+                .expect("the next row's handle resolves");
+            assert!(matches!(target, Target::General(43)));
+            let next = game
+                .resident_entities
+                .general
+                .rows
+                .iter()
+                .find(|row| row.id == 43)
+                .expect("the next row is in its list");
+            assert_eq!(next.fall_distance, 7.0);
+        });
+    }
+
+    /// A handle from an earlier epoch of the world — what a reload's restore
+    /// of the same UUID leaves in a mod's hands — refuses by the epoch check
+    /// alone, before any row is consulted.
+    #[test]
+    #[ignore = "daily"]
+    fn general_handle_of_an_earlier_epoch_refuses_by_the_epoch_check() {
+        with_game(|game| {
+            game.resident_entities
+                .general
+                .rows
+                .push(row(42, [21, 22, 23, 24], 7.0));
+            let handle = game.entity(42).expect("the row became a handle");
+            assert!(game.native_entity_target(handle).is_some());
+            // A reload opens a new epoch; a handle minted against the old one
+            // refuses even though a row of the same UUID and id is resident.
+            let stale = EntityRef::new(WorldEpoch::new(handle.epoch().get() + 1), handle.id());
+            assert!(game.native_entity_target(stale).is_none());
+        });
+    }
+}
 
 #[cfg(test)]
 mod ray_tests {
@@ -956,50 +1345,90 @@ mod ray_tests {
     }
 
     #[test]
-    fn hits_come_nearest_first_where_the_ray_enters_each_box() {
-        let hits = entity_ray_hits(
-            [0.0; 3],
-            [10.0, 0.0, 0.0],
-            0.0,
-            [
-                (entity(1), at(6.0)),
-                (entity(2), at(2.0)),
-                (entity(3), at(20.0)),
-            ],
-        );
-        let order: Vec<_> = hits.iter().map(|h| h.entity).collect();
+    fn clipping_reports_the_entry_and_distance_of_each_hit() {
+        let to = Vec3::new(10.0, 0.0, 0.0);
+        for (id, x, squared) in [(1, 6.0, 36.0), (2, 2.0, 4.0)] {
+            assert_eq!(
+                clip_entity_ray(Vec3::ZERO, to, Vec3::ZERO, entity(id), at(x)),
+                Some((
+                    EntityRayHit {
+                        entity: entity(id),
+                        location: [x, 0.0, 0.0],
+                        distance: x,
+                    },
+                    squared,
+                )),
+            );
+        }
         assert_eq!(
-            order,
-            [entity(2), entity(1)],
+            clip_entity_ray(Vec3::ZERO, to, Vec3::ZERO, entity(3), at(20.0)),
+            None,
             "the box past the segment's end is not hit"
         );
-        for (hit, x) in hits.iter().zip([2.0, 6.0]) {
-            assert!((hit.location[0] - x).abs() < 1e-9 && hit.location[1] == 0.0);
-            assert!((hit.distance - x).abs() < 1e-9);
-        }
     }
 
     #[test]
     fn the_margin_grows_every_box_and_a_start_inside_one_misses_it() {
-        // 0.3 above the ray: missed without a margin, hit with one.
+        // The box is above the ray: missed without a margin, hit with one.
         let above = [[3.0, 0.8, -0.5], [4.0, 1.8, 0.5]];
-        let to = [10.0, 0.0, 0.0];
-        assert!(entity_ray_hits([0.0; 3], to, 0.0, [(entity(1), above)]).is_empty());
-        let grown = entity_ray_hits([0.0; 3], to, 1.0, [(entity(1), above)]);
-        assert_eq!(grown.len(), 1);
-        assert!(
-            (grown[0].location[0] - 2.0).abs() < 1e-9,
+        let to = Vec3::new(10.0, 0.0, 0.0);
+        assert!(clip_entity_ray(Vec3::ZERO, to, Vec3::ZERO, entity(1), above).is_none());
+        let (grown, _) =
+            clip_entity_ray(Vec3::ZERO, to, Vec3::new(1.0, 1.0, 1.0), entity(1), above)
+                .expect("the ray enters the grown box");
+        assert_eq!(
+            grown.location,
+            [2.0, 0.0, 0.0],
             "entered at the grown box's face"
         );
         // `AABB.clip` from inside finds no entry, as for a projectile still in its shooter.
-        assert!(entity_ray_hits([0.5, 0.0, 0.0], to, 0.0, [(entity(1), at(0.0))]).is_empty());
+        assert!(
+            clip_entity_ray(Vec3::new(0.5, 0.0, 0.0), to, Vec3::ZERO, entity(1), at(0.0)).is_none()
+        );
+        // A negative margin deflates via `AABB.inflate`, and over-deflation swaps min/max.
+        let grazing_from = Vec3::new(0.0, 0.375, 0.0);
+        let grazing_to = Vec3::new(10.0, 0.375, 0.0);
+        assert!(
+            clip_entity_ray(grazing_from, grazing_to, Vec3::ZERO, entity(1), at(3.0)).is_some()
+        );
+        assert!(
+            clip_entity_ray(
+                grazing_from,
+                grazing_to,
+                Vec3::new(-0.25, -0.25, -0.25),
+                entity(1),
+                at(3.0),
+            )
+            .is_none()
+        );
+        let over_from = Vec3::new(0.0, 0.625, 0.0);
+        let over_to = Vec3::new(10.0, 0.625, 0.0);
+        assert!(clip_entity_ray(over_from, over_to, Vec3::ZERO, entity(1), at(3.0)).is_none());
+        let (over, _) = clip_entity_ray(
+            over_from,
+            over_to,
+            Vec3::new(-1.25, -1.25, -1.25),
+            entity(1),
+            at(3.0),
+        )
+        .expect("over-deflation swaps min/max like vanilla AABB");
+        assert_eq!(over.location, [2.75, 0.625, 0.0]);
     }
 }
 
 #[cfg(test)]
 pub(super) mod tests {
-    /// Keep guest setup and calls together, preserving libtest identity and panic payloads.
-    pub(in crate::game) use sunrise_guest_stack::run_on_guest_stack;
+    /// Run `test` on a game-sized stack, preserving libtest's thread name and panic payload.
+    pub(in crate::game) fn run_with_game_stack(test: impl FnOnce() + Send + 'static) {
+        let mut worker =
+            std::thread::Builder::new().stack_size(sunrise_threads::GAME_THREAD_STACK_BYTES);
+        if let Some(name) = std::thread::current().name() {
+            worker = worker.name(name.to_owned());
+        }
+        if let Err(payload) = worker.spawn(test).unwrap().join() {
+            std::panic::resume_unwind(payload);
+        }
+    }
 
     /// Resolve a fixture after registration or a late Parts reinstall from its loaded table.
     pub(in crate::game) fn resolve_parts(game: &super::Game<'_>) -> Result<(), String> {
@@ -1009,14 +1438,70 @@ pub(super) mod tests {
         game.resolve_parts().map_err(|error| error.to_string())
     }
     use crate::game::api_values::TryIntoApi;
+    use core::ops::ControlFlow;
     use mod_api::__private::game::*;
+    use mod_api::{EntityRef, LevelReadError, LevelRef};
+
+    // Keep the handle and direct Game routes separate when collecting for assertions.
+    pub(in crate::game) fn collect_all_entities(
+        host: &dyn mod_api::Host,
+        level: LevelRef,
+    ) -> Result<Vec<EntityRef>, LevelReadError> {
+        let mut entities = Vec::new();
+        let _ = level.visit_all_entities(host, &mut |entity| {
+            entities.push(entity);
+            ControlFlow::Continue(())
+        })?;
+        Ok(entities)
+    }
+
+    pub(in crate::game) fn collect_entities_in(
+        host: &dyn mod_api::Host,
+        level: LevelRef,
+        min: [f64; 3],
+        max: [f64; 3],
+    ) -> Result<Vec<EntityRef>, LevelReadError> {
+        let mut entities = Vec::new();
+        let _ = level.visit_entities_in(host, min, max, &mut |entity| {
+            entities.push(entity);
+            ControlFlow::Continue(())
+        })?;
+        Ok(entities)
+    }
+
+    pub(in crate::game) fn collect_game_all_entities(
+        game: &super::Game<'_>,
+        level: LevelRef,
+    ) -> Result<Vec<EntityRef>, LevelReadError> {
+        let mut entities = Vec::new();
+        let _ = game.level_visit_all_entities(level, &mut |entity| {
+            entities.push(entity);
+            ControlFlow::Continue(())
+        })?;
+        Ok(entities)
+    }
+
+    pub(in crate::game) fn collect_game_entities_in(
+        game: &super::Game<'_>,
+        level: LevelRef,
+        min: [f64; 3],
+        max: [f64; 3],
+    ) -> Result<Vec<EntityRef>, LevelReadError> {
+        let mut entities = Vec::new();
+        let _ = game.level_visit_entities_in(level, min, max, &mut |entity| {
+            entities.push(entity);
+            ControlFlow::Continue(())
+        })?;
+        Ok(entities)
+    }
+
     /// Isolate declarations and frozen registries without changing another test's resources.
     pub(in crate::game) fn run_fresh_cases(name: &str, flag: &str, cases: &[&str]) -> bool {
         run_fresh_cases_at_once(name, flag, cases, 1)
     }
 
     /// [`run_fresh_cases`] with up to `at_once` children running together, for a test that runs
-    /// alone in its job (the wasm fixture's): each child still has its own process and folders.
+    /// alone in its job: each child still has its own process and folders.
     pub(in crate::game) fn run_fresh_cases_at_once(
         name: &str,
         flag: &str,
@@ -1197,10 +1682,10 @@ pub(super) mod tests {
         for z in center.z - 2..=center.z + 2 {
             for x in center.x - 2..=center.x + 2 {
                 if !game.world.chunks.contains_key(&(x, z)) {
-                    game.world.chunks.insert(
-                        (x, z),
-                        std::sync::Arc::new(sunrise_client::chunk::Chunk::empty(x, z)),
-                    );
+                    let mut chunk = sunrise_client::chunk::Chunk::empty(x, z);
+                    // A ticking column is lit (`ChunkMap.prepareTickingChunk`); `forceload` waits for it.
+                    chunk.lit = true;
+                    game.world.chunks.insert((x, z), std::sync::Arc::new(chunk));
                     game.block_ticks
                         .add_empty_chunk(sunrise_core::position::ChunkPos::new(x, z))
                         .unwrap();
@@ -1287,8 +1772,11 @@ pub(super) mod tests {
     }
 
     pub(in crate::game) fn with_game(test: impl FnOnce(&mut super::Game<'_>)) {
-        let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
-        with_game_at(root, test);
+        with_game_at(fixture_root(), test);
+    }
+
+    pub(in crate::game) fn fixture_root() -> std::path::PathBuf {
+        std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap())
     }
 
     pub(in crate::game) fn with_game_at(
@@ -1317,9 +1805,8 @@ pub(super) mod tests {
     }
 
     pub(in crate::game) fn with_client_game(test: impl FnOnce(&mut super::Game<'_>)) {
-        let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
         with_game_role(
-            root,
+            fixture_root(),
             super::super::execution_role::ExecutionRole::Client,
             test,
         );
@@ -1328,6 +1815,18 @@ pub(super) mod tests {
     pub(in crate::game) fn with_game_role(
         root: std::path::PathBuf,
         role: super::super::execution_role::ExecutionRole,
+        test: impl FnOnce(&mut super::Game<'_>),
+    ) {
+        with_game_role_and_facts(root, role, None, test);
+    }
+
+    /// Configure the fixture's owned gameplay facts before constructing the game.
+    pub(in crate::game) fn with_game_role_and_facts(
+        root: std::path::PathBuf,
+        role: super::super::execution_role::ExecutionRole,
+        configure: Option<
+            fn(&sunrise_world::registry::BlockRegistry, &mut sunrise_client::blocks::BlockFacts),
+        >,
         test: impl FnOnce(&mut super::Game<'_>),
     ) {
         use super::super::{Audio, Game, Options, Progress, Settings, load_resources};
@@ -1346,9 +1845,6 @@ pub(super) mod tests {
             })
             .collect();
         crate::game::api_values::register_game_keys(ids);
-        // Rebuilding Parts replaces the entity-type lookup snapshot that content_root
-        // completed. Publish the prepared registry order into this new fixture epoch.
-        super::super::mods::register_iterated_registries(&root).unwrap();
         // Parts registration also clears particle keys. Restore the load-owned
         // providers as content_root does, rather than relying on a prior test.
         super::super::mods::resolve_particle_providers(
@@ -1357,7 +1853,7 @@ pub(super) mod tests {
         .unwrap();
         let saves = tempfile::tempdir().unwrap();
         let settings = Settings::default();
-        let loaded = load_resources(
+        let mut loaded = load_resources(
             sunrise_assets::resource_source::ResourceRoot::directory(root.clone()),
             Vec::new(),
             None,
@@ -1370,6 +1866,15 @@ pub(super) mod tests {
             &mut |_, _| unreachable!(),
         )
         .unwrap();
+        if let Some(configure) = configure {
+            configure(
+                loaded.pack.assets.registry,
+                &mut std::sync::Arc::get_mut(&mut loaded.resources)
+                    .unwrap()
+                    .core
+                    .facts,
+            );
+        }
         let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
         options.resources = root.clone();
         options.execution_role = role;
@@ -1558,10 +2063,12 @@ pub(super) mod tests {
             // Default: soils with no part answer as vanilla's plant rule does.
             assert!(survives(game, "minecraft:dirt"));
             assert!(!survives(game, "minecraft:stone"));
-            // A client's copy of the level does not ask the part.
+            // A non-authoritative copy of the level asks the part too (the client side itself is
+            // covered by `client_placement_prediction_asks_placement_and_survival_parts`).
+            game.options.execution_role = crate::game::execution_role::ExecutionRole::Client;
             game.options.dedicated = None;
-            assert!(!survives(game, "minecraft:glass"));
-            assert!(survives(game, "minecraft:grass_block"));
+            assert!(survives(game, "minecraft:glass"));
+            assert!(!survives(game, "minecraft:grass_block"));
         });
     }
 
@@ -1740,32 +2247,6 @@ pub(super) mod tests {
 
     #[test]
     #[ignore = "daily"]
-    fn a_level_can_survive_asks_the_blocks_own_rule() {
-        use std::sync::Arc;
-        use sunrise_client::chunk::Chunk;
-
-        with_game(|game| {
-            game.world
-                .chunks
-                .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
-            let registry = game.pack.assets.registry;
-            let grass = registry.default_state("minecraft:grass_block").unwrap();
-            let stone = registry.default_state("minecraft:stone").unwrap();
-            let sapling = registry.default_state("minecraft:oak_sapling").unwrap();
-            game.world.set(0, 64, 0, grass).unwrap();
-            assert!(game.level_can_survive([0, 65, 0], sapling));
-            game.world.set(0, 64, 0, stone).unwrap();
-            assert!(!game.level_can_survive([0, 65, 0], sapling));
-            assert!(
-                !game
-                    .level_can_survive([0, 65, 0], sunrise_world::registry::BlockStateId(u32::MAX))
-            );
-            assert!(!game.level_can_survive([100, 65, 100], sapling));
-        });
-    }
-
-    #[test]
-    #[ignore = "daily"]
     fn a_level_handle_updates_neighbours_as_vanillas_writes_do() {
         use mod_api::NeighbourUpdate::{Neighbours, NeighboursExcept, OutputSignal};
         use sunrise_core::geometry::Direction::East;
@@ -1924,7 +2405,7 @@ pub(super) mod tests {
             // A source that is no block state: refused, not a panic.
             let known: mod_api::BlockState = cake.try_into_api().unwrap();
             let unknown: mod_api::BlockState =
-                mod_api::BlockStateRecord::new(known.block(), u16::MAX).into();
+                mod_api::__private::block_state_from_ordinal(known.block(), u16::MAX);
             assert_eq!(
                 level.update_neighbors(game, [10, 64, 5], unknown, Neighbours),
                 Err(mod_api::LevelWriteError::InvalidState(
@@ -1998,6 +2479,84 @@ pub(super) mod tests {
                 game.tick_scheduled().unwrap();
                 assert_eq!(signal_reads(), reads, "after {elapsed} ticks");
             }
+        });
+    }
+
+    /// `RedstoneLampBlock.neighborChanged` sets its own block in the call
+    /// (`level.setBlock(pos, state.cycle(LIT), 2)`): a part's write in `neighbor_changed`
+    /// lands within the lever's update, and its own neighbour updates run next, depth first,
+    /// before the lever's next neighbour hears (`CollectingNeighborUpdater`).
+    #[test]
+    #[ignore = "daily"]
+    fn neighbor_changed_writes_the_level_and_its_updates_run_next() {
+        use mod_platform::__private::part_tests::{neighbor_writer_game_thread, neighbor_writes};
+
+        // The fixture installs its mod for the process: run it in a child of its own.
+        if run_fresh_cases(
+            "game::native_entity_refs::tests::neighbor_changed_writes_the_level_and_its_updates_run_next",
+            "SUNRISE_NEIGHBOR_WRITER_CHILD",
+            &["lever"],
+        ) {
+            return;
+        }
+        neighbor_writer_game_thread();
+        with_game(|game| {
+            game.options.dedicated = Some(Vec::new());
+            let registry = game.pack.assets.registry;
+            let glass = registry.default_state("minecraft:glass").unwrap();
+            let lit = registry
+                .default_state("minecraft:white_stained_glass")
+                .unwrap();
+            let lever = |powered: &str| {
+                registry
+                    .resolve(&sunrise_world::chunk::BlockState {
+                        name: "minecraft:lever".into(),
+                        properties: [("face", "wall"), ("facing", "east"), ("powered", powered)]
+                            .into_iter()
+                            .map(|(key, value)| (key.into(), value.into()))
+                            .collect(),
+                    })
+                    .unwrap()
+            };
+            for (x, z) in (-1..=1).flat_map(|x| (-1..=1).map(move |z| (x, z))) {
+                let mut chunk = sunrise_client::chunk::Chunk::empty(x, z);
+                chunk.lit = true;
+                game.world.chunks.insert((x, z), std::sync::Arc::new(chunk));
+            }
+            // A lever on the east face of stone. `NeighborUpdater.UPDATE_ORDER` is west, east,
+            // down, up, north, south: glass `a` east of the lever hears second (west is the
+            // stone), glass `b` above it fourth. Glass `c` east of `a` hears only `a`'s write.
+            let (a, b, c) = ([7, 64, 5], [6, 65, 5], [8, 64, 5]);
+            game.world
+                .set(5, 64, 5, registry.default_state("minecraft:stone").unwrap())
+                .unwrap();
+            game.world.set(6, 64, 5, lever("false")).unwrap();
+            for [x, y, z] in [a, b, c] {
+                game.world.set(x, y, z, glass).unwrap();
+            }
+            let dimension = game.dim.id().to_owned();
+            let key = |state: sunrise_world::registry::BlockStateId| {
+                use crate::game::api_values::TryIntoApi;
+                let state: mod_api::BlockState = state.try_into_api().unwrap();
+                state.block()
+            };
+            assert!(neighbor_writes().is_empty());
+
+            assert!(game.native_set_block(&dimension, [6, 64, 5], lever("true"), 3));
+            assert_eq!(
+                neighbor_writes(),
+                [
+                    (a, key(lever("true"))),
+                    // `Level.setBlock` names the old block as the source (`oldState.getBlock()`).
+                    (c, key(glass)),
+                    (b, key(lever("true"))),
+                ]
+            );
+            // Both glasses the lever reached changed in the same call, with no tick run.
+            for [x, y, z] in [a, b] {
+                assert_eq!(game.world.block(x, y, z), lit);
+            }
+            assert_eq!(game.world.block(c[0], c[1], c[2]), glass);
         });
     }
 
@@ -2212,6 +2771,13 @@ pub(super) mod tests {
     #[test]
     #[ignore = "daily"]
     fn a_block_part_changes_the_bounce_restitution_an_entity_reads() {
+        crate::game::in_own_process(
+            "game::native_entity_refs::tests::a_block_part_changes_the_bounce_restitution_an_entity_reads",
+            block_part_bounce_restitution_in_own_process,
+        );
+    }
+
+    fn block_part_bounce_restitution_in_own_process() {
         use sunrise_client::block_contact::{Contact, bounce_restitution};
         use sunrise_core::position::BlockPos;
 
@@ -2238,14 +2804,36 @@ pub(super) mod tests {
                     state: block,
                     position: pos,
                 };
-                let level = sunrise_client::health::DamageLevel::of(
-                    &mut game.world,
-                    registry,
-                    None,
-                    Some(&game.pack.block_registries),
-                    &game.damage_hooks,
-                );
-                bounce_restitution(&mut level.on_client(client_side), contact, own)
+                use sunrise_world::native_load_context::{
+                    DataLoadOrigin, LoadContext, LoadInputs, LoopSide,
+                };
+                let context = LoadContext::new(
+                    DataLoadOrigin::ServerDataLoad,
+                    std::sync::Arc::new(LoadInputs::new(Default::default(), Default::default())),
+                    [],
+                )
+                .captured_loop_context(if client_side {
+                    LoopSide::Client
+                } else {
+                    LoopSide::Server
+                });
+                bounce_restitution(
+                    sunrise_client::motion::FrictionLevel {
+                        world: &game.world,
+                        registry,
+                        context: &context,
+                        side: &game_side!(game),
+                        coefficient: &|id| {
+                            game.res
+                                .facts()
+                                .states
+                                .get(id.0 as usize)
+                                .map(|p| p.friction)
+                        },
+                    },
+                    contact,
+                    own,
+                )
             };
             // Glass's part answers whatever the block's own value: 0.5 on a server, 0.25 on a
             // client predicting its own bounce.
@@ -2664,12 +3252,15 @@ pub(super) mod tests {
                 .update_guest(12, |guest| guest.motion = Some(Box::new(motion)))
                 .unwrap();
             let player = game.player(12).unwrap();
-            assert_eq!(
-                player.inventory(game),
-                Some(vec![crate::game::api_values::test_snapshot(
-                    &ItemStack::new("minecraft:stone", 1)
-                )])
-            );
+            player
+                .with_inventory(game, |view| {
+                    let mut slots = view.iter();
+                    let (slot, stack) = slots.next().unwrap();
+                    let stone = mod_api::__private::item_key("minecraft:stone").unwrap();
+                    assert_eq!((slot, stack.item(), stack.count()), (0, stone, 1));
+                    assert!(slots.next().is_none());
+                })
+                .unwrap();
             let guest_living = game.living(player.fields().entity).unwrap();
             let host: &dyn mod_api::Host = game;
             assert_eq!(
@@ -2697,8 +3288,10 @@ pub(super) mod tests {
                 Some(ItemStack::new("minecraft:iron_horse_armor", 1))
             ));
             assert_eq!(
-                game.living_equipment(living, EquipmentSlot::Saddle),
-                Some(saddle.clone())
+                game.living_equipment_stack(living, EquipmentSlot::Saddle)
+                    .map(|stack| stack.project())
+                    .as_deref(),
+                Some(&saddle)
             );
             assert_eq!(
                 game.lan.as_ref().unwrap().hub.guests[0]
@@ -2708,7 +3301,10 @@ pub(super) mod tests {
                 Some("minecraft:iron_horse_armor")
             );
             assert!(game.living_set_equipment(living, EquipmentSlot::Saddle, None));
-            assert_eq!(game.living_equipment(living, EquipmentSlot::Saddle), None);
+            assert!(
+                game.living_equipment_stack(living, EquipmentSlot::Saddle)
+                    .is_none()
+            );
             // The host's own previous mode, which no guest's change may touch.
             game.previous_mode = Some(sunrise_client::command::args::GameMode::Adventure);
             assert_eq!(game.player_previous_game_mode(player), Some(None));
@@ -2763,11 +3359,11 @@ pub(super) mod tests {
                 let living = game.living(entity).unwrap();
                 assert_eq!(
                     living
-                        .equipment(game, EquipmentSlot::MainHand)
-                        .unwrap()
-                        .item()
-                        .id(game),
-                    "minecraft:stone"
+                        .with_equipment(game, EquipmentSlot::MainHand, |stack| stack
+                            .item()
+                            .id(game))
+                        .unwrap(),
+                    Some("minecraft:stone")
                 );
                 assert_eq!(game.player.as_ref().unwrap().health.health(), 20.0);
                 // The loaded walking speed is the movement speed's base.
@@ -2827,46 +3423,51 @@ pub(super) mod tests {
             // The turn's write is stored in the guest's record.
             let stored = game.lan.as_ref().unwrap().hub.guest(12).unwrap().abilities;
             assert!(stored.may_fly && stored.walking_speed == 0.3);
-            let swap = game.enter_guest(12).unwrap();
-            assert!(game.entity(12).is_some());
-            let other = game.entity(13).unwrap();
-            assert_eq!(other.position(game), Some([3.0, 64.0, 5.0]));
-            assert_eq!(other.uuid(game), Some(13));
-            assert_eq!(
-                other.kind(game).map(|kind| kind.id(game)).as_deref(),
-                Some("minecraft:player")
-            );
-            let living = game.living(other).unwrap();
-            assert_eq!(
-                living
-                    .equipment(game, EquipmentSlot::MainHand)
-                    .unwrap()
-                    .item()
-                    .id(game),
-                "minecraft:stone"
-            );
-            let player = game.player(13).unwrap();
-            assert_eq!(player.fields().entity, other);
-            assert_eq!(player.game_mode(game), Some(GameMode::Survival));
-            assert!(game.player_set_game_mode(player, GameMode::Creative));
-            assert_eq!(player.game_mode(game), Some(GameMode::Creative));
-            assert_eq!(game.lan_acting, Some(12));
-            let acting = game.player(12).unwrap();
-            assert!(game.player_set_game_mode(acting, GameMode::Adventure));
-            assert_eq!(game.player_game_mode(acting), Some(GameMode::Adventure));
-            let nested = game.enter_guest(13).unwrap();
-            assert!(game.enter_guest(12).is_none());
-            assert_eq!(game.lan_acting, Some(13));
-            assert!(game.entity(12).is_none());
-            assert!(game.player(12).is_none());
-            assert!(
-                game.living(mod_api::EntityRef::new(other.epoch(), 12))
-                    .is_none()
-            );
-            assert!(game.entity(13).is_some());
-            game.leave_guest(nested);
-            assert_eq!(game.lan_acting, Some(12));
-            game.leave_guest(swap);
+            game.with_guest_swap(12, game.dim, |game| {
+                assert!(game.entity(12).is_some());
+                let other = game.entity(13).unwrap();
+                assert_eq!(other.position(game), Some([3.0, 64.0, 5.0]));
+                assert_eq!(other.uuid(game), Some(13));
+                assert_eq!(
+                    other.kind(game).and_then(|kind| kind.id(game)).as_deref(),
+                    Some("minecraft:player")
+                );
+                let living = game.living(other).unwrap();
+                assert_eq!(
+                    living
+                        .with_equipment(game, EquipmentSlot::MainHand, |stack| stack
+                            .item()
+                            .id(game))
+                        .unwrap(),
+                    Some("minecraft:stone")
+                );
+                let player = game.player(13).unwrap();
+                assert_eq!(player.fields().entity, other);
+                assert_eq!(player.game_mode(game), Some(GameMode::Survival));
+                assert!(game.player_set_game_mode(player, GameMode::Creative));
+                assert_eq!(player.game_mode(game), Some(GameMode::Creative));
+                assert_eq!(game.lan_acting, Some(12));
+                let acting = game.player(12).unwrap();
+                assert!(game.player_set_game_mode(acting, GameMode::Adventure));
+                assert_eq!(game.player_game_mode(acting), Some(GameMode::Adventure));
+                game.with_guest_swap(13, game.dim, |game| {
+                    assert!(
+                        game.with_guest_swap(12, game.dim, |_| panic!("active guest re-entered"))
+                            .is_none()
+                    );
+                    assert_eq!(game.lan_acting, Some(13));
+                    assert!(game.entity(12).is_none());
+                    assert!(game.player(12).is_none());
+                    assert!(
+                        game.living(mod_api::EntityRef::new(other.epoch(), 12))
+                            .is_none()
+                    );
+                    assert!(game.entity(13).is_some());
+                })
+                .unwrap();
+                assert_eq!(game.lan_acting, Some(12));
+            })
+            .unwrap();
             assert!(game.lan_guest_swaps.is_empty());
             // A player saved in creative (game mode 1, mayfly and instabuild)
             // joins again: without force they stay creative; forced into the
@@ -2894,7 +3495,7 @@ pub(super) mod tests {
                         g.abilities = Default::default();
                     })
                     .unwrap();
-                game.lan_guest_joined(13, &[], [0.0, 64.0, 0.0]);
+                game.lan_guest_joined(13, &[], [0.0, 64.0, 0.0], None);
                 let g = game.lan.as_ref().unwrap().hub.guest(13).unwrap();
                 (
                     g.game_mode,
@@ -2944,29 +3545,29 @@ pub(super) mod tests {
             assert!(game.entity(0).is_none());
             game.armor_stands
                 .push(ArmorStand::new(12, Vec3::new(1.0, 0.0, 0.0), 0.0));
-            let found = game
-                .level_entities_in(level, [0.0, 0.0, -1.0], [0.8, 1.0, 1.0])
-                .unwrap();
+            let found =
+                collect_game_entities_in(game, level, [0.0, 0.0, -1.0], [0.8, 1.0, 1.0]).unwrap();
             assert_eq!(found.len(), 1);
             assert_eq!(game.entity_position(found[0]), Some([1.0, 0.0, 0.0]));
             assert_eq!(
                 game.entity_kind(found[0])
-                    .map(|kind| kind.id(game))
+                    .and_then(|kind| kind.id(game))
                     .as_deref(),
                 Some("minecraft:armor_stand")
             );
             assert!(
-                game.level_entities_in(level, [0.0, 0.0, -1.0], [0.75, 1.0, 1.0])
+                collect_game_entities_in(game, level, [0.0, 0.0, -1.0], [0.75, 1.0, 1.0])
                     .unwrap()
                     .is_empty()
             );
-            assert!(
-                game.level_entities_in(
+            assert_eq!(
+                collect_game_entities_in(
+                    game,
                     LevelRef::new(WorldEpoch::new(0), game.dim.key()),
                     [0.0; 3],
                     [2.0; 3]
-                )
-                .is_none()
+                ),
+                Err(LevelReadError::Stale)
             );
         });
     }
@@ -3224,7 +3825,7 @@ pub(super) mod tests {
             );
             assert_ne!(overworld_actor, nether_actor);
             let host: &mut dyn mod_api::ServerHost = game;
-            let aborted: Result<(), ()> = host.transaction(|host, _| {
+            let aborted: Result<(), mod_api::TransactionError<()>> = host.transaction(|host, _| {
                 attachment.set(host, holder, 99).unwrap();
                 Err(())
             });
@@ -3247,12 +3848,13 @@ pub(super) mod tests {
                 &sunrise_client::items::ItemStack::new("minecraft:stick", 1),
             ));
             let host: &mut dyn mod_api::ServerHost = game;
-            let rolled_back: Result<(), ()> = host.transaction(|host, tx| {
-                assert_eq!(place.insert(host, tx, &sticks, 1), 1);
-                Err(())
-            });
+            let rolled_back: Result<(), mod_api::TransactionError<()>> =
+                host.transaction(|host, tx| {
+                    assert_eq!(place.insert(host, tx, &sticks, 1), Ok(1));
+                    Err(())
+                });
             assert!(rolled_back.is_err());
-            assert!(place.stack(game).is_none());
+            assert!(place.with_stack(game, |_| ()).is_none());
             assert_eq!(
                 game.lan
                     .as_ref()
@@ -3267,10 +3869,10 @@ pub(super) mod tests {
             );
             let host: &mut dyn mod_api::ServerHost = game;
             assert_eq!(
-                host.transaction(|host, tx| Ok::<_, ()>(place.insert(host, tx, &sticks, 1))),
+                host.transaction(|host, tx| place.insert(host, tx, &sticks, 1)),
                 Ok(1)
             );
-            assert_eq!(place.stack(game).unwrap().count(), 1);
+            assert_eq!(place.with_stack(game, |stack| stack.count()).unwrap(), 1);
             assert_eq!(game.fake_player(nether, 2345, "parked"), Some(nether_actor));
             assert!(game.player_set_experience_levels(nether_actor, 8));
             assert!(game.player_set_experience_levels(overworld_actor, 3));
@@ -3434,22 +4036,23 @@ pub(super) mod tests {
                 0
             );
             assert!(rx.try_recv().is_err());
-            let outer = game.enter_guest(real_id).unwrap();
-            assert!(!game.lan_acting_fake);
-            game.guest_cooldowns.push(("minecraft:real".into(), 7));
-            game.guest_player_sounds
-                .push(("outer".into(), [0.0; 3], 1.0, 1.0));
-            game.as_guest(fake_id, |game| {
-                assert!(game.lan_acting_fake);
-                game.guest_cooldowns.push(("minecraft:fake".into(), 20));
+            game.with_guest_swap(real_id, game.dim, |game| {
+                assert!(!game.lan_acting_fake);
+                game.guest_cooldowns.push(("minecraft:real".into(), 7));
+                game.guest_player_sounds
+                    .push(("outer".into(), [0.0; 3], 1.0, 1.0));
+                game.as_guest(fake_id, |game| {
+                    assert!(game.lan_acting_fake);
+                    game.guest_cooldowns.push(("minecraft:fake".into(), 20));
+                })
+                .unwrap();
+                assert!(!game.lan_acting_fake);
+                assert_eq!(game.guest_cooldowns.len(), 1);
+                assert_eq!(&*game.guest_cooldowns[0].0, "minecraft:real");
+                assert_eq!(game.guest_player_sounds[0].0, "outer");
+                game.guest_player_sounds.clear();
             })
             .unwrap();
-            assert!(!game.lan_acting_fake);
-            assert_eq!(game.guest_cooldowns.len(), 1);
-            assert_eq!(&*game.guest_cooldowns[0].0, "minecraft:real");
-            assert_eq!(game.guest_player_sounds[0].0, "outer");
-            game.guest_player_sounds.clear();
-            game.leave_guest(outer);
             let out = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
             let sunrise_client::lan::Out::Packet(body) = out else {
                 panic!("expected cooldown packet")
@@ -3465,26 +4068,27 @@ pub(super) mod tests {
             assert!(rx.try_recv().is_err());
 
             // A real turn nested in a fake must not receive the fake's cooldown.
-            let outer = game.enter_guest(fake_id).unwrap();
-            assert!(game.lan_acting_fake);
-            game.guest_cooldowns
-                .push(("minecraft:fake_outer".into(), 8));
-            game.guest_player_sounds
-                .push(("fake_outer".into(), [0.0; 3], 1.0, 1.0));
-            game.as_guest(real_id, |game| {
-                assert!(!game.lan_acting_fake);
-                let before = game.stats.get("custom", "minecraft:jump");
-                game.award_stat("custom", "minecraft:jump", 1);
-                assert_eq!(game.stats.get("custom", "minecraft:jump"), before + 1);
+            game.with_guest_swap(fake_id, game.dim, |game| {
+                assert!(game.lan_acting_fake);
                 game.guest_cooldowns
-                    .push(("minecraft:real_inner".into(), 9));
+                    .push(("minecraft:fake_outer".into(), 8));
+                game.guest_player_sounds
+                    .push(("fake_outer".into(), [0.0; 3], 1.0, 1.0));
+                game.as_guest(real_id, |game| {
+                    assert!(!game.lan_acting_fake);
+                    let before = game.stats.get("custom", "minecraft:jump");
+                    game.award_stat("custom", "minecraft:jump", 1);
+                    assert_eq!(game.stats.get("custom", "minecraft:jump"), before + 1);
+                    game.guest_cooldowns
+                        .push(("minecraft:real_inner".into(), 9));
+                })
+                .unwrap();
+                assert!(game.lan_acting_fake);
+                assert_eq!(&*game.guest_cooldowns[0].0, "minecraft:fake_outer");
+                assert_eq!(game.guest_player_sounds[0].0, "fake_outer");
+                game.guest_player_sounds.clear();
             })
             .unwrap();
-            assert!(game.lan_acting_fake);
-            assert_eq!(&*game.guest_cooldowns[0].0, "minecraft:fake_outer");
-            assert_eq!(game.guest_player_sounds[0].0, "fake_outer");
-            game.guest_player_sounds.clear();
-            game.leave_guest(outer);
             let sunrise_client::lan::Out::Packet(body) =
                 rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap()
             else {
@@ -3520,26 +4124,27 @@ pub(super) mod tests {
             );
             second.placed = true;
             game.lan.as_mut().unwrap().hub.guests.push(second);
-            let outer = game.enter_guest(real_id).unwrap();
-            game.guest_cooldowns
-                .push(("minecraft:real_outer".into(), 10));
-            game.guest_player_sounds
-                .push(("real_outer".into(), [0.0; 3], 1.0, 1.0));
-            game.as_guest(3, |game| {
-                assert_eq!(game.lan_acting, Some(3));
-                assert!(
-                    game.as_guest(real_id, |_| panic!("active guest re-entered"))
-                        .is_none()
-                );
-                assert_eq!(game.lan_acting, Some(3));
+            game.with_guest_swap(real_id, game.dim, |game| {
                 game.guest_cooldowns
-                    .push(("minecraft:real_second".into(), 11))
+                    .push(("minecraft:real_outer".into(), 10));
+                game.guest_player_sounds
+                    .push(("real_outer".into(), [0.0; 3], 1.0, 1.0));
+                game.as_guest(3, |game| {
+                    assert_eq!(game.lan_acting, Some(3));
+                    assert!(
+                        game.as_guest(real_id, |_| panic!("active guest re-entered"))
+                            .is_none()
+                    );
+                    assert_eq!(game.lan_acting, Some(3));
+                    game.guest_cooldowns
+                        .push(("minecraft:real_second".into(), 11))
+                })
+                .unwrap();
+                assert_eq!(&*game.guest_cooldowns[0].0, "minecraft:real_outer");
+                assert_eq!(game.guest_player_sounds[0].0, "real_outer");
+                game.guest_player_sounds.clear();
             })
             .unwrap();
-            assert_eq!(&*game.guest_cooldowns[0].0, "minecraft:real_outer");
-            assert_eq!(game.guest_player_sounds[0].0, "real_outer");
-            game.guest_player_sounds.clear();
-            game.leave_guest(outer);
             for (receiver, expected) in [
                 (&rx, "minecraft:real_outer"),
                 (&rx2, "minecraft:real_second"),
@@ -3577,18 +4182,21 @@ pub(super) mod tests {
             let (tx, _rx) = std::sync::mpsc::channel();
             shared
                 .events
-                .send(sunrise_client::lan::NetEvent::Joined(Box::new(Joined {
-                    conn,
-                    uuid: 5678,
-                    name: "joiner".into(),
-                    properties: Vec::new(),
-                    info: ClientInformation::new(8),
-                    brand: String::new(),
-                    sender: PlayerSender::new(tx, Arc::default()),
-                    latency: Arc::default(),
-                    address: ([127, 0, 0, 1], 1).into(),
-                    expected: false,
-                })))
+                .send(sunrise_client::lan::NetEvent::Joined(
+                    Box::new(Joined {
+                        conn,
+                        uuid: 5678,
+                        name: "joiner".into(),
+                        properties: Vec::new(),
+                        info: ClientInformation::new(8),
+                        brand: String::new(),
+                        sender: PlayerSender::new(tx, Arc::default()),
+                        latency: Arc::default(),
+                        address: ([127, 0, 0, 1], 1).into(),
+                        expected: false,
+                    }),
+                    None,
+                ))
                 .unwrap();
             use mod_api;
             struct Logout(std::sync::Arc<std::sync::atomic::AtomicUsize>);
@@ -4298,21 +4906,13 @@ pub(super) mod tests {
         use crate::game::api_values::TryIntoApi;
         let api_stone: mod_api::BlockState = stone.try_into_api().unwrap();
         let invalid: mod_api::BlockState =
-            mod_api::BlockStateRecord::new(api_stone.block(), u16::MAX).into();
+            mod_api::__private::block_state_from_ordinal(api_stone.block(), u16::MAX);
         assert_eq!(
             level.set_block(&mut game, [0, 64, 0], invalid, BlockUpdateFlags::NONE),
             Err(mod_api::LevelWriteError::InvalidState(
                 mod_api::BlockStateError::UnknownState
             ))
         );
-        assert_eq!(game.world.block(0, 64, 0), air);
-        {
-            let _phase = mod_api::__private::PhaseOwner::scope(mod_api::__private::ModPhase::Setup);
-            assert_eq!(
-                level.set_block(&mut game, [0, 64, 0], api_stone, BlockUpdateFlags::NONE),
-                Err(mod_api::LevelWriteError::Unavailable)
-            );
-        }
         assert_eq!(game.world.block(0, 64, 0), air);
         game.world.block_log = Some(Vec::new());
         assert_eq!(
@@ -4367,7 +4967,7 @@ pub(super) mod tests {
         assert_eq!(game.world.modified.clone(), dirty_before);
         assert_eq!(game.world.block(5, 64, 0), block_before);
         let host: &mut dyn mod_api::ServerHost = &mut game;
-        let aborted: Result<(), ()> = host.transaction(|host, _| {
+        let aborted: Result<(), mod_api::TransactionError<()>> = host.transaction(|host, _| {
             assert!(level.send_block_updated(host, [6, 64, 0]));
             Err(())
         });
@@ -4614,7 +5214,438 @@ pub(super) mod tests {
 
     #[test]
     #[ignore = "daily"]
+    fn client_box_queries_use_live_display_positions_and_section_order() {
+        use super::Game;
+        use mod_api::Host;
+        use std::sync::Arc;
+        use sunrise_client::chunk::Chunk;
+        use sunrise_core::nbt::Compound;
+        use sunrise_protocol::{
+            connection::Pipe,
+            entity_data::Value,
+            packets::play::{self, Clientbound as C},
+        };
+
+        const CASE: &str = "SUNRISE_DISPLAY_BOX_QUERY_CHILD";
+        if run_fresh_cases(
+            "game::native_entity_refs::tests::client_box_queries_use_live_display_positions_and_section_order",
+            CASE,
+            &["client", "server"],
+        ) {
+            return;
+        }
+
+        const LO: [f64; 3] = [13.0, 65.0, 2.0];
+        const HI: [f64; 3] = [19.0, 66.0, 4.0];
+        const ADMISSIONS: [(i32, &str, [f64; 3]); 4] = [
+            (31, "minecraft:item_display", [17.0, 65.5, 3.0]),
+            (92, "minecraft:block_display", [15.5, 65.5, 3.0]),
+            (55, "minecraft:pig", [14.5, 65.5, 3.0]),
+            (11, "minecraft:text_display", [13.5, 65.5, 3.0]),
+        ];
+        let chunks = |game: &mut Game<'_>| {
+            for x in 0..=1 {
+                game.world
+                    .chunks
+                    .insert((x, 0), Arc::new(Chunk::empty(x, 0)));
+            }
+        };
+        let ids = |host: &dyn Host, level, min, max| {
+            collect_entities_in(host, level, min, max)
+                .unwrap()
+                .into_iter()
+                .map(|e| e.id())
+                .collect::<Vec<_>>()
+        };
+        match std::env::var(CASE).unwrap().as_str() {
+            "client" => with_client_game(|game| {
+                let (client, _server) = Pipe::pair();
+                game.connect_local(client, "DisplayBoxTest").unwrap();
+                let remote = game.remote.as_mut().unwrap();
+                remote.logged_in = true;
+                remote.entity_id = 7;
+                chunks(game);
+                for (id, name, position) in ADMISSIONS {
+                    let kind = game
+                        .remote
+                        .as_ref()
+                        .unwrap()
+                        .builtin
+                        .get("minecraft:entity_type")
+                        .unwrap()
+                        .id(name)
+                        .unwrap();
+                    game.handle_packet(C::AddEntity(play::AddEntity {
+                        id,
+                        uuid: id as u128,
+                        kind,
+                        position,
+                        velocity: [0.0; 3],
+                        yaw: 0,
+                        pitch: 0,
+                        head_yaw: 0,
+                        data: 0,
+                    }))
+                    .unwrap();
+                }
+                let level = game.level("minecraft:overworld").unwrap();
+                assert_eq!(ids(game, level, HI, LO), [92, 55, 11, 31]);
+                let mut seen = Vec::new();
+                assert_eq!(
+                    level.visit_entities_in(game, LO, HI, &mut |entity| {
+                        seen.push(entity.id());
+                        let (_, kind, at) = ADMISSIONS
+                            .into_iter()
+                            .find(|(id, _, _)| *id as u32 == entity.id())
+                            .unwrap();
+                        assert_eq!(
+                            entity.kind(game).and_then(|k| k.id(game)).as_deref(),
+                            Some(kind)
+                        );
+                        assert_eq!(entity.position(game), Some(at));
+                        if entity.id() != 55 {
+                            assert_eq!(entity.bounding_box(game), Some([at; 2]));
+                        }
+                        ControlFlow::Continue(())
+                    }),
+                    Ok(ControlFlow::Continue(()))
+                );
+                assert_eq!(seen, [92, 55, 11, 31]);
+
+                let block = game.entity(92).unwrap();
+                game.text_displays.get_mut(&92).unwrap().metadata(&[
+                    (10, 1, Value::Int(3)),
+                    (20, 2, Value::Float(4.0)),
+                    (21, 2, Value::Float(4.0)),
+                ]);
+                game.handle_packet(C::EntityPositionSync(play::EntityPositionSync {
+                    id: 92,
+                    path: play::PositionPath::Linear([18.5, 65.5, 3.0]),
+                    yaw: 0.0,
+                    pitch: 0.0,
+                    on_ground: false,
+                }))
+                .unwrap();
+                assert_eq!(block.position(game), Some([15.5, 65.5, 3.0]));
+                assert_eq!(block.bounding_box(game), Some([[15.5, 65.5, 3.0]; 2]));
+                assert_eq!(ids(game, level, LO, HI), [92, 55, 11, 31]);
+
+                game.tick_text_displays(true);
+                assert_eq!(ids(game, level, LO, HI), [55, 11, 31, 92]);
+                let tight_lo = [16.25, 65.0, 2.5];
+                let tight_hi = [16.75, 66.0, 3.5];
+                let mut seen = Vec::new();
+                let stopped = level.visit_entities_in(game, LO, HI, &mut |entity| {
+                    seen.push(entity.id());
+                    assert_eq!(ids(game, level, tight_lo, tight_hi), [92]);
+                    ControlFlow::Break(())
+                });
+                assert_eq!(stopped, Ok(ControlFlow::Break(())));
+                assert_eq!(seen, [55]);
+                assert_eq!(block.position(game), Some([16.5, 65.5, 3.0]));
+                assert_eq!(block.bounding_box(game), Some([[16.5, 65.5, 3.0]; 2]));
+                assert!(ids(game, level, [16.5, 65.0, 2.5], tight_hi).is_empty());
+                let culling_only_lo = [16.5, 67.0, 2.5];
+                let culling_only_hi = [16.75, 68.0, 3.5];
+                assert!(ids(game, level, culling_only_lo, culling_only_hi).is_empty());
+                let (lo, hi) = game.text_displays[&92].interpolated_bounding_box(1.0);
+                let culling = super::aabb_extents((lo.to_array(), hi.to_array()));
+                let culling_only = super::aabb_extents((culling_only_lo, culling_only_hi));
+                assert!(culling.intersects(culling_only));
+                let mut picked = Vec::new();
+                game.for_each_pickable_in_bounds(super::aabb_extents((LO, HI)), |id, _, _| {
+                    picked.push(id)
+                });
+                assert_eq!(picked, [55]);
+
+                game.handle_packet(C::RemoveEntities(play::RemoveEntities { ids: vec![92] }))
+                    .unwrap();
+                assert!(game.entity(92).is_none());
+                assert_eq!(block.position(game), None);
+                assert_eq!(block.bounding_box(game), None);
+                assert_eq!(ids(game, level, LO, HI), [55, 11, 31]);
+            }),
+            "server" => with_game(|game| {
+                game.options.dedicated = Some(Vec::new());
+                chunks(game);
+                let level = game.level("minecraft:overworld").unwrap();
+                let [item, block, pig, text] = ADMISSIONS.map(|(_, kind, at)| {
+                    game.summon("minecraft:overworld", kind, at, Compound::new())
+                        .unwrap()
+                });
+                assert_eq!(ids(game, level, LO, HI), [block, pig, text, item]);
+                for (id, (_, _, at)) in [item, block, pig, text].into_iter().zip(ADMISSIONS) {
+                    if id != pig {
+                        let display = game.entity(id).unwrap();
+                        assert_eq!(display.position(game), Some(at));
+                        assert_eq!(display.bounding_box(game), Some([at; 2]));
+                    }
+                }
+                let at = [16.5, 65.5, 3.0];
+                assert_eq!(
+                    game.place_teleport_filed(
+                        super::Target::Other(block),
+                        at,
+                        None,
+                        [false; 3],
+                        false
+                    ),
+                    Some(ADMISSIONS[1].2)
+                );
+                assert_eq!(ids(game, level, LO, HI), [pig, text, item, block]);
+                assert_eq!(
+                    game.entity(block).unwrap().bounding_box(game),
+                    Some([at; 2])
+                );
+                // `/data merge` moves it through `Entity.load`: the old box loses it and the
+                // new one, queried for the first time, finds it.
+                let far_lo = [39.5, 65.0, 2.0];
+                let far_hi = [41.5, 66.0, 4.0];
+                assert!(ids(game, level, far_lo, far_hi).is_empty());
+                let target = super::Target::Other(block);
+                let mut tag = game.command_target_nbt(target).unwrap();
+                let pos = sunrise_core::nbt::Tag::List(
+                    [40.5, 65.5, 3.0]
+                        .map(|v: f64| sunrise_core::nbt::Tag::Double(v.to_bits()))
+                        .to_vec(),
+                );
+                if let sunrise_core::nbt::Tag::Compound(c) = &mut tag {
+                    c.insert("Pos".into(), pos);
+                }
+                game.apply_entity_nbt(target, tag).unwrap();
+                assert_eq!(ids(game, level, LO, HI), [pig, text, item]);
+                assert_eq!(ids(game, level, far_lo, far_hi), [block]);
+            }),
+            _ => unreachable!("unexpected display query case"),
+        }
+    }
+
+    /// Crossings in one normal client tick land in `ClientLevel.tickEntities` order whichever
+    /// Sunrise loop moved them and whether or not a read-only tick listener splits the displays
+    /// off; a tracked player is filed before its `player_tick_post`; a rider snapped with its
+    /// display is filed at its seat before it ticks.
+    #[test]
+    #[ignore = "daily"]
+    fn client_crossings_land_in_tick_order_and_before_hooks_read_them() {
+        use super::Game;
+        use mod_api::{Hooks, Host, HostSide, ModEntry, PlayerTickPostEvent};
+        use std::sync::{Arc, Mutex};
+        use sunrise_client::chunk::Chunk;
+        use sunrise_core::geometry::Vec3;
+        use sunrise_protocol::{
+            connection::Pipe,
+            entity_data::Value,
+            packets::play::{self, Clientbound as C},
+        };
+
+        const CASE: &str = "SUNRISE_CLIENT_CROSSING_CHILD";
+        if run_fresh_cases(
+            "game::native_entity_refs::tests::client_crossings_land_in_tick_order_and_before_hooks_read_them",
+            CASE,
+            &["order", "order_listened", "tracked_player", "rider"],
+        ) {
+            return;
+        }
+
+        /// Asks for each block display's tick alone, reading nothing; answers the box around
+        /// player 18 from its `player_tick_post`.
+        struct Probe(Arc<Mutex<Vec<Vec<u32>>>>);
+        #[mod_api::__subscriptions]
+        impl Hooks for Probe {
+            fn register(
+                &self,
+                registrar: &mut dyn mod_api::Registrar,
+                _: &mod_api::RegistrationContext,
+            ) {
+                registrar.entity_tick_each("minecraft:block_display");
+            }
+            fn entity_tick_listened(
+                &self,
+                _: HostSide<'_>,
+                event: &mut mod_api::EntityTickListenedEvent,
+            ) {
+                event.listened = true;
+            }
+            fn player_tick_post(&self, host: HostSide<'_>, event: &mut PlayerTickPostEvent) {
+                let HostSide::Client(host) = host else { return };
+                if event.player.entity().id() != 18 {
+                    return;
+                }
+                let level = host.level("minecraft:overworld").unwrap();
+                let found = collect_entities_in(&*host, level, [30.0, 0.0, -0.5], [31.0, 1.8, 0.5])
+                    .unwrap()
+                    .into_iter()
+                    .map(|e| e.id())
+                    .collect();
+                self.0.lock().unwrap().push(found);
+            }
+        }
+
+        let ids = |host: &dyn Host, min, max| {
+            let level = host.level("minecraft:overworld").unwrap();
+            collect_entities_in(host, level, min, max)
+                .unwrap()
+                .into_iter()
+                .map(|e| e.id())
+                .collect::<Vec<_>>()
+        };
+        let connect = |game: &mut Game<'_>| {
+            let (client, server) = Pipe::pair();
+            std::mem::forget(server);
+            game.connect_local(client, "CrossingTest").unwrap();
+            let remote = game.remote.as_mut().unwrap();
+            remote.logged_in = true;
+            remote.entity_id = 7;
+            for x in -1..=4 {
+                game.world
+                    .chunks
+                    .insert((x, 0), Arc::new(Chunk::empty(x, 0)));
+            }
+        };
+        let add = |game: &mut Game<'_>, id: i32, name: &str, position: [f64; 3]| {
+            let kind = game
+                .remote
+                .as_ref()
+                .unwrap()
+                .builtin
+                .get("minecraft:entity_type")
+                .unwrap()
+                .id(name)
+                .unwrap();
+            game.handle_packet(C::AddEntity(play::AddEntity {
+                id,
+                uuid: id as u128,
+                kind,
+                position,
+                velocity: [0.0; 3],
+                yaw: 0,
+                pitch: 0,
+                head_yaw: 0,
+                data: 0,
+            }))
+            .unwrap();
+        };
+        let sync = |game: &mut Game<'_>, id: i32, to: [f64; 3]| {
+            game.handle_packet(C::EntityPositionSync(play::EntityPositionSync {
+                id,
+                path: play::PositionPath::Linear(to),
+                yaw: 0.0,
+                pitch: 0.0,
+                on_ground: false,
+            }))
+            .unwrap();
+        };
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let case = std::env::var(CASE).unwrap();
+        let mods = if case == "order" {
+            Vec::new()
+        } else {
+            vec![ModEntry::new("probe", Box::new(Probe(heard.clone())))]
+        };
+        mod_platform::testing::with_mods(mods.into(), || {
+            with_client_game(|game| {
+                connect(game);
+                match case.as_str() {
+                    "order" | "order_listened" => {
+                        // The pig joined first, so vanilla moves it first: both enter section 1
+                        // on this tick, the pig ahead of the display the display loop moved.
+                        add(game, 70, "minecraft:pig", [14.5, 65.5, 3.0]);
+                        add(game, 71, "minecraft:block_display", [13.5, 65.5, 3.0]);
+                        game.text_displays.get_mut(&71).unwrap().metadata(&[(
+                            10,
+                            1,
+                            Value::Int(3),
+                        )]);
+                        sync(game, 70, [20.5, 65.5, 3.0]);
+                        sync(game, 71, [22.5, 65.5, 3.0]);
+                        game.tick_remote_entities(true);
+                        assert_eq!(
+                            game.entity(71).unwrap().position(game),
+                            Some([16.5, 65.5, 3.0])
+                        );
+                        assert_eq!(ids(game, [16.0, 65.0, 2.5], [17.0, 66.0, 3.5]), [70, 71]);
+                    }
+                    "tracked_player" => {
+                        let player = game
+                            .remote
+                            .as_ref()
+                            .unwrap()
+                            .builtin
+                            .get("minecraft:entity_type")
+                            .unwrap()
+                            .id("minecraft:player")
+                            .unwrap();
+                        game.handle_packet(C::PlayerInfoUpdate(play::PlayerInfoUpdate {
+                            actions: 1,
+                            entries: vec![play::PlayerInfo {
+                                uuid: 9,
+                                name: Some("Player18".into()),
+                                ..Default::default()
+                            }],
+                        }))
+                        .unwrap();
+                        game.handle_packet(C::AddEntity(play::AddEntity {
+                            id: 18,
+                            uuid: 9,
+                            kind: player,
+                            position: [0.5, 0.0, 0.0],
+                            velocity: [0.0; 3],
+                            pitch: 0,
+                            yaw: 0,
+                            head_yaw: 0,
+                            data: 0,
+                        }))
+                        .unwrap();
+                        // A tracked player's interpolation carries it halfway on this step, to
+                        // x 30.5: section 1, beyond the padded range of a box around its new
+                        // position.
+                        sync(game, 18, [60.5, 0.0, 0.0]);
+                        game.tick_remote_entities(true);
+                        assert_eq!(*heard.lock().unwrap(), [vec![18]]);
+                    }
+                    "rider" => {
+                        let mut local =
+                            sunrise_client::motion::PlayerMotion::new(game.motion, Vec3::ZERO)
+                                .unwrap();
+                        local.entity_id = 7;
+                        local.position = Vec3::new(15.5, 65.5, 3.0);
+                        game.player = Some(local);
+                        game.bind_local_player_residency();
+                        add(game, 92, "minecraft:block_display", [15.5, 65.5, 3.0]);
+                        game.handle_packet(C::SetPassengers(play::SetPassengers {
+                            vehicle: 92,
+                            passengers: vec![7],
+                        }))
+                        .unwrap();
+                        let near =
+                            |game: &Game<'_>| ids(game, [39.5, 60.0, 2.0], [41.5, 70.0, 4.0]);
+                        assert!(near(game).is_empty());
+                        // No teleport duration: the display snaps, and its rider with it.
+                        sync(game, 92, [40.5, 65.5, 3.0]);
+                        let seat = game.player.as_ref().unwrap().position;
+                        use sunrise_client::join_seq::residency::table::SectionKey;
+                        assert_eq!(
+                            SectionKey::at(seat.components()),
+                            SectionKey::at([40.5, 65.5, 3.0])
+                        );
+                        assert_eq!(near(game), [92, 7]);
+                    }
+                    _ => unreachable!("unexpected crossing case"),
+                }
+            });
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
     fn a_client_finds_the_entities_it_tracks_and_its_own_player_in_a_box() {
+        if run_fresh_cases(
+            "game::native_entity_refs::tests::a_client_finds_the_entities_it_tracks_and_its_own_player_in_a_box",
+            "SUNRISE_CLIENT_ENTITY_BOX_QUERY_CHILD",
+            &["client"],
+        ) {
+            return;
+        }
         use super::super::execution_role::ExecutionRole;
         use mod_api::{Host, LevelRef, WorldEpoch};
         use sunrise_core::geometry::Vec3;
@@ -4628,56 +5659,78 @@ pub(super) mod tests {
             remote.logged_in = true;
             remote.entity_id = 7;
             remote.profile = 42;
-            game.player =
-                Some(sunrise_client::motion::PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
+            let mut local =
+                sunrise_client::motion::PlayerMotion::new(game.motion, Vec3::ZERO).unwrap();
+            local.entity_id = 7;
+            game.player = Some(local);
             game.spawn_entity(15, "minecraft:pig", [2.0, 0.0, 0.0], [0.0; 3]);
+            game.pick_section_sync_id(15);
             game.spawn_entity(16, "minecraft:pig", [40.0, 0.0, 0.0], [0.0; 3]);
+            game.pick_section_sync_id(16);
+            game.bind_local_player_residency();
             let level = game.level("minecraft:overworld").unwrap();
             let ids = |host: &dyn Host, level: LevelRef, min, max| {
-                level
-                    .entities_in(host, min, max)
+                collect_entities_in(host, level, min, max)
                     .map(|found| found.into_iter().map(|e| e.id()).collect::<Vec<_>>())
             };
             // The tracked pig, then the window's own player; the other pig is far away.
             assert_eq!(
                 ids(game, level, [-1.0, -1.0, -1.0], [3.0, 2.0, 1.0]),
-                Some(vec![15, 7])
+                Ok(vec![15, 7])
             );
             assert_eq!(
                 ids(game, level, [39.0, -1.0, -1.0], [41.0, 2.0, 1.0]),
-                Some(vec![16])
+                Ok(vec![16])
             );
             // The pig's box ends at x 2.45.
             assert_eq!(
                 ids(game, level, [2.5, 0.0, -1.0], [4.0, 1.0, 1.0]),
-                Some(vec![])
+                Ok(vec![])
             );
-            game.set_mode_id(3);
+            game.set_local_mode(sunrise_client::command::args::GameMode::Spectator);
             assert_eq!(
                 ids(game, level, [-1.0, -1.0, -1.0], [3.0, 2.0, 1.0]),
-                Some(vec![15])
+                Ok(vec![15])
             );
             let nether = LevelRef::new(level.epoch(), mod_api::DimensionKey::NETHER);
-            assert_eq!(ids(game, nether, [-1.0; 3], [3.0; 3]), None);
+            assert_eq!(
+                ids(game, nether, [-1.0; 3], [3.0; 3]),
+                Err(LevelReadError::Unavailable)
+            );
             let stale = LevelRef::new(WorldEpoch::new(level.epoch().get() + 1), level.dimension());
-            assert_eq!(ids(game, stale, [-1.0; 3], [3.0; 3]), None);
+            assert_eq!(
+                ids(game, stale, [-1.0; 3], [3.0; 3]),
+                Err(LevelReadError::Stale)
+            );
             game.remote.as_mut().unwrap().logged_in = false;
-            assert_eq!(ids(game, level, [-1.0; 3], [3.0; 3]), None);
+            assert_eq!(
+                ids(game, level, [-1.0; 3], [3.0; 3]),
+                Err(LevelReadError::Unavailable)
+            );
         });
     }
 
-    /// A client's `entities_in` lists another player standing in the box (added through the
+    /// A client's `visit_entities_in` visits another player standing in the box (added through the
     /// real `AddEntity` packet), after the entities the server tracks and before the window's
     /// own player; a player outside the box, and one the server removed, are not listed.
     #[test]
     #[ignore = "daily"]
     fn a_client_lists_another_player_in_the_box_after_the_tracked_entities() {
+        if run_fresh_cases(
+            "game::native_entity_refs::tests::a_client_lists_another_player_in_the_box_after_the_tracked_entities",
+            "SUNRISE_CLIENT_ENTITY_BOX_QUERY_CHILD",
+            &["client"],
+        ) {
+            return;
+        }
         use super::super::execution_role::ExecutionRole;
         use mod_api::{Host, LevelRef};
         use sunrise_core::geometry::Vec3;
         use sunrise_protocol::{
             connection::Pipe,
-            packets::play::{AddEntity, Clientbound as C, RemoveEntities},
+            packets::play::{
+                AddEntity, Clientbound as C, PlayerInfo, PlayerInfoUpdate, RemoveEntities,
+            },
         };
         with_game(|game| {
             game.options.execution_role = ExecutionRole::Client;
@@ -4694,10 +5747,22 @@ pub(super) mod tests {
                 .unwrap()
                 .id("minecraft:player")
                 .unwrap();
-            game.player =
-                Some(sunrise_client::motion::PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
+            let mut local =
+                sunrise_client::motion::PlayerMotion::new(game.motion, Vec3::ZERO).unwrap();
+            local.entity_id = 7;
+            game.player = Some(local);
             game.spawn_entity(15, "minecraft:pig", [2.0, 0.0, 0.0], [0.0; 3]);
+            game.pick_section_sync_id(15);
             let add_player = |game: &mut crate::game::Game<'_>, id, uuid, x| {
+                game.handle_packet(C::PlayerInfoUpdate(PlayerInfoUpdate {
+                    actions: 1,
+                    entries: vec![PlayerInfo {
+                        uuid,
+                        name: Some(format!("Player{id}")),
+                        ..Default::default()
+                    }],
+                }))
+                .unwrap();
                 game.handle_packet(C::AddEntity(AddEntity {
                     id,
                     uuid,
@@ -4715,6 +5780,7 @@ pub(super) mod tests {
             add_player(game, 18, 9, 1.0);
             add_player(game, 19, 10, 40.0);
             add_player(game, 20, 11, 0.5);
+            game.bind_local_player_residency();
             assert!(
                 [18, 19, 20]
                     .iter()
@@ -4722,25 +5788,24 @@ pub(super) mod tests {
             );
             let level = game.level("minecraft:overworld").unwrap();
             let ids = |host: &dyn Host, level: LevelRef, min, max| {
-                level
-                    .entities_in(host, min, max)
+                collect_entities_in(host, level, min, max)
                     .map(|found| found.into_iter().map(|e| e.id()).collect::<Vec<_>>())
             };
-            // Entity-list order: the pig, then the other players, then the window's own.
+            // Section entry order: the pig, then the other players, then the window's own.
             assert_eq!(
                 ids(game, level, [-1.0, -1.0, -1.0], [3.0, 2.0, 1.0]),
-                Some(vec![15, 18, 20, 7])
+                Ok(vec![15, 18, 20, 7])
             );
             // A box around only the far player finds it, and the near box did not.
             assert_eq!(
                 ids(game, level, [39.0, -1.0, -1.0], [41.0, 2.0, 1.0]),
-                Some(vec![19])
+                Ok(vec![19])
             );
             game.handle_packet(C::RemoveEntities(RemoveEntities { ids: vec![20] }))
                 .unwrap();
             assert_eq!(
                 ids(game, level, [-1.0, -1.0, -1.0], [3.0, 2.0, 1.0]),
-                Some(vec![15, 18, 7])
+                Ok(vec![15, 18, 7])
             );
         });
     }
@@ -4748,6 +5813,13 @@ pub(super) mod tests {
     #[test]
     #[ignore = "daily"]
     fn a_client_refuses_a_box_with_a_bound_that_is_not_finite_and_swaps_an_inverted_one() {
+        if run_fresh_cases(
+            "game::native_entity_refs::tests::a_client_refuses_a_box_with_a_bound_that_is_not_finite_and_swaps_an_inverted_one",
+            "SUNRISE_CLIENT_ENTITY_BOX_QUERY_CHILD",
+            &["client"],
+        ) {
+            return;
+        }
         use super::super::execution_role::ExecutionRole;
         use mod_api::{Host, LevelRef};
         use sunrise_core::geometry::Vec3;
@@ -4761,13 +5833,16 @@ pub(super) mod tests {
             remote.logged_in = true;
             remote.entity_id = 7;
             remote.profile = 42;
-            game.player =
-                Some(sunrise_client::motion::PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
+            let mut local =
+                sunrise_client::motion::PlayerMotion::new(game.motion, Vec3::ZERO).unwrap();
+            local.entity_id = 7;
+            game.player = Some(local);
             game.spawn_entity(15, "minecraft:pig", [2.0, 0.0, 0.0], [0.0; 3]);
+            game.pick_section_sync_id(15);
+            game.bind_local_player_residency();
             let level = game.level("minecraft:overworld").unwrap();
             let ids = |host: &dyn Host, level: LevelRef, min, max| {
-                level
-                    .entities_in(host, min, max)
+                collect_entities_in(host, level, min, max)
                     .map(|found| found.into_iter().map(|e| e.id()).collect::<Vec<_>>())
             };
             // Mod code chooses the bounds: one that is not finite is refused, never panics,
@@ -4779,17 +5854,21 @@ pub(super) mod tests {
                 ([-1.0, -1.0, -1.0], [3.0, 2.0, f64::INFINITY]),
                 ([f64::NEG_INFINITY; 3], [f64::INFINITY; 3]),
             ] {
-                assert_eq!(ids(game, level, min, max), None, "{min:?} {max:?}");
+                assert_eq!(
+                    ids(game, level, min, max),
+                    Err(LevelReadError::Unavailable),
+                    "{min:?} {max:?}"
+                );
             }
             // A minimum above its maximum on one axis is the same box swapped (vanilla's
             // AABB): the tracked pig, then the window's own player.
             assert_eq!(
                 ids(game, level, [3.0, -1.0, -1.0], [-1.0, 2.0, 1.0]),
-                Some(vec![15, 7])
+                Ok(vec![15, 7])
             );
             assert_eq!(
                 ids(game, level, [3.0, 2.0, 1.0], [-1.0, -1.0, -1.0]),
-                Some(vec![15, 7])
+                Ok(vec![15, 7])
             );
         });
     }

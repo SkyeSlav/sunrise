@@ -376,7 +376,7 @@ fn villager(game: &mut super::super::Game<'_>, id: u32, at: [f64; 3]) {
         .unwrap()
         .clone();
     let mut m = Mob::new(id, kind, Vec3::new(at[0], at[1], at[2]), 0.0);
-    m.on_ground = true;
+    m.ground.on_ground = true;
     game.mobs.push(m);
 }
 
@@ -709,7 +709,7 @@ fn mob_of(game: &mut super::super::Game<'_>, kind: &str, id: u32, at: [f64; 3]) 
     use sunrise_core::geometry::Vec3;
     let kind = game.res.mob_types().get(kind).unwrap().clone();
     let mut m = Mob::new(id, kind, Vec3::new(at[0], at[1], at[2]), 0.0);
-    m.on_ground = true;
+    m.ground.on_ground = true;
     game.mobs.push(m);
 }
 

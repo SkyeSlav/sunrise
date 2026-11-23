@@ -29,15 +29,13 @@ fn set(bits: &mut Vec<u64>, key: crate::BlockKey) {
 
 impl ListenIndex {
     /// The index of the resolved hook tables (`block_keys` filled).
-    pub(crate) fn of(hooks: &[Option<HookParts>]) -> Self {
+    pub(crate) fn of(hooks: &[Option<Box<HookParts>>]) -> Self {
         let listening = hooks
             .iter()
             .map(|table| {
                 let mut bits = Vec::new();
-                for (key, parts) in table.iter().flat_map(|table| &table.block_keys) {
-                    if !parts.is_empty() {
-                        set(&mut bits, *key);
-                    }
+                for key in table.iter().flat_map(|table| table.block_keys.keys()) {
+                    set(&mut bits, *key);
                 }
                 (!bits.is_empty()).then(|| bits.into_boxed_slice())
             })
@@ -46,8 +44,12 @@ impl ListenIndex {
         let resistance = hooks
             .get(HookId::ExplosionResistance as usize)
             .and_then(Option::as_ref);
-        for (key, parts) in resistance.iter().flat_map(|table| &table.block_keys) {
-            if !parts.iter().all(|a| a.part.explosion_resistance_is_pure()) {
+        for (key, entry) in resistance.iter().flat_map(|table| &table.block_keys) {
+            if !entry
+                .parts()
+                .iter()
+                .all(|a| a.part.explosion_resistance_is_pure())
+            {
                 set(&mut impure, *key);
             }
         }
@@ -156,6 +158,20 @@ pub fn block_key_listens(hook: HookId, key: crate::BlockKey) -> bool {
     parts(hook, "block routing").listens.listens(hook, key)
 }
 
+/// The ids of the mods whose parts on this API block key answer `hook`, in dispatch order: what a
+/// diagnostic about the block's parts names.
+pub fn block_key_owners(hook: HookId, key: crate::BlockKey) -> Vec<&'static str> {
+    parts(hook, "block routing")
+        .for_hook(hook)
+        .map_or_else(Vec::new, |table| {
+            table
+                .block_key(Some(key))
+                .iter()
+                .map(|attached| attached.mod_id)
+                .collect()
+        })
+}
+
 /// Whether every part on this API block key that answers `explosion_resistance` declares the
 /// answer pure (`BlockPart::explosion_resistance_is_pure`), so a batched read may ask once a state.
 pub fn explosion_resistance_key_pure(key: crate::BlockKey) -> bool {
@@ -171,25 +187,97 @@ pub fn worldgen_block_key_listens(hook: HookId, key: crate::BlockKey) -> bool {
         .is_some_and(|table| !table.block_key(Some(key)).is_empty())
 }
 
+/// A resolved block's subscribers for one hook, in dispatch order.
+#[derive(Clone)]
+pub(crate) struct BlockHookParts {
+    parts: Vec<Attached<dyn BlockPart>>,
+    /// The content owner's first subscribed Part, regardless of whether it is currently enabled.
+    owner_slot: Option<usize>,
+}
+
+impl BlockHookParts {
+    pub(crate) fn new(id: &str, parts: &[Attached<dyn BlockPart>]) -> Self {
+        let owner_slot = crate::runtime::content_owner_index(id)
+            .and_then(|owner| parts.iter().position(|part| part.mod_index == owner));
+        Self {
+            parts: parts.to_vec(),
+            owner_slot,
+        }
+    }
+
+    pub(crate) fn parts(&self) -> &[Attached<dyn BlockPart>] {
+        &self.parts
+    }
+
+    pub(crate) fn disabled_owner_slot(&self) -> Option<usize> {
+        self.owner_slot
+            .filter(|&slot| !crate::mod_index_on(self.parts[slot].mod_index))
+    }
+}
+
 impl HookParts {
     /// Prepared subscribers for an API block key; missing keys have no subscribers.
     pub fn block_key(&self, key: Option<crate::BlockKey>) -> &[Attached<dyn BlockPart>] {
         key.and_then(|key| self.block_keys.get(&key))
-            .map_or(&[], |parts| parts.as_slice())
+            .map_or(&[], BlockHookParts::parts)
     }
     /// Parts for a checked API state. Key lookup does not depend on world state numbers.
     pub fn block_value(&self, state: crate::BlockState) -> &[Attached<dyn BlockPart>] {
-        let Some(blocks) = crate::__private::block_definitions() else {
-            return &[];
-        };
-        let Some(definition) = blocks.definitions.get(state.block().0 as usize) else {
-            return &[];
-        };
-        if definition.property(state.ordinal(), "").is_err() {
-            return &[];
-        }
-        self.block_key(Some(state.block()))
+        self.block_entry(state).map_or(&[], BlockHookParts::parts)
     }
+
+    pub(crate) fn block_entry(&self, state: crate::BlockState) -> Option<&BlockHookParts> {
+        let blocks = crate::__private::block_definitions()?;
+        let key = state.block();
+        let definition = blocks.definitions.get(key.0 as usize)?;
+        definition.property(state.ordinal(), "").ok()?;
+        self.block_keys.get(&key)
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn cached_slot_tracks_the_first_owner_in_dispatch_order_and_live_toggles() {
+    struct Quiet;
+    #[mod_api::__subscriptions]
+    impl crate::Hooks for Quiet {}
+    struct Probe;
+    #[mod_api::sunrise_part]
+    impl BlockPart for Probe {}
+
+    crate::testing::with_dispatch(
+        vec![
+            ModEntry::new("other", Box::new(Quiet)),
+            ModEntry::new("owner", Box::new(Quiet)),
+        ]
+        .into(),
+        || {
+            let attach = |mod_index, mod_id, order, type_name| Attached::<dyn BlockPart> {
+                mod_id,
+                mod_index,
+                order,
+                type_name,
+                part: Arc::new(Probe),
+            };
+            let other = attach(0, "other", 0, "Other");
+            let owner = attach(1, "owner", 0, "Owner");
+            let second = attach(1, "owner", 1, "Second");
+            let first = BlockHookParts::new("other:first", &[other.clone(), owner.clone()]);
+            let later = BlockHookParts::new("owner:later", &[other.clone(), owner, second]);
+            let absent = BlockHookParts::new("owner:absent", &[other]);
+
+            assert_eq!(later.disabled_owner_slot(), None);
+            assert!(crate::set_mod_enabled("owner", false));
+            assert_eq!(first.disabled_owner_slot(), None);
+            assert_eq!(later.disabled_owner_slot(), Some(1));
+            assert_eq!(absent.disabled_owner_slot(), None);
+            assert!(crate::set_mod_enabled("other", false));
+            assert_eq!(first.disabled_owner_slot(), Some(0));
+            assert_eq!(absent.disabled_owner_slot(), None);
+            assert!(crate::set_mod_enabled("owner", true));
+            assert_eq!(later.disabled_owner_slot(), None);
+        },
+    );
 }
 
 impl dyn Registrar + '_ {
@@ -206,7 +294,8 @@ impl dyn Registrar + '_ {
     /// stands there (NeoForge's `RegisterCapabilitiesEvent.registerBlock`): a trash can that voids
     /// what it is given, a machine's port block passing a pipe on to its controller. `provider`
     /// is given the position and side asked about, the block state there and the block entity,
-    /// if any: `r.block_capability(&ITEMS, &bin, |_, _, _, _| Some(Box::new(Voids)))`. Asked
+    /// if any, and a read-only level. Call `offer.offer(|| Box::new(Voids))` to answer, or
+    /// leave the offer untouched to decline. Asked
     /// in one list with the providers of the block entity type there, as
     /// [`LevelRef::capability`](crate::LevelRef::capability) orders them.
     pub fn block_capability<T: ?Sized + 'static>(
@@ -214,16 +303,21 @@ impl dyn Registrar + '_ {
         key: &CapabilityKey<T>,
         block: &crate::BlockKey,
         provider: impl Fn(
-            &mut dyn ServerHost,
+            &dyn crate::LevelHost,
             BlockSide,
             crate::BlockState,
             Option<crate::BlockEntityRef>,
-        ) -> Option<Box<T>>
-        + Send
+            &mut crate::BlockCapabilityOffer<'_, T>,
+        ) + Send
         + Sync
         + 'static,
     ) {
-        self.provide_block_capability(key.name, block, false, block_provider(*block, provider));
+        self.provide_block_capability(
+            key.name,
+            block,
+            false,
+            BlockProviderOf::of(Arc::new(provider)),
+        );
     }
     /// `block_capability`, asked ahead of the game's own provider.
     pub fn block_capability_before_game<T: ?Sized + 'static>(
@@ -231,44 +325,22 @@ impl dyn Registrar + '_ {
         key: &CapabilityKey<T>,
         block: &crate::BlockKey,
         provider: impl Fn(
-            &mut dyn ServerHost,
+            &dyn crate::LevelHost,
             BlockSide,
             crate::BlockState,
             Option<crate::BlockEntityRef>,
-        ) -> Option<Box<T>>
-        + Send
+            &mut crate::BlockCapabilityOffer<'_, T>,
+        ) + Send
         + Sync
         + 'static,
     ) {
-        self.provide_block_capability(key.name, block, true, block_provider(*block, provider));
+        self.provide_block_capability(
+            key.name,
+            block,
+            true,
+            BlockProviderOf::of(Arc::new(provider)),
+        );
     }
-}
-
-/// A block provider as the table keeps it: one asked by position and side, which reads the block
-/// state and block entity there for `provider`. A position whose block can't be read (a stale
-/// level, an unloaded chunk), or is no longer `block`, has no answer.
-fn block_provider<T: ?Sized + 'static>(
-    block: crate::BlockKey,
-    provider: impl Fn(
-        &mut dyn ServerHost,
-        BlockSide,
-        crate::BlockState,
-        Option<crate::BlockEntityRef>,
-    ) -> Option<Box<T>>
-    + Send
-    + Sync
-    + 'static,
-) -> BlockProviderOf {
-    BlockProviderOf::of(Arc::new(move |host: &mut dyn ServerHost, at: BlockSide| {
-        // The block may have changed since the lookup chose this provider: an earlier provider
-        // replaced it, say. Then it is another block's position, and this one has no answer.
-        if at.level.block(host, at.pos)? != block {
-            return None;
-        }
-        let state = at.level.block_state(host, at.pos)?;
-        let entity = host.block_entity(at.level, at.pos);
-        provider(host, at, state, entity)
-    }) as Arc<dyn BlockCapabilityProvider<T>>)
 }
 
 /// Registrar operations for blocks.
@@ -296,44 +368,6 @@ pub trait BlocksRegistrar {
         before_game: bool,
         provider: BlockProviderOf,
     );
-}
-
-/// CapabilityProviders operations for blocks.
-// hidden: per-kind lookup implementation, exposed for generated provider bindings
-#[doc(hidden)]
-pub trait BlocksCapabilityProviders {
-    /// The next enabled provider of block capability `name` at a position: those registered for
-    /// block entity type `kind` standing there and for block `block`, as one list in
-    /// [`LevelRef::capability`](crate::LevelRef::capability)'s order, with its mod and whether it
-    /// is asked ahead of the game. `index` starts at zero and advances past every visited
-    /// registration, including disabled ones.
-    fn block_provider(
-        &self,
-        name: &str,
-        kind: Option<crate::BlockEntityTypeKey>,
-        block: Option<crate::BlockKey>,
-        index: &mut u32,
-    ) -> Option<(BlockProviderOf, &'static str, bool)>;
-}
-
-impl BlocksCapabilityProviders for InstalledProviders {
-    fn block_provider(
-        &self,
-        name: &str,
-        kind: Option<crate::BlockEntityTypeKey>,
-        block: Option<crate::BlockKey>,
-        index: &mut u32,
-    ) -> Option<(BlockProviderOf, &'static str, bool)> {
-        use crate::content::registry_keys::{block_entity_type_name, block_id};
-        let keys = &installed()?.keys;
-        let kind = kind.and_then(block_entity_type_name);
-        let block = block.and_then(block_id);
-        next_merged(
-            providers_at(&keys.capabilities, name, kind),
-            providers_at(&keys.block_capabilities, name, block),
-            index,
-        )
-    }
 }
 
 /// `table`'s providers of capability `name` for `id`: none for no id.

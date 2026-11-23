@@ -354,7 +354,7 @@ mod tests {
                 .unwrap()
                 .clone();
             let mut zombie = Mob::new(99, kind, Vec3::new(3.5, 65.0, 3.5), 0.0);
-            zombie.on_ground = true;
+            zombie.ground.on_ground = true;
             game.mobs.push(zombie);
             let entity = game.entity(99).unwrap();
             let mob = game.mob(entity).unwrap();

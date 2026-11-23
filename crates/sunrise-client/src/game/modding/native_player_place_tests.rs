@@ -122,10 +122,11 @@ fn each_place_block_refusal_has_its_own_name_and_writes_nothing() {
     });
 }
 
-/// A level that is open but is not the one the player is in is `OtherLevel`.
+/// A level that is open but is not the one in place is `OtherLevel`: the check compares the
+/// supplied level with the installed one, not with the player's dimension.
 #[test]
 #[ignore = "daily"]
-fn another_level_is_not_where_the_player_is() {
+fn a_level_not_in_place_is_other_level() {
     with_guests(|game| {
         loaded(game);
         let b = game.player(13).unwrap();

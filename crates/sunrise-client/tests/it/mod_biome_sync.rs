@@ -71,12 +71,19 @@ fn server_load() -> sunrise_world::native_load_context::LoadContext {
 
 fn sync_of(root: &std::path::Path) -> SyncData {
     let defaults = sunrise_world::item_defaults::read(root).unwrap();
+    let items = sunrise_client::items::Items::catalog(
+        root,
+        &sunrise_world::loot::PackOverlay::NONE,
+        &defaults,
+    )
+    .unwrap();
     SyncData::load(
         root,
         &sunrise_world::loot::PackOverlay::NONE,
         &defaults,
         &sunrise_client::crafting::ResolvedSources::load(
             root,
+            &items,
             &sunrise_world::loot::PackOverlay::NONE,
             &server_load(),
         )

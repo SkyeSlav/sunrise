@@ -103,9 +103,6 @@ impl GameNarrator {
             ..Self::new()
         }
     }
-    pub fn set_sink(&mut self, sink: Box<dyn Sink>) {
-        self.sink = Some(sink);
-    }
     pub fn set_status(&mut self, status: Status) {
         self.status = status;
     }

@@ -112,9 +112,8 @@ impl Game<'_> {
         self.remember_uuid(id, saved, &tag);
         // Entity.load's `setXRot` keeps the pitch in -90..90 and its `setRot`
         // takes both `% 360`; the save writes the rotation back from this tag.
-        let [yaw, pitch] = sunrise_client::entity_nbt::rotation(&tag);
-        let (yaw, pitch) = (yaw % 360.0, (pitch % 360.0).clamp(-90.0, 90.0));
-        let floats = [yaw, pitch].map(|v| sunrise_core::nbt::Tag::Float(v.to_bits()));
+        let floats = sunrise_client::entity_nbt::loaded_rotation(&tag)
+            .map(|v| sunrise_core::nbt::Tag::Float(v.to_bits()));
         if let sunrise_core::nbt::Tag::Compound(map) = &mut tag {
             map.insert(
                 "Rotation".into(),
@@ -243,6 +242,9 @@ impl Game<'_> {
         out: &mut Vec<Vertex>,
     ) {
         for s in &self.ominous_spawners {
+            if self.hides_as_camera(s.id) {
+                continue;
+            }
             let at = glam::DVec3::from_array(s.position);
             if at.distance_squared(camera) >= 64.0 * 64.0 {
                 continue;
@@ -262,7 +264,7 @@ impl Game<'_> {
                 * glam::Mat4::from_scale(glam::Vec3::splat(scale))
                 * glam::Mat4::from_rotation_y(spin.to_radians());
             let seed =
-                i64::from(self.pack.item_renderer.item_id(&s.item.item)) + i64::from(s.item.damage);
+                i64::from(self.item_number(&s.item.item).unwrap_or(0)) + i64::from(s.item.damage);
             for copy in item_render::cluster_poses(
                 &state,
                 pose,

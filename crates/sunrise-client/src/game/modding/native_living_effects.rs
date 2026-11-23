@@ -54,29 +54,30 @@ impl Game<'_> {
         index: usize,
     ) -> Option<bool> {
         let target = self.native_living_target(living)?;
-        let effect = self
-            .items()
-            .get(&stack.item)?
-            .consumable
-            .as_ref()?
+        let effect = stack
+            .consumable(self.items().get(&stack.item))?
             .effects
             .get(index)?
             .clone();
         match target {
             t @ (Target::Player | Target::Guest(_)) => self
-                .for_player(t, |g| g.apply_consume_effect(stack, &effect, None))
+                .for_player(t, |g| {
+                    g.apply_consume_effect(stack, &effect, None, living.entity())
+                })
                 .flatten(),
-            Target::Mob(_) => self.apply_consume_effect(stack, &effect, Some(living)),
+            Target::Mob(_) => {
+                self.apply_consume_effect(stack, &effect, Some(living), living.entity())
+            }
             _ => None,
         }
     }
 
     /// Where a player's or a guest's effects are: the acting player's own
-    /// are the game's (swapped in by `enter_guest`; a player handle names
+    /// are the game's (swapped in by the entry of `guest_turn`; a player handle names
     /// the acting player, and a game without a hub keeps its single
     /// player's the same way), any other guest's are their hub record's.
     /// None for another kind.
-    fn native_living_player_effects(&self, t: Target) -> Option<&PlayerEffects> {
+    pub(super) fn native_living_player_effects(&self, t: Target) -> Option<&PlayerEffects> {
         match t {
             Target::Player => Some(&self.potions.effects),
             Target::Guest(conn) if self.lan_acting == Some(conn) => Some(&self.potions.effects),
@@ -130,10 +131,11 @@ impl Game<'_> {
                 if !self.can_be_affected_resolved(Some(id as i32), &kind, name, Some(effect.id)) {
                     return false;
                 }
-                let Some(m) = self.mobs.iter_mut().find(|m| m.id == id && !m.removed) else {
+                let Some(changed) = self.mutate_mob_effects(id, Some(name), |mob| {
+                    mob.add_effect_instance(name, instance)
+                }) else {
                     return false;
                 };
-                let changed = m.add_effect_instance(name, instance);
                 self.mod_effect_added_resolved(effect.id, Some(id as i32), amplifier, new);
                 changed
             }
@@ -153,39 +155,16 @@ impl Game<'_> {
     ) -> Option<ActiveEffect> {
         let def = mod_api::__private::effect_index(effect)
             .and_then(sunrise_client_core::potions::effect_by_index)?;
-        match self.native_living_read_target(living)? {
-            t @ (Target::Player | Target::Guest(_)) => self
-                .native_living_player_effects(t)?
-                .get_registered(def.index)
-                .map(active_effect),
-            Target::Mob(id) => {
-                let m = self.mobs.iter().find(|m| m.id == id && !m.removed)?;
-                let e = m
-                    .extra
-                    .effects
-                    .iter()
-                    .find(|e| e.registry_index == Some(def.index))?;
-                Some(mob_effect(m, e))
-            }
-            _ => None,
-        }
+        let target = self.native_living_read_target(living)?;
+        super::native_living_body::body_effect(self.native_living_body(target)?, def.index)
     }
 
     /// The entity's active effects (`LivingEntity.getActiveEffects`), in the
     /// order their store keeps them, in `Some` even when it has none. None
     /// for an armor stand, the dragon, a stale handle or a client.
     pub(super) fn living_effects(&self, living: LivingRef) -> Option<Vec<ActiveEffect>> {
-        match self.native_living_read_target(living)? {
-            t @ (Target::Player | Target::Guest(_)) => self
-                .native_living_player_effects(t)
-                .map(|effects| effects.list.iter().map(active_effect).collect()),
-            Target::Mob(id) => self
-                .mobs
-                .iter()
-                .find(|m| m.id == id && !m.removed)
-                .map(|m| m.extra.effects.iter().map(|e| mob_effect(m, e)).collect()),
-            _ => None,
-        }
+        let target = self.native_living_read_target(living)?;
+        super::native_living_body::body_effects(self.native_living_body(target)?)
     }
 
     /// Whether the entity has `effect` (`LivingEntity.hasEffect`), using its resolved key.
@@ -198,22 +177,9 @@ impl Game<'_> {
         else {
             return false;
         };
-        match self.native_living_read_target(living) {
-            Some(t @ (Target::Player | Target::Guest(_))) => self
-                .native_living_player_effects(t)
-                .is_some_and(|effects| effects.get_registered(def.index).is_some()),
-            Some(Target::Mob(id)) => self
-                .mobs
-                .iter()
-                .find(|m| m.id == id && !m.removed)
-                .is_some_and(|m| {
-                    m.extra
-                        .effects
-                        .iter()
-                        .any(|e| e.registry_index == Some(def.index))
-                }),
-            _ => false,
-        }
+        self.native_living_read_target(living)
+            .and_then(|target| self.native_living_body(target))
+            .is_some_and(|body| super::native_living_body::body_potion_affected(body, def.index))
     }
 
     /// `LivingEntity.getEffectBlendFactor(effect, partialTick)` on a client:
@@ -226,8 +192,8 @@ impl Game<'_> {
     /// add starts at its target immediately; an update preserves the old blend.
     /// `partial` is not clamped. The registration-slot key is resolved at load.
     /// 0 when the entity lacks the effect. None before effect resolution, for a stale
-    /// handle, or an entity other than the local player: the client keeps no
-    /// other entity's effects.
+    /// handle, or an entity other than the local player: the client keeps other living
+    /// entities' effects, but this query reads only the local player's.
     pub(super) fn living_effect_blend_factor(
         &self,
         living: LivingRef,
@@ -293,10 +259,10 @@ impl Game<'_> {
                 if cancel {
                     return false;
                 }
-                self.mobs
-                    .iter_mut()
-                    .find(|m| m.id == id && !m.removed)
-                    .is_some_and(|m| m.retain_effects(|e| e.registry_index != Some(def.index)))
+                self.mutate_mob_effects(id, Some(def.id), |mob| {
+                    mob.retain_effects(|e| e.registry_index != Some(def.index))
+                })
+                .unwrap_or(false)
             }
             _ => false,
         }
@@ -338,14 +304,12 @@ impl Game<'_> {
                     .map(|(name, _)| *name)
                     .collect();
                 // The refused removals keep their effects; the rest go.
-                self.mobs
-                    .iter_mut()
-                    .find(|m| m.id == id && !m.removed)
-                    .is_some_and(|m| {
-                        m.retain_effects(|e| {
-                            e.registry_index.is_some_and(|index| keep.contains(&index))
-                        })
+                self.mutate_mob_effects(id, None, |mob| {
+                    mob.retain_effects(|e| {
+                        e.registry_index.is_some_and(|index| keep.contains(&index))
                     })
+                })
+                .unwrap_or(false)
             }
             _ => false,
         }
@@ -397,7 +361,7 @@ mod tests {
                 listed[0].id,
                 mod_platform::__private::part_tests::effect_key("speed")
             );
-            assert_eq!(listed[0].id.id(game), "minecraft:speed");
+            assert_eq!(listed[0].id.id(game), Some("minecraft:speed"));
         });
     }
 

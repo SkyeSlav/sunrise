@@ -34,7 +34,8 @@ impl Runtime {
                 Ok(package) => {
                     let m = &package.manifest;
                     if m.id != expected.id
-                        || m.version != expected.version
+                        || crate::manifest::parse_version(expected.version).as_ref()
+                            != Ok(&m.version)
                         || m.side != expected.side
                     {
                         refused.push(PackageError::Identity {
@@ -191,7 +192,7 @@ mod tests {
         let runtime = f.load().unwrap();
         assert_eq!(runtime.packages.len(), 2);
         assert_eq!(runtime.packages[0].manifest.id, "machines");
-        assert_eq!(runtime.packages[0].manifest.version, "1.2.3");
+        assert_eq!(runtime.packages[0].manifest.version.to_string(), "1.2.3");
         assert_eq!(
             runtime.packages[0].path,
             f.0.join(NATIVE_DIR).join("machines")

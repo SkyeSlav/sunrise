@@ -273,6 +273,27 @@ impl<'a> GoalContext<'a> {
     pub fn jump(&mut self) {
         self.inner.jump()
     }
+    /// `getDeltaMovement()`: the mob's velocity now, in blocks a tick,
+    /// with any write this goal made earlier in the tick.
+    pub fn delta_movement(&self) -> [f64; 3] {
+        self.inner.delta_movement()
+    }
+    /// `setDeltaMovement(x, y, z)`: replace the mob's velocity, in blocks a
+    /// tick. It applies at once, inside the mob's AI step, so the travel
+    /// that follows in the same tick uses it, and clients see it
+    /// through the entity's ordinary motion tracking. False, the velocity
+    /// unchanged, when a component is not finite; nothing else is refused or
+    /// clamped.
+    pub fn set_delta_movement(&mut self, velocity: [f64; 3]) -> bool {
+        self.inner.set_delta_movement(velocity)
+    }
+    /// `addDeltaMovement(x, y, z)`: add `delta` to the mob's velocity, as
+    /// [`set_delta_movement`](Self::set_delta_movement) does with the sum.
+    /// False, the velocity unchanged, when a component of `delta` or of the
+    /// sum is not finite.
+    pub fn add_delta_movement(&mut self, delta: [f64; 3]) -> bool {
+        self.inner.add_delta_movement(delta)
+    }
 }
 
 // hidden: a game-side helper, not part of the mod surface
@@ -296,6 +317,12 @@ pub trait GoalCxBackend {
     fn set_target(&mut self, target: Option<LivingRef>) -> bool;
     /// `GoalContext::jump`.
     fn jump(&mut self);
+    /// `GoalContext::delta_movement`.
+    fn delta_movement(&self) -> [f64; 3];
+    /// `GoalContext::set_delta_movement`.
+    fn set_delta_movement(&mut self, velocity: [f64; 3]) -> bool;
+    /// `GoalContext::add_delta_movement`.
+    fn add_delta_movement(&mut self, delta: [f64; 3]) -> bool;
 }
 
 #[cfg(test)]

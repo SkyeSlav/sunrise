@@ -74,9 +74,9 @@ pub const ROUTES: [Route; 32] = [
     Route {
         method: "GET",
         path: "/api/v1/events",
-        takes: "`?since=N` (or `Last-Event-ID`), `?types=join,leave,kick,chat,chat_filtered,death,log,phase` (all by default)",
+        takes: "`?since=N` (or `Last-Event-ID`), `?types=join,leave,kick,chat,death,log,phase` (all by default)",
         answers: "with `Accept: text/event-stream`, server-sent events as they happen (`id`, `event`: the type, `data`: JSON); otherwise `{\"next\": N, \"events\": [...]}`",
-        what: "Log lines, the supervisor's phase, and the game's joins, leaves, kicks, chat, messages the chat filter refused (`chat_filtered`, without their text) and deaths (the last 2000 kept)",
+        what: "Log lines, the supervisor's phase, and the game's joins, leaves, kicks, chat and deaths (the last 2000 kept)",
     },
     Route {
         method: "POST",
@@ -470,7 +470,7 @@ impl Shared {
             .spawn(move || {
                 let fetched = (|| {
                     let current = install.current().unwrap_or_default();
-                    let release = update::release(None)?;
+                    let release = update::newest(&current)?;
                     if !update::update_available(&release.tag, &current) {
                         return Ok(None);
                     }

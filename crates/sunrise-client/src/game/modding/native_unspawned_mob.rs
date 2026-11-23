@@ -296,7 +296,7 @@ impl Game<'_> {
         })
     }
 
-    /// The tags a mod gave the mob so far (`Entity.getTags`).
+    /// The tags a mod gave the mob so far (`Entity.entityTags()`).
     pub(super) fn unspawned_mob_tags(
         &self,
         mob: UnspawnedMobRef,
@@ -598,7 +598,10 @@ impl UnspawnedMobEdits for Edits<'_, '_> {
         mob: UnspawnedMobRef,
         name: Option<mod_api::Text>,
     ) -> Result<(), UnspawnedMobError> {
-        let name = name.try_into_engine(&())?;
+        let name = name
+            .as_ref()
+            .map(sunrise_client_lib::api_text::to_serialized_engine)
+            .transpose()?;
         self.game.edit_lent_mob(mob, |_, m| {
             m.custom_name = name.as_ref().map(Text::plain);
             m.custom_name_text = name;
@@ -738,12 +741,13 @@ mod tests {
                     assert_eq!(m.custom_name.as_deref(), Some("Bacon"));
                     assert_eq!(game.tags_of(Target::Mob(spawned)), ["test:tagged"]);
                 });
+                // Item keys resolve with the game inside this scope, so the stack is read here.
+                let (kind, base, head) = seen.lock().unwrap().take().expect("the hook ran");
+                assert_eq!(kind, Ok(id("minecraft:pig")));
+                assert_eq!(base, Ok(20.0));
+                assert_eq!(head, Ok(Some(pumpkin())));
             },
         );
-        let (kind, base, head) = seen.lock().unwrap().take().expect("the hook ran");
-        assert_eq!(kind, Ok(id("minecraft:pig")));
-        assert_eq!(base, Ok(20.0));
-        assert_eq!(head, Ok(Some(pumpkin())));
     }
 
     /// A handle kept past its hook reads `Expired`, and the next call's

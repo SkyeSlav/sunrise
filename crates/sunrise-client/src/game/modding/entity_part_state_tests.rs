@@ -4,7 +4,7 @@ use std::{collections::HashSet, panic::AssertUnwindSafe, sync::Arc};
 
 use mod_api::{
     AttachmentType, EntityPart, EntityPartState, EntityRef, Hooks, HostTransaction, PartStateError,
-    Registrar, ServerHost, WorldEpoch, edit_part_state, read_state,
+    Registrar, ServerHost, TransactionError, WorldEpoch, edit_part_state, read_state,
 };
 use sunrise_client::chunk::Chunk;
 use sunrise_core::{
@@ -68,8 +68,11 @@ impl Hooks for StateMod {
             mod_api::GeneralEntityCategory::Misc,
             0.8,
             1.9,
+            None,
             mod_api::GeneralSavePolicy::Save,
             true,
+            false,
+            None,
             8,
             3,
             1,
@@ -97,7 +100,6 @@ fn with_state_mod(name: &str, test: impl FnOnce(&mut Game<'_>)) {
     }
     with_mod(StateMod { refused: None }, |game| {
         // Registration is over once the game is built: the test runs in the world's phase.
-        let _world = mod_api::__private::PhaseOwner::scope(mod_api::__private::ModPhase::World);
         game.options.dedicated = Some(Vec::new());
         game.native_level_opened(Dim::Overworld);
         game.world
@@ -113,7 +115,7 @@ fn with_state_mod(name: &str, test: impl FnOnce(&mut Game<'_>)) {
 /// is only declared while that phase is current.
 fn with_mod(state_mod: StateMod, test: impl FnOnce(&mut Game<'_>)) {
     mod_platform::__private::initialize().expect("test registration requires the mod API runtime");
-    let _phase = mod_api::__private::PhaseOwner::scope(mod_api::__private::ModPhase::Registration);
+    let _phase = mod_platform::__private::RegistrationGuard::open();
     let mods: mod_api::Mods =
         vec![mod_api::ModEntry::new("part_state", Box::new(state_mod))].into();
     mod_platform::testing::with_mods(mods, || {
@@ -149,6 +151,7 @@ fn robot_tag(uuid: i32) -> Tag {
         position: [0.5, 64.0, 0.5],
         velocity: [0.0; 3],
         rotation: [0.0, 90.0],
+        owner: None,
         uuid: [uuid, 0, 0, 2],
         envelope: super::general::GeneralTypeEnvelope {
             type_key: "part_state:robot".to_owned(),
@@ -217,16 +220,17 @@ fn entity_part_state_is_per_entity_through_edits_transactions_and_panics() {
 
         // An inner edit commits into the outer transaction, which then aborts: the value goes
         // back, and with it the save gate.
-        let aborted: Result<(), ()> = (game as &mut dyn ServerHost).transaction(|host, _| {
-            assert_eq!(Charge::edit_state(host, a, |_, n| *n = 11), Ok(()));
-            assert_eq!(Charge::state(host, a), Ok(11), "later steps see it");
-            assert!(
-                !sunrise_client::join_seq::visibility::passes_settled(),
-                "no save while it is tentative"
-            );
-            Err(())
-        });
-        assert_eq!(aborted, Err(()));
+        let aborted: Result<(), TransactionError<()>> =
+            (game as &mut dyn ServerHost).transaction(|host, _| {
+                assert_eq!(Charge::edit_state(host, a, |_, n| *n = 11), Ok(()));
+                assert_eq!(Charge::state(host, a), Ok(11), "later steps see it");
+                assert!(
+                    !sunrise_client::join_seq::visibility::passes_settled(),
+                    "no save while it is tentative"
+                );
+                Err(())
+            });
+        assert_eq!(aborted, Err(TransactionError::Aborted(())));
         assert_eq!(stored(game, a), Some(7));
         assert!(sunrise_client::join_seq::visibility::passes_settled());
         assert_eq!(indexed(game, Dim::Overworld), [(a.id(), 7)]);
@@ -384,49 +388,52 @@ fn a_spawn_or_removal_inside_an_aborted_action_keeps_the_bindings() {
 
         // Removed inside an action: stale at once, but bound until the root commits; the abort
         // brings it back with its value.
-        let seal = game.transaction_open();
-        assert!(game.entity_discard(cow));
-        assert_eq!(Charge::state(game, cow), Err(PartStateError::Stale));
-        assert_eq!(
-            Charge::edit_state(game, cow, |_, n| *n = 1),
-            Err(PartStateError::Stale)
-        );
-        assert_eq!(
-            indexed(game, Dim::Overworld),
-            [(cow.id(), 7)],
-            "nothing retired yet"
-        );
-        // A spawn inside it exists at once and keeps state; the abort removes both.
-        let (Tag::Compound(nbt), _) = sunrise_core::nbt::parse_snbt("{}").unwrap() else {
-            unreachable!()
-        };
-        let pig = game
-            .summon(
-                "minecraft:overworld",
-                "minecraft:pig",
-                [1.5, 70.0, 1.5],
-                nbt,
-            )
-            .unwrap();
-        let pig = game.entity(pig).unwrap();
-        assert_eq!(Charge::edit_state(game, pig, |_, n| *n = 5), Ok(()));
-        assert_eq!(
-            indexed(game, Dim::Overworld),
-            [(cow.id(), 7), (pig.id(), 5)]
-        );
-        game.transaction_close(&seal, false);
+        let pig = game.storage_scope(|game, _| {
+            assert!(game.entity_discard(cow));
+            assert_eq!(Charge::state(game, cow), Err(PartStateError::Stale));
+            assert_eq!(
+                Charge::edit_state(game, cow, |_, n| *n = 1),
+                Err(PartStateError::Stale)
+            );
+            assert_eq!(
+                indexed(game, Dim::Overworld),
+                [(cow.id(), 7)],
+                "nothing retired yet"
+            );
+            // A spawn inside it exists at once and keeps state; the abort removes both.
+            let (Tag::Compound(nbt), _) = sunrise_core::nbt::parse_snbt("{}").unwrap() else {
+                unreachable!()
+            };
+            let pig = game
+                .summon(
+                    "minecraft:overworld",
+                    "minecraft:pig",
+                    [1.5, 70.0, 1.5],
+                    nbt,
+                )
+                .unwrap();
+            let pig = game.entity(pig).unwrap();
+            assert_eq!(Charge::edit_state(game, pig, |_, n| *n = 5), Ok(()));
+            assert_eq!(
+                indexed(game, Dim::Overworld),
+                [(cow.id(), 7), (pig.id(), 5)]
+            );
+            (pig, false)
+        });
         assert_eq!(Charge::state(game, cow), Ok(7));
         assert_eq!(Charge::state(game, pig), Err(PartStateError::Stale));
         assert!(!game.entity_attachments.contains_key(&pig.id()));
         assert_eq!(indexed(game, Dim::Overworld), [(cow.id(), 7)]);
 
         // A nested removal committed into its parent still waits; the root commit retires it.
-        let outer = game.transaction_open();
-        let inner = game.transaction_open();
-        assert!(game.entity_discard(cow));
-        game.transaction_close(&inner, true);
-        assert_eq!(indexed(game, Dim::Overworld), [(cow.id(), 7)]);
-        game.transaction_close(&outer, true);
+        game.storage_scope(|game, _| {
+            game.storage_scope(|game, _| {
+                assert!(game.entity_discard(cow));
+                ((), true)
+            });
+            assert_eq!(indexed(game, Dim::Overworld), [(cow.id(), 7)]);
+            ((), true)
+        });
         assert_eq!(Charge::state(game, cow), Err(PartStateError::Stale));
         // The removal ran at the root commit; its row goes when the mob does, at the sweep.
         game.native_removals_flush();
@@ -581,25 +588,26 @@ fn a_transfer_inside_an_aborted_action_leaves_the_state_with_the_entity() {
     with_state_mod(NAME, |game| {
         let cow = mob(game, "minecraft:cow", 51);
         assert_eq!(Charge::edit_state(game, cow, |_, n| *n = 7), Ok(()));
-        let seal = game.transaction_open();
-        assert_eq!(Charge::edit_state(game, cow, |_, n| *n = 9), Ok(()));
-        let state = game.take_transferred_entity_state(cow.id());
-        game.mobs.retain(|m| m.id != cow.id());
-        game.detach_entity(cow.id());
-        assert_eq!(
-            indexed(game, Dim::Overworld),
-            [(cow.id(), 9)],
-            "the source index keeps its row until the root closes"
-        );
-        game.enter_level(Dim::Nether).unwrap();
-        let moved = game
-            .load_mob_transferred(mob_tag("minecraft:cow", 51), None, Some(state))
-            .unwrap();
-        let moved = game.entity(moved).unwrap();
-        assert_eq!(stored(game, moved), Some(9));
-        assert_eq!(Charge::edit_state(game, moved, |_, n| *n = 11), Ok(()));
-        game.enter_level(Dim::Overworld).unwrap();
-        game.transaction_close(&seal, false);
+        let moved = game.storage_scope(|game, _| {
+            assert_eq!(Charge::edit_state(game, cow, |_, n| *n = 9), Ok(()));
+            let state = game.take_transferred_entity_state(cow.id());
+            game.mobs.retain(|m| m.id != cow.id());
+            game.detach_entity(cow.id());
+            assert_eq!(
+                indexed(game, Dim::Overworld),
+                [(cow.id(), 9)],
+                "the source index keeps its row until the root closes"
+            );
+            game.enter_level(Dim::Nether).unwrap();
+            let moved = game
+                .load_mob_transferred(mob_tag("minecraft:cow", 51), None, Some(state))
+                .unwrap();
+            let moved = game.entity(moved).unwrap();
+            assert_eq!(stored(game, moved), Some(9));
+            assert_eq!(Charge::edit_state(game, moved, |_, n| *n = 11), Ok(()));
+            game.enter_level(Dim::Overworld).unwrap();
+            (moved, false)
+        });
 
         // Travel is not undone: the map stays with the cow under its new id, with the writes the
         // action made rolled back; the old handle stays stale and its row is gone.
@@ -615,27 +623,28 @@ fn a_transfer_inside_an_aborted_action_leaves_the_state_with_the_entity() {
         game.enter_level(Dim::Overworld).unwrap();
         let a = mob(game, "minecraft:cow", 52);
         assert_eq!(Charge::edit_state(game, a, |_, n| *n = 7), Ok(()));
-        let seal = game.transaction_open();
-        assert_eq!(Charge::edit_state(game, a, |_, n| *n = 9), Ok(()));
-        let state = game.take_transferred_entity_state(a.id());
-        game.mobs.retain(|m| m.id != a.id());
-        game.detach_entity(a.id());
-        game.enter_level(Dim::Nether).unwrap();
-        let b = game
-            .load_mob_transferred(mob_tag("minecraft:cow", 52), None, Some(state))
-            .unwrap();
-        let b = game.entity(b).unwrap();
-        assert_eq!(stored(game, b), Some(9));
-        let state = game.take_transferred_entity_state(b.id());
-        game.mobs.retain(|m| m.id != b.id());
-        game.detach_entity(b.id());
-        game.enter_level(Dim::Overworld).unwrap();
-        let c = game
-            .load_mob_transferred(mob_tag("minecraft:cow", 52), None, Some(state))
-            .unwrap();
-        let c = game.entity(c).unwrap();
-        assert_eq!(stored(game, c), Some(9));
-        game.transaction_close(&seal, false);
+        let (b, c) = game.storage_scope(|game, _| {
+            assert_eq!(Charge::edit_state(game, a, |_, n| *n = 9), Ok(()));
+            let state = game.take_transferred_entity_state(a.id());
+            game.mobs.retain(|m| m.id != a.id());
+            game.detach_entity(a.id());
+            game.enter_level(Dim::Nether).unwrap();
+            let b = game
+                .load_mob_transferred(mob_tag("minecraft:cow", 52), None, Some(state))
+                .unwrap();
+            let b = game.entity(b).unwrap();
+            assert_eq!(stored(game, b), Some(9));
+            let state = game.take_transferred_entity_state(b.id());
+            game.mobs.retain(|m| m.id != b.id());
+            game.detach_entity(b.id());
+            game.enter_level(Dim::Overworld).unwrap();
+            let c = game
+                .load_mob_transferred(mob_tag("minecraft:cow", 52), None, Some(state))
+                .unwrap();
+            let c = game.entity(c).unwrap();
+            assert_eq!(stored(game, c), Some(9));
+            ((b, c), false)
+        });
 
         assert!(game.transactions.is_empty());
         assert_eq!(stored(game, c), Some(7), "the value the action first found");
@@ -659,12 +668,13 @@ fn a_transfer_inside_an_aborted_action_leaves_the_state_with_the_entity() {
         game.enter_level(Dim::Overworld).unwrap();
         let late = mob(game, "minecraft:cow", 53);
         assert_eq!(Charge::edit_state(game, late, |_, n| *n = 7), Ok(()));
-        let seal = game.transaction_open();
-        assert_eq!(Charge::edit_state(game, late, |_, n| *n = 9), Ok(()));
-        let state = game.take_transferred_entity_state(late.id());
-        game.mobs.retain(|m| m.id != late.id());
-        game.detach_entity(late.id());
-        game.transaction_close(&seal, false);
+        let state = game.storage_scope(|game, _| {
+            assert_eq!(Charge::edit_state(game, late, |_, n| *n = 9), Ok(()));
+            let state = game.take_transferred_entity_state(late.id());
+            game.mobs.retain(|m| m.id != late.id());
+            game.detach_entity(late.id());
+            (state, false)
+        });
         assert!(game.transactions.is_empty());
         assert_eq!(
             indexed(game, Dim::Overworld),
@@ -688,22 +698,23 @@ fn a_transfer_inside_an_aborted_action_leaves_the_state_with_the_entity() {
         game.enter_level(Dim::Overworld).unwrap();
         let first = mob(game, "minecraft:cow", 54);
         assert_eq!(Charge::edit_state(game, first, |_, n| *n = 7), Ok(()));
-        let seal = game.transaction_open();
-        assert_eq!(Charge::edit_state(game, first, |_, n| *n = 9), Ok(()));
-        let state = game.take_transferred_entity_state(first.id());
-        game.mobs.retain(|m| m.id != first.id());
-        game.detach_entity(first.id());
-        game.enter_level(Dim::Nether).unwrap();
-        let second = game
-            .load_mob_transferred(mob_tag("minecraft:cow", 54), None, Some(state))
-            .unwrap();
-        let second = game.entity(second).unwrap();
-        assert_eq!(stored(game, second), Some(9));
-        let state = game.take_transferred_entity_state(second.id());
-        game.mobs.retain(|m| m.id != second.id());
-        game.detach_entity(second.id());
-        game.enter_level(Dim::Overworld).unwrap();
-        game.transaction_close(&seal, false);
+        let (state, second) = game.storage_scope(|game, _| {
+            assert_eq!(Charge::edit_state(game, first, |_, n| *n = 9), Ok(()));
+            let state = game.take_transferred_entity_state(first.id());
+            game.mobs.retain(|m| m.id != first.id());
+            game.detach_entity(first.id());
+            game.enter_level(Dim::Nether).unwrap();
+            let second = game
+                .load_mob_transferred(mob_tag("minecraft:cow", 54), None, Some(state))
+                .unwrap();
+            let second = game.entity(second).unwrap();
+            assert_eq!(stored(game, second), Some(9));
+            let state = game.take_transferred_entity_state(second.id());
+            game.mobs.retain(|m| m.id != second.id());
+            game.detach_entity(second.id());
+            game.enter_level(Dim::Overworld).unwrap();
+            ((state, second), false)
+        });
         assert!(game.transactions.is_empty());
         let third = game
             .load_mob_transferred(mob_tag("minecraft:cow", 54), None, Some(state))

@@ -20,7 +20,7 @@ use sunrise_client::{
 };
 use sunrise_core::geometry::Vec3;
 
-fn game() -> Game<'static> {
+fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -> Game<'a> {
     let root = std::path::PathBuf::from(
         std::env::var_os("SUNRISE_TEST_RESOURCES")
             .expect("set SUNRISE_TEST_RESOURCES to prepared resources"),
@@ -42,7 +42,7 @@ fn game() -> Game<'static> {
     let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
     options.resources = root.clone();
     options.execution_role = execution_role::ExecutionRole::IntegratedServer;
-    let res: &'static _ = Box::leak(Box::new(loaded.resources));
+    let res = &*resources.insert(loaded.resources);
     let mut game = Game::new(
         res,
         loaded.pack,
@@ -81,7 +81,8 @@ fn drawn(game: &mut Game<'_>, command: &str) -> ParticleOptions {
 #[test]
 #[ignore = "daily"]
 fn particle_options_carry_their_codec_data() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     // BlockParticleOption: `block_crumble` is the crumbs of the named block.
     let crumble = drawn(
         &mut game,
@@ -131,7 +132,8 @@ fn particle_options_carry_their_codec_data() {
 #[test]
 #[ignore = "daily"]
 fn block_crumble_draws_the_block_it_names() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     game.particles.created_requests = None;
     game.particles.clear();
     assert!(game.run_command(
@@ -146,4 +148,93 @@ fn block_crumble_draws_the_block_it_names() {
     };
     game.particles.tick(&level);
     assert_eq!(game.particles.len(), 1, "the crumble is drawn");
+}
+
+#[test]
+#[ignore = "daily"]
+fn typed_particle_commands_suggest_and_execute_the_decoded_value() {
+    if crate::game::native_entity_refs::tests::run_fresh_cases(
+        "game::commands::world_cmds::particle_command_tests::typed_particle_commands_suggest_and_execute_the_decoded_value",
+        "SUNRISE_TEST_TYPED_PARTICLE_COMMAND_CASE",
+        &["typed"],
+    ) {
+        return;
+    }
+    let entries = [mod_api::ModEntry::new(
+        "test",
+        Box::new(crate::game::lan_particles::tests::MeasuredParticle),
+    )];
+    mod_platform::__private::part_tests::install_parts_fixture(&entries).unwrap();
+    crate::game::mods::resolve_particle_providers(&Default::default()).unwrap();
+    let mut resources = None;
+    let mut game = game(&mut resources);
+    let reg = &game.ui.registries;
+    let input = "particle test:meas";
+    let dispatcher = sunrise_command::vanilla::dispatcher();
+    let (_, suggestions) = dispatcher.suggestions(&dispatcher.parse(input, reg), input.len(), reg);
+    assert!(
+        suggestions
+            .iter()
+            .any(|suggestion| suggestion.text == "test:measured")
+    );
+    for invalid in ["test:measured", "test:measured{measure:\"large\"}"] {
+        let error = sunrise_command::args::ArgType::Particle
+            .parse(&mut sunrise_command::Reader::new(invalid), reg)
+            .unwrap_err();
+        assert_eq!(error.key, "particle.invalidOptions");
+    }
+    let measured = drawn(
+        &mut game,
+        "particle test:measured{measure:257} 0.5 100.5 0.5 0 0 0 0 1",
+    );
+    let (value, _) = measured.typed_particle.expect("typed particle requested");
+    assert_eq!(
+        mod_api::__private::encode_particle_stream(&value, 8).unwrap(),
+        [1, 1, 0, 0]
+    );
+}
+
+#[test]
+#[ignore = "daily"]
+fn typed_particle_command_encoder_refusal_does_not_deliver_to_a_guest() {
+    if crate::game::native_entity_refs::tests::run_fresh_cases(
+        "game::commands::world_cmds::particle_command_tests::typed_particle_command_encoder_refusal_does_not_deliver_to_a_guest",
+        "SUNRISE_TEST_TYPED_PARTICLE_COMMAND_CASE",
+        &["refusal"],
+    ) {
+        return;
+    }
+    use crate::game::lan_particles::tests::{MeasuredParticle, test_hub};
+    let entries = [mod_api::ModEntry::new("test", Box::new(MeasuredParticle))];
+    mod_platform::__private::part_tests::install_parts_fixture(&entries).unwrap();
+    crate::game::mods::resolve_particle_providers(&Default::default()).unwrap();
+    let mut resources = None;
+    let mut game = game(&mut resources);
+    let (mut hub, receiver, _) = test_hub("CommandParticleOptions", Vec::new(), None);
+    hub.guests.update_all(|g| {
+        if g.conn == 1 {
+            g.brand = "sunrise".into();
+            g.position = [0.5, 100.5, 0.5];
+        }
+    });
+    game.lan = Some(crate::game::lan::LanHost::for_test(hub));
+    game.lan_acting = Some(1);
+    game.particles.created_requests = Some(Vec::new());
+    assert!(game.run_command("particle test:measured{measure:1} 0.5 100.5 0.5 0 0 0 0 1 force @s"));
+    assert!(game.guest_packets.iter().any(|p| matches!(
+        p,
+        sunrise_protocol::packets::play::Clientbound::LevelParticles(_)
+    )));
+    game.guest_packets.clear();
+    let (ok, outcome) = game.recording_command_outcome(|game| {
+        game.run_command("particle test:measured{measure:-1} 0.5 100.5 0.5 0 0 0 0 1 force @s")
+    });
+    assert!(!ok);
+    assert_eq!(outcome, Some((false, 0)));
+    assert!(game.guest_packets.iter().all(|p| !matches!(
+        p,
+        sunrise_protocol::packets::play::Clientbound::LevelParticles(_)
+    )));
+    assert!(receiver.try_recv().is_err());
+    assert!(game.particles.created_requests.take().unwrap().is_empty());
 }

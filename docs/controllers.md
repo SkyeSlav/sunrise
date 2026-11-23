@@ -226,7 +226,7 @@ by a short caption (`sunrise.radial.action.*`). Its rules are in
 `sunrise-client-render/src/radial_overlay.rs`.
 
 Pages live in `sunrise-controller.txt`, written once they differ from the
-defaults, so each splitscreen profile has its own, after `radialLayout:1` (the
+defaults, after `radialLayout:1` (the
 version of the default page list they were written against). A page the player
 hasn't changed is written as its preset, `radial_<page>_preset:general` or
 `camera`, and reads back as that default page as it is now: changing one slot
@@ -270,8 +270,7 @@ back and drops, X swaps the offhand, Y opens the inventory, and every glyph
 shows those letters: the binds list, the gameplay guide, the glyphs on declared
 buttons, notices and the on-screen keyboard's hints. Letter mode is part of the
 player's resolved glyph style, so nothing that draws a glyph handles it
-([ui-kit.md](ui-kit.md)). Splitscreen's join and lost-controller prompts, which
-a controller nobody holds yet answers, stay by places. Controller Settings > Device > Nintendo Buttons picks one: By
+([ui-kit.md](ui-kit.md)). Controller Settings > Device > Nintendo Buttons picks one: By
 Position or By Letter, saved as `nintendoLetters:true|false` in
 `sunrise-controller.txt`. By position unless changed (a build for the Switch
 itself goes by letters). The row is always there, like the DualSense rows
@@ -304,7 +303,7 @@ registers nothing, unless its allowlist names it.
 It works the same on a focus screen and a pointer screen (Statistics, Advancements, packs, books).
 The hint is the glyph on the declared button, in that player's pad's style and view; nothing draws
 in a corner. It shows while the pad drives; the mouse or a focus key hides it, and a button too small
-for it, or running off a split view, goes without it and keeps its pad button. What a screen declared
+for it goes without it and keeps its pad button. What a screen declared
 stops counting as soon as another screen is drawn over it (`widgets::begin_screen`: a popup's buried
 buttons can't be pressed) or takes its place. While a key row waits for its key nothing is declared and only B and Start act:
 they are Escape, which unbinds. A row on Controller Settings > Bindings takes the next button pressed
@@ -516,7 +515,7 @@ Approximations:
   shift-click on the result does. What's in the grid goes back first, and
   what a recipe leaves behind (bottles, buckets) follows the result, or stays
   in the grid if there's no room. A stack in the hand refuses it. It's on by itself
-  only in single player, a splitscreen guest's join of that world, and on a LAN world
+  only in single player and on a LAN world
   joined from the server list's LAN entries (and that world's reconnects). Everywhere else,
   a server joined by address included, even one on this computer or the local network
   (it can be a proxy, a tunnel or a relay), and Play with Friends, it's off until **Quick
@@ -574,8 +573,7 @@ the next one (`CommandSuggestions`); the right stick pushed up or down picks the
 (the arrow keys), so the suggestions are reached without closing the keyboard. It opens by itself when the pad opens chat or a
 sign, but not over the chat a sleeper gets (the game opens that one): there
 it waits for A on the chat box. It types into chat (local and server), signs, books being written, the title screens' fields,
-every options page's fields (searches, the packs', the language list's,
-splitscreen profiles), the creative and recipe-book searches, the mod browser's search, the anvil, the
+every options page's fields (searches for packs, languages and settings), the creative and recipe-book searches, the mod browser's search, the anvil, the
 LAN screen's port and its game rules, a server dialog's inputs, command blocks, the game master blocks'
 edit screens, Player Social's search and Debug Options' search. The one exception is a native mod's
 own screen (`Screen::Mod`), which takes its input through the screen hooks: the keyboard types nothing
@@ -648,7 +646,7 @@ glyph shows 12 tall, as a text glyph does: a square picture 12 wide, a bumper or
 button's label leaves room for it.
 
 Art shows on declared buttons and a focused field's A, in notices, the gameplay guide, the radial
-menu's hints and splitscreen's strips. What runs inside a line of text stays text: the recipe tooltip,
+menu's hints. What runs inside a line of text stays text: the recipe tooltip,
 the on-screen keyboard's hint line and the buttons on the Bindings page. Vanilla's own messages that name a key (tutorial hints) keep the keyboard's names.
 
 The inventory crosshair is `crosshair_inv` in the same folder, drawn at 16 GUI pixels on the point it
@@ -733,7 +731,7 @@ button, has no row. The mouse or keyboard taking over hides them, as do a menu, 
 Gameplay Guide option. They read what a click would do from the client's own answers
 (`remote_block_reacts`, `remote_mob_takes`), and a use only a fluid ray or the server can tell (an
 empty bucket) shows nothing. The rows step around what the HUD drew (effect icons, boss bars, the
-sidebar, chat, toasts, splitscreen's badge), and in a small view the last rows drop. The left
+sidebar, chat and toasts), and in a small view the last rows drop. The left
 column's last row names the radial menu's opener, as nothing else in play says it's there (for a
 spectator too, who can open it).
 

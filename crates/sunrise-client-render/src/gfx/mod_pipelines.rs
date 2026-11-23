@@ -7,9 +7,10 @@
 //! load's renderer and the reload with it.
 
 use super::world_primitives::Upload;
-use crate::mod_pipelines::{Built, BuiltTexture, FRAGMENT_ENTRY, Pipelines, VERTEX_ENTRY};
+use crate::mod_pipelines::{Built, BuiltTexture, Pipelines};
 use glam::Mat4;
 use mod_api::{PipelineBlend, WorldDepth};
+use sunrise_shader_api::mod_pipeline::{FRAGMENT_ENTRY, VERTEX_ENTRY};
 
 /// One corner of a pipeline quad, camera-relative.
 #[repr(C)]
@@ -532,9 +533,8 @@ mod tests {
 }";
 
     fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
-        let instance = crate::gfx::test_gpu::instance();
-        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
-        pollster::block_on(adapter.request_device(&Default::default())).ok()
+        let (_, device, queue) = crate::gfx::test_gpu::optional_device()?;
+        Some((device, queue))
     }
 
     /// The load of `generation` with one optional pipeline for each shader, in slot order.
@@ -724,6 +724,7 @@ mod tests {
     /// are vanilla's 2.2 encoding worked out by hand: linear 0.5 is 0.5^(1/2.2) = 0.7297,
     /// stored as 186.
     #[test]
+    #[ignore = "daily"]
     fn gpu_validation_failure_is_contained_and_invalidates_handle() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, _)) = device() else {
@@ -750,6 +751,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn optional_gpu_refusal_is_published_only_once() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, _)) = device() else {
@@ -775,6 +777,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn a_later_successful_build_makes_a_refused_slot_usable_again() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, _)) = device() else {
@@ -799,6 +802,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn required_gpu_failure_does_not_publish_and_mixed_success_does() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, _)) = device() else {
@@ -842,6 +846,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn pipelines_convert_colour_both_ways_and_keep_their_blend_depth_and_stage() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some(gpu) = device() else {
@@ -945,6 +950,7 @@ mod tests {
     /// In a float frame light above white survives, stored as vanilla encodes it (linear 2.0
     /// is 2^(1/2.2) = 1.37035), and a new load's shader replaces the old one's pipeline.
     #[test]
+    #[ignore = "daily"]
     fn a_float_frame_keeps_light_above_white_and_a_reload_builds_the_new_shader() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some(gpu) = device() else {
@@ -993,6 +999,7 @@ mod tests {
     /// atlas lacks refuses the optional pipeline, and an untextured one in the same load still
     /// draws as before. Expected bytes: stored red and green stay 255 through decode and encode.
     #[test]
+    #[ignore = "daily"]
     fn textured_pipelines_sample_their_file_or_their_sprite() {
         use mod_api::PipelineTexture;
         use wgpu::util::DeviceExt;

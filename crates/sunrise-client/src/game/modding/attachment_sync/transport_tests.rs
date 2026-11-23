@@ -73,9 +73,10 @@ pub(super) fn set_level(game: &Game<'_>, value: i32, commit: bool) {
         .as_ref()
         .unwrap()
         .call(move |server| {
-            let seal = server.transaction_open();
-            VALUE.set(store(server), Holder::Level, value).unwrap();
-            server.transaction_close(&seal, commit);
+            server.storage_scope(|server, _| {
+                VALUE.set(store(server), Holder::Level, value).unwrap();
+                ((), commit)
+            });
         })
         .unwrap();
 }
@@ -88,7 +89,10 @@ fn window_value(game: &mut Game<'_>) -> Option<i32> {
         .unwrap()
         .query(&VALUE)
         .ok()?;
-    rows.iter().next().map(|row| *row.unwrap().value)
+    rows.iter().try_next().unwrap().map(|row| {
+        row.with_value(game.attachment_frame_borrow(), |value| *value)
+            .unwrap()
+    })
 }
 
 /// Let the server's hub tick `n` times, so later edits land in a later pass.
@@ -157,6 +161,19 @@ pub(super) fn peer(port: u16, name: &str, sunrise: bool) -> Connection {
     let local =
         sunrise_client::raw_payloads::Local::capture(sunrise_client::raw_payloads::Side::Client)
             .unwrap();
+    if sunrise {
+        // A server queries a client only once its brand says Sunrise.
+        let mut brand = ::sunrise_core::vanilla_bytes::Writer::new();
+        brand.string("sunrise");
+        c.send(
+            &cfg::Serverbound::CustomPayload(cfg::CustomPayload {
+                channel: "minecraft:brand".into(),
+                data: brand.data,
+            })
+            .encode(),
+        )
+        .unwrap();
+    }
     loop {
         assert!(Instant::now() < deadline, "configuration deadline: {name}");
         let (id, body) = c.recv().unwrap();
@@ -178,6 +195,8 @@ pub(super) fn peer(port: u16, name: &str, sunrise: bool) -> Connection {
                 c.send(&cfg::Serverbound::SelectKnownPacks(p).encode())
                     .unwrap();
             }
+            // The server pings a Sunrise client whose Offer is not in by its pack reply.
+            cfg::Clientbound::Ping(p) => c.send(&cfg::Serverbound::Pong(p).encode()).unwrap(),
             cfg::Clientbound::FinishConfiguration(_) => break,
             cfg::Clientbound::Disconnect(p) => panic!("disconnected: {p:?}"),
             _ => {}
@@ -435,12 +454,13 @@ fn attachment_sync_follows_the_negotiated_route() {
                             value: Some([("n".into(), Tag::Int(99))].into()),
                         }],
                     };
-                    let seal = server.transaction_open();
-                    server.send_attachment_sync(&senders, &message);
-                    for sender in &senders {
-                        sender.payload_transport().begin_configuration();
-                    }
-                    server.transaction_close(&seal, true);
+                    server.storage_scope(|server, _| {
+                        server.send_attachment_sync(&senders, &message);
+                        for sender in &senders {
+                            sender.payload_transport().begin_configuration();
+                        }
+                        ((), true)
+                    });
                     senders.len()
                 })
                 .unwrap();

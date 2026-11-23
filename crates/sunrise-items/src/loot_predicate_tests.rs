@@ -39,8 +39,14 @@ fn block_tables_resolve_predicate_ids_from_the_packs() {
         match_tool("minecraft:diamond_pickaxe"),
     )
     .unwrap();
-    // The pack replaces the built-in predicate with a stick, and adds an id
-    // of its own that names shears.
+    // A referenced holder must also bind without packs (RegistryDataLoader).
+    fs::create_dir_all(root.join("data/mypack/predicate")).unwrap();
+    fs::write(
+        root.join("data/mypack/predicate/my_silk.json"),
+        match_tool("minecraft:golden_pickaxe"),
+    )
+    .unwrap();
+    // The pack replaces both predicates, including the custom id with shears.
     let pack = [
         (
             "predicate/minecraft:tool/can_silk_touch".to_owned(),
@@ -56,7 +62,7 @@ fn block_tables_resolve_predicate_ids_from_the_packs() {
         &root,
         &PackOverlay {
             files: &pack,
-            ..PackOverlay::NONE
+            ..PackOverlay::default()
         },
         &defaults,
     )
@@ -95,6 +101,7 @@ fn block_tables_resolve_predicate_ids_from_the_packs() {
     let base = Items::catalog(&root, &PackOverlay::NONE, &defaults).unwrap();
     assert_eq!(drops(&base, Some(&pick)), ["minecraft:diamond"]);
     assert_eq!(drops(&base, Some(&stick)), ["minecraft:cobblestone"]);
+    assert_eq!(drops(&base, Some(&shears)), ["minecraft:cobblestone"]);
     fs::remove_dir_all(root).unwrap();
 }
 

@@ -21,7 +21,6 @@ fn client_host_hashes_plain_stacks_with_added_and_removed_components() {
         return;
     }
     with_client_game(|game| {
-        let _phase = mod_api::__private::PhaseOwner::scope(mod_api::__private::ModPhase::World);
         let mut stack =
             mod_api::ItemStack::new(mod_api::__private::item_key("minecraft:stick").unwrap(), 3)
                 .unwrap();
@@ -48,7 +47,7 @@ fn client_host_hashes_plain_stacks_with_added_and_removed_components() {
             removed: vec![11],
             ..Stack::new(4, 3)
         };
-        let hashed = Hashed::create(&network, &NoNames);
+        let hashed = Hashed::create(&network, &NoNames).unwrap();
         let expected = Serverbound::ContainerClick(ContainerClick {
             container: 2,
             state: 5,

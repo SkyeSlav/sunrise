@@ -149,12 +149,9 @@ fn the_totem_hook_fires_after_the_health_is_gone_and_a_cancel_lets_the_mob_die()
         let mut hit = zombie(game, 226005);
         hit.extra
             .set_main_hand(Some("minecraft:totem_of_undying".into()));
-        hit.damage(
-            damage_level_of!(game, &sunrise_client::health::NO_ATTACK, no_push, None),
-            1000.0,
-            Damage::of(DamageKind::Generic),
-        );
-        assert_eq!(hit.health, 0.0);
+        game.mobs.push(hit);
+        assert!(game.mob_hits_mob(226005, 1000.0, Damage::of(DamageKind::Generic)));
+        assert_eq!(game.mobs[0].health, 0.0);
     });
     assert_eq!(
         heard.totem,
@@ -180,6 +177,7 @@ fn an_uncanceled_totem_saves_the_mob() {
         assert!(hit.extra.main_hand_stack().is_none());
     });
     assert_eq!(heard.totem.len(), 1);
+    assert_eq!(heard.order, ["shield", "totem", "post"]);
 }
 
 /// The hit's level is the one the hit draws from: a mod's draw moves the world's random on by

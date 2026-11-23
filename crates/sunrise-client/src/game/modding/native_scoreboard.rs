@@ -31,14 +31,13 @@ fn api_render_type(render: sb::RenderType) -> ObjectiveRenderType {
 }
 
 /// A text as the API holds it; one too deep for the API is refused by name, never flattened.
-fn api_text(text: &EngineText) -> Result<mod_api::Text, TextFormError> {
+pub(super) fn api_text(text: &EngineText) -> Result<mod_api::Text, TextFormError> {
     use super::api_values::TryIntoApi;
     text.try_into_api()
 }
 
 fn engine_text(text: &mod_api::Text) -> Result<EngineText, TextFormError> {
-    use super::api_values::TryIntoEngine;
-    text.try_into_engine(&())
+    sunrise_client_lib::api_text::to_serialized_engine(text)
 }
 
 fn engine_comp(text: &mod_api::Text) -> Result<Comp, TextFormError> {
@@ -72,7 +71,7 @@ fn api_number_format(format: &sb::NumberFormat) -> Result<NumberFormat, TextForm
             if let Comp::Object(fields) = &mut json {
                 fields.insert("text".into(), Comp::String(String::new()));
             }
-            NumberFormat::Styled(api_text(&comp_text(&json))?.style)
+            NumberFormat::Styled(std::mem::take(&mut api_text(&comp_text(&json))?.style))
         }
     })
 }
@@ -112,10 +111,10 @@ impl Game<'_> {
 
     /// The key a holder has on the board, for a read: a player's name, a non-player entity's
     /// UUID if it has one yet (no score can exist before), or the name as given.
-    fn score_holder_key(&self, holder: &ScoreHolder) -> Option<String> {
+    pub(super) fn score_holder_key(&self, holder: &ScoreHolder) -> Option<String> {
         match holder {
             ScoreHolder::Name(name) => Some(name.clone()),
-            ScoreHolder::Player(player) => self.player_name(*player),
+            ScoreHolder::Player(player) => self.player_name(*player).map(str::to_owned),
             ScoreHolder::Entity(entity) => {
                 self.existing_holder_name(self.native_entity_target(*entity)?)
             }
@@ -124,7 +123,10 @@ impl Game<'_> {
 
     /// The key and the display name of a holder, for a write; a non-player entity that has no
     /// UUID yet gets one, as its name is asked for.
-    fn score_holder_for_write(&mut self, holder: &ScoreHolder) -> Option<(String, Option<Comp>)> {
+    pub(super) fn score_holder_for_write(
+        &mut self,
+        holder: &ScoreHolder,
+    ) -> Option<(String, Option<Comp>)> {
         let target = match holder {
             ScoreHolder::Name(name) => return Some((name.clone(), Some(literal(name)))),
             ScoreHolder::Player(player) => {
@@ -525,15 +527,18 @@ impl Game<'_> {
                 scores,
             ));
         }
-        Ok(Some(ClientScoreboard::new(objectives)))
+        Ok(Some(ClientScoreboard::new(
+            objectives,
+            self.client_teams()?,
+        )))
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::game) mod tests {
     use super::super::{lan::LanSettings, native_entity_refs::tests::with_game};
     use super::*;
-    use mod_api::{HostTransaction, TeamColor, prelude::ScoreboardServerHost, text::TextStyle};
+    use mod_api::{TeamColor, prelude::ScoreboardServerHost, text::TextStyle};
     use std::sync::{
         Arc,
         atomic::{AtomicI32, AtomicUsize},
@@ -577,23 +582,61 @@ mod tests {
         );
     }
 
-    /// A component the API cannot hold is refused by name, in a number format and in a text: it
-    /// is not flattened to its plain words.
+    /// A component deeper than the serialization limit survives in-memory capture, while
+    /// writing it back across the serialization boundary is refused by name, never flattened.
     #[test]
     fn a_text_too_deep_for_the_api_is_refused_by_name() {
         let mut deep = literal("x");
         for _ in 0..600 {
             deep = serde_json::json!({"text": "", "extra": [deep]});
         }
+        let captured = api_text(&comp_text(&deep)).unwrap();
+        assert_eq!(engine_text(&captured), Err(TextFormError::TooDeep));
+        let fixed = api_number_format(&sb::NumberFormat::Fixed(deep)).unwrap();
+        assert_eq!(engine_number_format(&fixed), Err(TextFormError::TooDeep));
         assert_eq!(
-            api_number_format(&sb::NumberFormat::Fixed(deep.clone())),
-            Err(TextFormError::TooDeep)
+            api_text(
+                &EngineText::empty()
+                    .with_component(serde_json::json!({"text": "x", "test:meta": [null]}))
+            ),
+            Err(TextFormError::NestedNull)
         );
-        assert_eq!(api_text(&comp_text(&deep)), Err(TextFormError::TooDeep));
         assert!(api_text(&comp_text(&literal("x"))).is_ok());
     }
 
-    fn guest(uuid: u128, conn: u32) -> Guest {
+    /// Opens the game to LAN guests with no saved board on disk (the test world keeps its
+    /// folder between runs); returns the scoreboard file's path.
+    pub(in crate::game) fn open_lan(game: &mut Game<'_>) -> std::path::PathBuf {
+        let config = HubConfig {
+            default_game_mode: 0,
+            guest_commands: false,
+            force_game_mode: false,
+            hardcore: false,
+            view_distance: 4,
+            simulation_distance: 4,
+            dimension: "minecraft:overworld".into(),
+            allow_flight: true,
+            seed: 0,
+            max_players: 10,
+            integrated: true,
+            levels: game.level_shapes,
+            level_seeds: game.levels.runtime.seeds(),
+        };
+        let mut net = NetConfig::lan(0, "test".into(), 10);
+        net.listen = false;
+        let settings = LanSettings {
+            port: 0,
+            guest_commands: false,
+            force_game_mode: false,
+        };
+        game.lan_host(settings, net, config).unwrap();
+        // The test world keeps its folder between runs: start from no saved board.
+        let saved_board = game.world_root.join("data/minecraft/scoreboard.dat");
+        let _ = std::fs::remove_file(&saved_board);
+        saved_board
+    }
+
+    pub(in crate::game) fn guest(uuid: u128, conn: u32) -> Guest {
         let (tx, _) = std::sync::mpsc::channel();
         let mut g = Guest::new(
             Joined {
@@ -620,32 +663,7 @@ mod tests {
     #[ignore = "daily"]
     fn objectives_are_written_synced_saved_and_stale_once_removed() {
         with_game(|game| {
-            let config = HubConfig {
-                default_game_mode: 0,
-                guest_commands: false,
-                force_game_mode: false,
-                hardcore: false,
-                view_distance: 4,
-                simulation_distance: 4,
-                dimension: "minecraft:overworld".into(),
-                allow_flight: true,
-                seed: 0,
-                max_players: 10,
-                integrated: true,
-                levels: game.level_shapes,
-                level_seeds: game.levels.runtime.seeds(),
-            };
-            let mut net = NetConfig::lan(0, "test".into(), 10);
-            net.listen = false;
-            let settings = LanSettings {
-                port: 0,
-                guest_commands: false,
-                force_game_mode: false,
-            };
-            game.lan_host(settings, net, config).unwrap();
-            // The test world keeps its folder between runs: start from no saved board.
-            let saved_board = game.world_root.join("data/minecraft/scoreboard.dat");
-            let _ = std::fs::remove_file(&saved_board);
+            let saved_board = open_lan(game);
             game.lan.as_mut().unwrap().hub.guests.push(guest(123, 1));
             let player = game.player(123).unwrap();
             let text = mod_api::Text::literal;
@@ -799,7 +817,7 @@ mod tests {
             assert_eq!(renamed.score(game, ScoreHolder::Name("a".into())), None);
             // An aborted transaction puts the board back; a committed one keeps its writes.
             let before = game.score.board.clone();
-            let aborted: Result<(), ()> = game.transaction(|host, _| {
+            let aborted: Result<(), ()> = game.storage_transaction(|host, _| {
                 let temp = ScoreboardServerHost::add_objective(
                     host,
                     "temp",
@@ -817,7 +835,7 @@ mod tests {
             assert_eq!(game.score.board, before);
             assert!(game.objective("temp").is_none());
             assert_eq!(renamed.name(game).as_deref(), Some("kills"));
-            let kept: Result<(), ()> = game.transaction(|host, _| {
+            let kept: Result<(), ()> = game.storage_transaction(|host, _| {
                 ScoreboardServerHost::add_objective(
                     host,
                     "temp",

@@ -563,16 +563,6 @@ impl Timeline {
             tracks,
         })
     }
-
-    /// `Timeline.getCurrentTicks`: the clock's total ticks, within the period when there is one.
-    pub fn current_ticks(&self, total: i64) -> i64 {
-        self.period.map_or(total, |p| total % i64::from(p))
-    }
-
-    /// `Timeline.getPeriodCount`: whole periods the clock has run.
-    pub fn period_count(&self, total: i64) -> i32 {
-        self.period.map_or(0, |p| (total / i64::from(p)) as i32)
-    }
 }
 
 #[cfg(test)]

@@ -1,6 +1,5 @@
-//! Item-owned client behaviour for worn equipment. Registered anew at resource load.
-use crate::wire::{Reader, Wire, WireError, Writer};
-use crate::{ClientHost, ItemKey, ItemStack, ModelPart};
+//! Item-owned client behaviour for worn equipment and tooltip fonts. Registered anew at resource load.
+use crate::{ClientHost, Identifier, ItemKey, ItemStack, ModelPart};
 use std::sync::Arc;
 
 /// The equipment asset's material list used for this piece.
@@ -18,7 +17,6 @@ pub enum EquipmentLayerType {
 /// A model baked from a registered ModelPart tree on this resource load.
 /// References from a previous load fall back to the vanilla model, with one diagnostic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
 // exhaustive: only the engine constructs resource-load references
 pub struct ArmorModelRef {
     generation: u64,
@@ -47,7 +45,6 @@ impl ArmorModelRef {
 /// A texture resolved against this resource load's atlas.
 /// A stale reference falls back to the supplied vanilla/CIT texture, with one diagnostic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
 // exhaustive: only the engine constructs resource-load references
 pub struct ArmorTextureRef {
     generation: u64,
@@ -102,10 +99,9 @@ impl EquipmentLayer {
 
 /// The single provider attached to one item for worn equipment rendering.
 /// Only visible equipped pieces which pass the equippable slot/asset gate are queried.
-/// Native and wasm use these same methods and reload-issued references; geometry never
-/// crosses Wire during a frame. Register trees and textures through the reload registrar.
-/// A panicking native callback or refused/trapped wasm callback discards every layer of
-/// the piece, draws it with vanilla behaviour, and disables the provider until reload.
+/// Register trees and textures through the reload registrar and use the references it returns.
+/// If the callback panics, the game discards every layer of the piece, draws it with vanilla
+/// behaviour, and disables the provider until reload.
 pub trait ClientItemExtensions: Send + Sync + 'static {
     /// Choose the tree for one material layer, after its nonzero tint and texture resolve.
     /// Humanoid pose and slot visibility are copied onto the registered tree.
@@ -177,8 +173,16 @@ pub trait ClientItemExtensions: Send + Sync + 'static {
         let _ = (host, stack, layer_type, layer);
         default
     }
+    /// Choose the tooltip font for this item (`IClientItemExtensions.getFont` with
+    /// `FontContext.TOOLTIP`).
+    ///
+    /// Used to measure and wrap text lines during `render_tooltip_gather_components` and to seed
+    /// `render_tooltip_pre`'s `font`. Return `None` to use the default font (`minecraft:default`).
+    fn tooltip_font(&self, host: &dyn ClientHost, stack: &ItemStack) -> Option<Identifier> {
+        let _ = (host, stack);
+        None
+    }
 }
-crate::wire::wire_handlers::handler!(dyn ClientItemExtensions, "ClientItemExtensions");
 
 /// Client resource-load registration. Models, textures and item providers refresh together.
 /// No registration carries over to the next resource load.

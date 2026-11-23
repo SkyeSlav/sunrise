@@ -88,7 +88,10 @@ fn templates_read_numeric_fields_like_vanilla() {
         Limits::templates(),
     )
     .unwrap();
-    let compressed = Compression::Gzip.encode(&raw).unwrap();
+    // A pack template's root may span two gzip members.
+    let split = raw.len() / 2;
+    let mut compressed = Compression::Gzip.encode(&raw[..split]).unwrap();
+    compressed.extend(Compression::Gzip.encode(&raw[split..]).unwrap());
     let tree = StructureTemplate::from_nbt(&tag, registry, &transforms);
     let resources = StructureResources::new(
         registry,

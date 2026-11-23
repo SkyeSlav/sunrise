@@ -1,13 +1,13 @@
 //! Isolated attachment stores for chunk-worker disk callbacks.
 use crate::*;
-use std::sync::Arc;
 
 #[path = "chunk_disk/data.rs"]
 mod data;
 pub use data::ChunkDiskData;
 
+// no wire: identifies the representation of an in-process chunk disk job.
 /// Which serialized chunk representation owns a disk job.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ChunkDiskKind {
     /// A completed chunk.
@@ -16,8 +16,9 @@ pub enum ChunkDiskKind {
     Proto,
 }
 
+// no wire: identifies the phase of an in-process chunk disk job.
 /// The boundary at which a disk job runs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ChunkDiskPhase {
     /// After decoding, before residency publication.
@@ -26,11 +27,12 @@ pub enum ChunkDiskPhase {
     Save,
 }
 
+// no wire: captured context for an in-process chunk disk callback.
 /// Identity captured by the existing world and chunk residency owner.
-/// This value grants no live lookup or write authority.
-#[derive(Clone, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
+/// Borrow it from [`ChunkDiskHost::job`]; it grants no live lookup or write authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct ChunkDiskContextWire {
+pub struct ChunkDiskContext {
     /// The existing world's lifetime, never a second chunk generation.
     pub world: WorldEpoch,
     /// The owning dimension's resource identifier.
@@ -43,7 +45,7 @@ pub struct ChunkDiskContextWire {
     pub phase: ChunkDiskPhase,
 }
 
-impl ChunkDiskContextWire {
+impl ChunkDiskContext {
     /// Capture the existing world identity and the disk record's coordinates.
     pub fn new(
         world: WorldEpoch,
@@ -62,22 +64,9 @@ impl ChunkDiskContextWire {
     }
 }
 
-/// One opaque saved binding. Unknown keys retain this envelope unchanged.
-#[derive(Clone, Debug, PartialEq, sunrise_mod_api_macros::Wire)]
-#[non_exhaustive]
-pub struct AttachmentDiskEntryWire {
-    /// Registered attachment namespace.
-    pub namespace: String,
-    /// Registered name within the namespace.
-    pub name: String,
-    /// Schema of this envelope. The current attachment codec uses schema zero.
-    pub schema: u32,
-    /// The persistence envelope, including the encoded value and its policies.
-    pub encoded: Compound,
-}
-
+// no wire: local refusal of an in-process chunk disk job.
 /// Why a chunk disk job refused, with the failing mod and attachment when known.
-#[derive(Clone, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ChunkDiskFailure {
     /// The listener's owner; empty for input validation before dispatch.
@@ -88,48 +77,64 @@ pub struct ChunkDiskFailure {
     pub reason: String,
 }
 
-/// A worker's publication decision. Refusal never contains a partial store.
-#[derive(Clone, Debug, PartialEq, sunrise_mod_api_macros::Wire)]
-#[non_exhaustive]
-pub enum ChunkDiskResultWire {
-    /// All listeners and budget checks succeeded.
-    Success(Vec<AttachmentDiskEntryWire>),
-    /// Keep the original captured store and the old disk record.
-    Refused(ChunkDiskFailure),
-}
-
 /// A disk callback's shared Host. It has no live backend and is never a
 /// `ServerHost`: live handle methods refuse, and world writes do not compile.
-/// Registry and settings reads use the owning resource generation's snapshot.
+/// Registry and settings reads use the frozen resource generation retained by
+/// the disk worker. Neither getter reads files. The inherited
+/// [`ConfigHost::setting`](prelude::ConfigHost::setting) still returns an owned `Option<String>`.
 pub trait ChunkDiskHost: Host {
-    /// Captured world, dimension, chunk, representation and phase.
-    fn job(&self) -> ChunkDiskContextWire;
-    /// Immutable registry names in ID order.
-    fn registry(&self, name: &str) -> Option<Arc<[String]>>;
+    /// Borrow the captured world, dimension, chunk, representation and phase.
+    fn job(&self) -> &ChunkDiskContext;
+    /// Borrows registry names in ID order for the lifetime of the host borrow,
+    /// or returns `None` if the registry is unavailable in the captured generation.
+    fn registry(&self, name: &str) -> Option<&[String]>;
 }
 
-// no wire: a borrowed worker-only Host, carried by a synchronous Wire frame.
+// no wire: a borrowed worker-only Host.
 /// Engine-side capability lasting only for one callback dispatch.
 // hidden: engine-side worker capability, built only by the persistence owner
 #[doc(hidden)]
 #[non_exhaustive]
 pub struct OwningChunkDisk<'a> {
-    job: &'a ChunkDiskContextWire,
+    job: &'a ChunkDiskContext,
     resources: &'a dyn WorldgenHost,
+    upgrade_nbt: fn(NbtDataType, i32, Compound) -> Result<Compound, NbtUpgradeError>,
 }
 
 impl<'a> OwningChunkDisk<'a> {
-    /// Bind the captured identity to immutable resource-generation reads.
-    pub fn new(job: &'a ChunkDiskContextWire, resources: &'a dyn WorldgenHost) -> Self {
-        Self { job, resources }
+    /// Bind immutable resource reads and the engine's standalone data fixer to the captured job.
+    fn new(
+        job: &'a ChunkDiskContext,
+        resources: &'a dyn WorldgenHost,
+        upgrade_nbt: fn(NbtDataType, i32, Compound) -> Result<Compound, NbtUpgradeError>,
+    ) -> Self {
+        Self {
+            job,
+            resources,
+            upgrade_nbt,
+        }
     }
 }
 
 impl Host for OwningChunkDisk<'_> {}
-crate::impl_host_areas!(OwningChunkDisk<'_>, except(levels, config));
+crate::impl_host_areas!(OwningChunkDisk<'_>, except(levels, config, datafix));
+impl prelude::DatafixHost for OwningChunkDisk<'_> {
+    fn upgrade_nbt(
+        &self,
+        kind: NbtDataType,
+        data_version: i32,
+        nbt: Compound,
+    ) -> Result<Compound, NbtUpgradeError> {
+        (self.upgrade_nbt)(kind, data_version, nbt)
+    }
+}
 impl prelude::LevelsHost for OwningChunkDisk<'_> {
+    fn lit_block_name(&self, _: [i32; 3]) -> Option<crate::BlockKey> {
+        None
+    }
     fn is_loaded(&self, id: &str) -> bool {
-        self.resources.mods().get(id).is_some()
+        // Installed membership, as `LevelsHost` promises, not the startup-enabled `mods()` view.
+        crate::__private::loaded_mods().get(id).is_some()
     }
     fn chunk(&self, _: LevelRef, _: [i32; 2]) -> Option<ChunkRef> {
         None
@@ -137,14 +142,14 @@ impl prelude::LevelsHost for OwningChunkDisk<'_> {
 }
 impl prelude::ConfigHost for OwningChunkDisk<'_> {
     fn setting(&self, mod_id: &str, key: &str) -> Option<String> {
-        self.resources.setting(mod_id, key)
+        self.resources.setting(mod_id, key).map(str::to_owned)
     }
 }
 impl ChunkDiskHost for OwningChunkDisk<'_> {
-    fn job(&self) -> ChunkDiskContextWire {
-        self.job.clone()
+    fn job(&self) -> &ChunkDiskContext {
+        self.job
     }
-    fn registry(&self, name: &str) -> Option<Arc<[String]>> {
+    fn registry(&self, name: &str) -> Option<&[String]> {
         self.resources.registry(name)
     }
 }
@@ -175,24 +180,12 @@ pub use job::ChunkDiskJob;
 #[path = "chunk_disk/tests.rs"]
 mod tests;
 
-/// Fence native unwinds and synchronous guest failures before publication.
-pub(crate) fn invoke(mod_id: &str, call: impl FnOnce()) -> Result<(), ChunkDiskFailure> {
-    let failures = sunrise_mod_runtime::dispatch_failures::dispatch_failure_counter();
-    let before = failures.get();
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(call));
-    let reason = if result.is_err() {
-        Some("native listener unwound")
-    } else if before != failures.get() {
-        Some("wasm listener trapped or its Wire response was refused")
-    } else {
-        None
-    };
-    match reason {
-        None => Ok(()),
-        Some(reason) => Err(ChunkDiskFailure {
-            mod_id: mod_id.into(),
-            key: String::new(),
-            reason: reason.into(),
-        }),
+/// Build the job refusal recorded when a chunk-disk listener unwinds through
+/// [`crate::runtime::invoke`].
+pub(crate) fn unwound_failure(mod_id: &'static str) -> ChunkDiskFailure {
+    ChunkDiskFailure {
+        mod_id: mod_id.into(),
+        key: String::new(),
+        reason: "native listener unwound".into(),
     }
 }

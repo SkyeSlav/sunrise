@@ -2,7 +2,7 @@
 
 Search Modrinth (CurseForge support is coming soon) for Java mods, modpacks, resource packs and data packs, and Sunrise's
 registry for Sunrise's own mods, modpacks, resource packs and shader packs; see how well each one runs before installing it, and install it with its checksum checked. This is item 16 of the roadmap and issue #577. The code is in
-`launcher/src/browser.rs` and `launcher/src/browser/`.
+`https://github.com/sunrise-org/sunrise-launcher/blob/main/src/browser.rs` and `https://github.com/sunrise-org/sunrise-launcher/tree/main/src/browser/`.
 
 ## What it offers
 
@@ -58,7 +58,7 @@ off.
 
 ### End-to-end check
 
-`tools/mod_browser_harness.py [--mod SLUG] [--query TEXT] [--keep]` runs the whole path a player takes, in a scratch
+`tools/mod_browser_harness.py [--mod SLUG] [--query TEXT] [--keep]` (in sunrise-launcher) runs the whole path a player takes, in a scratch
 game folder: the launcher's `mods search --kind mod`, `mods check` and `mods install` (Modrinth), then the game
 opens a survival world with the mod offscreen (sunrise-ctl), places one of its blocks, and crafts one of its recipes
 from vanilla ingredients on a crafting table and takes the result. It times the world's load with and without the
@@ -104,7 +104,7 @@ file and the checksum they were checked against, with **Update to …** when a n
 (asked twice). **Update all (N)** above the list updates every pack a newer version was found for, of every kind,
 one after the other; one that fails is named and doesn't stop the others.
 
-**Automatic updates** run at launcher start and before Play for eligible content packages from Sunrise's registry, when enabled in Settings. They never update a modpack's pinned files or native and wasm code packages. Updates that remove content used by worlds wait for an explicit update on the Mods page. Native and wasm updates are explicit too: Play never rebuilds code mods or repins their game revision. The replaced file is retained for recovery if an update is interrupted; recovery runs before checking the automatic-update setting or fetching the registry, even when updates are disabled or the registry is offline. Failed recovery keeps the backup for retry.
+**Automatic updates** run at launcher start and before Play for eligible content packages from Sunrise's registry, when enabled in Settings. They never update a modpack's pinned files or native code packages. Updates that remove content used by worlds wait for an explicit update on the Mods page. Native updates are explicit too: Play never rebuilds code mods or repins their game revision. The replaced file is retained for recovery if an update is interrupted; recovery runs before checking the automatic-update setting or fetching the registry, even when updates are disabled or the registry is offline. Failed recovery keeps the backup for retry.
 
 ### Project pages, filters and icons
 
@@ -140,8 +140,8 @@ browser installed from it, the URLs asked for in one request (`GET /projects?ids
 (`fabric.mod.json`/`quilt.mod.json` `icon`, `mods.toml` `logoFile`), read from the jar off the UI thread and scaled to
 the row; else a generic glyph. The tab builds only the rows near the view, so a pack of hundreds costs what a few do.
 
-**Vanilla Minecraft** is marked with Sunrise's own grass block (`launcher/assets/logos/grass-block.png`, drawn by
-`tools/launcher_grass_block.py` from our palette, not from Mojang's textures): the game-version filter, the Java Edition
+**Vanilla Minecraft** is marked with Sunrise's own grass block (`https://github.com/sunrise-org/sunrise-launcher/blob/main/assets/logos/grass-block.png`, drawn by
+`tools/launcher_grass_block.py` (in sunrise-launcher) from our palette, not from Mojang's textures): the game-version filter, the Java Edition
 tab and plain Minecraft instances show it. No Mojang file or logo is in the launcher or the repository.
 
 **Source logos.** Modrinth's logo is not shown: Modrinth's own repository says its branding is all rights reserved and
@@ -155,7 +155,10 @@ in text ("from Modrinth") until Rinth, Inc. agrees. CurseForge support, and so i
 
 `mod-browser.json` beside `options.txt` lists every file the browser installed: its source, project, version, file
 and the checksum it was checked against. The browser replaces or removes only the files it lists; a file of the
-same name the player put there is never overwritten.
+same name the player put there is never overwritten. When installing a registry mod in the game, the browser follows
+directory links but refuses a link at the destination file. The download and destination must be on the same
+filesystem for atomic replacement. If ownership is ambiguous, the browser leaves the archive, manifest and any
+pending install journal unchanged, even if the new archive has not appeared yet.
 
 - **Install** picks the newest version that runs, then its required dependencies, checked before any download: a
   dependency that isn't a pack Sunrise loads (a Java mod) stops the install. Dependencies go in first. A resource

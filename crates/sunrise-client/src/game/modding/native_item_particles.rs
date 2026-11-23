@@ -17,11 +17,7 @@ mod tests {
     #[ignore = "daily"]
     fn host_resolves_stack_particle_sprites() {
         crate::game::native_entity_refs::tests::with_client_game(|game| {
-            mod_api::__private::resolve_particles(["minecraft:item"], |id| {
-                sunrise_client::particles::ParticleType::from_name(id)
-                    .map(|ty| mod_api::__private::ParticleKind::Vanilla(ty as u32))
-            })
-            .unwrap();
+            // The game fixture resolves the particle providers, as content_root does.
             let stack = ItemStack::new("minecraft:apple", 1);
             let api_stack = stack.try_into_api().unwrap();
             let host: &dyn mod_api::ClientHost = game;

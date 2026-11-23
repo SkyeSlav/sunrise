@@ -1,11 +1,10 @@
 //! Prepared-resource regressions through real projectile collision, mob AI and server death.
-#![cfg(test)]
 use crate::game::Game;
 use crate::game::api_values::TryIntoApi;
 use crate::game::native_entity_refs::tests::{bind_local_player, with_game};
 use mod_api::{
-    ArmorHurtEvent, Flow, HitHost, Hooks, HurtSource, LivingDeathEvent, LivingIncomingDamageEvent,
-    ModEntry, ServerHost,
+    ArmorHurtEvent, Flow, HitHost, Hooks, HurtSource, LivingDeathEvent, LivingDropsEvent,
+    LivingIncomingDamageEvent, ModEntry, ServerHost,
 };
 use std::sync::{Arc, Mutex};
 use sunrise_client::{
@@ -52,6 +51,7 @@ struct Seen {
     deaths: Vec<Hit>,
     armor: Vec<Hit>,
     kinds: Vec<(String, String)>,
+    drops: Vec<(Hit, Vec<String>)>,
 }
 struct Probe {
     seen: Arc<Mutex<Seen>>,
@@ -81,7 +81,13 @@ impl Hooks for Probe {
             event.weapon,
         ));
         let entity = host.entity(event.entity).expect("dying mob still resolves");
-        let kind = entity.kind(host).expect("dying entity has a type").id(host);
+        let kind = entity
+            .kind(host)
+            .expect("dying entity has a type")
+            .id(host)
+            .expect("dying entity type is registered")
+            .as_str()
+            .to_owned();
         self.seen
             .lock()
             .unwrap()
@@ -100,6 +106,22 @@ impl Hooks for Probe {
         } else {
             Flow::Continue
         }
+    }
+    fn living_drops(&self, _: &mut dyn ServerHost, event: &mut LivingDropsEvent<'_>) -> Flow {
+        let items = event
+            .drops
+            .iter()
+            .map(|drop| {
+                mod_api::__private::item_key_id(drop.stack.item())
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        self.seen.lock().unwrap().drops.push((
+            Hit::new(event.entity, event.kind, event.source, None),
+            items,
+        ));
+        Flow::Continue
     }
     fn armor_hurt(&self, _: &mut dyn ServerHost, event: &mut ArmorHurtEvent<'_>) -> Flow {
         assert!(!event.entries.is_empty());
@@ -157,7 +179,7 @@ fn mob(game: &mut Game<'_>, id: u32, name: &str, position: Vec3) {
     let mut mob = Mob::new(id, kind, position, 0.0);
     mob.persistent = true;
     mob.no_ai = true;
-    mob.on_ground = true;
+    mob.ground.on_ground = true;
     game.mobs.push(mob);
 }
 
@@ -590,10 +612,11 @@ fn later_cancelled_mob_revival_is_transactional_and_a_second_kill_drops_loot() {
                     let host: &mut dyn ServerHost = game;
                     host.living(host.entity(44).unwrap()).unwrap()
                 };
-                let abort = game.transaction_open();
-                assert!(living.set_health(game, 5.0));
-                assert_eq!(game.mob_object(44).unwrap().death_time, 0);
-                game.transaction_close(&abort, false);
+                game.storage_scope(|game, _| {
+                    assert!(living.set_health(game, 5.0));
+                    assert_eq!(game.mob_object(44).unwrap().death_time, 0);
+                    ((), false)
+                });
                 let body = game.mob_object(44).unwrap();
                 assert_eq!(
                     (body.health, body.death_time, body.death_canceled),
@@ -695,14 +718,15 @@ fn later_cancelled_player_revival_is_transactional_and_a_second_kill_drops_inven
                     let host: &mut dyn ServerHost = game;
                     host.living(host.entity(id).unwrap()).unwrap()
                 };
-                let abort = game.transaction_open();
-                assert!(living.set_health(game, 5.0));
-                let guest = &game.lan.as_ref().unwrap().hub.guests[0];
-                assert_eq!(
-                    (guest.health, guest.death_time, guest.death_canceled),
-                    (5.0, 0, false)
-                );
-                game.transaction_close(&abort, false);
+                game.storage_scope(|game, _| {
+                    assert!(living.set_health(game, 5.0));
+                    let guest = &game.lan.as_ref().unwrap().hub.guests[0];
+                    assert_eq!(
+                        (guest.health, guest.death_time, guest.death_canceled),
+                        (5.0, 0, false)
+                    );
+                    ((), false)
+                });
                 let guest = &game.lan.as_ref().unwrap().hub.guests[0];
                 assert_eq!(
                     (guest.health, guest.death_time, guest.death_canceled),
@@ -755,6 +779,41 @@ fn later_cancelled_player_revival_is_transactional_and_a_second_kill_drops_inven
     );
 }
 
+/// `/kill` records no combat entry, yet the player's drops still reach
+/// `living_drops`, with the `generic_kill` source `living_death` heard.
+#[test]
+#[ignore = "daily"]
+fn a_killed_guest_with_no_combat_entry_reports_its_drops() {
+    crate::game::in_own_process(
+        "game::native_hooks::death_source_tests::a_killed_guest_with_no_combat_entry_reports_its_drops",
+        || {
+            observed(false, false, |game, seen| {
+                crate::game::native_player_death::tests::add_guest(game);
+                game.lan.as_mut().unwrap().hub.guests.update(0, |guest| {
+                    guest.loaded = true;
+                    guest.load_timeout = 0;
+                    guest.inventory[0] = Some(ItemStack::new("minecraft:diamond", 3));
+                });
+                assert!(game.run_command("kill @a"));
+                game.guest_die(0, 1);
+                let id = game.lan.as_ref().unwrap().hub.guests[0].entity_id as u32;
+                let kill = Hit {
+                    entity: id,
+                    kind: "minecraft:player".into(),
+                    damage_type: "minecraft:generic_kill".into(),
+                    causing: 0,
+                    direct: 0,
+                    position: None,
+                    weapon: None,
+                };
+                let seen = seen.lock().unwrap();
+                assert_eq!(seen.deaths, vec![kill.clone()]);
+                assert_eq!(seen.drops, vec![(kill, vec!["minecraft:diamond".into()])]);
+            })
+        },
+    );
+}
+
 /// Hook payloads and entity handles preserve mod namespaces and qualify bare vanilla ids.
 #[test]
 #[ignore = "daily"]
@@ -773,8 +832,11 @@ fn mob_death_and_handle_preserve_namespaced_types() {
                         .name
                         .clone()
                 }));
-                mod_api::__private::resolve_entity_types(["vulture:vulture", "minecraft:sheep"])
-                    .unwrap();
+                mod_api::__private::resolve_entity_types(
+                    ["vulture:vulture", "minecraft:sheep"],
+                    |_| Some(true),
+                )
+                .unwrap();
                 let sheep = game.res.mob_types().get("minecraft:sheep").unwrap().clone();
                 for (index, id) in ["vulture:vulture", "sheep", "minecraft:sheep"]
                     .into_iter()

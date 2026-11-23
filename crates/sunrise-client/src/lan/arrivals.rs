@@ -993,6 +993,7 @@ mod hub_tests {
             next_entity: &mut next,
             spawn: [0.5, 64.0, 0.5],
             spawn_angle: [0.0; 2],
+            spawn_dimension: "minecraft:overworld",
             difficulty: 2,
             difficulty_locked: false,
             clock_rate: 1.0,
@@ -1018,6 +1019,7 @@ mod hub_tests {
             next_entity: next,
             spawn: [0.5, 64.0, 0.5],
             spawn_angle: [0.0; 2],
+            spawn_dimension: "minecraft:overworld",
             difficulty: 2,
             difficulty_locked: false,
             clock_rate: 1.0,
@@ -1222,7 +1224,7 @@ mod hub_tests {
         let (mut held_chunks, mut watcher_chunks) = (0, 0);
         let (mut held_adds, mut watcher_adds) = (Vec::new(), Vec::new());
         for _ in 0..30 {
-            hub.tick_level(&mut ctx);
+            hub.tick_level(&mut ctx, None);
             hub.end_tick();
             let mine_now = packets(&mine);
             let seen_now = packets(&seen);
@@ -2908,6 +2910,62 @@ mod hub_tests {
         assert_eq!(
             (g.abilities.flying_speed, g.abilities.walking_speed),
             (0.2, 0.3)
+        );
+    }
+
+    #[test]
+    fn held_arrival_syncs_own_player_info_before_teleport_without_publishing_early() {
+        let (mut source, i) = exported_guest();
+        source.guests.update(i, |g| {
+            g.game_mode = 3;
+            g.abilities.update_for_mode(3);
+        });
+        let record = super::export_record(&mut source, i, true, Default::default()).unwrap();
+        let (_, mut hub, seen, mine) = held_in_a_second_hub();
+        assert_eq!(hub.guests[1].game_mode, 0);
+        import_player(
+            &mut hub,
+            UUID_N,
+            &serde_json::json!({ "record": record, "place": false }),
+        )
+        .unwrap();
+        assert!(
+            ids(&seen).is_empty(),
+            "other clients must not receive the held player's mode before placement"
+        );
+        let decoded: Vec<sunrise_protocol::packets::play::Clientbound> = packets(&mine)
+            .into_iter()
+            .filter_map(|(id, body)| {
+                sunrise_protocol::packets::play::Clientbound::decode(id, &body).ok()
+            })
+            .collect();
+        let own_info_pos = decoded.iter().position(|pkt| {
+            matches!(
+                pkt,
+                sunrise_protocol::packets::play::Clientbound::PlayerInfoUpdate(u)
+                    if u.actions == 4
+                        && u.entries.iter().any(|e| e.uuid == UUID_N && e.game_mode == Some(3))
+            )
+        });
+        let game_event_pos = decoded.iter().position(|pkt| {
+            matches!(
+                pkt,
+                sunrise_protocol::packets::play::Clientbound::GameEvent(e)
+                    if e.event == 3 && e.param == 3.0
+            )
+        });
+        let teleport_pos = decoded.iter().position(|pkt| {
+            matches!(
+                pkt,
+                sunrise_protocol::packets::play::Clientbound::PlayerPosition(_)
+            )
+        });
+        let own_info_pos = own_info_pos.expect("held arrival must sync its own PlayerInfo");
+        let game_event_pos = game_event_pos.expect("held arrival must send CHANGE_GAME_MODE");
+        let teleport_pos = teleport_pos.expect("held arrival must send teleport");
+        assert!(
+            own_info_pos < game_event_pos && game_event_pos < teleport_pos,
+            "own PlayerInfo must precede CHANGE_GAME_MODE and teleport: {decoded:?}"
         );
     }
 

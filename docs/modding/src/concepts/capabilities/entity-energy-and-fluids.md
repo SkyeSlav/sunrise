@@ -15,5 +15,6 @@ by the lookup, and `None` requests no particular side. Your provider receives th
 context and can return a different handler for each side. `ENTITY_AUTOMATION`
 uses the same context; `ENTITY_ITEMS` uses `()`.
 
-Use `move_energy` or `move_resources` inside a transaction to transfer between
-entity, block and item handlers.
+Use `move_energy` or `resource_util::move_resources` inside a [transaction](../transactions.md)
+to transfer between entity, block and item handlers. Pass its borrowed `tx` to `move_energy`,
+or `Some(tx)` to `move_resources`.

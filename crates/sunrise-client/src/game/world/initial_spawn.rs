@@ -5,103 +5,45 @@
 use super::Game;
 use sunrise_client::{
     Result,
-    assets::Properties,
     collisions::{SceneCollisions, no_collision_or_liquid},
     random_source,
-    world::World,
     world_spawn::{
         PlayerSpawnFinder, SpawnCandidate, SpawnLevel, level_respawn_pos, spawn_pos_in_chunk,
     },
 };
 use sunrise_core::{
-    geometry::{Aabb, Direction, ShapeOp, Vec3, VoxelShape},
+    geometry::{Aabb, Vec3},
     position::BlockPos,
     random::RandomSource,
 };
+pub(super) use sunrise_gameplay::initial_spawn::{Columns, bottom_center};
 use sunrise_world::{
-    block_collision::BlockCollisionRegistry, collision_context::CollisionContext,
-    heightmap::HeightmapType, level::flags::UPDATE_CLIENTS, registry::BlockStateId,
-    worldgen::terrain::TerrainBlockStates,
+    collision_context::CollisionContext, heightmap::HeightmapType, level::flags::UPDATE_CLIENTS,
+    registry::BlockStateId,
 };
-
-/// The loaded world as the spawn searches query it.
-struct Columns<'a, 'r> {
-    world: &'a World,
-    properties: &'a Properties,
-    binding: &'a BlockCollisionRegistry<'r>,
-    has_ceiling: bool,
-    /// `ChunkGenerator.getSpawnHeight` (64 for the vanilla generators).
-    spawn_height: i32,
-}
-impl SpawnLevel for Columns<'_, '_> {
-    fn min_y(&self) -> i32 {
-        self.world.bottom_y()
-    }
-    fn height(&self, kind: HeightmapType, x: i32, z: i32) -> i32 {
-        (self.world.bottom_y()..self.world.top_y())
-            .rev()
-            .find(|&y| kind.is_opaque(self.properties.heightmap_state(self.world.block(x, y, z))))
-            .map_or(self.world.bottom_y(), |y| y + 1)
-    }
-    fn has_fluid(&self, x: i32, y: i32, z: i32) -> bool {
-        use sunrise_world::heightmap::HeightmapState;
-        self.properties
-            .heightmap_state(self.world.block(x, y, z))
-            .has_fluid()
-    }
-    fn top_face_full(&self, x: i32, y: i32, z: i32) -> bool {
-        let mut scene = SceneCollisions {
-            world: self.world,
-            binding: self.binding,
-            subject: None,
-        };
-        let state = self.world.block(x, y, z);
-        let Ok(shape) = self.binding.collision_shape_with_context(
-            &mut scene,
-            state,
-            BlockPos::new(x, y, z),
-            &CollisionContext::empty(false),
-        ) else {
-            return false;
-        };
-        shape.face_shape(Direction::Up).is_ok_and(|face| {
-            VoxelShape::block()
-                .join_is_not_empty(&face, ShapeOp::XOR)
-                .is_ok_and(|differs| !differs)
-        })
-    }
-    fn has_ceiling(&self) -> bool {
-        self.has_ceiling
-    }
-    fn spawn_height(&self) -> i32 {
-        self.spawn_height
-    }
-}
 
 impl Game<'_> {
     fn spawn_columns(&self) -> Columns<'_, '_> {
         Columns {
             world: &self.world,
             properties: &self.pack.assets.properties,
-            binding: self.collision,
-            // The spawn searches are the overworld's (PlayerSpawnFinder); a
-            // ceiling starts them at the generator's spawn height.
-            has_ceiling: self.level_shapes.overworld.has_ceiling,
-            spawn_height: self.spawn_origin.map_or(64, |(_, height)| height),
+            collision: self.collision,
+            // PlayerSpawnFinder.getLevelRespawnPos: a ceiling starts the walk
+            // at the destination generator's spawn height.
+            has_ceiling: self.dimension_type().height.has_ceiling,
+            spawn_height: self.streaming.spawn_height(),
         }
     }
     /// ChunkGenerator.getOrigin and getSpawnHeight of the overworld.
-    fn spawn_origin(&self) -> Result<((i32, i32), i32)> {
-        if let Some(flat) =
-            sunrise_client::save::world_gen_settings(&self.world_root).and_then(|s| {
-                sunrise_client::flatgen::FlatTerrain::from_settings(
-                    &s,
-                    self.pack.assets.registry,
-                    world_biomes!(self),
-                    self.level_shapes.overworld,
-                )
-            })
-        {
+    pub(super) fn spawn_origin(&self) -> Result<((i32, i32), i32)> {
+        if let Some(flat) = self.level.generator.as_ref().and_then(|g| {
+            sunrise_client::flatgen::FlatTerrain::from_settings(
+                g.settings(),
+                self.pack.assets.registry,
+                world_biomes!(self),
+                self.level_shapes.overworld,
+            )
+        }) {
             return Ok(((0, 0), flat.spawn_height()));
         }
         if self.options.test_terrain {
@@ -329,35 +271,6 @@ impl Game<'_> {
             random_source::entity().next_int_bound(n).unwrap_or(0)
         })
     }
-    /// ServerPlayer.adjustSpawnLocation for a server's new player: where
-    /// PlayerSpawnFinder.findSpawn puts their feet around the world spawn
-    /// (`spawn`, the feet there), so that players new to a world don't all
-    /// stand in one spot. Vanilla waits for each candidate's chunk; a server
-    /// tick can't, so a candidate in a chunk not loaded yet is passed over,
-    /// and `spawn` stays when the search never reaches a loaded column.
-    pub(super) fn server_player_spawn(&self, spawn: [f64; 3]) -> [f64; 3] {
-        let suggestion = spawn.map(|v| v.floor() as i32);
-        let mut finder = self.spawn_finder(suggestion);
-        while let Some(candidate) = finder.next_candidate() {
-            let (x, z) = match candidate {
-                SpawnCandidate::Column(x, z) => (x, z),
-                SpawnCandidate::Suggestion => (suggestion[0], suggestion[2]),
-            };
-            if !self.streaming.is_lit(x >> 4, z >> 4) {
-                continue;
-            }
-            let feet = match candidate {
-                SpawnCandidate::Column(x, z) => level_respawn_pos(&self.spawn_columns(), x, z)
-                    .filter(|&pos| self.player_fits(pos))
-                    .map(bottom_center),
-                SpawnCandidate::Suggestion => Some(self.fixup_spawn_height(suggestion)),
-            };
-            if let Some(feet) = feet {
-                return [feet.x, feet.y, feet.z];
-            }
-        }
-        spawn
-    }
     /// PlayerSpawnFinder.noCollisionNoLiquid: a player's box standing at the
     /// block's bottom centre touches no block or liquid.
     fn player_fits(&self, pos: [i32; 3]) -> bool {
@@ -386,13 +299,4 @@ impl Game<'_> {
         }
         bottom_center([x, y + 1, z])
     }
-}
-
-/// Vec3.atBottomCenterOf.
-fn bottom_center(pos: [i32; 3]) -> Vec3 {
-    Vec3::new(
-        f64::from(pos[0]) + 0.5,
-        f64::from(pos[1]),
-        f64::from(pos[2]) + 0.5,
-    )
 }

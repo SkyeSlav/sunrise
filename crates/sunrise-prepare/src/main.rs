@@ -18,7 +18,8 @@ sunrise-prepare: prepare Sunrise's resources from your own Minecraft Java Editio
 Usage: sunrise-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [--prism-dir PATH] [--root PATH] [--output PATH]
                        [--version-json PATH] [--client-jar PATH] [--libraries-dir PATH] [--assets-dir PATH]
                        [--java-home PATH] [--complete] [--progress json]
-       sunrise-prepare --check [--root PATH] [--output PATH]
+       sunrise-prepare --server [--server-jar PATH] [--java-home PATH] [--root PATH] [--output PATH]
+       sunrise-prepare --check [--server] [--root PATH] [--output PATH]
        sunrise-prepare --launch-api [--root PATH]
        sunrise-prepare compile-exporters [--root PATH]
        sunrise-prepare sounds [--minecraft-dir PATH] [--version-json PATH] [--assets-dir PATH] [--root PATH] [--output PATH]
@@ -26,7 +27,14 @@ Usage: sunrise-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [-
        sunrise-prepare fonts [--minecraft-dir PATH] [--version-json PATH] [--assets-dir PATH] [--root PATH] [--output PATH]
        sunrise-prepare packs [--minecraft-dir PATH] [--version-json PATH] [--assets-dir PATH] [--root PATH] [--output PATH]
        sunrise-prepare languages [--minecraft-dir PATH] [--version-json PATH] [--assets-dir PATH] [--root PATH] [--output PATH]
+       sunrise-prepare needs [--root PATH] [--json]
+       sunrise-prepare missing-extras [--root PATH] [--output PATH] [--json]
+       sunrise-prepare extras [--only KIND,...] [--minecraft-dir PATH]... [--assets-dir PATH] [--root PATH] [--output PATH] [--json]
 
+  --server              Prepare only a dedicated server's game files. Downloads the pinned
+                        server.jar from Mojang unless --server-jar is given. If a release has
+                        no suitable Java installed, it downloads Mojang's Java runtime.
+                        Default output: <root>/game-files/sunrise-client/<version>-server.
   --prepare             Import the pinned game files from your own copy first
   --server-jar PATH     The pinned server jar you downloaded yourself
                         (default: SUNRISE_SERVER_JAR, or the copy imported before)
@@ -42,11 +50,13 @@ Usage: sunrise-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [-
                         (each of these four replaces what --minecraft-dir would give; an earlier
                         import beside --root that is still verified is reused instead)
   --java-home PATH      A Java runtime of the pinned version that your launcher manages, tried
-                        after JAVA_HOME and the PATH, before the official launcher's runtimes
+                        after JAVA_HOME and the PATH, before the official launcher's runtimes.
+                        With --server, this overrides discovery.
   --root PATH           The Sunrise folder to prepare (default: the folder this program is
                         in, else the nearest folder above the current one with research-lock.json)
-  --output PATH         Where the resources go (default: <root>/.local/sunrise-client/<version>);
-                        the exporters' scratch files stay in <root>/.local
+  --output PATH         Where the resources go. Full: <root>/.local/sunrise-client/<version>;
+                        --server: <root>/game-files/sunrise-client/<version>-server.
+                        Exporters' scratch files stay in <root>/.local.
   --check               Exit 0 when the resources are complete and current for this preparer,
                         else 1: each gap on stdout with what it needs, or an error: line on
                         stderr when it can't check. Runs no Java and reads no game files; it tests
@@ -59,18 +69,25 @@ Usage: sunrise-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [-
   --launch-api          Print what this preparer supports as JSON (the Launch API's version, the
                         pinned Minecraft and Java, the resources' layout, the options) and exit 0
 
-Needs Minecraft played once from the official launcher, and Java of the version
-research-lock.json pins. Releases use a runtime; development or changed exporters need a JDK.
+Full preparation needs the player's installed Minecraft client files. The separate --server
+profile needs only the pinned server.jar, downloaded from Mojang or supplied with --server-jar.
+Releases can use the pinned Java runtime; development or changed exporters need a JDK.
 compile-exporters builds and validates a release bundle from the already imported pinned jars.
-The resources go to <root>/.local/sunrise-client/<version>, or --output; pass that to
-sunrise-client --resources. Exit codes: 0 done, 1 failed (or --check found gaps), 2 a refused
-command line (docs/api/launch.md).
+Pass the corresponding output folder to sunrise-client --resources. Exit codes: 0 done,
+1 failed (or --check found gaps), 2 a refused command line (docs/api/launch.md).
 
 sunrise-prepare panorama repairs the classic menu background in existing resources without Java.
 sunrise-prepare fonts adds the GNU Unifont glyphs (characters the bitmap fonts lack) the same way.
 sunrise-prepare packs adds the built-in Programmer Art and High Contrast resource packs the same way.
 sunrise-prepare languages adds the bundled languages and the language list the JAR lacks the same way.
 Full preparation also imports all four after extracting the client JAR's placeholders.
+
+sunrise-prepare needs says whether preparing will need a server jar (no verified import to reuse) and a JDK
+(no matching exporters shipped). sunrise-prepare missing-extras lists what prepared resources lack of packs,
+panorama, fonts, languages and sounds. sunrise-prepare extras adds what they lack (--only: some kinds), each
+from the first --minecraft-dir whose asset store has it (none given: nothing is added); exit 1 when one
+failed. With --json each prints
+JSON on stdout (docs/api/prepare-extras.md).
 
 sunrise-prepare sounds copies the pinned version's sounds (about 380 MB) from the official
 launcher's asset store into the same folder, checking every file. It is optional: without it the
@@ -104,16 +121,36 @@ fn main() -> ExitCode {
     };
     let mut root = None;
     let mut check = false;
+    let mut server = false;
     let mut complete = false;
     let mut json = false;
     let mut launch_api = false;
+    let mut as_json = false;
+    let mut only: Option<Vec<String>> = None;
+    let mut folders: Vec<PathBuf> = Vec::new();
     let mut args = std::env::args_os().skip(1).peekable();
     let assets = args.next_if(|a| {
         matches!(
             a.to_str(),
-            Some("sounds" | "panorama" | "fonts" | "packs" | "languages" | "compile-exporters")
+            Some(
+                "sounds"
+                    | "panorama"
+                    | "fonts"
+                    | "packs"
+                    | "languages"
+                    | "compile-exporters"
+                    | "needs"
+                    | "missing-extras"
+                    | "extras"
+                    | "data-file"
+            )
         )
     });
+    let query = assets
+        .as_deref()
+        .and_then(|a| a.to_str())
+        .filter(|a| QUERIES.contains(a))
+        .map(str::to_owned);
     while let Some(arg) = args.next() {
         let text = arg.to_string_lossy().into_owned();
         let (flag, inline) = match text.split_once('=') {
@@ -132,15 +169,25 @@ fn main() -> ExitCode {
             }
         };
         let parsed = match flag.as_str() {
-            "--prepare" | "--server-jar" | "--check" if assets.is_some() => {
+            "--prepare" | "--server" | "--server-jar" | "--check" if assets.is_some() => {
                 Err(format!("{flag} is for preparing, not for asset copying"))
+            }
+            "--progress" | "--launch-api" if query.is_some() => {
+                Err(format!("{flag} doesn't apply here; --json gives JSON"))
+            }
+            "--server" if inline.is_none() => {
+                server = true;
+                Ok(())
             }
             "--prepare" if inline.is_none() => {
                 options.import = true;
                 Ok(())
             }
             "--server-jar" => value("--server-jar").map(|v| options.server_jar = Some(v)),
-            "--minecraft-dir" => value("--minecraft-dir").map(|v| options.minecraft_dir = Some(v)),
+            "--minecraft-dir" => value("--minecraft-dir").map(|v| {
+                folders.push(v.clone());
+                options.minecraft_dir = Some(v);
+            }),
             "--prism-dir" => value("--prism-dir").map(|v| options.inputs.prism_dir = Some(v)),
             "--version-json" => {
                 value("--version-json").map(|v| options.inputs.version_json = Some(v))
@@ -169,6 +216,24 @@ fn main() -> ExitCode {
                 Ok(v) => Err(format!("--progress takes json, not {}", v.display())),
                 Err(e) => Err(e),
             },
+            "--json" if inline.is_none() && query.is_some() => {
+                as_json = true;
+                Ok(())
+            }
+            "--only" if query.as_deref() == Some("extras") => value("--only").and_then(|v| {
+                let kinds: Vec<String> =
+                    v.to_string_lossy().split(',').map(str::to_owned).collect();
+                match kinds
+                    .iter()
+                    .find(|k| !sunrise_prepare::extras::kinds().any(|known| known == *k))
+                {
+                    Some(unknown) => Err(format!("--only: no extra called {unknown}")),
+                    None => {
+                        only = Some(kinds);
+                        Ok(())
+                    }
+                }
+            }),
             "--launch-api" if inline.is_none() => {
                 launch_api = true;
                 Ok(())
@@ -188,6 +253,20 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     }
+    if server
+        && (options.import
+            || complete
+            || launch_api
+            || options.minecraft_dir.is_some()
+            || options.inputs.version_json.is_some()
+            || options.inputs.client_jar.is_some()
+            || options.inputs.libraries_dir.is_some()
+            || options.inputs.assets_dir.is_some()
+            || options.inputs.prism_dir.is_some())
+    {
+        eprintln!("sunrise-prepare: error: --server does not take client preparation options");
+        return ExitCode::from(2);
+    }
     let Some(root) = root.or_else(default_root) else {
         eprintln!(
             "sunrise-prepare: error: no research-lock.json beside this program or above the current folder; pass --root"
@@ -195,6 +274,9 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     };
     options.root = root;
+    if let Some(query) = query {
+        return run_query(&query, &options, &folders, only.as_deref(), as_json);
+    }
     if launch_api {
         return match sunrise_prepare::artifacts::Lock::read(&options.root) {
             Ok(lock) => {
@@ -220,7 +302,7 @@ fn main() -> ExitCode {
             );
             return ExitCode::from(2);
         }
-        return check_resources(&options);
+        return check_resources(&options, server);
     }
     let print = |line: &str| {
         let mut out = std::io::stdout().lock();
@@ -251,6 +333,7 @@ fn main() -> ExitCode {
                 &log,
             )
         }
+        _ if server => sunrise_prepare::prepare_server_with_progress(&options, &log, &progress),
         _ => sunrise_prepare::prepare_with_progress(&options, &log, &progress).and_then(
             |resources| match complete {
                 true => complete_resources(&options, resources, &log),
@@ -269,6 +352,109 @@ fn main() -> ExitCode {
         Err(e) => {
             if json {
                 print(&json_line("error", &e));
+            }
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The commands a launcher asks instead of linking the preparer (docs/api/prepare-extras.md).
+const QUERIES: [&str; 4] = ["needs", "missing-extras", "extras", "data-file"];
+
+/// `needs`, `missing-extras`, `extras` and `data-file`: the answer on stdout, JSON with `--json`.
+fn run_query(
+    name: &str,
+    options: &sunrise_prepare::Options,
+    folders: &[PathBuf],
+    only: Option<&[String]>,
+    json: bool,
+) -> ExitCode {
+    use sunrise_prepare::extras;
+    let print = |line: &str| {
+        let mut out = std::io::stdout().lock();
+        let _ = writeln!(out, "{line}");
+        let _ = out.flush();
+    };
+    let lines = |list: &[(&str, &str)]| -> String {
+        match list {
+            [] => "nothing missing".into(),
+            some => some
+                .iter()
+                .map(|(kind, what)| format!("{kind}: {what}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        }
+    };
+    let result = match name {
+        "needs" => extras::needs(&options.root, &|line| eprintln!("{line}")).map(|needs| {
+            let text = match json {
+                true => extras::needs_json(&needs),
+                false => format!(
+                    "server jar needed: {}\nJDK needed: {}",
+                    needs.server_jar, needs.jdk
+                ),
+            };
+            (text, true)
+        }),
+        "data-file" => extras::data_file(&options.root, options.output.as_deref()).map(|written| {
+            let text = match (json, written) {
+                (true, _) => extras::data_file_json(written),
+                (false, true) => "sunrise-data.bin written".into(),
+                (false, false) => "sunrise-data.bin was already there".into(),
+            };
+            (text, true)
+        }),
+        "missing-extras" => {
+            extras::missing(&options.root, options.output.as_deref()).map(|missing| {
+                let text = match (json, missing.prepared) {
+                    (true, _) => extras::missing_json(&missing),
+                    (false, false) => format!("{} is not prepared", missing.resources.display()),
+                    (false, true) => lines(&missing.extras),
+                };
+                (text, true)
+            })
+        }
+        _ => {
+            let log = |line: &str| match json {
+                true => print(&json_line("message", line)),
+                false => print(line),
+            };
+            extras::add(
+                &options.root,
+                options.output.as_deref(),
+                only,
+                folders,
+                &options.inputs,
+                &log,
+            )
+            .map(|added| {
+                let text = match json {
+                    true => extras::added_json(&added),
+                    false => {
+                        let mut out = vec![format!("added: {}", added.added.join(", "))];
+                        for (kind, error) in &added.failed {
+                            out.push(format!("not added: {kind}: {error}"));
+                        }
+                        out.join("\n")
+                    }
+                };
+                (text, added.failed.is_empty())
+            })
+        }
+    };
+    match result {
+        Ok((text, ok)) => {
+            print(&text);
+            if ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        Err(e) => {
+            if json {
+                print(&extras::error_json(&e));
             }
             eprintln!("error: {e}");
             ExitCode::FAILURE
@@ -317,11 +503,19 @@ fn fraction_line(fraction: f32) -> String {
 }
 
 /// `--check`: each gap on its own line on stdout, exit 1 when there is one.
-fn check_resources(options: &sunrise_prepare::Options) -> ExitCode {
-    let resources = sunrise_prepare::artifacts::Lock::read(&options.root).map(|lock| {
-        sunrise_prepare::resources_dir(&options.root, &lock.version, options.output.as_deref())
+fn check_resources(options: &sunrise_prepare::Options, server: bool) -> ExitCode {
+    let result = sunrise_prepare::artifacts::Lock::read(&options.root).and_then(|lock| {
+        let output = options.output.as_deref();
+        if server {
+            let folder =
+                sunrise_prepare::server_resources_dir(&options.root, &lock.version, output);
+            sunrise_prepare::check_server(&options.root, &folder)
+        } else {
+            let folder = sunrise_prepare::resources_dir(&options.root, &lock.version, output);
+            sunrise_prepare::check(&options.root, &folder)
+        }
     });
-    match resources.and_then(|resources| sunrise_prepare::check(&options.root, &resources)) {
+    match result {
         Ok(lacking) if lacking.is_empty() => ExitCode::SUCCESS,
         Ok(lacking) => {
             for line in lacking {

@@ -103,8 +103,11 @@ impl Game<'_> {
             cart: None,
         }
     }
-    /// The server as a source (function ticks and schedules): the world spawn.
+    /// The server as a source (function ticks and schedules,
+    /// `MinecraftServer.createCommandSourceStack`): the world spawn, in its level
+    /// (`findRespawnDimension`), whichever level is in place.
     pub(in crate::game) fn server_source(&self) -> Source {
+        let level = self.world_spawn_level();
         Source {
             entity: None,
             pos: self.server_position(),
@@ -112,15 +115,19 @@ impl Game<'_> {
             eyes: false,
             silent: true,
             store: None,
-            dimension: self.dim,
-            origin_dimension: self.dim,
+            dimension: level,
+            origin_dimension: level,
             origin_player: false,
             level: None,
             block: None,
             cart: None,
         }
     }
+    /// `Entity.getYRot` and `getXRot`: the entity's angles, not the direction its model faces.
     pub(in crate::game) fn target_rotation(&self, t: Target) -> [f32; 2] {
+        use crate::game::entity::Entity;
+        use sunrise_client::entity_nbt::loaded_rotation;
+        let saved_rotation = |id| self.persist.raw.get(&id).map_or([0.0; 2], loaded_rotation);
         match t {
             Target::Player => [self.yaw, self.pitch],
             Target::Guest(conn) => self
@@ -130,34 +137,120 @@ impl Game<'_> {
                 .mobs
                 .iter()
                 .find(|m| m.id == id)
-                .map_or([0.0; 2], |m| [m.yaw, m.head_pitch]),
+                .map_or([0.0; 2], Entity::rotation),
+            Target::Item(id) => self
+                .dropped
+                .iter()
+                .find(|a| a.id == id)
+                .map_or([0.0; 2], Entity::rotation),
+            Target::Orb(id) => self
+                .orbs
+                .iter()
+                .find(|a| a.id == id)
+                .map_or([0.0; 2], Entity::rotation),
+            Target::Projectile(id) => self
+                .creatures
+                .projectiles
+                .iter()
+                .find(|a| a.id == id)
+                .map_or([0.0; 2], Entity::rotation),
             Target::Stand(id) => self
                 .armor_stands
                 .iter()
                 .find(|a| a.id == id)
-                .map_or([0.0; 2], |a| [a.yaw, 0.0]),
+                .map_or([0.0; 2], Entity::rotation),
+            Target::Frame(id) => self
+                .item_frames
+                .iter()
+                .find(|a| a.id == id)
+                .map_or([0.0; 2], crate::entities::ItemFrame::entity_rotation),
+            Target::Painting(id) => self
+                .paintings
+                .iter()
+                .find(|a| a.id == id)
+                .map_or([0.0; 2], |a| {
+                    [f32::from(a.facing) * 90.0, saved_rotation(id)[1]]
+                }),
             Target::Boat(id) => self
                 .boats
                 .iter()
                 .find(|b| b.id == id)
-                .map_or([0.0; 2], |b| [b.yaw, b.pitch]),
+                .map_or([0.0; 2], Entity::rotation),
             Target::Cart(id) => self
                 .carts
                 .iter()
                 .find(|c| c.id == id)
-                .map_or([0.0; 2], |c| [c.yaw, c.pitch]),
+                .map_or([0.0; 2], Entity::rotation),
             Target::Fangs(id) => self
                 .fangs
                 .list
                 .iter()
                 .find(|f| f.id == id)
-                .map_or([0.0; 2], |f| [f.yaw, 0.0]),
+                .map_or([0.0; 2], |f| [f.yaw, saved_rotation(id)[1]]),
+            Target::Crystal(id) => self
+                .crystals
+                .iter()
+                .find(|c| c.id == id)
+                .map_or([0.0; 2], |c| c.rotation),
+            Target::Cloud(id) => saved_rotation(id),
+            Target::Dragon(id) => self
+                .dragon
+                .as_ref()
+                .filter(|a| a.id == id)
+                .map_or([0.0; 2], |a| [a.yaw, a.pitch]),
+            Target::Tnt(id) => self
+                .tnts
+                .iter()
+                .find(|a| a.id == id)
+                .map_or([0.0; 2], Entity::rotation),
+            Target::Cushion(id) => self
+                .cushions
+                .iter()
+                .find(|a| a.id == id)
+                .map_or([0.0; 2], |a| [a.yaw, saved_rotation(id)[1]]),
+            Target::Falling(id) => self
+                .falling
+                .iter()
+                .find(|a| a.id == id)
+                .map_or([0.0; 2], Entity::rotation),
+            Target::Rocket(id) => self
+                .rockets
+                .iter()
+                .find(|a| a.id == id)
+                .map_or([0.0; 2], Entity::rotation),
+            Target::Trident(id) => self
+                .tridents
+                .iter()
+                .find(|a| a.id == id)
+                .map_or([0.0; 2], Entity::rotation),
+            Target::Spawner(id) => self
+                .ominous_spawners
+                .iter()
+                .find(|a| a.id == id)
+                .and_then(|a| a.raw.as_deref())
+                .map_or([0.0; 2], sunrise_client::entity_nbt::rotation),
+            Target::Hook(id) => self
+                .fishing_hook_by_id(id)
+                .map_or([0.0; 2], |(hook, _)| [hook.yaw, hook.pitch]),
             Target::Other(id) => self
                 .others
                 .iter()
                 .find(|o| o.id == id)
                 .map_or([0.0; 2], |o| [o.yaw, o.pitch]),
-            _ => [0.0; 2],
+            Target::General(id) => self
+                .resident_entities
+                .general
+                .row(id)
+                .map(|row| row.rotation)
+                .or_else(|| {
+                    self.remote
+                        .as_ref()
+                        .and_then(|r| r.general.rows.get(&(id as i32)))
+                        .map(|row| row.rotation)
+                })
+                .unwrap_or([0.0; 2]),
+            // Dragon parts aren't admitted by UUID. Natural fence knots never turn.
+            Target::DragonPart(_) | Target::Knot(_) => [0.0; 2],
         }
     }
     pub(in crate::game) fn target_eye_height(&self, t: Target) -> f64 {
@@ -179,13 +272,17 @@ impl Game<'_> {
                 Some(a) if a.small => f64::from(0.9875f32),
                 _ => self.type_eye_height(&self.target_type(t)),
             },
+            Target::Other(id) => self.interactions.get(&(id as i32)).map_or_else(
+                || self.type_eye_height(&self.target_type(t)),
+                |i| f64::from(i.eye_height()),
+            ),
             // Entity.getEyeHeight: the type's dimensions.
             _ => self.type_eye_height(&self.target_type(t)),
         }
     }
     /// `EntityType.getDimensions().eyeHeight()` from `entity-types.json`,
     /// read once: a float, widened as `Entity.getEyeY` does.
-    fn type_eye_height(&self, ty: &str) -> f64 {
+    pub(in crate::game) fn type_eye_height(&self, ty: &str) -> f64 {
         static EYE_HEIGHTS: std::sync::OnceLock<std::collections::HashMap<String, f64>> =
             std::sync::OnceLock::new();
         EYE_HEIGHTS
@@ -869,30 +966,37 @@ impl Game<'_> {
                         .iter()
                         .find(|m| m.id == id)
                         .and_then(|m| {
-                            if attacker {
+                            use sunrise_client::mobs::{Species, Who, ai::brain_target};
+                            if !attacker && m.species() == Species::Warden {
+                                return self
+                                    .warden_attack_target(m, None)
+                                    .map(|(_, target)| target);
+                            }
+                            let who = if attacker {
                                 m.ai.last_hurt_by
                             } else {
-                                m.ai.target
-                            }
-                        })
-                        .map(|w| match w {
-                            sunrise_client::mobs::Who::Player => {
-                                // LivingEntity.getLastHurtByMob is the player
-                                // who hit it, not whichever client is reading it.
-                                match self
-                                    .last_hurt_by_player
-                                    .get(&id)
-                                    .and_then(|credit| self.resolve_player_credit(*credit))
-                                {
-                                    Some(Some(conn))
-                                        if attacker && self.lan_acting != Some(conn) =>
-                                    {
-                                        Target::Guest(conn)
-                                    }
-                                    _ => Target::Player,
+                                // `Mob.getTarget`, as brain-backed mobs override it.
+                                brain_target(m).unwrap_or(m.ai.target)
+                            }?;
+                            match who {
+                                Who::Player => {
+                                    let conn = if attacker {
+                                        // `getLastHurtByMob`: the player who hit it,
+                                        // not whichever client is reading it.
+                                        self.last_hurt_by_player.get(&id).and_then(|credit| {
+                                            self.resolve_player_credit(*credit).flatten()
+                                        })
+                                    } else {
+                                        None
+                                    };
+                                    Some(
+                                        conn.filter(|&conn| self.lan_acting != Some(conn))
+                                            .map_or(Target::Player, Target::Guest),
+                                    )
                                 }
+                                Who::Mob(i) if attacker => Some(Target::Mob(i)),
+                                Who::Mob(i) => self.level_entity(i as i32),
                             }
-                            sunrise_client::mobs::Who::Mob(i) => Target::Mob(i),
                         })
                         .into_iter()
                         .collect(),
@@ -1267,19 +1371,24 @@ impl Game<'_> {
                         let Some(de) = de else {
                             return Ok((false, 0));
                         };
-                        let st = sunrise_client::save::block_entity_encode::encode(
-                            (0, 0, 0),
-                            se,
-                            &name,
-                            self.res.items(),
-                        );
-                        let dt = sunrise_client::save::block_entity_encode::encode(
-                            (0, 0, 0),
+                        let st =
+                            self.encode_live_block_entity((x, y, z), se, &name, self.res.items());
+                        let dt = self.encode_live_block_entity(
+                            (dx, dy, dz),
                             de,
                             &name,
                             self.res.items(),
                         );
-                        if st != dt {
+                        // Each capture receives its real position; saveCustomOnly compares payloads.
+                        let without_pos = |mut tag: sunrise_core::nbt::Tag| {
+                            if let sunrise_core::nbt::Tag::Compound(fields) = &mut tag {
+                                for key in ["x", "y", "z"] {
+                                    fields.remove(&key.into());
+                                }
+                            }
+                            tag
+                        };
+                        if without_pos(st) != without_pos(dt) {
                             return Ok((false, 0));
                         }
                     }

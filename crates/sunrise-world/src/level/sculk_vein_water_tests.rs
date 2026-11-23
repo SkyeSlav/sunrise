@@ -147,6 +147,7 @@ impl World {
                     sound,
                     volume,
                     pitch,
+                    ..
                 } if &**sound == name => Some((*pos, *volume, *pitch)),
                 _ => None,
             })

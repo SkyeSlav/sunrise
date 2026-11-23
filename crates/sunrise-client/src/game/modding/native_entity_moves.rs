@@ -1,6 +1,6 @@
 //! Moving and turning an entity for native server mods, through an
 //! `EntityRef` (docs/modding/src/how-to/native-mods.md, "Entity and level handles", #7387):
-//! teleport, collided moves, rotation, head yaw, facing, size and pushes. Writes move the
+//! teleport, collided moves, rotation, head and body yaw, facing, size and pushes. Writes move the
 //! entity as `/tp` and `/rotate` do, so clients see it as they see those.
 //! Reads return `None`, writes false, for a stale handle or on a client.
 use super::entity::{Entity as _, EntityHandle, with_entity_mut};
@@ -9,8 +9,10 @@ use super::{
     commands::{Target, entity_pitch},
     vehicle_teleport::TeleportMotion,
 };
+use crate::game::{collision_source::Mover, move_gate::MoveWho};
 use mod_api::{EntityRef, MoveCause};
 use sunrise_core::geometry::Vec3;
+use sunrise_world::entity_move::MoverType;
 
 /// `Level.isInSpawnableBounds` and `/tp`'s limits: 30,000,000 blocks out,
 /// 20,000,000 up or down.
@@ -109,7 +111,11 @@ impl Game<'_> {
                 !r.iter().all(|v| v.is_finite())
                     || !matches!(
                         t,
-                        Target::Player | Target::Guest(_) | Target::Mob(_) | Target::Other(_)
+                        Target::Player
+                            | Target::Guest(_)
+                            | Target::Mob(_)
+                            | Target::Other(_)
+                            | Target::General(_)
                     )
             })
         {
@@ -119,21 +125,30 @@ impl Game<'_> {
     }
     /// Moves the entity by `delta` as `Entity.move(cause, delta)` does: collided, stepping,
     /// through the `entity_move` hook. How far it moved; None for a stale handle, on a client,
-    /// for a player, for an entity outside the entity walk, and for an unknown cause and for a delta
-    /// that is not finite or beyond 64 blocks on an axis.
+    /// for an entity outside the entity walk, and for an unknown cause and for a delta that is
+    /// not finite or beyond 64 blocks on an axis. A player is moved by `move_player_by`.
     pub(super) fn entity_move_by(
         &mut self,
         entity: EntityRef,
         delta: [f64; 3],
         cause: MoveCause,
     ) -> Option<[f64; 3]> {
-        if self.remote.is_some()
-            || !delta.iter().all(|v| v.is_finite() && v.abs() <= 64.0)
-            || self.native_entity_target(entity).is_none()
-        {
+        if self.remote.is_some() || !sunrise_client::move_gate::valid_mod_move_delta(delta) {
             return None;
         }
         let mover = sunrise_client::move_gate::mover_of(cause)?;
+        let t = self.native_entity_target(entity)?;
+        if matches!(t, Target::Player | Target::Guest(_)) {
+            let conn = match t {
+                Target::Player => self.lan_acting?,
+                Target::Guest(conn) => conn,
+                _ => return None,
+            };
+            // A teleport is made in the player's level, with that level's moving colliders.
+            return self.in_target_level(t, |game| {
+                game.in_this_levels_colliders(|game| game.move_player_by(t, conn, mover, delta))
+            })?;
+        }
         let handle = self.native_walk_entity(entity.id())?;
         let [x, y, z] = delta;
         let moved = self.move_listed_entity(handle, mover, Vec3::new(x, y, z));
@@ -181,6 +196,13 @@ impl Game<'_> {
                 });
                 true
             }
+            Target::General(id) => {
+                let Some(row) = self.resident_entities.general.row_mut(id) else {
+                    return false;
+                };
+                row.rotation = [yaw, pitch];
+                true
+            }
             _ => false,
         }
     }
@@ -195,6 +217,17 @@ impl Game<'_> {
             return Some(self.mobs.iter().find(|m| m.id == id)?.head_yaw);
         }
         Some(0.0)
+    }
+    /// The yaw of the entity's body (`LivingEntity.yBodyRot`) in degrees as
+    /// vanilla keeps it, not normalized: mobs only, None for players and every
+    /// other kind, and for a stale handle.
+    pub(super) fn entity_body_yaw(&self, entity: EntityRef) -> Option<f32> {
+        match self.native_entity_target(entity)? {
+            Target::Mob(id) => Some(self.mobs.iter().find(|m| m.id == id)?.body_yaw),
+            // The dragon's flight yaw also drives its body and part poses.
+            Target::Dragon(_) => Some(self.native_dragon(entity)?.yaw),
+            _ => None,
+        }
     }
     /// Turns a mob's head to `yaw` (`Entity.setYHeadRot`); its body follows
     /// as its AI turns it. Players' heads can turn too; false for other kinds
@@ -252,42 +285,11 @@ impl Game<'_> {
             return false;
         };
         if matches!(target, Target::Player | Target::Guest(_)) {
-            let conn = match target {
-                Target::Player => self.lan_acting,
-                Target::Guest(conn) => Some(conn),
-                _ => None,
-            };
-            let Some(conn) = conn else {
-                return false;
-            };
-            let Some(host) = self.lan.as_mut() else {
-                return false;
-            };
-            return host
-                .hub
-                .update_guest(conn, |g| {
-                    let motion = if matches!(target, Target::Player) {
-                        self.player.as_mut()
-                    } else {
-                        g.motion.as_deref_mut()
-                    };
-                    let Some(motion) = motion else {
-                        return false;
-                    };
-                    let v = motion.velocity;
-                    motion.velocity = Vec3::new(v.x + delta[0], v.y + delta[1], v.z + delta[2]);
-                    let v = motion.velocity;
-                    g.send(
-                        &sunrise_protocol::packets::play::Clientbound::SetEntityMotion(
-                            sunrise_protocol::packets::play::SetEntityMotion {
-                                id: g.entity_id,
-                                velocity: [v.x, v.y, v.z],
-                            },
-                        ),
-                    );
-                    true
-                })
-                .unwrap_or(false);
+            let [x, y, z] = delta;
+            return self.write_player_velocity(target, |before| {
+                let velocity = before.add_vector(Vec3::new(x, y, z));
+                velocity.is_finite().then_some(velocity)
+            });
         }
         let Some(h) = self.native_walk_entity(entity.id()) else {
             return false;
@@ -302,10 +304,130 @@ impl Game<'_> {
         }
         true
     }
+    /// Update the resolved player's body, in place for its own turn or in its guest record.
+    /// The resolver already excludes displaced outer players. Send to the owning client only.
+    pub(super) fn write_player_velocity(
+        &mut self,
+        target: Target,
+        change: impl FnOnce(Vec3) -> Option<Vec3>,
+    ) -> bool {
+        let Some((conn, motion)) = self.player_motion_mut(target) else {
+            return false;
+        };
+        let Some(velocity) = change(motion.velocity) else {
+            return false;
+        };
+        motion.velocity = velocity;
+        self.send_guest_motion(conn, Some(velocity));
+        true
+    }
+
+    /// Put back a player's own random after a copy of it drew for them.
+    pub(super) fn write_player_random(
+        &mut self,
+        target: Target,
+        random: sunrise_core::random::EntityRandom,
+    ) {
+        if let Some((_, motion)) = self.player_motion_mut(target) {
+            motion.random = random;
+        }
+    }
+
+    /// The body of the acting player or a guest, with its connection, during or outside a turn.
+    fn player_motion_mut(
+        &mut self,
+        target: Target,
+    ) -> Option<(u32, &mut sunrise_client::motion::PlayerMotion)> {
+        let conn = match target {
+            Target::Player => self.lan_acting,
+            Target::Guest(conn) => Some(conn),
+            _ => None,
+        }?;
+        let host = self.lan.as_mut()?;
+        let motion = if target == Target::Player {
+            host.hub.guest(conn).and(self.player.as_mut())
+        } else {
+            host.hub.guests.motion_mut(conn)
+        }?;
+        Some((conn, motion))
+    }
+
+    /// Moves a player by `delta` through the level (`Entity.move`) after the `entity_move` hook
+    /// has heard it, and tells its client with a relative teleport (`Hub::displace`). The
+    /// displacement made, or `None` (see the host trait for what is refused).
+    fn move_player_by(
+        &mut self,
+        t: Target,
+        conn: u32,
+        mover: MoverType,
+        delta: [f64; 3],
+    ) -> Option<[f64; 3]> {
+        let acting = t == Target::Player;
+        {
+            let guest = self.lan.as_ref()?.hub.guest(conn)?;
+            if guest.vehicle.is_some() || guest.sleeping {
+                return None;
+            }
+        }
+        // The hook hears the move once, as `Entity.move` begins; a cancel is a move of nothing.
+        let who = if acting {
+            MoveWho::Player
+        } else {
+            MoveWho::Guest(conn)
+        };
+        let gate = self.entity_move(who, mover, Vec3::new(delta[0], delta[1], delta[2]));
+        if gate.skipped() {
+            return Some([0.0; 3]);
+        }
+        let delta = gate.delta().components();
+        let host = self.lan.as_ref()?;
+        let guest = host.hub.guest(conn)?;
+        let body = if acting {
+            self.player.as_ref()
+        } else {
+            guest.motion.as_deref()
+        }?;
+        let from = [body.position.x, body.position.y, body.position.z];
+        let to = [from[0] + delta[0], from[1] + delta[1], from[2] + delta[2]];
+        if !in_bounds(to) {
+            return None;
+        }
+        // A spectator goes through everything, as its moves are not checked.
+        let reached = if guest.spectator() {
+            to
+        } else {
+            // The solid entities (boats, shulkers, a still happy ghast) the player may meet.
+            let entities = self.entity_collisions(Mover::PlayerAt { feet_y: from[1] });
+            self.lan.as_ref()?.hub.settle_conn(
+                conn,
+                from,
+                to,
+                &self.world,
+                self.collision,
+                &entities,
+            )?
+        };
+        let target = Vec3::new(reached[0], reached[1], reached[2]);
+        if acting {
+            self.player.as_mut()?.position = target;
+        } else {
+            let host = self.lan.as_mut()?;
+            host.hub.update_guest(conn, |g| {
+                g.motion.as_deref_mut().map(|m| m.position = target)
+            })??;
+        }
+        let by = [
+            reached[0] - from[0],
+            reached[1] - from[1],
+            reached[2] - from[2],
+        ];
+        self.lan.as_mut()?.hub.displace(conn, reached, by);
+        Some(by)
+    }
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::game) mod tests {
     #[test]
     #[ignore = "daily"]
     fn moves_and_pushes_a_live_mob() {
@@ -368,6 +490,7 @@ mod tests {
             let stand = game.entity(13).unwrap();
             assert!(!stand.set_rotation(game, 30.0, 10.0));
             game.others.push(super::super::commands::OtherEntity {
+                size_answer: None,
                 attachment_lifetime: Default::default(),
                 knot_check: None,
                 eye: None,
@@ -390,6 +513,7 @@ mod tests {
                 pos: [0, 64, 0],
                 facing: 0,
                 variant: "minecraft:kebab".into(),
+                asset: None,
                 width: 1,
                 height: 1,
                 check_interval: 0,
@@ -427,6 +551,10 @@ mod tests {
     /// Independent vanilla outcomes for spawn bounds and the yaw-to-direction conversion.
     #[test]
     fn move_boundaries_match_vanilla() {
+        run_move_boundaries_match_vanilla();
+    }
+
+    pub(in crate::game) fn run_move_boundaries_match_vanilla() {
         use serde_json::Value;
         let cases = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

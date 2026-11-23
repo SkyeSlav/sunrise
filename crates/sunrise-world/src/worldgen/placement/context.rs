@@ -4,12 +4,15 @@ use crate::{heightmap::HeightmapType, worldgen::anchor::WorldGenerationContext};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PlacementQueryError {
     Unavailable,
+    /// A direct placed-feature call reached a biome filter without a top feature.
+    MissingTopFeature,
     WorkLimit,
     Failed(String),
 }
 impl std::fmt::Display for PlacementQueryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::MissingTopFeature => f.write_str("biome filter requires a top feature"),
             Self::WorkLimit => f.write_str("predicate work limit exceeded"),
             Self::Unavailable => f.write_str("placement world query is unavailable"),
             Self::Failed(message) => f.write_str(message),
@@ -192,6 +195,23 @@ pub trait PlacementContext {
         _position: [i32; 3],
     ) -> Result<crate::fluid::FluidState, PlacementQueryError> {
         Err(PlacementQueryError::Unavailable)
+    }
+
+    /// A live `LiquidBlockContainer.placeLiquid` override can also make a
+    /// non-waterloggable template block a liquid container.
+    fn has_template_liquid_override(&self, _state: crate::registry::BlockStateId) -> bool {
+        false
+    }
+
+    /// Restore fluid directly, without asking the container's acceptance
+    /// predicate. `None` is an unhandled restore; use the vanilla template.
+    fn place_template_liquid(
+        &mut self,
+        _position: [i32; 3],
+        _state: crate::registry::BlockStateId,
+        _fluid: crate::fluid::FluidState,
+    ) -> Option<bool> {
+        None
     }
 
     /// Request destruction with no responsible entity. The world adapter owns

@@ -4,7 +4,7 @@
 //! and the packs over it. A pack replaces a built-in predicate
 //! (`minecraft:tool/can_silk_touch`) or adds its own, and block tables, item
 //! modifiers and entity tables all reference those ids.
-use super::{PackOverlay, load_kind, overlay_map};
+use super::PackOverlay;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io;
@@ -15,8 +15,7 @@ use std::path::Path;
 /// top pack's file for an id replaces the rest, as
 /// `SimpleJsonResourceReloadListener` sees one resource per id.
 pub fn load_predicates(root: &Path, overlay: &PackOverlay) -> io::Result<HashMap<String, Value>> {
-    let mut predicates = HashMap::new();
-    load_kind(&root.join("data"), "predicate", &mut predicates)?;
-    overlay_map(overlay, "predicate", &mut predicates);
-    Ok(predicates)
+    super::types::load_files(root, overlay, "predicate", |bytes| {
+        serde_json::from_slice(bytes)
+    })
 }

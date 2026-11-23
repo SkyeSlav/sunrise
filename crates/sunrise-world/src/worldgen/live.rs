@@ -416,24 +416,30 @@ impl LiveFeatures {
         }
     }
     /// `PlacedFeature.place` (placement modifiers, then the feature).
+    /// A reached biome filter without a top feature is returned distinctly; other
+    /// execution errors retain the live placement failure result.
     pub fn place_placed<W: FeatureWorld + PlacementContext>(
         &self,
         name: &str,
         world: &mut W,
         random: &mut impl RandomSource,
         origin: [i32; 3],
-    ) -> bool
+    ) -> Result<bool, super::placement::PlacementQueryError>
     where
         W::Error: std::fmt::Display,
     {
+        use super::{feature_graph::FeatureExecutionError, placement::PlacementQueryError};
         let Some(feature) = self.placed(name) else {
-            return false;
+            return Ok(false);
         };
         match feature.place(world, random, origin, self.blocks) {
-            Ok(placed) => placed,
+            Ok(placed) => Ok(placed),
+            Err(FeatureExecutionError::Query(PlacementQueryError::MissingTopFeature)) => {
+                Err(PlacementQueryError::MissingTopFeature)
+            }
             Err(e) => {
                 eprintln!("Sunrise: placing {name} failed: {e}");
-                false
+                Ok(false)
             }
         }
     }

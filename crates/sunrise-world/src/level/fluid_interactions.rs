@@ -4,7 +4,10 @@
 //! once when the world opens and again on each data reload, so no name or tag is looked up
 //! while a liquid updates.
 use super::{Behaviours, data::BlockSet, states::BlockId};
-use crate::{fluid::FluidKind, registry::BlockStateId};
+use crate::{
+    fluid::{FluidKind, FluidState},
+    registry::BlockStateId,
+};
 use std::sync::{
     Arc, RwLock,
     atomic::{AtomicU8, AtomicUsize, Ordering},
@@ -77,11 +80,12 @@ impl FluidInteraction {
 }
 
 /// What the liquid cell becomes: the result of the first interaction that applies and has one
-/// for the cell's state, by neighbour (`neighbours`: above, north, south, west, east, never
-/// below), then by interaction, as `FluidInteractionRegistry.canInteract` walks them.
+/// for the cell's state, by neighbour (`neighbours`, in the order given: vanilla's is above,
+/// north, south, west, east, never below), then by interaction, as
+/// `FluidInteractionRegistry.canInteract` walks them.
 pub fn first_match(
     interactions: &[FluidInteraction],
-    neighbours: [Cell; 5],
+    neighbours: impl IntoIterator<Item = Cell>,
     below: BlockId,
     source_cell: bool,
 ) -> Option<BlockStateId> {
@@ -206,6 +210,23 @@ impl Behaviours {
                 ]
             })
             .collect()
+    }
+    /// What a liquid cell of `source` becomes against the one `neighbour` cell, with `below`
+    /// under it: the table `should_spread_liquid` walks, for one neighbour. A pure read: it
+    /// changes no world, asks no hook and plays nothing. `None` is no interaction. The
+    /// neighbour's fluid is read through its block state, as a waterlogged block holds water.
+    pub fn fluid_interaction_result(
+        &self,
+        source: FluidState,
+        neighbour: BlockStateId,
+        below: BlockStateId,
+    ) -> Option<BlockStateId> {
+        let interactions = self.fluid_interactions(source.kind())?;
+        let cell = Cell {
+            fluid: self.fluid(neighbour).kind(),
+            block: self.block(neighbour),
+        };
+        first_match(&interactions, [cell], self.block(below), source.is_source())
     }
     /// The fluids of the `minecraft:water` and `minecraft:lava` fluid tags the prepared data
     /// gives.
@@ -332,6 +353,25 @@ mod tests {
         let water = around(&[(3, cell(FluidKind::FlowingWater, AIR))]);
         assert_eq!(made(&rules, water, STONE, true), Some(OBSIDIAN.0));
         assert_eq!(made(&rules, water, STONE, false), Some(COBBLESTONE.0));
+    }
+
+    #[test]
+    fn one_cell_walks_the_same_table_as_the_five_around_a_liquid() {
+        let rules = vanilla();
+        let one = |cell: Cell, below, source| {
+            first_match(&rules, [cell], below, source).map(|state| state.0)
+        };
+        let flowing_water = cell(FluidKind::FlowingWater, AIR);
+        assert_eq!(one(flowing_water, STONE, true), Some(OBSIDIAN.0));
+        assert_eq!(one(flowing_water, STONE, false), Some(COBBLESTONE.0));
+        assert_eq!(one(cell(FluidKind::Empty, STONE), STONE, true), None);
+        assert_eq!(
+            one(cell(FluidKind::Empty, BLUE_ICE), SOUL_SOIL, true),
+            Some(BASALT.0)
+        );
+        assert_eq!(one(cell(FluidKind::Empty, BLUE_ICE), STONE, true), None);
+        // No neighbour at all is no interaction.
+        assert_eq!(first_match(&rules, [], STONE, true), None);
     }
 
     #[test]

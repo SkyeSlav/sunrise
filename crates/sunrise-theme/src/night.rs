@@ -41,7 +41,7 @@ pub const PLAY: f32 = 56.;
 pub const UNCARDED_STOPS: usize = 3;
 
 /// What drifts or glows over a theme's sky besides the clouds, in the colours the theme gives it
-/// (`launcher/scenery/src/sky.rs` draws it, a few steps a second; nothing under reduced motion or in
+/// (`https://github.com/sunrise-org/sunrise-launcher/blob/main/scenery/src/sky.rs` draws it, a few steps a second; nothing under reduced motion or in
 /// performance mode).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Mood {
@@ -125,25 +125,25 @@ pub struct Night {
 }
 
 pub const NIGHT: Night = Night {
-    sky: [0x07061a, 0x140f38, 0x2a1656, 0x5b2a78, 0xb0477d, 0xf08a5d],
-    page: 0x0e0b26,
-    side: 0x0a0820,
-    card: 0x15112e,
-    card_alpha: 0.84,
-    card_hi: 0x231c4a,
-    card_hi_alpha: 0.90,
-    stroke: 0xb9acff,
-    stroke_alpha: 0.12,
-    rule_alpha: 0.10,
-    ink: 0xf4f2ff,
-    ink_soft: 0xcfc9ea,
-    muted: 0xa59fc6,
-    accent: 0x7656fa,
-    accent_hi: 0xa08cff,
+    sky: [0x0f1220; 6],
+    page: 0x0f1220,
+    side: 0x0b0d18,
+    card: 0x171b2e,
+    card_alpha: 1.,
+    card_hi: 0x20253d,
+    card_hi_alpha: 1.,
+    stroke: 0x2c3250,
+    stroke_alpha: 1.,
+    rule_alpha: 0.7,
+    ink: 0xf2f4fb,
+    ink_soft: 0xc6cbe0,
+    muted: 0x9aa1bd,
+    accent: 0x4f60e6,
+    accent_hi: 0x93b4ff,
     on_accent: 0xffffff,
-    success: 0x5fd39a,
-    warn: 0xf5b45a,
-    danger: 0xff8a78,
+    success: 0x4cd08a,
+    warn: 0xf5a94a,
+    danger: 0xff7d7d,
     dark: true,
     art: SkyArt {
         sun: [0xffe28c, 0xffbf66, 0xff944f],

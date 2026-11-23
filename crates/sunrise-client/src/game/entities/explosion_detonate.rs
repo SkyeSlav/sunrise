@@ -546,17 +546,12 @@ mod tests {
         mod_platform::testing::with_mods(mods, || {
             with_game(|game| {
                 for (id, x) in [(940, 8.0), (941, 7.99)] {
-                    game.crystals.push(crate::game::dragon::Crystal {
-                        attachment_lifetime: Default::default(),
-                        join: Default::default(),
+                    game.crystals.push(crate::game::dragon::Crystal::new(
                         id,
-                        position: Vec3::new(x, 1.0, 0.0),
-                        show_bottom: false,
-                        time: 0,
-                        beam: None,
-                        invulnerable: false,
-                        fall: (false, 0.0),
-                    });
+                        Vec3::new(x, 1.0, 0.0),
+                        false,
+                        0,
+                    ));
                 }
                 game.explosion_detonate([0.0, 1.0, 0.0], 3.0, &mut Vec::new());
                 let listed = game.combat.blast_hit_list.as_ref().unwrap();
@@ -658,6 +653,7 @@ mod tests {
             pos: [2, 1, 0],
             facing: 0,
             variant: "minecraft:kebab".into(),
+            asset: None,
             width: 1,
             height: 1,
             check_interval: 0,
@@ -674,17 +670,12 @@ mod tests {
             check_interval: 0,
             custom_name: None,
         });
-        game.crystals.push(crate::game::dragon::Crystal {
-            attachment_lifetime: Default::default(),
-            join: Default::default(),
-            id: 954,
-            position: Vec3::new(2.0, 1.0, 0.0),
-            show_bottom: false,
-            time: 0,
-            beam: None,
-            invulnerable: false,
-            fall: (false, 0.0),
-        });
+        game.crystals.push(crate::game::dragon::Crystal::new(
+            954,
+            Vec3::new(2.0, 1.0, 0.0),
+            false,
+            0,
+        ));
         zombie(game, 955, -2.0);
         game.boats.push(crate::game::boats::Boat::new(
             960,

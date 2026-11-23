@@ -19,7 +19,7 @@ const CENTRE: [f64; 3] = [8.5, 64.5, 8.5];
 
 /// A windowless integrated-server game from the prepared resources with a
 /// resident chunk; `None` without them.
-fn with_game<R>(f: impl FnOnce(&mut Game<'static>) -> R) -> Option<R> {
+fn with_game<R>(f: impl FnOnce(&mut Game<'_>) -> R) -> Option<R> {
     let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES")?);
     let settings = Settings::default();
     let loaded = load_resources(
@@ -38,7 +38,8 @@ fn with_game<R>(f: impl FnOnce(&mut Game<'static>) -> R) -> Option<R> {
     let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
     options.resources = root.clone();
     options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
-    let res: &'static _ = Box::leak(Box::new(loaded.resources));
+    let mut resources = None;
+    let res = &*resources.insert(loaded.resources);
     let mut game = Game::new(
         res,
         loaded.pack,

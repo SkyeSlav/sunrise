@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Instant};
 
 use mod_api::{
     BlockEntityPart, BlockEntityTickEvent, BlockEntityTicksEvent, BlockPart, BlocksEvent, Hooks,
-    Host, HostTransaction, Registrar, ServerHost,
+    Host, HostTransaction, Registrar, ServerHost, TransactionError,
 };
 use sunrise_client::{
     chunk::Chunk,
@@ -15,29 +15,38 @@ struct Ticker(bool);
 impl BlockPart for Ticker {}
 #[mod_api::sunrise_part]
 impl BlockEntityPart for Ticker {
-    fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+    fn block_entity_tick(&self, event: &mut BlockEntityTickEvent<'_>) {
         if self.0 {
+            let host = event.subject.host();
             let level = host.level("minecraft:overworld").unwrap();
             let sink = host.block_entity(level, [0, 63, 0]).unwrap();
             let value = sink.data_slots(host).unwrap()[0];
-            let result: Result<(), ()> = host.transaction(|host, _| {
+            let result: Result<(), TransactionError<()>> = host.transaction(|host, _| {
                 assert!(sink.set_data_slot(host, 0, value + 1).unwrap());
                 Ok(())
             });
             result.unwrap();
         }
-        std::hint::black_box(event.pos);
+        std::hint::black_box(event.subject.with_view(|entity| entity.position()));
     }
 }
 struct BenchMod(&'static str);
 #[mod_api::__subscriptions]
 impl Hooks for BenchMod {
     fn register(&self, r: &mut dyn Registrar, _: &mod_api::RegistrationContext) {
-        let kind = r.block_entity_type("ticker").blocks(&[]).build();
+        let kind = r
+            .block_entity_type("ticker")
+            .blocks(&["live_bench:ticker"])
+            .build();
         if self.0 != "none" {
             r.block_entity_part(&kind, Ticker(self.0 == "write"))
                 .unwrap();
         }
+    }
+    fn blocks(&self, _: &mod_api::RegistrationContext, event: &mut BlocksEvent<'_>) {
+        event
+            .register(mod_api::Block::new("live_bench:ticker", "minecraft:stone"))
+            .unwrap();
     }
 }
 
@@ -69,8 +78,15 @@ fn thousand_live_block_entity_ticks() {
                         .insert((x, z), Arc::new(Chunk::empty(x, z)));
                 }
             }
+            let block = game
+                .pack
+                .assets
+                .registry
+                .default_state("live_bench:ticker")
+                .unwrap();
             let positions: Vec<_> = (0..1000).map(|i| (i % 40, 64, i / 40)).collect();
             for &pos in positions.iter().chain(std::iter::once(&(0, 63, 0))) {
+                game.world.set(pos.0, pos.1, pos.2, block).unwrap();
                 let mut entity =
                     ModBlockEntity::new("live_bench:ticker".into(), Default::default());
                 entity.data = vec![0];
@@ -188,35 +204,25 @@ fn data_slot_sizing_after_creation_and_load_joins_the_existing_journal() {
                 "no-op sends no Changed notice"
             );
             assert_eq!(entity.data_slots(game), Some(vec![0]));
-            let aborted: Result<(), ()> = (game as &mut dyn ServerHost).transaction(|host, _| {
-                assert_eq!(entity.set_data_slots(host, vec![30, 40]), Ok(true));
-                host.transaction(|host, _| {
-                    assert!(entity.set_data_slot(host, 0, 50).unwrap());
-                    Ok(())
-                })?;
-                Err(())
-            });
-            assert_eq!(aborted, Err(()));
+            let aborted: Result<(), TransactionError<()>> = (game as &mut dyn ServerHost)
+                .transaction(|host, _| {
+                    assert_eq!(entity.set_data_slots(host, vec![30, 40]), Ok(true));
+                    host.transaction(|host, _| {
+                        assert!(entity.set_data_slot(host, 0, 50).unwrap());
+                        Ok::<_, ()>(())
+                    })
+                    .unwrap();
+                    Err(())
+                });
+            assert_eq!(aborted, Err(TransactionError::Aborted(())));
             assert_eq!(entity.data_slots(game), Some(vec![0]));
             assert!(game.transactions.is_empty());
             assert_eq!(entity.set_data_slots(game, vec![0; 256]), Ok(true));
             assert!(entity.set_data_slot(game, 255, 7).unwrap());
-            let before = entity.data_slots(game).unwrap();
-            let before_revision = revision(game);
-            game.world.modified.clear();
-            assert_eq!(
-                entity.set_data_slots(game, vec![0; 257]),
-                Err(BlockEntityDataError::TooManySlots {
-                    count: 257,
-                    limit: 256
-                })
-            );
-            assert_eq!(entity.data_slots(game), Some(before));
-            assert_eq!(revision(game), before_revision);
-            assert!(
-                game.world.modified.is_empty(),
-                "refusal sends no Changed notice"
-            );
+            let mut wide = vec![0; 257];
+            wide[256] = 9;
+            assert_eq!(entity.set_data_slots(game, wide.clone()), Ok(true));
+            assert_eq!(entity.data_slots(game), Some(wide));
             let saved = sunrise_client::save::block_entity_encode::encode(
                 pos,
                 game.world.block_entities.get(&pos).unwrap(),
@@ -267,8 +273,8 @@ impl Hooks for TickPaths {
     fn blocks(&self, _: &mod_api::RegistrationContext, event: &mut BlocksEvent<'_>) {
         for id in [BOTH_BLOCK, BARE_BLOCK] {
             event
-                .blocks
-                .push(mod_api::Block::new(id, "minecraft:stone"));
+                .register(mod_api::Block::new(id, "minecraft:stone"))
+                .unwrap();
         }
     }
 }
@@ -284,8 +290,12 @@ impl BlockEntityPart for BothPaths {
             event.ticks = true;
         }
     }
-    fn block_entity_tick(&self, _: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
-        event.entity.data.push(1);
+    fn block_entity_tick(&self, event: &mut BlockEntityTickEvent<'_>) {
+        event.subject.with_view(|mut entity| {
+            let mut data = entity.data_slots().to_vec();
+            data.push(1);
+            assert!(entity.set_data_slots(&data));
+        });
     }
 }
 

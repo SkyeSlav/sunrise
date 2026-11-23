@@ -26,13 +26,13 @@ INPUTS = ROOT / "crates/sunrise-mod-package/src/sdk/inputs.json"
 KINDS = {
     "surface": "The stable surface: everything an API-only mod can name, each item with its fingerprint "
                "([`surface.json`](02-surface.md)).",
-    "build-data": "`points.json`, `internals.json`, `loops.json` and `functions.json`: data pinned to this build, "
+    "build-data": "`internals.json`, `loops.json` and `functions.json`: data pinned to this build, "
                   "with no compatibility promise.",
     "api-source": "The mod API's crates with their generated code written out: what a mod project's "
                   "`.sunrise/sdk/api/` holds.",
     "runtime": "The game's libraries, the prebuilt program the API route links mods into, its stub mods library "
                "and the package's identity file.",
-    "api": "Metadata of the mod API's crates and their procedural macros, the point data and the mods library's "
+    "api": "Metadata of the mod API's crates and their procedural macros, build data and the mods library's "
            "template: what a mod on the mod API alone builds against.",
     "engine": "Every other file of the prebuilt game: what a mod with a `[native.*]` table, game internals or a "
               "registry dependency builds against as well.",
@@ -55,6 +55,7 @@ TARGETS = {
 ROUTES = {
     "api": "Every enabled mod uses the mod API alone.",
     "engine": "A mod has a `[native.*]` table, names game internals, or depends on a registry (crates.io) crate.",
+    "tool": "Before either: the native build tool, which tells the caller the route and then compiles.",
 }
 
 # `surface.json`'s record kinds by id prefix (`sunrise_mod_surface`, "Ids"); a member's id has a `.` after its owner.
@@ -72,6 +73,7 @@ RECORDS = {
     "part": "Part kind",
     "capability": "Capability",
     "behaviour": "Behaviour: a promise that is no type or signature",
+    "extension_tag": "Tag extension point (registry/id in `extension_tags`)",
 }
 ID_FORMS = {
     "hook": "hook:<name>",
@@ -87,6 +89,7 @@ ID_FORMS = {
     "part": "part:<kind>",
     "capability": "capability:<key>",
     "behaviour": "behaviour:<name>",
+    "extension_tag": "extension_tag:<registry>/<namespace>:<path>",
 }
 
 
@@ -161,15 +164,17 @@ def ids(value):
     if isinstance(value, dict):
         if isinstance(value.get("id"), str):
             yield value["id"]
-        for child in value.values():
-            yield from ids(child)
+        for key, child in value.items():
+            # These IDs are namespace-scoped tag names, not API record prefixes.
+            if key != "extension_tags":
+                yield from ids(child)
     elif isinstance(value, list):
         for child in value:
             yield from ids(child)
 
 
 def surface(document):
-    counts = {}
+    counts = {"extension_tag": len(document.get("extension_tags", []))}
     for record in ids(document):
         prefix, _, rest = record.partition(":")
         key = f"{prefix} member" if prefix in ("hook", "type") and "." in rest else prefix
@@ -184,7 +189,7 @@ def export_surface(root):
     """This checkout's `surface.json`, exported by its own `sunrise-stage`."""
     with tempfile.TemporaryDirectory() as folder:
         out = Path(folder) / "surface.json"
-        subprocess.run(["cargo", "run", "--quiet", "-p", "sunrise-mod-api-gen", "--bin", "sunrise-stage", "--",
+        subprocess.run(["cargo", "run", "--quiet", "-p", "sunrise-stage", "--bin", "sunrise-stage", "--",
                         "surface", str(root), str(out)],
                        cwd=root, check=True, stdout=sys.stderr)
         return json.loads(out.read_text())
@@ -197,19 +202,25 @@ def chapters(items):
             yield from chapters(item["Chapter"]["sub_items"])
 
 
-def preprocess(context, book):
-    root = Path(context["root"]).resolve().parents[1]
+def generators(root):
+    """SDK table renderers keyed by bare marker name, shared by mdBook and the site export."""
+    root = Path(root).resolve()
     # As a package, the way the tests import it: run as a script, nightly.py puts tools/ first on
     # the path, which would shadow tests/ modules of the same name.
     if str(root) not in sys.path:
         sys.path.append(str(root))
     from tools.ci import nightly
-    render = {
-        "{{#sdk-assets}}": lambda: assets(nightly.SDK_ASSETS),
-        "{{#sdk-hosts}}": lambda: hosts(nightly.SDK_LEGS),
-        "{{#sdk-routes}}": lambda: routes(json.loads((root / INPUTS.relative_to(ROOT)).read_text())),
-        "{{#sdk-surface}}": lambda: surface(export_surface(root)),
+    return {
+        "sdk-assets": lambda: assets(nightly.SDK_ASSETS),
+        "sdk-hosts": lambda: hosts(nightly.SDK_LEGS),
+        "sdk-routes": lambda: routes(json.loads((root / INPUTS.relative_to(ROOT)).read_text())),
+        "sdk-surface": lambda: surface(export_surface(root)),
     }
+
+
+def preprocess(context, book):
+    root = Path(context["root"]).resolve().parents[1]
+    render = {f"{{{{#{name}}}}}": make for name, make in generators(root).items()}
     holding = [chapter for chapter in chapters(book["sections"])
                if any(marker in chapter["content"] for marker in render)]
     lost = sorted(marker for marker in render if not any(marker in chapter["content"] for chapter in holding))

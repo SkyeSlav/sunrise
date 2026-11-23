@@ -114,7 +114,7 @@ impl SceneEntity {
 /// the scene's coordinates. It is added when the scene's clock next advances.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
+// no wire: scene-local requests can contain erased particle options.
 pub struct SceneParticle {
     /// The particle and its parameters, as `add_particle` takes them.
     pub options: crate::ParticleOptions,
@@ -201,7 +201,7 @@ pub const SCENE_MAX_ANIMATING: usize = 4;
 /// off) keeps no state and reads no clock. Keep one and change its clock each frame.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
+// no wire: scene-local requests can contain erased particle options.
 pub struct Scene {
     /// The blocks.
     pub blocks: Vec<SceneBlock>,

@@ -48,6 +48,12 @@ pub(crate) fn explosion_resistance_pure(state: BlockStateId) -> bool {
 pub(super) fn clear() {
     INDEX.with_borrow_mut(|index| *index = None);
 }
+impl AsRef<[BlockState]> for Index {
+    /// Every engine state as a mod reads it, by state id.
+    fn as_ref(&self) -> &[BlockState] {
+        &self.forward
+    }
+}
 pub(super) fn snapshot() -> Result<Box<[BlockState]>, BlockStateError> {
     Ok(current()?.forward.clone().into_boxed_slice())
 }
@@ -103,7 +109,7 @@ mod tests {
         impl mod_api::BlockPart for Part {
             fn analog_output(
                 &self,
-                _: &dyn mod_api::LevelHost,
+                _: &mut dyn mod_api::LevelRandomHost,
                 event: &mut mod_api::AnalogOutputEvent,
             ) {
                 event.output += 1;
@@ -165,7 +171,7 @@ mod tests {
         impl mod_api::BlockPart for Part {
             fn analog_output(
                 &self,
-                _: &dyn mod_api::LevelHost,
+                _: &mut dyn mod_api::LevelRandomHost,
                 event: &mut mod_api::AnalogOutputEvent,
             ) {
                 event.output += 1;
@@ -290,7 +296,7 @@ mod tests {
             BlockStateId(u32::MAX).try_into_api(),
             Err(BlockStateError::UnknownState)
         );
-        let bad = BlockState::from(mod_api::BlockStateRecord::new(east.block(), u16::MAX));
+        let bad = mod_api::__private::block_state_from_ordinal(east.block(), u16::MAX);
         assert_eq!(bad.try_into_engine(&()), Err(BlockStateError::UnknownState));
         std::thread::spawn(|| {
             assert_eq!(

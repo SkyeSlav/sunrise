@@ -2,23 +2,11 @@
 
 A recipe viewer shows its pages in the item panel's place with `panel_recipes(mod_id, page)`, a
 client `WorldOnly` call beside `panel_items` and `panel_style`. The page is data: the game draws it
-with its own slots, arrows, fluid wells and buttons, for native and WebAssembly mods alike. It is
+with its own slots, arrows, fluid wells and buttons. It is
 the same recipe view the game's own panel uses, so a mod never draws a second recipe window.
 
 ```rust
-use mod_api::{RecipeLayout, RecipePage, RecipeResult, RecipeView};
-
-fn show_planks(host: &mut dyn mod_api::ClientHost, log: mod_api::Stack, planks: mod_api::Stack) {
-    let craft = RecipeView::grid(1, 1)
-        .with_slots(vec![vec![log.clone()]])
-        .with_results(vec![RecipeResult::new(vec![planks])]);
-    let smelt = RecipeView::new(RecipeLayout::Cooking)
-        .with_slots(vec![vec![log]])
-        .with_note("10 s")
-        .with_action(true);
-    let page = RecipePage::new("Oak Planks", vec![craft, smelt]);
-    host.panel_recipes("my_viewer", Some(page));
-}
+{{#include ../../../examples/src/item_behaviors.rs:show_planks}}
 ```
 
 `None`, or a page with no recipes, shows the mod's items again. Showing the same title and tab

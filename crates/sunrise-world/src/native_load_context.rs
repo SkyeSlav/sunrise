@@ -1,4 +1,5 @@
 //! Data-only inputs carried from an owning load boundary to native load hooks.
+use mod_api::__private::BoundItemTags;
 use std::{
     collections::{BTreeMap, HashMap},
     ffi::{OsStr, OsString},
@@ -19,10 +20,6 @@ pub enum DataLoadOrigin {
 /// borrow the same registry snapshot instead of scanning it again.
 pub struct LoadInputs {
     registries: BTreeMap<String, Arc<[String]>>,
-    /// The fluid tags a recipe load reads for its ingredients' `#tags`:
-    /// each tag id to its fluids, in the sources' order. Empty until a load
-    /// that reads recipe resources fills them.
-    fluid_tags: Arc<[(String, Arc<[String]>)]>,
     settings_root: PathBuf,
 }
 
@@ -33,18 +30,8 @@ impl LoadInputs {
                 .into_iter()
                 .map(|(name, ids)| (name, ids.into()))
                 .collect(),
-            fluid_tags: Arc::from([]),
             settings_root,
         }
-    }
-    /// The inputs with the fluid `tags` a recipe load reads
-    /// (`data/<ns>/tags/fluid`), each tag's fluids in the sources' order.
-    pub fn with_fluid_tags(mut self, tags: HashMap<String, Vec<String>>) -> Self {
-        self.fluid_tags = tags
-            .into_iter()
-            .map(|(tag, fluids)| (tag, fluids.into()))
-            .collect();
-        self
     }
 }
 
@@ -62,17 +49,11 @@ impl Snapshot {
         Self { inputs, settings }
     }
 
-    fn registry(&self, name: &str) -> Option<Arc<[String]>> {
-        self.inputs.registries.get(name).cloned()
+    fn registry(&self, name: &str) -> Option<&[String]> {
+        self.inputs.registries.get(name).map(Arc::as_ref)
     }
 
-    /// The fluid tags the inputs carry, each tag's fluids in the sources'
-    /// order; empty until a load that reads recipe resources fills them.
-    fn fluid_tags(&self) -> &Arc<[(String, Arc<[String]>)]> {
-        &self.inputs.fluid_tags
-    }
-
-    fn setting(&self, mod_id: &str, key: &str) -> Option<String> {
+    fn setting(&self, mod_id: &str, key: &str) -> Option<&str> {
         let mod_at = self
             .settings
             .binary_search_by(|(known, _)| known.as_str().cmp(mod_id))
@@ -81,7 +62,7 @@ impl Snapshot {
         let at = values
             .binary_search_by(|(known, _)| known.as_str().cmp(key))
             .ok()?;
-        Some(values[at].1.clone())
+        Some(values[at].1.as_str())
     }
 }
 
@@ -100,6 +81,7 @@ fn shared_settings(
 pub struct LoadContext {
     origin: DataLoadOrigin,
     snapshot: Snapshot,
+    fluid_tags: Option<Arc<[(String, Arc<[String]>)]>>,
 }
 
 impl LoadContext {
@@ -114,6 +96,7 @@ impl LoadContext {
         Self {
             origin,
             snapshot: Snapshot::capture(inputs, mod_ids),
+            fluid_tags: None,
         }
     }
 
@@ -139,10 +122,12 @@ impl LoadContext {
         Self {
             origin,
             snapshot: Snapshot { inputs, settings },
+            fluid_tags: None,
         }
     }
 
-    /// A new owning load of `origin` over this load's registry inputs, with fresh settings.
+    /// A new owning load of `origin` over this load's registry inputs, with
+    /// fresh settings and no recipe fluid tags.
     pub fn for_load<'a>(
         &self,
         origin: DataLoadOrigin,
@@ -151,33 +136,24 @@ impl LoadContext {
         Self::new(origin, self.snapshot.inputs.clone(), mod_ids)
     }
 
-    /// This load over the same registries and settings, with the fluid `tags`
-    /// its recipe pass reads (`data/<ns>/tags/fluid`): what that pass's
-    /// ingredient hooks resolve fluid `#tags` with. A recipe load builds it
-    /// where it knows its overlay; loads that read no recipe resources share
-    /// the inputs as-is, with no tags.
+    /// Attach the recipe pass's fluid tags (`data/<ns>/tags/fluid`), even if
+    /// empty, while sharing this load's existing registry and settings snapshot.
     pub fn with_fluid_tags(&self, tags: HashMap<String, Vec<String>>) -> Self {
-        let inputs = Arc::new(LoadInputs {
-            registries: self.snapshot.inputs.registries.clone(),
-            fluid_tags: tags
-                .into_iter()
-                .map(|(tag, fluids)| (tag, fluids.into()))
-                .collect(),
-            settings_root: self.snapshot.inputs.settings_root.clone(),
-        });
         Self {
             origin: self.origin,
-            snapshot: Snapshot {
-                inputs,
-                settings: self.snapshot.settings.clone(),
-            },
+            snapshot: self.snapshot.clone(),
+            fluid_tags: Some(
+                tags.into_iter()
+                    .map(|(tag, fluids)| (tag, fluids.into()))
+                    .collect(),
+            ),
         }
     }
 
-    /// The fluid tags this load's recipe pass reads: each tag id to its
-    /// fluids, in the sources' order. Empty where no recipe pass filled them.
-    pub fn fluid_tags(&self) -> &Arc<[(String, Arc<[String]>)]> {
-        self.snapshot.fluid_tags()
+    /// Borrows each recipe fluid tag's members in source order. `None` means
+    /// there is no recipe overlay; an empty overlay still returns `Some`.
+    pub fn fluid_tags(&self) -> Option<&[(String, Arc<[String]>)]> {
+        self.fluid_tags.as_deref()
     }
 
     /// Readers of this load's resource generation, with the same captured
@@ -187,6 +163,7 @@ impl LoadContext {
             side,
             snapshot: self.snapshot.clone(),
             recipe_properties: Default::default(),
+            item_tags: None,
         }
     }
 
@@ -202,6 +179,7 @@ impl LoadContext {
             side,
             snapshot: Snapshot::capture(self.snapshot.inputs.clone(), mod_ids),
             recipe_properties: Default::default(),
+            item_tags: None,
         }
     }
 
@@ -222,12 +200,12 @@ impl LoadContext {
     }
 
     /// Names in registry ID order, from the load's registry snapshot.
-    pub fn registry(&self, name: &str) -> Option<Arc<[String]>> {
+    pub fn registry(&self, name: &str) -> Option<&[String]> {
         self.snapshot.registry(name)
     }
 
     /// A loaded mod's setting captured at this load boundary, with no file I/O.
-    pub fn setting(&self, mod_id: &str, key: &str) -> Option<String> {
+    pub fn setting(&self, mod_id: &str, key: &str) -> Option<&str> {
         self.snapshot.setting(mod_id, key)
     }
 }
@@ -248,12 +226,24 @@ pub struct LoopContext {
     side: LoopSide,
     snapshot: Snapshot,
     recipe_properties: Arc<HashMap<String, std::collections::HashSet<String>>>,
+    item_tags: Option<Arc<BoundItemTags>>,
 }
 
 #[path = "native_load_context/recipe_properties.rs"]
 mod recipe_properties;
 
 impl LoopContext {
+    /// Publish the API adapter's bound item tags at a load or synchronization boundary.
+    /// `None` marks unavailable tags. Clones retain the previous generation.
+    pub fn set_item_tags(&mut self, tags: Option<BoundItemTags>) {
+        self.item_tags = tags.map(Arc::new);
+    }
+
+    /// Borrow the published item tags when building the API view of this loop.
+    pub fn item_tags(&self) -> Option<&BoundItemTags> {
+        self.item_tags.as_deref()
+    }
+
     pub fn side(&self) -> LoopSide {
         self.side
     }
@@ -267,23 +257,18 @@ impl LoopContext {
     }
 
     /// Names in registry ID order, from the registry snapshot it was built over.
-    pub fn registry(&self, name: &str) -> Option<Arc<[String]>> {
+    pub fn registry(&self, name: &str) -> Option<&[String]> {
         self.snapshot.registry(name)
     }
 
     /// A loaded mod's setting captured when this context was built, with no file I/O.
-    pub fn setting(&self, mod_id: &str, key: &str) -> Option<String> {
+    pub fn setting(&self, mod_id: &str, key: &str) -> Option<&str> {
         self.snapshot.setting(mod_id, key)
     }
 }
 
 /// Capture regular UTF-8 files only, never following symlinks (even within the root).
-/// Refused keys are absent. Limits are measured before whitespace trimming.
-pub const MAX_SETTING_BYTES: usize = 64 * 1024;
-const MAX_VISITED_NAMES: usize = 4096;
-pub const MAX_SETTING_KEYS: usize = 1024;
-pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
-
+/// Unreadable, non-regular, non-UTF-8-named, or invalid-UTF-8 entries are skipped and reported.
 pub fn capture_settings<'a>(
     settings_root: &Path,
     mod_ids: impl IntoIterator<Item = &'a str>,
@@ -319,7 +304,6 @@ fn capture_settings_with_report<'a>(
     mut report: impl FnMut(&str, Option<&OsStr>, &dyn std::fmt::Display),
 ) -> BTreeMap<String, BTreeMap<String, String>> {
     let mut settings = BTreeMap::new();
-    let mut total = 0;
     for mod_id in mod_ids
         .into_iter()
         .collect::<std::collections::BTreeSet<_>>()
@@ -363,32 +347,16 @@ fn capture_settings_with_report<'a>(
                 );
                 continue;
             }
-            Err(SnapshotError::EnumerationLimit(names)) => {
-                for key in &names {
-                    report(
-                        mod_id,
-                        Some(key),
-                        &format_args!(
-                            "package exceeds enumeration limit ({MAX_VISITED_NAMES} names)"
-                        ),
-                    );
-                }
-                continue;
-            }
-            Err(SnapshotError::InvalidKey { names, index }) => {
-                for key in &names {
-                    report(
-                        mod_id,
-                        Some(key),
-                        &format_args!("package contains a non-UTF-8 key: {:?}", names[index]),
-                    );
-                }
-                continue;
-            }
         };
         let mut values = BTreeMap::new();
         for (key, file) in files {
-            let key = key.into_string().expect("validated UTF-8 setting name");
+            let key = match key.into_string() {
+                Ok(key) => key,
+                Err(name) => {
+                    report(mod_id, Some(name.as_os_str()), &"non-UTF-8 setting name");
+                    continue;
+                }
+            };
             let mut file = match file {
                 Ok(file) => file,
                 Err(error) => {
@@ -400,41 +368,13 @@ fn capture_settings_with_report<'a>(
                     continue;
                 }
             };
-            if values.len() >= MAX_SETTING_KEYS {
-                report(
-                    mod_id,
-                    Some(key.as_ref()),
-                    &format_args!("key limit ({MAX_SETTING_KEYS})"),
-                );
-                continue;
-            }
             use std::io::Read;
             let mut bytes = Vec::new();
-            if let Err(error) = file
-                .by_ref()
-                .take((MAX_SETTING_BYTES + 1) as u64)
-                .read_to_end(&mut bytes)
-            {
+            if let Err(error) = file.read_to_end(&mut bytes) {
                 report(
                     mod_id,
                     Some(key.as_ref()),
                     &format_args!("read failed: {error}"),
-                );
-                continue;
-            }
-            if bytes.len() > MAX_SETTING_BYTES {
-                report(
-                    mod_id,
-                    Some(key.as_ref()),
-                    &format_args!("file byte limit ({MAX_SETTING_BYTES})"),
-                );
-                continue;
-            }
-            if bytes.len() > MAX_SNAPSHOT_BYTES - total {
-                report(
-                    mod_id,
-                    Some(key.as_ref()),
-                    &format_args!("snapshot byte limit ({MAX_SNAPSHOT_BYTES})"),
                 );
                 continue;
             }
@@ -449,7 +389,6 @@ fn capture_settings_with_report<'a>(
                     continue;
                 }
             };
-            total += value.len();
             values.insert(key, value.trim().to_owned());
         }
         settings.insert(mod_id.to_owned(), values);
@@ -464,11 +403,6 @@ enum SnapshotError {
     Enumeration {
         names: Vec<OsString>,
         error: std::io::Error,
-    },
-    EnumerationLimit(Vec<OsString>),
-    InvalidKey {
-        names: Vec<OsString>,
-        index: usize,
     },
 }
 
@@ -490,8 +424,6 @@ fn settings_directory<T>(result: std::io::Result<T>) -> Result<T, SnapshotError>
     })
 }
 
-// Reject the whole package beyond the enumeration budget: retaining an arbitrary
-// prefix would make the result depend on filesystem enumeration order again.
 fn sorted_names(
     names: impl Iterator<Item = std::io::Result<OsString>>,
 ) -> Result<Vec<OsString>, SnapshotError> {
@@ -507,22 +439,10 @@ fn sorted_names(
             }
         };
         result.push(name);
-        if result.len() > MAX_VISITED_NAMES {
-            result.sort_unstable();
-            return Err(SnapshotError::EnumerationLimit(result));
-        }
     }
     // The native encoding is a superset of UTF-8: valid keys retain their
     // existing byte order without revalidating UTF-8 on every comparison.
     result.sort_unstable_by(|a, b| a.as_encoded_bytes().cmp(b.as_encoded_bytes()));
-    // Preserve whole-package refusal for an invalid filename, but retain the
-    // actual names so the diagnostic identifies what was discarded and why.
-    if let Some(index) = result.iter().position(|key| key.to_str().is_none()) {
-        return Err(SnapshotError::InvalidKey {
-            names: result,
-            index,
-        });
-    }
     Ok(result)
 }
 
@@ -646,12 +566,12 @@ pub struct WorldgenContext {
 
 impl WorldgenContext {
     /// Names in registry ID order, from the registry snapshot it was built over.
-    pub fn registry(&self, name: &str) -> Option<Arc<[String]>> {
+    pub fn registry(&self, name: &str) -> Option<&[String]> {
         self.snapshot.registry(name)
     }
 
     /// A loaded mod's setting captured when this context was built, with no file I/O.
-    pub fn setting(&self, mod_id: &str, key: &str) -> Option<String> {
+    pub fn setting(&self, mod_id: &str, key: &str) -> Option<&str> {
         self.snapshot.setting(mod_id, key)
     }
 }
@@ -708,14 +628,6 @@ mod tests {
         };
         assert_eq!(names, ["known"]);
         assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
-        let error = sorted_names((0..=MAX_VISITED_NAMES).map(|i| Ok(format!("key{i:04}").into())))
-            .unwrap_err();
-        let SnapshotError::EnumerationLimit(names) = error else {
-            panic!("expected an enumeration limit");
-        };
-        assert_eq!(names.len(), MAX_VISITED_NAMES + 1);
-        assert_eq!(names.first().unwrap(), "key0000");
-        assert_eq!(names.last().unwrap(), "key4096");
     }
 
     #[test]
@@ -746,10 +658,15 @@ mod tests {
         let captured = capture_settings_with_report(&root, ["reader"], |_, key, reason| {
             refused.insert(key.unwrap().to_owned(), reason.to_string());
         });
-        assert!(!captured.contains_key("reader"));
-        assert_eq!(refused.len(), 4);
-        assert!(refused[&invalid_key].starts_with("package contains a non-UTF-8 key:"));
-        assert!(refused[OsStr::new("value")].starts_with("package contains a non-UTF-8 key:"));
+        assert_eq!(
+            captured["reader"].get("value").map(String::as_str),
+            Some("inside")
+        );
+        assert_eq!(captured["reader"].len(), 1);
+        assert_eq!(refused.len(), 3);
+        assert_eq!(refused[&invalid_key], "non-UTF-8 setting name");
+        assert!(refused[OsStr::new("directory")].contains("not a regular file"));
+        assert!(refused[OsStr::new("dangling")].starts_with("unsafe or unreadable entry:"));
         std::os::unix::fs::symlink(root.join("reader"), root.join("alias")).unwrap();
         let mut scopes = Vec::new();
         let captured = capture_settings_with_report(&root, ["alias"], |mod_id, key, reason| {
@@ -768,7 +685,6 @@ mod tests {
         let root = root("published");
         fs::write(root.join("reader/value"), "before").unwrap();
         fs::write(root.join("reader/invalid"), [0xff]).unwrap();
-        fs::write(root.join("reader/large"), vec![b'x'; MAX_SETTING_BYTES + 1]).unwrap();
         let load = LoadContext::new(
             DataLoadOrigin::ServerDataLoad,
             Arc::new(LoadInputs::new(BTreeMap::new(), root.clone())),
@@ -785,6 +701,7 @@ mod tests {
                 settings: shared_settings(settings),
             },
             recipe_properties: Default::default(),
+            item_tags: None,
         };
         fs::write(root.join("reader/value"), "after").unwrap();
         fs::write(root.join("reader/later-invalid"), [0xff]).unwrap();
@@ -800,20 +717,16 @@ mod tests {
         ));
         std::thread::scope(|scope| {
             scope.spawn(|| {
-                assert_eq!(
-                    worldgen.setting("reader", "value").as_deref(),
-                    Some("before")
-                );
+                assert_eq!(worldgen.setting("reader", "value"), Some("before"));
                 assert_eq!(worldgen.setting("reader", "invalid"), None);
             });
             scope.spawn(|| {
-                assert_eq!(audio.setting("reader", "value").as_deref(), Some("before"));
+                assert_eq!(audio.setting("reader", "value"), Some("before"));
                 assert_eq!(audio.setting("reader", "later-invalid"), None);
             });
         });
         assert_eq!(diagnostics.len(), 1);
         assert!(diagnostics[0].contains("\"reader\"/\"invalid\": invalid UTF-8:"));
-        assert!(diagnostics[0].contains("\"reader\"/\"large\": file byte limit"));
         capture_settings_with_diagnostics(&root, ["reader"], |report| {
             diagnostics.push(report.to_owned());
         });
@@ -860,18 +773,12 @@ mod tests {
             &admitted.snapshot.settings,
             &loop_context.snapshot.settings
         ));
-        assert_eq!(
-            loop_context.setting("reader", "mode").as_deref(),
-            Some("before")
-        );
+        assert_eq!(loop_context.setting("reader", "mode"), Some("before"));
         assert_eq!(worldgen.setting("reader", "late"), None);
         let next = admitted.for_load(DataLoadOrigin::ClientPreload, ["reader"]);
-        assert_eq!(next.setting("reader", "mode").as_deref(), Some("after"));
-        assert_eq!(next.setting("reader", "late").as_deref(), Some("later key"));
-        assert_eq!(
-            loop_context.setting("reader", "mode").as_deref(),
-            Some("before")
-        );
+        assert_eq!(next.setting("reader", "mode"), Some("after"));
+        assert_eq!(next.setting("reader", "late"), Some("later key"));
+        assert_eq!(loop_context.setting("reader", "mode"), Some("before"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -926,28 +833,34 @@ mod tests {
     }
 
     #[test]
-    fn admission_is_sorted_and_enumeration_is_bounded() {
-        let root = root("ordered");
+    fn large_files_and_many_keys_are_captured_in_full_and_invalid_utf8_is_skipped() {
+        let root = root("uncapped");
         fs::create_dir(root.join("second")).unwrap();
-        for i in 0..1025 {
+        for i in 0..1030 {
             fs::write(root.join(format!("reader/key{i:04}")), "x").unwrap();
-            fs::write(root.join(format!("second/key{:04}", 1024 - i)), "x").unwrap();
+            fs::write(root.join(format!("second/key{:04}", 1029 - i)), "x").unwrap();
         }
-        let captured = capture_settings(&root, ["second", "reader"]);
-        assert_eq!(captured["reader"], captured["second"]);
-        assert!(!captured["reader"].contains_key("key1024"));
+        fs::write(root.join("reader/large"), vec![b'b'; 65_537]).unwrap();
+        fs::write(root.join("reader/invalid"), [0xff]).unwrap();
+        let mut refused = Vec::new();
+        let captured =
+            capture_settings_with_report(&root, ["second", "reader"], |mod_id, key, reason| {
+                refused.push((
+                    mod_id.to_owned(),
+                    key.unwrap().to_owned(),
+                    reason.to_string(),
+                ));
+            });
+        assert_eq!(captured["second"].len(), 1030);
+        assert_eq!(captured["reader"].len(), 1031);
         assert_eq!(captured["reader"]["key0000"], "x");
-        for i in 1025..4097 {
-            fs::write(root.join(format!("reader/key{i:04}")), "x").unwrap();
-        }
-        assert!(!capture_settings(&root, ["reader"]).contains_key("reader"));
-        assert!(sorted_names((0..4097).map(|i| Ok(i.to_string().into()))).is_err());
-        assert_eq!(
-            sorted_names((0..4096).map(|i| Ok(i.to_string().into())))
-                .unwrap()
-                .len(),
-            4096
-        );
+        assert_eq!(captured["reader"]["key1029"], "x");
+        assert_eq!(captured["reader"]["large"].len(), 65_537);
+        assert_eq!(captured["reader"].get("invalid"), None);
+        assert_eq!(refused.len(), 1);
+        assert_eq!(refused[0].0, "reader");
+        assert_eq!(refused[0].1, "invalid");
+        assert!(refused[0].2.starts_with("invalid UTF-8:"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -988,68 +901,6 @@ mod tests {
     }
 
     #[test]
-    fn byte_limits_and_invalid_utf8() {
-        let root = root("bytes");
-        fs::write(root.join("reader/exact"), vec![b'a'; 65536]).unwrap();
-        fs::write(root.join("reader/large"), vec![b'b'; 65537]).unwrap();
-        fs::write(root.join("reader/invalid"), [0xff]).unwrap();
-        let mut refused = Vec::new();
-        let captured = capture_settings_with_report(&root, ["reader"], |mod_id, key, reason| {
-            refused.push((
-                mod_id.to_owned(),
-                key.unwrap().to_owned(),
-                reason.to_string(),
-            ));
-        });
-        assert_eq!(captured["reader"]["exact"].len(), 65536);
-        assert_eq!(captured["reader"].get("large"), None);
-        assert_eq!(captured["reader"].get("invalid"), None);
-        assert_eq!(refused.len(), 2);
-        assert_eq!(refused[0].0, "reader");
-        assert_eq!(refused[0].1, "invalid");
-        assert!(refused[0].2.starts_with("invalid UTF-8:"));
-        assert_eq!(refused[1].1, "large");
-        assert!(refused[1].2.starts_with("file byte limit"));
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn key_limit() {
-        let root = root("count");
-        for i in 0..1027 {
-            fs::write(root.join(format!("reader/key{i:04}")), "x").unwrap();
-        }
-        let mut refused = Vec::new();
-        let captured = capture_settings_with_report(&root, ["reader"], |mod_id, key, reason| {
-            assert_eq!(mod_id, "reader");
-            assert!(reason.to_string().starts_with("key limit"));
-            refused.push(key.unwrap().to_owned());
-        });
-        assert_eq!(captured["reader"].len(), 1024);
-        assert_eq!(refused, ["key1024", "key1025", "key1026"]);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn reviewer_whitespace_spends_raw_aggregate_budget() {
-        let root = root("raw-budget");
-        for i in 0..256 {
-            fs::write(root.join(format!("reader/key{i:04}")), vec![b' '; 65536]).unwrap();
-        }
-        fs::write(root.join("reader/z-extra"), "x").unwrap();
-        let mut refused = Vec::new();
-        let captured = capture_settings_with_report(&root, ["reader"], |mod_id, key, reason| {
-            assert_eq!(mod_id, "reader");
-            assert!(reason.to_string().starts_with("snapshot byte limit"));
-            refused.push(key.unwrap().to_owned());
-        });
-        assert_eq!(captured["reader"].len(), 256);
-        assert!(!captured["reader"].contains_key("z-extra"));
-        assert_eq!(refused, ["z-extra"]);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
     #[cfg(unix)]
     fn reviewer_symlink_replacement_keeps_opened_value() {
         use std::io::Read;
@@ -1067,29 +918,6 @@ mod tests {
         let mut value = String::new();
         file.read_to_string(&mut value).unwrap();
         assert_eq!(value, "opened");
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn aggregate_limit() {
-        let root = root("aggregate");
-        fs::create_dir(root.join("second")).unwrap();
-        for i in 0..129 {
-            for package in ["reader", "second"] {
-                fs::write(root.join(format!("{package}/key{i}")), vec![b'x'; 65536]).unwrap();
-            }
-        }
-        let captured = capture_settings(&root, ["second", "reader"]);
-        assert_eq!(captured["reader"].len(), 129);
-        assert_eq!(captured["second"].len(), 127);
-        assert_eq!(
-            captured
-                .values()
-                .flat_map(|values| values.values())
-                .map(String::len)
-                .sum::<usize>(),
-            16 * 1024 * 1024
-        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1113,19 +941,19 @@ mod tests {
         // Change the files before the first lookup, not just between reads.
         fs::write(active.join("mode"), "  after\n").unwrap();
         fs::write(active.join("late"), "new key").unwrap();
-        assert_eq!(before.setting("active", "mode").as_deref(), Some("before"));
-        assert_eq!(before.setting("active", "empty").as_deref(), Some(""));
+        assert_eq!(before.setting("active", "mode"), Some("before"));
+        assert_eq!(before.setting("active", "empty"), Some(""));
         assert_eq!(before.setting("active", "invalid"), None);
         assert_eq!(before.setting("active", "late"), None);
         assert_eq!(before.setting("inactive", "mode"), None);
         assert_eq!(read_setting(&active, "mode").as_deref(), Some("after"));
 
         let after = LoadContext::new(DataLoadOrigin::ClientPreload, inputs.clone(), ["active"]);
-        assert_eq!(after.setting("active", "mode").as_deref(), Some("after"));
-        assert_eq!(after.setting("active", "late").as_deref(), Some("new key"));
+        assert_eq!(after.setting("active", "mode"), Some("after"));
+        assert_eq!(after.setting("active", "late"), Some("new key"));
         fs::remove_dir_all(&root).unwrap();
-        assert_eq!(before.setting("active", "mode").as_deref(), Some("before"));
-        assert_eq!(after.setting("active", "mode").as_deref(), Some("after"));
+        assert_eq!(before.setting("active", "mode"), Some("before"));
+        assert_eq!(after.setting("active", "mode"), Some("after"));
         let missing = LoadContext::new(DataLoadOrigin::ServerDataLoad, inputs, ["active"]);
         assert_eq!(missing.setting("active", "mode"), None);
         assert!(!root.exists());
@@ -1151,14 +979,11 @@ mod tests {
 
         assert_eq!(client.side(), LoopSide::Client);
         assert_eq!(server.side(), LoopSide::Server);
-        assert_eq!(
-            client.registry("item").as_deref(),
-            Some(&["a:b".to_owned()][..])
-        );
+        assert_eq!(client.registry("item"), Some(&["a:b".to_owned()][..]));
         assert_eq!(server.registry("item"), client.registry("item"));
-        assert_eq!(client.setting("active", "mode").as_deref(), Some("one"));
-        assert_eq!(server.setting("active", "mode").as_deref(), Some("two"));
-        assert_eq!(load.setting("active", "mode").as_deref(), Some("one"));
+        assert_eq!(client.setting("active", "mode"), Some("one"));
+        assert_eq!(server.setting("active", "mode"), Some("two"));
+        assert_eq!(load.setting("active", "mode"), Some("one"));
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -1180,13 +1005,10 @@ mod tests {
         let worldgen = load.worldgen_context(["active"]);
         fs::write(mod_dir.join("ground"), "moss").unwrap();
 
-        assert_eq!(
-            worldgen.registry("block").as_deref(),
-            Some(&["a:b".to_owned()][..])
-        );
-        assert_eq!(worldgen.setting("active", "ground").as_deref(), Some("mud"));
+        assert_eq!(worldgen.registry("block"), Some(&["a:b".to_owned()][..]));
+        assert_eq!(worldgen.setting("active", "ground"), Some("mud"));
         assert_eq!(worldgen.setting("inactive", "ground"), None);
-        assert_eq!(load.setting("active", "ground").as_deref(), Some("podzol"));
+        assert_eq!(load.setting("active", "ground"), Some("podzol"));
         fs::remove_dir_all(&root).unwrap();
     }
 }

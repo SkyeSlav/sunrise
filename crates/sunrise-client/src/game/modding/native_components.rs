@@ -5,7 +5,7 @@ use sunrise_core::nbt::Tag;
 
 /// Failure to access a native item component.
 #[derive(Debug)]
-pub enum NativeComponentError {
+pub(crate) enum NativeComponentError {
     UnknownType,
     InvalidValue(sunrise_protocol::Error),
 }
@@ -179,6 +179,44 @@ impl Game<'_> {
         }
         mod_id
     }
+    /// `Item.getName(ItemStack)` of a mod item: what its `item_name` Part
+    /// answers, or `None` for the default. One table lookup for an item no
+    /// Part names.
+    pub(in crate::game) fn mod_item_name(
+        &self,
+        stack: &ItemStack,
+    ) -> Option<sunrise_client::text::Text> {
+        sunrise_client::stations::item_name_part(&self.loop_context, stack)
+    }
+    /// `ItemStack.getStyledHoverName`, without the rarity colour applied by the tooltip.
+    pub(in crate::game) fn styled_stack_name(
+        &self,
+        stack: &ItemStack,
+    ) -> sunrise_client::text::Text {
+        let name = self.stack_hover_name_text(stack);
+        if stack.data().is_some_and(|data| data.custom_name.is_some()) {
+            sunrise_client::text::Text::empty().append(name).italic()
+        } else {
+            name
+        }
+    }
+    /// `ItemStack.getHoverName` as a component: the custom name or a written
+    /// book's title, else the name a mod item's Part gives the stack, else
+    /// vanilla's. The Part is asked at most once.
+    pub(in crate::game) fn stack_hover_name_text(
+        &self,
+        stack: &ItemStack,
+    ) -> sunrise_client::text::Text {
+        sunrise_client::stations::hover_name_in(&self.loop_context, &self.pack.names, stack)
+    }
+    /// `ItemStack.getItemName` as a component: the name a mod item's Part gives the stack, else
+    /// vanilla's, without the custom name or a book's title. The Part is asked at most once.
+    pub(in crate::game) fn stack_item_name_text(
+        &self,
+        stack: &ItemStack,
+    ) -> sunrise_client::text::Text {
+        sunrise_client::stations::item_name_in(&self.loop_context, &self.pack.names, stack)
+    }
     /// `ItemStack.isBarVisible`, `getBarWidth`, `getBarColor`, before client-only hooks.
     pub(in crate::game) fn item_resource_bar(&self, stack: &ItemStack) -> Option<mod_api::ItemBar> {
         use super::api_values::TryIntoApi;
@@ -329,17 +367,15 @@ impl Game<'_> {
             return None;
         }
         self.native_entity_read_target(target)?;
-        let target = self.entity_kind(target).map(|kind| kind.id(self))?;
-        let actor = self
-            .entity_kind(attacker.entity())
-            .map(|kind| kind.id(self))?;
+        let target = self.entity_kind(target)?.id(self)?;
+        let actor = self.entity_kind(attacker.entity())?.id(self)?;
         let source = self.item_resource_damage_source(stack, attacker)?;
         let source = source.damage_type.to_string();
         let effective = self.item_combat_stack(stack);
         let ctx = sunrise_items::enchant::EffectContext {
-            this: Some(&target),
-            attacker: Some(&actor),
-            direct_attacker: Some(&actor),
+            this: Some(target.as_str()),
+            attacker: Some(actor.as_str()),
+            direct_attacker: Some(actor.as_str()),
             is_direct: true,
             damage_type: Some(&source),
             items: Some(world_items!(self)),
@@ -575,7 +611,7 @@ mod enchantment_conflict_tests {
 }
 
 #[cfg(test)]
-mod item_resource_property_tests {
+pub(in crate::game) mod item_resource_property_tests {
     fn engine(resource: &mod_api::ItemResource, count: u32) -> sunrise_items::items::ItemStack {
         super::super::api_values::stack_value(&resource.to_stack(count).unwrap()).unwrap()
     }
@@ -590,6 +626,10 @@ mod item_resource_property_tests {
     #[test]
     #[ignore = "daily"]
     fn effective_resource_properties_match_vanilla() {
+        run_effective_resource_properties_match_vanilla();
+    }
+
+    pub(in crate::game) fn run_effective_resource_properties_match_vanilla() {
         let inputs = std::env::var("SUNRISE_ITEM_PROPERTIES_CASES")
             .map(|path| std::fs::read_to_string(path).unwrap())
             .unwrap_or_else(|_| {
@@ -668,6 +708,10 @@ mod item_resource_property_tests {
     #[test]
     #[ignore = "daily"]
     fn item_resource_changed_defaults_and_consumption() {
+        run_item_resource_changed_defaults_and_consumption();
+    }
+
+    pub(in crate::game) fn run_item_resource_changed_defaults_and_consumption() {
         use mod_api::{ComponentId, ItemResource, Tag};
         use serde_json::json;
         use std::{fs, path::Path};
@@ -827,7 +871,7 @@ mod item_resource_property_tests {
                     .is_none()
             );
             game.creative = false;
-            game.right = true;
+            game.set_mapping_held("key.use", true);
             game.screen = crate::game::Screen::Playing;
             game.inventory[game.selected] = Some(stack);
             assert!(game.start_eating(&info));

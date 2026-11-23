@@ -12,8 +12,9 @@ use sunrise_client::{
     command::{MOD_COMMAND, Registries},
     lan::{Joined, NetConfig, Out, PlayerSender, guest::Guest, hub::HubConfig},
 };
+use sunrise_core::vanilla_bytes::Writer;
 use sunrise_protocol::{
-    buf::{Codec, Reader, Writer},
+    buf::{Codec, Reader},
     ids,
     packets::{configuration::ClientInformation, play},
 };
@@ -125,7 +126,11 @@ fn install_warps(game: &mut Game<'_>) {
         mod_api::Command::new("warp go <name:test:warp>"),
         mod_api::Command::op("warp admin <name:test:warp>", 4),
     ];
-    let (tree, _, problems) = command_tree(&commands, |_| false, &arguments);
+    let (tree, _, problems) = command_tree(
+        &commands,
+        &sunrise_client::command::Dispatcher::new(),
+        &arguments,
+    );
     assert!(problems.is_empty(), "{problems:?}");
     let mut dispatcher = (*game.ui.dispatcher.0).clone();
     register_dispatcher(&mut dispatcher, &tree, MOD_COMMAND, &arguments);
@@ -280,7 +285,7 @@ fn a_providers_answer_reaches_the_player_without_passing_through_the_completion_
                 mod_api::Command::new("warp go <name:test:warp>"),
                 mod_api::Command::new("probe <value:word>"),
             ],
-            |_| false,
+            &sunrise_client::command::Dispatcher::new(),
             &arguments,
         );
         assert!(problems.is_empty(), "{problems:?}");
@@ -330,7 +335,7 @@ fn an_identifier_listener_replies_on_the_wire_and_leaves_room_for_the_next_argum
         let arguments = CommandArguments::new();
         let (tree, _, problems) = command_tree(
             &[mod_api::Command::new("probe <value:id> <count:integer>")],
-            |_| false,
+            &sunrise_client::command::Dispatcher::new(),
             &arguments,
         );
         assert!(problems.is_empty(), "{problems:?}");

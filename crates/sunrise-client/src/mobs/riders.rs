@@ -9,7 +9,7 @@ use super::{
 };
 use crate::join_seq::JoinList;
 use sunrise_core::geometry::{Aabb, Vec3};
-use sunrise_core::nbt::{Compound, Tag};
+use sunrise_core::nbt::Tag;
 
 /// The goal flags a controlling passenger takes from its vehicle.
 const CONTROLLED: u8 = MOVE | JUMP | LOOK;
@@ -93,6 +93,15 @@ pub fn happy_ghast_attachment(index: usize) -> [f64; 3] {
     let [x, y, z] = SEATS[index.min(SEATS.len() - 1)];
     pt(x, y, z)
 }
+/// `HappyGhast.BABY_DIMENSIONS` scale the seats by `0.2375F` before `getScale` does.
+fn happy_ghast_seat(index: usize, baby: bool) -> [f64; 3] {
+    let [x, y, z] = happy_ghast_attachment(index);
+    if !baby {
+        return [x, y, z];
+    }
+    let k = f64::from(0.2375_f32);
+    [x * k, y * k, z * k]
+}
 /// `Pig.getDefaultDimensions` and other species' age-specific passenger attachments.
 fn base_attachment_at(v: &Mob, index: usize) -> [f64; 3] {
     let baby = v.is_baby();
@@ -136,7 +145,7 @@ fn base_attachment_at(v: &Mob, index: usize) -> [f64; 3] {
         Species::Endermite | Species::Silverfish => up(0.2375),
         Species::Enderman => up(2.80625),
         Species::Ghast => up(4.0625),
-        Species::HappyGhast => happy_ghast_attachment(index),
+        Species::HappyGhast => happy_ghast_seat(index, baby),
         Species::Warden => up(3.15),
         Species::Sniffer => up(2.09375),
         Species::Fox => pt(0.0, 0.6375, -0.25),
@@ -213,11 +222,11 @@ fn unscaled_vehicle_attachment(r: &Mob, vehicle_width: f32) -> f64 {
         _ => 0.0,
     }
 }
-/// `Vec3.yRot(-yaw)` of an attachment point.
+/// An attachment point turned with its vehicle: `Vec3.yRot(-yRot * (float)(PI / 180))`, through vanilla's sine
+/// table (`Vec3::rotate_y`).
 fn rotated([x, y, z]: [f64; 3], yaw: f32) -> [f64; 3] {
-    let a = -f64::from(yaw).to_radians();
-    let (sin, cos) = (a.sin(), a.cos());
-    [x * cos + z * sin, y, z * cos - x * sin]
+    let v = Vec3::new(x, y, z).rotate_y(-yaw * sunrise_core::geometry::trig::DEG_TO_RAD);
+    [v.x, v.y, v.z]
 }
 /// `Entity.positionRider`: the vehicle's position plus its rotated passenger
 /// attachment, less the rider's own vehicle attachment.
@@ -415,10 +424,7 @@ fn controller<'a>(m: &Mob, w: &'a MobWorld) -> Option<&'a Seen> {
         .and_then(|id| w.passenger_object(id))
         .filter(|r| {
             r.alive
-                && !w.data.entity_has(
-                    "minecraft:non_controlling_rider",
-                    &format!("minecraft:{}", super::species::def(r.species).name),
-                )
+                && !w.entity_tag_bit(&r.kind, crate::items::EntityTypeTags::NON_CONTROLLING_RIDER)
         })
 }
 /// Vehicle goal flags are independent of whether the rider has a combat target.
@@ -593,8 +599,11 @@ pub fn tick_until_consumption(
     w: &MobWorld,
     level: &mut super::DamageLevel<'_>,
     events: &mut Vec<super::MobEvent>,
+    movement: &mut Option<super::ai::MobMovement>,
 ) -> super::ai::TickProgress {
-    tick_with(mobs, index, w, level, events, Mob::tick_until_consumption)
+    tick_with(mobs, index, w, level, events, |m, w, level, events| {
+        m.tick_until_consumption(w, level, events, movement)
+    })
 }
 
 /// Resume the paused living AI step with the current vehicle/navigation owner.
@@ -605,11 +614,82 @@ pub fn resume_after_consumption(
     level: &mut super::DamageLevel<'_>,
     was_on_fire: bool,
     events: &mut Vec<super::MobEvent>,
-) -> bool {
+    movement: &mut Option<super::ai::MobMovement>,
+) -> super::ai::TickProgress {
     tick_with(mobs, index, w, level, events, |m, w, level, events| {
-        let kept = super::ai::resume_after_consumption(m, w, level, was_on_fire, events);
-        super::neutral_anger::after_tick(m, w.game_time);
-        kept
+        let progress =
+            super::ai::resume_after_consumption(m, w, level, was_on_fire, events, Some(movement));
+        if matches!(progress, super::ai::TickProgress::Complete(_)) {
+            super::neutral_anger::after_tick(m, w.game_time);
+        }
+        progress
+    })
+}
+
+/// Resume the paused tick after `living_breathe` with the current vehicle/navigation owner.
+pub fn resume_after_breathing(
+    mobs: &mut JoinList<Mob>,
+    index: usize,
+    w: &MobWorld,
+    level: &mut super::DamageLevel<'_>,
+    air: super::ai::AirPause,
+    known_speed: sunrise_core::geometry::Vec3,
+    breath: Option<crate::breathing::Breath>,
+    events: &mut Vec<super::MobEvent>,
+    movement: &mut Option<super::ai::MobMovement>,
+) -> super::ai::TickProgress {
+    tick_with(mobs, index, w, level, events, |m, w, level, events| {
+        let progress = super::ai::resume_after_breathing(
+            m,
+            w,
+            level,
+            events,
+            air,
+            known_speed,
+            breath,
+            Some(movement),
+        );
+        if matches!(progress, super::ai::TickProgress::Complete(_)) {
+            super::neutral_anger::after_tick(m, w.game_time);
+        }
+        progress
+    })
+}
+
+/// Resume the tick with its current navigation owner after settling a hit.
+pub fn resume_after_damage(
+    mobs: &mut JoinList<Mob>,
+    index: usize,
+    w: &MobWorld,
+    level: &mut super::DamageLevel<'_>,
+    resume: super::ai::DamageResume,
+    events: &mut Vec<super::MobEvent>,
+    movement: &mut Option<super::ai::MobMovement>,
+) -> super::ai::TickProgress {
+    tick_with(mobs, index, w, level, events, |m, w, level, events| {
+        let progress = super::ai::resume_after_damage(m, w, level, events, resume, Some(movement));
+        if matches!(progress, super::ai::TickProgress::Complete(_)) {
+            super::neutral_anger::after_tick(m, w.game_time);
+        }
+        progress
+    })
+}
+
+/// Resume after the level applied (or refused) the paused landing.
+pub fn resume_movement(
+    mobs: &mut JoinList<Mob>,
+    index: usize,
+    w: &MobWorld,
+    level: &mut super::DamageLevel<'_>,
+    movement: &mut Option<super::ai::MobMovement>,
+    events: &mut Vec<super::MobEvent>,
+) -> super::ai::TickProgress {
+    tick_with(mobs, index, w, level, events, |m, w, level, events| {
+        let progress = super::ai::resume_movement(m, w, level, movement, events);
+        if matches!(progress, super::ai::TickProgress::Complete(_)) {
+            super::neutral_anger::after_tick(m, w.game_time);
+        }
+        progress
     })
 }
 
@@ -639,7 +719,10 @@ fn tick_with<R>(
             owner = vehicle;
         }
     }
-    if !mod_api::__private::listened(mod_api::HookId::LivingChangeTarget) {
+    // The fast path has no live mob list, so resumed Creaking cramming would drop every pinned peer.
+    if mobs[index].species() != Species::Creaking
+        && !mod_api::__private::listened(mod_api::HookId::LivingChangeTarget)
+    {
         if owner == index {
             return step(&mut mobs[index], w, level, events);
         }
@@ -681,7 +764,7 @@ pub fn keeps_alive(m: &Mob) -> bool {
 }
 
 /// `IsChickenJockey`, `SkeletonTrap` and `SkeletonTrapTime`.
-pub fn write_nbt(m: &Mob, map: &mut Compound) {
+pub fn write_nbt(m: &Mob, map: &mut crate::entity_nbt::EntityTagWriter) {
     match m.species() {
         Species::Chicken => {
             map.insert(
@@ -758,7 +841,7 @@ mod tests {
         kind.id = "minecraft:zombie".into();
         let mut rider = Mob::new(72, Arc::new(kind), Vec3::new(2.0, 80.0, 0.5), 0.0);
         rider.extra.mount = Some(71);
-        rider.on_ground = true;
+        rider.ground.on_ground = true;
         rider.ai.nav.speed_modifier = 3.75;
         rider.ai.nav.target_pos = Some([1, 2, 3]);
         rider.ai.goals.clear();
@@ -819,6 +902,11 @@ mod tests {
         let mut rider = of(72, Species::Skeleton);
         rider.extra.mount = Some(vehicle.id);
         vehicle.extra.rider = Some(rider.id);
+        let custom = std::sync::Arc::make_mut(&mut rider.kind);
+        custom.id = "test:custom_rider".into();
+        // Its place in the one-type registry the tags below bind, as a content type's is set
+        // at load; in the resource world's registry that slot is a type outside the tag.
+        custom.flags.entity_tag_slot = Some(0);
         let retained = [rider.seen(None, &crate::items::Items::empty())];
         let root = std::env::var_os("SUNRISE_TEST_RESOURCES").expect("prepared resources required");
         assert!(crate::mobs::world::with_resource_test_world(
@@ -829,6 +917,7 @@ mod tests {
             |_, _| {},
             |w, _| {
                 let w = MobWorld {
+                    side: sunrise_client::motion::dry_side(),
                     passenger_objects: &retained,
                     ..w.clone()
                 };
@@ -837,6 +926,25 @@ mod tests {
                 assert!(w.seen(rider.id).is_none());
                 assert!(w.target_info(super::super::Who::Mob(rider.id)).is_none());
                 assert_eq!(w.others_near(vehicle.bounds()).count(), 0);
+
+                let mut items = crate::items::Items::empty();
+                items.set_entity_type_tags(crate::items::EntityTypeTags::from_ordered(
+                    [(
+                        "minecraft:non_controlling_rider".into(),
+                        vec![rider.kind.id.clone()],
+                    )]
+                    .into(),
+                    vec![rider.kind.id.clone()].into(),
+                ));
+                drive(
+                    &mut vehicle,
+                    &MobWorld {
+                        items: Some(&items),
+                        ..w.clone()
+                    },
+                );
+                assert_eq!(vehicle.ai.goals.disabled & CONTROLLED, 0);
+
                 vehicle.extra.rider = None;
                 drive(&mut vehicle, &w);
                 assert_eq!(vehicle.ai.goals.disabled & CONTROLLED, 0);
@@ -896,13 +1004,27 @@ mod tests {
 
     #[test]
     fn attachments_turn_with_the_vehicle() {
-        // A ravager's seat sits a sixteenth behind its centre.
+        // A ravager's seat sits a sixteenth behind its centre: vanilla's Vec3.yRot gives these exactly
+        // (HotSpot 25.0.4.1, x86-64).
         let behind = [0.0, 2.2625, -0.0625];
-        let [x, y, z] = rotated(behind, 0.0);
-        assert!(x.abs() < 1e-9 && (z + 0.0625).abs() < 1e-9 && y == 2.2625);
+        let bits = |v: [f64; 3]| v.map(f64::to_bits);
+        assert_eq!(bits(rotated(behind, 0.0)), bits([0.0, 2.2625, -0.0625]));
         // Facing west (yaw 90), behind is to the east.
-        let [x, _, z] = rotated(behind, 90.0);
-        assert!((x - 0.0625).abs() < 1e-9 && z.abs() < 1e-9);
+        assert_eq!(bits(rotated(behind, 90.0)), bits([0.0625, 2.2625, 0.0]));
+        // A point the double-precision turn moved by a few bits.
+        let point = [
+            f64::from_bits(0xbff2_ffd6_a376_26f4),
+            f64::from_bits(0x400f_4e32_6c3a_85f4),
+            f64::from_bits(0xc005_dbf0_485d_806c),
+        ];
+        assert_eq!(
+            bits(rotated(point, f32::from_bits(0x4377_00d0))),
+            [
+                0xc000_68df_242c_bc71,
+                0x400f_4e32_6c3a_85f4,
+                0x4001_4917_8633_8cb8
+            ]
+        );
     }
     fn of(id: u32, species: Species) -> Mob {
         let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();

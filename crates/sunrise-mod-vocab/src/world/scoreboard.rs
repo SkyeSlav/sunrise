@@ -1,7 +1,7 @@
 //! The server scoreboard's objectives, display slots and scores, and the client's view of them.
 
 use crate::text::TextStyle;
-use crate::{EntityRef, PlayerRef, Text, TextFormError};
+use crate::{ClientTeam, EntityRef, PlayerRef, Text, TextFormError};
 
 /// Who a score belongs to (vanilla's `ScoreHolder`). The board keys scores by one string, and
 /// every variant resolves to it: a player's profile name, another entity's UUID text, or the
@@ -302,20 +302,23 @@ impl ClientScore {
 }
 
 /// What this client has been sent of the scoreboard (`ClientPacketListener`'s board): the
-/// objectives the server shows in a display slot, with their scores. The server sends no other
-/// objective, and no score of one it does not show. Read-only; the client has no handles.
+/// objectives the server shows in a display slot, with their scores, and every team. The server
+/// sends no other objective, and no score of one it does not show. Read-only; the client has no
+/// handles.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
 pub struct ClientScoreboard {
     /// The shown objectives, each once, in the board's order.
     pub objectives: Vec<ClientObjective>,
+    /// Every team: the server sends all of them, shown or not.
+    pub teams: Vec<ClientTeam>,
 }
 
 impl ClientScoreboard {
-    /// A view from its objectives.
-    pub fn new(objectives: Vec<ClientObjective>) -> Self {
-        Self { objectives }
+    /// A view from its objectives and teams.
+    pub fn new(objectives: Vec<ClientObjective>, teams: Vec<ClientTeam>) -> Self {
+        Self { objectives, teams }
     }
     /// The objective shown in `slot`.
     pub fn in_slot(&self, slot: DisplaySlot) -> Option<&ClientObjective> {

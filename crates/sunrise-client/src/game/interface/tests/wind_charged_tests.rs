@@ -15,7 +15,7 @@ const WIND_CHARGE_BURST: &str = "minecraft:entity.wind_charge.wind_burst";
 /// set it; the default would discard a zombie as Peaceful does) with chunk
 /// (0, 0) loaded and a stone floor at y 63, which a dead mob falls onto so
 /// that its burst has ground under it. `None` without the prepared resources.
-fn with_game<R>(f: impl FnOnce(&mut Game<'static>) -> R) -> Option<R> {
+fn with_game<R>(f: impl FnOnce(&mut Game<'_>) -> R) -> Option<R> {
     let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES")?);
     let settings = Settings::default();
     let loaded = load_resources(
@@ -34,7 +34,8 @@ fn with_game<R>(f: impl FnOnce(&mut Game<'static>) -> R) -> Option<R> {
     let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
     options.resources = root.clone();
     options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
-    let res: &'static _ = Box::leak(Box::new(loaded.resources));
+    let mut resources = None;
+    let res = &*resources.insert(loaded.resources);
     let mut game = Game::new(
         res,
         loaded.pack,

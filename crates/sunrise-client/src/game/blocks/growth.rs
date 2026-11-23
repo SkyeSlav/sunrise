@@ -278,6 +278,8 @@ mod tests {
                         Direction::North,
                         ItemStack::new("minecraft:bone_meal", 3),
                     )
+                    .unwrap()
+                    .continue_value()
                     .unwrap();
                 let b = game.res.behaviours();
                 let state = game.world.block(CROP.x, CROP.y, CROP.z);

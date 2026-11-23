@@ -64,9 +64,9 @@ fn hash(x: i32, z: i32) -> u32 {
 impl ChunkGenerator for TestTerrain {
     type Worker = ();
     fn worker(&self) {}
-    fn lod_surface(&self, _: &mut (), x: i32, z: i32) -> Option<crate::lod::Surface> {
+    fn lod_surface(&self, _: &mut (), x: i32, z: i32) -> Option<crate::columns::Surface> {
         let h = Self::height(x, z);
-        Some(crate::lod::Surface {
+        Some(crate::columns::Surface {
             height: h + 1,
             state: sunrise_world::registry::BlockStateId(if h <= 63 {
                 self.sand
@@ -79,6 +79,11 @@ impl ChunkGenerator for TestTerrain {
     }
     fn proto(&self, w: &mut (), x: i32, z: i32) -> crate::streaming::Proto {
         Box::new(self.generate(w, x, z))
+    }
+    // The proto already has all terrain and features. The last FULL ring
+    // needs these blocks for lighting without promoting its neighbours.
+    fn light_view(&self, proto: &crate::streaming::Proto) -> Option<Chunk> {
+        proto.downcast_ref::<Chunk>().cloned()
     }
     fn finish(&self, proto: crate::streaming::Proto) -> Chunk {
         let mut chunk = *proto.downcast::<Chunk>().expect("test terrain proto");

@@ -6,8 +6,7 @@ use wgpu::util::DeviceExt;
 #[ignore = "daily"]
 fn terrain_material_samplers_preserve_surface_and_encoded_bytes() {
     let _gpu = crate::gfx::test_gpu::lock();
-    let instance = crate::gfx::test_gpu::instance();
-    let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+    let adapter = crate::gfx::test_gpu::adapter().unwrap();
     eprintln!("Material transport GPU: {:?}", adapter.get_info());
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         required_limits: adapter.limits(),
@@ -169,7 +168,13 @@ void main() {
         }
         let maps_expected = case == 0;
         pass.groups.clear();
-        post.resize(&device, [15, 1]);
+        post.resize(
+            &device,
+            [15, 1],
+            &std::sync::atomic::AtomicBool::new(false),
+            super::super::in_flight::poll_live,
+        )
+        .unwrap();
         let read = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size: 256,

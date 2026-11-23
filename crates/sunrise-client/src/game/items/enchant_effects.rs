@@ -388,8 +388,9 @@ impl Game<'_> {
     /// sees it after a hit on a mob: the server's player stops sprinting, and
     /// its flag reaches the client. (The server's 0.6 speed cut never does:
     /// the client's own `Player.attack` simulates no hurt on a mob, so it
-    /// skips the knockback. A hit on another player does simulate one:
-    /// `remote_player_attack`.)
+    /// skips the knockback. A hit on another player, a boat, a minecart, an
+    /// End crystal or a shulker bullet does simulate one:
+    /// `remote_attacker_knockback`.)
     pub(super) fn stop_sprint_after_extra_knockback(&mut self) {
         if let Some(p) = self.player.as_mut() {
             let _ = p.set_sprinting(false);
@@ -474,7 +475,7 @@ impl Game<'_> {
         }
         if ignite > 0.0
             && let Some(m) = self.mobs.get_mut(mob)
-            && !m.kind.flags.fire_immune
+            && !m.fire_immune()
         {
             m.ignite_for_ticks((ignite * 20.0) as i32);
         }
@@ -695,12 +696,14 @@ impl Game<'_> {
                 from: Some([p.position.x, p.position.y, p.position.z]),
                 attacker_species: None,
             };
-            let alive = g.mobs[index].alive();
-            if g.hurt_by_player(index, damage, source) {
-                if alive && !g.mobs[index].alive() {
-                    g.native_kill_event(index);
-                }
-                g.remember_mob_player_credit(attacker);
+            let join = g.mobs[index].join;
+            let (_, killed) = g.hurt_by_player(index, damage, source);
+            if killed
+                && let Some(i) = g.mob_index.find(&g.mobs, attacker)
+                && g.mobs[i].join == join
+                && !g.mobs[i].removed
+            {
+                g.native_kill_event(i);
             }
         });
     }
@@ -834,19 +837,30 @@ impl Game<'_> {
         let attacker = attacker.filter(|_| attacker_kind.is_some());
         let direct = direct.or(attacker_kind.as_deref());
         use sunrise_client::mobs::finalize as f;
-        let Some(m) = self.mobs.iter().find(|m| m.id == target) else {
-            return;
-        };
-        let (id, kind) = (m.id, m.kind.id.clone());
+        let (id, kind, is_stand) =
+            if let Some(m) = self.mobs.iter().find(|m| m.id == target && !m.removed) {
+                (m.id, m.kind.id.clone(), false)
+            } else if let Some(a) = self.armor_stands.iter().find(|a| a.id == target) {
+                (a.id, "minecraft:armor_stand".to_owned(), true)
+            } else {
+                return;
+            };
         // EquipmentSlot.VALUES: the hands, then the feet up to the head (the
         // body and the saddle keep no enchantments here).
         for slot in [f::MAINHAND, f::OFFHAND, f::FEET, f::LEGS, f::CHEST, f::HEAD] {
-            let Some(stack) = self
-                .mobs
-                .iter()
-                .find(|m| m.id == id)
-                .and_then(|m| f::item_stack(m, slot))
-            else {
+            let stack = if is_stand {
+                self.armor_stands
+                    .iter()
+                    .find(|a| a.id == id)
+                    .and_then(|a| a.equipment.get(slot))
+                    .cloned()
+            } else {
+                self.mobs
+                    .iter()
+                    .find(|m| m.id == id)
+                    .and_then(|m| f::item_stack(m, slot))
+            };
+            let Some(stack) = stack else {
                 continue;
             };
             let name = MOB_SLOTS[slot];
@@ -936,10 +950,17 @@ impl Game<'_> {
                     },
                 };
                 let damage = random * (max - min) + min;
-                let Some(m) = self.mobs.iter().find(|m| m.id == wearer) else {
-                    return;
-                };
-                let from = [m.position.x, m.position.y, m.position.z];
+                let (from, attacker_species) =
+                    if let Some(m) = self.mobs.iter().find(|m| m.id == wearer) {
+                        (
+                            [m.position.x, m.position.y, m.position.z],
+                            Some(m.species()),
+                        )
+                    } else if let Some(a) = self.armor_stands.iter().find(|a| a.id == wearer) {
+                        ([a.position.x, a.position.y, a.position.z], None)
+                    } else {
+                        return;
+                    };
                 let kind = effect["damage_type"].as_str().unwrap_or("minecraft:thorns");
                 match attacker {
                     Who::Player => {
@@ -950,7 +971,7 @@ impl Game<'_> {
                             kind: Self::damage_kind(&self.health_resources.damage, kind),
                             attacker: Some(Who::Mob(wearer)),
                             from: Some(from),
-                            attacker_species: Some(m.species()),
+                            attacker_species,
                         };
                         self.mob_hits_mob(id, damage, source);
                     }
@@ -969,13 +990,28 @@ impl Game<'_> {
     /// (`LivingEntity.onEquippedItemBroken`).
     fn wear_mob_piece(&mut self, id: u32, slot: usize, amount: u32) {
         use sunrise_client::mobs::finalize as f;
-        let Some(m) = self.mobs.iter().find(|m| m.id == id) else {
-            return;
-        };
-        let at = [m.position.x, m.position.y, m.position.z];
-        let Some(stack) = f::item_stack(m, slot).filter(|s| {
-            amount > 0 && sunrise_client::stations::is_damageable(world_items!(self), s)
-        }) else {
+        let (at, stack, is_stand) = if let Some(m) = self.mobs.iter().find(|m| m.id == id) {
+            let at = [m.position.x, m.position.y, m.position.z];
+            let Some(stack) = f::item_stack(m, slot).filter(|s| {
+                amount > 0 && sunrise_client::stations::is_damageable(world_items!(self), s)
+            }) else {
+                return;
+            };
+            (at, stack, false)
+        } else if let Some(a) = self.armor_stands.iter().find(|a| a.id == id) {
+            let at = [a.position.x, a.position.y, a.position.z];
+            let Some(stack) = a
+                .equipment
+                .get(slot)
+                .filter(|s| {
+                    amount > 0 && sunrise_client::stations::is_damageable(world_items!(self), s)
+                })
+                .cloned()
+            else {
+                return;
+            };
+            (at, stack, true)
+        } else {
             return;
         };
         let loss = self.durability_loss(&stack, amount, Wearer::Living(id));
@@ -986,14 +1022,27 @@ impl Game<'_> {
         let max = world_items!(self)
             .get(&stack.item)
             .map_or(0, |i| i.max_damage);
-        let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
-            return;
-        };
-        if damage < max {
-            f::set_slot_damage(m, slot, damage);
-            return;
+        if is_stand {
+            let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == id) else {
+                return;
+            };
+            if damage < max {
+                if let Some(s) = a.equipment[slot].as_mut() {
+                    s.damage = damage;
+                }
+                return;
+            }
+            a.equipment.set(slot, None);
+        } else {
+            let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
+                return;
+            };
+            if damage < max {
+                f::set_slot_damage(m, slot, damage);
+                return;
+            }
+            sunrise_client::mobs::drops::clear_slot(m, MOB_SLOTS[slot]);
         }
-        sunrise_client::mobs::drops::clear_slot(m, MOB_SLOTS[slot]);
         // LivingEntity.entityEventForEquipmentBreak
         let event = [47, 48, 52, 51, 50, 49][slot];
         self.lan_entity_event(id as i32, event, at);
@@ -1040,16 +1089,19 @@ impl Game<'_> {
                 return amount;
             }
             stack.damage -= repaired;
-            let item = stack.item.to_string();
+            let notice = player
+                .filter(|_| mod_api::__private::listened(mod_api::HookId::PlayerItemMend))
+                .and_then(|uuid| {
+                    let player = self
+                        .native_server_players()
+                        .into_iter()
+                        .find(|p| p.uuid() == uuid)?;
+                    let name = self.player_name(player)?.to_owned();
+                    Some((uuid, name, stack.item.to_string()))
+                });
             *self.player_slot_mut(slot) = Some(stack);
 
-            if let Some(player) = player
-                && let Some(name) = self
-                    .native_server_players()
-                    .into_iter()
-                    .find(|p| p.uuid() == player)
-                    .and_then(|p| self.player_name(p))
-            {
+            if let Some((player, name, item)) = notice {
                 self.native_player_item_mend(player, &name, &item, repaired, amount);
             }
             if remaining == 0 {
@@ -1340,7 +1392,7 @@ impl Game<'_> {
         let disks = location_disks(
             &self.stations().enchantments,
             equipment,
-            stand.on_ground,
+            stand.ground.on_ground,
             stand.vehicle.is_some(),
         );
         for (effect, level) in disks {
@@ -1446,27 +1498,6 @@ impl Game<'_> {
             }),
             _ => false,
         }
-    }
-    /// Whether a worn enchantment gives immunity to `#burn_from_stepping`
-    /// damage (frost walker's `minecraft:damage_immunity`).
-    pub(crate) fn wears_burn_from_stepping_immunity(&self) -> bool {
-        self.armor
-            .iter()
-            .zip(["head", "chest", "legs", "feet"])
-            .any(|(stack, slot)| {
-                stack
-                    .iter()
-                    .flat_map(ItemStack::enchantments)
-                    .any(|(id, _)| {
-                        self.stations().enchantments.get(id).is_some_and(|def| {
-                            def.effects.get("minecraft:damage_immunity").is_some()
-                                && def
-                                    .slots
-                                    .iter()
-                                    .any(|s| s == slot || s == "armor" || s == "any")
-                        })
-                    })
-            })
     }
     /// Enchantment attribute modifiers of active equipment, including held Efficiency.
     /// Each piece's modifier id ends with its slot (`EnchantmentAttributeEffect.idForSlot`),

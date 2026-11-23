@@ -1,9 +1,12 @@
 //! Byte buffers with vanilla's primitive encodings (FriendlyByteBuf, VarInt,
 //! VarLong, ByteBufCodecs) and the `Codec` building blocks packets are
 //! composed from, mirroring `StreamCodec.composite`.
+//!
+//! For the outgoing writer and VarInt helpers, import `Writer`, `write_varint`
+//! and `varint_size` from [`sunrise_core::vanilla_bytes`].
 use crate::{Error, Result};
 use std::marker::PhantomData;
-use sunrise_core::{nbt, nbt::Tag};
+use sunrise_core::{nbt, nbt::Tag, vanilla_bytes::Writer};
 
 /// Vanilla's default NBT quota for network tags (NbtAccounter.defaultQuota).
 pub const NBT_QUOTA: usize = nbt::Limits::network().max_bytes;
@@ -26,6 +29,7 @@ pub fn check_network_nbt(tag: &Tag) -> Result<()> {
 pub struct Reader<'a> {
     data: &'a [u8],
     pos: usize,
+    names: Option<&'a dyn crate::item::Names>,
     payload_codecs: Option<&'a crate::packets::custom_payload::PayloadCodecs>,
 }
 impl<'a> Reader<'a> {
@@ -33,6 +37,7 @@ impl<'a> Reader<'a> {
         Self {
             data,
             pos: 0,
+            names: None,
             payload_codecs: None,
         }
     }
@@ -44,8 +49,49 @@ impl<'a> Reader<'a> {
         Self {
             data,
             pos: 0,
+            names: None,
             payload_codecs: Some(codecs),
         }
+    }
+    /// Use the peer's synchronized registry IDs when decoding stream values.
+    pub fn with_names(mut self, names: &'a dyn crate::item::Names) -> Self {
+        self.names = Some(names);
+        self
+    }
+    pub(crate) fn consume_effect_kind(
+        &self,
+        id: i32,
+    ) -> Option<crate::item::consume_effects::Kind> {
+        match self.names {
+            Some(names) => names.consume_effect_kind(id),
+            None => crate::item::consume_effects::builtin_name(id)
+                .map(|_| crate::item::consume_effects::Kind::Builtin(id)),
+        }
+    }
+    pub(crate) fn consume_effect_admissions(
+        &self,
+    ) -> Option<&'a crate::item::consume_effects::AdmissionLookup<'a>> {
+        self.names?.consume_effect_admissions()
+    }
+    pub(crate) fn registry_entry(
+        &self,
+        registry: &str,
+        id: i32,
+    ) -> Option<(&'a str, Option<&'a Tag>)> {
+        self.names?.registry_entry(registry, id)
+    }
+    pub(crate) fn contains_registry_entry(&self, registry: &str, name: &str) -> bool {
+        self.names
+            .is_some_and(|names| names.contains_entry(registry, name))
+    }
+
+    pub fn subreader(&mut self, size: usize) -> Result<Self> {
+        Ok(Self {
+            data: self.bytes(size)?,
+            pos: 0,
+            names: self.names,
+            payload_codecs: self.payload_codecs,
+        })
     }
     pub(crate) fn payload_codecs(&self) -> Option<&crate::packets::custom_payload::PayloadCodecs> {
         self.payload_codecs
@@ -59,6 +105,9 @@ impl<'a> Reader<'a> {
     /// The bytes read since `start` (a `position()`).
     pub fn since(&self, start: usize) -> &'a [u8] {
         &self.data[start.min(self.pos)..self.pos]
+    }
+    pub(crate) fn unread(&self) -> &'a [u8] {
+        &self.data[self.pos..]
     }
     pub fn rest(&mut self) -> &'a [u8] {
         let rest = &self.data[self.pos..];
@@ -175,12 +224,15 @@ impl<'a> Reader<'a> {
     /// Utf8String.read: VarInt byte length, UTF-8, at most `max` chars of Java's
     /// String (UTF-16 units: a character outside the BMP counts twice).
     pub fn string(&mut self, max: usize) -> Result<String> {
+        self.string_field(max).map(|(text, _)| text)
+    }
+    pub(crate) fn string_field(&mut self, max: usize) -> Result<(String, usize)> {
         let len = self.count(max.saturating_mul(3))?;
         let s = java_utf8(self.bytes(len)?);
         if s.encode_utf16().count() > max {
             return Err(Error::new(format!("string longer than {max} chars")));
         }
-        Ok(s)
+        Ok((s, len))
     }
     pub fn byte_array(&mut self, max: usize) -> Result<Vec<u8>> {
         let len = self.count(max)?;
@@ -199,6 +251,13 @@ impl<'a> Reader<'a> {
             .map_err(|e| Error::new(format!("NBT: {e}")))?;
         self.pos += used;
         Ok(tag)
+    }
+    /// The same NBT decoder, writing a tape of its values into a copy of the body.
+    pub(crate) fn stage_nbt(&mut self, limits: nbt::Limits, copy: &mut [u8]) -> Result<u8> {
+        let (id, used) = nbt::pack_network(&self.data[self.pos..], &mut copy[self.pos..], limits)
+            .map_err(|e| Error::new(format!("NBT: {e}")))?;
+        self.pos += used;
+        Ok(id)
     }
     pub fn long_array(&mut self) -> Result<Vec<i64>> {
         let n = self.count(self.remaining() / 8)?;
@@ -246,103 +305,6 @@ pub fn java_utf8(mut bytes: &[u8]) -> String {
             }
         }
     }
-}
-
-/// An outgoing packet body.
-#[derive(Default)]
-pub struct Writer {
-    pub data: Vec<u8>,
-}
-impl Writer {
-    pub fn new() -> Self {
-        Self::default()
-    }
-    pub fn u8(&mut self, v: u8) {
-        self.data.push(v);
-    }
-    pub fn i8(&mut self, v: i8) {
-        self.data.push(v as u8);
-    }
-    pub fn bool(&mut self, v: bool) {
-        self.data.push(u8::from(v));
-    }
-    pub fn i16(&mut self, v: i16) {
-        self.data.extend_from_slice(&v.to_be_bytes());
-    }
-    pub fn u16(&mut self, v: u16) {
-        self.data.extend_from_slice(&v.to_be_bytes());
-    }
-    pub fn i32(&mut self, v: i32) {
-        self.data.extend_from_slice(&v.to_be_bytes());
-    }
-    pub fn u32(&mut self, v: u32) {
-        self.data.extend_from_slice(&v.to_be_bytes());
-    }
-    pub fn i64(&mut self, v: i64) {
-        self.data.extend_from_slice(&v.to_be_bytes());
-    }
-    pub fn f32(&mut self, v: f32) {
-        self.data.extend_from_slice(&v.to_be_bytes());
-    }
-    pub fn f64(&mut self, v: f64) {
-        self.data.extend_from_slice(&v.to_be_bytes());
-    }
-    pub fn varint(&mut self, v: i32) {
-        write_varint(&mut self.data, v);
-    }
-    pub fn varlong(&mut self, v: i64) {
-        let mut v = v as u64;
-        loop {
-            if v & !0x7F == 0 {
-                self.data.push(v as u8);
-                return;
-            }
-            self.data.push((v as u8 & 0x7F) | 0x80);
-            v >>= 7;
-        }
-    }
-    pub fn string(&mut self, s: &str) {
-        self.varint(s.len() as i32);
-        self.data.extend_from_slice(s.as_bytes());
-    }
-    pub fn byte_array(&mut self, b: &[u8]) {
-        self.varint(b.len() as i32);
-        self.data.extend_from_slice(b);
-    }
-    pub fn bytes(&mut self, b: &[u8]) {
-        self.data.extend_from_slice(b);
-    }
-    pub fn uuid(&mut self, v: u128) {
-        self.data.extend_from_slice(&v.to_be_bytes());
-    }
-    pub fn nbt(&mut self, tag: &Tag) {
-        match nbt::write_network(tag, nbt::Limits::default()) {
-            Ok(bytes) => self.data.extend_from_slice(&bytes),
-            // Unencodable tags (too deep) are sent as "no tag".
-            Err(_) => self.data.push(0),
-        }
-    }
-    pub fn long_array(&mut self, v: &[i64]) {
-        self.varint(v.len() as i32);
-        for &l in v {
-            self.i64(l);
-        }
-    }
-}
-pub fn write_varint(out: &mut Vec<u8>, v: i32) {
-    let mut v = v as u32;
-    loop {
-        if v & !0x7F == 0 {
-            out.push(v as u8);
-            return;
-        }
-        out.push((v as u8 & 0x7F) | 0x80);
-        v >>= 7;
-    }
-}
-pub fn varint_size(v: i32) -> usize {
-    let v = v as u32;
-    (1..5).find(|i| v >> (7 * i) == 0).unwrap_or(5)
 }
 
 /// A wire encoding for values of type `T` (vanilla's StreamCodec).
@@ -409,30 +371,41 @@ impl<const N: usize> Codec<String> for StrN<N> {
 }
 /// Identifier.STREAM_CODEC: a validated resource location, with the default namespace.
 pub struct Ident;
-impl Codec<String> for Ident {
-    fn read(r: &mut Reader) -> Result<String> {
-        let value = r.string(32767)?;
-        // A namespaced identifier (what vanilla writes) goes back as read.
-        let qualified = value.find(':').is_some_and(|i| i > 0);
-        let (namespace, path) = value.split_once(':').unwrap_or(("", &value));
-        let namespace = if namespace.is_empty() {
-            "minecraft"
-        } else {
-            namespace
-        };
-        if !namespace
-            .bytes()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_.-".contains(&c))
+impl Ident {
+    /// Borrow the validated spelling on the wire. An empty namespace still denotes `minecraft`.
+    pub(crate) fn read_borrowed<'a>(r: &mut Reader<'a>) -> Result<&'a str> {
+        const MAX: usize = 32767;
+        let len = r.count(MAX * 3)?;
+        let value = r.bytes(len)?;
+        // All valid identifiers are ASCII, so byte and UTF-16 unit counts agree.
+        let value =
+            std::str::from_utf8(value).map_err(|_| Error::new("invalid resource identifier"))?;
+        let (namespace, path) = value.split_once(':').unwrap_or(("", value));
+        // Identifier.isValidNamespace refuses `..` before its characters.
+        if namespace == ".."
+            || !namespace
+                .bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_.-".contains(&c))
             || !path
                 .bytes()
                 .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"/_.-".contains(&c))
         {
             return Err(Error::new("invalid resource identifier"));
         }
-        if qualified {
-            return Ok(value);
+        if value.len() > MAX {
+            return Err(Error::new(format!("string longer than {MAX} chars")));
         }
-        Ok(format!("{namespace}:{path}"))
+        Ok(value)
+    }
+}
+impl Codec<String> for Ident {
+    fn read(r: &mut Reader) -> Result<String> {
+        let value = Self::read_borrowed(r)?;
+        match value.split_once(':') {
+            Some(("", path)) => Ok(format!("minecraft:{path}")),
+            Some(_) => Ok(value.to_owned()),
+            None => Ok(format!("minecraft:{value}")),
+        }
     }
     fn write(v: &String, w: &mut Writer) {
         w.string(v)
@@ -492,6 +465,76 @@ impl Codec<Tag> for Nbt {
     }
     fn write(v: &Tag, w: &mut Writer) {
         w.nbt(v)
+    }
+}
+/// Network NBT read with `NbtAccounter.unlimitedHeap()` limits.
+pub struct TrustedNbt;
+impl Codec<Tag> for TrustedNbt {
+    fn read(r: &mut Reader) -> Result<Tag> {
+        r.nbt_within(nbt::Limits::unlimited_heap())
+    }
+    fn write(v: &Tag, w: &mut Writer) {
+        Nbt::write(v, w)
+    }
+}
+/// `ByteBufCodecs.TRUSTED_COMPOUND_TAG`: unlimited-heap NBT with a required compound root.
+pub struct TrustedCompound;
+impl Codec<Tag> for TrustedCompound {
+    fn read(r: &mut Reader) -> Result<Tag> {
+        let tag = TrustedNbt::read(r)?;
+        if !matches!(tag, Tag::Compound(_)) {
+            nbt::discard_tag(tag);
+            return Err(Error::new("Expected non-null compound tag"));
+        }
+        Ok(tag)
+    }
+    fn write(v: &Tag, w: &mut Writer) {
+        TrustedNbt::write(v, w)
+    }
+}
+/// `ComponentSerialization.TRUSTED_STREAM_CODEC` and `TRUSTED_CONTEXT_FREE_STREAM_CODEC`:
+/// read unlimited-heap NBT, then decode it as a component.
+pub struct TrustedComponent;
+impl TrustedComponent {
+    /// Check a component already read as part of a synchronized registry entry.
+    pub(crate) fn validate_tag(tag: &Tag, r: &Reader) -> Result<()> {
+        if *tag == Tag::End {
+            return Err(Error::new("Expected non-null compound tag"));
+        }
+        sunrise_world::component_value::source::text_from_tag(tag, &|item| {
+            r.contains_registry_entry("minecraft:item", item)
+        })
+        .map_err(|e| Error::new(format!("Failed to decode: {e}")))?;
+        Ok(())
+    }
+}
+impl Codec<Tag> for TrustedComponent {
+    fn read(r: &mut Reader) -> Result<Tag> {
+        let tag = TrustedNbt::read(r)?;
+        Self::validate_tag(&tag, r)?;
+        Ok(tag)
+    }
+    fn write(v: &Tag, w: &mut Writer) {
+        TrustedNbt::write(v, w)
+    }
+}
+/// `Style.Serializer.TRUSTED_STREAM_CODEC`: unlimited-heap NBT decoded as a style map.
+pub struct TrustedStyle;
+impl Codec<Tag> for TrustedStyle {
+    fn read(r: &mut Reader) -> Result<Tag> {
+        let tag = TrustedNbt::read(r)?;
+        if let Err(error) =
+            sunrise_world::component_value::source::validate_text_style(&tag, &|item| {
+                r.contains_registry_entry("minecraft:item", item)
+            })
+        {
+            nbt::discard_tag(tag);
+            return Err(Error::new(format!("Failed to decode: {error}")));
+        }
+        Ok(tag)
+    }
+    fn write(v: &Tag, w: &mut Writer) {
+        TrustedNbt::write(v, w)
     }
 }
 /// ByteBufCodecs.LONG_ARRAY.
@@ -652,12 +695,6 @@ impl LpVec3 {
     fn pack(v: f64) -> u64 {
         ((v * 0.5 + 0.5) * 32766.0).round() as u64
     }
-    /// `v` as a reader decodes it after it was written.
-    pub fn quantize(v: [f64; 3]) -> [f64; 3] {
-        let mut w = Writer::new();
-        Self::write(&v, &mut w);
-        Self::read(&mut Reader::new(&w.data)).unwrap_or([0.0; 3])
-    }
     fn sanitize(v: f64) -> f64 {
         if v.is_nan() {
             0.0
@@ -717,6 +754,9 @@ pub fn unpack_degrees(b: i8) -> f32 {
 
 /// Define a packet struct and its codec from (field: type => codec) triples,
 /// like vanilla's `StreamCodec.composite`.
+///
+/// Downstream callers need a direct `sunrise-core` dependency: this macro expands
+/// to `::sunrise_core::vanilla_bytes::Writer`.
 #[macro_export]
 macro_rules! packet {
     ($(#[$meta:meta])* $name:ident { $($field:ident : $ty:ty => $codec:ty),* $(,)? }) => {
@@ -734,7 +774,7 @@ macro_rules! packet {
                 Ok($name { $($field: <$codec as $crate::buf::Codec<$ty>>::read(r)?),* })
             }
             #[allow(unused_variables)]
-            fn write(v: &$name, w: &mut $crate::buf::Writer) {
+            fn write(v: &$name, w: &mut ::sunrise_core::vanilla_bytes::Writer) {
                 $(<$codec as $crate::buf::Codec<$ty>>::write(&v.$field, w);)*
             }
         }
@@ -784,6 +824,21 @@ mod tests {
         w.data
     }
 
+    /// `Identifier.STREAM_CODEC` parses with `Identifier.parse`, whose `isValidNamespace`
+    /// refuses the namespace `..`; a `..` path and a `.` namespace are valid identifiers.
+    #[test]
+    fn an_identifier_with_the_namespace_dot_dot_is_refused() {
+        let read = |text: &str| {
+            let mut w = Writer::new();
+            w.string(text);
+            Ident::read(&mut Reader::new(&w.data))
+        };
+        assert!(read("..:stone").is_err());
+        assert_eq!(read(".:stone").unwrap(), ".:stone");
+        assert_eq!(read("minecraft:..").unwrap(), "minecraft:..");
+        assert_eq!(read("stone").unwrap(), "minecraft:stone");
+    }
+
     #[test]
     fn varint_matches_vanilla_examples() {
         // wiki.vg / VarInt.java examples.
@@ -804,7 +859,10 @@ mod tests {
             [0x80, 0x80, 0x80, 0x80, 0x08]
         );
         for v in [0, 1, 127, 128, 16383, 16384, 2097151, 2097152, i32::MAX, -1] {
-            assert_eq!(varint_size(v), round::<i32, VarInt>(v).len());
+            assert_eq!(
+                sunrise_core::vanilla_bytes::varint_size(v),
+                round::<i32, VarInt>(v).len()
+            );
         }
         assert!(Reader::new(&[0xff; 6]).varint().is_err());
     }

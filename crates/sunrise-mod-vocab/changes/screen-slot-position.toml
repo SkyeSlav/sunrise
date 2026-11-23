@@ -1,3 +1,0 @@
-ids = ["method:prelude::ScreensClientHost::set_screen_slot_position"]
-why = "Adds ScreensClientHost::set_screen_slot_position (#1623): a mod moves a shown container slot of its open mod screen after the screen opens, relative to the screen's origin, and hover, highlight, contents, the empty-slot icon and recipe book ghost items follow from the next frame as for a vanilla slot there. It refuses (false) with no mod screen open, for an index the screen does not show and for a position that is not finite. Client-side only; nothing is sent."
-migrate = "Additive: nothing to change for existing mods."

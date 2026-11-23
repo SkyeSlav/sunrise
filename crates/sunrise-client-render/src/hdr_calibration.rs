@@ -322,12 +322,12 @@ impl Calibration {
             if !self.dragging {
                 return Outcome::Nothing;
             }
-            self.set(ui::slider_value(x, sw, cursor.0));
+            self.set(ui::slider_value(x, sw, cursor.0) as f32);
             return Outcome::Changed;
         }
         if over(cursor, l.slider) {
             self.dragging = true;
-            self.set(ui::slider_value(x, sw, cursor.0));
+            self.set(ui::slider_value(x, sw, cursor.0) as f32);
             return Outcome::Changed;
         }
         if over(cursor, l.cancel) {

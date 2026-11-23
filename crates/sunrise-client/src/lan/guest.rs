@@ -1,7 +1,6 @@
 //! A remote player: connection, position, chunk and entity views, and the
 //! player state (inventory, health, game mode) that the host's gameplay code
 //! operates on when it acts for them.
-use super::prediction::record::{Change, Record};
 use super::{Joined, PlayerSender, entity::Tracker};
 use crate::{
     items::ItemStack,
@@ -10,6 +9,7 @@ use crate::{
 };
 use std::{
     collections::VecDeque,
+    net::SocketAddr,
     sync::{
         Arc,
         atomic::{AtomicI32, AtomicU64, Ordering},
@@ -25,6 +25,7 @@ use sunrise_protocol::{
     },
     passage_sync,
 };
+use sunrise_world::component_value::consume_effects::Admitted;
 
 /// Unique across reconnects and server instances in this process, even when
 /// the protocol's container id wraps back to the same number.
@@ -127,12 +128,12 @@ struct GuestInit {
     conn: u32,
     uuid: u128,
     name: String,
-    properties: Vec<sunrise_protocol::packets::login::Property>,
+    properties: Vec<sunrise_core::profile::AccountProperty>,
     info: ClientInformation,
     brand: String,
     sender: PlayerSender,
     latency: Arc<AtomicI32>,
-    address: std::net::SocketAddr,
+    address: SocketAddr,
     expected: bool,
 }
 
@@ -157,13 +158,22 @@ impl InboxItem {
     }
 }
 
+/// The body state at a single accepted move, before later input or reports.
+#[derive(Clone, Copy, Debug)]
+pub struct GuestMove {
+    pub position: [f64; 3],
+    pub delta: [f64; 3],
+    pub on_ground: bool,
+    pub sneaking: bool,
+}
+
 pub struct Guest {
     /// Identity generation and journal binding travel with the actual player record.
     pub residency: crate::join_seq::residency::member::Member,
     pub kind: GuestKind,
     pub conn: u32,
-    /// The client's address (IP bans, `list`).
-    pub address: std::net::SocketAddr,
+    address: SocketAddr,
+    ip_address: String,
     /// The hub tick of the player's last action (ServerPlayer.lastActionTime),
     /// for player-idle-timeout.
     pub last_action_tick: u64,
@@ -189,6 +199,10 @@ pub struct Guest {
     pub center_sent: Option<(i32, i32)>,
     /// Why the connection closed (the console's "lost connection").
     pub left_reason: String,
+    /// The connections listed ahead of this player when the hub took them out of its list
+    /// (`Hub::remove_guest`): the game lists them again in that place while the mods hear them
+    /// leave.
+    pub listed_behind: Vec<u32>,
     /// A validated movement report the mods have not ruled on yet (`player_move`).
     pub pending_move: Option<super::hub::PendingMove>,
     /// A disconnect was started ([`Guest::begin_disconnect`]); the connection closes when the
@@ -197,7 +211,7 @@ pub struct Guest {
     pub uuid: u128,
     pub name: String,
     /// The profile's properties, for the player list (skins).
-    pub properties: Vec<sunrise_protocol::packets::login::Property>,
+    pub properties: Vec<sunrise_core::profile::AccountProperty>,
     pub entity_id: i32,
     pub sender: PlayerSender,
     pub latency: Arc<AtomicI32>,
@@ -262,8 +276,6 @@ pub struct Guest {
     /// Pending ClientboundPlayerPositionPacket id; movement is ignored until
     /// the client accepts it (ServerGamePacketListenerImpl.awaitingPositionFromClient).
     pub awaiting_teleport: Option<(i32, [f64; 3])>,
-    /// The teleport awaited keeps the player's motion (`Hub::teleport_keeping_motion`).
-    pub awaiting_keeps_motion: bool,
     /// Through a portal, until `LanHub::land` gives the client its position:
     /// the moves it sent from the old level are ignored, as they would be
     /// while it had a teleport to accept.
@@ -271,6 +283,10 @@ pub struct Guest {
     /// `landing` was set by a `tp` hold waiting for chunks (`Game::hold_for_chunks`), not by a portal.
     pub tp_held: bool,
     pub teleport_counter: i32,
+    /// The last server travel veto holds new position reports from this body.
+    pub(super) travel_vetoed: bool,
+    /// The velocity in a travel correction still awaiting confirmation.
+    pub(super) pending_travel_velocity: Option<[f64; 3]>,
     /// `ServerPlayer.getCamera() != this`.
     pub watching: bool,
     /// The hub tick the pending teleport was (re)sent on (awaitingTeleportTime).
@@ -303,21 +319,6 @@ pub struct Guest {
     /// A position move arrived since the client's last ClientTickEnd
     /// (receivedPositionThisTick): a second one is a protocol error.
     pub position_this_tick: bool,
-    /// Violation levels and the checks' state (the anticheat, when on).
-    pub anticheat: sunrise_anticheat::Player,
-    /// The client ticks the movement prediction plays again (only while it records).
-    pub record: Option<Box<Record>>,
-    /// Sprinting as the client's own commands left it (ServerboundPlayerCommandPacket's
-    /// START_SPRINTING and STOP_SPRINTING: LocalPlayer.wasSprinting), which the record's ticks take.
-    /// Not the server's player: a hit with extra knockback stops its sprint
-    /// (Player.causeExtraKnockback), the client's own `Player.attack` doesn't (a mob's `hurtClient`
-    /// is false), and once the server's flag reaches it LocalPlayer.aiStep starts the sprint again
-    /// while the sprint key is held, with nothing to say: wasSprinting never changed.
-    pub client_sprinting: bool,
-    /// The movement prediction's replay of the client's own moves (only while it runs).
-    pub replay: Option<Box<super::prediction::Replay>>,
-    /// What the server sent this tick that changes how the client moves (only while it records).
-    pub changes: std::sync::Mutex<Vec<Change>>,
     /// It accepted a move since the last entity range checks
     /// (ServerChunkCache.move), which then check all of its pairs again.
     pub moved: bool,
@@ -337,16 +338,10 @@ pub struct Guest {
     // Chunks.
     pub center: Option<(i32, i32)>,
     pub sent_chunks: crate::fast_hash::FxHashSet<(i32, i32)>,
-    /// Sent as far-ring columns and needing a near snapshot on promotion.
-    pub far_sent_chunks: crate::fast_hash::FxHashSet<(i32, i32)>,
     /// The near chunks the mods were told this player watches
     /// (`lan::chunk_watch`); empty while no mod listens.
     pub watched: crate::fast_hash::FxHashSet<(i32, i32)>,
     pub chunk_queue: Vec<(i32, i32)>,
-    /// The far ring's chunks still to send, past the view distance (`lan::far`), closest first.
-    pub far_queue: Vec<(i32, i32)>,
-    /// Where the bounded far-ring scan resumes; reset when the view changes.
-    pub far_cursor: usize,
     /// PlayerChunkSender: batches sent but not yet acknowledged, how many
     /// may be (1 until the client's first acknowledgement, then 10), the
     /// rate the client asks for and the chunks the next batch may hold.
@@ -357,6 +352,27 @@ pub struct Guest {
     /// A mod's boxes of its level in which the level's blocks don't stop it (#3717): its moves
     /// are checked through them, and its body takes them at each turn. Not saved.
     pub collision_exclusions: sunrise_world::collision_exclusions::CollisionExclusions,
+    /// The moving collider carrying the player, and where the last accepted report put its
+    /// feet in the collider's frame (`lan/hub/carried_check.rs`). Not saved.
+    pub on_collider: Option<sunrise_core::geometry::carried::Carried>,
+    /// What the player's client last said about the age of its copy of the collider
+    /// (`sunrise:carry_age`): the collider and the ticks. Used by the next report only.
+    pub carry_hint: Option<(u32, u8)>,
+    /// `ServerPlayer.requestedDebugSubscriptions`: the `debug_subscription` registry ids the
+    /// client asked for, kept whoever the player is (the permission check comes when they are read).
+    pub debug_subscriptions: Vec<i32>,
+    /// The tick a mod last displaced the player and how many ticks in a row it has (a development
+    /// build warns at 20; a release build never reads it).
+    pub displaced_streak: (u64, u32),
+    /// Where a rejected report puts the player back: the feet as the server last accepted
+    /// them, in the collider's frame, under the collider's transform now.
+    pub carry_correction: Option<[f64; 3]>,
+    /// Where the accepted report of a carried player is committed: its local position under
+    /// the collider's transform now, after the world's collision. Read by the same report.
+    pub carry_commit: Option<[f64; 3]>,
+    /// The reports rejected while a collider carried the player. They never count toward the
+    /// flying kick.
+    pub carry_rejects: u32,
     // Entities.
     pub tracker: Tracker,
     // Player state the gameplay code reads and writes.
@@ -369,8 +385,12 @@ pub struct Guest {
     /// until that body exists: the scale a player has set stays through a
     /// respawn and a change of level (#3684).
     pub carried_attributes: Option<sunrise_core::nbt::Tag>,
+    /// `Entity.tickCount` carried while the same player is between bodies.
+    /// A respawn clears it; a teleport or level change restores it to the new body.
+    pub carried_tick_count: Option<i32>,
     /// The accepted hit follows the same living body through a full teleport restore.
     pub carried_hit: Option<std::sync::Arc<crate::health::AcceptedHit>>,
+    pub carried_last_hurt_mob: Option<(u32, i32)>,
     /// The vehicle the player's file names (`ServerPlayer.saveParentVehicle`'s
     /// "RootVehicle"), for the ride to come back on the next login.
     pub saved_vehicle: Option<[i32; 4]>,
@@ -393,7 +413,9 @@ pub struct Guest {
     /// Converted tracking stacks, invalidated when their full source stack changes.
     pub equipment_cache: super::equipment_cache::EquipmentCache,
     pub selected: usize,
+    /// The active menu's cursor. The inventory menu keeps its own while another menu is open.
     pub carried: Option<ItemStack>,
+    pub(super) inactive_inventory_carried: Option<ItemStack>,
     /// The inventory menu's crafting grid (2x2) and its result
     /// (`InventoryMenu.craftSlots`, `resultSlots`), which the game computes.
     pub craft_grid: [Option<ItemStack>; 4],
@@ -424,9 +446,15 @@ pub struct Guest {
     pub sent_effects: Vec<SentEffect>,
     /// What the client believes the inventory menu holds (for change detection).
     pub menu_sent: Vec<Option<ItemStack>>,
+    /// `AbstractContainerMenu.remoteCarried` for the always-present inventory menu.
+    pub(super) inventory_carried_sent: Option<ItemStack>,
+    /// `remoteCarried` for the open window, including menus run by Game rather than Hub.
+    pub(super) open_carried_sent: Option<(i32, Option<ItemStack>)>,
     pub menu_state: i32,
     /// `lastSentHealth`, `lastSentFood` and `lastFoodSaturationZero`.
     pub sent_health: Option<(f32, i32, bool)>,
+    /// Whether the entity tracker has sent the initial health metadata to this player.
+    pub(super) sent_health_data: bool,
     pub sent_xp: Option<(f32, i32, i32)>,
     /// The air supply and absorption the player's client was last sent
     /// (Entity.DATA_AIR_SUPPLY_ID, Player.DATA_PLAYER_ABSORPTION_ID); their
@@ -448,14 +476,12 @@ pub struct Guest {
     pub last_death: Option<(String, [i32; 3])>,
     /// The last action sequence to acknowledge at the next tick (-1: none).
     pub ack_up_to: std::cell::Cell<i32>,
-    pub sent_selected: usize,
     /// Packets waiting for the player's next turn, and their bytes on the wire.
     pub inbox: VecDeque<InboxItem>,
     pub joined_tick: u64,
     pub ticks: u64,
-    /// The moves accepted since the game last looked (movement, on ground),
-    /// for ServerPlayer.doCheckFallDamage.
-    pub moves: Vec<([f64; 3], bool)>,
+    /// The moves accepted since the game last looked, for ServerPlayer.doCheckFallDamage.
+    pub moves: Vec<GuestMove>,
     /// Whether the guest was on the ground before the first of `moves`.
     pub moves_from_ground: bool,
     /// `ServerPlayer.lastKnownClientMovement`: the last move accepted from
@@ -470,6 +496,8 @@ pub struct Guest {
     /// Network guests reach this state after placeNewPlayer; fake actors do not
     /// log in. Online iterators must also check `participates_online`.
     pub placed: bool,
+    /// Removed from its level for `showEndCredits` or `PlayerList.respawn`, but still joined.
+    pub respawning: bool,
     /// The hand-over a proxy started by exporting it with `freeze`
     /// (`arrivals::Handover`): while it lasts, what it sends other than its
     /// acknowledgements is not acted on, and every export answers with the
@@ -527,6 +555,8 @@ pub struct Guest {
     pub attachments: sunrise_mod_runtime::attachments::ResidentAttachments,
     /// `ServerPlayer.seenCredits`: the end poem has been shown.
     pub seen_credits: bool,
+    /// `ServerPlayer.wonGame`: the End poem is showing until PERFORM_RESPAWN.
+    pub won_game: bool,
     /// `ServerPlayer.postEffects` and `postEffectsDirty`.
     pub post_effects: Vec<String>,
     pub post_effects_dirty: bool,
@@ -541,21 +571,93 @@ pub struct Guest {
     /// changed since (`progressChanged`).
     pub advancements: crate::advancements::Progress,
     pub advancements_loaded: bool,
+    /// Whether the first advancement snapshot reached this connection.
+    pub advancements_sent: bool,
     pub advancements_visible: Vec<bool>,
     pub advancements_changed: std::collections::BTreeSet<usize>,
     /// The server's scoreboard as this player's client has it (lan/scoreboard.rs).
     pub scoreboard: super::scoreboard::View,
+    /// Whether the joining sync (`PlayerList.updateEntireScoreboard`) went out.
+    pub scoreboard_synced: bool,
     /// Recipes unlocked since the client was last told
     /// (`ServerRecipeBook.addRecipes` sends them).
     pub recipes_unlocked: Vec<String>,
 }
 
 impl Guest {
+    /// The client's socket address, including the port.
+    pub fn address(&self) -> SocketAddr {
+        self.address
+    }
+
+    /// The client's IP address as text, without the port.
+    pub fn ip_address(&self) -> &str {
+        &self.ip_address
+    }
+
+    /// Replaces the address and keeps its cached IP text in sync.
+    pub fn set_address(&mut self, address: SocketAddr) {
+        self.address = address;
+        self.ip_address = address.ip().to_string();
+    }
+
     /// Allocate the next protocol window and a non-reusable menu identity.
     pub fn next_menu_window(&mut self) -> i32 {
         self.next_window = self.next_window % 100 + 1;
         self.menu_generation = menu_generation();
+        self.inactive_inventory_carried = self.carried.take();
+        self.open_carried_sent = Some((self.next_window, None));
         self.next_window
+    }
+
+    /// The wire window and its parked cursor, before a transactional replacement.
+    /// The guest's active cursor is saved with their inventory through its loan.
+    pub fn menu_before_replacement(&self) -> impl FnOnce(&mut Self) + use<> {
+        let menu = self.menu.clone();
+        let native = self.native_menu.clone();
+        let window = self.next_window;
+        let generation = self.menu_generation;
+        let inactive = self.inactive_inventory_carried.clone();
+        let sent = self.open_carried_sent.clone();
+        move |guest| {
+            guest.menu = menu;
+            guest.native_menu = native;
+            guest.next_window = window;
+            guest.menu_generation = generation;
+            guest.inactive_inventory_carried = inactive;
+            guest.open_carried_sent = sent;
+        }
+    }
+
+    /// Retire an open menu, returning its carried stack for `AbstractContainerMenu.removed`.
+    pub fn close_menu_cursor(&mut self, window: i32) -> Option<ItemStack> {
+        self.open_carried_sent.take_if(|(id, _)| *id == window)?;
+        std::mem::replace(&mut self.carried, self.inactive_inventory_carried.take())
+    }
+
+    pub fn take_inventory_carried(&mut self) -> Option<ItemStack> {
+        if self.open_carried_sent.is_some() {
+            self.inactive_inventory_carried.take()
+        } else {
+            self.carried.take()
+        }
+    }
+
+    /// `Player.remove` removes both menus, dropping both cursors.
+    pub fn take_menu_cursors(&mut self) -> impl Iterator<Item = ItemStack> {
+        [self.inactive_inventory_carried.take(), self.carried.take()]
+            .into_iter()
+            .flatten()
+    }
+
+    pub(super) fn acknowledge_menu_cursor(&mut self, window: i32, carried: Option<ItemStack>) {
+        if window == 0 {
+            self.inventory_carried_sent = carried;
+        } else if let Some((id, sent)) = &mut self.open_carried_sent
+            && *id == window
+        {
+            *sent = carried;
+        }
     }
 
     pub fn new(j: Joined, entity_id: i32, position: [f64; 3], view_distance: i32) -> Self {
@@ -647,6 +749,17 @@ impl Guest {
     pub fn is_fake(&self) -> bool {
         self.kind == GuestKind::Fake
     }
+    /// The connection has joined; unloading a body for respawn does not log it out.
+    pub fn joined(&self) -> bool {
+        self.placed || self.respawning
+    }
+    /// Whether this guest's sender still accepts play packets. Does not require a placed body.
+    pub fn play_connection_open(&self) -> bool {
+        !self.disconnect_pending
+            && self.left_reason.is_empty()
+            && !self.sender.payload_transport().closed()
+            && self.sender.is_live()
+    }
     /// Whether the guest is online and placed in level `dimension`: one of the
     /// level's players (`ServerLevel.players`).
     pub fn placed_in(&self, dimension: &str) -> bool {
@@ -667,7 +780,7 @@ impl Guest {
     }
     /// `ChunkMap.isChunkTracked`: whether the guest watches chunk `(x, z)` of
     /// level `dimension`, inside its view (`ChunkTrackingView.contains`) and
-    /// sent rather than pending. A far-ring column past the view is not tracked.
+    /// sent rather than pending.
     pub fn tracks_chunk(&self, dimension: &str, (x, z): (i32, i32)) -> bool {
         self.watches_level(dimension)
             && self.sent_chunks.contains(&(x, z))
@@ -688,6 +801,7 @@ impl Guest {
             kind,
             conn: j.conn,
             address: j.address,
+            ip_address: j.address.ip().to_string(),
             last_action_tick: 0,
             chat_index: 0,
             chain: Default::default(),
@@ -698,6 +812,7 @@ impl Guest {
             last_reported: (position, [0.0, 0.0]),
             center_sent: None,
             left_reason: String::new(),
+            listed_behind: Vec::new(),
             pending_move: None,
             disconnect_pending: false,
             uuid: j.uuid,
@@ -738,10 +853,11 @@ impl Guest {
             spawn: None,
             respawn_elsewhere: None,
             awaiting_teleport: None,
-            awaiting_keeps_motion: false,
             landing: false,
             tp_held: false,
             teleport_counter: 0,
+            travel_vetoed: false,
+            pending_travel_velocity: None,
             watching: false,
             teleport_tick: 0,
             first_good: position,
@@ -756,11 +872,6 @@ impl Guest {
             rests_on_ground: false,
             support_blocks_sent: 0,
             position_this_tick: false,
-            anticheat: Default::default(),
-            record: None,
-            client_sprinting: false,
-            replay: None,
-            changes: Default::default(),
             moved: false,
             tab_hidden: Default::default(),
             loaded: false,
@@ -768,20 +879,26 @@ impl Guest {
             load_timeout: CLIENT_LOADED_TIMEOUT,
             center: None,
             sent_chunks: Default::default(),
-            far_sent_chunks: Default::default(),
             watched: Default::default(),
             chunk_queue: Vec::new(),
-            far_queue: Vec::new(),
-            far_cursor: 0,
             unacknowledged: 0,
             max_unacknowledged: 1,
             chunks_per_tick: 9.0,
             batch_quota: 0.0,
             collision_exclusions: Default::default(),
+            on_collider: None,
+            carry_hint: None,
+            debug_subscriptions: Vec::new(),
+            displaced_streak: (0, 0),
+            carry_correction: None,
+            carry_commit: None,
+            carry_rejects: 0,
             tracker: Tracker::default(),
             motion: None,
             loaded_body: None,
             carried_attributes: None,
+            carried_tick_count: None,
+            carried_last_hurt_mob: None,
             carried_hit: None,
             saved_vehicle: None,
             logs_kept: None,
@@ -793,6 +910,7 @@ impl Guest {
             equipment_cache: Default::default(),
             selected: 0,
             carried: None,
+            inactive_inventory_carried: None,
             craft_grid: Default::default(),
             craft_result: None,
             ender_items: vec![None; 27],
@@ -809,8 +927,11 @@ impl Guest {
             modified_effect_particles: None,
             sent_effects: Vec::new(),
             menu_sent: vec![None; 46],
+            inventory_carried_sent: None,
+            open_carried_sent: None,
             menu_state: 0,
             sent_health: None,
+            sent_health_data: false,
             sent_xp: None,
             sent_air: (300, 0.0),
             sent_frozen: 0,
@@ -820,7 +941,6 @@ impl Guest {
             sent_stuck: (0, 0),
             last_death: None,
             ack_up_to: std::cell::Cell::new(-1),
-            sent_selected: 0,
             inbox: VecDeque::new(),
             joined_tick: 0,
             ticks: 0,
@@ -831,6 +951,7 @@ impl Guest {
             death_canceled: false,
             death_time: 0,
             placed: false,
+            respawning: false,
             handover: None,
             expected: j.expected,
             held: false,
@@ -852,15 +973,18 @@ impl Guest {
             saved: None,
             attachments: Default::default(),
             seen_credits: false,
+            won_game: false,
             post_effects: Vec::new(),
             post_effects_dirty: true,
             recipe_book: Default::default(),
             selected_tab: None,
             advancements: Default::default(),
             advancements_loaded: false,
+            advancements_sent: false,
             advancements_visible: Vec::new(),
             advancements_changed: Default::default(),
             scoreboard: Default::default(),
+            scoreboard_synced: false,
             recipes_unlocked: Vec::new(),
         }
     }
@@ -872,13 +996,80 @@ impl Guest {
         if !self.participates_online() {
             return;
         }
-        if self.record.is_some() {
-            self.note_change(packet);
-        }
         match packet.try_encode() {
             Ok(body) => self.sender.send(body),
             Err(error) => eprintln!("[lan] send refused: {error}"),
         }
+    }
+    /// Send the committed data that fits the negotiated blockless packet's index.
+    pub fn send_menu_data_snapshot(&self) {
+        let Some(menu) = &self.menu else { return };
+        for (index, &value) in (0..=u16::MAX).zip(&menu.blockless_data) {
+            self.send_menu_data(menu.window, index, value);
+        }
+        let wire_len = usize::from(u16::MAX) + 1;
+        if menu.blockless_data.len() > wire_len {
+            log::warn!(
+                "Sunrise: blockless menu window {} cannot sync data slots at indices {wire_len}..{} (DataSlot index max is {})",
+                menu.window,
+                menu.blockless_data.len(),
+                u16::MAX,
+            );
+        }
+    }
+
+    /// Commit one blockless-menu data slot. The caller resolves the window generation
+    /// and validates the index before supplying a write.
+    pub fn set_menu_data(&mut self, index: usize, value: i32) {
+        let Some(menu) = &mut self.menu else { return };
+        let slot = &mut menu.blockless_data[index];
+        if *slot != value {
+            *slot = value;
+            let window = menu.window;
+            if let Ok(wire_index) = u16::try_from(index) {
+                self.send_menu_data(window, wire_index, value);
+            } else {
+                log::warn!(
+                    "Sunrise: blockless menu window {window} cannot sync data slot {index} (DataSlot index max is {})",
+                    u16::MAX,
+                );
+            }
+        }
+    }
+
+    fn send_menu_data(&self, window: i32, index: u16, value: i32) {
+        use sunrise_protocol::menu_extra::{DATA_CHANNEL, DataSlot};
+        self.send(&play::Clientbound::CustomPayload(CustomPayload {
+            channel: DATA_CHANNEL.into(),
+            data: DataSlot {
+                window,
+                index,
+                value,
+            }
+            .encode(),
+        }));
+    }
+    /// Whether this connection reads collider sync (`sunrise:collider_sync`).
+    pub fn negotiated_collider_sync(&self) -> bool {
+        crate::raw_payloads::negotiated(
+            self.sender.payload_transport(),
+            sunrise_protocol::collider_sync::CHANNEL,
+        )
+    }
+    /// Whether this connection reads connection-group sync (`sunrise:connection_groups`).
+    pub fn negotiated_connection_groups(&self) -> bool {
+        crate::raw_payloads::negotiated(
+            self.sender.payload_transport(),
+            sunrise_protocol::connection_groups::CHANNEL,
+        )
+    }
+    /// Whether this connection reads general entity spawns (`sunrise:general_entity`): only
+    /// such a guest is paired with a mod's general row.
+    pub fn negotiated_general_entity(&self) -> bool {
+        crate::raw_payloads::negotiated(
+            self.sender.payload_transport(),
+            sunrise_protocol::general_entity::CHANNEL,
+        )
     }
     /// Whether the guest's play epoch has attachment sync negotiated (a vanilla client never
     /// offers it).
@@ -901,58 +1092,12 @@ impl Guest {
         }
     }
     /// [`Self::send`] of a `ChunksBiomes` whose body is `packet.encode()`, the same
-    /// bytes for each guest with those columns. `note_change` ignores that packet.
+    /// bytes for each guest with those columns.
     pub fn send_chunks_biomes_body(&self, body: Vec<u8>) {
         if !self.participates_online() {
             return;
         }
         self.sender.send(body);
-    }
-    /// What `packet` changes about how the client moves, for the prediction's replay: kept until
-    /// the tick's ping places it (`Hub::anticheat_ping`).
-    fn note_change(&self, packet: &play::Clientbound) {
-        use play::Clientbound as C;
-        let own = |id: i32| id == self.entity_id;
-        let change = match packet {
-            C::SetEntityMotion(p) if own(p.id) => {
-                Change::Velocity(sunrise_protocol::buf::LpVec3::quantize(p.velocity))
-            }
-            C::Explode(p) => match p.knockback {
-                Some(k) => Change::Knockback(k),
-                None => return,
-            },
-            C::UpdateAttributes(p) if own(p.id) => {
-                let speed = self.motion.as_ref().and_then(|m| {
-                    m.attributes
-                        .key("minecraft:movement_speed")
-                        .map(|k| k.attribute().registry_id())
-                });
-                let sprint = p
-                    .values
-                    .iter()
-                    .find(|a| Some(a.attribute) == speed)
-                    .map(|a| a.modifiers.iter().any(|m| m.id == "minecraft:sprinting"));
-                Change::Attributes { sprint }
-            }
-            // Entity.DATA_SHARED_FLAGS_ID: its sprinting bit (0x08).
-            C::SetEntityData(p) if own(p.id) => match p.values.iter().find(|v| v.0 == 0) {
-                Some(&(_, _, sunrise_protocol::entity_data::Value::Byte(flags))) => {
-                    Change::Sprinting(flags & 0x08 != 0)
-                }
-                _ => return,
-            },
-            C::UpdateMobEffect(p) if own(p.id) => Change::Effects,
-            C::RemoveMobEffect(p) if own(p.id) => Change::Effects,
-            C::PlayerAbilities(_) => Change::Abilities,
-            // The chest slot (InventoryMenu's slot 6): a glider.
-            C::ContainerSetSlot(p) if p.container == 0 && p.slot == 6 => Change::Abilities,
-            C::ContainerSetContent(p) if p.container == 0 => Change::Abilities,
-            _ => return,
-        };
-        self.changes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(change);
     }
     /// `Entity.stopRiding`: out of the vehicle it rode.
     pub fn stop_riding(&mut self) {
@@ -1067,15 +1212,22 @@ impl Guest {
     /// same player in another level (`restore_all`), only their base values
     /// after a death. The old body, for what else it hands over.
     pub fn new_body(&mut self, restore_all: bool) -> Option<Box<PlayerMotion>> {
+        self.travel_vetoed = false;
         if !restore_all {
+            self.carried_tick_count = None;
             self.carried_hit = None;
+            self.carried_last_hurt_mob = None;
             self.death_canceled = false;
             self.death_time = 0;
         }
         let mut m = self.motion.take()?;
         self.carried_attributes = Some(m.carried_attributes(restore_all));
         if restore_all {
+            self.carried_tick_count = Some(m.health.tick_count);
             self.carried_hit = m.health.accepted_hit.take();
+            self.carried_last_hurt_mob = m.health.last_hurt_mob.take();
+        } else {
+            self.carried_tick_count = None;
         }
         Some(m)
     }
@@ -1171,7 +1323,9 @@ impl Guest {
         let slot = 36 + self.selected;
         self.menu_sent[slot] = self.menu_slot(slot);
         let told = self.inventory.get(self.selected).cloned().flatten();
-        if let Some(m) = self.menu.as_mut() {
+        if let Some(m) = self.menu.as_mut()
+            && m.player_slots() != 0
+        {
             let at = m.size + 27 + self.selected;
             if m.sent.len() <= at {
                 m.sent.resize(at + 1, None);
@@ -1246,7 +1400,7 @@ fn sign_text_bytes(text: &sunrise_core::nbt::Tag) -> Option<Vec<u8>> {
         Some(Tag::List(lines)) if lines.len() == 4 => Some(lines),
         _ => None,
     };
-    let mut w = sunrise_protocol::buf::Writer::new();
+    let mut w = ::sunrise_core::vanilla_bytes::Writer::new();
     lines("messages")?.iter().for_each(|line| w.nbt(line));
     let filtered = lines("filtered_messages");
     w.bool(filtered.is_some());
@@ -1268,7 +1422,22 @@ pub fn stack_to_network(
     synced_id: impl Fn(&str, &str) -> Option<i32>,
     s: &Option<ItemStack>,
 ) -> Option<Stack> {
-    Some(network_stack(&item_id, &synced_id, s.as_ref()?))
+    stack_to_network_projecting(item_id, synced_id, s, &|_| ())
+}
+
+/// Send the stack and expose effects materialized during this encoding to its hash input.
+pub fn stack_to_network_projecting(
+    item_id: impl Fn(&str) -> i32,
+    synced_id: impl Fn(&str, &str) -> Option<i32>,
+    s: &Option<ItemStack>,
+    projected: &dyn Fn(&Admitted),
+) -> Option<Stack> {
+    Some(network_stack_projecting(
+        &item_id,
+        &synced_id,
+        s.as_ref()?,
+        projected,
+    ))
 }
 /// `ProvidesTrimMaterial.STREAM_CODEC`, `ProvidesBannerPatterns.STREAM_CODEC`,
 /// `AdventureModePredicate.STREAM_CODEC` and `ItemAttributeModifiers.STREAM_CODEC`:
@@ -1280,7 +1449,7 @@ fn builtin_component(
     ids: &dyn Fn(&str, &str) -> Option<i32>,
 ) -> Option<sunrise_protocol::item::Component> {
     use sunrise_core::nbt::Tag;
-    use sunrise_protocol::buf::Writer;
+    use sunrise_core::vanilla_bytes::Writer;
     let mut w = Writer::new();
     match name {
         "minecraft:attribute_modifiers" => {
@@ -1348,7 +1517,7 @@ fn builtin_component(
 fn write_tool(
     value: &sunrise_core::nbt::Tag,
     ids: &dyn Fn(&str, &str) -> Option<i32>,
-    w: &mut sunrise_protocol::buf::Writer,
+    w: &mut ::sunrise_core::vanilla_bytes::Writer,
 ) -> Option<()> {
     use sunrise_core::nbt::Tag;
     use sunrise_world::datafix::dynamic::{as_bool_opt, as_number};
@@ -1396,7 +1565,7 @@ fn write_holder_set(
     registry: &str,
     value: &sunrise_core::nbt::Tag,
     ids: &dyn Fn(&str, &str) -> Option<i32>,
-    w: &mut sunrise_protocol::buf::Writer,
+    w: &mut ::sunrise_core::vanilla_bytes::Writer,
 ) -> Option<()> {
     use sunrise_core::nbt::Tag;
     if let Tag::String(name) = value {
@@ -1440,7 +1609,7 @@ fn write_holder_set(
 fn write_block_predicate(
     value: &sunrise_core::nbt::Tag,
     ids: &dyn Fn(&str, &str) -> Option<i32>,
-    w: &mut sunrise_protocol::buf::Writer,
+    w: &mut ::sunrise_core::vanilla_bytes::Writer,
 ) -> Option<()> {
     use sunrise_core::nbt::Tag;
     let Tag::Compound(map) = value else {
@@ -1541,7 +1710,7 @@ fn write_block_predicate(
 fn write_matchers(
     value: &sunrise_core::nbt::Tag,
     ids: &dyn Fn(&str, &str) -> Option<i32>,
-    w: &mut sunrise_protocol::buf::Writer,
+    w: &mut ::sunrise_core::vanilla_bytes::Writer,
 ) -> Option<()> {
     use sunrise_core::nbt::Tag;
     for (field, expected, registry) in [
@@ -1649,18 +1818,54 @@ fn trim_component(
         (material, pattern) => Component::TrimDirect { material, pattern },
     })
 }
+/// Drop prototype-equivalent entries from an encoded live stack. Nested templates
+/// keep their own patches, even when an entry equals the item's prototype.
+pub fn canonicalize_stack_patch(
+    wire: &mut Stack,
+    source: &ItemStack,
+    items: &crate::items::Items,
+    builtin: &sunrise_protocol::registry::Builtin,
+) {
+    if wire.added.is_empty() && wire.removed.is_empty() {
+        return;
+    }
+    let keep = crate::item_data::component_patch_filter(source, items);
+    let component_types = builtin.get("minecraft:data_component_type");
+    let retain = |id, removed| {
+        component_types
+            .and_then(|types| types.name(id))
+            .or_else(|| sunrise_protocol::item::custom::name(id))
+            .is_none_or(|name| keep(&name.into(), removed))
+    };
+    wire.added.retain(|(id, _)| retain(*id, false));
+    wire.removed.retain(|id| retain(*id, true));
+}
+
 /// Convert a borrowed item template with the same component codecs as inventory slots.
 pub(super) fn network_stack(
     item_id: &dyn Fn(&str) -> i32,
     synced_id: &dyn Fn(&str, &str) -> Option<i32>,
     s: &ItemStack,
 ) -> Stack {
+    network_stack_projecting(item_id, synced_id, s, &|_| ())
+}
+
+fn network_stack_projecting(
+    item_id: &dyn Fn(&str) -> i32,
+    synced_id: &dyn Fn(&str, &str) -> Option<i32>,
+    s: &ItemStack,
+    projected: &dyn Fn(&Admitted),
+) -> Stack {
     let enchantment_id = |name: &str| synced_id("minecraft:enchantment", name);
     let mut stack = Stack::new(item_id(&s.item), s.count as i32);
-    if s.damage > 0 {
+    if stack.item <= 0 {
+        log::warn!("Cannot send item {}: no registered network id", s.item);
+    }
+    // Send the stack's own damage, including an explicit zero, not the prototype.
+    if s.carries_component(None, "minecraft:damage") {
         stack.added.push((
             sunrise_protocol::item::component::DAMAGE,
-            sunrise_protocol::item::Component::Int(s.damage as i32),
+            sunrise_protocol::item::Component::Int(s.effective_damage(None)),
         ));
     }
     let enchantments: Vec<(i32, i32)> = s
@@ -1754,30 +1959,6 @@ pub(super) fn network_stack(
                 stack.added.push((kind, component));
             }
         }
-        for (name, value) in d.preserved_components() {
-            let (removed, kind) = match name.strip_prefix('!') {
-                Some(kind) => (true, kind),
-                None => (false, name.as_str()),
-            };
-            if removed {
-                // Resolve every removal through the peer's canonical registry, including
-                // built-ins without a modelled value. Earlier codec branches may have
-                // already recorded this removal.
-                if let Some(id) = synced_id("minecraft:data_component_type", kind)
-                    && !stack.removed.contains(&id)
-                {
-                    stack.removed.push(id);
-                }
-            } else if sunrise_protocol::item::custom::id(kind).is_some() {
-                if let Some(id) = synced_id("minecraft:data_component_type", kind) {
-                    stack
-                        .added
-                        .push((id, sunrise_protocol::item::Component::Nbt(value.clone())));
-                } else {
-                    log::warn!("Cannot send custom component {kind} to this peer");
-                }
-            }
-        }
         if let Some(rgb) = d.dyed_color {
             stack.added.push((
                 sunrise_protocol::item::component::DYED_COLOR,
@@ -1791,21 +1972,12 @@ pub(super) fn network_stack(
                 .added
                 .push((sunrise_protocol::item::component::TRIM, component));
         }
-        // BannerPatternLayers: each pattern a reference into the synced registry;
-        // a layer that has none leaves the stack without the component. An
-        // ominous banner made by the raid keeps only its flag, so its layers
-        // are the ones the NBT encoder synthesises from it.
-        let patterns: Vec<(&str, &str)> = if d.ominous_banner && d.banner_patterns.is_empty() {
-            crate::item_data::OMINOUS_LAYERS.to_vec()
-        } else {
-            d.banner_patterns
-                .iter()
-                .map(|layer| (&*layer.pattern, &*layer.color))
-                .collect()
-        };
-        let layers: Option<Vec<(i32, i32)>> = patterns
+        // A pattern without a synced registry id leaves out the component.
+        let layers: Option<Vec<(i32, i32)>> = d
+            .banner_layers()
             .iter()
-            .map(|(pattern, color)| {
+            .map(|layer| {
+                let (pattern, color) = (&*layer.pattern, &*layer.color);
                 let name = if pattern.contains(':') {
                     pattern.to_string()
                 } else {
@@ -1817,32 +1989,36 @@ pub(super) fn network_stack(
                 ))
             })
             .collect();
-        if let Some(layers) = layers.filter(|layers| !layers.is_empty()) {
+        if let Some(layers) = layers.filter(|_| d.sets_component("minecraft:banner_patterns")) {
             stack.added.push((
                 sunrise_protocol::item::component::BANNER_PATTERNS,
                 sunrise_protocol::item::Component::BannerPatterns(layers),
             ));
         }
-        // The raid captain's banner: `Raid.getBannerComponentPatch` gives it
-        // the ominous name, rarity and hidden layers, which `StackData` keeps
-        // as `ominous_banner` rather than in `other` (#12530).
-        if d.ominous_banner {
-            stack.added.push((
-                sunrise_protocol::item::component::ITEM_NAME,
-                sunrise_protocol::item::Component::Text(sunrise_core::nbt::Tag::compound([(
-                    "translate",
-                    sunrise_core::nbt::Tag::String("block.minecraft.ominous_banner".into()),
-                )])),
-            ));
-            stack.added.push((
-                sunrise_protocol::item::component::RARITY,
-                sunrise_protocol::item::Component::Int(1),
-            ));
+        if let Some(display @ sunrise_core::nbt::Tag::Compound(_)) =
+            d.saved_other("minecraft:tooltip_display")
+        {
+            let mut seen = std::collections::HashSet::new();
+            let hidden = match display.get("hidden_components") {
+                Some(sunrise_core::nbt::Tag::List(entries)) => entries
+                    .iter()
+                    .filter_map(|tag| {
+                        let name = crate::save::text(Some(tag))?;
+                        let name = sunrise_core::identifier::Identifier::parse(&name).ok()?;
+                        synced_id("minecraft:data_component_type", &name.to_string())
+                    })
+                    .filter(|id| seen.insert(*id))
+                    .collect(),
+                _ => Vec::new(),
+            };
             stack.added.push((
                 sunrise_protocol::item::component::TOOLTIP_DISPLAY,
                 sunrise_protocol::item::Component::TooltipDisplay {
-                    hide: false,
-                    hidden: vec![sunrise_protocol::item::component::BANNER_PATTERNS],
+                    hide: display
+                        .get("hide_tooltip")
+                        .and_then(crate::item_data::component_bool)
+                        .unwrap_or(false),
+                    hidden,
                 },
             ));
         }
@@ -1908,22 +2084,6 @@ pub(super) fn network_stack(
             ));
         }
         stack.added.extend(firework_components(d));
-        // A goat horn's instrument, by its `minecraft:instrument` id.
-        if let Some(id) = d
-            .other("minecraft:instrument")
-            .and_then(|t| crate::save::text(Some(t)))
-            .and_then(|name| {
-                synced_id(
-                    "minecraft:instrument",
-                    &sunrise_world::datafix::dynamic::namespaced(&name),
-                )
-            })
-        {
-            stack.added.push((
-                sunrise_protocol::item::component::INSTRUMENT,
-                sunrise_protocol::item::Component::Instrument(id),
-            ));
-        }
         // The compass's lodestone target.
         if let Some(t) = d.other("minecraft:lodestone_tracker") {
             let target = t.get("target").and_then(|g| {
@@ -1937,22 +2097,6 @@ pub(super) fn network_stack(
             stack.added.push((
                 sunrise_protocol::item::component::LODESTONE_TRACKER,
                 sunrise_protocol::item::Component::LodestoneTracker { target, tracked },
-            ));
-        }
-        // PotionContents: the potion by its `minecraft:potion` id.
-        if let Some(id) = (d.potion.as_deref()).and_then(|potion| {
-            synced_id(
-                "minecraft:potion",
-                &sunrise_world::datafix::dynamic::namespaced(potion),
-            )
-        }) {
-            stack.added.push((
-                sunrise_protocol::item::component::POTION_CONTENTS,
-                sunrise_protocol::item::Component::Potion {
-                    potion: Some(id),
-                    color: None,
-                    rest: Vec::new(),
-                },
             ));
         }
         // SuspiciousStewEffects: each effect by its `minecraft:mob_effect` id.
@@ -1975,7 +2119,7 @@ pub(super) fn network_stack(
             let charged = d
                 .charged
                 .iter()
-                .map(|c| network_stack(item_id, synced_id, c))
+                .map(|c| network_stack_projecting(item_id, synced_id, c, projected))
                 .collect();
             stack.added.push((
                 sunrise_protocol::item::component::CHARGED_PROJECTILES,
@@ -1990,12 +2134,17 @@ pub(super) fn network_stack(
             let slots: Vec<(i32, Stack)> = d
                 .container
                 .iter()
-                .map(|(slot, s)| (i32::from(*slot), network_stack(item_id, synced_id, s)))
+                .map(|(slot, s)| {
+                    (
+                        i32::from(*slot),
+                        network_stack_projecting(item_id, synced_id, s, projected),
+                    )
+                })
                 .collect();
             // The saved list names only the filled slots; the codec counts them
             // all, from the first to the last that holds one.
             let size = slots.iter().map(|(slot, _)| slot + 1).max().unwrap_or(0);
-            let mut w = sunrise_protocol::buf::Writer::new();
+            let mut w = ::sunrise_core::vanilla_bytes::Writer::new();
             w.varint(size);
             for slot in 0..size {
                 let stack = slots.iter().find(|(at, _)| *at == slot).map(|(_, s)| s);
@@ -2017,7 +2166,7 @@ pub(super) fn network_stack(
             let contents = d
                 .bundle_contents
                 .iter()
-                .map(|c| network_stack(item_id, synced_id, c))
+                .map(|c| network_stack_projecting(item_id, synced_id, c, projected))
                 .collect();
             stack.added.push((
                 sunrise_protocol::item::component::BUNDLE_CONTENTS,
@@ -2088,7 +2237,7 @@ pub(super) fn network_stack(
         stack.removed.push(sunrise_protocol::item::component::LORE);
     }
     // The stack's custom rarity ("common", "uncommon", "rare", "epic" or 0..=3).
-    if let Some(r) = s.data().and_then(|d| d.other("minecraft:rarity")) {
+    if let Some(r) = s.data().and_then(|d| d.saved_other("minecraft:rarity")) {
         let index = match r {
             sunrise_core::nbt::Tag::String(s) => match &*s.to_string_lossy() {
                 "common" => Some(0),
@@ -2134,7 +2283,7 @@ pub(super) fn network_stack(
         ));
     }
     // The component as loaded, so a translatable name stays one.
-    if let Some(name) = s.data().and_then(|d| d.other("minecraft:item_name")) {
+    if let Some(name) = s.data().and_then(|d| d.saved_other("minecraft:item_name")) {
         stack.added.push((
             sunrise_protocol::item::component::ITEM_NAME,
             sunrise_protocol::item::Component::Text(name.clone()),
@@ -2168,6 +2317,112 @@ pub(super) fn network_stack(
             sunrise_protocol::item::component::CUSTOM_MODEL_DATA,
             custom_model_data(t),
         ));
+    }
+    if let Some(d) = s.data() {
+        use sunrise_protocol::item::persistent;
+
+        let ids = |registry: &str, name: &str| {
+            if registry == "minecraft:item" {
+                let id = item_id(name);
+                (id > 0).then_some(id)
+            } else {
+                synced_id(registry, name)
+            }
+        };
+        let mut encode_saved = |name: &str, value: &sunrise_core::nbt::Tag| {
+            let key = name.strip_prefix('!').unwrap_or(name);
+            let kind = persistent::component_id(key);
+            if key != name {
+                // The peer registry can name a removal even when we have no value codec.
+                let peer_kind = synced_id("minecraft:data_component_type", key)
+                    .or_else(|| kind.filter(|&id| id < persistent::BUILTIN_COMPONENT_COUNT as i32));
+                if let Some(id) = peer_kind
+                    && !stack.removed.contains(&id)
+                {
+                    stack.removed.push(id);
+                }
+                return;
+            }
+            let Some(kind) = kind else { return };
+            if kind >= persistent::BUILTIN_COMPONENT_COUNT as i32
+                && synced_id("minecraft:data_component_type", key) != Some(kind)
+            {
+                // The peer did not negotiate this native component.
+                return;
+            }
+            let encoded = if crate::item_data::StackData::CONSUME_EFFECT_COMPONENTS.contains(&key) {
+                persistent::component_from_admitted_tag(
+                    kind,
+                    value,
+                    &ids,
+                    &|tag| d.find_admitted_consume_effect(&|effect| effect.matches_tag(tag)),
+                    projected,
+                )
+            } else {
+                persistent::component_from_tag(kind, value, &ids)
+            };
+            match encoded {
+                Ok(component) => stack.added.push((kind, component)),
+                Err(error) => {
+                    log::warn!("Cannot send component {name} on {}: {error}", s.item);
+                }
+            }
+        };
+        // Consumable is modeled separately from the preserved fields, but its
+        // saved value is available by reference alongside those overrides.
+        if let Some(value) = d.other("minecraft:consumable") {
+            encode_saved("minecraft:consumable", value);
+        }
+        for (name, value) in d.preserved_components() {
+            // These fields have specialized encoders above; only the other
+            // saved overrides go through the general protocol codec.
+            if !matches!(
+                name.as_str(),
+                "minecraft:enchantment_glint_override"
+                    | "minecraft:max_damage"
+                    | "minecraft:unbreakable"
+                    | "minecraft:kinetic_weapon"
+                    | "minecraft:provides_trim_material"
+                    | "minecraft:provides_banner_patterns"
+                    | "minecraft:can_place_on"
+                    | "minecraft:can_break"
+                    | "minecraft:tool"
+                    | "minecraft:attribute_modifiers"
+                    | "minecraft:tooltip_display"
+                    | "minecraft:painting/variant"
+                    | "minecraft:sign_text_front"
+                    | "minecraft:sign_text_back"
+                    | "minecraft:lodestone_tracker"
+                    | "minecraft:custom_name"
+                    | "minecraft:lore"
+                    | "minecraft:rarity"
+                    | "minecraft:max_stack_size"
+                    | "minecraft:item_name"
+                    | "minecraft:item_model"
+                    | "minecraft:custom_data"
+                    | "minecraft:custom_model_data"
+                    | "minecraft:consumable"
+                    | "minecraft:potion_contents"
+                    | "minecraft:pot_decorations"
+            ) {
+                encode_saved(name, value);
+            }
+        }
+        if let Some(sunrise_core::nbt::Tag::Compound(entries)) =
+            crate::item_data::encode_extra_components_matching(s, |name| {
+                matches!(
+                    name,
+                    "minecraft:potion_contents" | "minecraft:pot_decorations"
+                )
+            })
+        {
+            for (name, value) in &entries {
+                let name = name.to_string_lossy();
+                if !name.starts_with('!') {
+                    encode_saved(&name, value);
+                }
+            }
+        }
     }
     stack
 }
@@ -2231,7 +2486,8 @@ pub fn within_block_range(eye: [f64; 3], range: f64, pos: [i32; 3]) -> bool {
 mod tests {
     use super::*;
     use sunrise_core::nbt::Tag;
-    use sunrise_protocol::buf::{Codec, Reader, Writer};
+    use sunrise_core::vanilla_bytes::Writer;
+    use sunrise_protocol::buf::{Codec, Reader};
     use sunrise_protocol::item::{Component, component};
 
     #[test]

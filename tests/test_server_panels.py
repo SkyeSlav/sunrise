@@ -176,8 +176,8 @@ class AmpTests(unittest.TestCase):
         self.assertEqual(self.kvp["App.ExitString"], "stop")
 
     def test_the_console_patterns_match_what_the_server_logs(self):
-        done = re.search(r'"(Done \(\{:\.3\}s\)! For help, type \\"help\\")"', DEDICATED_RS).group(1)
-        line = "[12:00:00] [Server thread/INFO]: " + done.replace("{:.3}", "4.217").replace('\\"', '"')
+        done = re.search(r'"(Done \(\{seconds\}s\)! For help, type \\"help\\")"', DEDICATED_RS).group(1)
+        line = "[12:00:00] [Server thread/INFO]: " + done.format(seconds="4.217").replace('\\"', '"')
         self.assertRegex(line, self.kvp["Console.AppReadyRegex"])
         self.assertNotRegex("[12:00:00] [Server thread/INFO]: Preparing spawn area", self.kvp["Console.AppReadyRegex"])
         for key, said in (("Console.UserJoinRegex", "joined"), ("Console.UserLeaveRegex", "left")):

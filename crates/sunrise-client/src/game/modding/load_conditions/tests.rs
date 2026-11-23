@@ -1,4 +1,5 @@
-use mod_api::__private::game::RegistrationContextNew;
+use crate::game::native_entity_refs::tests::run_fresh_cases;
+use mod_api::__private::{game::RegistrationContextNew, reload::ReloadStageError};
 use mod_api::{
     ConditionError, Hooks, Identifier, LoadCondition, ModEntry, RegisterLoadConditionsEvent,
     RegistrationContext,
@@ -71,7 +72,7 @@ impl Hooks for Registrant {
             ),
             (
                 "nested",
-                json!({"type":"neoforge:and","values":[{"type":"neoforge:true"},{"type":"neoforge:or","values":[{"type":"testmod:flag","value":true}]}]}),
+                json!({"type":"neoforge:and","values":[{"type":"neoforge:always"},{"type":"neoforge:or","values":[{"type":"testmod:flag","value":true}]}]}),
             ),
         ] {
             let mut recipe = json!({
@@ -142,6 +143,13 @@ fn malformed_known_recipe_stops_dedicated_world_startup() {
 #[test]
 #[ignore = "daily"]
 fn load_conditions_recipe_reload_counts_and_failed_candidates_keep_old_recipes() {
+    if run_fresh_cases(
+        "game::load_conditions::tests::load_conditions_recipe_reload_counts_and_failed_candidates_keep_old_recipes",
+        "SUNRISE_LOAD_CONDITIONS_RELOAD_CHILD",
+        &["reload"],
+    ) {
+        return;
+    }
     let scratch = tempfile::tempdir().unwrap();
     let count = Arc::new(AtomicUsize::new(0));
     let mode = Arc::new(AtomicUsize::new(0));
@@ -238,7 +246,7 @@ fn load_conditions_recipe_reload_counts_and_failed_candidates_keep_old_recipes()
                     .iter()
                     .map(|(id, _)| id.clone())
                     .collect();
-                let old_generation = game.recipes().by_type["minecraft:crafting_shapeless"].clone();
+                let old_generation = game.recipes().by_type["minecraft:crafting"].clone();
                 let grid = [Some(sunrise_client::items::ItemStack::new(
                     "minecraft:flint",
                     1,
@@ -249,15 +257,18 @@ fn load_conditions_recipe_reload_counts_and_failed_candidates_keep_old_recipes()
                     (3, "handler panicked"),
                     (6, "invalid result"),
                     (7, "ingredient kind testmod:unregistered"),
-                    (8, "invalid ingredients or required fields"),
+                    (8, "invalid ingredient: 42"),
                 ] {
                     mode.store(bad, Ordering::SeqCst);
-                    let error = format!(
-                        "{:?}",
-                        game.reload_datapacks(true, &game.level.enabled_features.clone())
-                            .err()
-                            .unwrap()
-                    );
+                    let error = game
+                        .reload_datapacks(true, &game.level.enabled_features.clone())
+                        .err()
+                        .unwrap();
+                    let error = match (bad, error) {
+                        (8, ReloadStageError::DataSource(message)) => message,
+                        (8, other) => panic!("expected a recipe data-source error, got {other:?}"),
+                        (_, other) => format!("{other:?}"),
+                    };
                     assert!(
                         error.contains("data/testmod/recipe/enabled.json"),
                         "{error}"
@@ -266,7 +277,7 @@ fn load_conditions_recipe_reload_counts_and_failed_candidates_keep_old_recipes()
                     if bad == 2 || bad == 3 {
                         assert!(error.contains("testmod:flag"), "{error}");
                     }
-                    if bad == 1 || bad == 3 {
+                    if bad == 3 {
                         assert!(error.contains("mod testmod"), "{error}");
                     }
                     assert_eq!(
@@ -280,7 +291,7 @@ fn load_conditions_recipe_reload_counts_and_failed_candidates_keep_old_recipes()
                     assert!(game.recipes().recipe("testmod:enabled").is_some());
                     assert!(Arc::ptr_eq(
                         &old_generation,
-                        &game.recipes().by_type["minecraft:crafting_shapeless"],
+                        &game.recipes().by_type["minecraft:crafting"],
                     ));
                     assert!(game.recipes().recipe_matches(
                         &game.loop_context,
@@ -327,46 +338,185 @@ fn load_conditions_recipe_reload_counts_and_failed_candidates_keep_old_recipes()
                 assert!(game.recipes().recipe("testmod:content").is_some());
                 assert!(!Arc::ptr_eq(
                     &old_generation,
-                    &game.recipes().by_type["minecraft:crafting_shapeless"],
+                    &game.recipes().by_type["minecraft:crafting"],
                 ));
             });
         },
     );
 }
-struct Duplicate;
+struct NamedCondition(&'static str);
 #[mod_api::__subscriptions]
-impl Hooks for Duplicate {
+impl Hooks for NamedCondition {
     fn register_load_conditions(
         &self,
         _: &RegistrationContext,
         event: &mut RegisterLoadConditionsEvent<'_>,
     ) {
         let _ = event.conditions.register(
-            Identifier::parse("testmod:flag").unwrap(),
+            Identifier::parse(self.0).unwrap(),
             Flag(Arc::default(), Arc::default()),
         );
     }
 }
 #[test]
-fn load_conditions_registration_refuses_duplicates_and_foreign_namespace_even_if_ignored() {
-    for owners in [vec!["testmod", "intruder"], vec!["intruder"]] {
-        let entries: Vec<_> = owners
-            .iter()
-            .map(|owner| ModEntry::new(owner, Box::new(Duplicate)))
-            .collect();
-        mod_platform::testing::with_mods(entries.into(), || {
-            let mut registrar = mod_api::LoadConditionDeclarations::default();
-            mod_api::dispatch_register_load_conditions(&RegistrationContext::new(), &mut registrar);
-            let error = registrar.finish().err().unwrap().message;
-            assert!(error.contains("testmod:flag"), "{error}");
-            assert!(error.contains("intruder"), "{error}");
-            if owners.len() == 2 {
-                assert!(error.contains("both testmod and intruder"), "{error}");
-            } else {
-                assert!(error.contains("outside its namespace"), "{error}");
+fn load_conditions_registration_allows_shared_namespaces() {
+    mod_platform::testing::with_mods(
+        vec![
+            ModEntry::new("a", Box::new(NamedCondition("a:y"))),
+            ModEntry::new("b", Box::new(NamedCondition("a:x"))),
+        ]
+        .into(),
+        || {
+            let mut registrar = mod_api::LoadConditionDeclarations::new(
+                sunrise_world::conditions::is_builtin_condition,
+            );
+            mod_api::dispatch_register_load_conditions(&RegistrationContext::new(), |listen| {
+                registrar.register_listener(listen)
+            });
+            let entries = registrar.finish().unwrap();
+            assert_eq!(entries.len(), 2);
+            for (name, owner, value) in [("a:y", "a", true), ("a:x", "b", false)] {
+                let (registered_owner, handler) =
+                    entries.get(&Identifier::parse(name).unwrap()).unwrap();
+                assert_eq!(registered_owner, owner);
+                assert_eq!(handler.test(&json!({"value": value})), Ok(value));
             }
-        });
+        },
+    );
+}
+
+#[test]
+fn load_conditions_registration_refuses_duplicate_ids_even_if_ignored() {
+    mod_platform::testing::with_mods(
+        vec![
+            ModEntry::new("a", Box::new(NamedCondition("a:x"))),
+            ModEntry::new("b", Box::new(NamedCondition("a:x"))),
+        ]
+        .into(),
+        || {
+            let mut registrar = mod_api::LoadConditionDeclarations::new(
+                sunrise_world::conditions::is_builtin_condition,
+            );
+            mod_api::dispatch_register_load_conditions(&RegistrationContext::new(), |listen| {
+                registrar.register_listener(listen)
+            });
+            let error = registrar.finish().err().unwrap().message;
+            assert!(error.contains("condition a:x"), "{error}");
+            assert!(error.contains("both a and b"), "{error}");
+        },
+    );
+}
+
+#[test]
+fn a_panicking_load_condition_registrar_leaves_neither_handlers_nor_errors() {
+    use std::sync::atomic::AtomicBool;
+
+    struct Failing(Arc<AtomicBool>);
+    #[mod_api::__subscriptions]
+    impl Hooks for Failing {
+        fn register_load_conditions(
+            &self,
+            _: &RegistrationContext,
+            event: &mut RegisterLoadConditionsEvent<'_>,
+        ) {
+            let handler = || Flag(Arc::default(), Arc::default());
+            let shared = Identifier::parse("a:shared").unwrap();
+            event
+                .conditions
+                .register(shared.clone(), handler())
+                .unwrap();
+            event
+                .conditions
+                .register(Identifier::parse("a:leaked").unwrap(), handler())
+                .unwrap();
+            assert_eq!(
+                event
+                    .conditions
+                    .register(shared, handler())
+                    .unwrap_err()
+                    .message,
+                "condition a:shared registered by both a and a",
+            );
+            self.0.store(true, Ordering::Relaxed);
+            panic!("load condition registrar fixture failed");
+        }
     }
+
+    let reached = Arc::new(AtomicBool::new(false));
+    mod_platform::testing::with_mods(
+        vec![
+            ModEntry::new("a", Box::new(Failing(reached.clone()))),
+            ModEntry::new("b", Box::new(NamedCondition("a:shared"))),
+        ]
+        .into(),
+        || {
+            let mut registrar = mod_api::LoadConditionDeclarations::new(
+                sunrise_world::conditions::is_builtin_condition,
+            );
+            super::Game::native_register_load_conditions(
+                &RegistrationContext::new(),
+                &mut registrar,
+            );
+            assert!(reached.load(Ordering::Relaxed));
+            let entries = registrar.finish().unwrap();
+            assert_eq!(entries.len(), 1);
+            let (owner, handler) = &entries[&Identifier::parse("a:shared").unwrap()];
+            assert_eq!(owner, "b");
+            assert_eq!(handler.test(&json!({"value": false})), Ok(false));
+        },
+    );
+}
+
+#[test]
+fn load_conditions_refuse_a_builtin_id_at_startup_even_if_ignored() {
+    for name in ["neoforge:always", "neoforge:never", "neoforge:mod_loaded"] {
+        mod_platform::testing::with_mods(
+            vec![ModEntry::new("compat", Box::new(NamedCondition(name)))].into(),
+            || {
+                let sources = crate::game::mods::ModsState::default();
+                let inventory = sunrise_mod_package::enabled::EnabledMods::default();
+                let error = super::conditions_for_mods(&sources, &inventory).unwrap_err();
+                assert_eq!(
+                    error,
+                    format!("mod compat cannot register condition {name}: that ID is built in")
+                );
+            },
+        );
+    }
+}
+
+#[test]
+fn load_conditions_admit_registered_foreign_ids_but_refuse_every_unknown_id() {
+    mod_platform::testing::with_mods(
+        vec![
+            ModEntry::new("a", Box::new(NamedCondition("a:x"))),
+            ModEntry::new("b", Box::new(NamedCondition("a:z"))),
+            ModEntry::new("compat", Box::new(NamedCondition("c:config"))),
+            ModEntry::new("other", Box::new(NamedCondition("neoforge:custom"))),
+        ]
+        .into(),
+        || {
+            let sources = crate::game::mods::ModsState::default();
+            let inventory = sunrise_mod_package::enabled::EnabledMods::default();
+            let conditions = super::conditions_for_mods(&sources, &inventory).unwrap();
+            let file = |id: &str| json!({"neoforge:conditions":[{"type":id, "value":true}]});
+            assert!(conditions.allows_file(&file("c:config"), "data/demo/advancement/known.json"));
+            assert!(conditions.allows_file(
+                &file("neoforge:custom"),
+                "data/demo/advancement/custom.json"
+            ));
+            for namespace in ["a", "c", "neoforge"] {
+                let id = format!("{namespace}:missing");
+                let path = format!("data/demo/advancement/{namespace}.json");
+                assert!(!conditions.allows_file(&file(&id), &path));
+                let error = conditions.check_errors().unwrap_err();
+                assert!(
+                    error.contains(&format!("{path}: unknown load conditions [{id}]")),
+                    "{error}"
+                );
+            }
+        },
+    );
 }
 
 #[test]
@@ -437,7 +587,7 @@ fn registered_reads_the_candidate_packs_not_the_last_load() {
     // An entry its own conditions turn off is not in the registry.
     files.push((
         "worldgen/biome/test:off".into(),
-        vec![br#"{"neoforge:conditions":[{"type":"neoforge:false"}]}"#.to_vec()],
+        vec![br#"{"neoforge:conditions":[{"type":"neoforge:never"}]}"#.to_vec()],
     ));
     let first = super::candidate_registries(root.path(), &files, &admission);
     let first = sunrise_world::conditions::LoadConditions::new([]).with_registries(

@@ -18,7 +18,7 @@ pub struct FlatTerrain {
     shape: LevelShape,
     layers: Vec<u32>,
     biome: u16,
-    surface: Option<crate::lod::Surface>,
+    surface: Option<crate::columns::Surface>,
     /// The blocks of `minecraft:void_start_platform`, when the adjusted
     /// generation settings place it (the Void preset).
     void_platform: Option<FeatureBlocks>,
@@ -137,7 +137,7 @@ impl FlatTerrain {
         registry: &BlockRegistry,
         shape: LevelShape,
         biome: u16,
-    ) -> Option<Option<crate::lod::Surface>> {
+    ) -> Option<Option<crate::columns::Surface>> {
         let mut water = None;
         let mut surface = None;
         for (i, &id) in layers.iter().take(shape.height as usize).enumerate().rev() {
@@ -153,7 +153,7 @@ impl FlatTerrain {
             if matches!(name, "minecraft:water" | "minecraft:lava") {
                 water.get_or_insert((height, state));
             } else {
-                surface = Some(crate::lod::Surface {
+                surface = Some(crate::columns::Surface {
                     height,
                     state,
                     water,
@@ -384,13 +384,16 @@ pub fn settings_from_json(
 impl ChunkGenerator for FlatTerrain {
     type Worker = ();
     fn worker(&self) {}
+    fn spawn_height(&self) -> i32 {
+        FlatTerrain::spawn_height(self)
+    }
     /// FlatLevelSource's proto is already its decorated column. Keep a copy
     /// for lighting a finished neighbour outside the kept area, just as the
     /// vanilla pipeline does for FEATURES neighbours.
     fn light_view(&self, proto: &crate::streaming::Proto) -> Option<Chunk> {
         proto.downcast_ref::<Chunk>().cloned()
     }
-    fn lod_surface(&self, _: &mut (), _: i32, _: i32) -> Option<crate::lod::Surface> {
+    fn lod_surface(&self, _: &mut (), _: i32, _: i32) -> Option<crate::columns::Surface> {
         self.surface
     }
     fn proto(&self, _: &mut (), cx: i32, cz: i32) -> crate::streaming::Proto {

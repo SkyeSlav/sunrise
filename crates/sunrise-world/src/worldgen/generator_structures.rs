@@ -1023,7 +1023,7 @@ fn saved_piece_name(piece: &sunrise_core::nbt::Tag) -> Option<String> {
 }
 /// A saved piece's tag as the JSON `PoolPiece::from_saved` reads: compounds and lists as they
 /// are, numbers as numbers.
-pub(crate) fn tag_json(tag: &sunrise_core::nbt::Tag) -> Value {
+fn tag_json(tag: &sunrise_core::nbt::Tag) -> Value {
     use sunrise_core::nbt::Tag;
     match tag {
         Tag::Byte(v) => Value::from(i64::from(*v)),

@@ -12,7 +12,9 @@ use sunrise_client::{
 use sunrise_protocol::packets::configuration::ClientInformation;
 
 /// A host game with a window player and two other online players.
-fn game_with_two_guests() -> Game<'static> {
+fn game_with_two_guests<'a>(
+    resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>,
+) -> Game<'a> {
     use crate::game::{Audio, Options, Progress, Settings, load_resources};
     let root = std::path::PathBuf::from(
         std::env::var_os("SUNRISE_TEST_RESOURCES").expect("set SUNRISE_TEST_RESOURCES"),
@@ -34,7 +36,7 @@ fn game_with_two_guests() -> Game<'static> {
     let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
     options.resources = root.clone();
     options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
-    let res: &'static _ = Box::leak(Box::new(loaded.resources));
+    let res = &*resources.insert(loaded.resources);
     let mut game = Game::new(
         res,
         loaded.pack,
@@ -127,7 +129,8 @@ fn guest_2_command(game: &mut Game<'_>, command: &str) -> Vec<Text> {
 #[test]
 #[ignore = "daily"]
 fn a_boss_bars_player_list_is_decorated_like_other_player_lists() {
-    let mut game = game_with_two_guests();
+    let mut resources = None;
+    let mut game = game_with_two_guests(&mut resources);
     assert!(game.run_command("bossbar add demo:bar Demo"));
     assert!(game.run_command("team add demo_team"));
     assert!(game.run_command("team modify demo_team color red"));

@@ -1,24 +1,18 @@
 //! One dependency plan shared by source staging and immutable prebuilt SDK builds.
-use super::{api::Project, crates::Wanted, registry_lock::RegistryLock};
-use std::path::Path;
+use super::{api::Project, crates::Wanted, registry_lock::RegistryLock, registry_resolve};
+use crate::host::trf;
+use std::{collections::BTreeSet, path::Path};
 
 pub struct Plan {
     pub game: RegistryLock,
-    pub mods: RegistryLock,
-    pub allowed: RegistryLock,
-    owned: Vec<(String, String, RegistryLock)>,
-    roots: std::collections::BTreeSet<String>,
+    seed: RegistryLock,
+    allowed: RegistryLock,
 }
 
 impl Plan {
     pub fn read(game: &str, projects: &[Project<'_>], wanted: &[Wanted]) -> Result<Self, String> {
         let game = RegistryLock::parse(game)?;
         let mut mods = RegistryLock::default();
-        let mut owned = Vec::new();
-        let roots = projects
-            .iter()
-            .map(|project| project.package.clone())
-            .collect();
         for project in projects {
             let bundle = project.bundle;
             let requested: Vec<_> = wanted
@@ -28,7 +22,9 @@ impl Plan {
             if requested.is_empty() {
                 continue;
             }
-            let pins = RegistryLock::parse(&super::read_lock(&bundle.dir)?)?;
+            let pins = super::read_lock(&bundle.dir)
+                .and_then(|text| RegistryLock::parse(&text))
+                .map_err(|error| format!("{}: {error}", bundle.manifest.id))?;
             for request in requested {
                 if !pins
                     .packages
@@ -36,22 +32,27 @@ impl Plan {
                     .any(|id| id.name == request.name && request.requirement.matches(&id.version))
                 {
                     return Err(format!(
-                        "{}: Cargo.lock does not pin {} {}",
-                        request.mod_id, request.name, request.version
+                        "{mod_id}: Cargo.lock does not pin {} {}, which its Cargo.toml asks for. Run native-lock with update on {mod_id}.",
+                        request.name,
+                        request.version,
+                        mod_id = request.mod_id
                     ));
                 }
             }
-            mods.extend(&pins)?;
-            owned.push((bundle.manifest.id.clone(), project.package.clone(), pins));
+            mods.extend(&pins)
+                .map_err(|error| format!("{}: {error}", bundle.manifest.id))?;
         }
-        let mut allowed = game.clone();
-        allowed.extend(&mods)?;
+        let mut seed = game.clone();
+        seed.extend(&mods)?;
+        // Cargo prefers a compatible pin already in the lock. Leave it only the game's record
+        // in shared slots, including the game's dependencies and checksums for those records.
+        for (_, id) in game.moved_pins(&mods) {
+            seed.packages.remove(id);
+        }
         Ok(Self {
             game,
-            mods,
-            allowed,
-            owned,
-            roots,
+            allowed: seed.clone(),
+            seed,
         })
     }
 
@@ -67,59 +68,12 @@ impl Plan {
                     .cloned()
             })
             .collect();
-        self.allowed.allow_game_patch_edges(&self.game, &names);
+        self.allowed.withhold_sdk_patched(&self.game, &names);
     }
 
-    pub fn check_mods(&self, resolved: &RegistryLock) -> Result<(), String> {
-        for (id, root, pins) in &self.owned {
-            let mut skip_local: std::collections::BTreeSet<String> = self
-                .roots
-                .iter()
-                .filter(|other| *other != root)
-                .cloned()
-                .collect();
-            skip_local.extend(
-                super::api::PACKAGES
-                    .iter()
-                    .map(|(package, _)| (*package).to_owned()),
-            );
-            skip_local.insert(super::internals::package(id));
-            let mut owned_pins = self.game.clone();
-            owned_pins.extend(pins)?;
-            resolved.check_mod(id, root, &skip_local, &owned_pins)?;
-        }
-        Ok(())
-    }
-
-    pub fn explain_resolution(&self, error: String) -> String {
-        let mut details = Vec::new();
-        for id in self
-            .mods
-            .packages
-            .keys()
-            .filter(|id| error.contains(&id.name))
-        {
-            let versions = self
-                .game
-                .packages
-                .keys()
-                .filter(|game| game.name == id.name && game.version != id.version)
-                .map(|game| game.version.to_string())
-                .collect::<Vec<_>>();
-            if !versions.is_empty() {
-                details.push(format!(
-                    "{}: game locks [{}], mod locks {}; the game graph must not move",
-                    id.name,
-                    versions.join(", "),
-                    id.version
-                ));
-            }
-        }
-        if details.is_empty() {
-            error
-        } else {
-            format!("{error}\n\n{}", details.join("\n"))
-        }
+    pub(super) fn check_resolved(&self, resolved: &RegistryLock) -> Result<(), String> {
+        registry_resolve::check_game_pins(&self.game, resolved)?;
+        self.allowed.check_pins(resolved)
     }
 
     pub fn fetch_with_patches(
@@ -141,13 +95,42 @@ impl Plan {
         directory: &Path,
         mut cargo: impl FnMut(&str) -> std::process::Command,
     ) -> Result<(), String> {
-        let mut index = cargo("update");
-        index.arg("--workspace");
-        super::run(index, "Checking the pinned registry index", |_| {})
-            .map_err(|error| self.explain_resolution(error))?;
-        let pins = RegistryLock::parse(&super::read_lock(directory)?)?;
-        self.check_mods(&pins)?;
-        self.allowed.check_partial_resolution(&pins, &self.game)?;
+        registry_resolve::resolve(
+            directory,
+            &self.game,
+            &self.seed,
+            Some(&self.allowed),
+            &mut cargo,
+        )
+        .map_err(|error| {
+            // Cargo names the requiring package and its local path, not its Sunrise mod ID.
+            // Map only package paths in its dependency report, never the mods' lock contents.
+            let mods = directory.join(super::crates::DIR);
+            let canonical = mods.canonicalize().ok();
+            let ids: BTreeSet<_> = error
+                .lines()
+                .filter(|line| line.contains(" package `"))
+                .filter_map(|line| {
+                    let (_, path) = line.trim_end().strip_suffix(")`")?.split_once(" (")?;
+                    let path = Path::new(path);
+                    let relative = path
+                        .strip_prefix(&mods)
+                        .ok()
+                        .or_else(|| path.strip_prefix(canonical.as_ref()?).ok())?;
+                    relative.components().next()?.as_os_str().to_str()
+                })
+                .collect();
+            if ids.is_empty() {
+                error
+            } else {
+                let mods = ids.into_iter().collect::<Vec<_>>().join(", ");
+                let sources = trf(
+                    "Mods in Cargo's dependency report: {mods}.",
+                    &[("mods", &mods)],
+                );
+                format!("{sources}\n\n{error}")
+            }
+        })?;
         let mut fetch = cargo("fetch");
         fetch.arg("--locked");
         super::run(fetch, "Downloading the mods' pinned crates", |_| {})
@@ -169,40 +152,14 @@ pub fn apply_patches(directory: &Path, patches: &toml::Table) -> Result<(), Stri
 mod tests {
     use super::*;
     #[test]
-    fn sdk_partial_graph_accepts_inactive_edges_but_refuses_new_registry_edges() {
-        let original = format!(
-            "version=4\n[[package]]\nname='game'\nversion='1.0.0'\ndependencies=['log']\n[[package]]\nname='log'\nversion='0.4.0'\nsource='registry+https://github.com/rust-lang/crates.io-index'\nchecksum='{}'\n",
-            "a".repeat(64)
-        );
-        let plan = Plan::read(&original, &[], &[]).unwrap();
-        let narrower = original.replace("dependencies=['log']", "dependencies=[]");
-        plan.allowed
-            .check_partial_resolution(&RegistryLock::parse(&narrower).unwrap(), &plan.game)
-            .unwrap();
-        let added = format!("{original}dependencies=['game']\n");
-        assert!(
-            plan.allowed
-                .check_partial_resolution(&RegistryLock::parse(&added).unwrap(), &plan.game)
-                .is_err()
-        );
-    }
-
-    #[test]
     fn production_plan_preserves_isolated_game_patch_identity() {
         let original = "version=4\n[[package]]\nname='allocator-sys'\nversion='0.1.49'\n";
         let plan = Plan::read(original, &[], &[]).unwrap();
         plan.allowed
-            .check_resolution(
-                &RegistryLock::parse(original).unwrap(),
-                &RegistryLock::default(),
-            )
+            .check_pins(&RegistryLock::parse(original).unwrap())
             .unwrap();
         let moved = RegistryLock::parse(&original.replace("0.1.49", "0.1.50")).unwrap();
-        // Both fetch and SDK compilation use allowed against resolved, with an empty game argument.
-        let error = plan
-            .allowed
-            .check_resolution(&moved, &RegistryLock::default())
-            .unwrap_err();
+        let error = plan.allowed.check_pins(&moved).unwrap_err();
         assert!(error.contains("allocator-sys"), "{error}");
     }
 
@@ -271,17 +228,14 @@ mod tests {
         );
         RegistryLock::parse(&game)
             .unwrap()
-            .check_resolution(
-                &RegistryLock::parse(&text).unwrap(),
-                &RegistryLock::default(),
-            )
+            .check_pins(&RegistryLock::parse(&text).unwrap())
             .unwrap();
         assert!(!root.join("target").exists());
     }
 
     #[test]
     #[ignore = "daily"]
-    fn mod_only_registry_edge_can_use_the_same_version_sdk_naga_patch() {
+    fn a_mods_registry_package_builds_on_the_sdks_naga_and_never_on_the_registrys() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         for path in ["vendor/mod-parent/src", "sdk/naga/src", "src", ".cargo"] {
@@ -362,119 +316,18 @@ mod tests {
         let game_lock = "version=4\n[[package]]\nname='naga'\nversion='30.0.1'\n";
         let mut plan = Plan::read(game_lock, &[], &[]).unwrap();
         plan.allowed.extend(&pins).unwrap();
-        let before = plan
-            .allowed
-            .check_resolution(&resolved, &RegistryLock::default())
-            .unwrap_err();
-        assert!(before.contains("mod-parent"), "{before}");
         plan.authorize_game_patches(&patches);
-        plan.allowed
-            .check_resolution(&resolved, &RegistryLock::default())
-            .unwrap();
-        // Authorization is directional and version-exact: neither re-sourcing the
-        // SDK package nor actually moving its version is permission to change it.
+        plan.allowed.check_pins(&resolved).unwrap();
+        // The SDK's package is used in the SDK's form only: neither the registry's copy of it,
+        // which the mod's own lock pins, nor another version in its place.
         for bad in [&mod_lock, &text.replace("30.0.1", "30.0.2")] {
-            assert!(
-                plan.allowed
-                    .check_resolution(&RegistryLock::parse(bad).unwrap(), &RegistryLock::default())
-                    .is_err()
-            );
-        }
-        // A game-owned parent's original edges remain strict, too.
-        let mut game_parent = Plan::read(&text, &[], &[]).unwrap();
-        game_parent.allowed.extend(&pins).unwrap();
-        game_parent.authorize_game_patches(&patches);
-        assert!(
-            game_parent
+            let error = plan
                 .allowed
-                .check_resolution(&pins, &RegistryLock::default())
-                .is_err()
-        );
-        println!(
-            "ORIGINAL MOD LOCK:\n{mod_lock}\nSDK PATCHED RESOLUTION:\n{text}\nOLD CHECK REFUSAL: {before}\nAUTHORIZED CHECK: accepted"
-        );
-        assert!(!root.join("target").exists());
-    }
-
-    #[test]
-    #[ignore = "daily"]
-    fn cargo_optional_game_edges_may_shrink_but_not_grow_or_move() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        for name in ["bumpalo", "allocator-api2", "unexpected"] {
-            let crate_dir = root.join("vendor").join(name);
-            std::fs::create_dir_all(crate_dir.join("src")).unwrap();
-            let extra = if name == "bumpalo" {
-                "[dependencies]\nallocator-api2={version='1',optional=true}\nunexpected={version='1',optional=true}\n"
-            } else {
-                ""
-            };
-            std::fs::write(
-                crate_dir.join("Cargo.toml"),
-                format!("[package]\nname='{name}'\nversion='1.0.0'\n{extra}"),
-            )
-            .unwrap();
-            std::fs::write(crate_dir.join("src/lib.rs"), "").unwrap();
-            std::fs::write(
-                crate_dir.join(".cargo-checksum.json"),
-                format!(r#"{{"package":"{}","files":{{}}}}"#, "a".repeat(64)),
-            )
-            .unwrap();
+                .check_pins(&RegistryLock::parse(bad).unwrap())
+                .unwrap_err();
+            assert!(error.contains("the SDK supplies naga 30.0.1"), "{error}");
         }
-        std::fs::create_dir_all(root.join(".cargo")).unwrap();
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("src/lib.rs"), "").unwrap();
-        std::fs::write(
-            root.join(".cargo/config.toml"),
-            "[source.crates-io]\nreplace-with='fixture'\n[source.fixture]\ndirectory='vendor'\n",
-        )
-        .unwrap();
-        let resolve = |features: &str| {
-            std::fs::write(root.join("Cargo.toml"), format!("[package]\nname='fixture'\nversion='1.0.0'\n[workspace]\n[dependencies]\nbumpalo={{version='1',default-features=false,features=[{features}]}}\n")).unwrap();
-            let output = std::process::Command::new("cargo")
-                .args(["generate-lockfile", "--offline"])
-                .current_dir(root)
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            std::fs::read_to_string(root.join("Cargo.lock")).unwrap()
-        };
-        let game = resolve("'allocator-api2'");
-        let plan = Plan::read(&game, &[], &[]).unwrap();
-        let narrower = resolve("");
-        let narrower = RegistryLock::parse(&narrower).unwrap();
-        plan.allowed
-            .check_partial_resolution(&narrower, &plan.game)
-            .unwrap();
-        // Without game ownership a mod's declared graph remains exact.
-        assert!(
-            plan.allowed
-                .check_partial_resolution(&narrower, &RegistryLock::default())
-                .unwrap_err()
-                .contains("bumpalo")
-        );
-        let added = resolve("'unexpected'");
-        assert!(
-            plan.allowed
-                .check_partial_resolution(&RegistryLock::parse(&added).unwrap(), &plan.game)
-                .unwrap_err()
-                .contains("bumpalo")
-        );
-        let moved = game.replace(
-            "name = \"bumpalo\"\nversion = \"1.0.0\"",
-            "name = \"bumpalo\"\nversion = \"1.0.1\"",
-        );
-        assert_ne!(moved, game);
-        assert!(
-            plan.allowed
-                .check_partial_resolution(&RegistryLock::parse(&moved).unwrap(), &plan.game)
-                .unwrap_err()
-                .contains("bumpalo")
-        );
+        assert!(!root.join("target").exists());
     }
 
     #[test]
@@ -557,7 +410,6 @@ mod tests {
             std::fs::read_to_string(root.join("Cargo.lock")).unwrap(),
             "b".repeat(64)
         );
-        std::fs::write(root.join("Cargo.lock"), &game).unwrap();
         let plan = Plan::read(&game, &[], &[]).unwrap();
         plan.resolve_and_fetch(root, cargo).unwrap();
         let lock = RegistryLock::parse(&std::fs::read_to_string(root.join("Cargo.lock")).unwrap())
@@ -580,6 +432,191 @@ mod tests {
             String::from_utf8_lossy(&metadata.stderr)
         );
         assert!(!root.join("target").exists());
+    }
+
+    fn shared_registry_fixture(
+        ahead_requirement: &str,
+        build: bool,
+        transitive: bool,
+    ) -> Result<RegistryLock, String> {
+        use std::{fs, process::Command};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(super::super::root()).unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nresolver='3'\nmembers=['native-api/loose_mod','native-api/ahead_mod']\n",
+        )
+        .unwrap();
+        let package = |name: &str, version: &str, digit: &str| {
+            format!(
+                "[[package]]\nname='{name}'\nversion='{version}'\nsource='{}'\nchecksum='{}'\n",
+                sunrise_addresses::CARGO_CRATES_IO_SOURCE,
+                digit.repeat(64)
+            )
+        };
+        let vendor_crate = |name: &str, version: &str, digit: &str, extra: &str| {
+            let vendor = root.join("vendor").join(format!("{name}-{version}"));
+            fs::create_dir_all(vendor.join("src")).unwrap();
+            fs::write(vendor.join("src/lib.rs"), "").unwrap();
+            fs::write(
+                vendor.join("Cargo.toml"),
+                format!("[package]\nname='{name}'\nversion='{version}'\nedition='2024'\n{extra}"),
+            )
+            .unwrap();
+            fs::write(
+                vendor.join(".cargo-checksum.json"),
+                format!(r#"{{"package":"{}","files":{{}}}}"#, digit.repeat(64)),
+            )
+            .unwrap();
+        };
+        for (version, digit) in [("3.0.6", "a"), ("3.0.10", "b")] {
+            vendor_crate("syn", version, digit, "");
+        }
+        if transitive {
+            // A later registry release is compatible with the game but neither mod pins it.
+            vendor_crate("parent", "1.0.2", "c", "[dependencies]\nsyn='3'\n");
+        }
+        let game = format!("version=4\n{}", package("syn", "3.0.6", "a"));
+        let mut bundles = Vec::new();
+        let mut wanted = Vec::new();
+        for (id, requirement, version) in [
+            (
+                "loose_mod",
+                "^3.0",
+                if transitive { "3.0.6" } else { "3.0.10" },
+            ),
+            ("ahead_mod", ahead_requirement, "3.0.10"),
+        ] {
+            let path = root.join(crate::crates::DIR).join(id);
+            let crate_name = if id == "loose_mod" {
+                "loose_crate"
+            } else {
+                "ahead_crate"
+            };
+            let digit = if version == "3.0.6" { "a" } else { "b" };
+            super::super::tests::write_bundle(&path, id, "");
+            let (dependency, requirement) = if transitive {
+                ("parent", "1")
+            } else {
+                ("syn", requirement)
+            };
+            let manifest = format!(
+                "[package]\nname='{crate_name}'\nversion='1.0.0'\nedition='2024'\n[dependencies]\n{dependency}='{requirement}'\n"
+            );
+            fs::write(
+                path.join("Cargo.toml"),
+                format!(
+                    "{manifest}sunrise-mod-api={{path='.sunrise/sdk/api/crates/sunrise-mod-api'}}\n"
+                ),
+            )
+            .unwrap();
+            let mut lock = format!("version=4\n{}", package("syn", version, digit));
+            if transitive {
+                // With two seeded parents Cargo prefers the first pin, even though its real
+                // dependency would move the game. The other mod's parent is also admissible.
+                let (parent, requirement) = if id == "loose_mod" {
+                    ("1.0.1", "3")
+                } else {
+                    ("1.0.0", "=3.0.10")
+                };
+                vendor_crate(
+                    "parent",
+                    parent,
+                    digit,
+                    &format!("[dependencies]\nsyn='{requirement}'\n"),
+                );
+                lock.push_str(&package("parent", parent, digit));
+                lock.push_str("dependencies=['syn']\n");
+            }
+            fs::write(path.join("Cargo.lock"), lock).unwrap();
+            bundles.push((super::super::bundle_in(&path).unwrap().unwrap(), manifest));
+            wanted.push(Wanted {
+                mod_id: id.into(),
+                name: dependency.into(),
+                version: requirement.into(),
+                requirement: semver::VersionReq::parse(requirement).unwrap(),
+            });
+        }
+        let projects: Vec<_> = bundles
+            .iter()
+            .map(|(bundle, manifest)| {
+                let project = Project::read(bundle).unwrap();
+                // Staging removes the SDK dependency before Cargo resolves registry packages.
+                fs::write(bundle.dir.join("Cargo.toml"), manifest).unwrap();
+                project
+            })
+            .collect();
+        let cargo = |subcommand: &str| {
+            let mut command = Command::new("cargo");
+            command
+                .args([
+                    subcommand,
+                    "--offline",
+                    "--config",
+                    "source.crates-io.replace-with='fixture'",
+                ])
+                .arg("--config")
+                .arg(format!(
+                    "source.fixture.directory={:?}",
+                    root.join("vendor").to_string_lossy()
+                ))
+                .current_dir(root)
+                .env("CARGO_HOME", root.join("cargo-home"));
+            command
+        };
+        let plan = Plan::read(&game, &projects, &wanted).unwrap();
+        plan.resolve_and_fetch(root, cargo)?;
+        if build {
+            let output = cargo("build")
+                .args(["--locked", "--workspace", "--target-dir"])
+                .arg(root.join("target"))
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        RegistryLock::parse(&super::super::read_lock(root).unwrap())
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn two_mods_build_on_the_games_pin_when_both_requirements_allow_it() {
+        let lock = shared_registry_fixture("^3.0", true, false).unwrap();
+        let pins: Vec<_> = lock
+            .packages
+            .keys()
+            .map(|id| (&*id.name, id.version.to_string()))
+            .collect();
+        assert_eq!(pins, [("syn", "3.0.6".to_owned())]);
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn joint_build_chooses_a_pinned_parent_that_keeps_the_games_version() {
+        let lock = shared_registry_fixture("^3.0", true, true).unwrap();
+        let pins: Vec<_> = lock
+            .packages
+            .keys()
+            .map(|id| (&*id.name, id.version.to_string()))
+            .collect();
+        assert_eq!(
+            pins,
+            [("parent", "1.0.1".to_owned()), ("syn", "3.0.6".to_owned())]
+        );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn refusal_names_the_requiring_mod_not_the_other_mod_with_the_same_lock_pin() {
+        let error = shared_registry_fixture("=3.0.10", false, false).unwrap_err();
+        for detail in ["syn", "3.0.6", "=3.0.10", "ahead_mod", "ahead_crate"] {
+            assert!(error.contains(detail), "{error}");
+        }
+        assert!(!error.contains("loose_mod"), "{error}");
     }
 
     #[test]

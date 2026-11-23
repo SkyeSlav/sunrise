@@ -7,10 +7,11 @@ use super::Game;
 use mod_api::EntityRef;
 use sunrise_client::blocks::RenderShape;
 use sunrise_client::effects::effect_particle;
-use sunrise_client::mobs::{MobEvent, ambient};
+use sunrise_client::mobs::MobEvent;
 use sunrise_client::motion::{LAVA, WATER};
 use sunrise_client::particles::{ParticleEngine, ParticleOptions, ParticleType};
 use sunrise_client::pose::Pose;
+use sunrise_client_gameplay::mob_ambient as ambient;
 use sunrise_core::{geometry::Vec3, random::RandomSource};
 
 impl Game<'_> {
@@ -174,7 +175,8 @@ impl Game<'_> {
                 .mobs
                 .iter()
                 .find(|m| m.id == id)
-                .and_then(|m| m.supporting),
+                .and_then(|m| m.ground.supporting_block)
+                .map(|p| [p.x, p.y, p.z]),
             _ => None,
         };
         let mob = match target {
@@ -279,6 +281,7 @@ impl Game<'_> {
             );
             swirl(
                 &mut self.particles,
+                &self.world,
                 p.position,
                 size,
                 &list,
@@ -306,6 +309,7 @@ impl Game<'_> {
                     .collect();
                 swirl(
                     &mut self.particles,
+                    &self.world,
                     m.position,
                     size,
                     &list,
@@ -317,6 +321,7 @@ impl Game<'_> {
                 let ambient = m.extra.effect_ambient;
                 swirl(
                     &mut self.particles,
+                    &self.world,
                     m.position,
                     size,
                     list,
@@ -333,6 +338,7 @@ impl Game<'_> {
 /// effects are ambient) of one of the particles at a random spot of the box.
 fn swirl(
     particles: &mut ParticleEngine,
+    world: &sunrise_client::world::World,
     feet: Vec3,
     size: (f64, f64),
     list: &[ParticleOptions],
@@ -352,7 +358,7 @@ fn swirl(
     let x = feet.x + size.0 * (2.0 * r.next_double() - 1.0) * 0.5;
     let y = feet.y + size.1 * r.next_double();
     let z = feet.z + size.0 * (2.0 * r.next_double() - 1.0) * 0.5;
-    particles.add(&list[pick], [x, y, z], [1.0; 3]);
+    particles.add_with_world(Some(world), &list[pick], [x, y, z], [1.0; 3], false, false);
 }
 
 #[cfg(test)]

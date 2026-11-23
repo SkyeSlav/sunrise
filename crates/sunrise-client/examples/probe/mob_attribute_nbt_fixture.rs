@@ -106,7 +106,7 @@ pub fn main() -> sunrise_client::Result<()> {
                     .unwrap();
             }
         };
-        let (reads, saved_tag) = if entity == "minecraft:armor_stand" {
+        let (reads, health, saved_tag) = if entity == "minecraft:armor_stand" {
             let mut stand = entity_nbt::armor_stand_from_nbt(&tag, 1).ok_or("stand")?;
             let mut live = std::mem::take(&mut stand.live);
             run(&mut live, &mut stand.equipment, &Vec::new);
@@ -117,8 +117,23 @@ pub fn main() -> sunrise_client::Result<()> {
                 .flatten()
                 .map(|n| read(&stand.live, &catalog, entity, n, Vec::new()))
                 .collect();
+            let default_max = catalog
+                .id("minecraft:max_health")
+                .and_then(|id| catalog.default_base(entity, id))
+                .unwrap_or(20.0);
+            let max_health = stand
+                .live
+                .read(
+                    &catalog,
+                    entity,
+                    "minecraft:max_health",
+                    ValueKind::Computed,
+                    Vec::new,
+                )
+                .unwrap_or(default_max) as f32;
             (
                 reads,
+                (stand.health, max_health, default_max),
                 entity_nbt::armor_stand_to_nbt(&stand, [0; 4], None, &Default::default()),
             )
         } else {
@@ -140,8 +155,15 @@ pub fn main() -> sunrise_client::Result<()> {
                 .flatten()
                 .map(|n| read(&mob.extra.live, &catalog, entity, n, seed(&mob)))
                 .collect();
+            let default_max = mob
+                .kind
+                .attributes
+                .get("minecraft:max_health")
+                .copied()
+                .unwrap_or_else(|| f64::from(mob.kind.max_health));
             (
                 reads,
+                (mob.health, mob.attrs.max_health, default_max),
                 entity_nbt::mob_to_nbt(&mob, [0; 4], None, None, |_| None, &Default::default()),
             )
         };
@@ -155,6 +177,21 @@ pub fn main() -> sunrise_client::Result<()> {
                     let _ = write!(row, "\tread {n} none");
                 }
             }
+        }
+        if case["health"].as_bool().unwrap_or(false) {
+            let (loaded_health, loaded_max, default_max) = health;
+            let saved_health = match saved_tag.get("Health") {
+                Some(Tag::Float(bits)) => *bits,
+                _ => f32::NAN.to_bits(),
+            };
+            let _ = write!(
+                row,
+                "\thealth {:08x} {:08x} {:08x} {:x}",
+                loaded_health.to_bits(),
+                loaded_max.to_bits(),
+                saved_health,
+                default_max.to_bits(),
+            );
         }
         row.push_str(&saved(&saved_tag));
         out.push_str(&row);

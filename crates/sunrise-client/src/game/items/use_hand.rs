@@ -25,7 +25,7 @@ impl Game<'_> {
         self.use_failed = false;
         // isSecondaryUseActive with something in either hand keeps blocks
         // from reacting.
-        let sneaking = self.keys.held(Mapping::Sneak);
+        let sneaking = self.held_mapping(Mapping::Sneak);
         let hands_full = self.stack_in(self.selected).is_some() || self.offhand.is_some();
         let mut anchor_passed = false;
         // Native mods, where ServerPlayerGameMode.useItemOn starts
@@ -35,7 +35,7 @@ impl Game<'_> {
         // mods' hook, the block's own use, then the item's.
         use mod_api::InteractionResult as Answer;
         use mod_api::TriState;
-        let on_block = matches!(self.guest_use, Some(GuestUse::OnBlock(_)));
+        let on_block = matches!(self.guest_use, Some(GuestUse::OnBlock { .. }));
         let mut block_hit = block_hit;
         let (mut use_block, mut use_item) = (TriState::Default, TriState::Default);
         let block_phase = sunrise_client::spans::guard("use_block");
@@ -58,6 +58,8 @@ impl Game<'_> {
                     self.use_failed = answer == Answer::Fail;
                     return Ok(true);
                 }
+                // A canceled PASS permits Item.use but never reaches ItemStack.useOn.
+                native_hooks::BlockClickAnswer::Canceled(_) if on_block => return Ok(false),
                 native_hooks::BlockClickAnswer::Canceled(_) => {
                     (use_block, use_item) = (TriState::False, TriState::False);
                 }
@@ -105,9 +107,13 @@ impl Game<'_> {
                 {
                     return Ok(true);
                 }
-                if self.use_on_cauldron(hit.pos)? {
-                    self.swing_arm();
-                    return Ok(true);
+                match self.use_on_cauldron(hit.pos)? {
+                    sunrise_client::cauldron::Outcome::Success => {
+                        self.swing_arm();
+                        return Ok(true);
+                    }
+                    sunrise_client::cauldron::Outcome::Consume => return Ok(true),
+                    sunrise_client::cauldron::Outcome::Pass => {}
                 }
                 if let Some(placed) = self.use_on_campfire(hit.pos)? {
                     if placed {
@@ -250,7 +256,9 @@ impl Game<'_> {
                     } else {
                         empty_template_ran = true;
                         let player = self.use_context();
+                        let actor = self.interacting_loot_entity();
                         self.with_block_use_level(|b, level, ticks| {
+                            level.interacting = Some(actor.clone());
                             b.use_without_item(level, ticks, state, block_hit, player)
                         })
                     };
@@ -326,6 +334,14 @@ impl Game<'_> {
                     return Ok(true);
                 }
             }
+        }
+        // The block passed or was skipped, independently of what ItemStack.useOn
+        // is about to answer. Record this on the current guest turn only.
+        if let Some(GuestUse::OnBlock {
+            block_fell_through, ..
+        }) = &mut self.guest_use
+        {
+            *block_fell_through = true;
         }
         // RightClickBlock's useItem FALSE: no ItemStack.useOn, so only Item.use is left (a guest's UseItem asks for it).
         if !use_item.or(true) {
@@ -618,18 +634,15 @@ impl Game<'_> {
             face,
             hit: Vec3::new(hit.point[0], hit.point[1], hit.point[2]),
             inside: hit.inside,
-            yaw: self.yaw,
-            pitch: self.pitch,
-            sneaking: self.keys.held(Mapping::Sneak),
+            source: sunrise_world::level::PlacementSource::Player {
+                yaw: self.yaw,
+                pitch: self.pitch,
+                sneaking: self.held_mapping(Mapping::Sneak),
+            },
             item: stack.item.to_string(),
             can_use_game_master_blocks: self.can_use_game_master_blocks(),
         };
-        let outcome = if self.player_place_canceled(&ctx) {
-            PlaceOutcome::Failed
-        } else {
-            self.with_level(|b, level, ticks| b.place_block(level, ticks, &ctx))
-        };
-        let PlaceOutcome::Placed { pos, state } = outcome else {
+        let Some(placed) = self.place_item_block(&ctx, true, &stack)? else {
             self.process_level_events()?;
             // BlockItem.useOn: a consumable that could not be placed is used,
             // which ItemStack.useOn counts as a use of the item.
@@ -641,39 +654,8 @@ impl Game<'_> {
             }
             return Ok(true);
         };
+        let pos = placed.context.pos;
         let target = [pos.x, pos.y, pos.z];
-        let game_master = self.can_use_game_master_blocks();
-        let state = self.lectern_placed(target, state, &stack, game_master)?;
-        let state = self.apply_item_block_state(target, state, &stack)?;
-        let key = (target[0], target[1], target[2]);
-        if !self.world.block_entities.stateful_entity(state.0)
-            && let Some(entity) = self.new_block_entity_for_state(state)
-        {
-            self.world.block_entities.insert(key, entity);
-        }
-        if self.world.block_entities.get(&key).is_some() {
-            self.apply_placed_item(target, &stack, game_master);
-            // Block.setPlacedBy.
-            match self.world.block_entities.get(&key) {
-                Some(BlockEntity::CommandBlock(_)) => {
-                    let data = stack.data().is_some_and(|d| {
-                        d.other(sunrise_client::block_entity_item::BLOCK_ENTITY_DATA)
-                            .is_some()
-                    });
-                    self.command_block_placed(key, !data);
-                }
-                Some(BlockEntity::StructureBlock(_)) => self.structure_block_placed(key),
-                Some(BlockEntity::JigsawBlock(_)) => self.jigsaw_block_placed(key),
-                Some(BlockEntity::TestBlock(_)) => self.test_block_placed(key),
-                Some(BlockEntity::Jukebox(_)) => self.jukebox_placed(target, &stack),
-                Some(BlockEntity::Sign(sign)) if !sign.waxed && sign.front.has_editable_text() => {
-                    self.open_text_edit(key, true)
-                }
-                _ => {}
-            }
-        }
-        let placer = self.native_acting_player();
-        self.block_item_placed(&stack, placer, pos, &ctx);
         // BlockItem.place's SUCCESS: the client swings with its own prediction.
         self.swing_arm_predicted();
         // BlockItem.place's sound is among the level events;
@@ -689,16 +671,9 @@ impl Game<'_> {
             }
         }
         self.process_level_events()?;
-        // BlockItem.place: the used statistic and the placed_block trigger.
         self.award_stat("used", &stack.item, 1);
-        self.trigger_block("minecraft:placed_block", target, &stack);
-        self.check_wither_spawn(target)?;
         self.check_golem_spawn(target)?;
-        self.consume_held();
-        // SolidBucketItem.useOn: BucketItem.getEmptySuccessItem in hand.
-        if solid_bucket && !self.creative {
-            *self.held_mut() = Some(ItemStack::new("minecraft:bucket", 1));
-        }
+        self.consume_placed(&stack);
         // ItemStack.useOn applies the pre-use stack's component side effects
         // after the successful placement and its hand replacement.
         self.apply_use_cooldown(&stack);
@@ -712,6 +687,7 @@ impl Game<'_> {
         consumed: &sunrise_client::items::ItemStack,
         effect: &sunrise_client::items::ConsumeEffect,
         mob: Option<mod_api::LivingRef>,
+        user: mod_api::EntityRef,
     ) -> Option<bool> {
         use sunrise_client::items::ConsumeEffect;
         Some(match effect {
@@ -807,11 +783,24 @@ impl Game<'_> {
                     Some(living) => self.entity_sound_source(living.entity())?,
                     None => mod_api::SoundSource::Players,
                 };
-                self.native_queue_sound(level, sound, at, source, 1.0, 1.0, None)?;
+                if !self.native_queue_sound(super::native_level_effects::NativeSoundRequest {
+                    level,
+                    sound,
+                    at,
+                    source,
+                    volume: 1.0,
+                    pitch: 1.0,
+                    except: None,
+                    entity: None,
+                }) {
+                    return None;
+                }
                 true
             }
-            ConsumeEffect::Native { kind, data } => {
-                consume_effect_dispatch::dispatch(kind, || self.native_consume_effect(kind, data))
+            ConsumeEffect::Native { kind, data, .. } => {
+                consume_effect_dispatch::dispatch(kind, || {
+                    self.native_consume_effect(kind, data, consumed, user)
+                })
             }
         })
     }
@@ -929,13 +918,7 @@ impl Game<'_> {
             && !infinity
             && let Some(i) = arrow_slot
         {
-            let cell = self.stack_in_mut(i);
-            if let Some(s) = cell.as_mut() {
-                s.count -= 1;
-                if s.count == 0 {
-                    *cell = None;
-                }
-            }
+            self.consume_player_slot(i, 1);
         }
     }
     /// `EnchantmentHelper.processProjectileCount` and `processProjectileSpread`

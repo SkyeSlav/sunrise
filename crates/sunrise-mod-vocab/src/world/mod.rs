@@ -2,6 +2,7 @@
 
 pub(crate) mod advancement_progress;
 pub(crate) mod scoreboard;
+pub(crate) mod team;
 // hidden: a module of game-side types; mods use their re-exports
 #[doc(hidden)]
 pub mod biome;
@@ -36,8 +37,10 @@ pub(crate) mod map_decoration_types;
 #[doc(hidden)]
 pub mod mod_chunk_tickets;
 pub(crate) mod package_details;
+pub(crate) mod package_files;
 pub(crate) mod passage;
 pub(crate) mod phase;
+pub(crate) mod portal;
 pub(crate) mod random;
 pub(crate) mod read_error;
 pub(crate) mod reload;
@@ -45,6 +48,7 @@ pub(crate) mod reload_order;
 // hidden: a module of game-side entry points; mods use their re-exports
 #[doc(hidden)]
 pub mod rotation;
+pub(crate) mod runtime_files;
 pub(crate) mod runtime_levels;
 pub(crate) mod scheduler;
 pub(crate) mod server_console;

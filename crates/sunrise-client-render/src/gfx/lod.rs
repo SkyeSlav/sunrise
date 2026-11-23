@@ -1,12 +1,16 @@
 //! Far meshes share the terrain arenas and passes, with their actual bounds
 //! rather than the 16³ boxes used by the near-section residency walk.
-use super::{Frustum, Renderer, SectionGpu};
+use super::{
+    Frustum, Renderer, SectionGpu,
+    sourced_geometry::gpu::{self, Mesh},
+};
 use crate::{
     fast_hash::{FxHashMap, FxHashSet},
     lod::{MAX_LEVEL, TileKey},
     mesher::SectionMesh,
 };
 use glam::{DVec3, Vec3};
+use smallvec::SmallVec;
 use std::{
     collections::VecDeque,
     time::{Duration, Instant},
@@ -15,7 +19,7 @@ use std::{
 /// Finished tile meshes not uploaded yet, the tiles they replace (removed
 /// once every mesh is in) and the columns they leave out.
 #[derive(Default)]
-pub(super) struct Pending {
+pub(crate) struct Pending {
     meshes: FxHashMap<TileKey, SectionMesh>,
     /// The order they go up in: as handed over (`Lod::update`: finer tiles
     /// first, so no tile clipped around a finer one is drawn before it).
@@ -52,7 +56,7 @@ impl Pending {
 
 /// Small, its meshes boxed: `draw_frame` walks every tile each frame (thousands at long far
 /// distances), and that walk is bound by the memory it reads.
-pub(super) struct Tile {
+pub(crate) struct Tile {
     pub mesh: Box<SectionGpu>,
     bounds: Bounds,
     /// When it began to fade in; none while the rest of its job uploads.
@@ -68,6 +72,52 @@ pub(super) struct Tile {
     /// Its slot in occlusion culling's results (`cull::TILE`), kept while
     /// meshes of the same tile replace one another.
     pub cull_slot: u32,
+    /// The animated sprite layers of both meshes it holds (`animated_layers`):
+    /// the frame walk marks them as it lists the tile, without reaching into
+    /// its boxed meshes.
+    pub animated: SmallVec<[u16; 4]>,
+}
+
+/// The animated sprite layers a tile drawing `mesh`, or `previous` in its
+/// place, can show: those of either.
+fn animated_layers(mesh: &SectionGpu, previous: Option<&SectionGpu>) -> SmallVec<[u16; 4]> {
+    let mut layers = SmallVec::from_slice(&mesh.animated_layers);
+    for &layer in previous.iter().flat_map(|p| p.animated_layers.iter()) {
+        if !layers.contains(&layer) {
+            layers.push(layer);
+        }
+    }
+    layers
+}
+
+/// Puts the tiles above `key` (its parent and theirs, up to `MAX_LEVEL`) in
+/// `tiles`; one already there has its own above it.
+fn insert_ancestors(tiles: &mut FxHashSet<TileKey>, mut key: TileKey) {
+    while key.level < MAX_LEVEL && tiles.insert(key.parent()) {
+        key = key.parent();
+    }
+}
+
+/// The tiles that hold any of the chunk `columns`: each column's own level-0
+/// tile and those above it.
+fn holding_columns(columns: impl IntoIterator<Item = (i32, i32)>) -> FxHashSet<TileKey> {
+    let mut tiles = FxHashSet::default();
+    for (x, z) in columns {
+        let key = TileKey { x, z, level: 0 };
+        if tiles.insert(key) {
+            insert_ancestors(&mut tiles, key);
+        }
+    }
+    tiles
+}
+
+/// The cell a tile covers (#2500's `Cell`), and the tile of a cell.
+fn cell(key: TileKey) -> gpu::Cell {
+    gpu::Cell {
+        x: key.x,
+        z: key.z,
+        size_log2: key.level + 4,
+    }
 }
 
 /// How long a tile takes to fade in over the ones it replaces.
@@ -102,7 +152,7 @@ pub(super) fn fade_out_code(since: Instant, level: u8, now: Instant) -> u32 {
 }
 
 #[derive(Clone, Copy)]
-struct Bounds {
+pub(in crate::gfx) struct Bounds {
     min: Vec3,
     max: Vec3,
 }
@@ -122,7 +172,151 @@ impl Bounds {
         if !frustum.intersects(min.as_vec3(), max.as_vec3()) {
             return None;
         }
-        Some(((min + max) * 0.5).length_squared().to_bits())
+        Some(self.distance(origin))
+    }
+
+    /// Its centre's squared distance, as bits: the order far tiles are drawn
+    /// in. The same whether its box was tested or its cell's was.
+    fn distance(self, origin: DVec3) -> u64 {
+        let min = origin + self.min.as_dvec3();
+        let max = origin + self.max.as_dvec3();
+        ((min + max) * 0.5).length_squared().to_bits()
+    }
+
+    /// The box in world coordinates, around the tile's own corner.
+    fn world(self, key: TileKey) -> (DVec3, DVec3) {
+        let origin = DVec3::from(key.origin().map(f64::from));
+        (origin + self.min.as_dvec3(), origin + self.max.as_dvec3())
+    }
+}
+
+/// The width of a cell in blocks, along x and z.
+const CELL: i32 = 128;
+
+/// Far tiles grouped by coarse cell: one frustum test per cell every frame
+/// covers the tiles in it, where each tile would take six planes of its own
+/// (thousands of them at long distances, against a frame budget of a fraction
+/// of a millisecond). A cell's box is the union of its tiles' world boxes, so
+/// it holds every tile in it: a cell out of view leaves all of them out, and
+/// one wholly in view saves each its own test (`Frustum::contains`).
+///
+/// Not a cache: it is kept in step with `Renderer::lods` by every method that
+/// changes it, so it is never a frame behind, and the camera moving changes
+/// nothing it holds.
+#[derive(Default)]
+pub(crate) struct TileGrid {
+    cells: FxHashMap<(i32, i32), Cell>,
+}
+
+struct Cell {
+    /// The union of its tiles' world boxes.
+    min: DVec3,
+    max: DVec3,
+    /// Its tiles, and the boxes (tile-relative, as `Tile` keeps them) they
+    /// hold it at.
+    tiles: Vec<(TileKey, Bounds)>,
+}
+
+impl TileGrid {
+    /// The cell a tile sits in, from the corner its mesh is laid out at: a
+    /// tile's box can spill over, which only widens the cells it widens.
+    fn cell_of(key: TileKey) -> (i32, i32) {
+        let [x, _, z] = key.origin();
+        (x.div_euclid(CELL), z.div_euclid(CELL))
+    }
+
+    /// Puts a tile in its cell, in the place of the one it may have had
+    /// there: a tile meshed again can come back with other bounds.
+    pub(in crate::gfx) fn insert(&mut self, key: TileKey, bounds: Bounds) {
+        self.remove(key);
+        let (min, max) = bounds.world(key);
+        let at = Self::cell_of(key);
+        if let Some(cell) = self.cells.get_mut(&at) {
+            cell.min = cell.min.min(min);
+            cell.max = cell.max.max(max);
+            cell.tiles.push((key, bounds));
+        } else {
+            self.cells.insert(
+                at,
+                Cell {
+                    min,
+                    max,
+                    tiles: vec![(key, bounds)],
+                },
+            );
+        }
+    }
+
+    /// Takes a tile out: its cell shrinks to the tiles left, and goes when
+    /// there are none.
+    pub(in crate::gfx) fn remove(&mut self, key: TileKey) {
+        let at = Self::cell_of(key);
+        // Its box after the tile leaves: none when nothing is left in it.
+        let mut left: Option<(DVec3, DVec3)> = None;
+        if let Some(cell) = self.cells.get_mut(&at) {
+            let Some(slot) = cell.tiles.iter().position(|&(tile, _)| tile == key) else {
+                return;
+            };
+            cell.tiles.swap_remove(slot);
+            // A cell holds a handful of tiles: the union is built again from
+            // those left rather than kept with an edge count per tile.
+            for &(tile, bounds) in &cell.tiles {
+                let (min, max) = bounds.world(tile);
+                left = Some(match left {
+                    Some((low, high)) => (low.min(min), high.max(max)),
+                    None => (min, max),
+                });
+            }
+            if let Some((min, max)) = left {
+                cell.min = min;
+                cell.max = max;
+            }
+        }
+        if left.is_none() {
+            self.cells.remove(&at);
+        }
+    }
+
+    /// Every tile gone at once (`clear_lods`, `clear_sections`).
+    pub(in crate::gfx) fn clear(&mut self) {
+        self.cells.clear();
+    }
+
+    /// Whether it holds the tile at `key`.
+    pub(in crate::gfx) fn contains(&self, key: TileKey) -> bool {
+        self.cells
+            .get(&Self::cell_of(key))
+            .is_some_and(|cell| cell.tiles.iter().any(|&(tile, _)| tile == key))
+    }
+
+    /// Whether it holds no tile.
+    #[cfg(any(test, debug_assertions))]
+    pub(in crate::gfx) fn is_empty(&self) -> bool {
+        self.cells.is_empty()
+    }
+
+    /// Calls `tile` for each tile whose cell meets `view`, with whether the
+    /// whole cell is inside it (then so is every tile's box).
+    pub(super) fn walk(&self, camera: DVec3, view: &Frustum, mut tile: impl FnMut(bool, TileKey)) {
+        for cell in self.cells.values() {
+            let min = (cell.min - camera).as_vec3();
+            let max = (cell.max - camera).as_vec3();
+            let inside = view.contains(min, max);
+            if !inside && !view.intersects(min, max) {
+                continue;
+            }
+            for &(key, _) in &cell.tiles {
+                tile(inside, key);
+            }
+        }
+    }
+
+    /// Each cell's place and box, for tests.
+    #[cfg(test)]
+    fn cells(&self) -> impl Iterator<Item = ((i32, i32), DVec3, DVec3)> + '_ {
+        self.cells
+            .iter()
+            .map(|(&at, cell)| (at, cell.min, cell.max))
     }
 }
 
@@ -143,7 +337,8 @@ pub(super) fn instance(origin: [f32; 3], fade: u32) -> [f32; 4] {
     ]
 }
 
-pub(super) struct Visible {
+#[derive(Clone, Copy)]
+pub(crate) struct Visible {
     pub key: TileKey,
     pub distance: u64,
     pub origin: [f32; 3],
@@ -155,6 +350,36 @@ pub(super) struct Visible {
 }
 
 impl Tile {
+    /// Whether the GPU pass draws its own mesh at `now`: whole, no stand-in, not going. Once
+    /// true it stays so until the mesh is meshed again, stands in or goes.
+    pub(in crate::gfx) fn steady(&self, key: TileKey, now: Instant) -> bool {
+        self.previous.is_none()
+            && self.dying.is_none()
+            && fade_code(self.shown, key.level, now) == Some(0)
+    }
+    /// When it is `steady` at the latest, if time alone makes it so.
+    pub(in crate::gfx) fn whole_at(&self) -> Option<Instant> {
+        let shown = self
+            .shown
+            .filter(|_| self.previous.is_none() && self.dying.is_none());
+        shown.map(|shown| shown + FADE)
+    }
+    /// What sourced geometry's pass reads of its own mesh.
+    pub(in crate::gfx) fn gpu_mesh(&self, key: TileKey) -> Mesh<'_> {
+        let s = &self.mesh;
+        Mesh {
+            cell: cell(key),
+            page: s.page,
+            start: u64::from(s.solid_base()),
+            quads: s.solid,
+            sides: &s.sides,
+            bounds: [self.bounds.min, self.bounds.max],
+        }
+    }
+    /// Its bounds, for sourced geometry's list of the tiles it leaves the CPU (`listed`).
+    pub(in crate::gfx) fn bounds(&self) -> Bounds {
+        self.bounds
+    }
     /// The mesh drawn this frame: the previous one while it stands in.
     pub fn drawn(&self) -> &SectionGpu {
         self.previous
@@ -188,6 +413,16 @@ impl Tile {
     pub fn meshes_mut(&mut self) -> impl Iterator<Item = &mut SectionGpu> {
         std::iter::once(&mut *self.mesh).chain(self.previous.as_deref_mut().map(|(mesh, _)| mesh))
     }
+    /// `meshes_mut`, each with its own mesh's record's id in sourced geometry's table
+    /// (`sourced_ids`), for the moves that compaction makes.
+    pub fn recorded_meshes_mut(
+        &mut self,
+        id: Option<u32>,
+    ) -> impl Iterator<Item = (&mut SectionGpu, Option<u32>)> {
+        std::iter::once((&mut *self.mesh, id))
+            .chain(self.previous.as_deref_mut().map(|(mesh, _)| (mesh, None)))
+    }
+    /// The tile as drawn this frame, if its own box is in view.
     pub fn visible(
         &self,
         key: TileKey,
@@ -195,15 +430,32 @@ impl Tile {
         frustum: &Frustum,
         now: Instant,
     ) -> Option<Visible> {
+        let at = DVec3::from(key.origin().map(f64::from)) - camera;
+        let mut visible = self.draw_state(key, at, now)?;
+        visible.distance = self.bounds.visible(at, frustum)?;
+        Some(visible)
+    }
+
+    /// `visible` for a tile whose cell is wholly in view (`TileGrid::walk`):
+    /// its own box is wholly in view too, so only its distance is left.
+    pub fn visible_inside(&self, key: TileKey, camera: DVec3, now: Instant) -> Option<Visible> {
+        let at = DVec3::from(key.origin().map(f64::from)) - camera;
+        let mut visible = self.draw_state(key, at, now)?;
+        visible.distance = self.bounds.distance(at);
+        Some(visible)
+    }
+
+    /// The tile as drawn this frame, short of its distance: none while it is
+    /// still fading in.
+    fn draw_state(&self, key: TileKey, at: DVec3, now: Instant) -> Option<Visible> {
         let fade = match self.dying {
             Some(since) if self.alone => fade_out_code(since, key.level, now),
             _ => fade_code(self.shown, key.level, now)?,
         };
-        let origin = DVec3::from(key.origin().map(f64::from)) - camera;
         Some(Visible {
             key,
-            distance: self.bounds.visible(origin, frustum)?,
-            origin: origin.as_vec3().to_array(),
+            distance: 0,
+            origin: at.as_vec3().to_array(),
             fade,
             old: self.dying.is_some() || self.previous.is_some(),
         })
@@ -211,6 +463,35 @@ impl Tile {
 }
 
 impl Renderer {
+    /// A far tile in, with its cell. `lods` and `lod_cells` change only here
+    /// and in `take_lod_tile`, so the cells never name a tile that is gone and
+    /// never miss one that is there (the frame walk trusts them).
+    fn add_lod_tile(&mut self, key: TileKey, mut tile: Tile) {
+        if self.sourced.record(
+            key,
+            &mut tile,
+            self.gpu_culling.as_ref(),
+            &self.device,
+            Instant::now(),
+        ) {
+            self.sourced_oom();
+        }
+        self.lod_cells.insert(key, tile.bounds);
+        self.lod_vertex_bytes += tile.mesh.vertex_bytes();
+        if let Some(old) = self.lods.insert(key, tile) {
+            self.lod_vertex_bytes -= old.mesh.vertex_bytes();
+        }
+    }
+
+    /// A far tile out, with its cell.
+    fn take_lod_tile(&mut self, key: TileKey) -> Option<Tile> {
+        let tile = self.lods.remove(&key)?;
+        self.lod_cells.remove(key);
+        self.sourced.unrecord(key);
+        self.lod_vertex_bytes -= tile.mesh.vertex_bytes();
+        Some(tile)
+    }
+
     /// A tile meshed again (finer detail) takes its place at once, but for
     /// one meshed around near chunks or finer tiles that are new (`keep`):
     /// its old mesh stands in while they fade in. A new one waits for the rest of its job
@@ -220,7 +501,7 @@ impl Renderer {
             copies.tile(key, mesh);
         }
         let old_slot = self.lods.get(&key).map(|tile| tile.cull_slot);
-        let (shown, previous) = match self.lods.remove(&key) {
+        let (shown, previous) = match self.take_lod_tile(key) {
             Some(old) if old.dying.is_none() => match old.previous {
                 Some(previous) => {
                     self.release_mesh(*old.mesh);
@@ -246,9 +527,11 @@ impl Renderer {
                         self.lod_cull_next - 1
                     })
                 });
-                self.lods.insert(
+                let animated = animated_layers(&mesh, previous.as_deref().map(|(p, _)| p));
+                self.add_lod_tile(
                     key,
                     Tile {
+                        animated,
                         mesh: Box::new(mesh),
                         bounds,
                         shown,
@@ -279,7 +562,7 @@ impl Renderer {
         if let Some(copies) = &mut self.capture_copies {
             copies.forget_tile(key);
         }
-        if let Some(tile) = self.lods.remove(&key) {
+        if let Some(tile) = self.take_lod_tile(key) {
             self.lod_cull_free.push(tile.cull_slot);
             self.release_tile(tile);
         }
@@ -300,9 +583,12 @@ impl Renderer {
                 self.release_section(key);
             }
         }
+        self.lod_vertex_bytes = 0;
         for (_, tile) in std::mem::take(&mut self.lods) {
             self.release_tile(tile);
         }
+        self.lod_cells.clear();
+        self.sourced.clear();
         self.lod_cull_free.clear();
         self.lod_cull_next = 0;
         self.set_lod_cutout(Default::default());
@@ -334,27 +620,16 @@ impl Renderer {
             self.shrink_gate.wait(start, super::SHRINK_SETTLE);
         }
         self.release_left(start);
-        let faded: Vec<_> = self
-            .lods
-            .iter()
-            .filter(|(_, tile)| tile.dying.is_some_and(|d| start - d >= FADE))
-            .map(|(&key, _)| key)
-            .collect();
-        for key in faded {
-            self.remove_lod(key);
+        // Tiles go dying and stand-ins get their time only as a job ends, so
+        // once the last job's fade is over no tile is left to look at.
+        if let Some(settled) = self.lod_settled {
+            self.release_faded(start);
+            if start >= settled {
+                self.lod_settled = None;
+            }
         }
-        let stood_in: Vec<_> = self
-            .lods
-            .values_mut()
-            .filter_map(|tile| match tile.previous.as_deref() {
-                Some((_, Some(since))) if start - *since >= FADE => {
-                    tile.previous.take().map(|p| *p)
-                }
-                _ => None,
-            })
-            .collect();
-        for (previous, _) in stood_in {
-            self.release_mesh(previous);
+        if self.lod_pending.is_none() {
+            return;
         }
         // The columns near chunks take in this job, and the tiles holding the
         // job's new finer ones: a tile meshed again around them keeps its
@@ -372,18 +647,15 @@ impl Renderer {
                     .map(|(key, _)| key),
             );
         for &key in new {
-            let mut key = key;
-            while key.level < MAX_LEVEL && around_new.insert(key.parent()) {
-                key = key.parent();
-            }
+            insert_ancestors(&mut around_new, key);
         }
-        let taken: Vec<_> = self
-            .lod_pending
-            .iter()
-            .flat_map(|pending| pending.cutout.iter().flatten())
-            .filter(|column| !self.lod_cutout.contains(column))
-            .copied()
-            .collect();
+        let taken = holding_columns(
+            self.lod_pending
+                .iter()
+                .flat_map(|pending| pending.cutout.iter().flatten())
+                .filter(|column| !self.lod_cutout.contains(column))
+                .copied(),
+        );
         while let Some(pending) = &mut self.lod_pending {
             // Keys meshed again keep their place; removed ones are skipped.
             let next = std::iter::from_fn(|| pending.order.pop_front())
@@ -401,10 +673,7 @@ impl Renderer {
                     .collect();
                 let mut above_replaced = FxHashSet::default();
                 for &key in &replaced {
-                    let mut key = key;
-                    while key.level < MAX_LEVEL && above_replaced.insert(key.parent()) {
-                        key = key.parent();
-                    }
+                    insert_ancestors(&mut above_replaced, key);
                 }
                 let over_replaced = |key: TileKey| {
                     let mut ancestor = key;
@@ -432,10 +701,7 @@ impl Renderer {
                 kept.extend(cut.iter().map(|&(x, z)| TileKey { x, z, level: 0 }));
                 let mut above = FxHashSet::default();
                 for &key in &kept {
-                    let mut key = key;
-                    while key.level < MAX_LEVEL && above.insert(key.parent()) {
-                        key = key.parent();
-                    }
+                    insert_ancestors(&mut above, key);
                 }
                 let alone = |key: TileKey| {
                     let mut ancestor = key;
@@ -447,9 +713,11 @@ impl Renderer {
                         })
                 };
                 let whole = start.checked_sub(FADE).unwrap_or(start);
+                let mut changed = Vec::new();
                 for (&key, tile) in &mut self.lods {
                     if tile.shown.is_none() {
                         tile.shown = Some(if over_replaced(key) { start } else { whole });
+                        changed.push(key);
                     }
                     if let Some((_, since)) = tile.previous.as_deref_mut() {
                         since.get_or_insert(start);
@@ -462,26 +730,54 @@ impl Renderer {
                     {
                         tile.dying = Some(start);
                         tile.alone = alone;
+                        changed.push(key);
                     }
                 }
+                self.sourced.refresh(changed, &self.lods, start);
                 if let Some(cutout) = pending.cutout {
                     self.set_lod_cutout(cutout);
                 }
+                self.lod_settled = Some(start + FADE);
                 return;
             };
             let mesh = pending.meshes.remove(&key).expect("pending tile");
-            let [x, _, z] = key.origin();
-            let size = key.size();
-            let keep = mesh.keep
-                || around_new.contains(&key)
-                || taken.iter().any(|&(cx, cz)| {
-                    (x..x + size).contains(&(cx * 16)) && (z..z + size).contains(&(cz * 16))
-                });
+            let keep = mesh.keep || around_new.contains(&key) || taken.contains(&key);
             self.upload_lod(key, &mesh, keep);
             if start.elapsed() >= budget {
                 return;
             }
         }
+    }
+
+    /// Releases the tiles that have faded out and the stand-ins whose
+    /// replacements have faded in, `FADE` after their job ended.
+    fn release_faded(&mut self, start: Instant) {
+        let faded: Vec<_> = self
+            .lods
+            .iter()
+            .filter(|(_, tile)| tile.dying.is_some_and(|d| start - d >= FADE))
+            .map(|(&key, _)| key)
+            .collect();
+        for key in faded {
+            self.remove_lod(key);
+        }
+        let stood_in: Vec<_> = self
+            .lods
+            .iter_mut()
+            .filter_map(|(&key, tile)| match tile.previous.as_deref() {
+                Some((_, Some(since))) if start - *since >= FADE => {
+                    tile.animated = animated_layers(&tile.mesh, None);
+                    tile.previous.take().map(|p| (key, *p))
+                }
+                _ => None,
+            })
+            .collect();
+        let mut changed = Vec::with_capacity(stood_in.len());
+        for (key, (previous, _)) in stood_in {
+            self.release_mesh(previous);
+            changed.push(key);
+        }
+        self.sourced.refresh(changed, &self.lods, start);
     }
 
     /// The tiles drawn for good, not fading out (`render-capture`).
@@ -507,6 +803,45 @@ impl Renderer {
             self.lod_retiring.remove(&key);
             self.leave_section(key);
         }
+    }
+}
+
+/// Fixtures for sourced geometry's residency tests (`sourced_geometry::gpu`), which build
+/// tiles and put them in a grid the way `upload_lod` does.
+#[cfg(test)]
+impl Tile {
+    pub(in crate::gfx) fn for_test(
+        mesh: SectionGpu,
+        bounds: [Vec3; 2],
+        shown: Option<Instant>,
+        previous: Option<(SectionGpu, Option<Instant>)>,
+    ) -> Self {
+        Self {
+            animated: SmallVec::new(),
+            mesh: Box::new(mesh),
+            bounds: Bounds {
+                min: bounds[0],
+                max: bounds[1],
+            },
+            shown,
+            dying: None,
+            alone: false,
+            previous: previous.map(Box::new),
+            cull_slot: 0,
+        }
+    }
+}
+
+#[cfg(test)]
+impl TileGrid {
+    pub(in crate::gfx) fn insert_bounds(&mut self, key: TileKey, bounds: [Vec3; 2]) {
+        self.insert(
+            key,
+            Bounds {
+                min: bounds[0],
+                max: bounds[1],
+            },
+        );
     }
 }
 
@@ -589,12 +924,10 @@ mod tests {
         let bounds = Bounds::mesh(&mesh).unwrap();
         assert_eq!(bounds.min, Vec3::new(0.0, -64.0, 0.0));
         assert_eq!(bounds.max, Vec3::new(1024.0, 120.0, 1024.0));
-        let view = Frustum {
-            planes: super::super::frustum(
-                super::super::world_projection(70.0, 16.0 / 9.0, 8192.0)
-                    * crate::camera::view_matrix(0.0, 0.0),
-            ),
-        };
+        let view = Frustum::from_planes(super::super::frustum(
+            super::super::world_projection(70.0, 16.0 / 9.0, 8192.0)
+                * crate::camera::view_matrix(0.0, 0.0),
+        ));
         // The tile origin is far behind, but its far edge reaches the camera.
         // Negative world origins therefore remain visible.
         assert!(
@@ -609,5 +942,146 @@ mod tests {
                 .is_none()
         );
         assert!(Bounds::mesh(&SectionMesh::default()).is_none());
+    }
+
+    /// The view the grid tests are written against: the camera at the origin,
+    /// looking down +z, as vanilla's `view_matrix(0, 0)` does.
+    fn camera_view() -> Frustum {
+        Frustum::from_planes(super::super::frustum(
+            super::super::world_projection(70.0, 16.0 / 9.0, 8192.0)
+                * crate::camera::view_matrix(0.0, 0.0),
+        ))
+    }
+
+    fn tile_box(min: [f32; 3], max: [f32; 3]) -> Bounds {
+        Bounds {
+            min: Vec3::from(min),
+            max: Vec3::from(max),
+        }
+    }
+
+    /// The tiles holding a set of chunk columns are those whose block square
+    /// holds one of the columns' corners, at every level.
+    #[test]
+    fn tiles_holding_columns_are_those_over_them() {
+        let columns = [(-1, 5), (0, 0), (37, -70)];
+        let tiles = holding_columns(columns);
+        let mut held = 0;
+        for level in 0..=MAX_LEVEL {
+            for x in -6..6 {
+                for z in -6..6 {
+                    let key = TileKey { x, z, level };
+                    let [x0, _, z0] = key.origin();
+                    let size = key.size();
+                    let over = columns.iter().any(|&(cx, cz)| {
+                        (x0..x0 + size).contains(&(cx * 16)) && (z0..z0 + size).contains(&(cz * 16))
+                    });
+                    assert_eq!(tiles.contains(&key), over, "{key:?}");
+                    held += usize::from(over);
+                }
+            }
+        }
+        // The first two columns are held at every level, (37, -70) within the
+        // range above only by coarser tiles.
+        assert!(held > 2 * (usize::from(MAX_LEVEL) + 1));
+        assert!(tiles.contains(&TileKey {
+            x: 37,
+            z: -70,
+            level: 0
+        }));
+    }
+
+    /// A tile its cell vouches for gets the same distance, and so the same
+    /// place in the draw order, as one tested on its own box.
+    #[test]
+    fn a_vouched_for_tile_takes_the_same_distance() {
+        let view = camera_view();
+        let bounds = tile_box([0.0, -64.0, 0.0], [1024.0, 120.0, 1024.0]);
+        for origin in [
+            DVec3::new(-1000.0, -80.0, -512.0),
+            DVec3::new(0.0, 100.0, 300.0),
+            DVec3::new(-64.0, 0.0, 0.0),
+        ] {
+            assert_eq!(bounds.visible(origin, &view), Some(bounds.distance(origin)));
+        }
+    }
+
+    /// A cell's box holds every tile in it (a tile it did not hold would be
+    /// dropped unseen), shrinks to the tiles left when one goes, and goes with
+    /// the last of them.
+    #[test]
+    fn a_cell_holds_the_boxes_of_its_tiles() {
+        let key = |x, z| TileKey { x, z, level: 0 };
+        let mut grid = TileGrid::default();
+        // Two level-0 tiles in the cell at (0, 0), 128 blocks wide: the second
+        // 16 along, its box reaching past its own corner.
+        grid.insert(key(0, 0), tile_box([0.0, -64.0, 0.0], [16.0, 120.0, 16.0]));
+        grid.insert(
+            key(1, 0),
+            tile_box([-2.0, -64.0, -2.0], [18.0, 320.0, 18.0]),
+        );
+        // A third in the next cell along.
+        grid.insert(key(8, 0), tile_box([0.0, -64.0, 0.0], [16.0, 64.0, 16.0]));
+        let box_of = |grid: &TileGrid, at: (i32, i32)| {
+            grid.cells()
+                .find(|&(cell, ..)| cell == at)
+                .map(|(_, min, max)| (min, max))
+        };
+        assert_eq!(
+            box_of(&grid, (0, 0)),
+            Some((DVec3::new(0.0, -64.0, -2.0), DVec3::new(34.0, 320.0, 18.0)))
+        );
+        assert_eq!(
+            box_of(&grid, (1, 0)),
+            Some((DVec3::new(128.0, -64.0, 0.0), DVec3::new(144.0, 64.0, 16.0)))
+        );
+        // The overflowing tile goes: the cell is the one left over.
+        grid.remove(key(1, 0));
+        assert_eq!(
+            box_of(&grid, (0, 0)),
+            Some((DVec3::new(0.0, -64.0, 0.0), DVec3::new(16.0, 120.0, 16.0)))
+        );
+        grid.remove(key(0, 0));
+        assert_eq!(box_of(&grid, (0, 0)), None, "the last tile takes it");
+        assert!(box_of(&grid, (1, 0)).is_some(), "another cell stays");
+    }
+
+    /// The frustum is asked once per cell: a cell wholly in view vouches for
+    /// its tiles, one that only crosses it hands them back for their own test,
+    /// and one it misses leaves them out.
+    #[test]
+    fn a_cell_is_tested_once_for_all_its_tiles() {
+        let key = |x, z| TileKey { x, z, level: 0 };
+        let view = camera_view();
+        let tile = tile_box([0.0, -64.0, 0.0], [16.0, 64.0, 16.0]);
+        let mut grid = TileGrid::default();
+        // On the axis 176 blocks in front of the camera.
+        let inside = key(-1, 11);
+        // Behind it.
+        let behind = key(-1, -4);
+        // Across the screen's right edge: 50 blocks out on its near side, 400
+        // on its far side, over 100 blocks of depth.
+        let crossing = key(3, 0);
+        let edge = tile_box([2.0, -64.0, 0.0], [352.0, 64.0, 100.0]);
+        grid.insert(inside, tile);
+        grid.insert(behind, tile);
+        grid.insert(crossing, edge);
+        let seen_box = |key: TileKey, bounds: Bounds| {
+            let (min, max) = bounds.world(key);
+            (min.as_vec3(), max.as_vec3())
+        };
+        let (min, max) = seen_box(inside, tile);
+        assert!(view.contains(min, max), "the box 176 in is wholly in view");
+        let (min, max) = seen_box(behind, tile);
+        assert!(!view.intersects(min, max), "the box behind is out of view");
+        let (min, max) = seen_box(crossing, edge);
+        assert!(
+            view.intersects(min, max) && !view.contains(min, max),
+            "the box across the edge is neither in nor out"
+        );
+        let mut seen = Vec::new();
+        grid.walk(DVec3::ZERO, &view, |inside, at| seen.push((inside, at)));
+        seen.sort_unstable();
+        assert_eq!(seen, [(false, crossing), (true, inside)]);
     }
 }

@@ -288,6 +288,7 @@ pub fn main() -> sunrise_client::Result<()> {
             };
             let death = drops::Death {
                 loot: &loot,
+                this_nbt: None,
                 damage: Some(source),
                 player: player.filter(|_| pkill),
                 player_killed: pkill,

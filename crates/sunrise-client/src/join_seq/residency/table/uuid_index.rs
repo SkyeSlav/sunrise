@@ -23,7 +23,7 @@ pub(super) struct UuidIndex {
 }
 
 impl UuidIndex {
-    fn key(&self, id: NonZeroU32, row: ResidentRow) -> Option<LevelUuid> {
+    pub(super) fn key(&self, id: NonZeroU32, row: ResidentRow) -> Option<LevelUuid> {
         let owner = row.location.owner;
         if owner.kind == Kind::DragonPart {
             return None;

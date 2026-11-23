@@ -75,7 +75,23 @@ impl Game<'_> {
     /// `Projectile.getOwner`: the owner as a resolved entity. None for no
     /// owner, one that is gone or in another level, or a stale handle.
     pub(super) fn projectile_owner(&self, projectile: ProjectileRef) -> Option<EntityRef> {
-        let target = match self.native_projectile_backing(projectile)? {
+        self.native_projectile_backing(projectile)?;
+        self.entity_owner(projectile.entity())
+    }
+
+    /// `TraceableEntity.getOwner`: a projectile's owner (`Projectile.getOwner`)
+    /// or a general row's, as a resolved entity. None for no owner or a kind
+    /// with none, one that is gone or in another level, or a stale handle.
+    pub(super) fn entity_owner(&self, entity: EntityRef) -> Option<EntityRef> {
+        let Some(backing) = self.native_projectile_backing(ProjectileRef::new(entity)) else {
+            let Target::General(id) = self.native_entity_target(entity)? else {
+                return None;
+            };
+            let rows = &self.resident_entities.general.rows;
+            let owner = rows.iter().find(|row| row.id == id)?.owner?;
+            return self.native_owner_entity(self.target_by_uuid(ints_uuid(owner))?);
+        };
+        let target = match backing {
             Backing::List(i) => {
                 let uuid = self.creatures.projectiles[i].owner_uuid?;
                 self.target_by_uuid(ints_uuid(uuid))?
@@ -424,7 +440,7 @@ mod tests {
             let projectile = game.projectile(entity).unwrap();
             assert!(game.projectile_set_owner(projectile, Some(boat)));
             assert_eq!(game.projectile_owner(projectile), Some(boat));
-            let scene = Air(game.vehicle_targets());
+            let scene = Air(game.pickable_object_targets());
             let mut p = game.creatures.projectiles[0].clone();
             assert!(!p.left_owner);
             assert_eq!(p.owner, None, "a vehicle must not credit a living attacker");

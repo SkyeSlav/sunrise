@@ -1,10 +1,10 @@
 use super::*;
 use crate::prelude::*;
-use runtime::index::AttachmentIndex;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
+use sunrise_mod_runtime::attachments::{self as runtime, index::AttachmentIndex};
 
 static VALUE: AttachmentType<u32> = AttachmentType {
     namespace: "mapping",
@@ -43,7 +43,7 @@ impl ModStateServerHost for Store {
         &self,
         token: AttachmentWriteToken,
     ) -> Result<(), AttachmentRowError> {
-        token.validate(&self.index.lock().unwrap())
+        crate::__private::game::validate_attachment_write(&token, Some(&self.index))
     }
 }
 impl AttachmentHost for Store {
@@ -125,21 +125,22 @@ fn all_scoped_variants_write_and_remove_the_exact_storage_target() {
         host.maps.insert(target, map);
     }
     let batch = host.query_mut(&VALUE).unwrap();
-    assert_eq!(batch.iter().len(), 5);
     let captured = || {
-        batch
-            .iter()
+        let mut rows = batch.iter();
+        std::iter::from_fn(|| rows.try_next().unwrap())
             .map(|row| {
-                let row = row.unwrap();
-                (row.holder(), *row.value())
+                (
+                    row.holder(),
+                    row.with_value(Default::default(), |value| *value).unwrap(),
+                )
             })
             .collect::<Vec<_>>()
     };
     let original: Vec<_> = cases.iter().map(|(holder, _)| (*holder, 10)).collect();
+    assert_eq!(captured(), original);
     for (scoped, target) in cases {
-        let row = batch
-            .iter()
-            .map(Result::unwrap)
+        let mut rows = batch.iter();
+        let row = std::iter::from_fn(|| rows.try_next().unwrap())
             .find(|row| row.holder() == scoped)
             .unwrap();
         row.set(&mut host, 23).unwrap();
@@ -151,15 +152,7 @@ fn all_scoped_variants_write_and_remove_the_exact_storage_target() {
                 .read(&VALUE),
             Ok(&23)
         );
-        assert_eq!(
-            *batch
-                .iter()
-                .map(Result::unwrap)
-                .find(|captured| captured.holder() == scoped)
-                .unwrap()
-                .value(),
-            10
-        );
+        assert_eq!(row.with_value(Default::default(), |value| *value), Ok(10));
         assert_eq!(row.remove(&mut host).unwrap(), Some(23));
         assert_eq!(captured(), original);
         assert!(
@@ -168,7 +161,10 @@ fn all_scoped_variants_write_and_remove_the_exact_storage_target() {
                 .unwrap()
                 .is_none()
         );
-        assert_eq!(*row.value(), 10);
+        assert_eq!(
+            row.with_value(Default::default(), |value| *value).unwrap(),
+            10
+        );
     }
     for target in decoys {
         assert_eq!(
@@ -180,5 +176,12 @@ fn all_scoped_variants_write_and_remove_the_exact_storage_target() {
             Ok(&99)
         );
     }
-    assert_eq!(host.query(&VALUE).unwrap().iter().len(), 0);
+    assert!(
+        host.query(&VALUE)
+            .unwrap()
+            .iter()
+            .try_next()
+            .unwrap()
+            .is_none()
+    );
 }

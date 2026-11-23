@@ -10,6 +10,8 @@ pub mod tests {
     #[cfg(test)]
     use super::*;
     use crate::parts::tests::*;
+    #[cfg(test)]
+    use crate::resource_util::move_resources;
     use crate::*;
 
     #[test]
@@ -34,7 +36,7 @@ pub mod tests {
                 mod_vocab::__private::parts_installation::fluid_key(u32::MAX)
             );
             assert_eq!(registrar.world_fluids.len(), 1);
-            let world = registrar.world_fluids[0].1;
+            let (_, (_, world)) = registrar.world_fluids[0];
             assert_eq!(
                 (
                     world.tick_delay,
@@ -152,51 +154,55 @@ pub mod tests {
             &self,
             host: &mut dyn ServerHost,
             index: usize,
-            resource: &FluidResource,
+            resource: Option<&FluidResource>,
         ) -> u32 {
             crate::backend_of(host).map_or(0, |backend| {
-                backend.fluid_tank_capacity(self.at, index, &resource.to_stack(1))
+                backend.fluid_tank_capacity(
+                    self.at,
+                    index,
+                    resource.map(|r| r.to_stack(1)).as_ref(),
+                )
             })
         }
-        fn insert(
+        fn insert_at(
             &self,
             host: &mut dyn ServerHost,
-            tx: &Transaction,
+            tx: &TransactionContext,
             index: usize,
             resource: &FluidResource,
             amount: u32,
-        ) -> u32 {
+        ) -> Result<u32, TransactionError<Overanswered>> {
             let Some(backend) = crate::backend_mut_of(host) else {
-                return 0;
+                return Ok(0);
             };
             let rest = backend.fluid_tank_insert(self.at, index, resource.to_stack(amount), tx);
             let went = amount - rest.map_or(0, |rest| rest.amount);
-            match self.lie {
+            Ok(match self.lie {
                 Some(Lie::TakesMore) => went + 100,
                 _ => went,
-            }
+            })
         }
-        fn extract(
+        fn extract_at(
             &self,
             host: &mut dyn ServerHost,
-            tx: &Transaction,
+            tx: &TransactionContext,
             index: usize,
             resource: &FluidResource,
             amount: u32,
-        ) -> u32 {
+        ) -> Result<u32, TransactionError<Overanswered>> {
             let held =
                 crate::backend_of(host).and_then(|backend| backend.fluid_tank(self.at, index));
             if !held.is_some_and(|held| resource.matches(&held)) {
-                return 0;
+                return Ok(0);
             }
             let more = if self.lie == Some(Lie::GivesMore) {
                 100
             } else {
                 0
             };
-            crate::backend_mut_of(host)
+            Ok(crate::backend_mut_of(host)
                 .and_then(|backend| backend.fluid_tank_extract(self.at, index, amount + more, tx))
-                .map_or(0, |out| out.amount)
+                .map_or(0, |out| out.amount))
         }
     }
 
@@ -263,15 +269,60 @@ pub mod tests {
             (from, from_side): ([i32; 3], Option<Direction>),
             (to, to_side): ([i32; 3], Option<Direction>),
             max: u32,
-        ) -> Result<u32, Overanswered> {
+        ) -> Result<u32, crate::TransactionError<Overanswered>> {
             let host: &mut dyn ServerHost = self;
             let source = here().capability(host, &FLUIDS, from, from_side).unwrap();
             let target = here().capability(host, &FLUIDS, to, to_side).unwrap();
-            host.transaction(|host, tx| move_resources(host, &source, &target, |_| true, max, tx))
+            match host.transaction(|host, tx| {
+                move_resources(host, &source, &target, |_| true, max, Some(tx))
+            }) {
+                Ok(moved) => Ok(moved),
+                Err(crate::TransactionError::Aborted(over)) => Err(over),
+                Err(crate::TransactionError::InvalidContext) => {
+                    Err(crate::TransactionError::InvalidContext)
+                }
+                Err(crate::TransactionError::Unavailable) => {
+                    Err(crate::TransactionError::Unavailable)
+                }
+                Err(crate::TransactionError::CommitRefused) => {
+                    Err(crate::TransactionError::CommitRefused)
+                }
+            }
         }
     }
     #[cfg(test)]
-    impl mod_api::prelude::LevelsBackend for TankWorld {
+    impl mod_api::prelude::LevelBlocksBackend for TankWorld {
+        fn level_with_capability_site(
+            &self,
+            at: BlockSide,
+            visit: &mut dyn FnMut(&dyn crate::LevelHost, crate::BlockCapabilitySite),
+        ) -> Result<(), crate::LevelReadError> {
+            if at.level != here() {
+                return Err(crate::LevelReadError::Unavailable);
+            }
+            let air = crate::__private::block_key("minecraft:air")
+                .ok_or(crate::LevelReadError::Unavailable)?;
+            let resident = crate::prelude::BlockEntitiesHost::block_entity(self, at.level, at.pos)
+                .map(|entity| {
+                    (
+                        entity,
+                        crate::prelude::BlockEntitiesBackend::block_entity_kind(self, entity),
+                    )
+                });
+            visit(
+                &crate::parts::tests::Level,
+                crate::BlockCapabilitySite::new(
+                    at,
+                    crate::__private::block_state_from_ordinal(air, 0),
+                    resident,
+                    false,
+                ),
+            );
+            Ok(())
+        }
+    }
+    #[cfg(test)]
+    impl mod_api::prelude::LevelTickingBackend for TankWorld {
         fn level_in_place(&self, level: LevelRef) -> bool {
             level == here()
         }
@@ -296,7 +347,7 @@ pub mod tests {
             &self,
             BlockSide { pos, .. }: BlockSide,
             _: usize,
-            _: &FluidStack,
+            _: Option<&FluidStack>,
         ) -> u32 {
             self.tanks
                 .get(&pos)
@@ -307,7 +358,10 @@ pub mod tests {
     #[cfg(test)]
     impl Backend for TankWorld {}
     #[cfg(test)]
-    mod_api::impl_backend_areas!(TankWorld, except(block_entities, fluids_energy, levels));
+    mod_api::impl_backend_areas!(
+        TankWorld,
+        except(block_entities, fluids_energy, level_blocks, level_ticking)
+    );
     #[cfg(test)]
     impl mod_api::prelude::FluidsEnergyBackendMut for TankWorld {
         fn fluid_tank_insert(
@@ -315,8 +369,9 @@ pub mod tests {
             BlockSide { pos, .. }: BlockSide,
             _: usize,
             fluid: FluidStack,
-            _: &Transaction,
+            tx: &TransactionContext,
         ) -> Option<FluidStack> {
+            self.journal.assert_current(tx);
             let Some(tank) = self.tanks.get_mut(&pos).filter(|tank| tank.fills) else {
                 return Some(fluid);
             };
@@ -352,8 +407,9 @@ pub mod tests {
             BlockSide { pos, .. }: BlockSide,
             _: usize,
             max: u32,
-            _: &Transaction,
+            tx: &TransactionContext,
         ) -> Option<FluidStack> {
+            self.journal.assert_current(tx);
             let tank = self.tanks.get_mut(&pos).filter(|tank| tank.drains)?;
             let held = tank.held.clone()?;
             let asked = if tank.short {
@@ -397,17 +453,44 @@ pub mod tests {
                 self,
             ))
         }
+        fn with_current_transaction_scope(
+            &mut self,
+            callback: &mut dyn for<'loan> FnMut(
+                &'loan mut dyn ServerHost,
+                &'loan TransactionContext,
+            ),
+        ) -> Result<(), mod_vocab::TransactionUnavailable> {
+            FakeJournal::with_current_scope(self, |host| &host.journal, callback)
+        }
+
+        fn with_transaction_scope(
+            &mut self,
+            callback: &mut dyn for<'loan> FnMut(
+                &'loan mut dyn ServerHost,
+                &'loan TransactionContext,
+            ) -> bool,
+        ) -> Result<bool, crate::TransactionScopeError> {
+            FakeJournal::with_scope(
+                self,
+                |world| &mut world.journal,
+                |world| world.tanks.clone(),
+                |world, tanks| world.tanks = tanks,
+                callback,
+            )
+        }
+        fn transaction_matches(&self, tx: Option<&TransactionContext>) -> bool {
+            self.journal.matches(tx)
+        }
     }
     #[cfg(test)]
     mod_api::impl_server_host_areas!(TankWorld, except(mod_state));
     #[cfg(test)]
     impl crate::prelude::ModStateServerHost for TankWorld {
-        fn transaction_open(&mut self) -> TransactionSeal {
-            self.journal.open(self.tanks.clone())
-        }
-        fn transaction_close(&mut self, seal: &TransactionSeal, commit: bool) {
-            if let Some(tanks) = self.journal.close(seal, commit) {
-                self.tanks = tanks;
+        fn transaction_lifecycle(&self) -> crate::TransactionLifecycle {
+            if self.journal.depth() == 0 {
+                crate::TransactionLifecycle::None
+            } else {
+                crate::TransactionLifecycle::Open
             }
         }
     }
@@ -461,13 +544,16 @@ pub mod tests {
         world.tank(TANK, None, false);
         let host: &mut dyn ServerHost = &mut world;
         let target = here().capability(host, &FLUIDS, TANK, None).unwrap();
-        assert_eq!(target.capacity(host, 0, &FluidResource::of(&water)), 0);
+        assert_eq!(
+            target.capacity(host, 0, Some(&FluidResource::of(&water))),
+            0
+        );
         assert_eq!(world.moved((SOURCE, None), (TANK, None), 1000), Ok(0));
         assert_eq!(world.held(SOURCE), Some(water));
     }
 
     #[test]
-    pub(crate) fn a_fluid_move_tries_again_with_what_the_target_took_and_loses_nothing() {
+    pub(crate) fn a_fluid_move_commits_only_the_destination_count_the_source_can_supply_exactly() {
         game_thread();
         let water = |amount| {
             FluidStack::new(
@@ -476,32 +562,42 @@ pub mod tests {
             )
         };
         type Setup = fn(&mut GameTank, &mut GameTank);
-        let cases: [(&str, Setup, u32); 6] = [
-            // Half of each offer: no request is ever taken whole, so nothing moves.
-            ("half of each offer", |_, t| t.halving = true, 0),
+        let cases: [(&str, Setup, u32); 7] = [
+            // NeoForge ResourceHandlerUtil.moveInternal visits each source index once.
+            ("half of each offer", |_, t| t.halving = true, 500),
             (
                 "half of each offer, from quarters",
                 |s, t| (s.quarters, t.halving) = (true, true),
-                0,
+                500,
             ),
             (
                 "half of each offer, from a drain-only tank",
                 |s, t| (s.fills, t.halving) = (false, true),
-                0,
+                500,
             ),
-            // Half its room: moves of 500, 250, then 125, which quarters can't give.
+            // Half its room: 500 fits a quarter-quantized source; 375 (half of 750) cannot be
+            // extracted exactly, so the transfer rolls back to 0.
             (
                 "half its room, from quarters",
                 |s, t| (s.quarters, t.half_room) = (true, true),
-                750,
+                500,
+            ),
+            (
+                "non-quarter half room, from quarters",
+                |s, t| {
+                    s.quarters = true;
+                    t.half_room = true;
+                    t.capacity = 750;
+                },
+                0,
             ),
             (
                 "half its room, from a drain-only tank",
                 |s, t| (s.fills, t.half_room) = (false, true),
-                999,
+                500,
             ),
-            // One less than asked: the 999 it gives all go in.
-            ("a source giving one less", |s, _| s.short = true, 999),
+            // It probes as available for 999 but cannot supply 999 after that much was inserted.
+            ("a source giving one less", |s, _| s.short = true, 0),
         ];
         for (case, setup, moves) in cases {
             let mut world = TankWorld::default();
@@ -545,21 +641,35 @@ pub mod tests {
             // first move through the liar fails, and its error aborts the transaction, so
             // every tank holds what it held.
             let moved = host.transaction(|host, tx| {
-                let first = move_resources(host, &other, &tank, |_| true, 300, tx)?;
-                let second = move_resources(host, &source, &tank, |_| true, 300, tx)?;
-                Ok(first + second)
+                let first = move_resources(host, &other, &tank, |_| true, 300, Some(tx))?;
+                let second = move_resources(host, &source, &tank, |_| true, 300, Some(tx))?;
+                Ok::<_, crate::TransactionError<Overanswered>>(first + second)
             });
-            let owner = "doubler".to_owned();
-            assert_eq!(
-                moved,
-                Err(mod_vocab::__private::parts_installation::overanswered(
-                    owner
-                )),
-                "{liar}"
-            );
+            let crate::TransactionError::Aborted(crate::TransactionError::Aborted(error)) =
+                moved.unwrap_err()
+            else {
+                panic!("expected aborted Overanswered");
+            };
+            assert_eq!(error.owner.as_deref(), Some("doubler"), "{liar}");
+            assert!(crate::parts::warned_about("doubler"));
             let held = [SOURCE, OTHER, TANK].map(|pos| world.held(pos));
             assert_eq!(held, [water(1000), water(1000), None], "{liar}");
         }
+
+        // The full probe is capped by what the source holds. Only the extraction
+        // after the destination takes half can return more than was requested.
+        let mut world = TankWorld::default();
+        world.tank(SOURCE, water(1000), true);
+        world.types.insert(SOURCE, "test:gives_more");
+        world.tank(TANK, None, true);
+        world.tanks.get_mut(&TANK).unwrap().halving = true;
+        let crate::TransactionError::Aborted(error) =
+            world.moved((SOURCE, None), (TANK, None), 1000).unwrap_err()
+        else {
+            panic!("expected aborted Overanswered");
+        };
+        assert_eq!(error.owner.as_deref(), Some("doubler"));
+        assert_eq!([world.held(SOURCE), world.held(TANK)], [water(1000), None]);
     }
 }
 
@@ -642,7 +752,7 @@ impl FluidsRegistrar for PartRegistrar {
                 .declared_fluids
                 .insert(flowing.clone(), self.mod_id);
             self.fluid_key(&flowing);
-            self.world_fluids.push((id, fluid));
+            self.world_fluids.push((self.mod_id, (id, fluid)));
         }
         key
     }

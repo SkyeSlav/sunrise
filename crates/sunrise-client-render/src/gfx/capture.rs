@@ -32,7 +32,7 @@ use std::{
 
 /// CPU copies of the meshes uploaded since capturing was turned on.
 #[derive(Default)]
-pub(super) struct Copies {
+pub(crate) struct Copies {
     sections: FxHashMap<SectionKey, SectionMesh>,
     tiles: FxHashMap<TileKey, SectionMesh>,
 }
@@ -177,6 +177,46 @@ pub struct Clouds {
     pub range: i32,
     pub fast: bool,
     pub color: [f32; 4],
+    /// The layer's bottom (`clouds::Input::height`); a capture from before it was kept has the
+    /// default height.
+    #[serde(default = "default_cloud_height")]
+    pub height: f32,
+}
+
+impl Clouds {
+    /// The frame's cloud inputs as a capture keeps them.
+    fn record(c: &crate::clouds::Input<'_>) -> Self {
+        Self {
+            texture: c.texture.clone(),
+            uv: c.uv,
+            camera: c.camera.to_array(),
+            time: c.time,
+            partial_tick: c.partial_tick,
+            range: c.range,
+            fast: c.fast,
+            color: c.color,
+            height: c.height,
+        }
+    }
+
+    /// The cloud inputs a replay draws from.
+    fn input(&self) -> crate::clouds::Input<'_> {
+        crate::clouds::Input {
+            texture: &self.texture,
+            uv: self.uv,
+            camera: DVec3::from_array(self.camera),
+            time: self.time,
+            partial_tick: self.partial_tick,
+            range: self.range,
+            fast: self.fast,
+            color: self.color,
+            height: self.height,
+        }
+    }
+}
+
+fn default_cloud_height() -> f32 {
+    crate::clouds::CLOUD_HEIGHT
 }
 
 /// The frame's camera and the inputs of its globals, sky, fog and lightmap.
@@ -186,6 +226,8 @@ pub struct FrameInputs {
     pub yaw: f32,
     pub pitch: f32,
     pub fov_degrees: f32,
+    #[serde(default)]
+    pub cull_fov_degrees: Option<f32>,
     pub eye: [f64; 3],
     pub eye_rotation: [f32; 2],
     pub first_person: bool,
@@ -194,6 +236,8 @@ pub struct FrameInputs {
     pub sky: Sky,
     pub distance: f32,
     pub detail_distance: f32,
+    #[serde(default)]
+    pub shadow_distance: Option<f32>,
     pub depth_far: f32,
     pub underwater: bool,
     pub water_plane: Option<f32>,
@@ -223,6 +267,8 @@ pub struct FrameInputs {
     pub night_vision: f32,
     pub block_flicker: f32,
     pub boss_darken: f32,
+    /// What each quad of `celestial.bin` is (`Frame::celestial_bodies`).
+    pub celestial_bodies: Vec<super::CelestialBody>,
 }
 
 /// `scene.json`.
@@ -398,59 +444,7 @@ impl Renderer {
                 animated_textures: self.animated_textures,
                 shader_pack: self.pack_post.is_some() || self.native.is_some(),
             },
-            frame: FrameInputs {
-                camera: frame.camera.to_array(),
-                yaw: frame.yaw,
-                pitch: frame.pitch,
-                fov_degrees: frame.fov_degrees,
-                eye: frame.eye.to_array(),
-                eye_rotation: frame.eye_rotation,
-                first_person: frame.first_person,
-                bob: frame.bob.to_cols_array(),
-                spin: frame.spin.to_cols_array(),
-                sky: frame.sky,
-                distance: frame.distance,
-                detail_distance: frame.detail_distance,
-                depth_far: frame.depth_far,
-                underwater: frame.underwater,
-                water_plane: frame.water_plane,
-                cave_culling: frame.cave_culling,
-                sky_blocked: frame.sky_blocked,
-                skybox: frame.skybox,
-                end_sky: frame.end_sky,
-                end_sky_sprite: frame.end_sky_sprite,
-                boss_world_fog: frame.boss_world_fog,
-                environment_fog: frame.environment_fog,
-                water_fog: frame.water_fog,
-                fog: frame.fog,
-                dark_disc: frame.dark_disc,
-                nether_lighting: frame.nether_lighting,
-                glint_alpha: frame.glint_alpha,
-                glint_ticks: frame.glint_ticks,
-                hand_fov_degrees: frame.hand_fov_degrees,
-                stars: frame
-                    .stars
-                    .map(|(rotation, brightness)| (rotation.to_cols_array(), brightness)),
-                clouds: frame.clouds.as_ref().map(|c| Clouds {
-                    texture: c.texture.clone(),
-                    uv: c.uv,
-                    camera: c.camera.to_array(),
-                    time: c.time,
-                    partial_tick: c.partial_tick,
-                    range: c.range,
-                    fast: c.fast,
-                    color: c.color,
-                }),
-                game_time: frame.game_time,
-                shader_game_time: frame.shader_game_time,
-                end_portal_sprites: frame.end_portal_sprites,
-                crumbling_sprite: frame.crumbling_sprite,
-                ticks: frame.ticks,
-                darkness: frame.darkness,
-                night_vision: frame.night_vision,
-                block_flicker: frame.block_flicker,
-                boss_darken: frame.boss_darken,
-            },
+            frame: FrameInputs::record(frame),
             sections,
             tiles,
             lod_cutout: self.lod_cutout.iter().copied().collect(),
@@ -470,25 +464,59 @@ impl Renderer {
     }
 }
 
-impl Scene {
-    /// Reads `scene.json` and `celestial.bin` (the meshes: `read_meshes`).
-    pub fn read(dir: &Path) -> Result<Self> {
-        let mut scene: Scene =
-            serde_json::from_reader(BufReader::new(File::open(dir.join("scene.json"))?))?;
-        let bytes = fs::read(dir.join("celestial.bin"))?;
-        let size = std::mem::size_of::<Vertex>();
-        let mut celestial = vec![<Vertex as bytemuck::Zeroable>::zeroed(); bytes.len() / size];
-        let len = celestial.len() * size;
-        bytemuck::cast_slice_mut::<Vertex, u8>(celestial.as_mut_slice())
-            .copy_from_slice(&bytes[..len]);
-        scene.celestial = celestial;
-        Ok(scene)
+impl FrameInputs {
+    fn record(frame: &Frame<'_>) -> Self {
+        Self {
+            camera: frame.camera.to_array(),
+            yaw: frame.yaw,
+            pitch: frame.pitch,
+            fov_degrees: frame.fov_degrees,
+            cull_fov_degrees: Some(frame.cull_fov_degrees),
+            eye: frame.eye.to_array(),
+            eye_rotation: frame.eye_rotation,
+            first_person: frame.first_person,
+            bob: frame.bob.to_cols_array(),
+            spin: frame.spin.to_cols_array(),
+            sky: frame.sky,
+            distance: frame.distance,
+            detail_distance: frame.detail_distance,
+            shadow_distance: frame.shadow_distance,
+            depth_far: frame.depth_far,
+            underwater: frame.underwater,
+            water_plane: frame.water_plane,
+            cave_culling: frame.cave_culling,
+            sky_blocked: frame.sky_blocked,
+            skybox: frame.skybox,
+            end_sky: frame.end_sky,
+            end_sky_sprite: frame.end_sky_sprite,
+            boss_world_fog: frame.boss_world_fog,
+            environment_fog: frame.environment_fog,
+            water_fog: frame.water_fog,
+            fog: frame.fog,
+            dark_disc: frame.dark_disc,
+            nether_lighting: frame.nether_lighting,
+            glint_alpha: frame.glint_alpha,
+            glint_ticks: frame.glint_ticks,
+            hand_fov_degrees: frame.hand_fov_degrees,
+            stars: frame
+                .stars
+                .map(|(rotation, brightness)| (rotation.to_cols_array(), brightness)),
+            clouds: frame.clouds.as_ref().map(Clouds::record),
+            game_time: frame.game_time,
+            shader_game_time: frame.shader_game_time,
+            end_portal_sprites: frame.end_portal_sprites,
+            crumbling_sprite: frame.crumbling_sprite,
+            ticks: frame.ticks,
+            darkness: frame.darkness,
+            night_vision: frame.night_vision,
+            block_flicker: frame.block_flicker,
+            boss_darken: frame.boss_darken,
+            celestial_bodies: frame.celestial_bodies.to_vec(),
+        }
     }
 
-    /// The captured frame: its camera, sky, fog, clouds, sun, moon and stars, without
-    /// entities, particles, weather, the hand, the outline or the HUD.
-    pub fn frame<'a>(&'a self, hud: &'a HudBatch) -> Frame<'a> {
-        let f = &self.frame;
+    fn to_frame<'a>(&'a self, celestial: &'a [Vertex], hud: &'a HudBatch) -> Frame<'a> {
+        let f = self;
         Frame {
             weather: &[],
             hand_items: &[],
@@ -497,6 +525,7 @@ impl Scene {
             yaw: f.yaw,
             pitch: f.pitch,
             fov_degrees: f.fov_degrees,
+            cull_fov_degrees: f.cull_fov_degrees.unwrap_or(f.fov_degrees),
             eye: DVec3::from_array(f.eye),
             eye_rotation: f.eye_rotation,
             first_person: f.first_person,
@@ -507,6 +536,7 @@ impl Scene {
             shadow_cache: false,
             distance: f.distance,
             detail_distance: f.detail_distance,
+            shadow_distance: f.shadow_distance,
             depth_far: f.depth_far,
             underwater: f.underwater,
             water_plane: f.water_plane,
@@ -533,6 +563,7 @@ impl Scene {
             glint_ticks: f.glint_ticks,
             nether_lighting: f.nether_lighting,
             entities: &[],
+            explicit_particles: None,
             static_block_entities: &[],
             visible_static_block_entity_sections: &[],
             static_block_entity_stats: Default::default(),
@@ -544,22 +575,14 @@ impl Scene {
             dynamic_lights: &[],
             colored_lights: &[],
             emissive_layers: &[],
-            clouds: f.clouds.as_ref().map(|c| crate::clouds::Input {
-                texture: &c.texture,
-                uv: c.uv,
-                camera: DVec3::from_array(c.camera),
-                time: c.time,
-                partial_tick: c.partial_tick,
-                range: c.range,
-                fast: c.fast,
-                color: c.color,
-            }),
+            clouds: f.clouds.as_ref().map(Clouds::input),
             lightning: Default::default(),
             additive: &[],
             see_through: &[],
             world_primitives: Default::default(),
             shadow_only: &[],
-            celestial: &self.celestial,
+            celestial,
+            celestial_bodies: &f.celestial_bodies,
             stars: f
                 .stars
                 .map(|(rotation, brightness)| (Mat4::from_cols_array(&rotation), brightness)),
@@ -583,3 +606,29 @@ impl Scene {
         }
     }
 }
+
+impl Scene {
+    /// Reads `scene.json` and `celestial.bin` (the meshes: `read_meshes`).
+    pub fn read(dir: &Path) -> Result<Self> {
+        let mut scene: Scene =
+            serde_json::from_reader(BufReader::new(File::open(dir.join("scene.json"))?))?;
+        let bytes = fs::read(dir.join("celestial.bin"))?;
+        let size = std::mem::size_of::<Vertex>();
+        let mut celestial = vec![<Vertex as bytemuck::Zeroable>::zeroed(); bytes.len() / size];
+        let len = celestial.len() * size;
+        bytemuck::cast_slice_mut::<Vertex, u8>(celestial.as_mut_slice())
+            .copy_from_slice(&bytes[..len]);
+        scene.celestial = celestial;
+        Ok(scene)
+    }
+
+    /// The captured frame: its camera, sky, fog, clouds, sun, moon and stars, without
+    /// entities, particles, weather, the hand, the outline or the HUD.
+    pub fn frame<'a>(&'a self, hud: &'a HudBatch) -> Frame<'a> {
+        self.frame.to_frame(&self.celestial, hud)
+    }
+}
+
+#[cfg(test)]
+#[path = "capture_clouds_tests.rs"]
+mod capture_clouds_tests;

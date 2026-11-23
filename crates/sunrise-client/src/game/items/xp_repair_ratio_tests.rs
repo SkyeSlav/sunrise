@@ -212,7 +212,7 @@ fn a_data_packs_mending_arrives_as_the_ratio() {
         game.world_tables = game
             .stage_world_tables(&stack, false, &resources)
             .unwrap()
-            .0;
+            .tables;
 
         for answer in [None, Some(2.0_f32 / 7.0)] {
             hold_pickaxe(game, 100);

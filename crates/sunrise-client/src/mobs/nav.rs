@@ -5,6 +5,7 @@ use super::{
     Mob, MobWorld,
     path::{Evaluator, Finder, Path, PathMob, PathNode, PathType},
 };
+use crate::items::BlockTagFlags;
 use sunrise_core::geometry::Vec3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -154,7 +155,7 @@ impl Mob {
             position: self.position,
             width: self.width(),
             height: self.height(),
-            on_ground: self.on_ground,
+            on_ground: self.ground.on_ground,
             in_water: self.fluids.in_water,
             max_up_step: self.kind.step_height as f32,
             max_fall_distance: self.max_fall_distance(),
@@ -230,7 +231,7 @@ impl Mob {
             // without this).
             NavKind::Ground | NavKind::WallClimber => {
                 self.ai.navigation_redirect.as_ref().map_or_else(
-                    || self.on_ground || self.is_in_liquid() || self.extra.mount.is_some(),
+                    || self.ground.on_ground || self.is_in_liquid() || self.extra.mount.is_some(),
                     |r| r.body.on_ground || r.in_liquid || r.passenger,
                 )
             }
@@ -525,9 +526,7 @@ impl Mob {
     /// sun keeps only the nodes before the first one the sky sees.
     fn trim_path(&mut self, w: &MobWorld) {
         if let Some(path) = &mut self.ai.nav.path {
-            path.raise_cauldron_nodes(|x, y, z| {
-                w.has_tag("minecraft:cauldrons", w.block_name(x, y, z))
-            });
+            path.raise_cauldron_nodes(|x, y, z| w.block_flag(x, y, z, BlockTagFlags::CAULDRONS));
         }
         if !self.ai.nav.avoid_sun
             || !matches!(self.ai.nav.kind, NavKind::Ground | NavKind::WallClimber)
@@ -638,7 +637,7 @@ impl Mob {
                 }
                 _ => {
                     mob.y > pos.y
-                        && !self.on_ground
+                        && !self.ground.on_ground
                         && mob.x.floor() == pos.x.floor()
                         && mob.z.floor() == pos.z.floor()
                 }
@@ -994,9 +993,9 @@ mod tests {
         let mut kind = crate::mobs::sensor_scan_tests::kind();
         std::sync::Arc::make_mut(&mut kind).species = crate::mobs::Species::Pig;
         let mut m = Mob::new(1, kind, Vec3::ZERO, 0.0);
-        m.on_ground = true;
+        m.ground.on_ground = true;
         assert!(m.can_update_path(), "standing on the ground");
-        m.on_ground = false;
+        m.ground.on_ground = false;
         assert!(
             !m.can_update_path(),
             "in the air with no vehicle: no path is made or followed"
@@ -1027,7 +1026,7 @@ mod supplied_path_tests {
     fn a_supplied_path_is_followed_and_finishes_at_its_node_count() {
         with_test_world(&[], |w, types| {
             let mut m = Mob::new(1, cow(types), Vec3::new(0.5, 64.0, 0.5), 0.0);
-            m.on_ground = true;
+            m.ground.on_ground = true;
             assert!(m.ai.nav.is_done(), "no path");
             assert!(m.nav_move_to_supplied(
                 w,
@@ -1069,7 +1068,7 @@ mod supplied_path_tests {
     fn unloaded_and_out_of_world_nodes_are_accepted_without_loading_chunks() {
         with_test_world(&[], |w, types| {
             let mut m = Mob::new(1, cow(types), Vec3::new(0.5, 64.0, 0.5), 0.0);
-            m.on_ground = true;
+            m.ground.on_ground = true;
             assert!(m.nav_move_to_supplied(w, &[[1.0e9, 1.0e9, 1.0e9]], 0.5));
             assert!(
                 m.ai.nav.path.as_ref().is_some_and(|p| p.nodes[0]
@@ -1106,7 +1105,7 @@ mod supplied_path_tests {
             },
             |w, types| {
                 let mut m = Mob::new(1, cow(types), Vec3::new(0.5, 64.0, 0.5), 0.0);
-                m.on_ground = true;
+                m.ground.on_ground = true;
                 assert!(m.nav_move_to_supplied(
                     w,
                     &[[0.5, 64.0, 0.5], [1.5, 64.0, 0.5], [2.5, 64.0, 0.5]],
@@ -1140,7 +1139,7 @@ mod supplied_path_tests {
             },
             |w, types| {
                 let mut m = Mob::new(1, cow(types), Vec3::new(0.5, 63.0, 0.5), 0.0);
-                m.on_ground = true;
+                m.ground.on_ground = true;
                 assert!(m.nav_move_to_supplied(
                     w,
                     &[[0.5, 63.0, 0.5], [1.5, 63.0, 0.5], [2.5, 63.0, 0.5]],
@@ -1187,7 +1186,7 @@ mod supplied_path_tests {
                 assert!(!w.can_see_sky(0, 64, 0));
                 assert!(w.can_see_sky(2, 64, 0));
                 let mut m = Mob::new(1, cow(types), Vec3::new(0.5, 64.0, 0.5), 0.0);
-                m.on_ground = true;
+                m.ground.on_ground = true;
                 m.ai.nav.avoid_sun = true;
                 assert!(m.nav_move_to_supplied(
                     w,
@@ -1219,7 +1218,7 @@ mod supplied_path_tests {
     fn a_block_change_drops_a_supplied_path_without_re_searching() {
         with_test_world(&[], |w, types| {
             let mut m = Mob::new(1, cow(types), Vec3::new(0.5, 64.0, 0.5), 0.0);
-            m.on_ground = true;
+            m.ground.on_ground = true;
             let nodes: Vec<[f64; 3]> = (0..20).map(|x| [f64::from(x) + 0.5, 64.0, 0.5]).collect();
             assert!(m.nav_move_to_supplied(w, &nodes, 0.5));
             assert!(
@@ -1245,7 +1244,7 @@ mod supplied_path_tests {
     fn the_stuck_check_stops_a_supplied_path() {
         with_test_world(&[], |w, types| {
             let mut m = Mob::new(1, cow(types), Vec3::new(0.5, 64.0, 0.5), 0.0);
-            m.on_ground = true;
+            m.ground.on_ground = true;
             m.ai.speed = 0.3;
             let nodes: Vec<[f64; 3]> = (0..200).map(|x| [f64::from(x) + 0.5, 64.0, 0.5]).collect();
             assert!(m.nav_move_to_supplied(w, &nodes, 0.5));
@@ -1266,7 +1265,7 @@ mod supplied_path_tests {
     fn the_per_node_timeout_stops_a_supplied_path() {
         with_test_world(&[], |w, types| {
             let mut m = Mob::new(1, cow(types), Vec3::new(0.5, 64.0, 0.5), 0.0);
-            m.on_ground = true;
+            m.ground.on_ground = true;
             m.ai.speed = 0.5;
             assert!(m.nav_move_to_supplied(w, &[[50.5, 64.0, 0.5], [51.5, 64.0, 0.5]], 0.5));
             let mob = Vec3::new(0.5, 64.0, 0.5);
@@ -1305,7 +1304,7 @@ mod supplied_path_tests {
             },
             |w, types| {
                 let mut m = Mob::new(1, cow(types), Vec3::new(0.5, 64.0, 0.5), 0.0);
-                m.on_ground = true;
+                m.ground.on_ground = true;
                 assert!(
                     m.nav_move_to_supplied(w, &[[i32::MAX as f64, 64.0, i32::MAX as f64]], 0.5),
                     "the extreme node is taken"
@@ -1339,7 +1338,7 @@ mod supplied_path_tests {
         with_test_world(&[], |w, types| {
             let mut m = Mob::new(1, cow(types), Vec3::new(0.5, 64.0, 0.5), 0.0);
             m.ai.nav.kind = NavKind::Flying;
-            m.on_ground = true;
+            m.ground.on_ground = true;
             assert!(
                 m.nav_move_to_supplied(w, &[[i32::MAX as f64, 64.0, i32::MAX as f64]], 0.5),
                 "void air at the saturation point is taken, not refused"

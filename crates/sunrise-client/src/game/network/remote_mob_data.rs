@@ -10,7 +10,7 @@ use sunrise_client::mobs::{
     phantom, raider, sniffer, species::can_be_a_baby, sync, tame, zombie_villager,
 };
 use sunrise_client::particles::{ParticleOptions, ParticleType};
-use sunrise_protocol::entity_data::{Particle, ParticleData, Value};
+use sunrise_protocol::entity_data::{ParticleData, Particles, Value};
 use sunrise_protocol::registry::{Builtin, Dynamic};
 use sunrise_world::registry::BlockStateId;
 
@@ -34,6 +34,10 @@ pub(super) fn apply(
             // Entity's signed air and frozen counters are synced as-is.
             (1, Value::Int(air)) => m.air = *air,
             (7, Value::Int(frozen)) => m.ticks_frozen = *frozen,
+            // Player.DATA_PLAYER_ABSORPTION_ID.
+            (17, Value::Float(absorption)) if &*m.kind.id == "minecraft:player" => {
+                m.absorption = *absorption;
+            }
             // Entity.DATA_POSE: a player's or mannequin's box follows it.
             (6, Value::Id(pose))
                 if matches!(&*m.kind.id, "minecraft:player" | "minecraft:mannequin") =>
@@ -458,20 +462,23 @@ fn player_poses(m: &mut Mob, values: &[(u8, i32, Value)]) {
 
 /// The options of a synched particle list: an entity effect carries its ARGB
 /// colour, the omens none.
-fn swirls(list: &[Particle], builtin: &Builtin) -> Vec<ParticleOptions> {
+fn swirls(list: &Particles, builtin: &Builtin) -> Vec<ParticleOptions> {
     let channel = |argb: i32, shift: u32| ((argb >> shift) & 255) as f32 / 255.0;
     list.iter()
         .filter_map(|p| {
+            if let Some(ParticleData::Mod { name, options }) = &p.data {
+                return super::lan_particles::decode_mod_particle(name, options);
+            }
             let name = builtin.get("minecraft:particle_type")?.name(p.id)?;
             let ty = ParticleType::from_name(name)?;
-            Some(match p.data {
+            Some(match &p.data {
                 Some(ParticleData::Color(argb)) => ParticleOptions::colored(
                     ty,
                     [
-                        channel(argb, 16),
-                        channel(argb, 8),
-                        channel(argb, 0),
-                        channel(argb, 24),
+                        channel(*argb, 16),
+                        channel(*argb, 8),
+                        channel(*argb, 0),
+                        channel(*argb, 24),
                     ],
                 ),
                 _ => ParticleOptions::simple(ty),
@@ -488,17 +495,30 @@ impl Game<'_> {
         let Some(r) = &self.remote else {
             return;
         };
-        // LivingEntity.onSyncedDataUpdated(SLEEPING_POS_ID): a villager lies
-        // in its bed the way the bed faces, or gets up.
-        let bed = values.iter().find_map(|v| match v {
-            (14, _, Value::OptPos(bed)) => Some(bed.map_or(0, |b| self.bed_facing(b))),
+        // LivingEntity.onSyncedDataUpdated(SLEEPING_POS_ID): any living entity
+        // records its sleeping block pos; villagers also keep the legacy facing code.
+        let sleeping_pos = values.iter().find_map(|v| match v {
+            (14, _, Value::OptPos(bed)) => Some(*bed),
             _ => None,
         });
+        let bed = sleeping_pos.map(|bed| bed.map_or(0, |b| self.bed_facing(b)));
+        let sleep_at = sleeping_pos
+            .flatten()
+            .and_then(|head| self.sleeping_position(head));
         let professions = r.professions.clone();
         if let Some(m) = self.mob_index.get_mut(&mut self.mobs, id as u32) {
             let stare_sound =
                 super::villager_client::receive(m, values, &r.builtin, r.entity_id, &professions);
             apply_registry_data(m, values, &r.registries, self.world.game_time);
+            if let Some(pos) = sleeping_pos {
+                m.extra.sleeping_pos = pos;
+                if pos.is_some()
+                    && let Some(at) = sleep_at
+                {
+                    // LivingEntity.onSyncedDataUpdated(SLEEPING_POS_ID): setPosToBed.
+                    m.position = at;
+                }
+            }
             if let Some(code) = bed
                 && m.species() == Species::Villager
             {
@@ -531,7 +551,7 @@ pub(super) fn client_defaults(m: &mut Mob) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::game) mod tests {
     use super::*;
     use sunrise_protocol::entity_data::serializer as s;
 
@@ -556,6 +576,7 @@ mod tests {
         // Metadata needs no AI or model. Avoid the resource loader, which also
         // initializes process-wide item tags used by unrelated mob tests.
         let kind = Arc::new(MobType {
+            type_key: Default::default(),
             shadow: None,
             id: kind.into(),
             species,
@@ -594,6 +615,7 @@ mod tests {
                 pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
                 polygons: Vec::new(),
                 children: Vec::new(),
+                layer: None,
             }),
             layers: Default::default(),
             texture: String::new(),
@@ -721,6 +743,8 @@ mod tests {
                     spectator: false,
                     permission: 0,
                     sunrise: true,
+                    general_entity: true,
+                    attachment_sender: None,
                     moved: true,
                     position: [0.0; 3],
                     view_distance: 10,
@@ -728,8 +752,8 @@ mod tests {
                     sources: None,
                     tracker: &mut tracker,
                     out: &mut packets,
-                    gone: None,
                 }],
+                None,
                 |_| Some(100),
             );
             let mut sent = Vec::new();
@@ -795,6 +819,10 @@ mod tests {
     #[test]
     #[ignore = "run by tools/test_mob_air_parity.py"]
     fn mob_air_parity_fixture() {
+        run_mob_air_parity_fixture();
+    }
+
+    pub(in crate::game) fn run_mob_air_parity_fixture() {
         use std::io::Write;
         let input =
             std::fs::read_to_string(std::env::var("SUNRISE_MOB_AIR_INPUT").unwrap()).unwrap();
@@ -885,6 +913,8 @@ mod tests {
                     spectator: false,
                     permission: 0,
                     sunrise: true,
+                    general_entity: true,
+                    attachment_sender: None,
                     moved: true,
                     position: [0.0; 3],
                     view_distance: 10,
@@ -892,8 +922,8 @@ mod tests {
                     sources: None,
                     tracker: &mut tracker,
                     out: &mut packets,
-                    gone: None,
                 }],
+                None,
                 |_| Some(100),
             );
             let mut sent = Vec::new();
@@ -954,6 +984,10 @@ mod tests {
     #[test]
     #[ignore = "run by tools/test_raider_celebration_parity.py"]
     fn raider_celebration_parity_fixture() {
+        run_raider_celebration_parity_fixture();
+    }
+
+    pub(in crate::game) fn run_raider_celebration_parity_fixture() {
         use std::io::Write;
         let input =
             std::fs::read_to_string(std::env::var("SUNRISE_RAIDER_SYNC_INPUT").unwrap()).unwrap();

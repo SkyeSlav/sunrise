@@ -9,7 +9,10 @@ pub trait Hooks {
     /// `DamageSource`, named as `native_living_incoming_damage` names a hit's. `attacker` is the
     /// attacking entity's network id, falling back to the victim's last hurt-by mob, or 0 when
     /// unknown; `attacker_main` and `attacker_off` are what it holds (a player's selected and
-    /// off-hand stacks, a mob's main hand), none when unknown. `entry` is `Short` when the push
+    /// off-hand stacks, a mob's main hand), none when unknown. `LivingRef::knockback` has an
+    /// unattributed `minecraft:generic` source: this same attacker fallback and the victim's
+    /// existing kill credit still apply. The call deals no damage and creates no credit.
+    /// `entry` is `Short` when the push
     /// came in through `knockback(power, x, z)`, which only delegates to the full entry, and `Full`
     /// when the full entry was called directly. The hook fires once per call of the full entry
     /// either way, so a listener that wants its change applied twice for a short-entry push, as
@@ -18,14 +21,14 @@ pub trait Hooks {
     /// set `canceled`, and the push follows them: canceled, the entity's motion is left alone. A
     /// `strength` of 0 or less after the hook is no push, and a direction too short to tell
     /// draws a random one after it, as in vanilla. A value a mod leaves that is not a finite
-    /// number is put back as it was. It fires for the players, mobs and armor stands the game
-    /// knocks back: a hit's own push, a sprinting or Knockback hit, a sweep, a spear, a
+    /// number is put back as it was. It fires for `LivingRef::knockback` and for vanilla
+    /// living knockbacks: a hit's own push, a sprinting or Knockback hit, a sweep, a spear, a
     /// shield's push on its holder, a goat's ram and a mob's melee push. It does not fire for a
     /// sulfur cube with a block that a hit with a causing entity knocks back
     /// (`SulfurCube.knockback` does not call `super` there), for the pushes vanilla doesn't make
     /// with `LivingEntity.knockback` (the ender dragon's wings, Punch arrows, explosions, wind
-    /// charges, a mace smash's area, a hoglin's throw), nor for the ones Sunrise makes another
-    /// way (the ender dragon's). The level is the hit's: its blocks, random and own attachments.
+    /// charges, a mace smash's area, a hoglin's throw). The level is the victim's: its blocks,
+    /// random and own attachments.
     /// `kill_credit` is the pushed living entity's kill credit at this pre-motion moment:
     /// a remembered player takes precedence over its last hurting mob, even when that player
     /// cannot resolve (then 0, without falling back). `kill_credit_main` is that entity's
@@ -35,6 +38,7 @@ pub trait Hooks {
     /// there read the pushed entity's kill credit and its holder's main hand themselves.
     #[notes = "Version 2 adds the pushed entity's kill credit and its current main-hand stack; remembered player precedence and expiry match LivingRef::kill_credit."]
     #[hook(
+        dispatch = "api_carrier",
         side = "server",
         version = 2,
         contract = "cancel",

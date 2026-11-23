@@ -199,8 +199,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         state: BlockStateId,
         pos: BlockPos,
     ) -> super::data::ShapeInfo {
-        // A block entity's published shape stands over the declared one.
-        if let Some(shape) = self.level.published_collision_shape(pos, state) {
+        if let Some(shape) = self.signals().positioned_collision(pos, state) {
             return super::data::analyse_shape(&shape).unwrap_or_default();
         }
         if self.b.facts(state).shape >= 0 {
@@ -376,23 +375,38 @@ impl<L: super::signal_access::SignalAccess + ?Sized> Signals<'_, L> {
             .is_face_sturdy(&mut world, [pos.x, pos.y, pos.z], direction, support)
             .ok()
     }
-    /// `isFaceSturdy` of a block whose block entity published its shape: that shape stands
-    /// over the declared one. None for every other cell.
-    fn published_support(
+    /// Position-specific collision overrides the ordinary cached shape and its metadata.
+    /// A publication wins over the declared default, even if that default has an offset.
+    pub(super) fn positioned_collision(
+        &self,
+        pos: BlockPos,
+        state: BlockStateId,
+    ) -> Option<VoxelShape> {
+        self.level
+            .published_collision_shape(pos, state)
+            .or_else(|| {
+                let limits = self.b.facts(state).collision_offset?;
+                let shape = self.b.collision_shape(state)?;
+                let offset = sunrise_core::random::column_offset(limits, pos.x, pos.z);
+                Some(crate::collision::translate_shape(shape, offset))
+            })
+    }
+
+    /// `isFaceSturdy` when the block's collision depends on its column or its block entity.
+    fn positioned_support(
         &self,
         pos: BlockPos,
         state: BlockStateId,
         direction: Direction,
         support: SupportType,
     ) -> Option<bool> {
-        let shape = self.level.published_collision_shape(pos, state)?;
+        let shape = self.positioned_collision(pos, state)?;
         Some(support.is_supporting(&shape, direction).unwrap_or(false))
     }
-    /// `Block.isFaceFull(state.getCollisionShape(level, pos), direction)` of the cell at `pos`:
-    /// a block entity's published shape stands over the declared one.
+    /// `Block.isFaceFull(state.getCollisionShape(level, pos), direction)` of the cell at `pos`.
     pub(crate) fn collision_face_full_at(&self, pos: BlockPos, direction: Direction) -> bool {
         let state = self.state(pos);
-        match self.level.published_collision_shape(pos, state) {
+        match self.positioned_collision(pos, state) {
             Some(shape) => super::data::analyse_shape(&shape)
                 .is_ok_and(|info| info.full_faces & (1 << direction as u8) != 0),
             None => self.b.collision_face_full(state, direction),
@@ -402,14 +416,20 @@ impl<L: super::signal_access::SignalAccess + ?Sized> Signals<'_, L> {
     pub(crate) fn multiface_can_attach_at(&self, pos: BlockPos, direction: Direction) -> bool {
         let state = self.state(pos);
         let face = direction.opposite();
-        match self.published_support(pos, state, face, SupportType::Full) {
-            Some(sturdy) => sturdy || self.collision_face_full_at(pos, face),
+        match self.positioned_collision(pos, state) {
+            Some(shape) => {
+                SupportType::Full
+                    .is_supporting(&shape, face)
+                    .unwrap_or(false)
+                    || super::data::analyse_shape(&shape)
+                        .is_ok_and(|info| info.full_faces & (1 << face as u8) != 0)
+            }
             None => self.b.multiface_can_attach(state, direction),
         }
     }
     pub fn sturdy(&self, pos: BlockPos, direction: Direction) -> bool {
         let state = self.state(pos);
-        if let Some(sturdy) = self.published_support(pos, state, direction, SupportType::Full) {
+        if let Some(sturdy) = self.positioned_support(pos, state, direction, SupportType::Full) {
             return sturdy;
         }
         if let Some(sturdy) = self.moving_block_supports(pos, state, direction, SupportType::Full) {
@@ -428,7 +448,8 @@ impl<L: super::signal_access::SignalAccess + ?Sized> Signals<'_, L> {
     /// entity at `pos`, as `DiodeBlock.canSurviveOn` asks of a shape update's
     /// neighbour. A retracting piston's base is a `moving_piston` here.
     pub(super) fn can_support_rigid_block_on(&self, pos: BlockPos, state: BlockStateId) -> bool {
-        if let Some(rigid) = self.published_support(pos, state, Direction::Up, SupportType::Rigid) {
+        if let Some(rigid) = self.positioned_support(pos, state, Direction::Up, SupportType::Rigid)
+        {
             return rigid;
         }
         if let Some(rigid) =
@@ -450,7 +471,7 @@ impl<L: super::signal_access::SignalAccess + ?Sized> Signals<'_, L> {
             return false;
         }
         let raw = self.state(pos);
-        if let Some(center) = self.published_support(pos, raw, direction, SupportType::Center) {
+        if let Some(center) = self.positioned_support(pos, raw, direction, SupportType::Center) {
             return center;
         }
         if let Some(center) = self.moving_block_supports(pos, raw, direction, SupportType::Center) {

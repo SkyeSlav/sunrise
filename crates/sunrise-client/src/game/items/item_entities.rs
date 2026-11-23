@@ -1,6 +1,7 @@
 //! Dropped items and experience orbs: their tick (`tick_items`, `tick_dropped_items`,
 //! `tick_experience`), the stacks a destroyed container lets fall, and spawning and merging orbs.
 use super::*;
+use crate::game::collision_source::Mover;
 
 /// A dropped item's `bobOffs` (its bob and spin phase) from its random's draw `drawn`, or under
 /// `SUNRISE_STILL` from a random seeded by its position alone: a client seeds an item's random
@@ -13,6 +14,14 @@ pub(super) fn bob_offset(position: Vec3, drawn: f32, still: bool) -> f32 {
         drawn
     };
     drawn * std::f32::consts::PI * 2.0
+}
+
+/// The items `give_items_back` takes again, where the item the loop was at now is (none once it
+/// is gone), and the index the loop goes on from.
+struct GivenBack {
+    items: sunrise_client::join_seq::JoinList<ItemEntity>,
+    at: Option<usize>,
+    next: usize,
 }
 
 impl Game<'_> {
@@ -39,7 +48,7 @@ impl Game<'_> {
         // `Entity.checkBelowWorld`: below `Level.getMinY() - 64`.
         let void = f64::from(self.level_min_y() - 64);
         let mut obstacles =
-            sunrise_client::entities::ObstacleGrid::new(self.item_entity_collisions());
+            sunrise_client::entities::ObstacleGrid::new(self.entity_collisions(Mover::Passive));
         let mut nearby = Vec::new();
         let mut bubble_tops = Vec::new();
         let mut moves = ahead::Moves::work_out(self, &items, &obstacles, round, |item| {
@@ -52,8 +61,19 @@ impl Game<'_> {
         // `ItemUtils.onContainerDestroyed`: what a destroyed item held, and
         // where it lay, for adding to the level once its own tick is done.
         let mut destroyed: Vec<(ItemStack, Vec3)> = Vec::new();
-        let item_type = sunrise_threads::work::entity_id("minecraft:item");
-        for i in 0..items.len() {
+        let item_type = sunrise_threads::work::entity_id(native_ticks::ITEM);
+        // Items a mod named (`entity_tick_each`) hear their Pre right before their own tick and
+        // their Post right after it, each alone, with the list given back for the call; their
+        // part (`on_entity_item_update`) follows their Pre.
+        let alone = round.alone_kind(native_ticks::ITEM);
+        let update_hook =
+            merging && mod_api::__private::has_part_hook(mod_api::HookId::OnEntityItemUpdate);
+        // Whether an item left the pass (`removed`) since the list was last given back.
+        let mut gone = false;
+        let mut next = 0;
+        while next < items.len() {
+            let mut i = next;
+            next += 1;
             sunrise_threads::work::set_entity(item_type);
             if removed[i] {
                 // Merged into an earlier item before its own tick: it never ticked.
@@ -68,195 +88,245 @@ impl Game<'_> {
             if !ticking(
                 items[i].position.x.floor() as i32,
                 items[i].position.z.floor() as i32,
-            ) || round.canceled(items[i].id)
-                || round.halted(items[i].id)
-            {
+            ) {
                 continue;
             }
-            self.tick_saved_invulnerable_time(items[i].id);
-            let item = &mut items[i];
-            let mut at_turn = |item: &mut ItemEntity| {
-                // `getEntityCollisions(entity, bounds.expandTowards(movement))`: the boxes around
-                // where the item can reach this tick.
-                obstacles.near(ahead::reach(item), &mut nearby);
-                // ItemEntity.tick's noPhysics (servers only): out of a block, a solid entity
-                // or the border, placed or closed on it, towards the closest open side (#1252).
-                let no_physics = merging
-                    && item.inside_block(
-                        &self.world,
-                        self.collision,
-                        &nearby,
-                        Some(self.border.geometry()),
-                    );
-                // `moveTowardsClosestSpace` draws the speed from the item's own random.
-                let escape_speed = no_physics.then(|| item.random.next_float() * 0.2 + 0.1);
-                let mut entered = Vec::new();
-                let (alive, discarded) = self.tick_item_with_block_contacts(
-                    item,
-                    escape_speed,
-                    &nearby,
-                    false,
-                    &mut |splash| entered.push(splash),
-                );
-                (no_physics, alive, discarded, entered)
-            };
-            let (no_physics, alive, discarded, entered) = match moves.take(i, item, &mut at_turn) {
-                Some(moved) => moved,
-                None => at_turn(item),
-            };
-            // Entity.doWaterSplashEffect: the server plays the sound (broadcast
-            // to clients). Its addParticle is empty.
-            for splash in entered {
-                self.apply_item_splash(splash);
-            }
-            if discarded {
-                removed[i] = true;
-                cells.remove(i, item.previous);
-                continue;
-            }
-            if merging && !no_physics {
-                self.item_landing_event(item.id, item.previous, item.position, item.on_ground);
-                self.entity_powder_snow_particles(
-                    item.previous,
-                    item.position,
-                    item.bounds(),
-                    item.velocity,
-                    false,
-                );
-            }
-            cells.moved(i, item.previous, item.position);
-            // Entity.handleOnAboveBubbleColumn: the server sends the particles of
-            // the surface of a bubble column the item is at the top of.
-            if merging {
-                bubble_tops.extend(sunrise_client::motion::bubble_column_surfaces(
-                    &self.world,
-                    self.pack.assets.registry,
-                    self.res.facts(),
-                    self.collision,
-                    item.bounds(),
-                ));
-            }
-            // ItemEntity.tick: merge every 2 ticks while moving between
-            // blocks, every 40 otherwise, before the lifetime check.
-            let block = |v: Vec3| (v.x.floor(), v.y.floor(), v.z.floor());
-            let rate = if block(item.previous) == block(item.position) {
-                40
-            } else {
-                2
-            };
-            if merging
-                && (alive || item.age == 6000 && item.position.y >= void)
-                && item.ticks.is_multiple_of(rate)
-            {
-                let max_stack = |stack: &ItemStack| self.stack_max_size(stack).max(1);
-                sunrise_client::entities::merge_with_neighbours(
-                    &mut items,
-                    &mut removed,
-                    &mut cells,
-                    i,
-                    true,
-                    &max_stack,
-                );
-            }
-            let item = &mut items[i];
-            let mut alive = alive || (item.age < 6000 && item.position.y >= void);
-            if merging && !removed[i] && item.age >= 6000 && item.position.y >= void {
-                let mut extra_life = 0;
-                self.native_item_expire(item.id, &item.stack, &mut extra_life);
-                if extra_life > 0 {
-                    item.age = 6000 - extra_life.min(32766);
-                    alive = true;
-                } else if self.serving.is_some() || self.options.dedicated.is_some() {
-                    self.native_item_despawn(
-                        item.id,
-                        &item.stack.item,
-                        item.stack.count as i32,
-                        [item.position.x, item.position.y, item.position.z],
-                    );
-                }
-            }
-            if !alive || removed[i] {
-                removed[i] = true;
-                cells.remove(i, item.position);
-                continue;
-            }
-            let from = item.previous;
-            let to = item.position;
-            if round.sections() {
-                let live = self.entity_section_step_visible(
-                    item.id,
-                    [from.x, from.y, from.z],
-                    [to.x, to.y, to.z],
-                );
-                if !live {
-                    removed[i] = true;
-                    cells.remove(i, to);
+            if alone {
+                let id = items[i].id;
+                let given =
+                    self.give_items_back(items, &mut removed, &mut cells, &mut gone, i, |game| {
+                        if game.native_tick_pre_one(round, id, native_ticks::ITEM)
+                            && update_hook
+                            && let Some(k) =
+                                native_ticks::place(&game.dropped, i, |item| item.id == id)
+                            && game.item_update_halts(k)
+                        {
+                            round.halt(id);
+                        }
+                    });
+                (items, next) = (given.items, given.next);
+                let Some(at) = given.at else {
                     continue;
-                }
+                };
+                i = at;
             }
-            let item_id = item.id;
-            let saved = native_components::ITEM_ENVIRONMENT_DAMAGE
-                .map(|damage| self.saved_refuses_damage(item_id, damage, false));
-            let tags = world_items!(self);
-            let registry = self.pack.assets.registry;
-            let block_registries = &self.pack.block_registries;
-            let hooks = &self.damage_hooks;
-            let environment = item.environment_tick_with_hook(
-                &mut self.world,
-                self.res.facts(),
-                registry,
-                &native_components::item_damage_resolver(
-                    &self.pack.item_renderer.models,
-                    &self.health_resources.damage,
-                ),
-                |world, damage| {
-                    let vanilla = match damage {
-                        "minecraft:on_fire" => saved[0],
-                        "minecraft:lava" => saved[1],
-                        "minecraft:in_fire" => saved[2],
-                        "minecraft:cactus" => saved[3],
-                        _ => false,
+            if round.canceled(items[i].id) {
+                continue;
+            }
+            'tick: {
+                if round.halted(items[i].id) {
+                    break 'tick;
+                }
+                self.tick_saved_invulnerable_time(items[i].id);
+                let item = &mut items[i];
+                let mut at_turn = |item: &mut ItemEntity| {
+                    // `getEntityCollisions(entity, bounds.expandTowards(movement))`: the boxes around
+                    // where the item can reach this tick.
+                    obstacles.near(ahead::reach(item), &mut nearby);
+                    // ItemEntity.tick's noPhysics (servers only): out of a block, a solid entity
+                    // or the border, placed or closed on it, towards the closest open side (#1252).
+                    let no_physics = merging
+                        && item.inside_block(
+                            &self.world,
+                            self.collision,
+                            &nearby,
+                            Some(self.border.geometry()),
+                        );
+                    // `moveTowardsClosestSpace` draws the speed from the item's own random.
+                    let escape_speed = no_physics.then(|| item.random.next_float() * 0.2 + 0.1);
+                    let mut entered = Vec::new();
+                    let (alive, discarded) = self.tick_item_with_block_contacts(
+                        item,
+                        escape_speed,
+                        &nearby,
+                        false,
+                        &mut |splash| entered.push(splash),
+                    );
+                    (no_physics, alive, discarded, entered)
+                };
+                let (no_physics, alive, discarded, entered) =
+                    match moves.take(i, item, &mut at_turn) {
+                        Some(moved) => moved,
+                        None => at_turn(item),
                     };
-                    let source = sunrise_client::health::HurtSource {
-                        damage_type: damage,
-                        causing: 0,
-                        direct: 0,
-                        position: None,
-                    };
-                    sunrise_client::health::DamageLevel::of(
-                        world,
-                        registry,
-                        Some(tags),
-                        Some(block_registries),
-                        hooks,
-                    )
-                    .no_push()
-                    .invulnerability_check(
-                        sunrise_client::health::Hurting::Entity(
-                            item_id as i32,
-                            "minecraft:item",
-                            source,
-                        ),
-                        vanilla,
-                    )
-                },
-            );
-            if environment.should_play_lava_hurt_sound(item.ticks) {
-                // `Entity.lavaHurt` pitches the burn from `this.random`, the item's own.
-                let pitch = 2.0 + item.random.next_float() * 0.4;
-                self.audio.play(
-                    "minecraft:entity.generic.burn",
-                    Some([item.position.x, item.position.y, item.position.z]),
-                    0.4,
-                    pitch,
+                // Entity.doWaterSplashEffect: the server plays the sound (broadcast
+                // to clients). Its addParticle is empty.
+                for splash in entered {
+                    self.apply_item_splash(splash);
+                }
+                if discarded {
+                    removed[i] = true;
+                    gone = true;
+                    cells.remove(i, item.previous);
+                    break 'tick;
+                }
+                if merging && !no_physics {
+                    self.item_landing_event(
+                        item.id,
+                        item.previous,
+                        item.position,
+                        item.ground.on_ground,
+                    );
+                    self.entity_powder_snow_particles(
+                        item.previous,
+                        item.position,
+                        item.bounds(),
+                        item.velocity,
+                        false,
+                    );
+                }
+                cells.moved(i, item.previous, item.position);
+                // Entity.handleOnAboveBubbleColumn: the server sends the particles of
+                // the surface of a bubble column the item is at the top of.
+                if merging {
+                    bubble_tops.extend(sunrise_client::motion::bubble_column_surfaces(
+                        &self.world,
+                        self.pack.assets.registry,
+                        self.res.facts(),
+                        self.collision,
+                        item.bounds(),
+                    ));
+                }
+                // ItemEntity.tick: merge every 2 ticks while moving between
+                // blocks, every 40 otherwise, before the lifetime check.
+                let block = |v: Vec3| (v.x.floor(), v.y.floor(), v.z.floor());
+                let rate = if block(item.previous) == block(item.position) {
+                    40
+                } else {
+                    2
+                };
+                if merging
+                    && (alive || item.age == 6000 && item.position.y >= void)
+                    && item.ticks.is_multiple_of(rate)
+                {
+                    let max_stack = |stack: &ItemStack| self.stack_max_size(stack).max(1);
+                    // A merge may take this item or a neighbour out of the pass.
+                    gone |= sunrise_client::entities::merge_with_neighbours(
+                        &mut items,
+                        &mut removed,
+                        &mut cells,
+                        i,
+                        true,
+                        &max_stack,
+                    );
+                }
+                let item = &mut items[i];
+                let mut alive = alive || (item.age < 6000 && item.position.y >= void);
+                if merging && !removed[i] && item.age >= 6000 && item.position.y >= void {
+                    let mut extra_life = 0;
+                    self.native_item_expire(item.id, &item.stack, &mut extra_life);
+                    if extra_life > 0 {
+                        item.age = 6000 - extra_life.min(32766);
+                        alive = true;
+                    } else if self.serving.is_some() || self.options.dedicated.is_some() {
+                        self.native_item_despawn(
+                            item.id,
+                            &item.stack.item,
+                            item.stack.count as i32,
+                            [item.position.x, item.position.y, item.position.z],
+                        );
+                    }
+                }
+                if !alive || removed[i] {
+                    removed[i] = true;
+                    gone = true;
+                    cells.remove(i, item.position);
+                    break 'tick;
+                }
+                let from = item.previous;
+                let to = item.position;
+                if round.sections() {
+                    let live = self.entity_section_step_visible(
+                        item.id,
+                        [from.x, from.y, from.z],
+                        [to.x, to.y, to.z],
+                    );
+                    if !live {
+                        removed[i] = true;
+                        gone = true;
+                        cells.remove(i, to);
+                        break 'tick;
+                    }
+                } else {
+                    self.entity_section_entered(
+                        item.id,
+                        [from.x, from.y, from.z],
+                        [to.x, to.y, to.z],
+                    );
+                }
+                let item_id = item.id;
+                let saved = native_components::ITEM_ENVIRONMENT_DAMAGE
+                    .map(|damage| self.saved_refuses_damage(item_id, damage, false));
+                let tags = world_items!(self);
+                let registry = self.pack.assets.registry;
+                let block_registries = &self.pack.block_registries;
+                let hooks = &self.damage_hooks;
+                let environment = item.environment_tick_with_hook(
+                    &mut self.world,
+                    self.res.facts(),
+                    registry,
+                    &native_components::item_damage_resolver(
+                        &self.pack.item_renderer.models,
+                        &self.health_resources.damage,
+                    ),
+                    |world, damage| {
+                        let vanilla = match damage {
+                            "minecraft:on_fire" => saved[0],
+                            "minecraft:lava" => saved[1],
+                            "minecraft:in_fire" => saved[2],
+                            "minecraft:cactus" => saved[3],
+                            _ => false,
+                        };
+                        let source = sunrise_client::health::HurtSource {
+                            damage_type: damage,
+                            causing: 0,
+                            direct: 0,
+                            position: None,
+                        };
+                        sunrise_client::health::DamageLevel::of(
+                            world,
+                            registry,
+                            Some(tags),
+                            Some(block_registries),
+                            hooks,
+                        )
+                        .no_push()
+                        .invulnerability_check(
+                            sunrise_client::health::Hurting::Entity(
+                                item_id as i32,
+                                "minecraft:item",
+                                source,
+                            ),
+                            vanilla,
+                        )
+                    },
                 );
-            }
-            if !environment.alive {
-                removed[i] = true;
-                cells.remove(i, item.position);
-                for stack in environment.spilled {
-                    destroyed.push((stack, item.position));
+                if environment.should_play_lava_hurt_sound(item.ticks) {
+                    // `Entity.lavaHurt` pitches the burn from `this.random`, the item's own.
+                    let pitch = 2.0 + item.random.next_float() * 0.4;
+                    self.audio.play(
+                        "minecraft:entity.generic.burn",
+                        Some([item.position.x, item.position.y, item.position.z]),
+                        0.4,
+                        pitch,
+                    );
                 }
+                if !environment.alive {
+                    removed[i] = true;
+                    gone = true;
+                    cells.remove(i, item.position);
+                    for stack in environment.spilled {
+                        destroyed.push((stack, item.position));
+                    }
+                }
+            }
+            if alone {
+                let id = items[i].id;
+                let given =
+                    self.give_items_back(items, &mut removed, &mut cells, &mut gone, i, |game| {
+                        game.native_tick_post_one(round, id, native_ticks::ITEM);
+                    });
+                (items, next) = (given.items, given.next);
             }
         }
         for pos in bubble_tops {
@@ -292,6 +362,54 @@ impl Game<'_> {
         self.native_player_pickups(&mut items, (min, max), feet, own);
         self.put_back_dropped(items);
         self.spawn_destroyed_contents(destroyed);
+    }
+    /// Gives the lifted items back to the level for a hook that reads them live (a named item's
+    /// own Pre or Post, at item `i`), then takes them again. The items gone this pass so far
+    /// (`gone` says whether there are any) leave the list first, so the hook sees the level as it
+    /// stands. When none left, none joined during the pass and the hook wrote no item (the
+    /// list's write stamp didn't move), the list comes back as it went and `removed` and `cells`
+    /// stay as they are; otherwise they are rebuilt for the list taken back. The loop goes on
+    /// right after item `i`, or, when it is gone, after where it stood in the list's join order.
+    fn give_items_back(
+        &mut self,
+        mut items: sunrise_client::join_seq::JoinList<ItemEntity>,
+        removed: &mut Vec<bool>,
+        cells: &mut sunrise_client::entities::ItemCells,
+        gone: &mut bool,
+        i: usize,
+        call: impl FnOnce(&mut Self),
+    ) -> GivenBack {
+        let (id, join) = (items[i].id, items[i].join);
+        let same_rows = !*gone && self.dropped.is_empty();
+        if *gone {
+            let mut left = removed.iter();
+            items.retain(|_| !left.next().copied().unwrap_or(false));
+            *gone = false;
+        }
+        self.put_back_dropped(items);
+        let restored = self.dropped.stamp();
+        call(self);
+        let unchanged = same_rows && self.dropped.stamp() == restored;
+        let items = self.dropped.lift();
+        if unchanged {
+            return GivenBack {
+                items,
+                at: Some(i),
+                next: i + 1,
+            };
+        }
+        removed.clear();
+        removed.resize(items.len(), false);
+        *cells = sunrise_client::entities::ItemCells::new(&items);
+        let at = items.iter().position(|item| item.id == id);
+        let next = match at {
+            Some(at) => at + 1,
+            None => items
+                .iter()
+                .position(|item| item.join > join)
+                .unwrap_or(items.len()),
+        };
+        GivenBack { items, at, next }
     }
     /// `ItemUtils.onContainerDestroyed`: spilled stacks use their own constructor
     /// motion (0.2 up and ±0.1 sideways), leaving the level random untouched.
@@ -342,6 +460,7 @@ impl Game<'_> {
                 let vanilla = o.can_merge(merge_id as u32, value as i32);
                 let (join, id, count, age) = (o.join, o.id, o.count, o.age);
                 let orb_value = o.value;
+                self.journal_orb_merge(join, (orb_value, count, age));
                 if !self.orb_merges(id, orb_value, count, 0, value as i32, 1, vanilla) {
                     self.restore_orb(join, orb_value, count, age);
                     continue;
@@ -365,7 +484,7 @@ impl Game<'_> {
     }
     /// Puts back what a merge hook may have written to the orb `join`: a refused merge
     /// leaves both orbs as they were.
-    fn restore_orb(&mut self, join: crate::join_seq::JoinSeq, value: i32, count: u32, age: u32) {
+    fn restore_orb(&mut self, join: crate::join_seq::JoinSeq, value: i32, count: u32, age: i32) {
         if let Some(i) = self.orbs.locate(join) {
             let orb = &mut self.orbs[i];
             (orb.value, orb.count, orb.age) = (value, count, age);
@@ -515,6 +634,7 @@ impl Game<'_> {
         }
         self.next_entity += 1;
         self.orbs.push(ExperienceOrb {
+            size_answer: None,
             attachment_lifetime: Default::default(),
             fall_distance: 0.0,
             rotation: [0.0, 0.0],
@@ -527,7 +647,7 @@ impl Game<'_> {
             // `getExperienceValue` sizes: 1 to 2477.
             value: value as i32,
             age: 0,
-            on_ground: false,
+            ground: Default::default(),
             count: 1,
             ticks: 0,
             health: 5,
@@ -727,20 +847,14 @@ impl Game<'_> {
     }
 
     /// Block.popResource
-    pub(super) fn pop_resource(&mut self, pos: [i32; 3], mut stack: ItemStack) {
-        self.pending.attach(pos, &mut stack);
-        // Block.popResource: Mth.nextDouble offsets from the level random; the
-        // motion is `new ItemEntity(..)`'s own, from the item's random.
-        let p = spill::pop_position(&mut self.world.random, pos);
-        // Block.popResource draws its offsets before the private overload checks the gamerule.
-        if !self
+    pub(super) fn pop_resource(&mut self, pos: [i32; 3], stack: ItemStack) {
+        let block_drops = self
             .ui
             .rules
-            .bool_at(sunrise_client::gamerules::vanilla::BLOCK_DROPS)
-        {
-            return;
+            .bool_at(sunrise_client::gamerules::vanilla::BLOCK_DROPS);
+        if let Some(at) = spill::admitted_pop_position(&mut self.world.random, pos, block_drops) {
+            self.spawn_item_own(stack, at, 10);
         }
-        self.spawn_item_own(stack, p, 10);
     }
 
     /// `Containers.dropItemStack`: a crafting remainder leaves from inside the
@@ -769,9 +883,8 @@ impl Game<'_> {
         &mut self,
         pos: [i32; 3],
         face: [i32; 3],
-        mut stack: ItemStack,
+        stack: ItemStack,
     ) {
-        self.pending.attach(pos, &mut stack);
         let (p, v) = spill::pop_position_from_face(&mut self.world.random, pos, face);
         // The private overload checks the gamerule after the offsets are drawn.
         if !self
@@ -830,23 +943,7 @@ impl Game<'_> {
         randomly: bool,
         thrown_from_hand: bool,
     ) -> Option<u32> {
-        // `Player.drop` draws the spread from the player's own random. A throw with no player
-        // in place (a `/give` remainder whose target this game doesn't hold) keeps a fresh one
-        // rather than losing the item.
-        let v = match self.player.as_mut() {
-            Some(player) => sunrise_client::entities::drop_motion(
-                &mut player.random,
-                self.yaw,
-                self.pitch,
-                randomly,
-            ),
-            None => sunrise_client::entities::drop_motion(
-                &mut random_source::entity(),
-                self.yaw,
-                self.pitch,
-                randomly,
-            ),
-        };
+        let v = self.player_drop_motion(randomly);
         let at = [eye[0], eye[1] - f64::from(0.3f32), eye[2]];
         let uuid = thrown_from_hand.then(|| self.acting_player_uuid());
         // Only `drop(.., false)` tosses ask `item_toss`: a death's scatter (`randomly`) does not.
@@ -859,6 +956,24 @@ impl Game<'_> {
         let item = self.dropped.iter_mut().rev().find(|d| d.id == id)?;
         item.thrower = uuid;
         Some(item.id)
+    }
+
+    /// `LivingEntity.createItemStackToDrop` draws the spread from the player's own random.
+    pub(super) fn player_drop_motion(&mut self, randomly: bool) -> [f64; 3] {
+        match self.player.as_mut() {
+            Some(player) => sunrise_client::entities::drop_motion(
+                &mut player.random,
+                self.yaw,
+                self.pitch,
+                randomly,
+            ),
+            None => sunrise_client::entities::drop_motion(
+                &mut random_source::entity(),
+                self.yaw,
+                self.pitch,
+                randomly,
+            ),
+        }
     }
 
     /// `FurnaceResultSlot.checkTakeAchievements`: the player took from the output of the
@@ -1026,7 +1141,7 @@ mod escape_tests {
 
 #[cfg(test)]
 #[path = "tests/thrown_items_tests.rs"]
-mod thrown_items_tests;
+pub(in crate::game) mod thrown_items_tests;
 
 #[cfg(test)]
 mod bob_tests {

@@ -1,8 +1,9 @@
 //! Host-owned container packet construction; the protocol owns stack codecs and hashes.
 use mod_api::{ContainerClickRequest, PacketBuildError, ServerboundPlayPacket};
 use std::cell::RefCell;
+use sunrise_core::vanilla_bytes::Writer;
 use sunrise_protocol::{
-    buf::{Codec, Writer},
+    buf::Codec,
     item::{Hashed, Stack},
     packets::play::ContainerClick,
     registry::{Builtin, Dynamic, SyncedNames},
@@ -171,19 +172,13 @@ fn checked_hash(
     if stack.added.len() > 256 || stack.removed.len() > 256 {
         return Err(range(format!("{field}.components")));
     }
-    let hashed = Hashed::create(stack, names);
-    if hashed.added.len() != stack.added.len() {
-        let id = stack
-            .added
-            .iter()
-            .find(|(id, _)| !hashed.added.iter().any(|(hashed_id, _)| hashed_id == id))
-            .map(|(id, _)| *id);
-        return Err(component_error(id.map_or_else(
-            || format!("{field}.components"),
-            |id| format!("{field}.components.{id}"),
-        )));
-    }
-    Ok(hashed)
+    Hashed::create(stack, names).map_err(|error| {
+        use sunrise_protocol::item::StackHashError;
+        component_error(match error {
+            StackHashError::Component(id) => format!("{field}.components.{id}"),
+            _ => format!("{field}.components"),
+        })
+    })
 }
 
 #[cfg(test)]

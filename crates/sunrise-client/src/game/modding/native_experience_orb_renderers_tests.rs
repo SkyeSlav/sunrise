@@ -42,7 +42,7 @@ impl EntityRenderer for Orb {
         entity: &EntityRenderState,
         draw: &mut dyn BlockEntityDrawContext,
     ) -> Result<(), String> {
-        self.0.lock().unwrap().state = Some(*entity);
+        self.0.lock().unwrap().state = Some(entity.clone());
         raised_quad(draw, 100.0);
         Ok(())
     }
@@ -79,7 +79,7 @@ const CAMERA: glam::DVec3 = glam::DVec3::new(0.5, 64.0, -4.5);
 const FEET: [f64; 3] = [0.5, 64.0, 0.5];
 const ALPHA: f32 = 0.5;
 const VALUE: i32 = 11;
-const AGE: u32 = 6;
+const AGE: i32 = 6;
 
 /// How high above the entity's position a vertex is, in blocks.
 fn above(v: &Vertex) -> f32 {
@@ -96,6 +96,7 @@ fn verts(out: &[Vertex]) -> Vec<([f32; 3], [f32; 2], u32, u32, u32, [i8; 4], [f3
 fn hanging(id: u32, previous: Vec3) -> ExperienceOrb {
     let at = Vec3::new(FEET[0], FEET[1], FEET[2]);
     ExperienceOrb {
+        size_answer: None,
         attachment_lifetime: Default::default(),
         fall_distance: 0.0,
         rotation: [90.0, -10.0],
@@ -106,7 +107,7 @@ fn hanging(id: u32, previous: Vec3) -> ExperienceOrb {
         velocity: Vec3::ZERO,
         value: VALUE,
         age: AGE,
-        on_ground: true,
+        ground: sunrise_world::ground_support::GroundState::from_ground_flag(true),
         count: 1,
         fire_ticks: 0,
         ticks: 0,
@@ -135,7 +136,8 @@ fn orb_frame_from(game: &mut Game<'_>, id: u32, previous: Vec3) -> Vec<Vertex> {
         (o, at, ALPHA)
     });
     let mut out = Vec::new();
-    game.orb_geometry(CAMERA, live, None, &mut out);
+    let frame = game.orb_frame();
+    game.orb_geometry(CAMERA, &frame, live, None, &mut out);
     out
 }
 
@@ -155,10 +157,13 @@ fn an_experience_orb_registration_resolves_to_the_orb_slot() {
         "minecraft:experience_orb".to_owned(),
         Arc::new(Mark) as Arc<dyn EntityRenderer>,
     )]);
-    let (table, unknown) =
-        EntityRendererTable::resolve(&registered, &[], &Default::default(), |id| {
-            ["minecraft:experience_orb", "minecraft:oak_boat"].contains(&id)
-        });
+    let (table, unknown) = EntityRendererTable::resolve(
+        &registered,
+        &[],
+        &Default::default(),
+        &crate::game::general::GeneralTypeCatalog::freeze(&[]).unwrap(),
+        |id| ["minecraft:experience_orb", "minecraft:oak_boat"].contains(&id),
+    );
     assert!(table.experience_orb().is_some());
     assert_eq!(unknown, Vec::<String>::new());
 }
@@ -260,7 +265,12 @@ fn a_registered_experience_orb_draws_its_renderer_in_place_of_the_quad() {
                     [0.5, 99.0, 4.0],
                 ]
             );
-            let state = heard.lock().unwrap().state.expect("the renderer was asked");
+            let state = heard
+                .lock()
+                .unwrap()
+                .state
+                .take()
+                .expect("the renderer was asked");
             assert_eq!(state.id, 91);
             assert_eq!(state.partial, ALPHA);
             assert_eq!(state.age, AGE as f32 + ALPHA);

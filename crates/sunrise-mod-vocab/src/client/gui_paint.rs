@@ -7,7 +7,7 @@ use crate::text::TextFormError;
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
 pub enum GuiPaintError {
-    /// A `Text` op's text could not cross to the game (deeper than 512 nodes, malformed).
+    /// A `Text` op's text could not cross to the game (unrepresentable metadata).
     Text(TextFormError),
     /// A `GuiDraw::Item` names a slot that is not a hotbar slot (0-8) or the off hand (40).
     ItemSlot {
@@ -34,8 +34,9 @@ pub enum GuiPaintError {
         /// The op's place in the buffer.
         index: u32,
     },
-    /// A `GuiDraw::Sprite` or `GuiDraw::AtlasSprite` the GUI atlas does not hold, a mob effect
-    /// sprite (`mob_effect/...`, namespaced or not) included.
+    /// A `GuiDraw::Sprite` the GUI atlas does not hold by GUI id (one its definition removed
+    /// included), a mob effect sprite (`mob_effect/...`, namespaced or not) included, or a
+    /// `GuiDraw::AtlasSprite` the packed block atlas does not hold by name.
     Sprite {
         /// The op's place in the buffer.
         index: u32,

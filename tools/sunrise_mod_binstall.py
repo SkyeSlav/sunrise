@@ -1,7 +1,7 @@
 """Where `cargo binstall` finds `cargo-sunrise-mod`'s prebuilt archives (#2120).
 
 `[package.metadata.binstall]` in `crates/cargo-sunrise-mod/Cargo.toml` names one release asset per Rust
-target, and `.github/workflows/cargo-sunrise-mod.yml` builds [`PLATFORMS`] and attaches them to the tag
+target, and `.github/workflows/cargo-sunrise-mod-build.yml` builds [`PLATFORMS`] and `cargo-sunrise-mod.yml` attaches them to the tag
 [`tag`]. Both sides read this file, so renaming an archive here cannot leave `cargo binstall` asking for a
 file no release holds.
 """
@@ -20,7 +20,6 @@ PLATFORMS = [
     {"target": "x86_64-unknown-linux-gnu", "os": "ubuntu-22.04", "run": True},
     {"target": "aarch64-unknown-linux-gnu", "os": "ubuntu-22.04", "run": False},
     {"target": "x86_64-pc-windows-msvc", "os": "windows-latest", "run": True},
-    {"target": "x86_64-apple-darwin", "os": "macos-latest", "run": True},
     {"target": "aarch64-apple-darwin", "os": "macos-latest", "run": True},
 ]
 

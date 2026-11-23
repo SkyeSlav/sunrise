@@ -64,7 +64,7 @@ Everything below is in the current release.
 
 ## Download
 
-Get **the Sunrise launcher** from [playsunrise.net/download](https://playsunrise.net/download), or from the newest `launcher@` release on [GitHub](https://github.com/sunrise-org/sunrise/releases?q=launcher&expanded=true):
+Get **the Sunrise launcher** from [playsunrise.net/download](https://playsunrise.net/download), or from GitHub: it has its own repository, [sunrise-org/sunrise-launcher](https://github.com/sunrise-org/sunrise-launcher), whose releases are also published here as `launcher@` releases ([1.0.0](https://github.com/sunrise-org/sunrise/releases?q=launcher&expanded=true) came from here):
 
 | Platform | File | Needs |
 | --- | --- | --- |
@@ -84,9 +84,9 @@ Get **the Sunrise launcher** from [playsunrise.net/download](https://playsunrise
 ## Mods and shader packs
 
 - **Content mods** (`.smod`): blocks, items, recipes, loot, models and textures, with no code.
-- **Native mods** (`.hnmod`): Rust that the launcher compiles into the game for you, with nothing to install.
+- **Native mods** (also `.smod`, whose manifest has a `[native]` table): Rust that the launcher compiles into the game for you, with nothing to install.
 - **Java mods** (Fabric, NeoForge, Forge) don't run: Sunrise has no Java. The launcher carries over the data and assets inside their jars, and imports modpacks (`.mrpack`, CurseForge zips, Prism instances) the same way ([modpacks](https://playsunrise.net/docs/modpacks)).
-- **Shader packs**: Iris/OptiFine-format packs (`shaders/` folders) and Sunrise's own WGSL packs, under Video Settings → Shader Packs ([pack format](docs/shaders.md)).
+- **Shader packs**: Iris/OptiFine-format packs (`shaders/` folders) and Sunrise's own WGSL packs, under Sunrise Graphics → Shaders → Shader Packs ([pack format](docs/shaders.md)).
 
 Mods are off by default: a fresh install plays exactly like vanilla 26.3. The launcher's Mods page browses Sunrise's registry and Modrinth. [Mods](https://playsunrise.net/docs/mods) · [make a mod](docs/mods.md).
 
@@ -166,6 +166,6 @@ Scores: 0 (absent), 0.25 (started), 0.5 (playable, major features missing), 0.75
 
 ## Licence
 
-Sunrise's code is under the [PolyForm Shield licence](LICENSE): use it for anything, servers, hosting and mods included, except a product that competes with Sunrise ([what that means](LICENSING.md)). Code that came from Horizon is also available under its original [MIT licence](LICENSES/MIT-Horizon.txt); dependencies keep their own licences ([notices](THIRD_PARTY_NOTICES.md)). Sunrise is a fork of Horizon, which is made by [Ludovic Marie](https://lu4ovic.com) ([@ludovic111](https://github.com/ludovic111)) and [its contributors](https://github.com/horizon-rust/horizon/graphs/contributors).
+Sunrise's code is under the [PolyForm Shield licence with the Sunrise Additional Terms](LICENSE): use it for anything, servers, hosting and mods included, and fork or port it freely as long as the fork stays free and open ([what that means](LICENSING.md)). Code that came from Horizon is also available under its original [MIT licence](LICENSES/MIT-Horizon.txt); dependencies keep their own licences ([notices](THIRD_PARTY_NOTICES.md)). Sunrise is a fork of Horizon, which is made by [Ludovic Marie](https://lu4ovic.com) ([@ludovic111](https://github.com/ludovic111)) and [its contributors](https://github.com/horizon-rust/horizon/graphs/contributors).
 
 NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT. Minecraft is a trademark of Mojang Synergies AB; its code and assets belong to Mojang and Microsoft under the [Minecraft EULA](https://www.minecraft.net/en-us/eula).

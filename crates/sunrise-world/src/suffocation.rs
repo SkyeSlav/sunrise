@@ -72,8 +72,10 @@ impl<'r> SuffocationRegistry<'r> {
                 SuffocationDefinition::TaggedFullCollision => {
                     if !causes_suffocation.contains(&state.name) {
                         Rule::Constant(false)
-                    } else if collisions.publishes_shapes(id) {
-                        // Its block entity may publish another shape than the cached one.
+                    } else if collisions.publishes_shapes(id)
+                        || collisions.cached_shapes().offset_collision(id)
+                    {
+                        // Publication and declared offsets make the full-shape answer positional.
                         Rule::DynamicFull
                     } else if let Some(shape) = collisions.cached_shapes().cached_shape(id)? {
                         let identity = std::ptr::from_ref(shape);

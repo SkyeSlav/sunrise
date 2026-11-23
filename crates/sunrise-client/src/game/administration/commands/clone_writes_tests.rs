@@ -6,7 +6,7 @@ use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_core::position::ChunkPos;
 
-fn game() -> Game<'static> {
+fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -> Game<'a> {
     let root = std::path::PathBuf::from(
         std::env::var_os("SUNRISE_TEST_RESOURCES")
             .expect("set SUNRISE_TEST_RESOURCES to prepared resources"),
@@ -28,7 +28,7 @@ fn game() -> Game<'static> {
     let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
     options.resources = root.clone();
     options.execution_role = execution_role::ExecutionRole::IntegratedServer;
-    let res: &'static _ = Box::leak(Box::new(loaded.resources));
+    let res = &*resources.insert(loaded.resources);
     let mut game = Game::new(
         res,
         loaded.pack,
@@ -92,7 +92,8 @@ fn cloned(game: &mut Game<'_>, command: &str) -> (bool, Option<String>, i32) {
 #[test]
 #[ignore = "daily"]
 fn a_clone_whose_destination_leaves_the_world_counts_only_the_writes_that_landed() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     load_chunk(&mut game, 0, 0);
     assert!(game.run_command("scoreboard objectives add h236 dummy"));
     assert!(game.run_command("setblock 0 300 0 stone"));
@@ -114,7 +115,8 @@ fn a_clone_whose_destination_leaves_the_world_counts_only_the_writes_that_landed
 #[test]
 #[ignore = "daily"]
 fn a_clone_into_the_nether_counts_by_the_nether_build_height() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     let here = game.dim;
     load_chunk(&mut game, 0, 0);
     load_chunk_in(&mut game, Dim::Nether, here);
@@ -159,7 +161,8 @@ fn a_clone_into_the_nether_counts_by_the_nether_build_height() {
 #[test]
 #[ignore = "daily"]
 fn a_clone_refuses_a_box_that_spans_an_unloaded_column() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     load_chunk(&mut game, 0, 0);
     load_chunk(&mut game, 2, 0);
     assert!(game.run_command("scoreboard objectives add h236 dummy"));

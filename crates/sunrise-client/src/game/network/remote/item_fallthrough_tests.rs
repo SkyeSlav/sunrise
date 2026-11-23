@@ -101,13 +101,8 @@ fn entity_pass_falls_through_but_success_stops_the_apple() {
             with_interaction_game(true, |game| {
                 game.inventory[game.selected] = Some(ItemStack::new("minecraft:apple", 1));
                 game.offhand = None;
-                let kind = game.res.mob_types().get(entity).unwrap().clone();
-                game.mobs.push(sunrise_client::mobs::Mob::new(
-                    42,
-                    kind,
-                    Vec3::new(0.5, 64.0, 5.5),
-                    0.0,
-                ));
+                game.spawn_entity(42, entity, [0.5, 64.0, 5.5], [0.0; 3]);
+                game.refresh_client_pick(1.0);
                 assert!(game.remote_use_targets_entity());
                 // Zombie interaction passes; the awake adult villager succeeds.
                 // Entity CONSUME prediction belongs to #2931 and is deliberately excluded.

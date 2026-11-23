@@ -5,6 +5,7 @@ use super::Game;
 use super::commands::Target;
 use std::convert::Infallible;
 use std::sync::Arc;
+use sunrise_client::living_attributes::{ModifierChanges, ModifierSnapshot};
 use sunrise_client::mobs::{
     Mob,
     finalize::{self, Attr, Op},
@@ -22,15 +23,42 @@ use sunrise_world::attributes::{
 pub(in crate::game) fn collect_equipment(catalog: &Arc<Catalog>, items: &Items, m: &mut Mob) {
     sunrise_client::mobs::armor::prepare(m, catalog);
     let mut live = std::mem::take(&mut m.extra.live);
-    let seed = || {
-        sunrise_client::entity_nbt::attribute_entries(m)
-            .into_iter()
-            .map(|(_, entry)| entry)
-            .collect()
-    };
     let changed =
-        live.collect_equipment_changes(catalog, &m.kind.id, &m.extra.equipment, items, seed);
+        live.collect_equipment_changes(catalog, &m.kind.id, &m.extra.equipment, items, || {
+            equipment_seed(m)
+        });
     warn_failed(m.id, &m.kind.id, changed);
+    m.extra.live = live;
+}
+
+fn equipment_seed(m: &Mob) -> Vec<sunrise_core::nbt::Tag> {
+    sunrise_client::entity_nbt::attribute_entries(m)
+        .into_iter()
+        .map(|(_, entry)| entry)
+        .collect()
+}
+
+pub(super) fn modifier_invalidation_undo(
+    catalog: &Arc<Catalog>,
+    mob: &Mob,
+) -> Option<ModifierChanges> {
+    match mob
+        .extra
+        .live
+        .modifier_invalidation_undo(catalog, &mob.kind.id, || equipment_seed(mob))
+    {
+        Ok(undo) => undo,
+        Err(error) => {
+            warn_failed(mob.id, &mob.kind.id, Err(error));
+            None
+        }
+    }
+}
+
+pub(super) fn undo_mob_modifiers(catalog: &Arc<Catalog>, m: &mut Mob, changes: ModifierChanges) {
+    let mut live = std::mem::take(&mut m.extra.live);
+    let result = live.undo_modifier_changes(catalog, &m.kind.id, changes, || equipment_seed(m));
+    warn_failed(m.id, &m.kind.id, result);
     m.extra.live = live;
 }
 
@@ -115,11 +143,23 @@ impl Game<'_> {
         }
     }
 
-    /// `collectEquipmentChanges` of the mob `id` right away: equipment a mod
-    /// wrote through a handle takes its attribute modifiers on the live map
-    /// at once — its armor and the reads of #940 — not at the tick's pass.
-    /// The tick's own pass remains the safety net for the other writers.
-    pub(super) fn collect_mob_equipment_attributes(&mut self, id: u32) {
+    /// Snapshot before any write that can refresh or invalidate the live map.
+    /// The non-transactional paths never read or allocate a modifier snapshot.
+    pub(super) fn snapshot_mob_modifiers(&self, id: u32) -> Option<ModifierSnapshot> {
+        if self.transactions.is_empty() {
+            return None;
+        }
+        let mob = self.mobs.iter().find(|m| m.id == id && !m.removed)?;
+        snapshot(&self.motion.attributes, mob)
+    }
+
+    /// Refresh equipment immediately, keeping the live diff if the caller took
+    /// a transaction snapshot. The ordinary tick remains the other writers' safety net.
+    pub(super) fn collect_mob_equipment_attributes(
+        &mut self,
+        id: u32,
+        before: Option<ModifierSnapshot>,
+    ) {
         if self.remote.is_some() || self.options.execution_role.is_client() {
             return;
         }
@@ -129,6 +169,27 @@ impl Game<'_> {
             return;
         };
         collect_equipment(&catalog, items, m);
+        if let Some(before) = before
+            && let Some(after) = snapshot(&catalog, m)
+            && let Some(changes) = before.diff(&after)
+        {
+            let dim = self.dim;
+            self.transactions.journal_modifier_changes(dim, id, changes);
+        }
+    }
+}
+
+fn snapshot(catalog: &Arc<Catalog>, mob: &Mob) -> Option<ModifierSnapshot> {
+    match mob
+        .extra
+        .live
+        .modifier_snapshot(catalog, &mob.kind.id, || equipment_seed(mob))
+    {
+        Ok(snapshot) => Some(snapshot),
+        Err(error) => {
+            warn_failed(mob.id, &mob.kind.id, Err(error));
+            None
+        }
     }
 }
 
@@ -296,10 +357,11 @@ impl Game<'_> {
     /// Applies `write` to the attribute `name` of `t` on the record that the
     /// entity's gameplay and its clients' attribute sync read:
     /// - a player's (or a guest's, in its turn) own attribute map;
-    /// - for a mob, `finalize`'s store for the nine attributes its behavior
-    ///   reads there (so it moves and hits by them at once); for its armor and
-    ///   toughness its armor map (`mobs/armor.rs`); for the rest, as for an
-    ///   armor stand, its generic map (`cmds.attributes`), which the sync sends.
+    /// - for a mob, `finalize`'s store for the attributes its behavior reads
+    ///   there (`finalize::Attr`, so it moves, hits and falls by them at once);
+    ///   for its armor and toughness its armor map (`mobs/armor.rs`); for the
+    ///   rest, as for an armor stand, its generic map (`cmds.attributes`),
+    ///   which the sync sends.
     ///
     /// A mob's and a stand's live map (`living_attributes`, which the mod
     /// API's reads and the save use) takes the same write and keeps it
@@ -315,13 +377,42 @@ impl Game<'_> {
         name: &str,
         write: AttributeWrite,
     ) -> Option<bool> {
+        let before = match t {
+            Target::Mob(id) => self.snapshot_mob_modifiers(id),
+            _ => None,
+        };
+        let explicit = if self.transactions.is_empty() || !matches!(t, Target::Mob(_)) {
+            None
+        } else {
+            write.transient_record().map(|(id, _)| id.to_owned())
+        };
         let done = self.apply_attribute_write(t, name, write)?;
         // A finalize write drops the mob's live map (its seed changed), which
         // takes the equipment's modifiers with it: collect them again at
         // once, so the next read — a hit's armor, the attribute sync — sees
         // them (#941).
         if let Target::Mob(id) = t {
-            self.collect_mob_equipment_attributes(id);
+            // Invalidation is part of the explicit-write step. Keep its
+            // collateral changes separate from what equipment collection does
+            // after it, even when both steps write the same modifier key.
+            let after_write = before
+                .as_ref()
+                .and_then(|_| self.snapshot_mob_modifiers(id));
+            if let (Some(before), Some(after)) = (before.as_ref(), after_write.as_ref())
+                && let Some(changes) = before.diff(after)
+            {
+                let dim = self.dim;
+                self.transactions.journal_modifier_changes(dim, id, changes);
+            }
+            if done && let Some(modifier) = explicit {
+                // The explicit write persists through abort. Earlier entries
+                // for that row must not undo it; the subsequent refresh,
+                // however, is journaled against the newly written value.
+                let dim = self.dim;
+                self.transactions
+                    .keep_explicit_modifier_write(dim, id, name, &modifier);
+            }
+            self.collect_mob_equipment_attributes(id, after_write);
         }
         Some(done)
     }
@@ -955,7 +1046,10 @@ mod tests {
             let read_at = |game: &Game<'_>| {
                 let m = &game.mobs[0];
                 let gear = m.extra.gear_knockback.as_deref();
-                (gear.map(std::ptr::from_ref), m.gear_knockback_resistance)
+                (
+                    gear.map(std::ptr::from_ref),
+                    gear.map(|_| m.knockback_resistance()),
+                )
             };
             let close = |value: Option<f64>, to: f64| value.is_some_and(|v| (v - to).abs() < 1e-6);
             game.mobs[0].set_equipment_stack(CHEST, stack("minecraft:netherite_chestplate"));
@@ -1223,6 +1317,14 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn a_mods_item_modifiers_reach_the_wearer() {
+        // The stack hooks are a process-wide table: install them in a child of its own.
+        if crate::game::native_entity_refs::tests::run_fresh_cases(
+            "game::living_attributes::tests::a_mods_item_modifiers_reach_the_wearer",
+            "SUNRISE_ITEM_MODIFIERS_WEARER_CHILD",
+            &["plated"],
+        ) {
+            return;
+        }
         // The game's stack snapshots, which the hook needs, as its startup installs them;
         // without this the test passes only after another test in the process installed them.
         crate::game::api_values::install_stack_hooks();
@@ -1235,7 +1337,7 @@ mod tests {
                 game.refresh_gear_knockback_resistance();
                 game.tick_equipment_attributes();
                 // Netherite's own 0.1, and the mod's 0.4.
-                let resistance = game.mobs[0].gear_knockback_resistance.unwrap();
+                let resistance = game.mobs[0].knockback_resistance();
                 assert!((resistance - 0.5).abs() < 1e-6, "{resistance}");
                 let toughness = read(game, 12, "minecraft:armor_toughness");
                 assert_eq!(toughness, (Some(0.0), Some(0.0)));

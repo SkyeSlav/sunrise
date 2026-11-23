@@ -33,8 +33,7 @@ pub fn agreed(path: &Path) -> Result<bool, String> {
     match read {
         Ok(p) => Ok(p
             .get("eula")
-            .unwrap_or("false")
-            .eq_ignore_ascii_case("true")),
+            .is_some_and(|value| value.eq_ignore_ascii_case("true"))),
         Err(_) => {
             let _ = std::fs::write(path, default_file(now_millis()));
             Err(format!("Failed to load {}", path.display()))

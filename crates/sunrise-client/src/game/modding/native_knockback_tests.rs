@@ -24,6 +24,8 @@ pub(in crate::game) struct Heard {
     incoming_causing: Vec<i32>,
     cancel: bool,
     repeat_short: bool,
+    set_strength: Option<f64>,
+    sources: Vec<(String, i32, i32)>,
     pub(in crate::game) reduce_sword_credit: bool,
 }
 
@@ -49,7 +51,14 @@ impl Hooks for Probe {
             .credits
             .push((event.kill_credit, id(event.kill_credit_main)));
         heard.entries.push(event.entry);
-        if heard.reduce_sword_credit {
+        heard.sources.push((
+            event.source.damage_type.to_owned(),
+            event.source.causing,
+            event.source.direct,
+        ));
+        if let Some(strength) = heard.set_strength {
+            event.strength = strength;
+        } else if heard.reduce_sword_credit {
             if id(event.kill_credit_main).as_deref() == Some("minecraft:iron_sword") {
                 event.strength *= 0.5;
             }
@@ -513,7 +522,7 @@ fn the_hook_names_the_entry_a_push_came_through_once_per_full_entry_call() {
         zombie_at(game, 42, Vec3::ZERO);
         let mut mob = game.mobs.pop().unwrap();
         mob.velocity = Vec3::ZERO;
-        mob.on_ground = false;
+        mob.ground.on_ground = false;
         with_detached_credit(game, 42, |level| {
             mob.knockback(level, 0.4, 1.0, 0.0, &hit, 0.0)
         });
@@ -567,14 +576,96 @@ fn the_hook_names_the_entry_a_push_came_through_once_per_full_entry_call() {
     assert_eq!(heard.entries.len(), 6, "one event per full-entry call");
 }
 
-fn with_detached_credit(
+fn with_detached_credit<R>(
     game: &mut super::Game<'_>,
     victim: i32,
-    push: impl FnOnce(&mut sunrise_client::health::DamageLevel<'_>),
-) {
+    push: impl FnOnce(&mut sunrise_client::health::DamageLevel<'_>) -> R,
+) -> R {
     let plan = game.prepare_knockback_credit(victim, None, &NO_ATTACK);
     let mut credit = plan.lend(&mut game.last_hurt_by_player);
-    push(damage_level_of!(game, &NO_ATTACK, &mut credit, None));
+    push(damage_level_of!(game, &NO_ATTACK, &mut credit, None))
+}
+
+#[test]
+#[ignore = "daily"]
+fn callable_knockback_respects_the_hook_and_resistance_without_dealing_damage() {
+    if super::native_entity_refs::tests::run_fresh_cases(
+        "game::native_knockback_tests::callable_knockback_respects_the_hook_and_resistance_without_dealing_damage",
+        "SUNRISE_CALLABLE_KNOCKBACK_CHILD",
+        &["mob"],
+    ) {
+        return;
+    }
+    let heard = heard(|game, log| {
+        zombie_at(game, 42, Vec3::ZERO);
+        let living = game.living(game.entity(42).unwrap()).unwrap();
+        game.mobs[0].attrs.knockback_resistance = 0.5;
+        game.mobs[0].velocity = Vec3::new(2.0, 0.25, 2.0);
+        game.mobs[0].ground.on_ground = true;
+        let health = game.mobs[0].health;
+        log.lock().unwrap().set_strength = Some(1.0);
+
+        // The listener flips X and sets strength to 1. Resistance halves it to 0.5.
+        assert!(living.knockback(game, 0.25, [1.0, 0.0]));
+        let after = Vec3::new(1.5, 0.4, 1.0);
+        assert_eq!(game.mobs[0].velocity, after);
+
+        log.lock().unwrap().cancel = true;
+        assert!(!living.knockback(game, 0.25, [0.0, 1.0]));
+        assert_eq!(game.mobs[0].velocity, after);
+
+        log.lock().unwrap().cancel = false;
+        game.mobs[0].attrs.knockback_resistance = 1.0;
+        assert!(!living.knockback(game, 0.25, [0.0, 1.0]));
+        assert_eq!(game.mobs[0].velocity, after);
+        assert!(!living.knockback(game, f64::NAN, [1.0, 0.0]));
+        assert_eq!(game.mobs[0].velocity, after);
+        assert_eq!(game.mobs[0].health, health);
+    });
+    assert_eq!(heard.entries, [mod_api::KnockbackEntry::Short; 3]);
+    assert_eq!(heard.knocks, vec![(0, None, None); 3]);
+    assert_eq!(heard.credits, vec![(0, None); 3]);
+    assert_eq!(
+        heard.sources,
+        vec![("minecraft:generic".to_owned(), 0, 0); 3]
+    );
+    assert!(heard.incoming_causing.is_empty());
+}
+
+/// `getAttributeValue(KNOCKBACK_RESISTANCE)` is read at the push: a geared zombie whose
+/// resistance was set to full this tick, before any equipment check, is not pushed.
+#[test]
+#[ignore = "daily"]
+fn callable_knockback_reads_resistance_written_this_tick() {
+    if super::native_entity_refs::tests::run_fresh_cases(
+        "game::native_knockback_tests::callable_knockback_reads_resistance_written_this_tick",
+        "SUNRISE_CALLABLE_KNOCKBACK_GEAR_CHILD",
+        &["geared"],
+    ) {
+        return;
+    }
+    use super::living_attributes::AttributeWrite;
+    use sunrise_items::equipment::CHEST;
+    heard(|game, _| {
+        zombie_at(game, 42, Vec3::ZERO);
+        game.mobs[0].ground.on_ground = true;
+        game.mobs[0].set_equipment_stack(
+            CHEST,
+            Some(ItemStack::new("minecraft:netherite_chestplate", 1)),
+        );
+        game.refresh_gear_knockback_resistance();
+        let living = game.living(game.entity(42).unwrap()).unwrap();
+        assert_eq!(
+            game.write_attribute(
+                super::commands::Target::Mob(42),
+                "minecraft:knockback_resistance",
+                AttributeWrite::Base(1.0),
+            ),
+            Some(true)
+        );
+        assert!(!living.knockback(game, 0.5, [1.0, 0.0]));
+        assert_eq!(game.mobs[0].velocity, Vec3::ZERO);
+    });
 }
 
 pub(in crate::game) fn credit_pig(game: &mut super::Game<'_>) {
@@ -587,6 +678,7 @@ pub(in crate::game) fn credit_pig(game: &mut super::Game<'_>) {
             players: vec![(0, 0)],
             forced: Vec::new(),
             portal: Vec::new(),
+            spawn: Vec::new(),
             dragon: None,
             viewed: Vec::new(),
             view_distance: 2,
@@ -605,7 +697,7 @@ fn credit_push(game: &mut super::Game<'_>) {
     let mut credit = plan.lend(&mut game.last_hurt_by_player);
     let mob = &mut game.mobs[0];
     mob.velocity = Vec3::ZERO;
-    mob.on_ground = false;
+    mob.ground.on_ground = false;
     mob.knockback(
         damage_level_of!(game, &NO_ATTACK, &mut credit, None),
         0.4,
@@ -672,6 +764,13 @@ fn accepted_wolf_hits_commit_owner_replacement_clearing_and_unresolved_precedenc
 #[test]
 #[ignore = "daily"]
 fn remembered_player_wins_after_forty_ticks_then_recent_mob_credit_expires_at_one_hundred() {
+    if super::native_entity_refs::tests::run_fresh_cases(
+        "game::native_knockback_tests::remembered_player_wins_after_forty_ticks_then_recent_mob_credit_expires_at_one_hundred",
+        "SUNRISE_KNOCKBACK_EXPIRY_CHILD",
+        &["expiry"],
+    ) {
+        return;
+    }
     let heard = guest_heard(|game, log| {
         credit_pig(game);
         zombie_at(game, 101, Vec3::new(1.0, 0.0, 0.0));
@@ -712,7 +811,7 @@ fn remembered_player_wins_after_forty_ticks_then_recent_mob_credit_expires_at_on
         [
             (12, Some("minecraft:iron_sword".into())),
             (12, Some("minecraft:iron_axe".into())),
-            (101, Some("minecraft:bone".into())),
+            (12, Some("minecraft:iron_axe".into())),
             (101, Some("minecraft:bone".into())),
             (0, None),
         ]

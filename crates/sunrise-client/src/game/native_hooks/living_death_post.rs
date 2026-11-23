@@ -136,7 +136,7 @@ mod tests {
                 game.mobs.last_mut().unwrap().ai.last_hurt_by_player = 100;
                 // The blow that killed it, at the attack: mob_killed's moment.
                 game.native_kill_event(game.mobs.len() - 1);
-                game.mob_died(&mob);
+                game.mob_die(&mob);
                 assert_eq!(
                     *heard.lock().unwrap(),
                     ["killed", "death", "loot", "xp", "post"]
@@ -165,7 +165,7 @@ mod tests {
                     attacker_species: None,
                 };
                 let mob = sheep(game, fall);
-                game.mob_died(&mob);
+                game.mob_die(&mob);
                 assert_eq!(*heard.lock().unwrap(), ["death", "loot", "post"]);
                 assert_eq!(
                     post.lock().unwrap().damage_type.as_deref(),
@@ -205,7 +205,7 @@ mod tests {
                         attacker_species: None,
                     },
                 );
-                game.mob_died(&mob);
+                game.mob_die(&mob);
                 assert_eq!(*heard.lock().unwrap(), ["death"]);
                 assert_eq!(
                     game.mobs.last().unwrap().health,
@@ -252,7 +252,7 @@ mod tests {
 
                 assert_eq!(
                     *heard.lock().unwrap(),
-                    ["death", "xp", "post"],
+                    ["death", "loot", "xp", "post"],
                     "the inventory drop, the message and the experience ran before it"
                 );
                 let post = post.lock().unwrap();

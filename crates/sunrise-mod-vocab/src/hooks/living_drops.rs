@@ -15,9 +15,10 @@ pub trait Hooks {
     /// motion and pickup delay its item entity will have. Edit the list (take
     /// out, change or add drops) or set `cancel` for no drops at all; empty
     /// stacks don't drop. `source` is the killing blow (`causing` and `direct`
-    /// entity ids, 0 when none or not known) and `recently_hit` is whether a
-    /// player hurt it within 100 ticks, which is what lets a mob drop its
-    /// equipment. An armor stand fires it from `brokenByAnything` with an
+    /// entity ids, 0 when none or not known); a player who dies with no
+    /// recorded blow gets the source `living_death` heard (`generic_kill` for
+    /// `/kill`). `recently_hit` is whether a player hurt it within 100
+    /// ticks, which is what lets a mob drop its equipment. An armor stand fires it from `brokenByAnything` with an
     /// empty list (its stand item and its equipment pop outside the list, as
     /// in vanilla). Experience orbs are not in the list
     /// (`living_experience_drop`); a spectator, who drops nothing,
@@ -26,11 +27,13 @@ pub trait Hooks {
     /// and starting `age` (`ItemDrop::UNLIMITED_LIFETIME` never despawns); a
     /// drop left as it was spawns as before. Server-side.
     #[hook(
+        dispatch = "api_carrier",
         side = "server",
         contract = "cancel",
         out = "cancel",
         neoforge = "LivingDropsEvent",
-        cancellable = true
+        cancellable = true,
+        version = 2
     )]
     fn living_drops(
         entity: u32,
@@ -56,6 +59,7 @@ pub trait Hooks {
     /// `source` and `recently_hit` are as in `native_living_drops`.
     /// Server-side.
     #[hook(
+        dispatch = "api_carrier",
         side = "server",
         contract = "listen",
         neoforge = "GetEquipmentDropChanceEvent",

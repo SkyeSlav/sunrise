@@ -8,6 +8,7 @@ use sunrise_core::geometry::Vec3;
 fn orb(id: u32, value: i32, count: u32) -> ExperienceOrb {
     let at = Vec3::new(0.5, 70.0, 0.5);
     ExperienceOrb {
+        size_answer: None,
         attachment_lifetime: Default::default(),
         fall_distance: 0.0,
         rotation: [0.0, 0.0],
@@ -18,7 +19,7 @@ fn orb(id: u32, value: i32, count: u32) -> ExperienceOrb {
         velocity: Vec3::ZERO,
         value,
         age: 0,
-        on_ground: true,
+        ground: sunrise_world::ground_support::GroundState::from_ground_flag(true),
         count,
         fire_ticks: 0,
         ticks: 0,
@@ -50,6 +51,8 @@ fn set_experience_orb_refuses_a_write_a_save_cannot_hold() {
         assert!(!game.set_experience_orb(&dimension, 7, Some(40_000), None, None));
         assert!(!game.set_experience_orb(&dimension, 7, None, Some(i32::MAX as u32 + 1), None));
         assert!(!game.set_experience_orb(&dimension, 7, None, Some(0), None));
+        // ExperienceOrb.age is an int.
+        assert!(!game.set_experience_orb(&dimension, 7, Some(11), None, Some(i32::MAX as u32 + 1)));
         assert_eq!((game.orbs[0].value, game.orbs[0].count), (3, 2));
         assert!(game.set_experience_orb(&dimension, 7, Some(11), Some(1), None));
         assert_eq!((game.orbs[0].value, game.orbs[0].count), (11, 1));

@@ -88,6 +88,17 @@ fn files_pass_against_their_entries() {
 }
 
 #[test]
+fn install_verification_compares_mod_versions_as_semver() {
+    let mut index = sample();
+    let smod = fixtures().join("coords_hud-0.1.0.smod");
+    index.projects[0].versions[0].version = "0.1".into();
+    assert_eq!(check(&index, "coords_hud", &smod), Ok(Trust::Verified));
+    index.projects[0].versions[0].version = "0.2".into();
+    let e = check(&index, "coords_hud", &smod).unwrap_err();
+    assert!(e.contains("isn't what the index lists"), "{e}");
+}
+
+#[test]
 fn a_changed_file_key_or_manifest_is_refused() {
     let index = sample();
     let dir = std::env::temp_dir().join(format!("sunrise-index-{}", std::process::id()));
@@ -121,6 +132,209 @@ fn a_changed_file_key_or_manifest_is_refused() {
     let e = check(&revoked, "coords_hud", &smod).unwrap_err();
     assert!(e.contains("taken down: Test."), "{e}");
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_content_mod_lists_manifest_dependencies_and_checks_index_claims() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("coords_hud.smod");
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+    zip.start_file(
+        crate::manifest::MANIFEST,
+        zip::write::SimpleFileOptions::default(),
+    )
+    .unwrap();
+    write!(zip, "id='coords_hud'\nname='Coordinates'\nversion='0.1.0'\napi='0.2'\ncapabilities=['registries']\n[dependencies]\njei={{version='^0.5', optional=true, side='client'}}\ncreature='^0.1'\n").unwrap();
+    zip.finish().unwrap();
+    let facts = inspect(&Kind::Mod, &path).unwrap();
+    assert_eq!(
+        serde_json::to_value(&facts.dependencies).unwrap(),
+        serde_json::json!([
+            {"id": "creature", "version": "^0.1"},
+            {"id": "jei", "version": "^0.5", "optional": true, "side": "client"}
+        ])
+    );
+
+    let index = sample();
+    let p = index.project("coords_hud").unwrap();
+    let mut version = p.versions[0].clone();
+    version.side = facts.side;
+    assert!(
+        serde_json::to_value(&version)
+            .unwrap()
+            .get("dependencies")
+            .is_none()
+    );
+    assert!(facts.matches(p, &version).is_ok());
+    version.dependencies = Some(facts.dependencies.clone());
+    assert!(facts.matches(p, &version).is_ok());
+    version.dependencies = Some(Vec::new());
+    let serialized = serde_json::to_value(&version).unwrap();
+    assert_eq!(serialized["dependencies"], serde_json::json!([]));
+    let version = serde_json::from_value(serialized).unwrap();
+    let error = facts.matches(p, &version).unwrap_err();
+    for word in ["coords_hud", "0.1.0", "dependencies"] {
+        assert!(error.contains(word), "{error}");
+    }
+}
+
+fn indexed_mod(id: &str, version: &str, dependencies: serde_json::Value) -> Project {
+    let mut p = sample().projects.remove(0);
+    p.id = id.into();
+    p.versions[0].version = version.into();
+    p.versions[0].dependencies = serde_json::from_value(dependencies).unwrap();
+    p
+}
+
+#[test]
+fn the_live_registry_dependency_shape_is_valid() {
+    let mut projects = [
+        "butterflies",
+        "cyclops",
+        "fairies",
+        "fireflies",
+        "scorpions",
+        "vanilla_bestiary",
+        "vulture",
+        "worms",
+    ]
+    .map(|id| {
+        indexed_mod(
+            id,
+            "0.1.0",
+            serde_json::json!([{"id": "creature", "version": "^0.1"}]),
+        )
+    })
+    .to_vec();
+    projects.extend([
+        indexed_mod("creature", "0.1.1", serde_json::Value::Null),
+        indexed_mod(
+            "ironfurnaces",
+            "1.0.0",
+            serde_json::json!([
+                {"id": "ae2", "version": "^15.4.13", "optional": true},
+                {"id": "guideme", "version": "^0.1", "optional": true},
+                {"id": "jei", "version": "^0.5", "optional": true},
+                {"id": "machine_work", "version": "^0.1", "optional": true}
+            ]),
+        ),
+        indexed_mod(
+            "jei",
+            "0.5.0",
+            serde_json::json!([
+                {"id": "guideme", "version": "^0.1", "optional": true}
+            ]),
+        ),
+    ]);
+    let index = Index {
+        schema: SCHEMA,
+        projects,
+        ..Index::default()
+    };
+    assert_eq!(index.check(), Ok(()));
+}
+
+#[test]
+fn a_required_dependency_needs_a_listed_matching_mod() {
+    let mod_for = |range| {
+        indexed_mod(
+            "fireflies",
+            "0.1.0",
+            serde_json::json!([
+                {"id": "creature", "version": range}
+            ]),
+        )
+    };
+    let mut index = Index {
+        schema: SCHEMA,
+        projects: vec![mod_for("^3.6")],
+        ..Index::default()
+    };
+    let assert_error = |index: &Index, range: &str, words: &[&str]| {
+        assert_eq!(index.check(), Ok(()));
+        let errors = resolve::uninstallable_versions(index, |_| true);
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        let e = &errors[0];
+        for word in ["fireflies", "0.1.0", "creature", range]
+            .into_iter()
+            .chain(words.iter().copied())
+        {
+            assert!(e.contains(word), "missing {word:?} in {e:?}");
+        }
+    };
+    assert_error(&index, "^3.6", &["not listed as a mod"]);
+    index.projects.push(indexed_mod(
+        "creature",
+        "3.6.30-sunrise.1",
+        serde_json::Value::Null,
+    ));
+    assert_error(&index, "^3.6", &["prerelease", "=3.6.30-sunrise.1"]);
+    index.projects[0] = mod_for("^4.0");
+    assert_error(&index, "^4.0", &["no listed version satisfies"]);
+    index.projects[0] = mod_for("=3.6.30-sunrise.1");
+    assert!(resolve::uninstallable_versions(&index, |_| true).is_empty());
+}
+
+#[test]
+fn only_required_cycles_on_the_same_installation_are_refused() {
+    let mut index = Index {
+        schema: SCHEMA,
+        projects: vec![
+            indexed_mod(
+                "fireflies",
+                "0.1.0",
+                serde_json::json!([
+                    {"id": "creature", "version": "^0.1", "side": "client"}
+                ]),
+            ),
+            indexed_mod(
+                "creature",
+                "0.1.1",
+                serde_json::json!([
+                    {"id": "fireflies", "version": "^0.1", "side": "server"}
+                ]),
+            ),
+        ],
+        ..Index::default()
+    };
+    assert!(resolve::uninstallable_versions(&index, |_| true).is_empty());
+    index.projects[1].versions[0].dependencies.as_mut().unwrap()[0].side = None;
+    assert_eq!(index.check(), Ok(()));
+    let errors = resolve::uninstallable_versions(&index, |_| true);
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    for error in errors {
+        for word in ["cycle", "fireflies 0.1.0", "creature 0.1.1", "client"] {
+            assert!(error.contains(word), "{error}");
+        }
+    }
+    index.projects[1].versions[0].dependencies.as_mut().unwrap()[0].optional = true;
+    assert!(resolve::uninstallable_versions(&index, |_| true).is_empty());
+}
+
+#[test]
+fn malformed_dependency_rows_fail_publication_and_are_left_out_by_readers() {
+    for rows in [
+        serde_json::json!([{"id": "another", "version": "not semver"}]),
+        serde_json::json!([{"id": "another", "version": "^1"}, {"id": "another", "version": "^2"}]),
+        serde_json::json!([{"id": "NotValid", "version": "^1"}]),
+    ] {
+        let id = rows[0]["id"].as_str().unwrap().to_owned();
+        let index = Index {
+            schema: SCHEMA,
+            projects: vec![indexed_mod("fireflies", "0.1.0", rows)],
+            ..Index::default()
+        };
+        let error = index.check().unwrap_err();
+        for word in ["fireflies", "0.1.0", &id] {
+            assert!(error.contains(word), "{error}");
+        }
+        let read = Index::parse(&serde_json::to_string(&index).unwrap()).unwrap();
+        assert!(read.projects.is_empty());
+        assert!(read.left_out.iter().any(|row| row.id == "fireflies"
+            && row.version.as_deref() == Some("0.1.0")
+            && row.reason == error));
+    }
 }
 
 #[test]
@@ -214,6 +428,94 @@ fn a_project_with_no_usable_version_is_left_out_and_the_rest_loads() {
         ]
     );
     assert!(index.left_out[0].reason.contains("plain file name"));
+}
+
+#[test]
+fn a_version_naming_a_release_the_index_does_not_list_is_left_out() {
+    let mut index = sample();
+    let listed = "26.3-0.1.0";
+    index.releases = Some(vec![SunriseRelease {
+        tag: listed.into(),
+        commit: "0123456789abcdef0123456789abcdef01234567".into(),
+        line: "26.3-0".into(),
+    }]);
+    let project = &mut index.projects[0];
+    let id = project.id.clone();
+    let game = project.versions[0].game.clone();
+    let tag = |release: &str| Some(listed.replace("0.1.0", release).replace("26.3", &game));
+    let mut versions = Vec::new();
+    for (version, release) in [
+        ("9.0.0", Some("0.2.0")),
+        ("9.0.1", Some("0.1.0")),
+        ("9.0.2", None),
+    ] {
+        let mut v = project.versions[0].clone();
+        v.version = version.into();
+        v.sunrise = release.and_then(tag);
+        versions.push(v);
+    }
+    project.versions = versions;
+    let error = index.check().unwrap_err();
+    assert!(error.contains(&id) && error.contains("9.0.0"), "{error}");
+    let read = reread(&index);
+    let kept: Vec<&str> = read
+        .project(&id)
+        .unwrap()
+        .versions
+        .iter()
+        .map(|v| v.version.as_str())
+        .collect();
+    assert_eq!(kept, ["9.0.1", "9.0.2"]);
+    let left_out: Vec<Option<&str>> = read
+        .left_out
+        .iter()
+        .filter(|l| l.id == id)
+        .map(|l| l.version.as_deref())
+        .collect();
+    assert_eq!(left_out, [Some("9.0.0")]);
+
+    // An index that lists no releases makes no claim about the tag.
+    index.releases = None;
+    assert_eq!(reread(&index).project(&id).unwrap().versions.len(), 3);
+}
+
+#[test]
+fn a_takedown_of_the_whole_project_drops_its_nightly_source_for_a_reader() {
+    let mut index = sample();
+    index.projects[0].nightly = Some(Nightly {
+        repo: "author/example".into(),
+        path: None,
+        metadata: Default::default(),
+    });
+    let id = index.projects[0].id.clone();
+    let mut source_only = index.projects[0].clone();
+    source_only.id = "source_only".into();
+    source_only.versions.clear();
+    index.projects.push(source_only);
+    let takedown = |id: &str, sha256: Option<String>| Revoked {
+        id: id.into(),
+        sha256,
+        reason: "Withdrawn test project.".into(),
+        date: String::new(),
+    };
+
+    // By hash: the named package alone.
+    let hash = index.projects[0].versions[0].file.sha256.clone();
+    index.revoked = vec![takedown(&id, Some(hash))];
+    assert_eq!(index.check(), Ok(()));
+    let read = reread(&index);
+    assert!(read.project(&id).unwrap().nightly.is_some());
+    assert!(read.project("source_only").is_some());
+
+    // By id: the source goes too, and a project left with nothing is left out.
+    index.revoked = vec![takedown(&id, None), takedown("source_only", None)];
+    let error = index.check().unwrap_err();
+    assert!(error.contains(&id), "{error}");
+    let read = reread(&index);
+    let project = read.project(&id).unwrap();
+    assert!(project.nightly.is_none() && !project.versions.is_empty());
+    assert!(read.project("source_only").is_none());
+    assert!(read.left_out.iter().any(|l| l.id == "source_only"));
 }
 
 #[test]
@@ -453,4 +755,63 @@ fn shader_packs_pass_the_game_s_own_check() {
     );
     assert_eq!(Kind::Shader.extension(), Some("sshader"));
     assert!(open(&Kind::Shader).is_ok());
+}
+
+/// A native source package with one `runtime/` file.
+fn native_package(name: &str, nav: &[u8]) -> PathBuf {
+    use std::io::Write;
+    let manifest = format!(
+        "id='ruby'\nname='Ruby'\nversion='0.1.0'\napi='0.2'\ncapabilities=['registries']\n\
+         [native]\ngame='26.3'\nsunrise='{0}'\nmixins='{0}'\n[runtime]\n\"nav.bin\"='{1}'\n",
+        "a".repeat(40),
+        crate::manifest::sha512_of(b"tables"),
+    );
+    let path = std::env::temp_dir().join(format!("{name}-{}.smod", std::process::id()));
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+    let options = zip::write::SimpleFileOptions::default();
+    for (entry, bytes) in [
+        (crate::manifest::MANIFEST, manifest.as_bytes()),
+        (
+            "Cargo.toml",
+            b"[package]\nname='ruby'\nversion='0.1.0'\n".as_slice(),
+        ),
+        ("src/lib.rs", b"pub fn hooks() {}".as_slice()),
+        ("runtime/nav.bin", nav),
+    ] {
+        zip.start_file(entry, options).unwrap();
+        zip.write_all(bytes).unwrap();
+    }
+    zip.finish().unwrap();
+    path
+}
+
+#[test]
+fn installing_a_native_mod_checks_its_runtime_files_against_the_manifest() {
+    let good = native_package("runtime-native-ok", b"tables");
+    let facts = inspect(&Kind::NativeMod, &good);
+    // The same name and length, different bytes.
+    let edited = native_package("runtime-native-edited", b"tablez");
+    let refused = inspect(&Kind::NativeMod, &edited);
+    std::fs::remove_file(good).unwrap();
+    std::fs::remove_file(edited).unwrap();
+    assert_eq!(facts.unwrap().id.as_deref(), Some("ruby"));
+    let error = refused.unwrap_err();
+    assert!(error.contains("runtime/nav.bin"), "{error}");
+}
+
+#[test]
+fn a_stable_tag_is_only_its_canonical_form() {
+    assert_eq!(stable_tag("26.3-0.1.0"), Some(("26.3", 0)));
+    assert_eq!(stable_tag("26.3.1-1.2.0"), Some(("26.3.1", 1)));
+    for tag in [
+        "026.3-0.1.0",
+        "26.03-0.1.0",
+        "26.3.1.2-0.1.0",
+        "26-0.1.0",
+        "26.3-0.1.0-rc.1",
+        "26.3-0.1",
+        "26.3-0.1.0+build",
+    ] {
+        assert_eq!(stable_tag(tag), None, "{tag}");
+    }
 }

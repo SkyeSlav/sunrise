@@ -13,6 +13,9 @@ use std::sync::Arc;
 ///
 /// The server and a client that does not know the type parse the value as this before the mod's
 /// own parser sees it, so the type must say it up front, when it is registered.
+///
+/// The same bounded numbers are kinds of a usage: `<amount:integer(0,1000)>`, `<total:long>`,
+/// `<total:long(0,)>` (see [`Command`](crate::Command)).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
@@ -24,6 +27,28 @@ pub enum CommandArgumentKind {
     Word,
     /// The rest of the line, spaces included: the argument must be the usage's last.
     Greedy,
+    /// A whole number in `i32` with optional bounds, as Brigadier's
+    /// `IntegerArgumentType.integer(min, max)` (NeoForge registers the same Brigadier type in
+    /// `RegisterCommandsEvent`). It goes to clients as `brigadier:integer` with the bounds
+    /// vanilla's `IntegerArgumentInfo` sends (a bound at `i32::MIN` or `i32::MAX` is left out, as
+    /// `None` is), so an unmodded client refuses an out-of-range value too. The server refuses
+    /// one with Brigadier's `argument.integer.low` / `argument.integer.big` before the mod's
+    /// [`parse`](CommandArgumentType::parse) sees the digits it accepted.
+    Integer {
+        /// The smallest value accepted; `None` for `i32::MIN`.
+        min: Option<i32>,
+        /// The largest value accepted; `None` for `i32::MAX`.
+        max: Option<i32>,
+    },
+    /// A whole number in `i64` with optional bounds, as Brigadier's
+    /// `LongArgumentType.longArg(min, max)`: `brigadier:long` on the wire, refused out of range
+    /// with `argument.long.low` / `argument.long.big`. Otherwise as [`Integer`](Self::Integer).
+    Long {
+        /// The smallest value accepted; `None` for `i64::MIN`.
+        min: Option<i64>,
+        /// The largest value accepted; `None` for `i64::MAX`.
+        max: Option<i64>,
+    },
 }
 
 /// Why a custom argument's parser refused the text a player wrote.
@@ -155,8 +180,9 @@ impl Default for CommandSender {
 ///
 /// Register it once, from `Hooks::register`, with `Registrar::register_command_argument`. Its
 /// namespaced id (`mymod:machine`) is the kind a `Command` usage names after the argument
-/// name: `Command::new("machine use <machine:mymod:machine>")`. The game then parses the
-/// argument with [`parse`](Self::parse) before calling `run_mod_command`, and asks
+/// name: `Command::new("machine use <machine:mymod:machine>")`. Register that server usage
+/// with [`crate::Command::executes`]. The game validates the argument with [`parse`](Self::parse)
+/// before calling its executor, and asks
 /// [`suggest`](Self::suggest) for the chat box's completions. Players' clients that do not know
 /// the type complete it from the server's answer.
 ///
@@ -166,7 +192,7 @@ pub trait CommandArgumentType: Send + Sync + 'static {
     /// The part of the line the argument takes. The same on every client.
     fn kind(&self) -> CommandArgumentKind;
 
-    /// Validate the text a client wrote and return the value `run_mod_command` receives.
+    /// Validate the text a client wrote and return the value the command executor receives.
     ///
     /// `input` is one word (see [`CommandArgumentKind::Word`] for its characters), or the rest
     /// of the line for [`CommandArgumentKind::Greedy`]. Return the canonical text to deliver (an
@@ -189,7 +215,7 @@ pub trait CommandArgumentType: Send + Sync + 'static {
     /// its answer unfiltered. It is `None` when no player asks: the console, and a client
     /// completing its own client commands before its own profile is known.
     ///
-    /// Native and wasm results share the vanilla packet limits: completion text may contain
+    /// The vanilla packet limits apply: completion text may contain
     /// at most 32767 UTF-16 code units; a literal tooltip may occupy at most 65535 bytes in
     /// Java modified UTF-8 (the NBT string limit). If any result exceeds either limit, the
     /// engine reports the refusal and discards the callback's results, rather than truncating

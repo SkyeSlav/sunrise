@@ -182,7 +182,7 @@ fn saved_entity_loaders_publish_and_retire_the_authoritative_owner() {
             assert_ne!(entity.id(), 0, "{kind}");
             VALUE.set(game, Holder::Entity(entity.id()), 19).unwrap();
             let old = game.query_mut(&VALUE).unwrap();
-            let row = old.iter().next().unwrap().unwrap();
+            let row = old.iter().try_next().unwrap().unwrap();
             let work = index.lock().unwrap().work_count();
             // Exercise the clone-replay boundary used by vehicle/projectile ticks.
             match kind {
@@ -228,7 +228,11 @@ fn saved_entity_loaders_publish_and_retire_the_authoritative_owner() {
                 Err(mod_api::AttachmentRowError::StaleHolder),
                 "{kind}"
             );
-            assert_eq!(*row.value(), 19);
+            assert_eq!(
+                row.with_value(game.attachment_frame_borrow(), |value| *value)
+                    .unwrap(),
+                19
+            );
         }
     });
 }
@@ -260,10 +264,11 @@ fn saved_binding_family_first_stores_publish_to_queries() {
                 VALUE.set(game, holder, 7).unwrap();
                 {
                     let query = game.query(&VALUE).unwrap();
-                    let rows: Vec<_> = query.iter().map(|row| row.unwrap()).collect();
+                    let mut rows = query.iter();
+                    let rows: Vec<_> = std::iter::from_fn(|| rows.try_next().unwrap()).collect();
                     assert_eq!(rows.len(), 1, "{} first store", $kind);
                     assert_eq!(rows[0].holder, AttachmentHolder::Entity(entity), "{}", $kind);
-                    assert_eq!(rows[0].value, &7, "{}", $kind);
+                    assert_eq!(rows[0].with_value(game.attachment_frame_borrow(), |value| *value), Ok(7), "{}", $kind);
                 }
                 assert!(game.entity_discard(entity), "{} discard", $kind);
                 game.native_removals_flush();
@@ -288,7 +293,12 @@ fn saved_binding_family_first_stores_publish_to_queries() {
         let id = game.tnts[0].id;
         VALUE.set(game, Holder::Entity(id), 9).unwrap();
         assert!(
-            game.query(&VALUE).unwrap().iter().next().is_none(),
+            game.query(&VALUE)
+                .unwrap()
+                .iter()
+                .try_next()
+                .unwrap()
+                .is_none(),
             "unindexed family"
         );
     });

@@ -9,10 +9,10 @@ use sunrise_core::geometry::trig::Mth;
 use sunrise_core::{geometry::Vec3, random::RandomSource};
 
 /// Phantom state in `Extra`: `flag` swooping, `home` the anchor,
-/// `vector` the move target, `attrs.speed` the move control's speed.
+/// `vector` the move target, `phantom_move_speed` the move control's speed.
 pub fn register(m: &mut Mob) {
     m.ai.mov.kind = MoveKind::Custom;
-    m.attrs.speed = 0.1;
+    m.extra.phantom_move_speed = 0.1;
     m.extra.home = Some([
         m.position.x.floor() as i32,
         m.position.y.floor() as i32 + 5,
@@ -288,7 +288,7 @@ impl Goal for SweepAttack {
                     data: 0,
                 });
             }
-        } else if m.horizontal_collision || m.hurt_time > 0 {
+        } else if m.ground.horizontal_collision || m.hurt_time > 0 {
             m.extra.flag = false;
         }
     }
@@ -307,8 +307,8 @@ fn wrap(d: f32) -> f32 {
 /// `PhantomMoveControl`: bank toward the move target, faster on a straight
 /// line.
 pub fn move_control(m: &mut Mob) {
-    let mut speed = m.attrs.speed as f32;
-    if m.horizontal_collision {
+    let mut speed = m.extra.phantom_move_speed;
+    if m.ground.horizontal_collision {
         m.yaw += 180.0;
         speed = 0.1;
     }
@@ -351,7 +351,7 @@ pub fn move_control(m: &mut Mob) {
             v.z + (tz - v.z) * 0.2,
         );
     }
-    m.attrs.speed = f64::from(speed);
+    m.extra.phantom_move_speed = speed;
     // PhantomBodyRotationControl: the head follows the body.
     m.head_yaw = m.body_yaw;
 }
@@ -461,7 +461,7 @@ mod tests {
                 assert!(
                     events
                         .iter()
-                        .any(|e| matches!(e, MobEvent::AttackPlayer(_, _))),
+                        .any(|e| matches!(e, MobEvent::AttackPlayer(..))),
                     "the swoop should bite through the pane: {events:?}"
                 );
             }),

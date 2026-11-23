@@ -42,7 +42,7 @@ fn lodestone_compass() -> ItemStack {
 
 /// A client game that draws: its item models (the compass' `range_dispatch`) and
 /// atlas come from the resources, as `ShelfRenderer` gets them.
-fn drawing_game() -> Game<'static> {
+fn drawing_game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -> Game<'a> {
     let root = std::path::PathBuf::from(
         std::env::var_os("SUNRISE_TEST_RESOURCES").expect("SUNRISE_TEST_RESOURCES"),
     );
@@ -63,7 +63,7 @@ fn drawing_game() -> Game<'static> {
     let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
     options.resources = root.clone();
     options.execution_role = ExecutionRole::Client;
-    let res: &'static _ = Box::leak(Box::new(loaded.resources));
+    let res = &*resources.insert(loaded.resources);
     let mut game = Game::new(
         res,
         loaded.pack,
@@ -137,7 +137,8 @@ fn drawn_sprite(game: &Game<'_>, vertices: &[Vertex]) -> Option<String> {
 #[test]
 #[ignore = "daily"]
 fn a_compass_on_a_shelf_points_from_that_shelf() {
-    let mut game = drawing_game();
+    let mut resources = None;
+    let mut game = drawing_game(&mut resources);
     let compass = lodestone_compass();
     let south = [0, 200, 0];
     place_shelf(&mut game, south, "south", &compass);

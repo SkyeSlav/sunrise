@@ -2,32 +2,71 @@
 //! kinds, ticking as `AbstractFurnaceBlockEntity.serverTick` with fuel times
 //! from the data-driven `context_int_provider`/`context_float_provider` files.
 
-pub use crate::chunk::block_entity::published_shapes::{PublishedShapes, SHAPES_KEY};
+pub use crate::chunk::block_entity::published_shapes::{CheckedShape, PublishedShapes, SHAPES_KEY};
 pub use crate::chunk::block_entity::{
     Banner, Beacon, BlockEntity, Brushable, Campfire, ChiseledBookshelf, Crafter, CreakingHeart,
     EndGateway, Furnace, FurnaceKind, Jukebox, Lectern, MOD_MENUS, ModBlockEntity,
-    ModBlockEntityFields, ModContainer, ModEnergyBuffer, ModFluidTanks, ModRevision, PotentSulfur,
-    Shelf, Skull, SkullSkin,
+    ModBlockEntityFields, ModContainer, ModContainerInsertRule, ModEnergyBuffer, ModFluidTanks,
+    ModRevision, PotentSulfur, Shelf, Skull, SkullSkin,
 };
 use crate::items::ItemStack;
 use std::collections::HashMap;
 
-/// a content mod's menu type (`data/<id>/sunrise/menu/`, vanilla's
+/// Apply a mod container's typed insertion rule to the engine's item-stack representation.
+pub fn mod_container_insert_allowed(
+    rule: ModContainerInsertRule,
+    current: Option<&ItemStack>,
+    offered: &ItemStack,
+) -> bool {
+    match rule {
+        ModContainerInsertRule::Any => true,
+        ModContainerInsertRule::OnlyWhenEmpty => current.is_none(),
+        ModContainerInsertRule::SameKind => {
+            current.is_none_or(|held| held.same_item_same_components(offered))
+        }
+    }
+}
+
+/// A content mod's menu type (`data/<id>/sunrise/menu/`, vanilla's
 /// `MenuType`): its container slots, its data slots (`ContainerData`) and the
 /// slots players only take from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModMenuType {
     pub id: &'static str,
+    /// Package ID, which need not match the menu's namespace.
+    pub owner: &'static str,
     pub slots: usize,
+    /// Whether this menu appends the player's main inventory and hotbar.
+    pub player_inventory: bool,
     pub data_slots: usize,
+    /// Validated transient-slot maxima, used when this type opens without a block.
+    pub owned_slots: Option<Vec<u8>>,
     pub results: Vec<usize>,
+    /// Validated container indices marked as machine inputs in the client layout.
+    pub inputs: Vec<usize>,
     /// its crafting grid, if it has one (`crafting`).
     pub crafting: Option<ModCrafting>,
     /// its linked slots, if it has any (`links`).
     pub links: Option<ModLinks>,
 }
 
-/// a mod menu type's linked slots: `count` container slots from `from` on,
+impl ModMenuType {
+    pub fn player_slots(&self) -> usize {
+        if self.player_inventory { 36 } else { 0 }
+    }
+
+    pub fn slot_count(&self) -> usize {
+        self.slots + self.player_slots()
+    }
+
+    /// Whether this menu slot belongs to its own block or crafting result, not a linked
+    /// container or the player.
+    pub fn owns_slot(&self, slot: usize) -> bool {
+        slot < self.slots && self.links.is_none_or(|link| !link.slots().contains(&slot))
+    }
+}
+
+/// A mod menu type's linked slots: `count` container slots from `from` on,
 /// which show the slots of the containers a native mod links them to
 /// (`native_menu_links`) instead of the block entity's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,28 +101,49 @@ impl ModCrafting {
 
 static MOD_MENU_TYPES: std::sync::OnceLock<Vec<ModMenuType>> = std::sync::OnceLock::new();
 
-/// One menu type as [`register_mod_menu_types`] takes it: `(id, slots, data
-/// slots, results, crafting, links)`.
+/// One menu type as [`register_mod_menu_types`] takes it: `(id, owner, slots, data
+/// slots, results, inputs, crafting, links, player inventory, owned slot maxima)`.
 pub type ModMenuTypeEntry = (
+    String,
     String,
     usize,
     usize,
     Vec<usize>,
+    Vec<usize>,
     Option<ModCrafting>,
     Option<ModLinks>,
+    bool,
+    Option<Vec<u8>>,
 );
 
 fn menu_types(menus: impl IntoIterator<Item = ModMenuTypeEntry>) -> Vec<ModMenuType> {
     menus
         .into_iter()
         .map(
-            |(id, slots, data_slots, results, crafting, links)| ModMenuType {
-                id: Box::leak(id.into_boxed_str()),
+            |(
+                id,
+                owner,
                 slots,
                 data_slots,
                 results,
+                inputs,
                 crafting,
                 links,
+                player_inventory,
+                owned_slots,
+            )| {
+                ModMenuType {
+                    id: Box::leak(id.into_boxed_str()),
+                    owner: Box::leak(owner.into_boxed_str()),
+                    slots,
+                    player_inventory,
+                    data_slots,
+                    owned_slots,
+                    results,
+                    inputs,
+                    crafting,
+                    links,
+                }
             },
         )
         .collect()
@@ -796,6 +856,25 @@ impl BlockEntity {
             | Self::CommandBlock(_)
             // Not a Container (only Clearable): hoppers don't reach in.
             | Self::Campfire(_) => &[],
+        }
+    }
+    /// An individual slot write claims just that slot from a mod's saved payload.
+    pub fn slot_mut(&mut self, slot: usize) -> Option<&mut Option<ItemStack>> {
+        match self {
+            Self::Mod(m) => m.item_slot_mut(slot),
+            other => other.slots_mut().get_mut(slot),
+        }
+    }
+    /// Write back an inventory projection, claiming a mod's opaque rows only at changed slots.
+    pub fn replace_slots(&mut self, slots: &[Option<ItemStack>]) {
+        if let Self::Mod(m) = self {
+            for (slot, stack) in slots.iter().enumerate() {
+                if m.items[slot] != *stack {
+                    *m.item_slot_mut(slot).unwrap() = stack.clone();
+                }
+            }
+        } else {
+            self.slots_mut().clone_from_slice(slots);
         }
     }
     pub fn slots_mut(&mut self) -> &mut [Option<ItemStack>] {

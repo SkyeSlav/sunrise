@@ -605,6 +605,7 @@ def world_blocks():
 
 
 def entities():
+    enchant_target = '@e[type=minecraft:armor_stand,tag=enchant_target,limit=1]'
     return [
         cmd('/summon minecraft:pig 4.5 210 4.5 {NoAI:1b,NoGravity:1b,Tags:["a","h"]}'),
         cmd('/summon minecraft:cow 6.5 210 4.5 {NoAI:1b,NoGravity:1b,CustomName:"Daisy",Tags:["h"]}'),
@@ -772,6 +773,11 @@ def entities():
             cmd(f'/data get entity @e[type=minecraft:{kind},limit=1] Item.id'),
             cmd(f'/kill @e[type=minecraft:{kind}]'),
         )],
+        cmd('/summon minecraft:armor_stand 8.5 210 4.5 {NoGravity:1b,ShowArms:1b,Tags:["enchant_target"],'
+            'equipment:{mainhand:{id:"minecraft:trident",count:1}}}', expect_result=1),
+        cmd(f'/enchant {enchant_target} minecraft:riptide 3', expect_result=1),
+        cmd(f'/data get entity {enchant_target} equipment.mainhand.components."minecraft:enchantments"',
+            expect_result=1),
         *setup('/kill @e[type=minecraft:armor_stand]'),
         {'op': 'tick', 'n': 25},
         cmd('/execute if entity @e[tag=h]'),
@@ -2711,6 +2717,7 @@ def function_return_fixtures(group_names):
         functions.update(anger_functions())
     if 'macro source type error' in group_names:
         functions.update({'command_macro:apply': '$scoreboard players add #hits macro_error $(amount)\n',
+                          'command_macro:decimal': '$data modify storage command_macro:args written set value "$(amount)"\n',
                           'command_macro:admit': 'scoreboard players add #admit macro_error 1\n',
                           'command_macro:fail': 'return fail\n',
                           'command_macro:zero': 'return 0\n'})
@@ -2772,6 +2779,10 @@ def macro_source_type_error():
                 cmd('/scoreboard players get #r macro_error', expect_result=0),
                 cmd('/scoreboard players get #s macro_error', expect_result=int(name == 'zero')),
                 cmd('/scoreboard players get #hits macro_error', expect_result=count)]
+    for amount, text in [('0.1f', '.100000001490116'), ('-1e-16d', '-0')]:
+        ops += [cmd(f'/data modify storage command_macro:args decimal set value {{amount:{amount}}}', expect_result=1),
+                cmd('/function command_macro:decimal with storage command_macro:args decimal'),
+                cmd(f'/execute if data storage command_macro:args {{written:"{text}"}}', expect_result=1)]
     ops += setup('/execute store result score #elapsed macro_error run time query gametime',
                  '/scoreboard players operation #elapsed macro_error -= #clock macro_error')
     return ops + [cmd('/scoreboard players get #elapsed macro_error', expect_result=0)]
@@ -7298,6 +7309,41 @@ def loaded_dead_mob():
     return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
                        f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} air',
                        f'/forceload remove {x0} {z0}')
+def dying_selector_candidates():
+    """`@e` and `@n` keep only `Entity.isAlive`: a pig `/damage` killed, and an armor stand loaded with no health,
+    stay in the level until `tickDeath` removes them, yet neither is selected. The dying pig is nearer the origin than
+    the living one, so `@n` shows which one it took."""
+    x0, y0, z0 = 4288, 260, 4288
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', False)]
+    dying, living, stand = (f'000010c0-0000-0000-0000-{n:012x}' for n in (1, 2, 3))
+    ops += [
+        cmd(f'/summon pig {x0 + 4}.5 {y0} {z0 + 4}.5 {{UUID:[I;4288,0,0,1],NoAI:1b}}', expect_result=1),
+        cmd(f'/summon pig {x0 + 10}.5 {y0} {z0 + 4}.5 {{UUID:[I;4288,0,0,2],NoAI:1b}}', expect_result=1),
+        cmd(f'/summon armor_stand {x0 + 2}.5 {y0} {z0 + 4}.5 {{UUID:[I;4288,0,0,3],Health:0.0f}}', expect_result=1),
+        cmd(f'/damage {dying} 100'),
+    ]
+    origin = f'x={x0 + 3}.5,y={y0},z={z0 + 4}.5,distance=..12'
+
+    def reads(*bodies):
+        for uuid in bodies:
+            ops.append(cmd(f'/data get entity {uuid} Health'))
+        ops.append(cmd(f'/execute if entity @e[type=!item,{origin}]'))
+        ops.append(cmd(f'/execute if entity @e[type=pig,{origin}]'))
+        ops.append(cmd(f'/execute if entity @e[type=armor_stand,{origin}]'))
+        ops.append(cmd(f'/data get entity @n[type=pig,{origin}] UUID'))
+        ops.append(cmd(f'/data get entity @n[type=!item,{origin}] UUID'))
+        ops.append(cmd(f'/data get entity @e[type=!item,{origin},sort=nearest,limit=1] UUID'))
+
+    # The stand is read only before it ticks: how long its body then stays (`tickDeath`) is not this group's.
+    reads(dying, living, stand)
+    ops.append({'op': 'tick', 'n': 1})
+    reads(dying, living)
+    ops.append({'op': 'tick', 'n': 20})
+    reads(dying, living)
+    return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
 def falling_block_fall_float():
     """#13701: `Entity.checkFallDamage` adds each step down narrowed to a float (`fallDistance -= (float)ya`);
     a falling block never runs `baseTick`, so it is never in water and every step counts."""
@@ -7446,6 +7492,15 @@ def zombie_villager_summoned_data():
         else:
             ops.append(cmd(f'/execute if data entity {uuid} VillagerData{{profession:"minecraft:none"}}'))
             ops.append(cmd(f'/data get entity {uuid} VillagerData'))
+    # Compare the whole compound: IsBaby and ConversionPlayer collide in the
+    # Java map, so a path query would miss the inherited field's insertion order.
+    # Load an existing longer Strength effect: the cure does not replace it or
+    # instantiate attack_damage, leaving no identity-hash attribute order to compare.
+    ops += [cmd(f'/summon zombie_villager {x0 + 12}.5 {y0} {z0 + 4}.5 '
+                '{UUID:[I;13262,0,4,1],NoAI:1b,ConversionTime:2000,ConversionPlayer:[I;1,2,3,4],'
+                'active_effects:[{id:"minecraft:strength",duration:4000,show_icon:1b}],'
+                'VillagerData:{type:"minecraft:taiga",profession:"minecraft:cleric",level:2}}', expect_result=1),
+            cmd('/data get entity 000033ce-0000-0000-0000-000400000001')]
     return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
                        f'/forceload remove {x0} {z0}')
 
@@ -8496,6 +8551,7 @@ def groups():
         ('beacon levels load', beacon_levels_load()),
         ('zombie villager summoned data', zombie_villager_summoned_data()),
         ('loaded dead mob', loaded_dead_mob()),
+        ('dying selector candidates', dying_selector_candidates()),
         ('falling block fall float', falling_block_fall_float()),
         ('explosion infested blocks', explosion_infested_blocks()),
         ('jigsaw default joint', jigsaw_default_joint()),

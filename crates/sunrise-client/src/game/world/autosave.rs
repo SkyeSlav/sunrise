@@ -68,6 +68,7 @@ impl Game<'_> {
             &self.world_root,
             self.options.execution_role,
             self.res.items(),
+            self.crash_save.keep_owner_file,
         )?;
         // PlayerEvent.SaveToFile for the owner, once level.dat is written.
         if let Some((uuid, name)) = stored_owner {
@@ -84,7 +85,7 @@ impl Game<'_> {
             // The vehicle tree goes into a player's file when they leave
             // (`take_parent_vehicle`); here it stays in the chunk saves.
             host.hub.guests.update_all(|g| {
-                if g.placed {
+                if g.placed && !self.crash_save.excludes(g.conn) {
                     // Read-only fixture input, correlated with the real save receipt.
                     // Keep this identical on the untouched/fixed selector builds.
                     if std::env::var_os("SUNRISE_DEV_ADVANCEMENT_SELECTOR_AUDIT").is_some() {
@@ -117,7 +118,6 @@ impl Game<'_> {
             }
         }
         self.save_world_state();
-        self.message = Some(("Saved the game".into(), Instant::now()));
         Ok(())
     }
 
@@ -139,6 +139,12 @@ impl Game<'_> {
         self.save_parked_levels(wait)?;
         self.save_game_metadata()?;
         let _ = self.finish_player_autosaves(wait);
+        if wait {
+            self.message = Some((
+                sunrise_client::lang::get("commands.save.success"),
+                Instant::now(),
+            ));
+        }
         self.native_world_saved(wait);
         if dedicated {
             dedicated::events::record_server("saved", serde_json::json!({}));

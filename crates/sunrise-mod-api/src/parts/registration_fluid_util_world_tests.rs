@@ -137,7 +137,7 @@ mod tests {
         let mut host = host("minecraft:bucket", 1);
         host.level.block_entity(TANK).tanks[0].held = Some(fluid("minecraft:lava", 2500));
         let server: &mut dyn ServerHost = &mut host;
-        let aborted: Result<(), ()> = server.transaction(|host, _| {
+        let aborted: Result<(), crate::TransactionError<()>> = server.transaction(|host, _| {
             let player = host.player(PLAYER).unwrap();
             let level = player.level(host).unwrap();
             let bucket = held(host);
@@ -158,7 +158,7 @@ mod tests {
         let mut host = host("minecraft:bucket", 1);
         host.level.block_entity(TANK).tanks[0].held = Some(fluid("minecraft:lava", 2500));
         let server: &mut dyn ServerHost = &mut host;
-        let committed: Result<(), ()> = server.transaction(|host, _| {
+        let committed: Result<(), crate::TransactionError<()>> = server.transaction(|host, _| {
             let player = host.player(PLAYER).unwrap();
             let level = player.level(host).unwrap();
             let bucket = held(host);

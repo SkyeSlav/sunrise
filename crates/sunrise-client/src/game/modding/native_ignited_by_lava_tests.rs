@@ -56,6 +56,7 @@ fn a_block_part_decides_whether_lava_lights_it() {
                 "no Part: the flag answers"
             );
             // A client's copy of the level asks no Part.
+            game.options.execution_role = crate::game::execution_role::ExecutionRole::Client;
             game.options.dedicated = None;
             assert_eq!(ignites(game, stone, Direction::Up), None);
         })

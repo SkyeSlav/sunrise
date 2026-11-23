@@ -5,7 +5,10 @@ use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
 use sunrise_client::items::ItemStack;
 
 /// A game on the prepared resources with a creative player (as `crossbow.rs`).
-fn game_with_player(root: &std::path::Path) -> Game<'static> {
+fn game_with_player<'a>(
+    resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>,
+    root: &std::path::Path,
+) -> Game<'a> {
     let settings = Settings::default();
     let loaded = load_resources(
         sunrise_assets::resource_source::ResourceRoot::directory(root.to_path_buf()),
@@ -23,7 +26,7 @@ fn game_with_player(root: &std::path::Path) -> Game<'static> {
     let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
     options.resources = root.to_path_buf();
     options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
-    let res: &'static _ = Box::leak(Box::new(loaded.resources));
+    let res = &*resources.insert(loaded.resources);
     let mut game = Game::new(
         res,
         loaded.pack,
@@ -66,7 +69,8 @@ fn heading(p: &sunrise_client::projectiles::Projectile) -> f32 {
 #[ignore = "daily"]
 fn a_piercing_bow_shoots_arrows_that_pierce_their_level() {
     let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
-    let mut game = game_with_player(&root);
+    let mut resources = None;
+    let mut game = game_with_player(&mut resources, &root);
     let mut bow = ItemStack::new("minecraft:bow", 1);
     bow.enchant("minecraft:piercing", 4);
     *game.held_mut() = Some(bow);
@@ -91,7 +95,8 @@ fn a_piercing_bow_shoots_arrows_that_pierce_their_level() {
 fn a_multishot_bow_fires_three_arrows_ten_degrees_apart() {
     use sunrise_client::arrows::Pickup;
     let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
-    let mut game = game_with_player(&root);
+    let mut resources = None;
+    let mut game = game_with_player(&mut resources, &root);
     // Not creative, with a stack of arrows to draw from.
     game.creative = false;
     let mut bow = ItemStack::new("minecraft:bow", 1);

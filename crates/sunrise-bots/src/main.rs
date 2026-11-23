@@ -35,9 +35,10 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use sunrise_core::vanilla_bytes::Writer;
 use sunrise_protocol::{
     PROTOCOL_VERSION,
-    buf::{Reader, Writer},
+    buf::Reader,
     connection::{ConnWriter, Connection, Counters},
     crypto::offline_uuid,
     entity_data, ids,
@@ -75,13 +76,13 @@ sunrise-bots: load-test bots for a Minecraft Java Edition 26.3 server (offline m
   --flood N              packets a tick for the flood behaviours; default 100
   --attack NAME          attack the player NAME twice a second, from wherever the bot is (a reach test),
                          swinging after each attack as vanilla's client does. NAME,NAME...: each of them
-                         in the same tick (a multi-target kill aura, for the anticheat's tests);
+                         in the same tick (a multi-target kill aura, to test an anticheat);
                          the report gives each bot's last health. A UUID instead of a NAME: the
                          entity with that UUID (a boat summoned with it, say)
   --attack-after S       start attacking S seconds after joining; default 5
   --attack-rounds N      stop after N rounds of attacks (each hits every target seen so far once);
                          default no limit
-  --no-swing             attack without swinging (a kill aura hiding its swing, for the anticheat's tests)
+  --no-swing             attack without swinging (a kill aura hiding its swing, to test an anticheat)
   --no-loaded            never say the level is loaded (ServerboundPlayerLoadedPacket): a vanilla server
                          ignores the player's moves and actions for its first 3 seconds
   --no-read              stop reading from the server once spawned (a client that lets the
@@ -108,7 +109,6 @@ sunrise-bots: load-test bots for a Minecraft Java Edition 26.3 server (offline m
                          click SLOT of its window (ServerboundContainerClickPacket), to test what a server takes
   --raw TICK:ID:HEX,...  raw serverbound play packets (id, body in hex) sent TICK ticks after joining,
                          to test what a server takes
-  --timer F              cheat, to test an anticheat: tick F times as fast as vanilla's client (1.5: 30 Hz)
   --report FILE          a JSON summary at the end (- prints it after the per-second lines)
   --capture FILE         record the first bot's play packets (milliseconds since it joined, id, body)
                          for crates/sunrise-protocol/examples/net_replay.rs
@@ -196,8 +196,6 @@ struct Options {
     report: Option<String>,
     /// --capture: where the first bot's play packets go.
     capture: Option<String>,
-    /// How many times as fast as vanilla's 20 Hz the bots tick (a timer cheat above 1).
-    timer: f64,
 }
 
 fn options() -> Result<Options, String> {
@@ -231,7 +229,6 @@ fn options() -> Result<Options, String> {
         report: None,
         capture: None,
         brand: None,
-        timer: 1.0,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -346,12 +343,6 @@ fn options() -> Result<Options, String> {
                 }
             }
             "--height" => o.height = value.parse().map_err(|_| number("blocks"))?,
-            "--timer" => {
-                o.timer = value.parse().map_err(|_| number("a speed, like 1.5"))?;
-                if !(o.timer >= 0.1 && o.timer <= 20.0) {
-                    return Err(format!("--timer {value}: use 0.1 to 20"));
-                }
-            }
             _ => return Err(format!("unknown option {arg}; --help lists them")),
         }
     }
@@ -978,36 +969,6 @@ fn raw_protocol_answer(
     }
 }
 
-/// ChunkBatchSizeCalculator: the chunks per tick a vanilla client asks for, from how long its batches take
-/// to arrive.
-struct BatchSize {
-    nanos_per_chunk: f64,
-    old_samples_weight: u32,
-    started: Instant,
-}
-
-impl BatchSize {
-    fn new() -> Self {
-        Self {
-            nanos_per_chunk: 2_000_000.0,
-            old_samples_weight: 1,
-            started: Instant::now(),
-        }
-    }
-    fn finished(&mut self, size: i32) {
-        if size > 0 {
-            let per_chunk = self.started.elapsed().as_nanos() as f64 / f64::from(size);
-            let clamped = per_chunk.clamp(self.nanos_per_chunk / 3.0, self.nanos_per_chunk * 3.0);
-            let weight = f64::from(self.old_samples_weight);
-            self.nanos_per_chunk = (self.nanos_per_chunk * weight + clamped) / (weight + 1.0);
-            self.old_samples_weight = (self.old_samples_weight + 1).min(49);
-        }
-    }
-    fn desired_chunks_per_tick(&self) -> f32 {
-        (7_000_000.0 / self.nanos_per_chunk) as f32
-    }
-}
-
 /// `--capture`: one record per play packet, little-endian: u32 milliseconds since the
 /// bot joined, i32 packet id, u32 body length, then the body (without the id).
 struct Capture {
@@ -1061,7 +1022,7 @@ fn read(
     use ids::play::serverbound as sb;
     let send = |body: Vec<u8>| lock(&writer).send(&body);
     let mut seen = HashSet::new();
-    let mut batch = BatchSize::new();
+    let mut batch = sunrise_protocol::chunk_batch::ChunkBatchSize::default();
     let mut teleports = 0u64;
     loop {
         if bot.deaf.load(Ordering::Relaxed) {
@@ -1137,11 +1098,11 @@ fn read(
                 Ok(())
             }
             cb::CHUNK_BATCH_START => {
-                batch.started = Instant::now();
+                batch.on_batch_start();
                 Ok(())
             }
             cb::CHUNK_BATCH_FINISHED => {
-                batch.finished(r.varint().unwrap_or(0));
+                batch.on_batch_finished(r.varint().unwrap_or(0));
                 send(
                     play::Serverbound::ChunkBatchReceived(play::ChunkBatchReceived {
                         chunks_per_tick: ack_rate
@@ -1527,7 +1488,7 @@ fn run_bot(
             bot.online.store(false, Ordering::SeqCst);
             break;
         }
-        next += Duration::from_secs_f64(0.05 / o.timer);
+        next += Duration::from_millis(50);
         let now = Instant::now();
         if next > now {
             thread::sleep(next - now);
@@ -1836,6 +1797,7 @@ mod tests {
             id: "ruby".into(),
             version: "1.0".into(),
             side: Side::Both,
+            runtime: None,
         }]);
         server.send(&config_payload(CHANNEL, list.clone())).unwrap();
         let configuration::Serverbound::CustomPayload(echo) = next(&mut server) else {

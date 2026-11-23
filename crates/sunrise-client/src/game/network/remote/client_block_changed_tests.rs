@@ -69,7 +69,7 @@ fn with_client(name: &str, test: impl FnOnce(&mut Game<'_>, BlockStateId)) {
             };
             game.enter_remote_dimension(
                 &spawn,
-                false,
+                RemoteDimensionEntry::Login,
                 sunrise_client::level_loading::Reason::Other,
             );
             game.remote.as_mut().unwrap().logged_in = true;
@@ -154,7 +154,7 @@ fn predictions_and_their_reconciliation_are_told() {
                 .unwrap();
             assert_eq!(heard(), [change([1, 64, 1], "air", "stone", false)]);
 
-            game.predict_blocks(&vec![(BlockPos::new(2, 64, 2), stone)], 8);
+            game.predict_blocks(&[(BlockPos::new(2, 64, 2), stone)], 8);
             assert_eq!(heard(), [change([2, 64, 2], "air", "stone", true)]);
         },
     );

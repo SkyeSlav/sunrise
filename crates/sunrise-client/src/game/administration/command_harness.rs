@@ -92,11 +92,9 @@ impl Game<'_> {
         };
         let (conn, dim, back) = (guest.conn, super::Dim::from_id(&guest.dimension), self.dim);
         self.enter_level(dim)?;
-        let swap = self
-            .enter_guest_in_dimension(conn, back)
+        let result = self
+            .with_guest_swap(conn, back, f)
             .ok_or("command harness: owner is already acting")?;
-        let result = f(self);
-        self.leave_guest(swap);
         if let Some(host) = self.lan.as_mut() {
             host.hub.sync_all_effects();
         }
@@ -160,13 +158,13 @@ impl Game<'_> {
                 plan,
             ))
         })?;
-        // Start travel after restoring the owner's body: change_level updates
-        // its hub record, which leave_guest would otherwise overwrite.
+        // Start travel after the turn restores the owner's body to the hub.
+        // Otherwise the turn would overwrite the hub record updated by change_level.
         self.in_owner_level(|g| {
             if g.lan.is_none() {
                 return Err("command harness: no hub".into());
             }
-            g.start_server_trip(conn, plan.dim, Some(plan), false);
+            g.start_server_trip(conn, plan.dim, Some(plan));
             Ok(())
         })
     }
@@ -322,6 +320,51 @@ impl Game<'_> {
                             out.push('\n');
                         }
                     }
+                }
+                "mob_damage_state" => {
+                    if let Some(seed) = op["level_seed"].as_i64() {
+                        *self.world.random = sunrise_core::random::LegacyRandom::new(seed);
+                    }
+                    let uuid = u128::from_str_radix(
+                        &op["uuid"]
+                            .as_str()
+                            .ok_or("mob damage state: missing UUID")?
+                            .replace('-', ""),
+                        16,
+                    )?;
+                    let Some(super::commands::Target::Mob(id)) = self.target_by_uuid(uuid) else {
+                        return Err("mob damage state: missing loaded mob".into());
+                    };
+                    if !op["start_sleeping"].is_null() {
+                        let bed: [i32; 3] = serde_json::from_value(op["start_sleeping"].clone())?;
+                        let epoch = self
+                            .native_lifecycle
+                            .epoch()
+                            .ok_or("sleep fixture: no level")?;
+                        let mob = mod_api::LivingRef::new(mod_api::EntityRef::new(epoch, id));
+                        if !self.living_start_sleeping(mob, bed) {
+                            return Err("sleep fixture: villager did not start sleeping".into());
+                        }
+                    }
+                    let index = self
+                        .mob_index
+                        .find(&self.mobs, id)
+                        .ok_or("mob damage state: missing row")?;
+                    let mob = &mut self.mobs[index];
+                    if let Some(seed) = op["no_action_time"].as_i64() {
+                        mob.ai.no_action_time = i32::try_from(seed)?;
+                    }
+                    let state = json!({
+                        "no_action_time": mob.ai.no_action_time,
+                        "cooldown": mob.invulnerable,
+                        "hurt_time": mob.hurt_time,
+                        "health": format!("{:08x}", mob.health.to_bits()),
+                        "sleeping": mob.pose() == mod_api::Pose::Sleeping,
+                        "position": mob.position.components().map(|v| format!("{:016x}", v.to_bits())),
+                        "rotation": ([mob.yaw, mob.head_pitch].map(|v| format!("{:08x}", v.to_bits()))),
+                    });
+                    out.push_str(&json!({"cmd": op["label"], "state": state}).to_string());
+                    out.push('\n');
                 }
                 "projectile_saved_type" => {
                     let uuid = u128::from_str_radix(
@@ -561,6 +604,24 @@ impl Game<'_> {
                     let record = json!({"cmd":format!("#player_state {}",op["label"].as_str().unwrap_or("")),"messages":[],"results":[],"state":state});
                     out.push_str(&record.to_string());
                     out.push('\n');
+                }
+                "align_game_time" => {
+                    let target = op["target"]
+                        .as_i64()
+                        .ok_or("align_game_time: missing target")?;
+                    let current = self.harness_owner(|g| Ok(g.world.game_time))?;
+                    if current > target {
+                        return Err("align_game_time: target is in the past".into());
+                    }
+                    for _ in current..target {
+                        if Instant::now() > deadline {
+                            return Err("align_game_time: deadline exceeded".into());
+                        }
+                        self.tick_server(false)?;
+                    }
+                    if self.harness_owner(|g| Ok(g.world.game_time))? != target {
+                        return Err("align_game_time: ticks did not reach the target".into());
+                    }
                 }
                 "tick" => {
                     self.chat_capture = Some(Vec::new());

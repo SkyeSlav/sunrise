@@ -1,5 +1,5 @@
 use super::*;
-fn state() -> Holds {
+fn state() -> Holds<Vec<u8>> {
     let mut h = Holds::default();
     h.sync(Some((7, 3)));
     h

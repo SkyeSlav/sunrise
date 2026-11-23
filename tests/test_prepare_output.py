@@ -19,7 +19,7 @@ class PrepareOutputTests(unittest.TestCase):
         a = {
             'sunrise-resources.json': json.dumps(manifest).encode(),
             'render-definitions.json': b'{"a": 1, "b": [1, 2]}',
-            'creative-inventory.json': b'{"tags": [["b", "a"]]}',
+            'creative-inventory.json': b'{"tabs":[{"search_metadata":[{"stack":"stone","tags":["b","a"]}]}]}',
             'block-behaviours.json': b'{"c": "Foo$$Lambda/0x0000012a"}',
             'export.log': b'run 1',
             'assets/minecraft/sounds/a.ogg': b'one',
@@ -28,7 +28,7 @@ class PrepareOutputTests(unittest.TestCase):
         b = {
             'sunrise-resources.json': json.dumps(manifest).encode(),
             'render-definitions.json': b'{"b": [1, 2], "a": 1}',
-            'creative-inventory.json': b'{"tags": [["a", "b"]]}',
+            'creative-inventory.json': b'{"tabs":[{"search_metadata":[{"stack":"stone","tags":["a","b"]}]}]}',
             'block-behaviours.json': b'{"c": "Foo$$Lambda/0x00000ff0"}',
             'export.log': b'run 2',
             'assets/minecraft/sounds/a.ogg': b'two',
@@ -61,6 +61,18 @@ class PrepareOutputTests(unittest.TestCase):
             self.assertEqual(first, prepare_output.digest(Path(tmp) / 'b'))
             (Path(tmp) / 'b/assets/minecraft/lang/en_us.json').write_bytes(b'{}')
             self.assertNotEqual(first, prepare_output.digest(Path(tmp) / 'b'))
+
+    def test_server_profile_digest_covers_its_resource_inventory(self):
+        manifest = {'profile': 'server', 'server_files': ['facts.json']}
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = self.preparation(Path(tmp), {
+                prepare_output.MANIFEST: json.dumps(manifest).encode(),
+                'facts.json': b'{}',
+            })
+            before = prepare_output.digest(folder)
+            manifest['server_files'] = []
+            (folder / prepare_output.MANIFEST).write_text(json.dumps(manifest))
+            self.assertNotEqual(before, prepare_output.digest(folder))
 
     def test_the_versions_file_ends_at_the_constant(self):
         versions = prepare_output.parse_versions('# comment\n1 aa\n2 bb\n')

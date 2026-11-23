@@ -24,6 +24,8 @@ pub(super) struct StabPlayer {
 /// One stab on a player, as the attacker worked it out.
 pub(super) struct PlayerStab {
     victim: u32,
+    /// Its place among the use's contacts, in `stabAttack` order.
+    contact: usize,
     /// The damage after the enchantments (and the attack strength when the
     /// spear isn't in use); 0 when the stab deals none.
     amount: f32,
@@ -47,13 +49,15 @@ pub(super) struct StabBatch {
     kinetic: Kinetic,
     /// A charge's tick (its hit feedback), else a jab (its hit sound).
     charge: bool,
-    /// Whether a mob stabbed in the same tick gave the feedback already.
-    felt: bool,
+    /// The place of the last mob contact the same tick affected, which also gave the
+    /// feedback already. A player stab after it is the attacker's last hurt target.
+    last_mob: Option<usize>,
     stabs: Vec<PlayerStab>,
 }
 
 /// What a landed stab did to the victim.
 struct Landed {
+    contact: usize,
     hurt: bool,
     /// The stab's enchantments added damage (the magic crit).
     magic: bool,
@@ -127,6 +131,7 @@ impl Game<'_> {
     pub(super) fn queue_player_stab(
         &mut self,
         target: usize,
+        contact: usize,
         base_damage: f32,
         deals_damage: bool,
         deals_knockback: bool,
@@ -173,6 +178,7 @@ impl Game<'_> {
         };
         Some(PlayerStab {
             victim,
+            contact,
             amount,
             deals_damage,
             deals_knockback,
@@ -192,7 +198,7 @@ impl Game<'_> {
         &mut self,
         kinetic: Kinetic,
         charge: bool,
-        felt: bool,
+        last_mob: Option<usize>,
         stabs: Vec<PlayerStab>,
     ) {
         let Some(attacker) = self.lan_acting.filter(|_| !stabs.is_empty()) else {
@@ -202,7 +208,7 @@ impl Game<'_> {
             attacker,
             kinetic,
             charge,
-            felt,
+            last_mob,
             stabs,
         });
     }
@@ -267,7 +273,13 @@ impl Game<'_> {
                 {
                     let _ = p.ignite_for_ticks((s.ignite * 20.0) as i32);
                 }
-                let dismounted = s.dismounts && g.riding.is_some();
+                // `Player.stabAttack`: a type in `cannot_be_dismounted_by_item_usage` stays seated.
+                let dismounted = s.dismounts
+                    && g.riding.is_some()
+                    && !g.items().entity_type_tags.has_flag(
+                        "minecraft:player",
+                        sunrise_client::items::EntityTypeTags::CANNOT_BE_DISMOUNTED_BY_ITEM_USAGE,
+                    );
                 if dismounted {
                     g.stop_riding();
                 }
@@ -280,6 +292,7 @@ impl Game<'_> {
                     )
                 });
                 let landed = Landed {
+                    contact: s.contact,
                     hurt,
                     magic: s.magic,
                     affected: hurt || s.deals_knockback || dismounted,
@@ -309,6 +322,11 @@ impl Game<'_> {
             if l.magic {
                 self.critical_hit(self.lan_acting, l.id, l.feet, l.width, l.height, true);
             }
+            // setLastHurtMob at this stab's own tail: a mob contact that came later
+            // in the same use already wrote the record during the turn.
+            if batch.last_mob.is_none_or(|m| l.contact > m) {
+                self.remember_player_target(Some(l.id as u32));
+            }
             // itemAttackInteraction: hurtEnemy (statistic, wear), and the
             // post-attack enchantments when the target was hurt.
             if let Some(stack) = self.held().cloned() {
@@ -325,7 +343,7 @@ impl Game<'_> {
                 p.cause_food_exhaustion(0.1);
             }
         }
-        if !affected || batch.felt {
+        if !affected || batch.last_mob.is_some() {
             return;
         }
         if batch.charge {

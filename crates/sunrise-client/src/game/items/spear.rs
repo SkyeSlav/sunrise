@@ -166,8 +166,13 @@ impl Game<'_> {
         let now = self.world.game_time;
         let actor = self.lan_acting;
         let mut affected = false;
+        let mut last_mob = None;
         let mut on_players = Vec::new();
-        for target in self.stab_targets(eye, look, movement) {
+        for (contact, target) in self
+            .stab_targets(eye, look, movement)
+            .into_iter()
+            .enumerate()
+        {
             let (entity, target_motion) = match target {
                 Target::Mob(i) => (self.mobs[i].id, self.mob_speed(i)),
                 Target::Player(k) => {
@@ -195,17 +200,21 @@ impl Game<'_> {
                 let amount = 1.0 + (relative * f64::from(kinetic.damage_multiplier)).floor() as f32;
                 match target {
                     Target::Mob(i) => {
-                        affected |= self.stab_mob(i, amount, damages, pushes, dismounts)
+                        if self.stab_mob(i, amount, damages, pushes, dismounts) {
+                            affected = true;
+                            last_mob = Some(contact);
+                        }
                     }
-                    Target::Player(k) => on_players
-                        .extend(self.queue_player_stab(k, amount, damages, pushes, dismounts)),
+                    Target::Player(k) => on_players.extend(
+                        self.queue_player_stab(k, contact, amount, damages, pushes, dismounts),
+                    ),
                 }
             }
         }
         if affected {
             self.spear_hit_feedback(&kinetic);
         }
-        self.keep_player_stabs(kinetic, true, affected, on_players);
+        self.keep_player_stabs(kinetic, true, last_mob, on_players);
     }
 
     /// What follows a charge tick that affected an entity:
@@ -261,11 +270,29 @@ impl Game<'_> {
         } else {
             0.0
         };
-        let old_health = self.mobs[index].health;
-        let hurt = deals_damage && self.hurt_by_player(index, total, Damage::spear(from));
-        if hurt && old_health > 0.0 && !self.mobs[index].alive() {
-            self.native_kill_event(index);
+        let (old_health, join) = (self.mobs[index].health, self.mobs[index].join);
+        let (hurt, killed) = if deals_damage {
+            self.hurt_by_player(index, total, Damage::spear(from))
+        } else {
+            (false, false)
+        };
+        if killed
+            && let Some(i) = self.mob_index.find(&self.mobs, id)
+            && self.mobs[i].join == join
+            && !self.mobs[i].removed
+        {
+            self.native_kill_event(i);
         }
+        let Some(index) = self
+            .mob_index
+            .find(&self.mobs, id)
+            .filter(|&i| self.mobs[i].join == join && !self.mobs[i].removed)
+        else {
+            if hurt {
+                self.remember_player_target(Some(id));
+            }
+            return hurt;
+        };
         // causeExtraKnockback: a push of 0.4, then the weapon's Knockback.
         if deals_knockback {
             let (xd, zd) = self.extra_knockback_direction();
@@ -292,7 +319,13 @@ impl Game<'_> {
             // ...and the attacker stops sprinting.
             self.stop_sprint_after_extra_knockback();
         }
-        let dismounted = dismounts && self.mobs[index].extra.mount.is_some();
+        // `Player.stabAttack`: a type in `cannot_be_dismounted_by_item_usage` stays seated.
+        let dismounted = dismounts
+            && self.mobs[index].extra.mount.is_some()
+            && !self.items().entity_type_tags.has_bit(
+                self.mobs[index].kind.flags.entity_tag_slot,
+                sunrise_client::items::EntityTypeTags::CANNOT_BE_DISMOUNTED_BY_ITEM_USAGE,
+            );
         if dismounted {
             self.dismount_mob(id);
         }
@@ -300,6 +333,7 @@ impl Game<'_> {
             return false;
         }
         let mob = &self.mobs[index];
+        let actual = old_health - mob.health;
         let (feet, width, height) = (
             [mob.position.x, mob.position.y, mob.position.z],
             mob.kind.width,
@@ -309,7 +343,7 @@ impl Game<'_> {
         if magic_boost > 0.0 {
             self.critical_hit(self.lan_acting, id as i32, feet, width, height, true);
         }
-        self.combat.last_hurt_mob = Some((id, self.world.game_time));
+        self.remember_player_target(Some(id));
         // itemAttackInteraction: hurtEnemy (statistic, wear), and the
         // post-attack enchantments when the target was hurt.
         if let Some(stack) = self.held().cloned() {
@@ -320,11 +354,7 @@ impl Game<'_> {
             self.weapon_wear(&stack);
         }
         // damageStatsAndHearts.
-        let actual = old_health - self.mobs[index].health;
         self.damage_stats_and_hearts(actual, feet, height);
-        if hurt {
-            self.remember_mob_player_credit(id);
-        }
         if let Some(p) = self.player.as_mut()
             && !self.creative
         {
@@ -384,23 +414,32 @@ impl Game<'_> {
         // The attack damage attribute.
         let damage = self.attack_damage();
         let movement = self.known_player_movement();
-        let mut hit = false;
+        let mut last_mob = None;
         let mut on_players = Vec::new();
-        for target in self.stab_targets(eye, look, movement) {
+        for (contact, target) in self
+            .stab_targets(eye, look, movement)
+            .into_iter()
+            .enumerate()
+        {
             match target {
-                Target::Mob(i) => hit |= self.stab_mob(i, damage, true, true, false),
+                Target::Mob(i) => {
+                    if self.stab_mob(i, damage, true, true, false) {
+                        last_mob = Some(contact);
+                    }
+                }
                 Target::Player(k) => {
-                    on_players.extend(self.queue_player_stab(k, damage, true, true, false))
+                    on_players.extend(self.queue_player_stab(k, contact, damage, true, true, false))
                 }
             }
         }
+        let hit = last_mob.is_some();
         // Player.onAttack, then postPiercingAttack.
         self.attack_ticks = 0;
         self.post_piercing_attack();
         if hit {
             self.play_at_feet(kinetic.hit_sound);
         }
-        self.keep_player_stabs(kinetic, false, hit, on_players);
+        self.keep_player_stabs(kinetic, false, last_mob, on_players);
         // swingAndResetAttackStrength (ServerPlayer): a swing that starts
         // resets the attack strength.
         let swings = self.swings_started;
@@ -472,35 +511,6 @@ impl Game<'_> {
         };
         if let (Some(kinetic), Some(at)) = (item.as_deref().and_then(Kinetic::of), at) {
             self.kinetic_hit_feedback(if own { OWN } else { id }, &kinetic, [at.x, at.y, at.z]);
-        }
-    }
-
-    /// Synchronize look rotation before sending a spear jab so the server
-    /// raycasts along the player's updated look direction.
-    pub(in crate::game) fn remote_sync_look(&mut self) {
-        let (yaw, pitch) = (self.yaw, self.pitch);
-        let (riding, controls) = (self.riding.is_some(), self.controls_camera());
-        if let Some(p) = self.player.as_ref()
-            && let Some(r) = self.remote.as_mut()
-        {
-            let pos = [p.position.x, p.position.y, p.position.z];
-            let (g, c) = (p.ground.on_ground, p.collision.horizontal);
-            let pkt = if riding {
-                Some(sunrise_protocol::packets::play::Serverbound::MovePlayerRot(
-                    sunrise_protocol::packets::play::MovePlayerRot {
-                        yaw,
-                        pitch,
-                        flags: u8::from(g) | u8::from(c) << 1,
-                    },
-                ))
-            } else if controls {
-                r.position_sender.update(pos, (yaw, pitch), g, c)
-            } else {
-                None
-            };
-            if let Some(pkt) = pkt {
-                self.send_or_hold_play(pkt);
-            }
         }
     }
 }

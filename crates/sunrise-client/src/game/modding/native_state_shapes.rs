@@ -4,9 +4,11 @@ use mod_api::BlockShapeKind;
 use sunrise_client::{
     block_entity_anim::BlockEntityAnims, collisions::SceneCollisions, world::World,
 };
-use sunrise_core::position::BlockPos;
+use sunrise_core::{geometry::VoxelShape, position::BlockPos};
 use sunrise_world::{
-    block_collision::BlockCollisionRegistry, collision_context::CollisionContext,
+    block_collision::BlockCollisionRegistry,
+    collision::ShapeChannel,
+    collision_context::{CollisionContext, EntityContextKind},
     registry::BlockStateId,
 };
 
@@ -45,69 +47,105 @@ pub(super) fn collision_boxes(
         .unwrap_or_default()
 }
 
+/// The geometry chosen by selection, before its column offset is applied.
+#[derive(Clone, Copy)]
+pub(super) enum Outline<'a> {
+    Published(&'a VoxelShape),
+    Declared(&'a VoxelShape, EntityContextKind),
+    Dynamic([f64; 6]),
+    Default(&'a sunrise_client::blocks::StateFacts),
+}
+
 impl Game<'_> {
+    pub(super) fn selected_outline<'a>(
+        &'a self,
+        world: &'a World,
+        state: BlockStateId,
+        anims: &BlockEntityAnims,
+        pos: [i32; 3],
+        player_context: bool,
+    ) -> (Outline<'a>, [f64; 3]) {
+        let facts = self.res.facts().get(state);
+        let default_offset = || {
+            perspective::outline_offset(
+                &self.pack.context.tables,
+                state,
+                pos[0],
+                pos[2],
+                facts.outline_offset,
+            )
+        };
+        if let Some(shape) =
+            sunrise_client::collisions::published_outline(world, self.collision, state, pos)
+        {
+            // Published outlines already followed the template's outline offset before
+            // declarations added their own channels.
+            return (Outline::Published(shape), default_offset());
+        }
+        let cached = self.collision.cached_shapes();
+        let kind = if player_context {
+            self.outline_context_kind()
+        } else {
+            EntityContextKind::Other
+        };
+        if let Some(shape) = cached.context_outline_shape(state, kind) {
+            return (
+                Outline::Declared(shape, kind),
+                cached.shape_offset(state, ShapeChannel::ContextOutline, pos),
+            );
+        }
+        if let Some(bounds) = self.context_outline(pos, state, player_context, anims) {
+            return (Outline::Dynamic(bounds), [0.0; 3]);
+        }
+        (Outline::Default(facts), default_offset())
+    }
+
+    pub(super) fn outline_edges_iter(
+        &self,
+        state: BlockStateId,
+        pos: [i32; 3],
+    ) -> impl Iterator<Item = [f64; 6]> + '_ {
+        let (outline, offset) =
+            self.selected_outline(&self.world, state, &self.be_anims, pos, true);
+        let (owned, cached) = match outline {
+            Outline::Published(shape) => (shape.edges(), &[][..]),
+            Outline::Declared(_, kind) => (
+                Vec::new(),
+                self.collision
+                    .cached_shapes()
+                    .context_outline_edges(state, kind)
+                    .unwrap_or_default(),
+            ),
+            Outline::Dynamic(_) => (sunrise_client::blocks::cube_edges(), &[][..]),
+            Outline::Default(facts) => (Vec::new(), facts.outline_edges.as_ref()),
+        };
+        owned
+            .into_iter()
+            .chain(cached.iter().copied())
+            .map(move |edge| {
+                std::array::from_fn(|i| {
+                    let axis = i % 3;
+                    let local = match outline {
+                        Outline::Dynamic(b) => b[axis] + edge[i] * (b[axis + 3] - b[axis]),
+                        _ => edge[i],
+                    };
+                    f64::from(pos[axis]) + offset[axis] + local
+                })
+            })
+    }
+
     /// The same outline traversal without allocating a box list.
     pub(super) fn outline_boxes_iter<'a>(
         &'a self,
         world: &'a World,
         state: BlockStateId,
-        anims: &sunrise_client::block_entity_anim::BlockEntityAnims,
+        anims: &BlockEntityAnims,
         pos: [i32; 3],
         player_context: bool,
     ) -> impl Iterator<Item = [f64; 6]> + 'a {
-        let declared =
-            sunrise_client::collisions::published_outline(world, self.collision, state, pos)
-                .or_else(|| {
-                    self.collision.cached_shapes().context_outline_shape(
-                        state,
-                        if player_context {
-                            self.outline_context_kind()
-                        } else {
-                            sunrise_world::collision_context::EntityContextKind::Other
-                        },
-                    )
-                });
-        let context = declared
-            .is_none()
-            .then(|| self.context_outline(pos, state, player_context, anims))
-            .flatten();
-        let f = self.res.facts().get(state);
-        let o = perspective::outline_offset(
-            &self.pack.context.tables,
-            state,
-            pos[0],
-            pos[2],
-            f.outline_offset,
-        );
-        let base = [
-            f64::from(pos[0]) + o[0],
-            f64::from(pos[1]) + o[1],
-            f64::from(pos[2]) + o[2],
-        ];
-        let boxes = if context.is_some() || declared.is_some() {
-            &[][..]
-        } else {
-            &f.outline[..]
-        };
-        context
-            .map(|b| std::array::from_fn(|i| f64::from(pos[i % 3]) + b[i]))
-            .into_iter()
-            .chain(
-                declared
-                    .into_iter()
-                    .flat_map(|shape| shape.boxes())
-                    .map(move |b| {
-                        let min = b.min_position();
-                        let max = b.max_position();
-                        let coords = [min.x, min.y, min.z, max.x, max.y, max.z];
-                        std::array::from_fn(|i| base[i % 3] + coords[i])
-                    }),
-            )
-            .chain(
-                boxes
-                    .iter()
-                    .map(move |b| std::array::from_fn(|i| base[i % 3] + b[i])),
-            )
+        let (outline, offset) = self.selected_outline(world, state, anims, pos, player_context);
+        let base = std::array::from_fn(|i| f64::from(pos[i]) + offset[i]);
+        outline_boxes(outline, base)
     }
 
     pub(super) fn state_shape_boxes(
@@ -119,14 +157,34 @@ impl Game<'_> {
         kind: BlockShapeKind,
     ) -> Vec<[f64; 6]> {
         match kind {
-            BlockShapeKind::Outline => self
-                .outline_boxes_iter(world, state, anims, pos, false)
-                .map(|bounds| std::array::from_fn(|i| bounds[i] - f64::from(pos[i % 3])))
-                .collect(),
+            BlockShapeKind::Outline => {
+                let (outline, offset) = self.selected_outline(world, state, anims, pos, false);
+                // Stay block-local: adding world coordinates and subtracting them again
+                // would lose precision in offsets used to sample debris.
+                outline_boxes(outline, offset).collect()
+            }
             BlockShapeKind::Collision => collision_boxes(self.collision, world, state, pos),
             _ => unreachable!("BlockShapeKind: unhandled variant"),
         }
     }
+}
+
+fn outline_boxes(outline: Outline<'_>, base: [f64; 3]) -> impl Iterator<Item = [f64; 6]> + '_ {
+    let (voxel, dynamic, defaults) = match outline {
+        Outline::Published(shape) | Outline::Declared(shape, _) => (shape.boxes(), None, &[][..]),
+        Outline::Dynamic(bounds) => (&[][..], Some(bounds), &[][..]),
+        Outline::Default(facts) => (&[][..], None, &facts.outline[..]),
+    };
+    voxel
+        .iter()
+        .map(|b| {
+            let min = b.min_position();
+            let max = b.max_position();
+            [min.x, min.y, min.z, max.x, max.y, max.z]
+        })
+        .chain(dynamic)
+        .chain(defaults.iter().copied())
+        .map(move |b| std::array::from_fn(|i| base[i % 3] + b[i]))
 }
 
 #[cfg(test)]

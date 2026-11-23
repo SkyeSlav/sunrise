@@ -41,6 +41,14 @@ pub fn removed(stack: &ItemStack, id: &str) -> bool {
 /// Presence is checked by the caller, so empty decoded enchantment maps compare equal.
 pub fn component_equal(id: &str, a: &ItemStack, b: &ItemStack) -> bool {
     match id {
+        // WritableBookContent.CODEC defaults an omitted pages field to an empty list.
+        // The retained raw patches can differ while the decoded contents are identical.
+        "minecraft:writable_book_content" => {
+            a.data()
+                .map_or(&[][..], |data| data.writable_pages.as_slice())
+                == b.data()
+                    .map_or(&[][..], |data| data.writable_pages.as_slice())
+        }
         "minecraft:waxed" | "minecraft:intangible_projectile" | "minecraft:glider" => {
             matches!(a.data().and_then(|d| d.other(id)), Some(Tag::Compound(_)))
                 && matches!(b.data().and_then(|d| d.other(id)), Some(Tag::Compound(_)))
@@ -461,7 +469,7 @@ pub fn stored_component_equal(id: &str, a: &ItemStack, b: &ItemStack) -> bool {
             (None, None) => true,
             _ => false,
         },
-        "minecraft:banner_patterns" => banner_equal(a, b),
+        "minecraft:banner_patterns" => a.banner_layers() == b.banner_layers(),
         "minecraft:consumable" => {
             a.consumable.as_ref().map(|value| &value.raw)
                 == b.consumable.as_ref().map(|value| &value.raw)
@@ -483,29 +491,6 @@ pub fn stored_component_equal(id: &str, a: &ItemStack, b: &ItemStack) -> bool {
 fn stacks_equal(a: &[ItemStack], b: &[ItemStack]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.matches(b))
 }
-fn banner_equal(a: &StackData, b: &StackData) -> bool {
-    match (a.ominous_banner, b.ominous_banner) {
-        (true, true) => true,
-        (false, false) => a.banner_patterns == b.banner_patterns,
-        (true, false) => ominous_layers(&b.banner_patterns),
-        (false, true) => ominous_layers(&a.banner_patterns),
-    }
-}
-fn ominous_layers(layers: &[crate::banner_layer::BannerLayer]) -> bool {
-    layers.len() == OMINOUS_LAYERS.len()
-        && layers
-            .iter()
-            .zip(OMINOUS_LAYERS)
-            .all(|(layer, (pattern, color))| {
-                layer
-                    .pattern
-                    .strip_prefix("minecraft:")
-                    .unwrap_or(&layer.pattern)
-                    == pattern
-                    && layer.color.as_ref() == color
-            })
-}
-
 fn java_is(value: &JavaString, text: &str) -> bool {
     value.0.iter().copied().eq(text.encode_utf16())
 }
@@ -922,6 +907,22 @@ mod tests {
         assert!(component_equal("minecraft:item_name", &a, &b));
         b.data_mut().enchantments[0].1 = 3;
         assert!(!component_equal("minecraft:enchantments", &a, &b));
+    }
+
+    #[test]
+    fn writable_book_equality_uses_decoded_pages() {
+        let id = "minecraft:writable_book_content";
+        let a = parse_stack(
+            r#"{id:"minecraft:writable_book",count:1,components:{"minecraft:writable_book_content":{}}}"#,
+        ).unwrap().unwrap();
+        let b = parse_stack(
+            r#"{id:"minecraft:writable_book",count:1,components:{"minecraft:writable_book_content":{pages:[]}}}"#,
+        ).unwrap().unwrap();
+        assert!(component_equal(id, &a, &b));
+        assert!(!stored_component_equal(id, &a, &b));
+        let mut written = b.clone();
+        written.data_mut().writable_pages.push("A page".into());
+        assert!(!component_equal(id, &a, &written));
     }
 
     #[test]

@@ -1,4 +1,3 @@
-#![cfg(test)]
 //! `on_chunk_unloaded` through a real game (#3145): a chunk with two mod block entities and a
 //! vanilla chest leaves the world when its `/forceload` ticket goes, through the game's own
 //! streaming, save and unload; the chunk comes back from its saved data; then the world closes.
@@ -56,8 +55,8 @@ impl Hooks for Probe {
     }
     fn blocks(&self, _: &RegistrationContext, event: &mut BlocksEvent<'_>) {
         event
-            .blocks
-            .push(mod_api::Block::new(POT, "minecraft:stone"));
+            .register(mod_api::Block::new(POT, "minecraft:stone"))
+            .unwrap();
     }
 }
 

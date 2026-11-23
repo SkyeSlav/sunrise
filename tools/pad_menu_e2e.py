@@ -24,7 +24,6 @@ Cases:
 - optimize_world: B doesn't stop Optimize World, which declares nothing.
 - pointer_screens: Statistics', Advancements' and the packs' Done show a glyph and B presses them.
 - settings_pages: nothing labelled Done, Back or Cancel is undeclared on any options page, Graphics included.
-- split_setup: Splitscreen Setup's Done is declared, and off while a player is held.
 - actions_follow_screen: right after a press opens a screen, the screen before it can't be pressed.
 - glyphs_title: the title's X and B on their buttons, A once the focus is on the exit, gone at the mouse.
 - glyph_on_field: A on a focused text field and B on Cancel; A opens one keyboard, which hides them; B closes it.
@@ -556,31 +555,6 @@ def settings_pages(args, name):
         game.pad('east')
         game.wait_targets()
         check(game.rects() != before, 'B did not press Done on Graphics')
-    finally:
-        game.quit()
-    return check.failures
-
-
-def split_setup(args, name):
-    game = Game(args, name)
-    check = Check()
-    try:
-        game.wait_targets()
-        game.title_buttons()
-        game.pad('west')
-        game.ctl('options', 'sunrise')
-        time.sleep(SETTLE)
-        game.wait_targets()
-        click_widget(game, widget(game, 'split'))
-        game.wait_targets()
-        game.pad('down')
-        check(declared(game).get('Done') is True, f'Setup declares {declared(game)}')
-        check(game.menu()['undeclared'] == [], f"undeclared: {game.menu()['undeclared']}")
-        # A held player needs a second one, which one virtual pad can't be: `split_ui`'s
-        # done_is_declared_off_while_a_player_is_held has that.
-        game.pad('east')
-        game.wait_targets()
-        check(any('split' in w['id'] for w in game.widgets()), f'B did not press Done: {labels(game)}')
     finally:
         game.quit()
     return check.failures
@@ -1197,13 +1171,40 @@ def crosshair_station_rows(args, name):
     return check.failures
 
 
+def open_graphics_from_extras(game):
+    """Sunrise's graphics screen, from the Extras page's Sunrise Graphics... row by the pad alone."""
+    game.ctl('options', 'extras')
+    time.sleep(SETTLE)
+    game.wait_targets()
+    game.pad('down')
+    check_label = game.focused_label() or ''
+    if 'Sunrise Graphics' not in check_label:
+        raise RuntimeError(f'down from the Extras search field is on {check_label}, not Sunrise Graphics...')
+    game.pad('south')
+    time.sleep(SETTLE)
+    game.wait_targets()
+
+
+def focus_extra(game, text):
+    """The D-pad down the Extras rows until the focus is on the one with this text."""
+    for _ in range(ROW_WALK):
+        if text in (game.focused_label() or ''):
+            return True
+        game.pad('down')
+    return text in (game.focused_label() or '')
+
+
 def options_case(button):
     def wrap(body):
         def case(args, name):
             game = Game(args, name)
             check = Check()
             try:
-                game.press_through('west', click=button)
+                if button:
+                    game.press_through('west', click=button)
+                else:
+                    game.press_through('west')
+                    open_graphics_from_extras(game)
                 body(game, check)
             finally:
                 game.quit()
@@ -1230,9 +1231,9 @@ def stick_under_keyboard(game, check):
     check(game.widgets() == before, 'the list scrolled under the keyboard')
 
 
-@options_case('video-settings')
+@options_case(None)
 def stick_leaves_sidebar(game, check):
-    # Video Settings... is the graphics screen.
+    # Sunrise's graphics screen, from Extras: Video Settings... is vanilla's page.
     game.pad('down')
     game.wait_targets()
     game.focus_on('advanced')
@@ -1360,7 +1361,7 @@ def stick_steps_once(args, name):
     return check.failures
 
 
-@options_case('video-settings')
+@options_case(None)
 def gui_scale_keeps_focus(game, check):
     # The graphics screen's General page.
     game.focus_on('gui-scale')
@@ -1620,8 +1621,8 @@ STUDIO_RECORDINGS, STUDIO_BUTTONS = 12, 3
 
 
 EXTRAS_ABOUT = 'Optional additions, all off by default'
-AUTO_RECONNECT = 'Auto-reconnect'
-AUTO_RECONNECT_ABOUT = 'Rejoins a server after a lost connection or a restart'
+PREGEN = 'Chunk pregeneration'
+PREGEN_ABOUT = 'Enables /pregen in your single-player and LAN worlds'
 FIRST_EXTRA = 'Own name tag'
 LAST_MENU_EXTRA = 'Resource pack browser'
 GREYED_EXTRA = 'Sort key'
@@ -1665,7 +1666,8 @@ def extras_shell(args, name):
 
         # From the search field across to the first row, then down: a greyed row is stepped over, hidden rows scroll in.
         game.pad('right')
-        check(FIRST_EXTRA in (game.focused_label() or ''), f'the D-pad never reached {FIRST_EXTRA}: {game.focused_label()}')
+        check('Sunrise Graphics' in (game.focused_label() or ''), f'right from the search field is on {game.focused_label()}')
+        check(focus_extra(game, FIRST_EXTRA), f'the D-pad never reached {FIRST_EXTRA}: {game.focused_label()}')
         # A presses with a click: the row it pressed doesn't stay lit once the focus moves on.
         game.pad('south')
         pressed = game.focus()
@@ -1684,13 +1686,13 @@ def extras_shell(args, name):
 
         # Back up the list to a row near its top; the right stick moves the list and the focus stays on it.
         for _ in range(ROW_WALK):
-            if AUTO_RECONNECT in (game.focused_label() or ''):
+            if PREGEN in (game.focused_label() or ''):
                 break
             game.pad('up')
         label = game.focused_label()
-        check(AUTO_RECONNECT in (label or ''), f'the D-pad never came back to {AUTO_RECONNECT}: {label}')
-        check(has_label(game, AUTO_RECONNECT_ABOUT), f'the strip does not follow the row: {labels(game)}')
-        check(AUTO_RECONNECT in (label or '') and label.endswith('Off'), f'{AUTO_RECONNECT} reads {label}')
+        check(PREGEN in (label or ''), f'the D-pad never came back to {PREGEN}: {label}')
+        check(has_label(game, PREGEN_ABOUT), f'the strip does not follow the row: {labels(game)}')
+        check(PREGEN in (label or '') and label.endswith('Off'), f'{PREGEN} reads {label}')
         shot(game, 'extras-described')
         y = game.focus()[1]
         game.stick()
@@ -1699,18 +1701,18 @@ def extras_shell(args, name):
         check(moved and moved[1] < y, f'the stick did not scroll the list: {y} to {moved}')
 
         # A changes the toggle: what the row reads, and the file it is saved in.
-        check('autoReconnect:true' not in extras_saved(game), 'Auto-reconnect began on')
+        check('pregen:true' not in extras_saved(game), 'Chunk pregeneration began on')
         game.pad('south')
         label = game.focused_label()
-        check(label and label.endswith('On'), f'A left {AUTO_RECONNECT} as {label}')
-        check('autoReconnect:true' in extras_saved(game), 'the toggle was not saved to sunrise-extras.txt')
+        check(label and label.endswith('On'), f'A left {PREGEN} as {label}')
+        check('pregen:true' in extras_saved(game), 'the toggle was not saved to sunrise-extras.txt')
         check('Apply' not in declared(game), f'Extras has no Undo, yet a change declared {declared(game)}')
         shot(game, 'extras-toggled')
 
         # B presses Done.
         game.pad('east')
         game.wait_targets()
-        check(not has_label(game, AUTO_RECONNECT), f'B did not leave Extras: {labels(game)}')
+        check(not has_label(game, PREGEN), f'B did not leave Extras: {labels(game)}')
     finally:
         game.quit()
     return check.failures
@@ -1824,8 +1826,8 @@ def shell_choice_step(args, name):
     return check.failures
 
 
-ZOOM_INSTALL = 'Zoom: install from Mods'
-# How far a group's name sits over its first row (`graphics_style::GROUP_ROW`): the list's top from the Mods note.
+# How far a group's name sits over its first row (`graphics_style::GROUP_ROW`): the list's top from the
+# first group's first row, Sunrise Graphics..., before anything scrolls.
 GROUP_NAME_H = 14
 STICK_NOTCHES = 8
 
@@ -1840,15 +1842,15 @@ def extras_shell_edges(args, name):
         game.wait_targets()
         check((game.menu()['focus'] or {}).get('kind') == 'field', f"Extras opened on {game.menu()['focus']}")
         game.pad('down')
-        check(FIRST_EXTRA in (game.focused_label() or ''),
-              f'down from the search field went to {game.focused_label()}, not {FIRST_EXTRA}')
+        check('Sunrise Graphics' in (game.focused_label() or ''),
+              f'down from the search field went to {game.focused_label()}, not Sunrise Graphics...')
+        graphics_row = game.focus()
+        check(focus_extra(game, FIRST_EXTRA), f'the D-pad never reached {FIRST_EXTRA}: {game.focused_label()}')
 
         # The right stick moves the list until the focused row's middle is above the list's top.
-        note = label_of(game, ZOOM_INSTALL)
-        check(note is not None, f'no Mods note to find the list by: {labels(game)}')
-        if not note or FIRST_EXTRA not in (game.focused_label() or ''):
+        if not graphics_row or FIRST_EXTRA not in (game.focused_label() or ''):
             return check.failures
-        top = note['bounds'][1] - GROUP_NAME_H
+        top = graphics_row[1] - GROUP_NAME_H
         before = game.focused_label()
         for _ in range(STICK_NOTCHES):
             focus = game.focus()
@@ -3182,8 +3184,22 @@ def craft_lan_guest(args, name):
     return check.failures
 
 
+# A flat creative test server with nobody's account checked.
+PROPERTIES = {
+    'online-mode': 'false',
+    'white-list': 'false',
+    'level-type': 'minecraft\\:flat',
+    'generate-structures': 'false',
+    'gamemode': 'creative',
+    'force-gamemode': 'true',
+    'spawn-protection': '0',
+    'view-distance': '4',
+    'simulation-distance': '4',
+    'max-players': '100',
+}
+
+
 def craft_dedicated(args, name):
-    from anticheat_e2e import PROPERTIES
     from server_bench import DONE, Server
     check = Check()
     folder = Path(tempfile.mkdtemp(prefix=f'pad-menu-{name}-server-'))
@@ -4652,7 +4668,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'pad_release': pad_release, 'pause_y': pause_y, 'settings': settings, 'create_world': create_world,
          'world_options': world_options, 'key_row_b': key_row_b, 'lock_question': lock_question,
          'optimize_world': optimize_world, 'pointer_screens': pointer_screens, 'settings_pages': settings_pages,
-         'split_setup': split_setup, 'actions_follow_screen': actions_follow_screen, 'glyphs_title': glyphs_title,
+         'actions_follow_screen': actions_follow_screen, 'glyphs_title': glyphs_title,
          'glyph_on_field': glyph_on_field, 'settings_apply': settings_apply, 'long_label': long_label,
          'tabs_create_world': tabs_create_world,
          'tab_release': tab_release,

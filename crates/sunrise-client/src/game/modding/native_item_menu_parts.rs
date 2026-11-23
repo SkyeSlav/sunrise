@@ -1,4 +1,3 @@
-// game-module-visibility: pub(crate)
 //! The executable's side of the item hooks the client library asks inside its menus and
 //! recipe matching (`native_client_hooks`): `can_grindstone_repair`, `is_combine_repairable`
 //! and `can_fit_inside_container_items`. Each asks the parts of the stack's item, with the
@@ -75,5 +74,33 @@ pub(crate) fn can_fit_inside_container_items(
             context, &api, fits,
         ),
         Err(error) => refuse_stack("can_fit_inside_container_items", &stack.item, error),
+    }
+}
+
+/// Ask the parts of `stack`'s item for its name (`Item.getName(ItemStack)`). With no part on the
+/// item, nothing is converted and `name` stays the default.
+pub(crate) fn item_name(
+    context: &LoopContext,
+    stack: &ItemStack,
+    name: &mut Option<sunrise_client::text::Text>,
+) {
+    use super::api_values::TryIntoEngine;
+    if !mod_api::__private::item_listens(mod_api::HookId::ItemName, &stack.item) {
+        return;
+    }
+    let api = match stack.try_into_api() {
+        Ok(api) => api,
+        Err(error) => return refuse_stack("item_name", &stack.item, error),
+    };
+    let mut answer: Option<mod_api::Text> = None;
+    sunrise_client::stations::native_item_name(context, &api, &mut answer);
+    if let Some(text) = answer {
+        match text.try_into_engine(&()) {
+            Ok(text) => *name = Some(text),
+            Err(error) => log::warn!(
+                "Sunrise: item_name of {} skipped: its text can't be shown ({error:?}); the default name is kept",
+                stack.item
+            ),
+        }
     }
 }

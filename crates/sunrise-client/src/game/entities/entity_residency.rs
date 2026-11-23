@@ -224,7 +224,7 @@ macro_rules! define_resident_access {
                     let dragon = $this.dragon.as_ref()?;
                     if dragon.id == 0 { return None; }
                     dragon.parts.get(usize::from(offset))?;
-                    let id = dragon.id.checked_add(u32::from(offset) + 1)?;
+                    let id = crate::game::dragon::dragon_part_id(dragon.id, usize::from(offset));
                     let visible = true;
                     Some(SourceEntity { id, value: (Target::DragonPart(id), visible) })
                 }

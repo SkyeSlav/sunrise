@@ -4,7 +4,8 @@
 //! `block_state`, `clip`, `collision_boxes` and `has_collisions` read its world (`viewed_worlds`),
 //! as do the reads built on `level_block_state`: `block`, `block_property` and the both-sided
 //! fluid reads (`fluid_shape`, `fluid_height`, `fluid_height_for_camera`,
-//! `fluid_can_be_replaced_with`). A read never writes and never loads a column: a column the
+//! `fluid_can_be_replaced_with`). `get_enchant_power_bonus` uses the viewed level as context.
+//! A read never writes and never loads a column: a column the
 //! world does not hold is None. The handle answers None from the server's close of the level,
 //! and from a Login, a Respawn or a new configuration phase, which drop every viewed world. A
 //! `LevelRef` names a level and the client level's epoch, not one open of the view: a close and
@@ -78,11 +79,12 @@ mod tests {
     use crate::game::{
         Game,
         api_values::TryIntoApi,
+        native_entity_refs::tests::collect_entities_in,
         viewed_worlds::tests::{client, close, column, layered, open, run, spawn},
     };
     use mod_api::{
-        BlockFace, BlockState, BlockUpdateFlags, ClipBlock, ClipFluid, Host, LevelRef,
-        LevelWriteError,
+        BlockFace, BlockState, BlockUpdateFlags, ClipBlock, ClipFluid, Host, LevelReadError,
+        LevelRef, LevelWriteError,
     };
     use sunrise_protocol::packets::play::{self, Clientbound as C};
     use sunrise_world::registry::BlockStateId;
@@ -229,7 +231,10 @@ mod tests {
         );
         assert_eq!(state(&game, viewed, POCKET), Some(0));
         assert_eq!(viewed.fluid_state(&game, POCKET), None);
-        assert_eq!(viewed.entities_in(&game, [0.0; 3], [16.0; 3]), None);
+        assert_eq!(
+            collect_entities_in(&game, viewed, [0.0; 3], [16.0; 3]),
+            Err(LevelReadError::Unavailable)
+        );
     }
 
     /// The server's close, and a Respawn, end the handle: it and `host.level` answer None until

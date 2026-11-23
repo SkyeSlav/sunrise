@@ -36,7 +36,7 @@ use sunrise_client::{
     collisions::{self, LookupCollisions, no_collision_empty},
     items::{ItemStack, Items},
     mobs::{
-        MobTypes, Species,
+        MobType, MobTypes, Species,
         data::MobData,
         spawn_rules::SpawnLevel,
         spawn_selection::{
@@ -46,7 +46,7 @@ use sunrise_client::{
         },
         spawner::{
             SpawnDataExt, Spawner, SpawnerAdded, SpawnerEvent, SpawnerExt, SpawnerLevel,
-            SpawnerSpawn,
+            SpawnerSpawn, SpawnerTypeFacts,
         },
         species::{self, Baby},
         trial_spawner::{
@@ -99,8 +99,8 @@ struct Shared<'a> {
     structures: &'a StructureSpawns,
     collision: &'a BlockCollisionRegistry<'a>,
     air: BlockStateId,
-    /// Every entity type id (`entity-types.json`).
-    entity_types: &'a HashSet<String>,
+    /// Every entity type's registry row (`entity-types.json`).
+    entity_types: &'a HashMap<String, SpawnerTypeFacts>,
 }
 struct World<'a> {
     border: sunrise_core::geometry::border::BorderGeometry,
@@ -261,14 +261,8 @@ impl NaturalLevel for World<'_> {
     fn has_ceiling(&self) -> bool {
         self.dimension.id == "minecraft:the_nether"
     }
-    fn mob_type(&self, entity: &str) -> Option<(Species, f32, f32, Category)> {
-        let t = self.s.types.types.get(entity)?;
-        Some((
-            t.species,
-            t.width as f32,
-            t.height as f32,
-            Category::from_name(&t.category),
-        ))
+    fn mob_type(&self, entity: &str) -> Option<&MobType> {
+        self.s.types.types.get(entity)
     }
     fn biome_spawns(&self, x: i32, y: i32, z: i32) -> Option<&HashMap<String, Vec<SpawnEntry>>> {
         self.biome_info(x, y, z).map(|b| &b.spawns)
@@ -341,11 +335,14 @@ impl NaturalLevel for World<'_> {
                 .any(|(id, b)| id == "minecraft:shulker" && b.intersects(grown))
     }
     fn unobstructed(&self, bounds: Aabb) -> bool {
+        let Ok(shape) = sunrise_core::geometry::VoxelShape::from_box(bounds) else {
+            return false;
+        };
         !self
             .entities
             .borrow()
             .iter()
-            .any(|(_, b)| b.intersects(bounds))
+            .any(|(_, b)| spawn_selection::blocks_spawn_shape(&shape, bounds, *b))
     }
     fn spawn_mobs(&self) -> bool {
         self.spawn_mobs
@@ -374,8 +371,8 @@ impl SpawnerLevel for World<'_> {
     fn spawner_blocks_work(&self) -> bool {
         self.spawners_work
     }
-    fn entity_exists(&self, id: &str) -> bool {
-        self.s.types.types.contains_key(id) || self.s.entity_types.contains(id)
+    fn spawner_type(&self, id: &str) -> Option<SpawnerTypeFacts> {
+        self.s.entity_types.get(id).copied()
     }
     fn count_entities(&self, id: &str, bounds: Aabb) -> usize {
         self.entities
@@ -535,8 +532,9 @@ pub fn main() -> sunrise_client::Result<()> {
     let facts = BlockFacts::load(root, registry)?;
     let data = MobData::load(
         &sunrise_assets::resource_source::ResourceRoot::directory(root.to_path_buf()),
-        &facts,
-    );
+        facts.states.len(),
+        false,
+    )?;
     let defaults = sunrise_world::item_defaults::read(root)?;
     let items = Items::catalog(root, &PackOverlay::NONE, &defaults)?;
     // Trial spawner rewards: the loot tables and the configs.
@@ -556,17 +554,15 @@ pub fn main() -> sunrise_client::Result<()> {
     ))?;
     let structures = StructureSpawns::load(root);
     let collision = collisions::load(root, registry)?;
-    let entity_types: HashSet<String> = fs::read(root.join("entity-types.json"))
-        .ok()
-        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-        .and_then(|v| {
-            v.as_object().map(|o| {
-                o.keys()
-                    .map(|k| sunrise_client::command::args::normalize(k))
-                    .collect()
-            })
-        })
-        .unwrap_or_default();
+    let builtin = sunrise_protocol::registry::Builtin::load(&root.join("registries.json"))?;
+    let ids = &builtin
+        .get("minecraft:entity_type")
+        .ok_or("missing entity type registry")?
+        .names;
+    let entity_types = SpawnerTypeFacts::load_registered(
+        root,
+        ids.iter().map(String::as_str).filter(|id| !id.is_empty()),
+    )?;
     let shared = Shared {
         facts: &facts,
         data: &data,
@@ -714,9 +710,10 @@ pub fn main() -> sunrise_client::Result<()> {
                 .collect();
             // EntityType.create makes no monsters in peaceful.
             if get("difficulty", "normal") == "peaceful"
-                && types.types.get(parts[0]).is_some_and(|t| {
-                    !sunrise_client::mobs::spawn_rules::allowed_in_peaceful(t.species)
-                })
+                && types
+                    .types
+                    .get(parts[0])
+                    .is_some_and(|t| !t.allowed_in_peaceful())
             {
                 continue;
             }
@@ -793,7 +790,6 @@ pub fn main() -> sunrise_client::Result<()> {
             let bounds = neutral_box(l, r);
             l.entities.borrow_mut().push((r.entity.to_owned(), bounds));
             Some(Spawned {
-                bounds,
                 school: true,
                 cluster_size: None,
             })
@@ -980,7 +976,6 @@ fn spawner_case(
                 ));
                 Some(SpawnerAdded {
                     id: spawned.len() as u32,
-                    bounds,
                     mob: true,
                 })
             };
@@ -1022,8 +1017,8 @@ fn spawner_case(
 
 /// `TrialSpawner.tickServer` `ticks` times from game time `t0` at `spos` on a
 /// trial spawner block in state `state` (ominous with `ominous=1`) loaded from
-/// `snbt` (base64 SNBT), as the oracle logs it. Every `kill` ticks the mobs it
-/// spawned die.
+/// `snbt` (base64 SNBT), as the oracle logs it. `warmup_snbt`, if provided,
+/// is loaded first on the same spawner. Every `kill` ticks the mobs it spawned die.
 fn trial_case(
     world: &World,
     registry: &sunrise_world::registry::BlockRegistry,
@@ -1050,9 +1045,17 @@ fn trial_case(
         .placed
         .borrow_mut()
         .push((pos, registry.resolve(&block_state(state, ominous))?));
-    let text = sunrise_client::skins::base64_decode(&get("snbt", "")).ok_or("bad snbt")?;
-    let tag = sunrise_core::nbt::parse_snbt(&String::from_utf8(text)?)?.0;
-    let mut spawner = TrialSpawner::load(&tag);
+    let decode = |text: &str| -> sunrise_client::Result<Tag> {
+        let text = sunrise_client::skins::base64_decode(text).ok_or("bad snbt")?;
+        Ok(sunrise_core::nbt::parse_snbt(&String::from_utf8(text)?)?.0)
+    };
+    let warmup = get("warmup_snbt", "");
+    let previous = if warmup.is_empty() {
+        None
+    } else {
+        Some(TrialSpawner::load(&decode(&warmup)?, None))
+    };
+    let mut spawner = TrialSpawner::load(&decode(&get("snbt", ""))?, previous.as_ref());
     let ticks: i64 = get("ticks", "1").parse()?;
     let t0: i64 = get("t0", "0").parse()?;
     let kill: i64 = get("kill", "0").parse()?;

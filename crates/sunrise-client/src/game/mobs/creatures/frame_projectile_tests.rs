@@ -5,7 +5,7 @@ use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_core::position::ChunkPos;
 
-fn game() -> Game<'static> {
+fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -> Game<'a> {
     let root = std::path::PathBuf::from(
         std::env::var_os("SUNRISE_TEST_RESOURCES")
             .expect("set SUNRISE_TEST_RESOURCES to prepared resources"),
@@ -27,7 +27,7 @@ fn game() -> Game<'static> {
     let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
     options.resources = root.clone();
     options.execution_role = execution_role::ExecutionRole::IntegratedServer;
-    let res: &'static _ = Box::leak(Box::new(loaded.resources));
+    let res = &*resources.insert(loaded.resources);
     let mut game = Game::new(
         res,
         loaded.pack,
@@ -78,7 +78,8 @@ fn dropped(game: &Game<'_>, item: &str) -> usize {
 #[test]
 #[ignore = "daily"]
 fn an_arrow_knocks_the_item_out_then_breaks_the_frame() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     // On the wall's west face (Facing 4: west).
     assert!(game.run_command(
         "summon minecraft:item_frame 3.5 64.5 6.5 {Facing:4b,Item:{id:\"minecraft:diamond\",count:1}}"
@@ -97,7 +98,8 @@ fn an_arrow_knocks_the_item_out_then_breaks_the_frame() {
 #[test]
 #[ignore = "daily"]
 fn a_fixed_frame_refuses_the_arrow() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     assert!(game.run_command(
         "summon minecraft:item_frame 3.5 64.5 9.5 {Facing:4b,Fixed:1b,Item:{id:\"minecraft:diamond\",count:1}}"
     ));

@@ -51,7 +51,7 @@ fn observed(effect: Effect) -> Published {
 }
 
 struct Frame {
-    id: u64,
+    id: TransactionFrame,
     action: Option<ActiveAction>,
     journal: Journal,
 }
@@ -61,6 +61,8 @@ struct Harness {
     actor: Residence,
     target: Residence,
     frames: Vec<Frame>,
+    journal_tag: Box<u8>,
+    sequence: u64,
     before_fire: Option<fn(&mut Self)>,
     decisions: usize,
     dispatches: usize,
@@ -81,6 +83,8 @@ impl Harness {
             actor: Residence::Found,
             target: Residence::Found,
             frames: Vec::new(),
+            journal_tag: Box::new(0),
+            sequence: 0,
             before_fire: None,
             decisions: 0,
             dispatches: 0,
@@ -91,8 +95,10 @@ impl Harness {
         host
     }
 
-    fn open(&mut self, menu: Option<MenuId>) -> u64 {
-        let id = super::super::frame_token();
+    fn open(&mut self, menu: Option<MenuId>) -> TransactionFrame {
+        self.sequence += 1;
+        let journal = std::ptr::from_ref(&*self.journal_tag) as usize;
+        let id = TransactionFrame::new(journal, self.sequence, self.frames.len());
         self.frames.push(Frame {
             id,
             action: menu.map(ActiveAction::new),
@@ -144,15 +150,15 @@ impl ActionHost for Harness {
             .iter()
             .any(|f| f.action.as_ref().is_some_and(|a| a.menu == menu))
     }
-    fn open_action(&mut self, menu: MenuId) -> u64 {
+    fn open_action(&mut self, menu: MenuId) -> TransactionFrame {
         self.open(Some(menu))
     }
-    fn action_is_current(&self, savepoint: u64, menu: MenuId) -> bool {
+    fn action_is_current(&self, savepoint: TransactionFrame, menu: MenuId) -> bool {
         self.frames
             .last()
             .is_some_and(|f| f.id == savepoint && f.action.as_ref().is_some_and(|a| a.menu == menu))
     }
-    fn close_action(&mut self, savepoint: u64, commit: bool) {
+    fn close_action(&mut self, savepoint: TransactionFrame, commit: bool) {
         let at = self.frames.iter().position(|f| f.id == savepoint).unwrap();
         while self.frames.len() > at + 1 {
             self.close(false);
@@ -206,26 +212,20 @@ fn fixture() -> (Harness, Menu) {
 }
 
 pub(super) fn placement(view: &MenuState) -> Plan {
-    Plan::new(
-        ActionKind::Placement,
-        vec![
-            Step::Write(Mutation::Cursor(None)),
-            Step::Write(Mutation::Slot(0, view.cursor.clone())),
-            Step::Effect(packet()),
-        ],
-    )
+    Plan::new(vec![
+        Step::Write(Mutation::Cursor(None)),
+        Step::Write(Mutation::Slot(0, view.cursor.clone())),
+        Step::Effect(packet()),
+    ])
 }
 
 fn quick_move(_: &MenuState) -> Plan {
-    Plan::new(
-        ActionKind::QuickMove,
-        vec![
-            Step::Write(Mutation::Slot(0, None)),
-            Step::Write(Mutation::Slot(1, stack("minecraft:stone", 4))),
-            Step::Write(Mutation::Slot(2, stack("minecraft:stone", 6))),
-            Step::Effect(packet()),
-        ],
-    )
+    Plan::new(vec![
+        Step::Write(Mutation::Slot(0, None)),
+        Step::Write(Mutation::Slot(1, stack("minecraft:stone", 4))),
+        Step::Write(Mutation::Slot(2, stack("minecraft:stone", 6))),
+        Step::Effect(packet()),
+    ])
 }
 
 fn quick_fixture() -> (Harness, Menu) {
@@ -633,15 +633,12 @@ fn invalid_plan_suffix_has_no_partial_successful_prefix() {
         &mut host,
         &menu,
         |_| {
-            Plan::new(
-                ActionKind::QuickMove,
-                vec![
-                    Step::Write(Mutation::Slot(0, None)),
-                    Step::Effect(packet()),
-                    Step::Write(Mutation::Slot(1, stack("minecraft:stone", 4))),
-                    Step::Write(Mutation::Slot(2, stack("minecraft:stone", 7))),
-                ],
-            )
+            Plan::new(vec![
+                Step::Write(Mutation::Slot(0, None)),
+                Step::Effect(packet()),
+                Step::Write(Mutation::Slot(1, stack("minecraft:stone", 4))),
+                Step::Write(Mutation::Slot(2, stack("minecraft:stone", 7))),
+            ])
         },
         |_| panic!("invalid plan must not dispatch"),
     );
@@ -685,14 +682,11 @@ fn recipe_two_stone_accept_consumes_once_changed_input_stale_restored() {
             &mut host,
             &menu,
             |_| {
-                Plan::new(
-                    ActionKind::RecipePlacement,
-                    vec![
-                        Step::Write(Mutation::Slot(0, None)),
-                        Step::Write(Mutation::Slot(1, stack("minecraft:stone_button", 1))),
-                        Step::Effect(packet()),
-                    ],
-                )
+                Plan::new(vec![
+                    Step::Write(Mutation::Slot(0, None)),
+                    Step::Write(Mutation::Slot(1, stack("minecraft:stone_button", 1))),
+                    Step::Effect(packet()),
+                ])
             },
             |host| {
                 if changed {
@@ -846,7 +840,7 @@ fn empty_decision_dispatches_nothing() {
         run(
             &mut host,
             &menu,
-            |_| Plan::new(ActionKind::Placement, vec![]),
+            |_| Plan::new(vec![]),
             |_| panic!("no-action dispatch")
         ),
         Ok(Outcome::Canceled)

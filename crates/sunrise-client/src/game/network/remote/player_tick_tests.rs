@@ -35,7 +35,7 @@ impl Log {
                 if host.local_player() != Some(player) {
                     assert_eq!(player.uuid(), 789);
                     assert_eq!(player.entity().id(), 66);
-                    assert!(player.inventory(host).is_none());
+                    assert_eq!(player.with_inventory(host, |_| ()), None);
                 }
                 (host, "client", None)
             }
@@ -45,14 +45,15 @@ impl Log {
             side,
             uuid: player.uuid(),
             diamonds: player
-                .inventory(host)
-                .unwrap_or_default()
-                .iter()
-                .filter(|s| {
-                    mod_api::__private::item_key_id(s.item()).unwrap() == "minecraft:diamond"
+                .with_inventory(host, |view| {
+                    let diamond = mod_api::__private::item_key("minecraft:diamond");
+                    (0..36)
+                        .filter_map(|slot| view.get(slot))
+                        .filter(|stack| Some(stack.item()) == diamond)
+                        .map(|stack| stack.count())
+                        .sum::<u32>()
                 })
-                .map(|s| s.count())
-                .sum(),
+                .unwrap_or_default(),
             xp: player.experience(host).map_or(0, |xp| xp.total),
             cooldown,
         });
@@ -293,7 +294,7 @@ fn client_player_ticks_on_the_death_screen_too() {
             ));
             game.cooldowns.add("minecraft:ender_pearl".into(), 3);
             game.sleep_timer = 4;
-            // LocalPlayer.tick waits for the client load and its chunk: only
+            // LocalPlayer.tick waits for the client load: only
             // the other player's pair runs, and the level pass still ticks.
             game.tick_remote().unwrap();
             // Player.tick owns both counters, so they wait with it.

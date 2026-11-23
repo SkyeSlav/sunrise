@@ -52,10 +52,10 @@ pub struct ModBookIndex {
 }
 impl ModBookIndex {
     pub fn build(
-        mut declarations: Vec<RecipeBookCategory>,
+        declarations: Vec<RecipeBookCategory>,
         resources: &dyn DisplayResources,
     ) -> Result<Self, DisplayLoadError> {
-        placement::validate_batch(&mut declarations, resources)?;
+        placement::validate_batch(&declarations, resources)?;
         let mut index = Self::default();
         for menu in mod_api::RecipeBookLayout::registered_menus() {
             let Some((_, recipe_type, layout)) = mod_api::RecipeBookLayout::registered(&menu)

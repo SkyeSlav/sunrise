@@ -1,8 +1,8 @@
 //! The Statistics screen (`StatsScreen`): General, Items and Mobs tabs over
 //! the player's statistics, with the Done button.
 use super::{Game, Screen};
-use std::fmt::Write as _;
 use sunrise_client::{hud::HudBatch, items::ItemStack, text::Text, ui};
+use sunrise_core::java_number::{double_to_string, format_decimal2};
 use winit::keyboard::KeyCode;
 
 /// `Stats.CUSTOM` in registration order with its formatter.
@@ -94,25 +94,38 @@ enum Format {
     Time,
 }
 fn two(v: f64) -> String {
-    format!("{v:.2}")
+    format_decimal2(v, false)
 }
 /// `StatFormatter`.
 fn format(f: Format, v: i32) -> String {
     match f {
         Format::Default => {
             // NumberFormat.getIntegerInstance(Locale.US): thousands separators.
-            let digits = v.unsigned_abs().to_string();
-            let mut out = String::new();
-            for (i, c) in digits.chars().enumerate() {
-                if i > 0 && (digits.len() - i).is_multiple_of(3) {
-                    out.push(',');
+            let mut digits = [0; 14]; // sign, 10 digits and 3 commas
+            let mut i = digits.len();
+            let mut value = v.unsigned_abs();
+            let mut group = 0;
+            loop {
+                i -= 1;
+                digits[i] = b'0' + (value % 10) as u8;
+                value /= 10;
+                if value == 0 {
+                    break;
                 }
-                out.push(c);
+                group += 1;
+                if group == 3 {
+                    i -= 1;
+                    digits[i] = b',';
+                    group = 0;
+                }
             }
             if v < 0 {
-                out.insert(0, '-');
+                i -= 1;
+                digits[i] = b'-';
             }
-            out
+            std::str::from_utf8(&digits[i..])
+                .expect("ASCII digits")
+                .into()
         }
         Format::Tenths => two(f64::from(v) * 0.1),
         Format::Distance => {
@@ -128,8 +141,10 @@ fn format(f: Format, v: i32) -> String {
         }
         Format::Time => {
             let s = f64::from(v) / 20.0;
-            let (min, h) = (s / 60.0, s / 3600.0);
-            let (d, y) = (h / 24.0, h / 24.0 / 365.0);
+            let min = s / 60.0;
+            let h = min / 60.0;
+            let d = h / 24.0;
+            let y = d / 365.0;
             if y > 0.5 {
                 format!("{} y", two(y))
             } else if d > 0.5 {
@@ -140,21 +155,21 @@ fn format(f: Format, v: i32) -> String {
                 format!("{} min", two(min))
             } else {
                 // Java's double + " s".
-                let mut t = String::new();
-                let _ = write!(t, "{s:?}");
-                format!("{t} s")
+                let mut seconds = double_to_string(s);
+                seconds.push_str(" s");
+                seconds
             }
         }
     }
 }
 /// The item columns: (stat type, header sprite).
 const COLUMNS: [(&str, &str); 6] = [
-    ("mined", "gui/sprites/statistics/block_mined"),
-    ("broken", "gui/sprites/statistics/item_broken"),
-    ("crafted", "gui/sprites/statistics/item_crafted"),
-    ("used", "gui/sprites/statistics/item_used"),
-    ("picked_up", "gui/sprites/statistics/item_picked_up"),
-    ("dropped", "gui/sprites/statistics/item_dropped"),
+    ("mined", "statistics/block_mined"),
+    ("broken", "statistics/item_broken"),
+    ("crafted", "statistics/item_crafted"),
+    ("used", "statistics/item_used"),
+    ("picked_up", "statistics/item_picked_up"),
+    ("dropped", "statistics/item_dropped"),
 ];
 /// `ItemStatisticsList`'s rows: items with a positive item column, plus
 /// `Block.asItem` (`block_item`) of blocks with a positive `mined` count,
@@ -479,10 +494,10 @@ impl Game<'_> {
                 tab_tip = true;
             }
             let sprite = match (selected, hover) {
-                (true, true) => "gui/sprites/widget/tab_selected_highlighted",
-                (true, false) => "gui/sprites/widget/tab_selected",
-                (false, true) => "gui/sprites/widget/tab_highlighted",
-                (false, false) => "gui/sprites/widget/tab",
+                (true, true) => "widget/tab_selected_highlighted",
+                (true, false) => "widget/tab_selected",
+                (false, true) => "widget/tab_highlighted",
+                (false, false) => "widget/tab",
             };
             ui::nine_slice(batch, atlas, sprite, x, 0.0, tw, TAB_H, u32::MAX);
             ui::menu_tab_label(
@@ -601,9 +616,9 @@ impl Game<'_> {
                             .child_of(list_key, 0)
                         });
                         let bg = if hover {
-                            "gui/sprites/statistics/header"
+                            "statistics/header"
                         } else {
-                            "gui/sprites/container/slot"
+                            "container/slot"
                         };
                         batch.sprite(atlas, bg, x, y + 1.0);
                         batch.sprite(atlas, sprite, x, y + 1.0);
@@ -611,9 +626,9 @@ impl Game<'_> {
                             && sc == c
                         {
                             let s = if order < 0 {
-                                "gui/sprites/statistics/sort_down"
+                                "statistics/sort_down"
                             } else {
-                                "gui/sprites/statistics/sort_up"
+                                "statistics/sort_up"
                             };
                             batch.sprite(atlas, s, x, y + 1.0);
                         }
@@ -627,7 +642,7 @@ impl Game<'_> {
                     let stack = ItemStack::new(item, 1);
                     // ItemRowWidget, an ItemDisplayWidget: "Item: <name>".
                     sunrise_client::widgets::narratable(|| {
-                        let name = sunrise_client::stations::hover_name(&self.pack.names, &stack);
+                        let name = self.stack_hover_name_text(&stack).plain();
                         sunrise_client::widgets::Narratable::text(
                             tr("narration.item", &[&name]),
                             [left + 1.0, y + 1.0, 18.0, 18.0],
@@ -636,12 +651,7 @@ impl Game<'_> {
                         .child_of(list_key, i + 1)
                         .without_tooltip()
                     });
-                    batch.sprite(
-                        &self.gui.atlas,
-                        "gui/sprites/container/slot",
-                        left + 1.0,
-                        y + 1.0,
-                    );
+                    batch.sprite(&self.gui.atlas, "container/slot", left + 1.0, y + 1.0);
                     self.draw_item(batch, &stack, left + 2.0, y + 2.0);
                     // `ItemRowWidget.extractTooltip`: the item's tooltip at the slot's corner.
                     if ui::hovered(self.cursor, left + 1.0, y + 1.0, 18.0, 18.0) {
@@ -740,10 +750,10 @@ impl Game<'_> {
                 .play("minecraft:ui.button.click", None, 0.25, 1.0);
         }
     }
-    pub(super) fn stats_click(&mut self, size: [u32; 2]) {
+    pub(super) fn stats_click(&mut self, size: [u32; 2]) -> bool {
         // A press on the scrollbar holds it and clicks nothing else.
         if self.stats_press_scrollbar(size) {
-            return;
+            return true;
         }
         let b = HudBatch::new(size, self.settings.gui_scale_inputs());
         let (w, h) = (b.width, b.height);
@@ -757,7 +767,7 @@ impl Game<'_> {
                 self.stats_ui.scroll.amount = 0.0;
                 self.audio
                     .play("minecraft:ui.button.click", None, 0.25, 1.0);
-                return;
+                return true;
             }
         }
         if ui::hovered(
@@ -770,14 +780,16 @@ impl Game<'_> {
             self.audio
                 .play("minecraft:ui.button.click", None, 0.25, 1.0);
             self.set_screen(Screen::Paused);
-            return;
+            return true;
         }
+        let mut handled = false;
         if self.stats_ui.tab == 1 {
             let left = ((w - 280.0) / 2.0).floor();
             let y = TAB_H + 4.0 - self.stats_ui.scroll.amount;
             for c in 0..COLUMNS.len() {
                 let x = left + 75.0 + 40.0 * c as f32 - 18.0;
                 if ui::hovered(self.cursor, x, y + 1.0, 18.0, 18.0) {
+                    handled = true;
                     // sortByColumn: descending, ascending, off.
                     self.stats_ui.sort = match self.stats_ui.sort {
                         Some((sc, -1)) if sc == c => Some((c, 1)),
@@ -789,14 +801,19 @@ impl Game<'_> {
                 }
             }
         }
+        handled
     }
-    pub(super) fn stats_scroll(&mut self, amount: f32) {
+    pub(super) fn stats_scroll(&mut self, amount: f32) -> bool {
         let (row_h, _) = self.stats_rows();
         let h = self.gui_size().1;
+        if !(TAB_H..h - FOOTER).contains(&self.cursor.1) {
+            return false;
+        }
         let content = self.stats_content();
         self.stats_ui
             .scroll
             .wheel(amount, row_h / 2.0, TAB_H, h - FOOTER, content);
+        true
     }
     /// A press on the statistics list's scrollbar holds it
     /// (`AbstractSelectionList.updateScrolling`).
@@ -809,19 +826,22 @@ impl Game<'_> {
             .press(self.cursor, Self::stats_bar(w), TAB_H, h - FOOTER, content)
     }
     /// The pointer moved while the scrollbar is held.
-    pub(super) fn stats_drag(&mut self) {
+    pub(super) fn stats_drag(&mut self) -> bool {
         if !self.stats_ui.scroll.held() {
-            return;
+            return false;
         }
         let h = self.gui_size().1;
         let content = self.stats_content();
         self.stats_ui
             .scroll
             .drag(self.cursor.1, TAB_H, h - FOOTER, content);
+        true
     }
     /// The button came up: the scrollbar lets go.
-    pub(super) fn stats_release(&mut self) {
+    pub(super) fn stats_release(&mut self) -> bool {
+        let handled = self.stats_ui.scroll.held();
         self.stats_ui.scroll.release();
+        handled
     }
 }
 
@@ -829,6 +849,15 @@ impl Game<'_> {
 mod tests {
     use super::*;
     use winit::keyboard::KeyCode::{Digit0, Digit1, Digit2, Digit3, Numpad8, Tab};
+
+    #[test]
+    fn stat_format_uses_java_grouping_and_time() {
+        assert_eq!(format(Format::Time, 39_960), "0.55 h");
+        // Temurin 25 NumberFormat and Double.toString on the converted values.
+        assert_eq!(format(Format::Default, i32::MIN), "-2,147,483,648");
+        assert_eq!(format(Format::Time, -373928161), "-1.869640805E7 s");
+        assert_eq!(format(Format::Time, 1), "0.05 s");
+    }
 
     /// Registry (network id) order, not alphabetical: a killed-by-only mob
     /// earlier in the registry precedes a killed-only one later; unknown ids

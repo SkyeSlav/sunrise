@@ -7,7 +7,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 use sunrise_mod_runtime::attachments::{
-    AttachmentLifetime, Holder, index::AttachmentIndex, observer::IndexedAttachmentObserver,
+    AttachmentBatch, AttachmentLifetime, Holder, index::AttachmentIndex,
+    observer::IndexedAttachmentObserver,
 };
 
 pub(super) type Indexes = HashMap<Dim, Arc<Mutex<AttachmentIndex<AttachmentHolder>>>>;
@@ -36,22 +37,35 @@ impl Game<'_> {
         name: &str,
     ) -> Result<mod_api::AttachmentBatch, mod_api::AttachmentError> {
         mod_api::__private::validate_attachment_use(namespace, name, false)?;
-        let Some(index) = self.attachment_indexes.get(&self.dim) else {
-            return Ok(sunrise_mod_runtime::attachments::AttachmentBatch::empty().into());
-        };
-        let rows = index.lock().unwrap().snapshot_named(namespace, name);
-        Ok(sunrise_mod_runtime::attachments::AttachmentBatch::new(rows).into())
+        let batch = self
+            .attachment_indexes
+            .get(&self.dim)
+            .map_or_else(AttachmentBatch::empty, |index| {
+                AttachmentBatch::new(index.lock().unwrap().snapshot_named(namespace, name))
+            });
+        Ok(batch
+            .in_scope(&self.transactions.attachment_query_scopes)
+            .into())
+    }
+
+    pub(in crate::game) fn attachment_read_scope(
+        &self,
+    ) -> Result<mod_api::AttachmentReadScope<'_>, mod_api::AttachmentRowError> {
+        Ok(self.attachment_frame_borrow())
+    }
+
+    pub(in crate::game) fn attachment_frame_borrow(&self) -> mod_api::AttachmentReadScope<'_> {
+        mod_api::__private::game::attachment_read_scope(&self.transactions.attachment_query_scopes)
     }
 
     pub(in crate::game) fn attachment_validate_write(
         &self,
         token: mod_api::AttachmentWriteToken,
     ) -> Result<(), mod_api::AttachmentRowError> {
-        let index = self
-            .attachment_indexes
-            .get(&self.dim)
-            .ok_or(mod_api::AttachmentRowError::StaleHolder)?;
-        token.validate(&index.lock().unwrap())
+        mod_api::__private::game::validate_attachment_write(
+            &token,
+            self.attachment_indexes.get(&self.dim).map(Arc::as_ref),
+        )
     }
 
     /// Publish saved contents only when an authoritative entity owns their lifetime.
@@ -137,7 +151,6 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn chunk_residency_uses_the_owning_level_through_cow_and_swaps() {
-        use mod_api::HostTransaction;
         use sunrise_client::chunk::{Chunk, ChunkExtras};
         use sunrise_mod_runtime::attachments::{AttachmentError, AttachmentType, Holder};
         static VALUE: AttachmentType<i32> = AttachmentType {
@@ -184,7 +197,7 @@ mod tests {
                 .unwrap();
             let current = overworld.lock().unwrap().snapshot(&key);
             assert_eq!(current[0].entry.read(&VALUE), Ok(&13));
-            let aborted: Result<(), AttachmentError> = game.transaction(|host, _| {
+            let aborted: Result<(), AttachmentError> = game.storage_transaction(|host, _| {
                 VALUE.set(host, Holder::Chunk([2, 3]), 14)?;
                 let tentative = overworld.lock().unwrap().snapshot(&key);
                 assert_eq!(tentative[0].entry.read(&VALUE), Ok(&14));

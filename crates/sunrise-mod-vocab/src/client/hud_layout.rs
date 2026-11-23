@@ -2,6 +2,19 @@
 #[allow(unused_imports)]
 use crate::*;
 use std::borrow::Cow;
+
+/// Keep a listener's replacement within `Player.getAttackStrengthScale`'s output range.
+pub(crate) fn validate_hotbar_attack_indicator_progress(
+    _accepted: &f32,
+    proposed: &f32,
+) -> Result<(), &'static str> {
+    if (0.0..=1.0).contains(proposed) {
+        Ok(())
+    } else {
+        Err("progress")
+    }
+}
+
 /// A `Matrix3x2fStack` operation applied to a copy of the current pose.
 #[derive(Clone, Copy, Debug, PartialEq)]
 // exhaustive: a closed set the game matches without a wildcard
@@ -133,30 +146,4 @@ pub enum HeartKind {
     Poisoned,
     Withered,
     Frozen,
-}
-// exhaustive: the game builds it with a literal; mods only read it
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct HealthInputs {
-    /// `Hud.tickCount`.
-    pub tick: i32,
-    /// `Util.getMillis()` now.
-    pub millis: i64,
-    pub health: f32,
-    pub max_health: f32,
-    pub absorption: f32,
-    pub armor: i32,
-    pub food: i32,
-    pub saturation: f32,
-    pub kind: HeartKind,
-    pub regeneration: bool,
-    pub hunger: bool,
-    pub hardcore: bool,
-    /// `damageCooldownTime > 0`.
-    pub damage_cooldown: bool,
-    /// `getAirSupply`, `getMaxAirSupply`, `isEyeInFluid(WATER)`.
-    pub air: i32,
-    pub max_air: i32,
-    pub under_water: bool,
-    /// `getVehicleMaxHearts` of the ridden living vehicle (0 = none).
-    pub vehicle_hearts: i32,
 }

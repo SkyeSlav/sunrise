@@ -126,7 +126,8 @@ mod sweep_tests {
         contacts: std::sync::Arc<std::sync::Mutex<Vec<[i32; 3]>>>,
         wither: std::sync::Arc<std::sync::Mutex<Option<mod_api::EffectKey>>>,
         speed: std::sync::Arc<std::sync::Mutex<Option<mod_api::EffectKey>>>,
-        kill_after: Option<usize>,
+        hurt_after: Option<(usize, f32)>,
+        generic: std::sync::Arc<std::sync::Mutex<Option<mod_api::DamageTypeKey>>>,
         panic_after: Option<usize>,
     }
     #[mod_api::sunrise_part]
@@ -145,12 +146,14 @@ mod sweep_tests {
             if self.panic_after.is_some_and(|after| seen > after) {
                 panic!("an entity_inside part panics");
             }
-            if self.kill_after.is_some_and(|after| seen > after) {
+            if let Some((after, amount)) = self.hurt_after
+                && seen > after
+            {
                 event.run_after(
                     mod_api::InsideEffect::Freeze,
                     mod_api::EntityWrite::Hurt {
-                        source: None,
-                        amount: 1000.0,
+                        damage_type: self.generic.lock().unwrap().unwrap(),
+                        amount,
                     },
                 );
             }
@@ -184,10 +187,15 @@ mod sweep_tests {
     #[mod_api::__subscriptions]
     impl mod_api::Hooks for InsideMod {
         fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+            *self.0.generic.lock().unwrap() = Some(r.damage_type_key("minecraft:generic"));
             *self.0.wither.lock().unwrap() = Some(r.effect_key("minecraft:wither"));
             *self.0.speed.lock().unwrap() = Some(r.effect_key("minecraft:speed"));
             let stone = r.block_key("minecraft:stone");
             r.block_part(stone, self.0.clone());
+            if self.0.hurt_after.is_some() {
+                let grass = r.block_key("minecraft:short_grass");
+                r.block_part(grass, self.0.clone());
+            }
         }
     }
 
@@ -264,6 +272,7 @@ mod sweep_tests {
             Some("minecraft:overworld"),
             || {
                 let mut w = MotionWorld {
+                    side: sunrise_client::motion::dry_side(),
                     tag_items: None,
                     block_registries: Some(&pack.block_registries),
                     loop_context,
@@ -331,37 +340,41 @@ mod sweep_tests {
     #[test]
     #[ignore = "daily"]
     fn a_killing_write_stops_the_flush() {
-        let part = InsidePart {
-            kill_after: Some(0),
-            ..InsidePart::default()
-        };
-        let mods = install_inside_mod("inside-kill", &part);
-        mod_platform::testing::with_mods(mods, || {
-            crate::game::native_entity_refs::tests::with_game(|game| {
-                let _ = sunrise_client::block_contact::HOOKS.set(super::BLOCK_CONTACT_HOOKS);
-                let (before, after, dead) = sweep_game_player(game);
-                assert_eq!(
-                    part.contacts.lock().unwrap().len(),
-                    2,
-                    "the walk itself reaches both contacts"
-                );
-                assert!(dead, "the killing write applied");
-                assert!(
-                    (after - before).abs() < 1e-9,
-                    "the writes after the death never apply"
-                );
-            });
-        });
+        crate::game::in_own_process(
+            "game::native_hooks::entity_inside::sweep_tests::a_killing_write_stops_the_flush",
+            || {
+                let part = InsidePart {
+                    hurt_after: Some((0, 1000.0)),
+                    ..InsidePart::default()
+                };
+                let mods = install_inside_mod("inside-kill", &part);
+                mod_platform::testing::with_mods(mods, || {
+                    crate::game::native_entity_refs::tests::with_game(|game| {
+                        let _ =
+                            sunrise_client::block_contact::HOOKS.set(super::BLOCK_CONTACT_HOOKS);
+                        let (before, after, dead) = sweep_game_player(game);
+                        assert_eq!(
+                            part.contacts.lock().unwrap().len(),
+                            2,
+                            "the walk itself reaches both contacts"
+                        );
+                        assert!(dead, "the killing write applied");
+                        assert_eq!(
+                            after.to_bits(),
+                            before.to_bits(),
+                            "the writes after the death never apply"
+                        );
+                    });
+                });
+            },
+        );
     }
 
-    /// A part that panics on its second contact: the panic is contained, the walk
-    /// and the player's tick go on, and the panicking callback's writes are refused
-    /// with it.
+    /// A part that panics on its first contact is disabled for this hook. The walk
+    /// and the player's tick go on without applying the failed callback's writes.
     #[test]
     #[ignore = "daily"]
     fn a_panicking_part_leaves_the_players_tick_restored() {
-        // The panic lands on every contact: each one is caught in the staged fire,
-        // and the mod keeps receiving the walk's contacts.
         let part = InsidePart {
             panic_after: Some(0),
             ..InsidePart::default()
@@ -374,8 +387,8 @@ mod sweep_tests {
                 assert!(!dead);
                 assert_eq!(
                     part.contacts.lock().unwrap().len(),
-                    2,
-                    "both contacts reached the part; each panic was contained"
+                    1,
+                    "the first panic disables the callback before the next contact"
                 );
                 assert!(
                     (after - before).abs() < 1e-9,
@@ -659,31 +672,87 @@ mod sweep_tests {
     #[test]
     #[ignore = "daily"]
     fn a_killing_write_stops_the_items_flush() {
-        let part = InsidePart {
-            kill_after: Some(0),
-            ..InsidePart::default()
-        };
-        let mods = install_inside_mod("inside-item-kill", &part);
-        mod_platform::testing::with_mods(mods, || {
-            crate::game::native_entity_refs::tests::with_game(|game| {
-                let _ = sunrise_client::block_contact::HOOKS.set(super::BLOCK_CONTACT_HOOKS);
-                let mut item = item_at_blocks(game);
-                let before = item.velocity.x;
-                sunrise_client::block_contact::in_level(
-                    sunrise_client::parallel::TickThread::mint(),
-                    Some("minecraft:overworld"),
-                    || {
-                        game.sweep_item_inside(&mut item);
-                    },
-                );
-                assert_eq!(part.contacts.lock().unwrap().len(), 2);
-                assert!(item.health <= 0, "the killing write applied");
-                assert!(
-                    (item.velocity.x - before).abs() < 1e-9,
-                    "the writes after the destruction never apply"
-                );
-            });
-        });
+        crate::game::in_own_process(
+            "game::native_hooks::entity_inside::sweep_tests::a_killing_write_stops_the_items_flush",
+            || {
+                let part = InsidePart {
+                    hurt_after: Some((0, 0.5)),
+                    ..InsidePart::default()
+                };
+                let mods = install_inside_mod("inside-item-kill", &part);
+                mod_platform::testing::with_mods(mods, || {
+                    crate::game::native_entity_refs::tests::with_game(|game| {
+                        let _ =
+                            sunrise_client::block_contact::HOOKS.set(super::BLOCK_CONTACT_HOOKS);
+                        let mut item = item_at_blocks(game);
+                        use sunrise_client::items::ItemStack;
+                        let diamonds = ItemStack::new("minecraft:diamond", 3);
+                        item.stack = ItemStack::new("minecraft:shulker_box", 1);
+                        item.stack.data_mut().container = vec![(0, diamonds.clone())];
+                        item.health = 1;
+                        let before = item.velocity.x;
+                        sunrise_client::block_contact::in_level(
+                            sunrise_client::parallel::TickThread::mint(),
+                            Some("minecraft:overworld"),
+                            || {
+                                game.sweep_item_inside(&mut item);
+                            },
+                        );
+                        assert_eq!(part.contacts.lock().unwrap().len(), 2);
+                        assert_eq!(item.health, 0, "subtract 0.5 before truncating health");
+                        assert_eq!(game.dropped.len(), 1);
+                        assert_eq!(game.dropped[0].stack, diamonds);
+                        assert_eq!(game.dropped[0].position, item.position);
+                        assert_eq!(
+                            item.velocity.x.to_bits(),
+                            before.to_bits(),
+                            "the writes after the destruction never apply"
+                        );
+
+                        // Run the real batch on a merge tick. The victim touches a
+                        // non-solid block, its neighbour is close enough to merge
+                        // but doesn't touch that block.
+                        let grass = game
+                            .pack
+                            .assets
+                            .registry
+                            .default_state("minecraft:short_grass")
+                            .unwrap();
+                        game.world.set(1, 104, 0, grass).unwrap();
+                        game.tickets.update(None);
+                        game.ticked_entities_through = u32::MAX;
+                        for (health, count) in [(5, 3), (1, 2)] {
+                            part.contacts.lock().unwrap().clear();
+                            game.dropped.clear();
+                            for (x, count, ticks, health) in
+                                [(1.25, 1, 39, health), (0.75, 2, 0, 5)]
+                            {
+                                game.spawn_item(
+                                    ItemStack::new("minecraft:stone", count),
+                                    [x, 104.5, 0.5],
+                                    [0.0; 3],
+                                    20,
+                                );
+                                let item = game.dropped.last_mut().unwrap();
+                                item.no_gravity = true;
+                                item.health = health;
+                                item.ticks = ticks;
+                            }
+                            let neighbour = game.dropped[1].id;
+                            sunrise_client::block_contact::in_level(
+                                sunrise_client::parallel::TickThread::mint(),
+                                Some("minecraft:overworld"),
+                                || game.tick_items(),
+                            );
+                            assert_eq!(*part.contacts.lock().unwrap(), [[1, 104, 0]]);
+                            assert_eq!(game.dropped.len(), 1);
+                            assert_eq!(game.dropped[0].id, neighbour);
+                            assert_eq!(game.dropped[0].stack.count, count);
+                        }
+                    });
+                });
+            },
+        );
     }
 
     /// A panicking part inside the item batch: the staged fire contains it, the
@@ -715,8 +784,8 @@ mod sweep_tests {
                 game.put_back_dropped(items);
                 assert_eq!(
                     part.contacts.lock().unwrap().len(),
-                    2,
-                    "both contacts reached the part; each panic was contained"
+                    1,
+                    "the first panic disables the callback before the next contact"
                 );
                 assert_eq!(game.dropped.len(), rows, "the lifted row returned");
                 let item = game.dropped.first().unwrap();
@@ -993,8 +1062,8 @@ mod sweep_tests {
                 );
                 assert_eq!(
                     part.contacts.lock().unwrap().len(),
-                    2,
-                    "both contacts reached the part; each panic was contained"
+                    1,
+                    "the first panic disables the callback before the next contact"
                 );
                 assert_eq!(
                     game.creatures.projectiles.len(),

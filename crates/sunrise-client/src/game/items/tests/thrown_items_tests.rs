@@ -13,8 +13,9 @@ use sunrise_protocol::packets::play::{self, Clientbound as C};
 
 /// A game with the player standing at 8.5 70 8.5 in a ticking chunk, with the
 /// positional sounds it plays recorded.
-fn standing_game() -> Game<'static> {
-    let resources = Box::leak(Box::new(None));
+fn standing_game<'a>(
+    resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>,
+) -> Game<'a> {
     let mut game = server_game(resources);
     let feet = Vec3::new(8.5, 70.0, 8.5);
     game.player = Some(sunrise_client::motion::PlayerMotion::new(game.motion, feet).unwrap());
@@ -45,7 +46,8 @@ fn sound(game: &mut Game<'_>, event: &str) -> (f32, f32) {
 #[test]
 #[ignore = "daily"]
 fn a_thrown_item_takes_the_throwers_random_not_the_levels() {
-    let mut game = standing_game();
+    let mut resources = None;
+    let mut game = standing_game(&mut resources);
     game.yaw = 0.0;
     game.pitch = 0.0;
     game.inventory[game.selected] = Some(ItemStack::new("minecraft:stone", 4));
@@ -75,7 +77,8 @@ fn a_thrown_item_takes_the_throwers_random_not_the_levels() {
 #[test]
 #[ignore = "daily"]
 fn a_death_scatter_takes_the_throwers_random_not_the_levels() {
-    let mut game = standing_game();
+    let mut resources = None;
+    let mut game = standing_game(&mut resources);
     game.inventory[0] = Some(ItemStack::new("minecraft:stone", 2));
     let level = game.world.random.state();
     game.drop_inventory(
@@ -104,7 +107,20 @@ fn a_death_scatter_takes_the_throwers_random_not_the_levels() {
 #[test]
 #[ignore = "daily"]
 fn a_pickup_pitch_is_not_drawn_from_the_levels_random() {
-    let mut game = standing_game();
+    use crate::game::native_entity_refs::tests::run_fresh_cases;
+    use crate::game::native_guest_turn_tests::with_guests;
+    use crate::game::native_sound_refs::tests::{guest, packets};
+    use sunrise_core::random::{EntityRandom, LegacyRandom};
+
+    if run_fresh_cases(
+        "game::item_entities::thrown_items_tests::a_pickup_pitch_is_not_drawn_from_the_levels_random",
+        "SUNRISE_PICKUP_PITCH_CASE",
+        &["pickup"],
+    ) {
+        return;
+    }
+    let mut resources = None;
+    let mut game = standing_game(&mut resources);
     game.spawn_item(
         ItemStack::new("minecraft:stone", 2),
         [8.5, 70.0, 8.5],
@@ -124,23 +140,42 @@ fn a_pickup_pitch_is_not_drawn_from_the_levels_random() {
         "the pickup drew from the level's random"
     );
 
-    game.build_registries();
-    game.set_allow_commands(true);
-    let level = game.world.random.state();
-    assert!(game.run_command("give @s minecraft:stone 2"));
-    let (volume, pitch) = sound(&mut game, "minecraft:entity.item.pickup");
-    assert_eq!(volume, 0.2);
-    assert!((0.6..5.4).contains(&pitch), "pitch {pitch}");
-    assert_eq!(
-        game.world.random.state(),
-        level,
-        "/give drew from the level's random"
-    );
+    with_guests(|game| {
+        let at = [3.0, 64.0, 5.0];
+        let (listener, rx) = guest(14, 14, at);
+        let hub = &mut game.lan.as_mut().unwrap().hub;
+        hub.guests.push(listener);
+        let C::Sound(pickup) = hub.sound_packet("minecraft:entity.item.pickup", at, 0.2, 2.0, 7, 0)
+        else {
+            unreachable!();
+        };
+        game.build_registries();
+        game.as_guest(12, |game| {
+            game.player.as_mut().unwrap().random = EntityRandom::own(LegacyRandom::new(0x5eed));
+        })
+        .unwrap();
+        let level = game.world.random.state();
+        assert!(game.as_console(|game| game.run_command("give guest12 minecraft:stone 2")));
+        let sounds: Vec<_> = packets(&rx)
+            .into_iter()
+            .filter_map(|p| match p {
+                C::Sound(p) if p.sound == pickup.sound => Some((p.volume, p.pitch.to_bits())),
+                _ => None,
+            })
+            .collect();
+        // Java Random(0x5eed): four draws for the fake item, then two for the pitch.
+        assert_eq!(sounds, [(0.2, 0x3fdcbf84)]);
+        assert_eq!(
+            game.world.random.state(),
+            level,
+            "/give drew from the level's random"
+        );
+    });
 }
 
 /// A window joined to a server through memory, with the sounds it plays
 /// recorded: the client half of a pickup (`ClientPacketListener`).
-fn with_remote_game<R>(f: impl FnOnce(&mut Game<'_>) -> R) -> R {
+pub(in crate::game) fn with_remote_game<R>(f: impl FnOnce(&mut Game<'_>) -> R) -> R {
     let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
     let settings = Settings::default();
     let loaded = load_resources(
@@ -227,7 +262,8 @@ fn a_client_pickup_sound_takes_the_listeners_random() {
 #[test]
 #[ignore = "daily"]
 fn a_burning_items_sound_is_not_drawn_from_the_levels_random() {
-    let mut game = standing_game();
+    let mut resources = None;
+    let mut game = standing_game(&mut resources);
     let lava = game
         .pack
         .assets

@@ -74,7 +74,7 @@ impl Game<'_> {
         };
         let now = Instant::now();
         // A freeze lasts ticks: how long one takes now, for `check_freeze`.
-        let period = arrivals::tick_period(self.clock.tick_duration(), state.tps());
+        let period = arrivals::tick_period(self.clock.tick_duration(), state.transfer_tps());
         match &mut transfers.stop_wait {
             None => {
                 transfers.stopping = true;
@@ -366,12 +366,7 @@ impl Game<'_> {
         if let Err(e) = self.enter_level(level) {
             return json!({ "error": format!("the player's level could not be opened: {e}") });
         }
-        // Nothing is sent to the client by this: it is for a player who is leaving.
-        self.guest_close_all(conn);
-        // The inventory's own 2x2 grid too (`InventoryMenu.removed`): `guest_close_all` empties it
-        // only with a real `ContainerClose(0)`, and a frozen client's is dropped. Its items are
-        // not in the player compound, so they would be lost with `player-release moved`.
-        self.lan_crafting_closed(conn, Some(0));
+        self.guest_close_menus_for_save(conn);
         if let Err(e) = self.enter_level(back) {
             log::error!("could not reopen {}: {e}", back.id());
         }

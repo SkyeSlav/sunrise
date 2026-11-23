@@ -71,6 +71,21 @@ pub fn pig_thunder_hit(from: &mut Mob, to: &mut Mob) {
     to.persistent = true;
 }
 
+/// The state [`single`] reads that the rest of a mob's tick changes after a conversion it made
+/// inside its AI step (`Mob.convertTo` runs then, before `travel`): `source` takes its
+/// position, rotation and motion from `at`, the mob as it was when it converted.
+pub fn motion_at(source: &mut Mob, at: &Mob) {
+    source.position = at.position;
+    source.yaw = at.yaw;
+    source.head_yaw = at.head_yaw;
+    source.head_pitch = at.head_pitch;
+    source.body_yaw = at.body_yaw;
+    source.velocity = at.velocity;
+    source.fall_distance = at.fall_distance;
+    source.extra.fall_flying = at.extra.fall_flying;
+    source.ground.on_ground = at.ground.on_ground;
+}
+
 /// `ConversionType.SINGLE.convert` and `ConversionType.convertCommon`: `to`
 /// is a fresh mob (`EntityType.create(level, CONVERSION)`, no spawn
 /// finalization) that takes `from`'s place, motion, ride, lead, equipment,
@@ -103,7 +118,7 @@ pub fn single(from: &Mob, to: &mut Mob, params: Params) {
     to.hurt_time = from.hurt_time;
     to.body_yaw = from.body_yaw;
     to.previous_body_yaw = from.body_yaw;
-    to.on_ground = from.on_ground;
+    to.ground.on_ground = from.ground.on_ground;
     to.extra.leash = from.extra.leash;
     to.extra.leash_pending = from.extra.leash_pending;
     to.extra.leash_player = from.extra.leash_player;
@@ -126,7 +141,8 @@ pub fn common(from: &Mob, to: &mut Mob, preserve_can_pick_up_loot: bool) {
         .get("minecraft:max_absorption")
         .unwrap_or(&0.0) as f32;
     to.absorption = from.absorption.clamp(0.0, maximum);
-    // addEffect for each: Absorption's onEffectStarted raises it again.
+    // addEffect for each: Absorption's onEffectStarted raises it again, and
+    // onEffectAdded stores each effect's attribute modifiers on the new mob.
     for effect in &from.extra.effects {
         to.add_effect(effect.id, effect.duration, effect.amplifier);
         // `new MobEffectInstance(effect)` copies its icon flag too.
@@ -137,14 +153,6 @@ pub fn common(from: &Mob, to: &mut Mob, preserve_can_pick_up_loot: bool) {
     to.extra.hidden_effects = from.extra.hidden_effects.clone();
     to.extra.effect_chains = from.extra.effect_chains.clone();
     to.extra.ambient_effects = from.extra.ambient_effects.clone();
-    if to
-        .extra
-        .effects
-        .iter()
-        .any(|e| e.id == "minecraft:health_boost")
-    {
-        super::finalize::health_boost_changed(to);
-    }
     if from.is_baby() {
         super::finalize::set_baby(to, true);
     }

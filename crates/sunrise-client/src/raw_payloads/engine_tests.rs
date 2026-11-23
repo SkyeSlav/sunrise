@@ -44,9 +44,9 @@ fn sync_packet() -> CustomPayload {
 fn engine_only_installation_has_no_mod_declarations_and_needs_no_mod_handler() {
     let local = engine_only();
     assert!(!local.has_mod_declarations());
-    // A client receives the engine channel with no mod callback for it.
+    // A client receives every engine channel with no mod callback for it.
     let entries = accepted(&local, Some(&local.manifest));
-    assert_eq!(entries.len(), 1);
+    assert_eq!(entries.len(), engine::DECLARATIONS.len());
     assert!(local.freeze(&entries, Side::Client).is_ok());
 }
 
@@ -79,6 +79,58 @@ fn a_sunrise_peer_gets_the_channel_and_a_vanilla_peer_gets_unsupported_peer() {
         older.epoch().unwrap().peer.can_send(Phase::Play, &id),
         Err(PayloadSendError::UnsupportedPeer(id))
     );
+}
+
+/// `send_refusal` is the one decision behind `can_send` (and `has_channel`): each answer, a
+/// yes included, is the one the send path turns into its owned error.
+#[test]
+fn the_send_refusal_is_the_decision_can_send_reports() {
+    let local = engine_only();
+    let id = attachment_sync::CHANNEL;
+    let sunrise = playing(
+        &local,
+        Side::Server,
+        &accepted(&local, Some(&local.manifest)),
+    );
+    let vanilla = playing(&local, Side::Server, &accepted(&local, None));
+    let client = playing(
+        &local,
+        Side::Client,
+        &accepted(&local, Some(&local.manifest)),
+    );
+    let cases = [
+        (&sunrise, Phase::Play, id, None),
+        (
+            &vanilla,
+            Phase::Play,
+            id,
+            Some(SendRefusal::UnsupportedPeer),
+        ),
+        // The engine sends it to clients only.
+        (&client, Phase::Play, id, Some(SendRefusal::WrongDirection)),
+        // Declared for play only, in a namespace this side owns.
+        (
+            &sunrise,
+            Phase::Configuration,
+            id,
+            Some(SendRefusal::WrongProtocol),
+        ),
+        (
+            &sunrise,
+            Phase::Play,
+            "nobody:channel",
+            Some(SendRefusal::UnknownPayload),
+        ),
+    ];
+    for (transport, phase, id, refusal) in cases {
+        let peer = &transport.epoch().unwrap().peer;
+        assert_eq!(peer.send_refusal(phase, id), refusal, "{id} {phase:?}");
+        assert_eq!(
+            peer.can_send(phase, &PayloadId(id.into())),
+            refusal.map_or(Ok(()), |refusal| Err(refusal.error(id))),
+            "{id} {phase:?}"
+        );
+    }
 }
 
 #[test]

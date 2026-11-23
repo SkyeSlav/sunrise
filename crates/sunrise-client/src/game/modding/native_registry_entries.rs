@@ -67,7 +67,7 @@ impl Game<'_> {
         &self,
         registry: &str,
     ) -> Option<&std::collections::HashMap<String, serde_json::Value>> {
-        self.res.providers().registry(registry)
+        self.active_providers().registry(registry)
     }
     fn local_registry(&self, registry: &str) -> Option<LocalRegistry<'_>> {
         Some(match registry {
@@ -101,7 +101,7 @@ impl Game<'_> {
         }
     }
 
-    fn registry_sync(&self) -> Option<Arc<SyncData>> {
+    pub(super) fn registry_sync(&self) -> Option<Arc<SyncData>> {
         self.native_lifecycle.epoch()?;
         if !self.is_logical_server() {
             return None;
@@ -115,6 +115,7 @@ impl Game<'_> {
                 super::lan::sync::sync_data(
                     &self.options.resources,
                     &self.res.core.item_data,
+                    self.items(),
                     &self.pack_files(),
                 )
                 .ok()
@@ -246,6 +247,11 @@ impl Game<'_> {
     pub(super) fn registry_entry_in_tag(&self, entry: &RegistryEntry, tag: &str) -> Option<bool> {
         let registry = entry.registry.to_string();
         let id = entry.id.to_string();
+        if registry == "minecraft:damage_type" && self.is_logical_server() {
+            self.native_lifecycle.epoch()?;
+            let damage = &self.health_resources.damage;
+            return damage.id(&id).map(|id| damage.in_tag(id, &normalized(tag)));
+        }
         if !self.registry_has_entry(&registry, &id) {
             return None;
         }
@@ -267,13 +273,11 @@ impl Game<'_> {
                     .is_some_and(|members| members.contains(&index)),
             );
         }
-        if registry == "minecraft:enchantment" {
-            return Some(
-                self.active_enchantment_definitions()
-                    .tag(&tag)
-                    .iter()
-                    .any(|member| member.as_ref() == id),
-            );
+        if matches!(
+            registry.as_str(),
+            "minecraft:enchantment" | "minecraft:entity_type"
+        ) {
+            return Some(self.sync_tag_contains(&registry, &id, &tag));
         }
         if registry == "minecraft:slot_source" {
             return Some(
@@ -328,20 +332,22 @@ impl Game<'_> {
                     .is_some_and(|members| members.contains(&id)),
             );
         }
+        Some(self.sync_tag_contains(&registry, &id, &tag))
+    }
+
+    fn sync_tag_contains(&self, registry: &str, id: &str, tag: &str) -> bool {
         let Some(sync) = self.registry_sync() else {
-            return Some(false);
+            return false;
         };
-        let Some(index) = network_id(&sync.builtin, &sync.dynamic, &registry, &id) else {
-            return Some(false);
+        let Some(index) = network_id(&sync.builtin, &sync.dynamic, registry, id) else {
+            return false;
         };
-        Some(
-            sync.tags
-                .registries
-                .iter()
-                .find(|tags| tags.registry == registry)
-                .and_then(|tags| tags.tags.iter().find(|candidate| candidate.name == tag))
-                .is_some_and(|tag| tag.ids.contains(&index)),
-        )
+        sync.tags
+            .registries
+            .iter()
+            .find(|tags| tags.registry == registry)
+            .and_then(|tags| tags.tags.iter().find(|candidate| candidate.name == tag))
+            .is_some_and(|tag| tag.ids.contains(&index))
     }
 
     pub(super) fn registry_entry_key_slot(&self, entry: &RegistryEntry) -> Option<u32> {
@@ -474,7 +480,7 @@ mod condition_tests {
         let files = vec![(
             "tags/test:spell/hot".to_owned(),
             vec![
-                br#"{"neoforge:conditions":[{"type":"neoforge:false"}],"values":["test:fire"]}"#
+                br#"{"neoforge:conditions":[{"type":"neoforge:never"}],"values":["test:fire"]}"#
                     .to_vec(),
             ],
         )];
@@ -482,7 +488,7 @@ mod condition_tests {
             root.path(),
             &sunrise_world::loot::PackOverlay {
                 files: &files,
-                ..sunrise_world::loot::PackOverlay::NONE
+                ..sunrise_world::loot::PackOverlay::default()
             },
             "spell",
             |id| id == "test:fire",

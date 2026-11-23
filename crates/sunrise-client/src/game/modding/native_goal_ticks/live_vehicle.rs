@@ -107,10 +107,10 @@ impl GoalCx<'_, '_> {
         let vehicle = self.entity_mob(entity)?;
         let first = *self.r_entity_passengers(entity)?.first()?;
         if let Some(rider) = self.entity_mob(first) {
-            let tagged = self
-                .w
-                .data
-                .entity_has("minecraft:non_controlling_rider", &rider.kind.id);
+            let tagged = self.w.entity_tag_bit(
+                &rider.kind,
+                sunrise_client::items::EntityTypeTags::NON_CONTROLLING_RIDER,
+            );
             return (!vehicle.no_ai && !tagged).then(|| LivingRef::new(first));
         }
         // The game only lets a player control this kind when the relevant

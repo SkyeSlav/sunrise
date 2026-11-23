@@ -13,7 +13,10 @@ use sunrise_core::random::RandomSource;
 
 /// A game over 5x5 empty chunks around (0, 0) with a stone floor at y = 3, so
 /// the silverfish the roll spawns at (8.5, 4, 8.5) have a loaded chunk.
-fn floored_game(root: &std::path::Path) -> Game<'static> {
+fn floored_game<'a>(
+    resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>,
+    root: &std::path::Path,
+) -> Game<'a> {
     let settings = Settings::default();
     let loaded = load_resources(
         sunrise_assets::resource_source::ResourceRoot::directory(root.to_path_buf()),
@@ -31,7 +34,7 @@ fn floored_game(root: &std::path::Path) -> Game<'static> {
     let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
     options.resources = root.to_path_buf();
     options.execution_role = execution_role::ExecutionRole::IntegratedServer;
-    let resources = Box::leak(Box::new(loaded.resources));
+    let resources = &*resources.insert(loaded.resources);
     let mut game = Game::new(
         resources,
         loaded.pack,
@@ -69,12 +72,14 @@ fn floored_game(root: &std::path::Path) -> Game<'static> {
 }
 
 /// A game whose window player stands at (8.5, 4, 8.5) over the floor.
-fn game_with_player() -> Game<'static> {
+fn game_with_player<'a>(
+    resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>,
+) -> Game<'a> {
     let root = std::path::PathBuf::from(
         std::env::var_os("SUNRISE_TEST_RESOURCES")
             .expect("set SUNRISE_TEST_RESOURCES to prepared resources"),
     );
-    let mut game = floored_game(&root);
+    let mut game = floored_game(resources, &root);
     game.creative = false;
     game.lan_acting = Some(7);
     let at = Vec3::new(8.5, 4.0, 8.5);
@@ -84,8 +89,10 @@ fn game_with_player() -> Game<'static> {
 
 /// ... and touches one puffed (state 2) pufferfish, which hurts for 3
 /// (`1 + PuffState`).
-fn game_with_fish() -> Game<'static> {
-    let mut game = game_with_player();
+fn game_with_fish<'a>(
+    resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>,
+) -> Game<'a> {
+    let mut game = game_with_player(resources);
     let at = Vec3::new(8.5, 4.0, 8.5);
     let kind = game.res.mob_types()["minecraft:pufferfish"].clone();
     let mut fish = Mob::new(9001, kind, at, 0.0);
@@ -109,7 +116,8 @@ fn silverfish(game: &Game<'_>) -> usize {
 #[test]
 #[ignore = "daily"]
 fn an_absorbed_hit_still_rolls_the_infested_effect() {
-    let mut g = game_with_fish();
+    let mut resources = None;
+    let mut g = game_with_fish(&mut resources);
     g.give_player_effect("minecraft:infested", 200, 0);
     g.apply_effect_status();
     // Absorption IV: 20 above the health, more than the sting's 3.
@@ -149,7 +157,8 @@ fn an_absorbed_hit_still_rolls_the_infested_effect() {
 #[test]
 #[ignore = "daily"]
 fn a_starving_infested_player_rolls_the_infested_effect() {
-    let mut g = game_with_player();
+    let mut resources = None;
+    let mut g = game_with_player(&mut resources);
     g.give_player_effect("minecraft:infested", 200, 0);
     g.apply_effect_status();
     let mut rolls = 0;

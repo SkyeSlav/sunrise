@@ -9,9 +9,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use sha2::{Digest, Sha256};
-use sunrise_mod_package::mixins_tool::{self, PATCH, PATCH_NAME};
+use sunrise_mod_package::{
+    mixins_tool::{self, PATCH, PATCH_NAME},
+    sdk::Mixins,
+};
 
-use super::{MIXINS_REV, root, run};
+use super::{Bundle, MIXINS_REV, root, run};
 use crate::host::{tr, trf};
 use crate::rust::Toolchain;
 
@@ -34,18 +37,73 @@ fn executable(dir: &Path) -> PathBuf {
         .join(format!("horizon-mixins{}", std::env::consts::EXE_SUFFIX))
 }
 
-/// The patched tool at [`MIXINS_REV`], fetched once per pin and patch.
-pub fn tool(rust: &dyn Toolchain, on_fetch: &impl Fn()) -> Result<PathBuf, String> {
+/// The only mixins identity this tool supports: the source revision and its carried patch.
+#[derive(Debug)]
+pub struct MixinsIdentity {
+    revision: &'static str,
+    patch: String,
+}
+
+impl MixinsIdentity {
+    /// Check the identity for every mod that uses mixins. Pass the signed SDK's identity when
+    /// using a separately installed tool; the tool shipped inside an SDK already matches it.
+    pub fn resolve<'a>(
+        bundles: impl IntoIterator<Item = &'a Bundle>,
+        sdk: Option<&Mixins>,
+    ) -> Result<Self, String> {
+        let identity = Self {
+            revision: MIXINS_REV,
+            patch: mixins_tool::patch_hash(),
+        };
+        for bundle in bundles.into_iter().filter(|bundle| bundle.needs_mixins()) {
+            let id = &bundle.manifest.id;
+            if let Some(sdk) = sdk
+                && (sdk.rev != identity.revision || sdk.patch != identity.patch)
+            {
+                return Err(trf(
+                    "E_MIXINS_IDENTITY: {mod} needs the SDK's horizon-mixins {sdk_rev} (patch {sdk_patch}), but this tool uses {tool_rev} (patch {tool_patch}). Install the cargo sunrise-mod tool from the selected SDK, or use cargo sunrise-mod pin to select an SDK that matches this tool.",
+                    &[
+                        ("mod", id),
+                        ("sdk_rev", &sdk.rev),
+                        ("sdk_patch", &sdk.patch),
+                        ("tool_rev", identity.revision),
+                        ("tool_patch", &identity.patch),
+                    ],
+                ));
+            }
+            if let Some(pin) = &bundle.native().mixins
+                && pin != identity.revision
+            {
+                return Err(trf(
+                    "E_MIXINS_IDENTITY: {mod} pins horizon-mixins {pin}, but this tool uses {tool_rev} (patch {tool_patch}). Remove [native] mixins from sunrise-mod.toml to use the SDK's revision, or select an SDK and cargo sunrise-mod tool that match the pin.",
+                    &[
+                        ("mod", id),
+                        ("pin", pin),
+                        ("tool_rev", identity.revision),
+                        ("tool_patch", &identity.patch),
+                    ],
+                ));
+            }
+        }
+        Ok(identity)
+    }
+
+    pub fn revision(&self) -> &'static str {
+        self.revision
+    }
+}
+
+/// The patched tool at the checked identity, fetched once per pin and patch.
+pub(super) fn tool(rust: &dyn Toolchain, identity: &MixinsIdentity) -> Result<PathBuf, String> {
     // Inside the pin's own tool folder, so storage cleanup counts it with the pin.
     let dir = root()
         .join("tools")
-        .join(&MIXINS_REV[..12])
-        .join(format!("patched-{}", &mixins_tool::patch_hash()[..12]));
+        .join(&identity.revision[..12])
+        .join(format!("patched-{}", &identity.patch[..12]));
     let bin = executable(&dir);
     if bin.is_file() {
         return Ok(bin);
     }
-    on_fetch();
     let started = std::time::Instant::now();
     let seconds = || format!("{:.1}", started.elapsed().as_secs_f64());
     let target = rust.target();
@@ -69,7 +127,7 @@ pub fn tool(rust: &dyn Toolchain, on_fetch: &impl Fn()) -> Result<PathBuf, Strin
                 &[("target", target)],
             ))?;
         }
-        build(rust, &dir)
+        build(rust, &dir, identity.revision)
     })?;
     match got {
         Got::Cached => {}
@@ -125,15 +183,15 @@ fn install(
 }
 
 /// The tool built from its pinned source with the carried patch, into `dir`.
-fn build(rust: &dyn Toolchain, dir: &Path) -> Result<(), String> {
+fn build(rust: &dyn Toolchain, dir: &Path, revision: &str) -> Result<(), String> {
     let partial = dir.join(".source");
     let top = super::unpack_archive(
-        &format!("{}/{MIXINS_REV}", sunrise_addresses::HORIZON_MIXINS_SOURCE),
+        &format!("{}/{revision}", sunrise_addresses::HORIZON_MIXINS_SOURCE),
         &partial,
         256 << 20,
     )?;
     mixins_tool::apply(&top, PATCH).map_err(|why| {
-        format!("E_MIXINS_PATCH: {PATCH_NAME} does not apply to horizon-mixins {MIXINS_REV}: {why}")
+        format!("E_MIXINS_PATCH: {PATCH_NAME} does not apply to horizon-mixins {revision}: {why}")
     })?;
     let mut cmd = rust.command(&rust.cargo());
     crate::rust::low_priority(&mut cmd);
@@ -234,6 +292,71 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
 
     const TARGET: &str = "x86_64-unknown-linux-gnu";
+
+    fn bundle(rows: &str) -> Bundle {
+        Bundle {
+            manifest: sunrise_mod_package::Manifest::parse(&format!(
+                "id='example'\nname='Example'\nversion='0.1.0'\n[native]\ngame='26.3'\nsunrise='{}'\n{rows}",
+                crate::tests::A,
+            ))
+            .unwrap(),
+            dir: PathBuf::new(),
+        }
+    }
+
+    const MIXIN: &str =
+        "[[native.mixin]]\nid='tick'\nkind='HEAD'\ntarget='game::tick'\nhelper='src/tick.rs'\n";
+
+    #[test]
+    fn a_mixin_requires_both_the_sdks_revision_and_patch() {
+        let bundle = bundle(MIXIN);
+        let patch = mixins_tool::patch_hash();
+        for sdk in [
+            Mixins {
+                rev: crate::tests::B.into(),
+                patch: patch.clone(),
+            },
+            Mixins {
+                rev: MIXINS_REV.into(),
+                patch: "c".repeat(64),
+            },
+        ] {
+            let error = MixinsIdentity::resolve([&bundle], Some(&sdk)).unwrap_err();
+            for fragment in [
+                "E_MIXINS_IDENTITY:",
+                "example",
+                &sdk.rev,
+                &sdk.patch,
+                MIXINS_REV,
+                &patch,
+                "cargo sunrise-mod pin",
+            ] {
+                assert!(error.contains(fragment), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_omitted_mixin_pin_uses_the_matching_sdks_identity() {
+        let bundle = bundle(MIXIN);
+        let sdk = Mixins {
+            rev: MIXINS_REV.into(),
+            patch: mixins_tool::patch_hash(),
+        };
+        let picked = MixinsIdentity::resolve([&bundle], Some(&sdk)).unwrap();
+        assert_eq!(picked.revision(), sdk.rev);
+        assert_eq!(picked.patch, sdk.patch);
+    }
+
+    #[test]
+    fn a_mod_without_mixins_does_not_require_either_identity_to_match() {
+        let bundle = bundle(&format!("mixins='{}'\n", crate::tests::A));
+        let sdk = Mixins {
+            rev: crate::tests::B.into(),
+            patch: "c".repeat(64),
+        };
+        assert!(MixinsIdentity::resolve([&bundle], Some(&sdk)).is_ok());
+    }
 
     /// A release archive holding `identity` and, with `tool`, the executable.
     fn archive(identity: &str, tool: bool) -> Vec<u8> {

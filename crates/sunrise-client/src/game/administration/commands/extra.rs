@@ -128,7 +128,7 @@ pub(in crate::game) struct CommandExtras {
     /// Entities whose waypoint transmit range changed since they last ticked.
     pub waypoint_dirty: Vec<Target>,
     /// Attribute maps of living entities whose attributes Sunrise does not
-    /// model (an armor stand's, a mob's beyond its modelled three).
+    /// model (an armor stand's, a mob's beyond its own store's, `finalize::Attr`).
     pub attributes: HashMap<Target, sunrise_world::attributes::entity::EntityAttributes>,
     /// The `CommandResultCallback` results of the outermost source, when a
     /// harness records them.
@@ -284,7 +284,7 @@ impl Game<'_> {
             self.set_camera(None);
             return;
         }
-        let sneaking = self.keys.held(Action::Sneak) && self.screen == super::Screen::Playing;
+        let sneaking = self.held_mapping(Action::Sneak) && self.screen == super::Screen::Playing;
         match self.target_position(t) {
             Some(p) if !sneaking => {
                 let rot = self.target_rotation(t);
@@ -302,7 +302,7 @@ impl Game<'_> {
 
     /// A guest's body is only `Player` during its turn; retained command state
     /// must use its connection so the next server tick still finds that body.
-    pub(super) fn waypoint_target(&self, t: Target) -> Target {
+    pub(in crate::game) fn waypoint_target(&self, t: Target) -> Target {
         match t {
             Target::Player => self.lan_acting.map_or(t, Target::Guest),
             _ => t,
@@ -328,6 +328,20 @@ impl Game<'_> {
                 })
                 .unwrap_or(0.0);
         }
+        // A mob's is in its own store, an Invisibility effect's stored
+        // modifier among the others (`Mob::set_effect_modifiers`).
+        if let Target::Mob(id) = t {
+            return self
+                .mobs
+                .iter()
+                .find(|m| m.id == id && !m.removed)
+                .map_or(0.0, |m| {
+                    sunrise_client::mobs::finalize::value(
+                        m,
+                        sunrise_client::mobs::finalize::Attr::WaypointTransmitRange,
+                    )
+                });
+        }
         let catalog = self.motion.attributes.clone();
         let Some(key) = catalog.id("minecraft:waypoint_transmit_range") else {
             return 0.0;
@@ -343,7 +357,7 @@ impl Game<'_> {
     /// `/waypoint modify` re-tracks its waypoint whatever its range.
     fn waypoint_transmitters(&mut self) -> Vec<Target> {
         if self.cmds.waypoints.is_none() {
-            let tracked = if self.transmit_range(Target::Player) > 0.0 {
+            let tracked = if self.lan.is_none() && self.transmit_range(Target::Player) > 0.0 {
                 vec![self.waypoint_target(Target::Player)]
             } else {
                 Vec::new()
@@ -358,6 +372,7 @@ impl Game<'_> {
         self.cmds.waypoints = Some(alive.clone());
         alive
             .into_iter()
+            .filter(|t| self.target_level(*t) == self.dim)
             .map(|t| match t {
                 Target::Guest(conn) if self.lan_acting == Some(conn) => Target::Player,
                 _ => t,
@@ -373,13 +388,23 @@ impl Game<'_> {
         }
         self.waypoint_transmitters();
         for t in dirty {
-            let on = self.transmit_range(t) > 0.0;
-            if let Some(tracked) = self.cmds.waypoints.as_mut() {
-                tracked.retain(|x| *x != t);
-                if on {
-                    tracked.push(t);
-                }
-            }
+            self.update_waypoint_transmitter(t);
+        }
+    }
+    /// `LivingEntity.onAttributeUpdated`: change the manager's tracked set.
+    pub(in crate::game) fn update_waypoint_transmitter(&mut self, target: Target) {
+        let on = self.transmit_range(target) > 0.0;
+        self.set_waypoint_transmitter(target, on);
+    }
+
+    pub(in crate::game) fn set_waypoint_transmitter(&mut self, target: Target, on: bool) {
+        let tracked = self.cmds.waypoints.get_or_insert_default();
+        tracked.retain(|t| *t != target);
+        if on {
+            tracked.push(target);
+        }
+        if let Target::Guest(conn) = target {
+            self.lan_set_waypoint_transmitting(conn, on);
         }
     }
     pub(in crate::game) fn waypoint_icon(&self, t: Target) -> Icon {

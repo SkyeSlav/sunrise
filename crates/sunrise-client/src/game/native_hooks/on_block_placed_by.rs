@@ -16,8 +16,7 @@ impl Game<'_> {
         &mut self,
         stack: &ItemStack,
         placer: Option<mod_api::PlayerRef>,
-        pos: BlockPos,
-        ctx: &PlaceContext,
+        ctx: &PlacementContext,
     ) {
         if !mod_api::__private::item_listens(mod_api::HookId::OnBlockPlacedBy, &stack.item) {
             return;
@@ -26,6 +25,7 @@ impl Game<'_> {
             return;
         };
         // setPlacedBy (for example a jukebox) can change the state again.
+        let pos = ctx.pos;
         let state = self.world.block(pos.x, pos.y, pos.z);
         let face = match ctx.face {
             Direction::Down => mod_api::BlockFace::Down,

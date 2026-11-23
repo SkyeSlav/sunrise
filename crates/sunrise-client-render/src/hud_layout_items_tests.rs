@@ -3,8 +3,11 @@
 //! blend; an op that cannot be drawn refuses the whole buffer; and [`super::super::paint`]
 //! still leaves items and screen-effect blits to its caller.
 use super::super::{Blend, GuiDraw, PoseOp, paint};
-use super::{GuiItems, Undrawable, paint_checked, paint_items};
-use crate::hud::{Blend as Run, HudAtlas, HudBatch, MINIMAP_SPRITE};
+use super::{GuiItems, Undrawable, paint_checked, paint_items, undrawable};
+use crate::hud::{Blend as Run, HudAtlas, HudBatch};
+
+/// A run-time atlas slot every atlas has: map slot 0 (`hud::map_slot_sprite`).
+const SLOT: &str = "sunrise/map0";
 
 fn atlas() -> HudAtlas {
     HudAtlas::build(&crate::resource_source::ResourceSource::directory(
@@ -142,10 +145,10 @@ fn every_blit_blend_draws_with_its_blend() {
     let atlas = atlas();
     let mut batch = HudBatch::scratch([854, 480]);
     let draws = [
-        blit(MINIMAP_SPRITE, Blend::Textured, [8, 8]),
-        blit(MINIMAP_SPRITE, Blend::Vignette, [8, 8]),
-        blit(MINIMAP_SPRITE, Blend::Nausea, [8, 8]),
-        blit(MINIMAP_SPRITE, Blend::Crosshair, [8, 8]),
+        blit(SLOT, Blend::Textured, [8, 8]),
+        blit(SLOT, Blend::Vignette, [8, 8]),
+        blit(SLOT, Blend::Nausea, [8, 8]),
+        blit(SLOT, Blend::Crosshair, [8, 8]),
     ];
     assert_eq!(
         paint_checked(&mut batch, &atlas, &draws, &mut Items::default()),
@@ -205,10 +208,7 @@ fn an_op_the_paint_cannot_draw_refuses_the_buffer_and_draws_nothing_of_it() {
             blit("test:missing", Blend::Vignette, [8, 8]),
             Undrawable::BlitTexture("test:missing".into()),
         ),
-        (
-            blit(MINIMAP_SPRITE, Blend::Textured, [0, 8]),
-            Undrawable::BlitSize,
-        ),
+        (blit(SLOT, Blend::Textured, [0, 8]), Undrawable::BlitSize),
         (sprite, Undrawable::Sprite("test:missing".into())),
         (atlas_sprite, Undrawable::Sprite("test:missing".into())),
     ];
@@ -292,15 +292,108 @@ fn a_missing_mob_effect_sprite_plain_or_namespaced_is_refused_as_unknown() {
     assert_eq!(refused_alone(&atlas, cases), 2);
 }
 
+/// A sprite the GUI atlas lists as removed is refused by the checked paint, not drawn as the
+/// missing sprite, while a present one is accepted; a block atlas sprite (`AtlasSprite`) is looked
+/// up in the packed table, so a GUI removal of the same id neither refuses nor replaces it.
+#[test]
+fn checked_paint_refuses_what_the_gui_atlas_lacks_and_atlas_sprites_use_the_block_lookup() {
+    let root = std::env::temp_dir().join(format!("sunrise-layout-refusal-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let sheet = root.join("assets/demo/textures/item");
+    let atlases = root.join("assets/minecraft/atlases");
+    std::fs::create_dir_all(&sheet).unwrap();
+    std::fs::create_dir_all(&atlases).unwrap();
+    let mut encoder = png::Encoder::new(
+        std::fs::File::create(sheet.join("sheet.png")).unwrap(),
+        1,
+        1,
+    );
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder
+        .write_header()
+        .unwrap()
+        .write_image_data(&[1, 2, 3, 255])
+        .unwrap();
+    let staged = root.join("assets/demo/textures/gui/atlases/icons/demo");
+    std::fs::create_dir_all(&staged).unwrap();
+    std::fs::copy(sheet.join("sheet.png"), staged.join("heart.png")).unwrap();
+    std::fs::write(atlases.join("blocks.json"), r#"{"sources":[]}"#).unwrap();
+    std::fs::write(
+        atlases.join("items.json"),
+        r#"{"sources":[{"type":"minecraft:single","resource":"demo:item/sheet","sprite":"demo:item/modeled"}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        atlases.join("gui.json"),
+        r#"{"sources":[
+            {"type":"minecraft:single","resource":"demo:item/sheet","sprite":"demo:kept"},
+            {"type":"minecraft:single","resource":"demo:item/sheet","sprite":"demo:item/modeled"},
+            {"type":"minecraft:filter","pattern":{"namespace":"demo","path":"item/modeled"}}]}"#,
+    )
+    .unwrap();
+    let mut atlas = HudAtlas::build(&crate::resource_source::ResourceSource::directory(
+        root.clone(),
+    ))
+    .unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    let refused = |name: &'static str| undrawable(&atlas, &[sprite(name, None, Blend::Textured)]);
+    assert_eq!(refused("demo:kept"), None);
+    assert_eq!(
+        refused("demo:item/modeled"),
+        Some((0, Undrawable::Sprite("demo:item/modeled".into()))),
+        "listed, removed"
+    );
+    assert_eq!(
+        refused("demo:unknown"),
+        Some((0, Undrawable::Sprite("demo:unknown".into())))
+    );
+    let block = GuiDraw::AtlasSprite {
+        sprite: "demo:item/modeled".into(),
+        x: 0,
+        y: 0,
+        w: 4,
+        h: 4,
+        color: u32::MAX,
+    };
+    assert_eq!(undrawable(&atlas, std::slice::from_ref(&block)), None);
+    let mut batch = HudBatch::scratch([64, 64]);
+    paint(&mut batch, &atlas, &[block]);
+    let model = atlas.sprites["demo:item/modeled"];
+    assert_eq!(
+        batch.vertices[0].uv,
+        [model.u0, model.v0],
+        "the block atlas's sprite"
+    );
+    // A live texture replayed at the model's name: a `Blit` takes the live one, an `AtlasSprite`
+    // keeps the packed model's, and the refusal and the draw agree.
+    let live = atlas.sprites["sunrise/white"];
+    atlas.live.insert("demo:item/modeled".into(), live);
+    let live_blit = blit("demo:item/modeled", Blend::Textured, [8, 8]);
+    assert_eq!(undrawable(&atlas, std::slice::from_ref(&live_blit)), None);
+    let mut batch = HudBatch::scratch([64, 64]);
+    paint(&mut batch, &atlas, &[live_blit]);
+    assert_eq!(batch.vertices[0].uv, [live.u0, live.v0], "the live texture");
+    assert_ne!([live.u0, live.v0], [model.u0, model.v0]);
+    // A registered atlas's sprite no packed sprite shares its name with draws as a `Blit`.
+    let name = "demo:gui/atlases/icons/demo/heart";
+    let registered = atlas.registered[name];
+    let heart = blit(name, Blend::Textured, [8, 8]);
+    assert_eq!(undrawable(&atlas, std::slice::from_ref(&heart)), None);
+    let mut batch = HudBatch::scratch([64, 64]);
+    paint(&mut batch, &atlas, &[heart]);
+    assert_eq!(batch.vertices[0].uv, [registered.u0, registered.v0]);
+}
+
 #[test]
 fn plain_paint_still_leaves_items_and_screen_effect_blits_to_its_caller() {
     let atlas = atlas();
     let mut batch = HudBatch::scratch([854, 480]);
     let draws = [
         item(0, 0, 0, [1.0, 1.0], [0.0, 0.0]),
-        blit(MINIMAP_SPRITE, Blend::Vignette, [8, 8]),
-        blit(MINIMAP_SPRITE, Blend::Nausea, [8, 8]),
-        blit(MINIMAP_SPRITE, Blend::Crosshair, [8, 8]),
+        blit(SLOT, Blend::Vignette, [8, 8]),
+        blit(SLOT, Blend::Nausea, [8, 8]),
+        blit(SLOT, Blend::Crosshair, [8, 8]),
     ];
     paint(&mut batch, &atlas, &draws);
     assert!(batch.vertices.is_empty());

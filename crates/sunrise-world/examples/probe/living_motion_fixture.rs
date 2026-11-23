@@ -136,7 +136,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "power" => jump_power(&mut w, single(&f["scale"]))
                 .and_then(|v| writeln!(w.out, "float {:08x}", fbits(v))),
-            "jump" => jump_from_ground(&mut w),
+            "jump" => jump_from_ground(&mut w).map(|_| ()),
             "gravity" => {
                 gravity(&mut w).and_then(|v| writeln!(w.out, "double {:016x}", f64_bits(v)))
             }

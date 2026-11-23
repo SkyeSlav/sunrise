@@ -6,7 +6,7 @@ use mod_api::*;
 use std::sync::Arc;
 use sunrise_core::geometry::Vec3;
 
-const BUS: &str = "shapes:bus";
+pub(super) const BUS: &str = "shapes:bus";
 /// A flagged block on a template with a dynamic shape and a random outline offset
 /// (`minecraft:bamboo`).
 const TUFT: &str = "shapes:tuft";
@@ -23,13 +23,13 @@ impl Hooks for Bus {
         for (id, template) in [(BUS, "minecraft:stone"), (TUFT, "minecraft:bamboo")] {
             let mut block = mod_api::Block::new(id, template);
             block.shapes_from_block_entity = true;
-            event.blocks.push(block);
+            event.register(block).unwrap();
         }
     }
 }
 
 /// The mod installed, a game on its content root with a player over chunk (0, 0).
-fn with_bus(test: impl FnOnce(&mut Game<'_>)) {
+pub(super) fn with_bus(test: impl FnOnce(&mut Game<'_>)) {
     let mods: Mods = vec![ModEntry::new("shapes", Box::new(Bus))].into();
     mod_platform::testing::with_mods(mods.clone(), || {
         crate::game::api_values::install_parts(&mods).unwrap();
@@ -53,7 +53,7 @@ fn with_bus(test: impl FnOnce(&mut Game<'_>)) {
 
 /// Places `block` at `pos` in the level in place, with its block entity and no shapes
 /// published yet.
-fn place(game: &mut Game<'_>, block: &str, pos: [i32; 3]) -> BlockEntityRef {
+pub(super) fn place(game: &mut Game<'_>, block: &str, pos: [i32; 3]) -> BlockEntityRef {
     let level = game.level(game.dim.id()).unwrap();
     let state = game.pack.assets.registry.default_state(block).unwrap();
     assert!(
@@ -70,17 +70,17 @@ fn publish(game: &mut Game<'_>, pos: [i32; 3], shapes: BlockEntityShapes) {
     assert_eq!(game.block_entity_set_shapes(entity, Some(shapes)), Ok(true));
 }
 
-fn shapes(collision: &[[f64; 6]], outline: &[[f64; 6]]) -> BlockEntityShapes {
+pub(super) fn shapes(collision: &[[f64; 6]], outline: &[[f64; 6]]) -> BlockEntityShapes {
     BlockEntityShapes {
         collision: collision.to_vec(),
         outline: outline.to_vec(),
     }
 }
 
-const HALF: [f64; 6] = [0.0, 0.0, 0.0, 1.0, 0.5, 1.0];
+pub(super) const HALF: [f64; 6] = [0.0, 0.0, 0.0, 1.0, 0.5, 1.0];
 const LOW: [f64; 6] = [0.0, 0.0, 0.0, 1.0, 0.25, 1.0];
-const SMALL: [f64; 6] = [0.25, 0.0, 0.25, 0.75, 0.25, 0.75];
-const FULL: [f64; 6] = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+pub(super) const SMALL: [f64; 6] = [0.25, 0.0, 0.25, 0.75, 0.25, 0.75];
+pub(super) const FULL: [f64; 6] = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
 const TALL: [f64; 6] = [0.0, 0.0, 0.0, 1.0, 0.75, 1.0];
 const THIN: [f64; 6] = [0.45, 0.0, 0.45, 0.55, 0.25, 0.55];
 
@@ -291,7 +291,7 @@ fn pathfinding_stands_on_the_published_collision_top() {
             assert_eq!(finder.static_floor(2, 65, 2), 64.5);
             drop(finder);
             // `MoveControl.tick`: standing on the published top, walking on, it doesn't jump.
-            zombie.on_ground = true;
+            zombie.ground.on_ground = true;
             zombie.ai.mov.wanted = [5.5, 64.5, 2.5];
             zombie.ai.mov.speed_modifier = 1.0;
             zombie.ai.mov.operation = sunrise_client::mobs::control::Operation::MoveTo;
@@ -375,5 +375,84 @@ fn a_published_shape_stands_over_a_dynamic_template_and_takes_its_offset() {
             assert_eq!(collider, Some(64.5), "{pos:?}: the published collision");
         }
         assert!(offset_seen, "some column's outline is offset");
+    });
+}
+
+/// With no declared offset keys, a bamboo template moves its published outline to the
+/// vanilla column, not its published collision. The outline ray only crosses the moved box.
+#[test]
+#[ignore = "daily"]
+fn inherited_published_outline_hits_at_the_template_column() {
+    if fresh("inherited_published_outline_hits_at_the_template_column") {
+        return;
+    }
+    with_bus(|game| {
+        let pos = [1, 64, 2];
+        let entity = place(game, TUFT, pos);
+        assert_eq!(
+            game.block_entity_set_shapes(entity, Some(shapes(&[HALF], &[THIN]))),
+            Ok(true)
+        );
+        // Vanilla's XZ column offset at (1, 2) is (-0.1166666597, -0.1833333299).
+        let x = 1.3833333402872086;
+        let z = 2.3166666701436043;
+        let level = game.level(game.dim.id()).unwrap();
+        let ray = |mode| {
+            game.level_clip(level, [x, 66.0, z], [x, 63.0, z], mode, ClipFluid::None)
+                .filter(|hit| !hit.miss)
+                .map(|hit| (hit.block, hit.location))
+        };
+        assert_eq!(ray(ClipBlock::Outline), Some((pos, [x, 64.25, z])));
+        assert_eq!(ray(ClipBlock::Collider), Some((pos, [x, 64.5, z])));
+        let [bounds]: [[f64; 6]; 1] = game.outline_boxes(pos).try_into().unwrap();
+        assert!((bounds[0] - 1.3333333402872086).abs() < 1.0e-12);
+        assert!((bounds[2] - 2.2666666701436043).abs() < 1.0e-12);
+    });
+}
+
+/// A publish that a transaction aborts puts the old shape back and tells the neighbours, as the
+/// publish did: the water beside the block is scheduled again to read the restored shape.
+#[test]
+#[ignore = "daily"]
+fn an_aborted_publish_restores_the_shape_and_notifies_the_neighbours() {
+    if fresh("an_aborted_publish_restores_the_shape_and_notifies_the_neighbours") {
+        return;
+    }
+    with_bus(|game| {
+        let pos = [2, 64, 2];
+        let state = game.pack.assets.registry.default_state(BUS).unwrap();
+        let level = game.level(game.dim.id()).unwrap();
+        publish(game, pos, shapes(&[HALF], &[SMALL]));
+        let water = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:water")
+            .unwrap();
+        assert!(
+            game.level_set_block(level, [3, 64, 2], water, BlockUpdateFlags::NONE)
+                .unwrap()
+        );
+        let entity = game.block_entity(level, pos).unwrap();
+        game.storage_scope(|game, _| {
+            assert_eq!(
+                game.block_entity_set_shapes(entity, Some(shapes(&[LOW], &[TALL]))),
+                Ok(true)
+            );
+            // What the publish scheduled is dropped, so only the abort's notice can schedule again.
+            let chunk = sunrise_core::position::ChunkPos::new(0, 0);
+            game.block_ticks.remove_chunk(chunk);
+            game.block_ticks.add_empty_chunk(chunk).unwrap();
+            assert_eq!(game.block_ticks.fluids.count(), 0);
+            ((), false)
+        });
+        assert_eq!(
+            game.level_block_shape(level, state, pos, BlockShapeKind::Collision),
+            Some(vec![HALF])
+        );
+        assert!(
+            game.block_ticks.fluids.count() > 0,
+            "the aborted publish told the water beside it"
+        );
     });
 }

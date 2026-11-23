@@ -5,6 +5,7 @@ const MAX_GHOSTS: usize = 256;
 /// The ghosts to draw: at most `MAX_GHOSTS`, in order, without one in a slot the screen lacks or one
 /// that resolves to no stack (`GhostSlots.setSlot` keeps only ghosts with a stack).
 fn shown_ghosts(
+    base: usize,
     ghosts: Vec<mod_api::GhostSlot>,
     has_slot: impl Fn(u16) -> bool,
     resolve: impl Fn(&mod_api::RecipeSlotDisplay) -> Vec<ItemStack>,
@@ -16,7 +17,7 @@ fn shown_ghosts(
         .filter_map(|ghost| {
             let items = resolve(&ghost.display);
             (!items.is_empty()).then(|| super::super::Ghost {
-                slot: 300 + usize::from(ghost.slot),
+                slot: base + usize::from(ghost.slot),
                 items,
                 result: ghost.result,
             })
@@ -125,9 +126,10 @@ impl Game<'_> {
             | mod_api::RecipeBookLayout::Smithing { result, .. } => Some(*result),
             mod_api::RecipeBookLayout::Mod => None,
         };
+        let base = self.native_screen_container_slot_base();
         let fuel_empty = match layout.declaration() {
             mod_api::RecipeBookLayout::Furnace { fuel, .. } => {
-                self.slot_mut(300 + usize::from(*fuel)).is_none()
+                self.slot_mut(base + usize::from(*fuel)).is_none()
             }
             _ => true,
         };
@@ -152,6 +154,7 @@ impl Game<'_> {
             });
         }
         let shown = shown_ghosts(
+            base,
             ghosts,
             |slot| self.native_screen_slot(usize::from(slot)).is_some(),
             |display| self.resolve_mod_book_declaration_slot(display),
@@ -181,6 +184,7 @@ mod tests {
     #[test]
     fn ghosts_without_a_slot_or_a_stack_are_dropped_and_the_rest_keep_their_order() {
         let shown = shown_ghosts(
+            300,
             vec![
                 ghost(6, "demo:meal", true),
                 ghost(40, "demo:a", false),
@@ -211,7 +215,7 @@ mod tests {
     #[test]
     fn no_more_than_the_cap_are_kept() {
         let many = (0..300).map(|n| ghost(n % 10, "demo:a", false)).collect();
-        let shown = shown_ghosts(many, |_| true, |_| vec![ItemStack::new("demo:a", 1)]);
+        let shown = shown_ghosts(300, many, |_| true, |_| vec![ItemStack::new("demo:a", 1)]);
         assert_eq!(shown.len(), 256);
     }
 }

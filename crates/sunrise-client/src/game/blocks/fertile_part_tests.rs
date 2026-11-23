@@ -62,11 +62,13 @@ fn a_farmland_part_answers_fertility_and_hydration() {
                     )
                 })
             };
-            // Not authoritative: no part is asked.
+            // A client's copy of the level: no part is asked.
+            game.options.execution_role = crate::game::execution_role::ExecutionRole::Client;
             let (fertile_asked, farmland_asked, ..) = ask(game);
             assert!(!fertile_asked && !farmland_asked);
-            // A dedicated server: the farmland's part answers, stone has none.
-            game.options.dedicated = Some(Vec::new());
+            // A server: the farmland's part answers, stone has none.
+            game.options.execution_role =
+                crate::game::execution_role::ExecutionRole::IntegratedServer;
             assert_eq!(
                 ask(game),
                 (true, true, false, true, Some(true), Some(false))

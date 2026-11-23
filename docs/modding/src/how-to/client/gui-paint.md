@@ -40,7 +40,7 @@ items this way too. To draw a stack the player doesn't hold, use `DrawContext::i
 
 | `GuiPaintError` | When |
 | --- | --- |
-| `Text(TextFormError)` | A `Text` op's text cannot cross to the game (deeper than 512 nodes, malformed). |
+| `Text(TextFormError)` | A `Text` op's text cannot cross to the game (unrepresentable metadata). |
 | `ItemSlot { index, slot }` | An `Item` of a slot other than 0-8 or 40. |
 | `ItemNotFinite { index }` | An `Item` whose `scale` or `pivot` is NaN or infinite. |
 | `BlitTexture { index, texture }` | A `Blit` of a texture the GUI atlas does not hold. |
@@ -53,5 +53,3 @@ The enum is `#[non_exhaustive]`. `index` is the op's place in the buffer; nothin
 ops before it included. A `TextFormError` converts into it with `?`.
 
 - **Cost.** The check reads the buffer once before drawing it; a mod that doesn't paint pays nothing.
-- **Wire layout.** `gui_paint`'s error type changed from `TextFormError` to `GuiPaintError`: rebuild wasm mods
-  against the new SDK.

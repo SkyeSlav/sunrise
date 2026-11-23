@@ -4,7 +4,7 @@
 //! draws it with (a mod's renderer for its type, else its model, then the
 //! mods' layers), then seen as the inventory's player is (`draw_player_preview`):
 //! the box's centre, `size` pixels a block, turned, depth-sorted, back faces
-//! culled and lit by `Lighting.ENTITY_IN_UI`.
+//! culled only for render types that cull them, and lit by `Lighting.ENTITY_IN_UI`.
 //!
 //! Nothing here runs unless a mod calls `DrawContext::entity`. The buffers and
 //! the entities made for `GuiEntity::Kind` are kept per thread and reused, so a
@@ -14,7 +14,11 @@ use super::{Game, commands::Target};
 use glam::{DVec3, Mat4, Vec3};
 use mod_api::{GuiEntity, GuiEntityError, GuiEntityLook, GuiEntityView};
 use std::{cell::RefCell, sync::Arc};
-use sunrise_client::{hud::HudBatch, mesher::Vertex, mobs::Mob};
+use sunrise_client::{
+    hud::HudBatch,
+    mesher::Vertex,
+    mobs::{Mob, render::FrameDraw},
+};
 use sunrise_core::{
     geometry::Vec3 as Position,
     nbt::{Compound, JavaString, Tag},
@@ -31,8 +35,8 @@ struct Made {
     mob: Mob,
 }
 
-/// A face of the entity as seen: its depth, corners, UVs and ABGR colour.
-type SeenQuad = (f32, [[f32; 3]; 4], [[f32; 2]; 4], u32);
+/// A face of the entity as seen: its depth, corners, UVs, ABGR colour and emission ordinal.
+type SeenQuad = (f32, [[f32; 3]; 4], [[f32; 2]; 4], u32, usize);
 
 #[derive(Default)]
 struct Scratch {
@@ -146,7 +150,7 @@ impl Game<'_> {
             return Err(GuiEntityError::BadView);
         }
         let start = batch.vertices.len();
-        for &(_, p, uv, color) in &scratch.quads {
+        for &(_, p, uv, color, _) in &scratch.quads {
             batch.quad_3d(p, uv, color);
         }
         let end = batch.vertices.len();
@@ -254,10 +258,11 @@ impl Game<'_> {
         out: &mut Vec<Vertex>,
     ) {
         let added = self.mod_layers(mob);
-        let mut parts = None;
         // A mod's renderer for the type draws in place of the model only: the mods' layers
         // still follow, as in the world.
-        let modded = self.mod_living_renderer_geometry(mob, partial, camera, FULL_BRIGHT, out);
+        let modded =
+            self.mod_living_renderer_geometry(mob, partial, camera, FULL_BRIGHT, false, out);
+        let mut frame_draw = FrameDraw::new(!modded && added.is_some());
         let atlas = &self.gui.atlas;
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
         // A screen's entity: custom entity model animations see is_in_gui = 1.
@@ -265,7 +270,7 @@ impl Game<'_> {
             if modded {
                 return;
             }
-            sunrise_client::mobs::render::render_with_hidden(
+            sunrise_client::mobs::render::render_with_frame(
                 mob,
                 partial,
                 camera,
@@ -273,17 +278,29 @@ impl Game<'_> {
                 FULL_BRIGHT,
                 self,
                 &[],
-                Default::default(),
-                added.is_some().then_some(&mut parts),
+                &mut frame_draw,
                 out,
             );
         });
-        self.mod_layer_geometry(mob, None, parts, added, partial, camera, FULL_BRIGHT, out);
+        self.mod_layer_geometry(
+            mob,
+            None,
+            frame_draw.model(),
+            added,
+            partial,
+            camera,
+            FULL_BRIGHT,
+            out,
+        );
     }
 }
 
-/// `verts` seen through `gui`, into `quads` far to near: the faces that look
-/// away left out, each lit by `Lighting.ENTITY_IN_UI` (`entity_in_ui_shade`).
+/// `verts` seen through `gui`, into `quads` far to near, each lit by
+/// `Lighting.ENTITY_IN_UI` (`entity_in_ui_shade`). A face that looks away is
+/// left out only when its render type culls (`culls_back_faces`): living
+/// models draw as `entityCutoutNoCull`, as in the world, and their art can sit
+/// on such a face (a chicken's legs are painted on their back and bottom
+/// faces, seen through the transparent front ones).
 fn seen_quads(verts: &[Vertex], gui: Mat4, quads: &mut Vec<SeenQuad>) {
     quads.clear();
     for q in verts.as_chunks::<4>().0 {
@@ -291,23 +308,29 @@ fn seen_quads(verts: &[Vertex], gui: Mat4, quads: &mut Vec<SeenQuad>) {
             std::array::from_fn(|i| gui.transform_point3(Vec3::from_array(q[i].pos)));
         let n = (p[1] - p[0]).cross(p[2] - p[0]);
         // The winding gives inward normals: faces with n.z >= 0 point away.
-        if n.z >= 0.0 {
+        let back = n.z >= 0.0;
+        if back && sunrise_client_render::mesher::culls_back_faces(q[0].normal[3]) {
             continue;
         }
+        // Lit by its outward normal, whichever way it faces, as vanilla's vertex normals.
         let shade = super::perspective::entity_in_ui_shade(-n.normalize_or_zero());
         let c = q[0].color;
         let ch = |s: u32| ((((c >> s) & 255) as f32 * shade) as u32) << s;
         let color = (c & 0xFF00_0000) | ch(0) | ch(8) | ch(16);
         let depth = p.iter().map(|v| v.z).sum::<f32>() / 4.0;
-        quads.push((
-            depth,
-            p.map(|v| v.to_array()),
-            std::array::from_fn(|i| q[i].uv),
-            color,
-        ));
+        let (mut corners, mut uv) = (p.map(|v| v.to_array()), std::array::from_fn(|i| q[i].uv));
+        if back {
+            // Seen from behind: the same quad wound towards the viewer, as the player preview's.
+            corners.reverse();
+            uv.reverse();
+        }
+        quads.push((depth, corners, uv, color, quads.len()));
     }
-    // Translucent faces over what is behind them; unstable, so no buffer is allocated.
-    quads.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+    // Far to near for translucent faces. Equal depths keep their emission order (the ordinal),
+    // so a layer the model draws again over the same faces (a villager's type and profession
+    // clothes over its body) stays after them and the depth test (LessEqual) shows the layer,
+    // as the world's draw order does. In place, so the sort allocates nothing each frame.
+    quads.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.4.cmp(&b.4)));
 }
 
 #[cfg(test)]
@@ -342,37 +365,81 @@ mod tests {
         assert_eq!(fixed, (210.0, 210.0, 10.0, 0.0));
     }
 
-    #[test]
-    fn faces_looking_away_are_culled_and_the_rest_sorted_far_to_near() {
-        let v = |pos: [f32; 3]| Vertex {
+    fn vertex(pos: [f32; 3], w: i8, u: f32) -> Vertex {
+        Vertex {
             pos,
-            uv: [0.0; 2],
+            uv: [u, 0.0],
             layer: 0,
             color: 0xFFFF_FFFF,
             light: 0,
-            normal: [0; 4],
+            normal: [0, 0, 0, w],
             glint_uv: [0.0; 2],
-        };
-        // Two faces towards the viewer at z 1 and 2, and one facing away.
-        let toward = |z: f32| {
-            [
-                v([0.0, 0.0, z]),
-                v([0.0, 1.0, z]),
-                v([1.0, 1.0, z]),
-                v([1.0, 0.0, z]),
-            ]
-        };
+        }
+    }
+
+    /// A face at depth `z` looking towards the viewer (or away, reversed), its
+    /// vertices' normal w `w` and its UVs marked `u`.
+    fn face(z: f32, w: i8, u: f32, away: bool) -> [Vertex; 4] {
+        let mut f = [
+            vertex([0.0, 0.0, z], w, u),
+            vertex([0.0, 1.0, z], w, u),
+            vertex([1.0, 1.0, z], w, u),
+            vertex([1.0, 0.0, z], w, u),
+        ];
+        if away {
+            f.reverse();
+        }
+        f
+    }
+
+    #[test]
+    fn faces_looking_away_are_culled_and_the_rest_sorted_far_to_near() {
+        // Two faces towards the viewer at z 1 and 2, and one facing away whose
+        // render type culls (an `entityCutoutCull` model's, `SHADED_CULL_W`).
+        let cull = sunrise_client_render::mesher::SHADED_CULL_W;
         let mut verts = Vec::new();
-        verts.extend(toward(2.0));
-        verts.extend(toward(1.0));
-        let mut away = toward(0.0);
-        away.reverse();
-        verts.extend(away);
+        verts.extend(face(2.0, cull, 0.0, false));
+        verts.extend(face(1.0, cull, 0.0, false));
+        verts.extend(face(0.0, cull, 0.0, true));
         let mut quads = Vec::new();
         seen_quads(&verts, Mat4::IDENTITY, &mut quads);
         let depths: Vec<f32> = quads.iter().map(|q| q.0).collect();
         assert_eq!(depths.len(), 2, "{depths:?}");
         assert!(depths[0] < depths[1]);
+    }
+
+    /// A living model's faces draw both sides (`entityCutoutNoCull`, normal w
+    /// -127), as in the world: a chicken's legs are painted on faces that look
+    /// away. Such a face is kept and wound towards the viewer.
+    #[test]
+    fn no_cull_faces_looking_away_are_kept_and_turned_to_the_viewer() {
+        let mut quads = Vec::new();
+        seen_quads(&face(0.0, -127, 0.5, true), Mat4::IDENTITY, &mut quads);
+        assert_eq!(quads.len(), 1);
+        let p = quads[0].1.map(Vec3::from_array);
+        assert!(
+            (p[1] - p[0]).cross(p[2] - p[0]).z < 0.0,
+            "wound towards the viewer"
+        );
+        // A face the model culls still goes.
+        let cull = sunrise_client_render::mesher::SHADED_CULL_W;
+        seen_quads(&face(0.0, cull, 0.5, true), Mat4::IDENTITY, &mut quads);
+        assert!(quads.is_empty());
+    }
+
+    /// A layer drawn again over the same faces (a villager's clothes over its
+    /// body) has the same depth: it must stay after them so the depth test
+    /// (LessEqual) shows it, whatever the sort meets.
+    #[test]
+    fn coplanar_layers_keep_their_draw_order() {
+        let mut verts = Vec::new();
+        for layer in 0..48 {
+            verts.extend(face(1.0, -127, layer as f32, false));
+        }
+        let mut quads = Vec::new();
+        seen_quads(&verts, Mat4::IDENTITY, &mut quads);
+        let order: Vec<f32> = quads.iter().map(|q| q.2[0][0]).collect();
+        assert_eq!(order, (0..48).map(|l| l as f32).collect::<Vec<_>>());
     }
 
     #[test]

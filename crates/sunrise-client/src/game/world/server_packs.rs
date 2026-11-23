@@ -3,7 +3,11 @@
 //! and `DownloadedPackSource` as `Minecraft` drives it): the prompt, the
 //! server list's setting, downloads into `downloads/`, and a resource reload
 //! with the server's packs on top of the player's own.
-use super::{Game, packs::ReloadKind};
+use super::{
+    Game,
+    packs::ReloadKind,
+    toast_manager::{SystemToastId, Toast},
+};
 use std::{
     path::PathBuf,
     sync::mpsc::{Receiver, TryRecvError},
@@ -11,7 +15,7 @@ use std::{
 use sunrise_client::{
     Result,
     confirm_screen::Confirm,
-    hud::{HudAtlas, HudBatch},
+    hud::{HudAtlas, HudBatch, rgba},
     multiplayer, packs,
     scoreboard::{comp_text, tag_to_json},
     server_packs::{Prompt, ServerPacks, action, download, parse_sha1, valid_url},
@@ -19,7 +23,6 @@ use sunrise_client::{
     toasts::SystemToast,
     ui,
 };
-use sunrise_core::jmath;
 use sunrise_protocol::{packets::configuration::ResourcePackPush, servers};
 
 /// `ClientCommonPacketListenerImpl.PackConfirmScreen`: the packs it asks
@@ -67,18 +70,6 @@ impl PackPrompt {
     }
 }
 
-impl ServerPackState {
-    /// The `ToastManager` slots the download toasts hold.
-    pub(super) fn toast_slots(&self) -> impl Iterator<Item = usize> + '_ {
-        self.notifiers
-            .iter()
-            .filter_map(|n| n.toast.as_ref())
-            .chain(self.load_fail.as_ref())
-            .chain(self.chunk_io.iter().flatten())
-            .filter_map(|t| t.slot)
-    }
-}
-
 /// The game's `DownloadedPackSource`.
 #[derive(Default)]
 pub(super) struct ServerPackState {
@@ -88,17 +79,16 @@ pub(super) struct ServerPackState {
     pub(super) prompt: Option<PackPrompt>,
     /// The server list entry the setting is saved to (none: a direct join).
     pub(super) address: Option<String>,
+    /// That entry's name, with `address`, so a pack answer updates only that row.
+    pub(super) name: Option<String>,
     /// The account the downloads are made for (the download headers).
     user: (String, u128),
     /// The packs loaded on top of the player's own, bottom first.
     pub(super) active: Vec<packs::Pack>,
     /// The download batches' notifiers, oldest first.
     notifiers: Vec<PackNotifier>,
-    /// `SystemToastId.PACK_LOAD_FAILURE`: the toast `Minecraft.clearResourcePacksOnError` adds.
-    pub(super) load_fail: Option<SystemToast>,
-    /// `SystemToastId.LOW_DISK_SPACE`, `CHUNK_LOAD_FAILURE` and `CHUNK_SAVE_FAILURE`:
-    /// the toasts the integrated server's chunk IO reports add (`chunk_io`).
-    pub(super) chunk_io: [Option<SystemToast>; 3],
+    /// Distinguish batches while their download notifications are still queued or visible.
+    next_download_toast: usize,
 }
 /// `DownloadedPackSource.createDownloadNotifier`: one batch's progress in its
 /// own `SystemToast`.
@@ -115,11 +105,11 @@ struct PackNotifier {
     bytes: Option<u64>,
     /// The last request has finished.
     done: bool,
-    toast: Option<SystemToast>,
+    id: usize,
     toast_cancelled: bool,
 }
 impl PackNotifier {
-    fn new(progress: Receiver<download::Progress>, total: usize) -> Self {
+    fn new(progress: Receiver<download::Progress>, total: usize, id: usize) -> Self {
         Self {
             progress,
             total,
@@ -128,13 +118,13 @@ impl PackNotifier {
             size: None,
             bytes: None,
             done: false,
-            toast: None,
+            id,
             toast_cancelled: false,
         }
     }
-    /// The batch's events since the last call, with the toast updated once
-    /// for all of them. False once the batch has ended and its toast is gone.
-    fn poll(&mut self, admit: impl FnOnce(SystemToast) -> Option<SystemToast>) -> bool {
+    /// Update once for the accumulated events. Returns whether to keep polling
+    /// the channel and whether a successful download should hide its toast.
+    fn poll(&mut self, update: impl FnOnce(SystemToast) -> bool) -> (bool, bool) {
         let (mut changed, mut hide) = (false, false);
         let ended = loop {
             let event = match self.progress.try_recv() {
@@ -166,19 +156,9 @@ impl PackNotifier {
         };
         if changed && !self.toast_cancelled {
             let (title, message) = self.text();
-            // SystemToast.addOrUpdate.
-            match &mut self.toast {
-                Some(toast) => toast.reset(title, message),
-                None => {
-                    self.toast = admit(SystemToast::new(title, message));
-                    self.toast_cancelled = self.toast.is_none();
-                }
-            }
+            self.toast_cancelled = !update(SystemToast::new(title, message));
         }
-        if hide && let Some(toast) = &mut self.toast {
-            toast.force_hide();
-        }
-        !ended || self.toast.is_some()
+        (!ended, hide)
     }
     /// The toast's title and message.
     fn text(&self) -> (Text, Option<Text>) {
@@ -191,26 +171,14 @@ impl PackNotifier {
             Some(size) if size > 0 => {
                 Text::tr("download.pack.progress.percent", &[&(bytes * 100 / size)])
             }
-            _ => Text::tr("download.pack.progress.bytes", &[&human_readable(bytes)]),
+            _ => Text::tr(
+                "download.pack.progress.bytes",
+                &[&sunrise_client::realms::human_readable(bytes)],
+            ),
         });
         (title, message)
     }
 }
-/// `com.mojang.realmsclient.Unit.humanReadable`, for
-/// `download.pack.progress.bytes`.
-fn human_readable(bytes: u64) -> String {
-    if bytes < 1024 {
-        return format!("{bytes} B");
-    }
-    let exp = (jmath::log(bytes as f64) / jmath::log(1024.0)) as i32;
-    let prefix = &"KMGTPE"[exp as usize - 1..exp as usize];
-    let value = bytes as f64 / 1024f64.powi(exp);
-    format!(
-        "{} {prefix}B",
-        sunrise_core::java_number::format_fixed(value, 1)
-    )
-}
-
 pub(super) fn saves() -> PathBuf {
     std::env::current_dir().unwrap_or_default().join("saves")
 }
@@ -235,22 +203,29 @@ impl Game<'_> {
     /// `ConnectScreen`: the server's setting decides what its packs do
     /// (`configureForServerControl`); single player's own server takes them
     /// all, quietly (`configureForLocalWorld`).
-    pub(super) fn server_packs_connect(&mut self, address: Option<&str>, user: (String, u128)) {
+    pub(super) fn server_packs_connect(
+        &mut self,
+        address: Option<&str>,
+        list_name: Option<&str>,
+        user: (String, u128),
+    ) {
         let state = &mut self.server_packs;
         state.user = user;
         state.prompt = None;
         state.notifiers.clear();
         let Some(address) = address else {
             state.address = None;
+            state.name = None;
             state.packs.local_world();
             return;
         };
         let file = multiplayer::servers_file(&saves());
         // ServerList.get: the shown entries, then the hidden ones.
         let (shown, hidden) = servers::load_all(&file);
-        let entry = shown.into_iter().chain(hidden).find(|s| s.ip == address);
+        let entry = servers::find(&shown, &hidden, address, list_name).cloned();
         let setting = entry.as_ref().and_then(|e| e.accept_textures);
-        state.address = entry.map(|e| e.ip);
+        state.address = entry.as_ref().map(|e| e.ip.clone());
+        state.name = entry.map(|e| e.name);
         state.packs.connect(Prompt::for_server(setting));
         // GetServerDetailsTask.scheduleResourcePackDownload: the Realm's own pack, which the
         // player agreed to before connecting (`allowServerPacks`, then `pushPack`).
@@ -306,7 +281,7 @@ impl Game<'_> {
         open.required = p.required;
         open.prompt = text;
         // Gui.setScreen: KeyMapping.releaseAll, so no walking behind the prompt.
-        self.keys.clear();
+        self.clear_device_keys();
         self.capture(false);
     }
     /// `handleResourcePackPop`: one pack, or all of them.
@@ -320,11 +295,7 @@ impl Game<'_> {
     fn server_setting(&self) -> Option<bool> {
         let address = self.server_packs.address.as_deref()?;
         let (shown, hidden) = servers::load_all(&multiplayer::servers_file(&saves()));
-        shown
-            .into_iter()
-            .chain(hidden)
-            .find(|s| s.ip == address)?
-            .accept_textures
+        servers::find(&shown, &hidden, address, self.server_packs.name.as_deref())?.accept_textures
     }
     fn send_pack_status(&self, id: u128, status: i32) {
         if let Some(r) = &self.remote {
@@ -332,19 +303,6 @@ impl Game<'_> {
         }
     }
 
-    /// Splitscreen: this player's answer for the server's packs, once it gave one (or its
-    /// server list entry did).
-    pub(super) fn pack_answer(&self) -> Option<bool> {
-        match self.server_packs.packs.prompt() {
-            Prompt::Allowed => Some(true),
-            Prompt::Declined => Some(false),
-            Prompt::Pending => None,
-        }
-    }
-    /// Splitscreen: this player is asked about a server's packs right now.
-    pub(super) fn pack_prompt_open(&self) -> bool {
-        self.server_packs.prompt.is_some()
-    }
     /// The prompt's answer (`PackConfirmScreen`'s callback): the server's
     /// setting follows it, declining a required pack disconnects, and every
     /// pack it asked about is pushed.
@@ -366,26 +324,18 @@ impl Game<'_> {
             }
             Some(false)
         };
+        self.refresh_screen_widgets();
         for (id, url, hash) in prompt.requests {
             self.server_packs.packs.push(id, &url, parse_sha1(&hash));
         }
-        // ServerList.saveSingleServer.
-        if let Some(address) = &self.server_packs.address {
+        // ServerList.saveSingleServer: one row, matched by name and address.
+        if let (Some(address), Some(name)) = (&self.server_packs.address, &self.server_packs.name) {
             let file = multiplayer::servers_file(&saves());
             let _guard = servers::lock();
             let (mut list, mut hidden) = servers::load_all(&file);
-            let mut found = false;
-            for entry in list.iter_mut().filter(|s| &s.ip == address) {
-                entry.accept_textures = setting;
-                found = true;
-            }
-            // Not among the shown entries: the hidden ones (a Direct Connection's).
-            if !found {
-                for entry in hidden.iter_mut().filter(|s| &s.ip == address) {
-                    entry.accept_textures = setting;
-                }
-            }
-            if let Err(e) = servers::save_all(&file, &list, &hidden) {
+            if servers::save_single_accept_textures(&mut list, &mut hidden, name, address, setting)
+                && let Err(e) = servers::save_all(&file, &list, &hidden)
+            {
                 log::warn!("Sunrise: could not save {}: {e}", file.display());
             }
         }
@@ -397,7 +347,14 @@ impl Game<'_> {
     /// packs change, and the statuses for the server.
     pub(super) fn tick_server_packs(&mut self) {
         let mut notifiers = std::mem::take(&mut self.server_packs.notifiers);
-        notifiers.retain_mut(|n| n.poll(|toast| self.add_system_toast(toast)));
+        notifiers.retain_mut(|n| {
+            let id = SystemToastId::PackDownload(n.id);
+            let (keep, hide) = n.poll(|new| self.add_or_update_system_toast(id, new));
+            if hide && let Some(toast) = self.toast_manager.system_mut(id) {
+                toast.force_hide();
+            }
+            keep
+        });
         self.server_packs.notifiers = notifiers;
         self.drive_mod_browser();
         // A reload waits for the world's resources (`reload_packs`).
@@ -437,6 +394,8 @@ impl Game<'_> {
     }
     fn start_pack_downloads(&mut self, requests: Vec<sunrise_client::server_packs::Request>) {
         let state = &mut self.server_packs;
+        let toast_id = state.next_download_toast;
+        state.next_download_toast += 1;
         if state.queue.is_none() {
             let dir = std::env::current_dir()
                 .unwrap_or_default()
@@ -453,7 +412,7 @@ impl Game<'_> {
                     }
                     state
                         .notifiers
-                        .push(PackNotifier::new(events, requests.len()));
+                        .push(PackNotifier::new(events, requests.len(), toast_id));
                     let failed = requests.iter().map(|r| r.id).collect();
                     state.packs.downloaded(sunrise_client::server_packs::Batch {
                         downloaded: Vec::new(),
@@ -467,7 +426,7 @@ impl Game<'_> {
         let (progress, events) = std::sync::mpsc::channel();
         state
             .notifiers
-            .push(PackNotifier::new(events, requests.len()));
+            .push(PackNotifier::new(events, requests.len(), toast_id));
         if let Some(queue) = &state.queue {
             queue.download(requests, headers, progress);
         }
@@ -526,12 +485,13 @@ impl Game<'_> {
         let mut layout = prompt.layout(atlas, (w, h));
         layout.declare_no();
         layout.draw(batch, atlas, self.cursor, [&yes, &no]);
+        self.draw_overlay_mounted_widgets(batch, "server_pack_prompt");
     }
-    /// `IntegratedServer.reportChunkLoadFailure` and the like: what the server
-    /// thread reported since the last frame, each in `SystemToast.addOrUpdate`
-    /// (a toast still shown is reset, else a new one).
-    fn add_chunk_io_toasts(&mut self) {
-        let pending = sunrise_client::chunk_io::take();
+
+    /// Admit new server reports in the receiving window. `SystemToast.addOrUpdate`
+    /// resets an existing chunk toast instead of admitting a second one.
+    pub(super) fn add_server_report_toasts(&mut self) {
+        let pending = self.client_reports.take();
         let toasts = [
             pending
                 .low_disk_space
@@ -545,58 +505,52 @@ impl Game<'_> {
         ];
         for (index, new) in toasts.into_iter().enumerate() {
             let Some(new) = new else { continue };
-            if let Some(shown) = &mut self.server_packs.chunk_io[index] {
-                shown.reset_from(new);
-            } else {
-                self.server_packs.chunk_io[index] = self.add_system_toast(new);
-            }
+            self.add_or_update_system_toast(SystemToastId::ChunkIo(index), new);
+        }
+        for mod_id in pending.scheduled_task_failures {
+            let notice = SystemToast::new(
+                Text::tr("sunrise.mods.scheduled_task_error.title", &[]),
+                Some(Text::tr(
+                    "sunrise.mods.scheduled_task_error.message",
+                    &[&mod_id],
+                )),
+            )
+            .with_title_color(rgba(255, 85, 85, 255));
+            self.add_system_toast(None, notice);
         }
     }
 
-    /// The download notifiers' toasts, each in a free 32-pixel slot of the
-    /// `ToastManager` (`hidden`, F1, keeps them timing out undrawn).
-    pub(super) fn draw_pack_toasts(&mut self, batch: &mut HudBatch, hidden: bool) {
-        let multiplier = f64::from(self.settings.notification_display_time);
-        self.add_chunk_io_toasts();
-        let mut used = self.toast_slots_used();
-        let packs = &mut self.server_packs;
-        for slot_toast in packs
-            .notifiers
-            .iter_mut()
-            .map(|n| &mut n.toast)
-            .chain(std::iter::once(&mut packs.load_fail))
-            .chain(packs.chunk_io.iter_mut())
-        {
-            let Some(toast) = slot_toast else {
-                continue;
-            };
-            if toast.slot.is_none() {
-                let Some(slot) = (0..Self::TOAST_SLOTS).find(|s| used & (1 << s) == 0) else {
-                    continue;
-                };
-                used |= 1 << slot;
-                toast.slot = Some(slot);
-            }
-            let (sound, finished) = toast.update(multiplier);
-            if let Some(show) = sound {
-                let event = if show { "ui.toast.in" } else { "ui.toast.out" };
-                self.audio
-                    .play(&format!("minecraft:{event}"), None, 1.0, 1.0);
-            }
-            if finished {
-                *slot_toast = None;
-                continue;
-            }
-            if let (false, Some(slot)) = (hidden, toast.slot) {
-                toast.draw(&self.gui.atlas, batch, 32.0 * slot as f32);
-            }
+    /// Queued hook-listener panics from any thread, each shown once per
+    /// `(hook, mod)` as a red-titled system toast. Enqueued directly on the
+    /// client toast queue rather than through `toast_add` so a mod cannot veto
+    /// or rewrite its own failure notice; headless servers log the error and do
+    /// not drain the client queue.
+    pub(super) fn add_hook_panic_toasts(&mut self) {
+        if self.serving.is_some() || self.options.dedicated.is_some() {
+            return;
         }
-        self.draw_split_hud(batch, hidden);
+        for report in mod_api::__private::take_hook_panics() {
+            let toast = SystemToast::new(
+                Text::tr("sunrise.mods.hook_panic.title", &[]),
+                Some(Text::tr(
+                    "sunrise.mods.hook_panic.description",
+                    &[&report.mod_id, &report.hook],
+                )),
+            )
+            .with_title_color(sunrise_client::hud::rgba(255, 85, 85, 255));
+            // Audio playback notices retain the player's existing F1 visibility rule.
+            let hide_with_f1 = matches!(report.hook, "AudioStream::read" | "AudioStream::drop");
+            self.toast_manager.queued.push_back(Toast::Diagnostic {
+                toast,
+                hide_with_f1,
+            });
+        }
     }
+
     /// A left click on the prompt: its answer when it hit a button.
-    pub(super) fn pack_prompt_click(&mut self) -> Result<()> {
+    pub(super) fn pack_prompt_click(&mut self) -> Result<bool> {
         let Some(prompt) = &self.server_packs.prompt else {
-            return Ok(());
+            return Ok(false);
         };
         let answer = prompt
             .layout(&self.gui.atlas, self.gui_size())
@@ -604,9 +558,10 @@ impl Game<'_> {
         match answer {
             Some(yes) => {
                 self.audio.play_button_click();
-                self.answer_pack_prompt(yes)
+                self.answer_pack_prompt(yes)?;
+                Ok(true)
             }
-            None => Ok(()),
+            None => Ok(false),
         }
     }
 }
@@ -616,13 +571,333 @@ mod tests {
     use super::*;
     use download::Progress::*;
 
+    #[test]
+    #[ignore = "daily"]
+    fn an_audio_panic_toast_survives_its_mods_hud_veto_but_not_f1() {
+        crate::game::in_own_process(
+            "game::server_packs::tests::an_audio_panic_toast_survives_its_mods_hud_veto_but_not_f1",
+            || {
+                use mod_api::{
+                    AudioStream, ClientHost, Flow, Hooks, ModEntry, RenderGuiPreEvent, SoundSource,
+                    StreamSpec,
+                };
+                use std::{
+                    sync::mpsc,
+                    time::{Duration, Instant},
+                };
+                use winit::keyboard::KeyCode;
+
+                const OWNER: &str = "audio_toast_fixture";
+                struct HideHud;
+                #[mod_api::__subscriptions]
+                impl Hooks for HideHud {
+                    fn render_gui_pre(
+                        &self,
+                        _: &dyn ClientHost,
+                        _: &mut RenderGuiPreEvent,
+                    ) -> Flow {
+                        Flow::Cancel
+                    }
+                }
+
+                struct BrokenSource(mpsc::Sender<()>);
+                impl AudioStream for BrokenSource {
+                    fn read(&mut self, _: &mut [i16]) -> usize {
+                        panic!("broken pull callback");
+                    }
+                }
+                impl Drop for BrokenSource {
+                    fn drop(&mut self) {
+                        let _ = self.0.send(());
+                    }
+                }
+
+                mod_platform::testing::with_mods(
+                    vec![ModEntry::new(OWNER, Box::new(HideHud))].into(),
+                    || {
+                        crate::game::native_entity_refs::tests::with_client_game(|game| {
+                            game.title = None;
+                            game.screen = crate::game::Screen::Playing;
+                            game.audio.backend_live_for_bench();
+                            let spec = StreamSpec::new(SoundSource::Voice, 2, 48_000);
+                            let (dropped, retired) = mpsc::channel();
+                            let _handle = game
+                                .audio
+                                .open_stream(OWNER, &spec, None, Box::new(BrokenSource(dropped)))
+                                .unwrap();
+                            game.audio.mix_buffer(&mut [0.0; 2], 2, 48_000);
+                            // The worker queues the notice before dropping the failed source.
+                            retired.recv_timeout(Duration::from_secs(1)).unwrap();
+
+                            game.add_system_toast(
+                                Some(SystemToastId::PackLoadFailure),
+                                SystemToast::new(Text::tr("resourcePack.load_fail", &[]), None),
+                            );
+                            let size = [640, 480];
+                            let _ = game.hud(size);
+                            let _ = game.hud(size);
+                            let [regular, error] = game.toast_manager.visible.as_mut_slice() else {
+                                panic!("expected two visible notices")
+                            };
+                            let Toast::System(Some(SystemToastId::PackLoadFailure), regular_toast) =
+                                &mut regular.toast
+                            else {
+                                panic!("expected ordinary toast")
+                            };
+                            let Toast::Diagnostic {
+                                toast: error_toast, ..
+                            } = &mut error.toast
+                            else {
+                                panic!("expected diagnostic toast")
+                            };
+                            assert_eq!(regular.slot, 0);
+                            assert_ne!(error.slot, 0, "the ordinary toast keeps its slot");
+                            let error_y = 32.0 * error.slot as f32;
+                            assert_eq!(
+                                error_toast.message.as_ref().unwrap().component()["with"][0]["text"],
+                                OWNER
+                            );
+                            let past = Instant::now() - Duration::from_millis(700);
+                            regular_toast.slide.origin = Some(past);
+                            error_toast.slide.origin = Some(past);
+
+                            let rect = *game
+                                .gui
+                                .atlas
+                                .sprites
+                                .entry("toast/system".into())
+                                .or_insert(sunrise_client::hud::Rect {
+                                    u0: 0.25,
+                                    v0: 0.25,
+                                    u1: 0.5,
+                                    v1: 0.5,
+                                    w: 160,
+                                    h: 32,
+                                });
+                            let has_toast = |batch: &HudBatch, y| {
+                                batch.vertices.iter().any(|vertex| {
+                                    vertex.uv == [rect.u0, rect.v0]
+                                        && vertex.pos[1] == y
+                                        && vertex.pos[0] < batch.width
+                                })
+                            };
+                            let canceled = game.hud(size);
+                            assert!(
+                                has_toast(&canceled, 0.0),
+                                "the HUD veto does not hide toasts"
+                            );
+                            assert!(has_toast(&canceled, error_y), "audio error still draws");
+                            game.key_pressed(KeyCode::F1, KeyCode::F1).unwrap();
+                            game.handle_play_keybinds();
+                            assert!(!has_toast(&game.hud(size), error_y), "F1 hides the notice");
+                        });
+                    },
+                );
+            },
+        );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn closing_save_reports_reach_the_title_in_the_owning_window() {
+        crate::game::in_own_process(
+            "game::server_packs::tests::closing_save_reports_reach_the_title_in_the_owning_window",
+            || {
+                use crate::game::{
+                    integrated::{Integrated, Serving},
+                    native_entity_refs::tests::with_client_game,
+                };
+                use mod_api::{ClientHost, Flow, Hooks, ModEntry, ToastAddEvent, ToastKind};
+
+                struct Listener;
+                #[mod_api::__subscriptions]
+                impl Hooks for Listener {
+                    fn toast_add(&self, _: &dyn ClientHost, event: &mut ToastAddEvent<'_>) -> Flow {
+                        use mod_api::text::TextContent::Translatable;
+
+                        if let Translatable { key, .. } = &event.title.content
+                            && key == "chunk.toast.saveFailure"
+                        {
+                            assert_eq!(event.kind, ToastKind::System);
+                            *event.description = Some(mod_api::Text::literal("Reported on title"));
+                        }
+                        Flow::Continue
+                    }
+                }
+
+                let mods = vec![ModEntry::new("chunk_report_probe", Box::new(Listener))];
+                mod_platform::testing::with_mods(mods.into(), || {
+                    with_client_game(|window| {
+                        let serving =
+                            Serving::fixture_with_reports(0, window.client_reports.clone());
+                        window.integrated = Some(Integrated::fixture_for(&serving));
+                        window.begin_closing_save(false).unwrap();
+                        assert!(window.pending_save.is_some());
+                        let dir = tempfile::tempdir().unwrap();
+                        let reporter = sunrise_client::chunk_io::SaveFailureReporter::new(
+                            true,
+                            dir.path(),
+                            "test",
+                        );
+                        serving.reports().report_save_failure(
+                            &reporter,
+                            dir.path(),
+                            "minecraft:overworld",
+                            "chunk",
+                            (10, -7),
+                            &std::io::Error::other("region write failed"),
+                        );
+                        drop(reporter);
+                        drop(serving);
+
+                        assert!(!window.poll_closing_save().unwrap());
+                        assert!(window.integrated.is_none());
+                        assert!(window.title.is_some());
+                        assert!(
+                            window
+                                .toast_manager
+                                .system_mut(SystemToastId::ChunkIo(2))
+                                .is_none()
+                        );
+                        let mut batch = HudBatch::scratch([640, 480]);
+                        window.draw_every_toast(&mut batch);
+                        let [entry] = window.toast_manager.visible.as_slice() else {
+                            panic!("expected a visible toast")
+                        };
+                        let Toast::System(Some(SystemToastId::ChunkIo(2)), toast) = &entry.toast
+                        else {
+                            panic!("expected a save failure toast")
+                        };
+                        assert_eq!(
+                            toast.title.translation_key(),
+                            Some("chunk.toast.saveFailure")
+                        );
+                        assert_eq!(toast.title.component()["with"][0]["text"], "[10, -7]");
+                        assert_eq!(toast.message.as_ref().unwrap().plain(), "Reported on title");
+                    });
+                });
+            },
+        );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn scheduled_task_error_toasts_are_admitted_by_the_owning_client() {
+        crate::game::in_own_process(
+            "game::server_packs::tests::scheduled_task_error_toasts_are_admitted_by_the_owning_client",
+            || {
+                use crate::game::{
+                    integrated::{Integrated, Serving},
+                    native_entity_refs::tests::{with_client_game, with_game},
+                };
+                use mod_api::{
+                    ClientHost, Flow, Hooks, ModEntry, ServerHost, ToastAddEvent, ToastKind,
+                };
+                use std::sync::{Arc, Mutex};
+
+                const ACCEPTED: &str = "toast_accept";
+                const CANCELLED: &str = "toast_cancel";
+                struct Listener(Arc<Mutex<Vec<String>>>);
+                #[mod_api::__subscriptions]
+                impl Hooks for Listener {
+                    fn toast_add(&self, _: &dyn ClientHost, event: &mut ToastAddEvent<'_>) -> Flow {
+                        use mod_api::text::TextContent::{Literal, Translatable};
+
+                        let Some(Translatable { key, arguments, .. }) =
+                            event.description.as_ref().map(|text| &text.content)
+                        else {
+                            return Flow::Continue;
+                        };
+                        if key != "sunrise.mods.scheduled_task_error.message" {
+                            return Flow::Continue;
+                        }
+                        assert_eq!(event.kind, ToastKind::System);
+                        let [argument] = arguments.as_slice() else {
+                            panic!("the notice must name one mod");
+                        };
+                        let Literal(id) = &argument.content else {
+                            panic!("the mod ID must be a literal component");
+                        };
+                        self.0.lock().unwrap().push(id.clone());
+                        if id == CANCELLED {
+                            Flow::Cancel
+                        } else {
+                            *event.title = mod_api::Text::literal("Edited task error");
+                            Flow::Continue
+                        }
+                    }
+                }
+                struct NoHooks;
+                #[mod_api::__subscriptions]
+                impl Hooks for NoHooks {}
+
+                let observed = Arc::new(Mutex::new(Vec::new()));
+                let mods = vec![
+                    ModEntry::new(ACCEPTED, Box::new(Listener(observed.clone()))),
+                    ModEntry::new(CANCELLED, Box::new(NoHooks)),
+                ];
+                mod_platform::testing::with_mods(mods.into(), || {
+                    with_client_game(|window| {
+                        let serving =
+                            Serving::fixture_with_reports(0, window.client_reports.clone());
+                        window.integrated = Some(Integrated::fixture_for(&serving));
+                        with_game(|server| {
+                            server.serving = Some(serving);
+                            server.native_lifecycle.world_open_ready().unwrap();
+                            for id in [ACCEPTED, CANCELLED] {
+                                let _owner = mod_api::__private::enter(id, "schedule fixture");
+                                let host: &mut dyn ServerHost = &mut *server;
+                                host.schedule_task(
+                                    0,
+                                    Box::new(|_| panic!("scheduled callback panicked")),
+                                )
+                                .unwrap();
+                            }
+                            server.native_lifecycle_server_tick_start(true);
+                            server.native_lifecycle_server_tick_end(false);
+                        });
+                        assert!(
+                            observed.lock().unwrap().is_empty(),
+                            "not admitted on the server"
+                        );
+
+                        let mut batch = HudBatch::scratch([640, 480]);
+                        with_client_game(|other| {
+                            other.draw_every_toast(&mut batch);
+                            assert!(other.toast_manager.visible.is_empty());
+                            assert!(
+                                observed.lock().unwrap().is_empty(),
+                                "not sent to another window"
+                            );
+                        });
+
+                        window.draw_every_toast(&mut batch);
+                        let [entry] = window.toast_manager.visible.as_slice() else {
+                            panic!("only the accepted notice should reach the queue");
+                        };
+                        let Toast::System(None, toast) = &entry.toast else {
+                            panic!("expected a scheduled task error toast")
+                        };
+                        assert_eq!(toast.title.plain(), "Edited task error");
+                        assert_eq!(
+                            toast.message.as_ref().unwrap().component()["with"][0]["text"],
+                            ACCEPTED,
+                        );
+                        window.draw_every_toast(&mut batch);
+                        assert_eq!(observed.lock().unwrap().as_slice(), [ACCEPTED, CANCELLED]);
+                    });
+                });
+            },
+        );
+    }
+
     fn notifier(total: usize, events: &[download::Progress]) -> PackNotifier {
         let (send, receive) = std::sync::mpsc::channel();
         for event in events {
             send.send(*event).unwrap();
         }
-        let mut notifier = PackNotifier::new(receive, total);
-        assert!(notifier.poll(Some));
+        let mut notifier = PackNotifier::new(receive, total, 0);
+        assert!(notifier.poll(|_| true).0);
         notifier
     }
     fn texts(n: &PackNotifier) -> (serde_json::Value, Option<serde_json::Value>) {
@@ -662,13 +937,17 @@ mod tests {
         for event in events {
             send.send(event).unwrap();
         }
-        let mut n = PackNotifier::new(receive, 2);
-        assert!(n.poll(Some));
+        let mut n = PackNotifier::new(receive, 2, 0);
+        assert!(n.poll(|_| true).0);
         // Not the last request yet: still downloading.
         assert_eq!(texts(&n).0["translate"], "download.pack.title");
         send.send(RequestFinished(true)).unwrap();
         drop(send);
-        assert!(n.poll(Some), "the failure toast stays until it slides out");
+        assert_eq!(
+            n.poll(|_| true),
+            (false, false),
+            "a failure does not force-hide the toast"
+        );
         let (title, message) = texts(&n);
         assert_eq!(
             title,
@@ -680,43 +959,155 @@ mod tests {
     #[test]
     fn a_cancelled_download_toast_is_not_retried_on_progress() {
         let (send, receive) = std::sync::mpsc::channel();
-        let mut n = PackNotifier::new(receive, 1);
+        let mut n = PackNotifier::new(receive, 1, 0);
         send.send(RequestStart).unwrap();
-        assert!(n.poll(|_| None));
-        assert!(n.toast.is_none());
+        assert_eq!(n.poll(|_| false), (true, false));
         send.send(DownloadStart(Some(100))).unwrap();
         send.send(Bytes(50)).unwrap();
-        assert!(n.poll(|_| panic!("cancelled toast must not be added again")));
-        assert!(n.toast.is_none());
+        assert_eq!(
+            n.poll(|_| panic!("cancelled toast must not be added again")),
+            (true, false)
+        );
         send.send(RequestFinished(true)).unwrap();
         drop(send);
-        assert!(!n.poll(|_| panic!("no toast on completion")));
+        assert_eq!(n.poll(|_| panic!("no toast on completion")), (false, true));
     }
 
     #[test]
     fn a_finished_batch_without_a_toast_is_dropped() {
         let (send, receive) = std::sync::mpsc::channel::<download::Progress>();
         drop(send);
-        assert!(!PackNotifier::new(receive, 1).poll(Some));
+        assert_eq!(
+            PackNotifier::new(receive, 1, 0).poll(|_| panic!("no toast without progress")),
+            (false, false)
+        );
     }
 
     #[test]
-    fn sizes_read_as_realms_unit_human_readable() {
-        // com.mojang.realmsclient.Unit.humanReadable, run on the 26.3 jar.
-        for (bytes, text) in [
-            (0, "0 B"),
-            (1023, "1023 B"),
-            (1024, "1.0 KB"),
-            (1280, "1.3 KB"),
-            (1535, "1.5 KB"),
-            (10_000, "9.8 KB"),
-            (1_048_575, "1024.0 KB"),
-            (1_048_576, "1.0 MB"),
-            (52_428_800, "50.0 MB"),
-            (262_144_000, "250.0 MB"),
-            (1_073_741_824, "1.0 GB"),
-        ] {
-            assert_eq!(human_readable(bytes), text, "{bytes}");
-        }
+    #[ignore = "daily"]
+    fn hook_panic_toast_cannot_be_vetoed_or_rewritten_by_toast_add() {
+        crate::game::in_own_process(
+            "game::server_packs::tests::hook_panic_toast_cannot_be_vetoed_or_rewritten_by_toast_add",
+            || {
+                use mod_api::{
+                    ClientHost, ClientTickPreEvent, Flow, Hooks, ModEntry, RenderGuiPreEvent,
+                    ToastAddEvent,
+                };
+                use sunrise_client::lang;
+
+                struct VetoingPanicker;
+                #[mod_api::__subscriptions]
+                impl Hooks for VetoingPanicker {
+                    fn client_tick_pre(&self, _: &mut dyn ClientHost, _: &mut ClientTickPreEvent) {
+                        panic!("boom from vetoing mod");
+                    }
+                    fn toast_add(&self, _: &dyn ClientHost, event: &mut ToastAddEvent<'_>) -> Flow {
+                        *event.title = mod_api::Text::literal("rewritten");
+                        *event.description = Some(mod_api::Text::literal("hidden"));
+                        Flow::Cancel
+                    }
+                    fn render_gui_pre(
+                        &self,
+                        _: &dyn ClientHost,
+                        _: &mut RenderGuiPreEvent,
+                    ) -> Flow {
+                        Flow::Cancel
+                    }
+                }
+                let mods: mod_api::Mods =
+                    vec![ModEntry::new("veto_mod", Box::new(VetoingPanicker))].into();
+                mod_platform::testing::with_mods(mods, || {
+                    super::super::native_entity_refs::tests::with_client_game(|game| {
+                        // Ordinary system toasts are still vetoed by toast_add.
+                        assert!(!game.add_system_toast(
+                            None,
+                            SystemToast::new(Text::literal("ordinary"), None)
+                        ));
+                        game.native_client_tick_pre();
+                        // Dedicated/server instances do not drain the client toast queue.
+                        game.options.dedicated = Some(Vec::new());
+                        game.add_hook_panic_toasts();
+                        assert!(game.toast_manager.queued.is_empty());
+                        // The client drains and queues the toast directly without firing toast_add.
+                        game.options.dedicated = None;
+                        let _ = lang::scoped(lang::Language::load(&[], lang::DEFAULT), || {
+                            game.add_hook_panic_toasts();
+                        });
+                        assert_eq!(game.toast_manager.queued.len(), 1);
+                        let Some(Toast::Diagnostic { toast, .. }) =
+                            game.toast_manager.queued.front()
+                        else {
+                            panic!("expected a queued diagnostic")
+                        };
+                        assert_eq!(
+                            toast.title.component()["translate"],
+                            "sunrise.mods.hook_panic.title"
+                        );
+                        let message = toast.message.as_ref().unwrap();
+                        assert_eq!(
+                            message.component(),
+                            serde_json::json!({
+                                "translate": "sunrise.mods.hook_panic.description",
+                                "with": [{"text": "veto_mod"}, {"text": "client_tick_pre"}],
+                            })
+                        );
+                        assert!(message.plain().contains("veto_mod"));
+                        let mut gui_canceled = false;
+                        game.native_render_gui_pre(&mut gui_canceled);
+                        assert!(gui_canceled);
+                        // Advance the existing slide past its entrance without sleeping.
+                        let mut first = HudBatch::scratch([640, 480]);
+                        game.draw_every_toast(&mut first);
+                        game.draw_every_toast(&mut first);
+                        let entry = &mut game.toast_manager.visible[0];
+                        assert_eq!(entry.slot, 0);
+                        let Toast::Diagnostic { toast, .. } = &mut entry.toast else {
+                            panic!("expected a visible diagnostic")
+                        };
+                        toast.slide.origin =
+                            Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+                        let mut visible = HudBatch::scratch([640, 480]);
+                        game.draw_every_toast(&mut visible);
+                        let mut drawn_text = visible.vertices.iter().filter(|v| {
+                            v.text == 1
+                                && (0.0..visible.width).contains(&v.pos[0])
+                                && (0.0..32.0).contains(&v.pos[1])
+                        });
+                        assert!(
+                            drawn_text.clone().any(|v| {
+                                v.color == sunrise_client::hud::rgba(255, 85, 85, 255)
+                            }),
+                            "the error title draws inside its slot despite the HUD veto"
+                        );
+                        assert!(
+                            drawn_text.any(|v| v.color == u32::MAX),
+                            "the message draws too"
+                        );
+
+                        game.set_hud_mode(mod_api::HudMode::NoHud);
+                        assert!(game.ui.hide_gui);
+                        let mut mod_hidden = HudBatch::scratch([640, 480]);
+                        game.draw_every_toast(&mut mod_hidden);
+                        assert!(
+                            !mod_hidden.vertices.is_empty(),
+                            "NoHud does not hide diagnostics"
+                        );
+
+                        game.toggle_hide_gui();
+                        game.set_hud_mode(mod_api::HudMode::AllVisible);
+                        assert!(game.ui.player_hides_gui);
+                        let mut player_hidden = HudBatch::scratch([640, 480]);
+                        game.draw_every_toast(&mut player_hidden);
+                        assert!(
+                            player_hidden.vertices.iter().any(|v| {
+                                v.text == 1
+                                    && v.color == sunrise_client::hud::rgba(255, 85, 85, 255)
+                            }),
+                            "the hook failure diagnostic still draws with the vanilla HUD hidden"
+                        );
+                    });
+                });
+            },
+        );
     }
 }

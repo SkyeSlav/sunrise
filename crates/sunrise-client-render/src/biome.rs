@@ -5,12 +5,21 @@ pub use mod_api::world::biome::{BiomeColors, SpawnEntry};
 use serde_json::Value;
 use std::{
     borrow::Cow,
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet, HashMap},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock, Weak},
 };
 use sunrise_assets::resource_source::{ResourceRoot, ResourceSource};
 use sunrise_client_core::particle_type::ParticleType;
 use sunrise_core::{noise::SimplexNoise, position::BlockPos, random::LegacyRandom};
+use sunrise_world::worldgen::biome_temperature::{
+    BiomeTemperature, BiomeTemperatureSettings, Precipitation, TemperatureModifier,
+};
+
+type TemperatureCaches = HashMap<*const (), (Weak<()>, BiomeTemperature)>;
+thread_local! {
+    static TEMPERATURE_CACHES: RefCell<TemperatureCaches> = RefCell::default();
+}
 
 /// The missing saved biomes already warned about in the open world: each dimension's table
 /// keeps its own placeholders, but a name is reported once per world.
@@ -95,6 +104,8 @@ pub struct BiomeInfo {
     pub frozen: bool,
     pub downfall: f32,
     pub precipitation: bool,
+    /// Clones share the same biome identity; a newly decoded biome gets its own cache.
+    temperature_cache_key: Arc<()>,
     pub grass: u32,
     pub modifier: GrassModifier,
     pub foliage: u32,
@@ -129,12 +140,7 @@ impl BiomeInfo {
             .collect()
     }
 
-    /// `Biome.getHeightAdjustedTemperature`: the frozen modifier, then cooler
-    /// with height above `sea_level + 17`.
-    pub fn temperature_at(&self, pos: BlockPos, sea_level: i32) -> f32 {
-        use sunrise_world::worldgen::biome_temperature::{
-            BiomeTemperatureSettings, TemperatureModifier,
-        };
+    fn temperature_settings(&self) -> BiomeTemperatureSettings {
         BiomeTemperatureSettings {
             base_temperature: self.temperature,
             modifier: if self.frozen {
@@ -145,14 +151,41 @@ impl BiomeInfo {
             has_precipitation: self.precipitation,
             downfall: self.downfall,
         }
-        .height_adjusted(pos, sea_level)
     }
-    /// `Biome.getPrecipitationAt` in the Overworld (sea level 63): None
-    /// without precipitation, else whether it falls as snow
-    /// (`getHeightAdjustedTemperature` below 0.15).
-    pub fn snows_at(&self, x: i32, y: i32, z: i32) -> Option<bool> {
-        self.precipitation
-            .then(|| self.temperature_at(BlockPos::new(x, y, z), 63) < 0.15)
+
+    /// `Biome.getHeightAdjustedTemperature`: the frozen modifier, then cooler
+    /// with height above `sea_level + 17`.
+    pub fn temperature_at(&self, pos: BlockPos, sea_level: i32) -> f32 {
+        self.temperature_settings().height_adjusted(pos, sea_level)
+    }
+
+    /// `Biome.getPrecipitationAt`: None without precipitation, otherwise whether it snows.
+    /// `Biome.getTemperature` retains the temperature per biome, thread and packed position.
+    pub fn snows_at(&self, pos: BlockPos, sea_level: i32) -> Option<bool> {
+        TEMPERATURE_CACHES.with_borrow_mut(|caches| {
+            let key = Arc::as_ptr(&self.temperature_cache_key);
+            let cache = if let Some((_, cache)) = caches.get_mut(&key) {
+                cache
+            } else {
+                // Weak keys prevent address reuse until the old cache is discarded without
+                // keeping biomes from replaced registries alive.
+                caches.retain(|_, (biome, _)| biome.strong_count() != 0);
+                &mut caches
+                    .entry(key)
+                    .or_insert_with(|| {
+                        (
+                            Arc::downgrade(&self.temperature_cache_key),
+                            BiomeTemperature::new(self.temperature_settings()),
+                        )
+                    })
+                    .1
+            };
+            match cache.precipitation_at(pos, sea_level) {
+                Precipitation::None => None,
+                Precipitation::Rain => Some(false),
+                Precipitation::Snow => Some(true),
+            }
+        })
     }
 }
 /// The game's biomes, by id. The built-in (vanilla) biomes come first, in
@@ -180,6 +213,7 @@ pub struct Biomes {
     exhausted: Arc<std::sync::atomic::AtomicBool>,
 }
 /// The grass, foliage and dry foliage colormaps.
+#[derive(Default)]
 struct Colormaps {
     grass: Vec<u32>,
     foliage: Vec<u32>,
@@ -200,13 +234,27 @@ fn colormap(root: &ResourceSource, name: &str) -> Result<Vec<u32>> {
     decoder.ignore_checksums(true);
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info()?;
-    let mut bytes = vec![0; reader.output_buffer_size().ok_or("colormap too large")?];
+    crate::hud::check_pack_size(reader.info().width, reader.info().height)?;
+    use crate::hud::{MAX_IMAGE_BYTES, image_buffer};
+    let size = reader.output_buffer_size().unwrap_or(usize::MAX);
+    let mut bytes = image_buffer(&[size], MAX_IMAGE_BYTES)?;
+    bytes.resize(size, 0);
     let info = reader.next_frame(&mut bytes)?;
     let channels = info.color_type.samples();
-    Ok(bytes[..info.buffer_size()]
-        .chunks_exact(channels)
-        .map(|p| u32::from(p[0]) << 16 | u32::from(p[1]) << 8 | u32::from(p[2]))
-        .collect())
+    let mut map = image_buffer(
+        &[info.width as usize, info.height as usize],
+        MAX_IMAGE_BYTES,
+    )?;
+    // A grey map (one channel, two with alpha) has its grey for red, green and blue.
+    map.extend(bytes[..info.buffer_size()].chunks_exact(channels).map(|p| {
+        let [r, g, b] = if channels < 3 {
+            [p[0]; 3]
+        } else {
+            [p[0], p[1], p[2]]
+        };
+        u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b)
+    }));
+    Ok(map)
 }
 /// `GrassColor.get`/`FoliageColor.get`: temperature and downfall index a 256x256 map.
 fn sample(map: &[u32], temperature: f32, downfall: f32, fallback: u32) -> u32 {
@@ -258,6 +306,7 @@ impl BiomeInfo {
             frozen: v["temperature_modifier"].as_str() == Some("frozen"),
             downfall,
             precipitation: v["has_precipitation"].as_bool().unwrap_or(true),
+            temperature_cache_key: Arc::new(()),
             grass: color(&effects["grass_color"])
                 .unwrap_or_else(|| sample(&maps.grass, temperature, downfall, 0xFF00FF)),
             modifier,
@@ -332,6 +381,17 @@ impl Biomes {
             foliage: colormap(root.source(), "foliage")?,
             dry: colormap(root.source(), "dry_foliage")?,
         };
+        Self::load_with_colormaps(root, maps)
+    }
+    /// Loads biome definitions for a logical server without opening the client
+    /// `textures/colormap/{grass,foliage,dry_foliage}.png` textures (`GrassColorReloadListener`,
+    /// `FoliageColorReloadListener`, `DryFoliageColorReloadListener` are client-only in vanilla).
+    /// Server-side biome JSON data (water colour, climate, spawns, features and attributes) is
+    /// loaded identically to [`Self::load`].
+    pub fn load_for_server(root: &ResourceRoot) -> Result<Self> {
+        Self::load_with_colormaps(root, Colormaps::default())
+    }
+    fn load_with_colormaps(root: &ResourceRoot, maps: Colormaps) -> Result<Self> {
         let mut list = Vec::new();
         let mut files_by_name = BTreeMap::new();
         // The folder's own files (not its subfolders'), by file name: through `json_folder`,
@@ -465,6 +525,7 @@ impl Biomes {
                 frozen: false,
                 downfall: 0.4,
                 precipitation: false,
+                temperature_cache_key: Arc::new(()),
                 grass: 0x7f_c0_55,
                 modifier: GrassModifier::None,
                 foliage: 0x6a_ab_37,
@@ -857,6 +918,37 @@ impl Biomes {
 }
 
 #[cfg(test)]
+mod precipitation_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn snow_is_not_warm_enough_to_rain_including_nan() {
+        let mut biomes =
+            Biomes::from_jsons(&[("test:unstable", json!({"has_precipitation": true}))]);
+        biomes.list[0].temperature = f32::NAN;
+        assert_eq!(
+            biomes.get(0).snows_at(BlockPos::new(0, 64, 0), 63),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn precipitation_caches_belong_to_the_biome_and_thread() {
+        let biomes = Biomes::from_jsons(&[("test:taiga", json!({"temperature": 0.25}))]);
+        let pos = BlockPos::new(0, 170, 0);
+        assert_eq!(biomes.get(0).snows_at(pos, 63), Some(true));
+        assert_eq!(biomes.clone().get(0).snows_at(pos, 120), Some(true));
+        std::thread::scope(|thread| {
+            thread.spawn(|| assert_eq!(biomes.get(0).snows_at(pos, 120), Some(false)));
+        });
+
+        let replaced = biomes.with_packs([("test:taiga", &json!({"temperature": 0.25}))]);
+        assert_eq!(replaced.get(0).snows_at(pos, 120), Some(false));
+    }
+}
+
+#[cfg(test)]
 mod color_tests {
     use super::*;
     use serde_json::json;
@@ -1024,6 +1116,62 @@ mod source_tests {
         )]));
         assert_eq!(colormap(&source, "grass").unwrap(), [0x0c2238]);
         assert!(colormap(&source, "missing").is_err());
+    }
+
+    /// A colormap is refused by the side its PNG header claims when no atlas
+    /// would take it, before the reader sizes a buffer from that header.
+    #[test]
+    fn a_colormap_claiming_a_side_no_atlas_takes_is_refused() {
+        use sunrise_assets::resource_source::Resource;
+        let colormap_of_width = |width: u32| {
+            let mut png = Vec::new();
+            let mut encoder = png::Encoder::new(&mut png, width, 1);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer
+                .write_image_data(&vec![0; width as usize * 3])
+                .unwrap();
+            writer.finish().unwrap();
+            let source = ResourceSource::indexed(std::collections::BTreeMap::from([(
+                "assets/minecraft/textures/colormap/grass.png".into(),
+                Resource::bytes(png),
+            )]));
+            colormap(&source, "grass").map(|map| map.len())
+        };
+        assert_eq!(colormap_of_width(32_768).unwrap(), 32_768);
+        let refused = colormap_of_width(40_000);
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|e| e.is::<crate::hud::OverSizeLimit>()),
+            "{refused:?}"
+        );
+    }
+
+    /// A grey colormap has one channel (two with alpha): each pixel is its
+    /// grey in red, green and blue.
+    #[test]
+    fn a_grey_colormap_reads_its_grey_into_every_channel() {
+        use sunrise_assets::resource_source::Resource;
+        for (color, pixels) in [
+            (png::ColorType::Grayscale, vec![0x10, 0x20]),
+            (png::ColorType::GrayscaleAlpha, vec![0x10, 0xff, 0x20, 0xff]),
+        ] {
+            let mut png = Vec::new();
+            {
+                let mut encoder = png::Encoder::new(&mut png, 2, 1);
+                encoder.set_color(color);
+                encoder.set_depth(png::BitDepth::Eight);
+                let mut writer = encoder.write_header().unwrap();
+                writer.write_image_data(&pixels).unwrap();
+            }
+            let source = ResourceSource::indexed(std::collections::BTreeMap::from([(
+                "assets/minecraft/textures/colormap/grass.png".into(),
+                Resource::bytes(png),
+            )]));
+            assert_eq!(colormap(&source, "grass").unwrap(), [0x101010, 0x202020]);
+        }
     }
 }
 
@@ -1258,5 +1406,56 @@ mod exhaustion_tests {
         assert_eq!(biomes.ensure_saveable(), Err(BiomeIdExhausted));
         assert!(BiomeIdExhausted.to_string().contains("65536"));
         assert_eq!(biomes.saved_name(65535), "missing:last");
+    }
+}
+
+#[cfg(test)]
+mod server_load_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct TempDir(std::path::PathBuf);
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn load_for_server_succeeds_without_colormaps_and_preserves_json_data() {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "sunrise-biomes-server-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let biome_dir = dir.join("data/minecraft/worldgen/biome");
+        std::fs::create_dir_all(&biome_dir).unwrap();
+        let _guard = TempDir(dir.clone());
+        std::fs::write(
+            biome_dir.join("plains.json"),
+            r#"{"temperature": 0.8, "downfall": 0.4, "has_precipitation": true, "effects": {"water_color": 4159204}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            biome_dir.join("swamp.json"),
+            r#"{"temperature": 0.8, "downfall": 0.9, "has_precipitation": true, "effects": {"water_color": 6388580, "foliage_color": 6975545}}"#,
+        )
+        .unwrap();
+
+        let root = ResourceRoot::directory(dir);
+        assert!(
+            Biomes::load(&root).is_err(),
+            "client biome load still requires colormap textures"
+        );
+        let server = Biomes::load_for_server(&root).unwrap();
+        assert_eq!(server.get(server.id("minecraft:plains")).water, 0x3F_76E4);
+        assert_eq!(server.get(server.id("minecraft:swamp")).water, 0x61_7B64);
+        assert_eq!(
+            server.get(server.id("minecraft:swamp")).foliage,
+            0x6A_7039,
+            "JSON foliage_color override is still read"
+        );
+        assert_eq!(server.effects("minecraft:plains").unwrap().water, 0x3F_76E4);
     }
 }

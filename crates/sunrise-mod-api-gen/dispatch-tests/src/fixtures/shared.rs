@@ -1,5 +1,5 @@
 //! Shared exception: dispatch infrastructure and cross-area fixture types/tests; no new hooks.
-use mod_api::mod_api::client::hud_layout::GuiDraw;
+use mod_api::mod_api::BlockEntityTypeKey;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use sunrise_core::game_mode::GameMode;
@@ -51,7 +51,9 @@ mod content {
 struct BlockEntityDraw(Vec<u32>);
 use serde_json::{Map, Value};
 use stubs::*;
+#[derive(Clone)]
 struct Text;
+#[derive(Clone)]
 struct ScreenshotImage;
 #[derive(Debug, PartialEq)]
 struct Zoom(u32);
@@ -60,8 +62,128 @@ enum Flow {
     Cancel,
 }
 trait Host {}
-trait ServerHost: Host {}
+trait ServerHost: Host {
+    fn transaction_refusal(
+        &mut self,
+    ) -> Option<item::transaction::TransactionError<core::convert::Infallible>> {
+        None
+    }
+}
 trait ClientHost: Host {}
+
+mod client {
+    pub(super) mod tooltip_components {
+        pub(in crate::tests) fn retain_gather_tooltip_payloads(
+            _: &'static str,
+            _: &[super::super::TooltipElement],
+        ) {
+        }
+        pub(in crate::tests) fn invoke_tooltip_image<P: ?Sized, R>(
+            part: &&P,
+            call: impl FnOnce(&P) -> Option<R>,
+        ) -> Option<R> {
+            let disabled = super::super::DISABLED_BLOCK_PART.get();
+            if disabled == Some(std::ptr::from_ref(*part).cast())
+                || super::super::runtime::poisoned(super::super::HookId::TooltipImage, "part")
+            {
+                return None;
+            }
+            super::super::runtime::invoke(
+                super::super::HookId::TooltipImage,
+                "tooltip_image",
+                "part",
+                || call(*part),
+            )
+            .flatten()
+        }
+    }
+}
+
+mod item {
+    pub(super) mod transaction {
+        use super::super::ServerHost;
+
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub(in crate::tests) enum TransactionError<E> {
+            Aborted(E),
+            Unavailable,
+            InvalidContext,
+            CommitRefused,
+        }
+
+        // The game exercises the actual journal; these fixtures have no world state.
+        pub(in crate::tests) trait HostTransaction {
+            fn transaction<T, E>(
+                &mut self,
+                call: impl FnOnce(&mut dyn ServerHost, &()) -> Result<T, E>,
+            ) -> Result<T, TransactionError<E>>;
+        }
+        impl HostTransaction for dyn ServerHost + '_ {
+            fn transaction<T, E>(
+                &mut self,
+                call: impl FnOnce(&mut dyn ServerHost, &()) -> Result<T, E>,
+            ) -> Result<T, TransactionError<E>> {
+                match self.transaction_refusal() {
+                    None => call(self, &()).map_err(TransactionError::Aborted),
+                    Some(TransactionError::Unavailable) => Err(TransactionError::Unavailable),
+                    Some(TransactionError::InvalidContext) => Err(TransactionError::InvalidContext),
+                    Some(TransactionError::CommitRefused) => {
+                        call(self, &()).map_err(TransactionError::Aborted)?;
+                        Err(TransactionError::CommitRefused)
+                    }
+                    Some(TransactionError::Aborted(never)) => match never {},
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn transaction_fixture_distinguishes_admission_and_settlement_refusal() {
+    use core::convert::Infallible;
+    use item::transaction::{HostTransaction, TransactionError};
+
+    struct RefusingHost(Option<TransactionError<Infallible>>);
+    impl Host for RefusingHost {}
+    impl ServerHost for RefusingHost {
+        fn transaction_refusal(&mut self) -> Option<TransactionError<Infallible>> {
+            self.0.take()
+        }
+    }
+
+    for (refusal, ran) in [
+        (TransactionError::Unavailable, false),
+        (TransactionError::InvalidContext, false),
+        (TransactionError::CommitRefused, true),
+    ] {
+        let mut host = RefusingHost(Some(refusal));
+        let mut called = false;
+        let result = (&mut host as &mut dyn ServerHost).transaction(|_, _| {
+            called = true;
+            Ok::<_, Infallible>(())
+        });
+        assert_eq!(result, Err(refusal));
+        assert_eq!(called, ran);
+    }
+}
+
+/// Owner, hook and field for one generated dispatch refusal.
+type OutputRefusal = (&'static str, &'static str, &'static str);
+thread_local! {
+    static OUTPUT_REFUSALS: std::cell::RefCell<Option<Vec<OutputRefusal>>> = const { std::cell::RefCell::new(None) };
+}
+
+fn capture_output_refusals(call: impl FnOnce()) -> Vec<OutputRefusal> {
+    struct Restore(Option<Vec<OutputRefusal>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            OUTPUT_REFUSALS.replace(self.0.take());
+        }
+    }
+    let _restore = Restore(OUTPUT_REFUSALS.replace(Some(Vec::new())));
+    call();
+    OUTPUT_REFUSALS.take().unwrap()
+}
 trait WorldDrawContext {}
 trait DrawContext {
     fn mark(&mut self, value: u32);
@@ -104,6 +226,18 @@ impl LevelSide<'_> {
         }
     }
 }
+enum LevelRandomSide<'a> {
+    Server(&'a mut dyn LevelRandomHost),
+    Client(&'a dyn LevelHost),
+}
+impl LevelRandomSide<'_> {
+    fn reborrow(&mut self) -> LevelRandomSide<'_> {
+        match self {
+            Self::Server(host) => LevelRandomSide::Server(&mut **host),
+            Self::Client(host) => LevelRandomSide::Client(*host),
+        }
+    }
+}
 struct TestHost;
 struct TestLevel;
 impl LevelHost for TestLevel {}
@@ -112,6 +246,20 @@ impl HitHost for TestLevel {}
 impl Host for TestHost {}
 impl ServerHost for TestHost {}
 impl ClientHost for TestHost {}
+
+#[test]
+fn level_random_dispatch_reborrows_the_active_side() {
+    let mut host = TestLevel;
+    assert!(matches!(
+        LevelRandomSide::Server(&mut host).reborrow(),
+        LevelRandomSide::Server(_)
+    ));
+    assert!(matches!(
+        LevelRandomSide::Client(&host).reborrow(),
+        LevelRandomSide::Client(_)
+    ));
+}
+
 #[allow(dead_code)]
 mod generated {
     pub(super) mod mod_api {
@@ -122,21 +270,22 @@ mod generated {
             pub id: String,
         }
         pub(super) use super::super::ItemStack;
-        // The generated standalone-model dispatch builds the stub `Answered` and names the type through this path.
+        // Generated registration dispatch builds the stub `Answered` through this path.
         pub(super) use super::super::Answered;
         pub(super) use super::super::{
-            Command, Config, Dispensed, InteractionResult, MapDecoration, MapInfo, Minimap, Screen,
-            Zoom,
+            Command, CommandRegistration, Config, Dispensed, InteractionResult, MapDecoration,
+            MapInfo, Zoom,
         };
+        #[derive(Clone)]
         pub struct FluidModel;
         #[derive(Clone, Copy)]
         pub struct EntityRef;
         include!(concat!(env!("OUT_DIR"), "/dispatch_fixtures_api.rs"));
     }
     include!(concat!(env!("OUT_DIR"), "/mod_api_generated.rs"));
-    pub(super) use self::mod_api::{
-        BlockEntityTickReply, BlockFace, BlockKey, BlockState, CrosshairTarget,
-    };
+    pub(super) use self::mod_api::InlineImageReplacement;
+    use self::mod_api::StandaloneModelRegistration;
+    pub(super) use self::mod_api::{BlockFace, BlockKey, BlockState, CrosshairTarget};
     pub use sunrise_mod_api_macros::__subscriptions;
 }
 use generated::*;
@@ -181,23 +330,20 @@ fn receives_cancelled(hook: HookId) -> bool {
     MODS.get()
         .is_some_and(|installed| installed.subscribers.receives_cancelled(hook as usize))
 }
-fn entered(hook_id: HookId, hook: &'static str) -> impl Iterator<Item = &'static dyn Hooks> {
-    entered_with_id(hook_id, hook).map(|(_, hooks)| hooks)
-}
 fn entered_with_id(
     hook_id: HookId,
     hook: &'static str,
 ) -> impl Iterator<Item = (&'static str, &'static dyn Hooks)> {
-    listening(hook_id).map(move |(_, entry)| {
-        let ((), hooks) = enter_listener(entry, hook);
-        (entry.id, hooks)
-    })
+    runtime::entered_with_id_matching(hook_id, hook, |_| true)
 }
 fn listening(hook_id: HookId) -> impl Iterator<Item = (bool, &'static ModEntry)> {
     MODS.get().into_iter().flat_map(move |installed| {
         installed
             .subscribers
             .subscribers(hook_id as usize)
+            .filter(move |subscriber| {
+                !runtime::poisoned(hook_id, installed.mods[subscriber.index].id)
+            })
             .map(move |subscriber| {
                 (
                     subscriber.receives_cancelled,
@@ -244,6 +390,7 @@ struct BehaviorRegistrar<'a> {
 #[derive(Default)]
 struct Parts {
     blocks: Vec<(BlockKey, Vec<&'static dyn BlockPart>)>,
+    owner_slot: Option<(BlockKey, usize)>,
     block_entities: Vec<&'static dyn BlockEntityPart>,
     items: Vec<&'static dyn ItemPart>,
     menus: Vec<&'static dyn MenuPart>,
@@ -252,6 +399,7 @@ struct Parts {
 }
 static NO_PARTS: Parts = Parts {
     blocks: Vec::new(),
+    owner_slot: None,
     block_entities: Vec::new(),
     items: Vec::new(),
     menus: Vec::new(),
@@ -292,6 +440,16 @@ impl Parts {
         }
         self.block_key(Some(state.block()))
     }
+    fn block_entry(&self, state: BlockState) -> Option<BlockHookParts<'_>> {
+        let parts = self.block_value(state);
+        (!parts.is_empty()).then_some(BlockHookParts {
+            parts,
+            owner_slot: self
+                .owner_slot
+                .filter(|(key, _)| *key == state.block())
+                .map(|(_, slot)| slot),
+        })
+    }
     fn block_key(&self, key: Option<BlockKey>) -> &[&'static dyn BlockPart] {
         key.and_then(|key| self.blocks.iter().find(|(block, _)| *block == key))
             .map_or(&[], |(_, parts)| parts.as_slice())
@@ -314,6 +472,9 @@ impl Parts {
     fn menu<'k>(&self, _: impl FnOnce() -> Option<&'k str>) -> &[&'static dyn MenuPart] {
         &self.menus
     }
+    fn menu_for_opener(&self, _: &str, _: Option<&str>) -> &[&'static dyn MenuPart] {
+        &self.menus
+    }
     fn fluid<'k>(&self, _: impl FnOnce() -> Option<&'k str>) -> &[&'static dyn FluidPart] {
         &self.fluids
     }
@@ -321,11 +482,190 @@ impl Parts {
         &self.entities
     }
 }
+struct BlockHookParts<'a> {
+    parts: &'a [&'static dyn BlockPart],
+    owner_slot: Option<usize>,
+}
+impl BlockHookParts<'_> {
+    fn parts(&self) -> &[&'static dyn BlockPart] {
+        self.parts
+    }
+    fn disabled_owner_slot(&self) -> Option<usize> {
+        self.owner_slot.filter(|&slot| {
+            DISABLED_BLOCK_PART.get() == Some(std::ptr::from_ref(self.parts[slot]).cast())
+        })
+    }
+}
+thread_local! {
+    // These fixtures use bare trait references, with at most one disabled attachment.
+    static DISABLED_BLOCK_PART: std::cell::Cell<Option<*const ()>> = const { std::cell::Cell::new(None) };
+}
+fn any_mod_disabled() -> bool {
+    DISABLED_BLOCK_PART.get().is_some()
+}
 fn entered_parts<'a, P: ?Sized>(
+    hook_id: HookId,
     parts: &'a [&'a P],
     _: &'static str,
-) -> impl Iterator<Item = &'a P> {
-    parts.iter().copied()
+) -> impl Iterator<Item = (&'static str, &'a P)> {
+    let disabled = DISABLED_BLOCK_PART.get();
+    parts
+        .iter()
+        .copied()
+        .filter(move |part| {
+            disabled != Some(std::ptr::from_ref(*part).cast())
+                && !runtime::poisoned(hook_id, "part")
+        })
+        .map(|part| ("part", part))
+}
+
+#[test]
+fn a_disabled_owner_answers_only_at_its_dispatch_position() {
+    struct Probe(Option<InteractionResult>, std::sync::atomic::AtomicUsize);
+    impl BlockPart for Probe {
+        fn block_subscribed(&self) -> &'static [Option<HookId>] {
+            &[]
+        }
+        fn use_without_item(
+            &self,
+            _: &mut dyn ServerHost,
+            _: &mut UseWithoutItemEvent<'_>,
+        ) -> Option<InteractionResult> {
+            self.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.0
+        }
+    }
+    let before = leak(Probe(
+        Some(InteractionResult::SuccessServer),
+        Default::default(),
+    ));
+    let declines = leak(Probe(None, Default::default()));
+    let owner: &dyn BlockPart = leak(Probe(None, Default::default()));
+    let after = leak(Probe(
+        Some(InteractionResult::SuccessServer),
+        Default::default(),
+    ));
+    DISABLED_BLOCK_PART.set(Some(std::ptr::from_ref(owner).cast()));
+    let interact = |first: &'static dyn BlockPart| {
+        install_parts(Parts {
+            blocks: vec![(BlockKey::Test, vec![first, owner, after])],
+            owner_slot: Some((BlockKey::Test, 1)),
+            ..Parts::default()
+        });
+        let mut answer = None;
+        dispatch_use_without_item(
+            &mut TestHost,
+            BlockState::new(BlockKey::Test, 0),
+            &BlockClick(&()),
+            &mut answer,
+        );
+        answer
+    };
+    assert_eq!(interact(before), Some(InteractionResult::SuccessServer));
+    assert_eq!(interact(declines), Some(InteractionResult::Pass));
+    use std::sync::atomic::Ordering::Relaxed;
+    assert_eq!(before.1.load(Relaxed), 1);
+    assert_eq!(declines.1.load(Relaxed), 1);
+    assert_eq!(after.1.load(Relaxed), 0);
+    DISABLED_BLOCK_PART.set(None);
+}
+
+#[test]
+fn inert_growth_answers_keep_subscribed_crop_and_soil() {
+    struct Worldgen;
+    impl WorldgenHost for Worldgen {}
+    struct Draws;
+    impl RandomSource for Draws {}
+    let owner: &dyn BlockPart = leak(Mod {
+        id: 0,
+        calls: Arc::default(),
+    });
+    let non_owner: &dyn BlockPart = leak(Mod {
+        id: 1,
+        calls: Arc::default(),
+    });
+    DISABLED_BLOCK_PART.set(Some(std::ptr::from_ref(owner).cast()));
+    install_parts(Parts {
+        owner_slot: Some((BlockKey::Test, 0)),
+        blocks: vec![
+            (BlockKey::Test, vec![owner]),
+            (BlockKey::Other, vec![non_owner]),
+        ],
+        ..Parts::default()
+    });
+    WORLDGEN_PARTS.set(PARTS.get());
+    for (key, expected_valid, expected_soil) in [
+        (BlockKey::Test, Some(false), Some(None)),
+        (BlockKey::Other, None, None),
+    ] {
+        let state = BlockState::new(key, 0);
+        let mut valid = None;
+        dispatch_is_valid_bonemeal_target(
+            LevelSide::Server(&TestLevel),
+            LevelDimension,
+            BlockPos,
+            state,
+            &mut valid,
+        );
+        assert_eq!(valid, expected_valid);
+        let mut soil = None;
+        dispatch_on_tree_grow(&Worldgen, state, [1, 64, 2], &mut Draws, &mut soil);
+        assert_eq!(soil, expected_soil);
+    }
+    DISABLED_BLOCK_PART.set(None);
+}
+
+#[test]
+fn inert_support_signals_that_the_simulation_decides() {
+    let owner: &dyn BlockPart = leak(Mod {
+        id: 0,
+        calls: Arc::default(),
+    });
+    DISABLED_BLOCK_PART.set(Some(std::ptr::from_ref(owner).cast()));
+    install_parts(Parts {
+        blocks: vec![(BlockKey::Test, vec![owner])],
+        owner_slot: Some((BlockKey::Test, 0)),
+        ..Parts::default()
+    });
+    let other = BlockState::new(BlockKey::Other, 0);
+    for (key, disabled) in [(BlockKey::Test, true), (BlockKey::Other, false)] {
+        let state = BlockState::new(key, 0);
+        let (mut survives, mut inert) = (None, false);
+        dispatch_can_survive(
+            LevelSide::Server(&TestLevel),
+            LevelDimension,
+            BlockPos,
+            state,
+            &mut survives,
+            &mut inert,
+        );
+        assert_eq!((survives, inert), (None, disabled));
+
+        let (mut may, mut inert) = (None, false);
+        dispatch_may_place_on(
+            LevelSide::Server(&TestLevel),
+            LevelDimension,
+            state,
+            other,
+            BlockPos,
+            &mut may,
+            &mut inert,
+        );
+        assert_eq!((may, inert), (None, disabled));
+
+        let (mut sustains, mut inert) = (None, false);
+        dispatch_can_sustain_plant(
+            LevelSide::Server(&TestLevel),
+            LevelDimension,
+            other,
+            state,
+            BlockPos,
+            &mut sustains,
+            &mut inert,
+        );
+        assert_eq!((sustains, inert), (None, disabled));
+    }
+    DISABLED_BLOCK_PART.set(None);
 }
 
 #[test]
@@ -370,18 +710,6 @@ impl BlockEntityPart for Mod {
     fn block_entity_subscribed(&self) -> &'static [Option<HookId>] {
         &[]
     }
-    fn menu_button(&self, _: &mut dyn ServerHost, event: &mut MenuButtonEvent<'_>) {
-        assert_eq!(event.context.player, 123);
-        assert_eq!(event.context.player_entity_id, 42);
-        assert_eq!(event.context.pos, [1, 2, 3]);
-        assert_eq!(event.context.id, 9);
-        assert_eq!(event.entity.id(), "machine");
-        event.entity.data.push(9);
-        *event.carried = Some(ItemStack {
-            item: "bucket".into(),
-            count: 1,
-        });
-    }
     fn block_entity_submit(&self, _: &dyn ClientHost, event: &mut BlockEntitySubmitEvent<'_>) {
         assert_eq!(event.pos, [1, 2, 3]);
         assert_eq!(event.block, "example:machine");
@@ -392,13 +720,35 @@ impl MenuPart for Mod {
     fn menu_subscribed(&self) -> &'static [Option<HookId>] {
         &[]
     }
+    fn menu_button(&self, event: &mut MenuButtonEvent<'_>) {
+        assert_eq!(event.context.player, 123);
+        assert_eq!(event.context.player_entity_id, 42);
+        assert_eq!(event.context.id, 9);
+        let pos = event.context.pos;
+        if event
+            .subject
+            .with_view(|entity| {
+                assert_eq!(pos, Some([1, 2, 3]));
+                assert_eq!(entity.id(), "machine");
+                entity.data.push(9);
+            })
+            .is_none()
+        {
+            assert_eq!(pos, None);
+        }
+        *event.carried = Some(ItemStack {
+            item: "bucket".into(),
+            count: 1,
+        });
+    }
     fn menu_slot_rules(&self, _: &dyn Host, event: &mut MenuSlotRulesEvent<'_>) {
         // The context arrives as the game passed it: who, where and the other slots.
         let context = event.context;
         assert_eq!((context.player, context.pos), (Some(7), Some([1, 2, 3])));
         assert_eq!(event.container, MenuContainer::Grid);
-        assert_eq!(context.slots.len(), 2);
-        assert!(context.slots[1][0].is_none() && context.slots[1][1].is_some());
+        assert!(context.slot(MenuContainer::Grid, 0).is_none());
+        let stack = context.slot(MenuContainer::Grid, 1).unwrap();
+        assert_eq!((stack.item.as_ref(), stack.count), ("planks", 4));
         event.may_place = false;
         event.max_stack = self.id;
     }
@@ -407,11 +757,7 @@ impl EntityPart for Mod {
     fn entity_subscribed(&self) -> &'static [Option<HookId>] {
         &[]
     }
-    fn general_entity_tick(
-        &self,
-        _host: &mut dyn ServerHost,
-        event: &mut GeneralEntityTickEvent<'_>,
-    ) {
+    fn general_entity_tick(&self, event: &mut GeneralEntityTickEvent<'_>) {
         assert_eq!(event.kind, "mymod:robot");
         self.calls.lock().unwrap().push(self.id);
     }
@@ -483,24 +829,12 @@ impl Hooks for Mod {
         self.calls.lock().unwrap().push(self.id);
         Some(Zoom(self.id))
     }
-    fn should_apply_effect_tick_this_tick(
-        &self,
-        _: &dyn Host,
-        event: &mut ShouldApplyEffectTickThisTickEvent,
-    ) {
-        assert_eq!(
-            (event.effect, event.tick_count, event.amplifier),
-            (EffectKey(7), 19, 2)
-        );
-        event.apply = !event.apply;
-        self.calls.lock().unwrap().push(self.id);
-    }
     fn living_incoming_damage(
         &self,
         _: &mut dyn HitHost,
         event: &mut LivingIncomingDamageEvent<'_>,
     ) -> Flow {
-        event.container.0 = event.container.0 * 2.0 + self.id as f32;
+        *event.container.0 = *event.container.0 * 2.0 + self.id as f32;
         if self.id == 2 {
             Flow::Cancel
         } else {
@@ -517,5 +851,22 @@ fn part(id: u32, calls: &Arc<Mutex<Vec<u32>>>) -> &'static Mod {
 
 mod stubs {
     pub(super) use super::generated::mod_api::LivingRef;
-    pub(super) use crate::tests::mod_api::mod_api::{BlockEntityTickReply, DamageContainer};
+    pub(super) use crate::tests::mod_api::mod_api::DamageContainer;
+}
+mod crate_root {
+    // Dispatch fixtures isolate ordering; the vocabulary's own tests cover what the client
+    // validators refuse. One module for every client hook's validator.
+    mod client {
+        pub(crate) mod render_pipeline {
+            pub(crate) fn validate_render_pipelines<T>(_: &str, _: &[T], _: &mut Vec<T>) {}
+        }
+        pub(crate) mod hud_layout {
+            pub(crate) fn validate_hotbar_attack_indicator_progress(
+                _: &f32,
+                _: &f32,
+            ) -> Result<(), &'static str> {
+                Ok(())
+            }
+        }
+    }
 }

@@ -1,4 +1,5 @@
-//! What a server mod reads of the tick times and sets of the view and simulation distance.
+//! What a server mod reads of the tick times and of whether the server is published, and sets
+//! of the view and simulation distance.
 use super::Game;
 
 impl Game<'_> {
@@ -13,6 +14,11 @@ impl Game<'_> {
     /// `PlayerList.getSimulationDistance`.
     pub(super) fn server_simulation_distance(&self) -> Option<i32> {
         Some(self.lan.as_ref()?.hub.config.simulation_distance)
+    }
+    /// `MinecraftServer.isPublished`: `DedicatedServer`'s is always true, `IntegratedServer`'s
+    /// while it is open to LAN (`multiplayerScope != OFF`).
+    pub(super) fn server_is_published(&self) -> bool {
+        self.is_dedicated_server() || self.published_port().is_some()
     }
     /// `PlayerList.setViewDistance` on a dedicated server; the tickets read the settings.
     pub(super) fn server_set_view_distance(&mut self, distance: i32) -> bool {
@@ -63,6 +69,44 @@ mod tests {
             assert_eq!(game.server_view_distance(), Some(6));
             assert_eq!(game.server_simulation_distance(), Some(5));
             assert_eq!(game.settings.simulation_distance, 5);
+        });
+    }
+
+    /// A single-player world's server is published while it is open to LAN, and no longer once
+    /// it closes, though it runs headless (`options.dedicated` set) throughout; a dedicated
+    /// server always is.
+    #[test]
+    #[ignore = "daily"]
+    fn the_server_is_published_while_open_to_lan() {
+        use super::super::execution_role::ExecutionRole;
+        if super::super::native_entity_refs::tests::run_fresh_cases(
+            "game::native_server_distances::tests::the_server_is_published_while_open_to_lan",
+            "SUNRISE_TEST_SERVER_PUBLISHED_CASE",
+            &["published"],
+        ) {
+            return;
+        }
+        with_guests(|game| {
+            assert_eq!(game.options.execution_role, ExecutionRole::IntegratedServer);
+            game.options.dedicated = Some(Vec::new());
+            game.serving = Some(super::super::integrated::Serving::fixture(0));
+            let published = |game: &mut super::super::Game<'_>| {
+                let host: &dyn mod_api::ServerHost = game;
+                host.server_is_published()
+            };
+            assert!(!published(game), "a world not yet open to LAN");
+            let settings = super::super::lan::LanSettings {
+                port: 0,
+                guest_commands: false,
+                force_game_mode: false,
+            };
+            game.publish(settings).unwrap();
+            assert!(published(game), "opened to LAN");
+            assert!(game.unpublish());
+            assert!(!published(game), "the LAN closed");
+            game.serving = None;
+            game.options.execution_role = ExecutionRole::DedicatedServer;
+            assert!(published(game), "a dedicated server");
         });
     }
 }

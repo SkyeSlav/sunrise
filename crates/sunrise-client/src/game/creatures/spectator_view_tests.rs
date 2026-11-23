@@ -15,7 +15,7 @@ fn root() -> std::path::PathBuf {
         .expect("set SUNRISE_TEST_RESOURCES to prepared resources")
 }
 
-fn game() -> Game<'static> {
+fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -> Game<'a> {
     let root = root();
     let settings = Settings::default();
     let loaded = load_resources(
@@ -34,7 +34,7 @@ fn game() -> Game<'static> {
     let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
     options.resources = root.clone();
     options.execution_role = execution_role::ExecutionRole::IntegratedServer;
-    let res: &'static _ = Box::leak(Box::new(loaded.resources));
+    let res = &*resources.insert(loaded.resources);
     let mut game = Game::new(
         res,
         loaded.pack,
@@ -74,7 +74,8 @@ fn game() -> Game<'static> {
 #[test]
 #[ignore = "daily"]
 fn a_spectator_sees_the_invisible_body() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     let types = MobTypes::load(&root()).unwrap();
     let kind = Arc::new(types.types["minecraft:pig"].clone());
     let mut pig = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);

@@ -13,12 +13,13 @@ use sunrise_core::{
 };
 use sunrise_world::{
     block_collision::{BlockCollisionRegistry, DynamicCollisionWorld, ShulkerCollisionState},
-    block_collision_scan::{BlockCollisionWorld, CollisionBlock},
+    block_collision_scan::{BlockCollisionWorld, CollisionBlock, CollisionScanError},
     collision::CachedCollisionRegistry,
     collision_context::{CollisionContext, CollisionEntity, CollisionItem},
     dynamic_support::DynamicSupportWorld,
     entity_obstruction::EntityIdentity,
     fluid::{FluidKind, FluidState},
+    ground_support::{GroundState, find_supporting_block},
     liquid_collision::LiquidCollisionWorld,
     piston_shape::PistonCollisionWorld,
     powder_snow_collision::{PowderSnowEntity, PowderSnowWorld},
@@ -49,12 +50,26 @@ pub fn published_outline<'w>(
     if !binding.publishes_shapes(state) {
         return None;
     }
-    match world.block_entities.get(&(p[0], p[1], p[2])) {
-        Some(crate::chunk::block_entity::BlockEntity::Mod(entity)) => {
-            entity.shapes().map(|shapes| shapes.outline())
-        }
-        _ => None,
-    }
+    published_shapes(world, binding.registry(), state, p).map(|shapes| shapes.outline())
+}
+
+/// The publication at `p` only belongs to the supplied block if its identity matches
+/// the block there. Properties can change without replacing that block entity.
+pub fn published_shapes<'w>(
+    world: &'w World,
+    registry: &BlockRegistry,
+    state: BlockStateId,
+    [x, y, z]: [i32; 3],
+) -> Option<&'w crate::chunk::block_entity::published_shapes::PublishedShapes> {
+    let crate::chunk::block_entity::BlockEntity::Mod(entity) =
+        world.block_entities.get(&(x, y, z))?
+    else {
+        return None;
+    };
+    let shapes = entity.shapes()?;
+    let resident = world.block(x, y, z);
+    (state == resident || registry.state(state)?.name == registry.state(resident)?.name)
+        .then_some(shapes)
 }
 
 /// What powder snow's and liquids' contextual collisions ask of the colliding
@@ -194,6 +209,14 @@ impl<W: EntityMovementWorld<Error = io::Error>> EntityMovementWorld for EntityCo
         }
         border.collision_shape().map(Some).map_err(io::Error::other)
     }
+    fn moving_colliders(
+        &mut self,
+        entity: EntityIdentity,
+        bounds: Aabb,
+        out: &mut Vec<sunrise_core::geometry::oriented::OrientedCollider>,
+    ) -> io::Result<()> {
+        self.blocks.moving_colliders(entity, bounds, out)
+    }
 }
 impl<'a, W> EntityCollisions<'a, W>
 where
@@ -244,6 +267,26 @@ where
     }
 }
 impl<'w> SceneCollisions<'w, '_> {
+    /// `Entity.checkSupportingBlock` against this entity's contextual shapes.
+    pub fn update_ground_support(
+        &mut self,
+        ground: &mut GroundState,
+        feet: Vec3,
+        bounds: Aabb,
+        movement: Option<Vec3>,
+        context: CollisionContext<'_>,
+    ) -> std::result::Result<(), CollisionScanError<io::Error>> {
+        ground.check_support(ground.on_ground, bounds, movement, |bounds| {
+            find_supporting_block(
+                self,
+                context.at_entity_height(feet.y),
+                feet,
+                bounds,
+                usize::MAX,
+            )
+        })
+    }
+
     /// Position contexts permit geometric movement probes without inventing a
     /// player, inventory, effects or fluid-standing behavior. A supplied subject
     /// collides as a living entity with its captured main-hand stack.
@@ -583,6 +626,16 @@ impl EntityMovementWorld for SceneCollisions<'_, '_> {
     fn movement_border(&mut self, _: EntityIdentity, _: Aabb) -> io::Result<Option<VoxelShape>> {
         Ok(None)
     }
+    /// The moving colliders the game placed for this pass: every mover resolves through here.
+    fn moving_colliders(
+        &mut self,
+        entity: EntityIdentity,
+        bounds: Aabb,
+        out: &mut Vec<sunrise_core::geometry::oriented::OrientedCollider>,
+    ) -> io::Result<()> {
+        crate::moving_colliders::near(entity, bounds, out);
+        Ok(())
+    }
 }
 impl DynamicSupportWorld for SceneCollisions<'_, '_> {
     type Error = io::Error;
@@ -613,13 +666,15 @@ impl DynamicSupportWorld for SceneCollisions<'_, '_> {
     }
     /// The shapes a mod block entity published for its block: one lookup of the entity at
     /// the position, whose built shape is shared, not made again.
-    fn published_collision_shape(&mut self, p: [i32; 3]) -> io::Result<Option<VoxelShape>> {
-        Ok(match self.world.block_entities.get(&(p[0], p[1], p[2])) {
-            Some(crate::chunk::block_entity::BlockEntity::Mod(entity)) => {
-                entity.shapes().map(|shapes| shapes.collision().clone())
-            }
-            _ => None,
-        })
+    fn published_collision_shape(
+        &mut self,
+        p: [i32; 3],
+        state: BlockStateId,
+    ) -> io::Result<Option<VoxelShape>> {
+        Ok(
+            published_shapes(self.world, self.binding.registry(), state, p)
+                .map(|shapes| shapes.collision().clone()),
+        )
     }
 }
 impl PistonCollisionWorld for SceneCollisions<'_, '_> {
@@ -1223,8 +1278,8 @@ mod published_shape_tests {
     use sunrise_core::{geometry::Axis, nbt::Tag};
     use sunrise_world::{DATA_VERSION, registry::BlockStateId};
 
-    /// `test:bus` (state 1) declares a full cube and may publish its shapes; `test:plain`
-    /// (state 2) declares the same cube and may not.
+    /// `test:bus` and `test:other` may publish shapes in place of their declared cubes.
+    /// `test:plain` declares the same cube and may not publish.
     fn binding(registry: &BlockRegistry) -> BlockCollisionRegistry<'_> {
         let empty = VoxelShape::empty();
         let (min, max) = empty.discrete_bounds();
@@ -1268,8 +1323,8 @@ mod published_shape_tests {
                 ("DataVersion", Tag::Int(DATA_VERSION)),
                 ("states", Tag::List(states())),
                 ("shapes", Tag::List(vec![cube, air])),
-                ("cached_shapes", Tag::IntArray(vec![1, 0, 0])),
-                ("published_shapes", Tag::IntArray(vec![1])),
+                ("cached_shapes", Tag::IntArray(vec![1, 0, 0, 0, 0])),
+                ("published_shapes", Tag::IntArray(vec![1, 3, 4])),
             ]),
             registry,
         )
@@ -1277,9 +1332,19 @@ mod published_shape_tests {
         BlockCollisionRegistry::new(Arc::new(cached)).unwrap()
     }
     fn states() -> Vec<Tag> {
-        ["minecraft:air", "test:bus", "test:plain"]
-            .map(|name| Tag::String(name.into()))
-            .to_vec()
+        vec![
+            Tag::String("minecraft:air".into()),
+            Tag::String("test:bus".into()),
+            Tag::String("test:plain".into()),
+            Tag::String("test:other".into()),
+            Tag::compound([
+                ("id", Tag::String("test:bus".into())),
+                (
+                    "properties",
+                    Tag::compound([("lit", Tag::String("true".into()))]),
+                ),
+            ]),
+        ]
     }
     fn registry() -> BlockRegistry {
         BlockRegistry::from_nbt(&Tag::compound([
@@ -1291,6 +1356,7 @@ mod published_shape_tests {
                     ("minecraft:air", Tag::Int(0)),
                     ("test:bus", Tag::Int(1)),
                     ("test:plain", Tag::Int(2)),
+                    ("test:other", Tag::Int(3)),
                 ]),
             ),
         ]))
@@ -1331,6 +1397,10 @@ mod published_shape_tests {
             World::new(BlockStateId(0), 0),
             World::new(BlockStateId(0), 0),
         );
+        for world in [&mut first, &mut second] {
+            world.chunks.insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+            world.set(1, 64, 1, BlockStateId(1)).unwrap();
+        }
         publish(&mut first, (1, 64, 1), &[]);
         let mut entity = ModBlockEntity::new("test:bus".into(), Default::default());
         entity.set_shapes(Some(Arc::new(
@@ -1354,11 +1424,82 @@ mod published_shape_tests {
     }
 
     #[test]
+    fn a_supplied_state_reads_only_its_own_blocks_publication() {
+        let registry = registry();
+        let binding = binding(&registry);
+        let mut world = World::new(BlockStateId(0), 0);
+        world.chunks.insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        // The same block entity type can publish for both block identities.
+        let bus = BlockStateId(1);
+        let lit_bus = BlockStateId(4);
+        let other = BlockStateId(3);
+        for (x, state, height) in [(1, bus, 0.25), (2, other, 0.75)] {
+            world.set(x, 64, 1, state).unwrap();
+            let mut entity = ModBlockEntity::new("test:bus".into(), Default::default());
+            let boxes = vec![[0.0, 0.0, 0.0, 1.0, height, 1.0]];
+            entity.set_shapes(Some(Arc::new(
+                PublishedShapes::new(BlockEntityShapes {
+                    outline: boxes.clone(),
+                    collision: boxes,
+                })
+                .unwrap(),
+            )));
+            world
+                .block_entities
+                .insert((x, 64, 1), BlockEntity::Mod(Box::new(entity)));
+        }
+        let mut scene = SceneCollisions {
+            world: &world,
+            binding: &binding,
+            subject: None,
+        };
+        for (state, x, published) in [
+            (bus, 1, Some(0.25)),
+            (lit_bus, 1, Some(0.25)),
+            (other, 2, Some(0.75)),
+            (bus, 2, None),
+            (other, 1, None),
+        ] {
+            let p = [x, 64, 1];
+            assert_eq!(
+                published_outline(&world, &binding, state, p)
+                    .and_then(|s| s.bounds())
+                    .map(|b| b.max(Axis::Y)),
+                published
+            );
+            let height = published.unwrap_or(1.0);
+            assert_eq!(
+                binding
+                    .collision_shape(&mut scene, state, p)
+                    .unwrap()
+                    .bounds()
+                    .unwrap()
+                    .max(Axis::Y),
+                height
+            );
+            assert_eq!(
+                binding
+                    .collision_shape_with_context(
+                        &mut scene,
+                        state,
+                        sunrise_core::position::BlockPos::new(x, 64, 1),
+                        &CollisionContext::empty(false)
+                    )
+                    .unwrap()
+                    .bounds()
+                    .unwrap()
+                    .max(Axis::Y),
+                height
+            );
+        }
+    }
+
+    #[test]
     fn suffocation_reads_the_published_shape_of_a_flagged_state() {
         use sunrise_world::suffocation::{SuffocationDefinition, SuffocationRegistry};
         let registry = registry();
         let binding = Arc::new(binding(&registry));
-        let definitions = ["minecraft:air", "test:bus", "test:plain"]
+        let definitions = ["minecraft:air", "test:bus", "test:plain", "test:other"]
             .map(|name| (name.to_owned(), SuffocationDefinition::TaggedFullCollision))
             .into();
         let causes = ["test:bus", "test:plain"].map(String::from).into();
@@ -1435,5 +1576,171 @@ mod published_shape_tests {
         );
         assert!(fall(&world, &binding).abs() < 1e-9);
         assert!(published_outline(&world, &binding, BlockStateId(1), [1, 64, 1]).is_none());
+    }
+
+    /// Parts for the tests: the answer of `rule` for each ask, counting them.
+    struct Rule<F: Fn(&CollisionContext<'_>, BlockPos) -> Option<VoxelShape>> {
+        asked: std::cell::Cell<usize>,
+        rule: F,
+    }
+    impl<F: Fn(&CollisionContext<'_>, BlockPos) -> Option<VoxelShape>>
+        sunrise_world::part_collision::PartShapes for Rule<F>
+    {
+        fn shape(
+            &self,
+            _: BlockStateId,
+            position: BlockPos,
+            context: &CollisionContext<'_>,
+            _: &mut dyn FnMut() -> &'static [&'static str],
+        ) -> Option<VoxelShape> {
+            self.asked.set(self.asked.get() + 1);
+            (self.rule)(context, position)
+        }
+    }
+    fn rule<F: Fn(&CollisionContext<'_>, BlockPos) -> Option<VoxelShape>>(
+        rule: F,
+    ) -> std::rc::Rc<Rule<F>> {
+        std::rc::Rc::new(Rule {
+            asked: Default::default(),
+            rule,
+        })
+    }
+    fn slab(top: f64) -> VoxelShape {
+        VoxelShape::from_box(Aabb::new(Vec3::ZERO, Vec3::new(1.0, top, 1.0))).unwrap()
+    }
+    /// How far the mover `id`, dropped onto the top face of the block at (6, 64, 1) and given
+    /// `context`, falls: the same drop as `fall`, onto the declared cube of state 2.
+    fn fall_onto_plain(
+        world: &World,
+        binding: &BlockCollisionRegistry<'_>,
+        id: u32,
+        context: CollisionContext<'_>,
+    ) -> f64 {
+        let body = Aabb::new(Vec3::new(6.2, 65.0, 1.2), Vec3::new(6.8, 66.8, 1.8));
+        let mut scene = SceneCollisions {
+            world,
+            binding,
+            subject: None,
+        };
+        -crate::moving_colliders::as_mover(id, || {
+            scene
+                .resolve_with_context(body, Vec3::new(0.0, -2.0, 0.0), 0.0, false, context)
+                .unwrap()
+        })
+        .y
+    }
+    fn plain_world() -> World {
+        let mut world = World::new(BlockStateId(0), 0);
+        world.chunks.insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        world.set(1, 64, 1, BlockStateId(1)).unwrap();
+        world.set(6, 64, 1, BlockStateId(2)).unwrap();
+        world
+    }
+    fn player(id: u64, y: f64, descending: bool) -> CollisionContext<'static> {
+        CollisionContext::for_entity(
+            CollisionEntity {
+                identity: EntityIdentity(id),
+                kind: sunrise_world::collision_context::EntityContextKind::Player,
+                y,
+                descending,
+                main_hand: None,
+            },
+            false,
+        )
+    }
+
+    #[test]
+    fn a_part_gives_the_entity_that_asks_its_own_shape() {
+        let registry = registry();
+        let binding = binding(&registry);
+        binding.set_part_states([BlockStateId(2)]);
+        let world = plain_world();
+        // Belt-like: the carried entity (7) gets the full block, anything else a clipped slab.
+        let parts = rule(|_, _| {
+            Some(if crate::moving_colliders::mover() == 7 {
+                VoxelShape::block()
+            } else {
+                slab(0.25)
+            })
+        });
+        let _in = sunrise_world::part_collision::InParts::enter(parts.clone());
+        assert!(fall_onto_plain(&world, &binding, 7, player(0, 65.0, false)).abs() < 1e-9);
+        assert!((fall_onto_plain(&world, &binding, 8, player(0, 65.0, false)) - 0.75).abs() < 1e-9);
+        assert!(parts.asked.get() > 0);
+        // The cell's cached shape stays the empty-context answer: a state that opts in is
+        // still scanned for in the cells around its own, and never counts as empty.
+        let block = binding.collision_block(BlockStateId(2)).unwrap();
+        assert!(block.large_collision_shape && !block.empty_shape);
+    }
+
+    #[test]
+    fn a_state_that_does_not_opt_in_is_never_asked() {
+        let registry = registry();
+        let binding = binding(&registry);
+        let world = plain_world();
+        let parts = rule(|_, _| Some(slab(0.25)));
+        // No part installed: the declared cube.
+        assert!(fall_onto_plain(&world, &binding, 7, player(0, 65.0, false)).abs() < 1e-9);
+        // Parts installed, the state not marked: the declared cube, and no ask.
+        {
+            let _in = sunrise_world::part_collision::InParts::enter(parts.clone());
+            assert!(fall_onto_plain(&world, &binding, 7, player(0, 65.0, false)).abs() < 1e-9);
+            assert_eq!(parts.asked.get(), 0);
+            let block = binding.collision_block(BlockStateId(2)).unwrap();
+            assert!(!block.large_collision_shape);
+        }
+        // Marked, then not: the marking is replaced, not added to.
+        binding.set_part_states([BlockStateId(2)]);
+        binding.set_part_states([]);
+        let _in = sunrise_world::part_collision::InParts::enter(parts.clone());
+        assert!(fall_onto_plain(&world, &binding, 7, player(0, 65.0, false)).abs() < 1e-9);
+        assert_eq!(parts.asked.get(), 0);
+        // Parts installed on this thread only: the guard puts the previous ones back.
+        drop(_in);
+        binding.set_part_states([BlockStateId(2)]);
+        assert!(fall_onto_plain(&world, &binding, 7, player(0, 65.0, false)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_part_reads_is_above_and_descending_as_powder_snow_does() {
+        let registry = registry();
+        let binding = binding(&registry);
+        binding.set_part_states([BlockStateId(2)]);
+        let world = plain_world();
+        let parts = rule(|context, position| {
+            Some(
+                if context.is_above(&VoxelShape::block(), position, false)
+                    && !context.is_descending()
+                {
+                    VoxelShape::block()
+                } else {
+                    VoxelShape::empty()
+                },
+            )
+        });
+        let _in = sunrise_world::part_collision::InParts::enter(parts);
+        // Above the block and upright: it holds the body. Descending, or below its top: it is
+        // empty and the body drops the whole 2 blocks.
+        assert!(fall_onto_plain(&world, &binding, 7, player(0, 65.0, false)).abs() < 1e-9);
+        assert!((fall_onto_plain(&world, &binding, 7, player(0, 65.0, true)) - 2.0).abs() < 1e-9);
+        assert!((fall_onto_plain(&world, &binding, 7, player(0, 64.5, false)) - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn none_keeps_a_published_shape_and_some_replaces_it() {
+        let registry = registry();
+        let binding = binding(&registry);
+        binding.set_part_states([BlockStateId(1)]);
+        let mut world = plain_world();
+        publish(&mut world, (1, 64, 1), &[[0.0, 0.0, 0.0, 1.0, 0.25, 1.0]]);
+        let answer = std::rc::Rc::new(std::cell::RefCell::new(None::<VoxelShape>));
+        let given = answer.clone();
+        let parts = rule(move |_, _| given.borrow().clone());
+        let _in = sunrise_world::part_collision::InParts::enter(parts);
+        // `None`: the published slab stands.
+        assert!((fall(&world, &binding) - 0.75).abs() < 1e-9);
+        // `Some`: the cube replaces it for the query.
+        *answer.borrow_mut() = Some(VoxelShape::block());
+        assert!(fall(&world, &binding).abs() < 1e-9);
     }
 }

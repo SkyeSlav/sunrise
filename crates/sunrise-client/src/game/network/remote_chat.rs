@@ -14,6 +14,7 @@ use sunrise_client::{
     hud::HudBatch,
     text::Text,
 };
+use sunrise_java_properties::now_millis;
 use sunrise_protocol::{
     packets::play::{self, Serverbound as S},
     secure_chat::{Body, Encoder, LastSeenTracker, Signature},
@@ -175,17 +176,19 @@ fn random_uuid() -> u128 {
 
 impl Game<'_> {
     /// handleLogin: a new session state and signature cache, and prepareKeyPair.
+    /// The session itself goes out from `tick_chat_session`, never from here:
+    /// vanilla's tick sends it once the key future is done, after the login's
+    /// teleport confirm.
     pub(super) fn remote_chat_login(&mut self) {
         if let Some(r) = self.remote.as_mut() {
             r.secure_chat = SecureChat::default();
             r.signatures = Default::default();
         }
         // Only when the server says it is in online mode (handleLogin).
-        if self.remote.as_ref().is_some_and(|r| r.online_mode) {
-            if let Some(account) = self.auth() {
-                auth::prepare_chat_keys_for(account, true);
-            }
-            self.update_chat_session();
+        if self.remote.as_ref().is_some_and(|r| r.online_mode)
+            && let Some(account) = self.auth()
+        {
+            auth::prepare_chat_keys_for(account, true);
         }
     }
 
@@ -246,7 +249,7 @@ impl Game<'_> {
     /// message; the signature only with a chat session.
     pub(super) fn send_signed_chat(&mut self, content: &str) {
         let content = truncate_utf16(content, 256);
-        let (timestamp, salt) = (auth::now_millis(), salt());
+        let (timestamp, salt) = (now_millis(), salt());
         let Some(r) = self.remote.as_mut() else {
             return;
         };
@@ -277,8 +280,7 @@ impl Game<'_> {
     /// (SignableCommand.of over the chat's tree, the server's once it sent one) has each of them signed,
     /// all with the same time, salt and last seen (without a chat session the
     /// signature list is empty, as in vanilla); any other command goes as the
-    /// unsigned packet on releases that have one. Before 1.20.5 even a command
-    /// without message arguments carries the real last-seen acknowledgement.
+    /// unsigned packet.
     pub(super) fn send_command(&mut self, command: &str) {
         let Some(r) = self.remote.as_mut() else {
             return;
@@ -290,18 +292,13 @@ impl Game<'_> {
         } else {
             Vec::new()
         };
-        if arguments.is_empty()
-            && !r
-                .session
-                .server_version()
-                .at_most(sunrise_protocol::adapter::ServerVersion::V1_20_3)
-        {
+        if arguments.is_empty() {
             self.send(S::ChatCommand(play::ChatCommand {
                 command: command.to_owned(),
             }));
             return;
         }
-        let (timestamp, salt) = (auth::now_millis(), salt());
+        let (timestamp, salt) = (now_millis(), salt());
         let chat = &mut r.secure_chat;
         let seen = chat.tracker.update();
         let mut signatures = Vec::new();
@@ -333,14 +330,16 @@ impl Game<'_> {
     /// asks first, and one with a message argument is never sent from here:
     /// the player can only send it themselves, from the chat box. So neither
     /// a server nor a mod can have the player sign a message they never saw.
-    pub(super) fn send_unattended_command(&mut self, command: &str) {
+    /// Returns true when sent without a confirmation, so a dialog can open
+    /// its screen after the command.
+    pub(super) fn send_unattended_command(&mut self, command: &str) -> bool {
         let command = command.trim();
         let command = command.strip_prefix('/').unwrap_or(command);
         if command.is_empty() || !self.chat_abilities().allows(&format!("/{command}")) {
-            return;
+            return false;
         }
         let Some(r) = self.remote.as_ref() else {
-            return;
+            return false;
         };
         // Vanilla's dispatcher is empty until the server sends its tree.
         let check = if r.chat_tree_received {
@@ -355,7 +354,7 @@ impl Game<'_> {
                 // Verification above excludes message arguments. Use the ordinary sender so
                 // releases without an unsigned command packet still acknowledge seen chat.
                 self.send_command(command);
-                return;
+                return true;
             }
             CommandCheck::ParseErrors => (
                 "multiplayer.confirm_command.parse_errors",
@@ -385,6 +384,7 @@ impl Game<'_> {
             });
             game.capture(false);
         });
+        false
     }
 
     /// The command just clicked left this screen: if it asks, no returns there.
@@ -452,6 +452,7 @@ impl Game<'_> {
         let mut layout = self.command_prompt_layout(prompt, (w, h));
         layout.declare_no(1);
         layout.draw(batch, atlas, self.cursor, &labels);
+        self.draw_overlay_mounted_widgets(batch, "command_prompt");
     }
 
     /// The confirmation's answer; on no, what was behind it is back.
@@ -479,6 +480,7 @@ impl Game<'_> {
             (false, _, Some(Behind::Dialog(dialog))) => self.reopen_dialog(dialog),
             (false, _, None) => {}
         }
+        self.refresh_screen_widgets();
         if self.screen == Screen::Playing && !self.screen_over_playing() {
             self.capture(true);
         }
@@ -486,34 +488,39 @@ impl Game<'_> {
 
     /// ConfirmScreen.keyPressed, and what its buttons take from the keyboard
     /// (Screen's focus navigation, AbstractButton's Enter and Space).
-    pub(super) fn command_prompt_key(&mut self, key: KeyCode) {
+    pub(super) fn command_prompt_key(&mut self, key: KeyCode) -> bool {
         let (size, shift) = (self.gui_size(), self.has_shift_down());
         let Some(prompt) = &self.command_prompt else {
-            return;
+            return false;
         };
         let mut choice = self.command_prompt_layout(prompt, size);
         match key {
-            KeyCode::Escape => return self.answer_command_prompt(false),
+            KeyCode::Escape => {
+                self.answer_command_prompt(false);
+                return true;
+            }
             KeyCode::Tab => choice.tab(shift),
             KeyCode::ArrowLeft | KeyCode::ArrowRight => choice.arrow(key == KeyCode::ArrowLeft),
             KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => {
                 if let Some(button) = choice.pressed() {
                     self.audio.play_button_click();
                     self.answer_command_prompt(button == 0);
+                    return true;
                 }
-                return;
+                return false;
             }
-            _ => return,
+            _ => return false,
         }
         let focus = choice.focus;
         if let Some(prompt) = self.command_prompt.as_mut() {
             prompt.focus = focus;
         }
+        false
     }
 
-    pub(super) fn command_prompt_click(&mut self) {
+    pub(super) fn command_prompt_click(&mut self) -> bool {
         let Some(prompt) = &self.command_prompt else {
-            return;
+            return false;
         };
         let pressed = self
             .command_prompt_layout(prompt, self.gui_size())
@@ -522,6 +529,7 @@ impl Game<'_> {
             self.audio.play_button_click();
             self.answer_command_prompt(button == 0);
         }
+        pressed.is_some()
     }
 
     /// markMessageAsProcessed, when the chat takes a signed message (past

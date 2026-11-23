@@ -10,6 +10,8 @@ the exhaustion. The player needn't reach or look at the block. It is true when t
 removed. With `into_inventory`, the drops `block_drops` leaves go to the player's inventory, and
 what doesn't fit drops from them.
 
+For a player in another level than the hook's it breaks nothing and returns false: a break lands in the world, and the hook's level is the one in place.
+
 ## A vein miner
 
 A vein miner keeps the drops of its own breaks with `block_drops`: it takes the item list and the
@@ -53,7 +55,14 @@ impl Hooks for VeinMiner {
         let pos = [event.pos.x, event.pos.y, event.pos.z];
         if self.busy.load(Ordering::Relaxed) && self.vein.lock().unwrap().contains(&pos) {
             let mut kept = self.kept.lock().unwrap();
-            kept.0.extend(event.drops.drain(..).map(|drop| drop.stack));
+            event.drops.retain(|drop| {
+                if let Some(stack) = drop.stack().and_then(|stack| stack.project()) {
+                    kept.0.push(stack);
+                    false
+                } else {
+                    true
+                }
+            });
             kept.1 += std::mem::take(&mut event.experience);
         }
         Flow::Continue

@@ -65,7 +65,7 @@ fn column_offset(x: i32, z: i32) -> [f64; 3] {
 
 pub fn main() -> Result<()> {
     let args: Vec<String> = crate::args().collect();
-    let root = Path::new(".local/sunrise-client/26.3");
+    let root = &Path::new(".local/sunrise-client").join(sunrise_core::VANILLA_VERSION);
     let assets = Assets::load(root)?;
     let facts = BlockFacts::load(root, assets.registry)?;
     let biomes = Biomes::load(&sunrise_assets::resource_source::ResourceRoot::directory(
@@ -180,6 +180,7 @@ pub fn main() -> Result<()> {
                 gateway_particles: &|_, _| 0,
                 thundering: false,
                 ultrawarm: false,
+                block_parts: None,
             };
             engine.clear();
             engine.sounds.clear();
@@ -230,6 +231,7 @@ pub fn main() -> Result<()> {
                 gateway_particles: &|_, _| 0,
                 thundering: false,
                 ultrawarm: false,
+                block_parts: None,
             };
             let pos = [0, 64, 0];
             // Every particle the level is asked for: the engine records them
@@ -239,7 +241,9 @@ pub fn main() -> Result<()> {
             engine.requested = None;
             engine.created_requests = Some(Vec::new());
             engine.camera = [0.5, 64.5, 0.5];
-            engine.seed_randoms(seed, 0, 0);
+            // The campfire block entity's particles draw from the level random (`Level.random`),
+            // which the oracle seeds for these cases and reads its `next` from.
+            engine.seed_randoms(0, seed, 0);
             if kind == "campfire" {
                 let state = assets
                     .registry
@@ -268,7 +272,7 @@ pub fn main() -> Result<()> {
                 }
                 writeln!(out)?;
             }
-            writeln!(out, "next {}", engine.random().next_int())?;
+            writeln!(out, "next {}", engine.level_random().next_int())?;
             continue;
         }
         let mode = GameMode::ALL
@@ -302,6 +306,7 @@ pub fn main() -> Result<()> {
             gateway_particles: &|_, _| 0,
             thundering: false,
             ultrawarm: false,
+            block_parts: None,
         };
         engine.seed_randoms(1057, 0, 0);
         engine.requested = Some(Vec::new());

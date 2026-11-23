@@ -42,7 +42,7 @@ impl Drop for NestedBreak {
 
 impl Game<'_> {
     /// `ServerPlayerGameMode.destroyBlock` at `pos` as `player` breaks it, as FTB Ultimine does
-    /// (`PlayersBackendMut::player_destroy_block` says what holds and what is refused). With
+    /// (`PlayerInteractionBackendMut::player_destroy_block` says what holds and what is refused). With
     /// `into_inventory`, the drops `block_drops` leaves go to the player's inventory, and what
     /// doesn't fit drops from them as `Inventory.placeItemBackInInventory` drops it. Refused
     /// (false) once [`MAX_NESTED_BREAKS`] breaks are inside one another.
@@ -60,7 +60,11 @@ impl Game<'_> {
         };
         let mut broke = false;
         self.native_as_player_handle(player, |game| {
-            broke = game.break_as_acting_player(pos, into_inventory);
+            // The break is in the player's level: for a player in another level than the one
+            // in place, nothing is broken.
+            if game.acting_in_level_in_place() {
+                broke = game.break_as_acting_player(pos, into_inventory);
+            }
         });
         broke
     }
@@ -195,14 +199,11 @@ mod tests {
         });
     }
 
-    /// A door's break asks the same harvest answer as every other block: the selected hotbar
-    /// slot, never the offhand. Breaking an iron door's upper half with the pickaxe in the main
-    /// hand takes both halves (the lower by the neighbour update); with the pickaxe only in the
-    /// offhand (and acting) the tool is not the correct one, so the lower half goes at once and
-    /// nothing drops.
+    /// Only the selected slot harvests a block that requires a tool. Iron doors do not
+    /// require one in 26.3, so both hand arrangements harvest their lower-half drop.
     #[test]
     #[ignore = "daily"]
-    fn a_door_breaks_by_the_selected_slot_not_the_offhand() {
+    fn harvesting_uses_the_selected_slot_and_iron_doors_need_no_tool() {
         with_game(|game| {
             game.world.chunks.insert(
                 (0, 0),
@@ -210,6 +211,26 @@ mod tests {
             );
             let pickaxe = ItemStack::new("minecraft:iron_pickaxe", 1);
             let player = with_player(game, pickaxe.clone());
+            let iron = [8, 64, 4];
+            place(game, iron, "minecraft:iron_block");
+            assert!(game.player_destroy_block(player, iron, false));
+            assert!(
+                popped(game, "minecraft:iron_block"),
+                "selected pickaxe harvests"
+            );
+            game.dropped.clear();
+            game.inventory[game.selected] = None;
+            game.offhand = Some(pickaxe.clone());
+            game.hand = sunrise_client::first_person::Hand::Off;
+            place(game, iron, "minecraft:iron_block");
+            assert!(game.player_destroy_block(player, iron, false));
+            assert!(
+                !popped(game, "minecraft:iron_block"),
+                "offhand cannot harvest"
+            );
+            game.inventory[game.selected] = Some(pickaxe.clone());
+            game.offhand = None;
+            game.hand = sunrise_client::first_person::Hand::Main;
             let (lower, upper) = ([6, 64, 4], [6, 65, 4]);
             let door = |game: &mut Game<'_>, half: &str, pos: [i32; 3]| {
                 let state = game
@@ -243,6 +264,7 @@ mod tests {
                 "minecraft:air",
                 "main hand: correct tool"
             );
+            assert!(popped(game, "minecraft:iron_door"));
 
             game.dropped.clear();
             game.inventory[game.selected] = None;
@@ -256,9 +278,9 @@ mod tests {
             assert_eq!(
                 block(game, lower),
                 "minecraft:air",
-                "offhand: not the correct tool"
+                "empty main hand: door needs no tool"
             );
-            assert!(!popped(game, "minecraft:iron_door"));
+            assert!(popped(game, "minecraft:iron_door"));
         });
     }
 
@@ -380,7 +402,14 @@ mod tests {
                 && self.vein.contains(&pos)
             {
                 let mut kept = self.kept.lock().unwrap();
-                kept.0.extend(event.drops.drain(..).map(|drop| drop.stack));
+                event.drops.retain(|drop| {
+                    if let Some(stack) = drop.stack().and_then(|stack| stack.project()) {
+                        kept.0.push(stack);
+                        false
+                    } else {
+                        true
+                    }
+                });
                 kept.1 += std::mem::take(&mut event.experience);
             }
             mod_api::Flow::Continue

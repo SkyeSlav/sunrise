@@ -9,6 +9,7 @@ use super::items::java_hash_order;
 use super::schema::{Key, Ty, key};
 use super::{Cx, FixFn, id_is, reread};
 use sunrise_core::nbt::{Compound, Tag};
+use sunrise_core::uuid::uuid_text;
 
 pub(super) fn register(out: &mut Vec<(Key, FixFn)>) {
     // ProjectileStoredWeaponFix only writes and reads arrows with the new schema.
@@ -16,8 +17,9 @@ pub(super) fn register(out: &mut Vec<(Key, FixFn)>) {
         let k = cx.k;
         cx.each(Ty::Entity, |e| {
             if id_is(e, "minecraft:arrow") || id_is(e, "minecraft:spectral_arrow") {
-                reread(k, e);
+                reread(k, e)?;
             }
+            Ok(())
         });
     }));
     out.push((key(3939, 0), |cx| {
@@ -219,20 +221,6 @@ pub(super) fn feature_flag_remove(cx: &mut Cx, flags: &[&str]) {
 }
 
 // ------------------------------------------------------------------ 3945
-
-fn uuid_text(u: [i32; 4]) -> String {
-    let most = (i64::from(u[0]) << 32) | (i64::from(u[1]) & 0xFFFF_FFFF);
-    let least = (i64::from(u[2]) << 32) | (i64::from(u[3]) & 0xFFFF_FFFF);
-    let (m, l) = (most as u64, least as u64);
-    format!(
-        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
-        m >> 32,
-        (m >> 16) & 0xFFFF,
-        m & 0xFFFF,
-        l >> 48,
-        l & 0xFFFF_FFFF_FFFF
-    )
-}
 
 const MODIFIER_IDS: &[(&str, &str)] = &[
     (
@@ -1103,7 +1091,7 @@ fn saddle_equipment_slot(cx: &mut Cx) {
                     rename(e, "SaddleItem", "saddle");
                     saddle_drop_chance(e);
                 }
-                reread(k, e);
+                reread(k, e)?;
             }
             "minecraft:pig" | "minecraft:strider" => {
                 let saddled = as_bool(e.get("Saddle"), false);
@@ -1116,10 +1104,11 @@ fn saddle_equipment_slot(cx: &mut Cx) {
                     );
                     saddle_drop_chance(e);
                 }
-                reread(k, e);
+                reread(k, e)?;
             }
             _ => {}
         }
+        Ok(())
     });
 }
 

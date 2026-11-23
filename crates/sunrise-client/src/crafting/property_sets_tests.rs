@@ -66,7 +66,7 @@ fn custom_sets_survive_dispatch_and_sync_but_new_foreign_keys_do_not() {
         ]
         .into(),
         || {
-            let resolved = ResolvedSources::resolve(vec![], &context).unwrap();
+            let resolved = ResolvedSources::resolve(vec![], &Items::empty(), &context).unwrap();
             assert!(resolved.property_additions.get("foreign:input").is_none());
             assert!(resolved.property_additions.get("pot:foreign_new").is_none());
             assert!(
@@ -83,11 +83,7 @@ fn custom_sets_survive_dispatch_and_sync_but_new_foreign_keys_do_not() {
                     "minecraft:diamond".into(),
                 ]),
             );
-            let bytes = crate::lan::recipes::update_recipes(
-                &Default::default(),
-                &sync,
-                &resolved.property_additions,
-            );
+            let (bytes, _) = crate::lan::recipes::update_recipes(&sync, &resolved);
             let packet = UpdateRecipes::read(&mut Reader::new(&bytes)).unwrap();
             assert_eq!(
                 packet

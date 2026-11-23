@@ -109,18 +109,18 @@ pub struct Settings {
     /// Chunks, 5..=32.
     pub simulation_distance: i32,
     /// 0..1, vanilla default 0.5.
-    pub sensitivity: f32,
+    pub sensitivity: f64,
     /// 0..1 (soundCategory_master).
-    pub master_volume: f32,
+    pub master_volume: f64,
     /// Volumes of every other sound source, indexed like SOUND_SOURCES.
-    pub volumes: [f32; 11],
+    pub volumes: [f64; 11],
     /// Empty for system default, or a specific audio device name.
     pub sound_device: String,
     /// Requested scale (0 = auto); rendering caps it to the current framebuffer.
     pub gui_scale: u32,
     pub view_bobbing: bool,
     /// Brightness 0..1 (gamma).
-    pub gamma: f32,
+    pub gamma: f64,
     /// 10..=260 (260 = unlimited).
     pub max_fps: u32,
     pub vsync: bool,
@@ -132,14 +132,14 @@ pub struct Settings {
     pub cloud_range: i32,
     /// 0 all, 1 decreased, 2 minimal.
     pub particles: u8,
-    pub entity_distance: f32,
+    pub entity_distance: f64,
     pub entity_shadows: bool,
     pub biome_blend: i32,
     /// "fast", "fancy", "fabulous" or "custom".
     pub graphics_preset: String,
     pub mipmap_levels: i32,
     pub weather_radius: i32,
-    pub chunk_fade: f32,
+    pub chunk_fade: f64,
     pub vignette: bool,
     pub autosave_indicator: bool,
     pub cutout_leaves: bool,
@@ -150,7 +150,7 @@ pub struct Settings {
     pub prioritize_chunk_updates: u8,
     pub menu_blur: i32,
     pub invert_y: bool,
-    pub mouse_wheel_sensitivity: f32,
+    pub mouse_wheel_sensitivity: f64,
     pub discrete_scroll: bool,
     pub toggle_crouch: bool,
     pub toggle_sprint: bool,
@@ -162,22 +162,22 @@ pub struct Settings {
     pub chat_colors: bool,
     pub chat_links: bool,
     pub chat_links_prompt: bool,
-    pub chat_opacity: f32,
+    pub chat_opacity: f64,
     /// Chat Delay in seconds (`chatDelay`): player chat shows this far apart.
     pub chat_delay: f64,
-    pub text_background_opacity: f32,
-    pub chat_scale: f32,
-    pub chat_width: f32,
-    pub chat_height_focused: f32,
-    pub chat_height_unfocused: f32,
-    pub chat_line_spacing: f32,
+    pub text_background_opacity: f64,
+    pub chat_scale: f64,
+    pub chat_width: f64,
+    pub chat_height_focused: f64,
+    pub chat_height_unfocused: f64,
+    pub chat_line_spacing: f64,
     pub auto_suggestions: bool,
     pub reduced_debug_info: bool,
     pub high_contrast: bool,
     /// `showSubtitles`: the closed-caption overlay.
     pub show_subtitles: bool,
     /// `notificationDisplayTime`: a multiplier for subtitle and toast times.
-    pub notification_display_time: f32,
+    pub notification_display_time: f64,
     pub main_hand_left: bool,
     /// Enabled resource packs, bottom first (resourcePacks).
     pub resource_packs: Vec<String>,
@@ -305,9 +305,9 @@ impl Default for Settings {
         }
     }
 }
-fn put_f(f: &mut OptionsFile, key: &str, v: f32) {
-    if v != f.double(key) as f32 {
-        f.set(key, V::Double(f64::from(v)));
+fn put_d(f: &mut OptionsFile, key: &str, v: f64) {
+    if v != f.double(key) {
+        f.set(key, V::Double(v));
     }
 }
 fn put_i(f: &mut OptionsFile, key: &str, v: i32) {
@@ -341,17 +341,36 @@ impl Settings {
             .and_then(|mode| self.video_modes.iter().position(|m| *m == mode))
             .map_or(-1, |i| i as i32)
     }
-    /// Loads only the crates' settings stores (`sunrise_hooks::settings`) from the files next to
-    /// `path`, into the seat whose turn it is (`sunrise_hooks::seat`): a splitscreen player whose
-    /// settings were made from P1's rather than loaded.
-    pub fn load_stores(path: &Path) {
-        let dir = path.parent();
-        sunrise_hooks::settings::engine::load(&mut |file| fs::read_to_string(dir?.join(file)).ok());
-    }
     pub fn load(path: &Path) -> Self {
+        let (extras_text, keep_extras) = path
+            .parent()
+            .map_or((String::new(), false), crate::extras::Extras::read_text);
+        let graphics_text = path.parent().and_then(|dir| {
+            sunrise_hooks::settings::engine::read(&dir.join(crate::graphics::FILE))
+                .ok()
+                .flatten()
+                .map(|read| read.text)
+        });
+        // The settings stores of the crates above the engine: their lines of `sunrise-extras.txt`
+        // and `sunrise-graphics.txt`, or of their own files (docs/layers.md, "Platform
+        // registries"). First, as the graphics settings below may be saved again with them.
+        sunrise_hooks::settings::engine::load(&mut |file| match path.parent() {
+            _ if file == crate::extras::FILE => Some(extras_text.clone()),
+            _ if file == crate::graphics::FILE => graphics_text.clone(),
+            Some(dir) => sunrise_hooks::settings::engine::read(&dir.join(file))
+                .ok()
+                .flatten()
+                .map(|read| read.text),
+            None => None,
+        });
         let mut sunrise = path
             .parent()
-            .map(crate::graphics::Graphics::load)
+            .map(|dir| {
+                crate::graphics::Graphics::load_text(
+                    dir,
+                    graphics_text.as_deref().unwrap_or_default(),
+                )
+            })
             .unwrap_or_default();
         crate::mipmap::set_dither_cutouts(sunrise.dither_cutout_mips);
         if let Some(dir) = path.parent() {
@@ -368,18 +387,7 @@ impl Settings {
             .parent()
             .map(crate::gamepad::PadSettings::load)
             .unwrap_or_default();
-        let extras_text = path
-            .parent()
-            .and_then(|dir| fs::read_to_string(dir.join(crate::extras::FILE)).ok())
-            .unwrap_or_default();
-        let mut extras = crate::extras::Extras::parse(&extras_text);
-        // The settings stores of the crates above the engine: their lines of this file, or of
-        // their own (docs/layers.md, "Platform registries").
-        sunrise_hooks::settings::engine::load(&mut |file| match path.parent() {
-            _ if file == crate::extras::FILE => Some(extras_text.clone()),
-            Some(dir) => fs::read_to_string(dir.join(file)).ok(),
-            None => None,
-        });
+        let extras = crate::extras::Extras::from_text(&extras_text, keep_extras);
         // The enabled mods are the game folder's, shared by its players (`--player-dir`).
         let mods = path
             .parent()
@@ -388,7 +396,6 @@ impl Settings {
         let settings = match fs::read(path) {
             Ok(bytes) => {
                 let text = String::from_utf8_lossy(&bytes);
-                extras.read_old_options(&extras_text, &text);
                 Self {
                     sunrise,
                     controller,
@@ -466,19 +473,19 @@ impl Settings {
         }
         let mut volumes = [1.0; 11];
         for (i, source) in SOUND_SOURCES.iter().enumerate() {
-            volumes[i] = f.double(&format!("soundCategory_{source}")) as f32;
+            volumes[i] = f.double(&format!("soundCategory_{source}"));
         }
         Self {
             fov: f.int("fov") as f32,
             render_distance: f.int("renderDistance"),
             simulation_distance: f.int("simulationDistance"),
-            sensitivity: f.double("mouseSensitivity") as f32,
+            sensitivity: f.double("mouseSensitivity"),
             master_volume: volumes[0],
             volumes,
             sound_device: f.string("soundDevice"),
             gui_scale: f.int("guiScale").max(0) as u32,
             view_bobbing: f.bool("bobView"),
-            gamma: f.double("gamma") as f32,
+            gamma: f.double("gamma"),
             max_fps: f.int("maxFps") as u32,
             vsync: f.bool("enableVsync"),
             fullscreen: f.bool("fullscreen"),
@@ -486,13 +493,13 @@ impl Settings {
             clouds: f.name("renderClouds"),
             cloud_range: f.int("cloudRange"),
             particles: f.int("particles") as u8,
-            entity_distance: f.double("entityDistanceScaling") as f32,
+            entity_distance: f.double("entityDistanceScaling"),
             entity_shadows: f.bool("entityShadows"),
             biome_blend: f.int("biomeBlendRadius"),
             graphics_preset: f.name("graphicsPreset"),
             mipmap_levels: f.int("mipmapLevels"),
             weather_radius: f.int("weatherRadius"),
-            chunk_fade: f.double("chunkSectionFadeInTime") as f32,
+            chunk_fade: f.double("chunkSectionFadeInTime"),
             vignette: f.bool("vignette"),
             autosave_indicator: f.bool("showAutosaveIndicator"),
             cutout_leaves: f.bool("cutoutLeaves"),
@@ -503,7 +510,7 @@ impl Settings {
             menu_blur: f.int("menuBackgroundBlurriness"),
             invert_x: f.bool("invertXMouse"),
             invert_y: f.bool("invertYMouse"),
-            mouse_wheel_sensitivity: f.double("mouseWheelSensitivity") as f32,
+            mouse_wheel_sensitivity: f.double("mouseWheelSensitivity"),
             discrete_scroll: f.bool("discrete_mouse_scroll"),
             allow_cursor_changes: f.bool("allowCursorChanges"),
             toggle_crouch: f.bool("toggleCrouch"),
@@ -531,24 +538,32 @@ impl Settings {
             chat_colors: f.bool("chatColors"),
             chat_links: f.bool("chatLinks"),
             chat_links_prompt: f.bool("chatLinksPrompt"),
-            chat_opacity: f.double("chatOpacity") as f32,
+            chat_opacity: f.double("chatOpacity"),
             chat_delay: f.double("chatDelay"),
-            text_background_opacity: f.double("textBackgroundOpacity") as f32,
-            chat_scale: f.double("chatScale") as f32,
-            chat_width: f.double("chatWidth") as f32,
-            chat_height_focused: f.double("chatHeightFocused") as f32,
-            chat_height_unfocused: f.double("chatHeightUnfocused") as f32,
-            chat_line_spacing: f.double("chatLineSpacing") as f32,
+            text_background_opacity: f.double("textBackgroundOpacity"),
+            chat_scale: f.double("chatScale"),
+            chat_width: f.double("chatWidth"),
+            chat_height_focused: f.double("chatHeightFocused"),
+            chat_height_unfocused: f.double("chatHeightUnfocused"),
+            chat_line_spacing: f.double("chatLineSpacing"),
             auto_suggestions: f.bool("autoSuggestions"),
             reduced_debug_info: f.bool("reducedDebugInfo"),
             high_contrast: f.bool("highContrast"),
             show_subtitles: f.bool("showSubtitles"),
-            notification_display_time: f.double("notificationDisplayTime") as f32,
+            notification_display_time: f.double("notificationDisplayTime"),
             main_hand_left: f.name("mainHand") == "left",
             resource_packs: f.list("resourcePacks"),
             keys,
             file: f,
         }
+    }
+    /// Validated live `(textureFiltering, maxAnisotropyBit, mipmapLevels)` for atlas stitching.
+    pub fn texture_atlas_settings(&self) -> (i32, i32, i32) {
+        (
+            self.file.int("textureFiltering").clamp(0, 2),
+            self.file.int("maxAnisotropyBit").clamp(1, 3),
+            self.mipmap_levels.clamp(0, 4),
+        )
     }
     /// `Options.createInformation`: what the server learns about this player.
     pub fn client_information(&self, view_distance: i8) -> ClientInformation {
@@ -570,19 +585,19 @@ impl Settings {
         put_i(&mut f, "fov", self.fov as i32);
         put_i(&mut f, "renderDistance", self.render_distance);
         put_i(&mut f, "simulationDistance", self.simulation_distance);
-        put_f(&mut f, "mouseSensitivity", self.sensitivity);
+        put_d(&mut f, "mouseSensitivity", self.sensitivity);
         for (i, source) in SOUND_SOURCES.iter().enumerate() {
             let v = if i == 0 {
                 self.master_volume
             } else {
                 self.volumes[i]
             };
-            put_f(&mut f, &format!("soundCategory_{source}"), v);
+            put_d(&mut f, &format!("soundCategory_{source}"), v);
         }
         put_s(&mut f, "soundDevice", &self.sound_device);
         put_i(&mut f, "guiScale", self.gui_scale as i32);
         put_b(&mut f, "bobView", self.view_bobbing);
-        put_f(&mut f, "gamma", self.gamma);
+        put_d(&mut f, "gamma", self.gamma);
         put_i(&mut f, "maxFps", self.max_fps as i32);
         put_b(&mut f, "enableVsync", self.vsync);
         put_b(&mut f, "fullscreen", self.fullscreen);
@@ -590,13 +605,13 @@ impl Settings {
         put_name(&mut f, "renderClouds", &self.clouds);
         put_i(&mut f, "cloudRange", self.cloud_range);
         put_i(&mut f, "particles", i32::from(self.particles));
-        put_f(&mut f, "entityDistanceScaling", self.entity_distance);
+        put_d(&mut f, "entityDistanceScaling", self.entity_distance);
         put_b(&mut f, "entityShadows", self.entity_shadows);
         put_i(&mut f, "biomeBlendRadius", self.biome_blend);
         put_name(&mut f, "graphicsPreset", &self.graphics_preset);
         put_i(&mut f, "mipmapLevels", self.mipmap_levels);
         put_i(&mut f, "weatherRadius", self.weather_radius);
-        put_f(&mut f, "chunkSectionFadeInTime", self.chunk_fade);
+        put_d(&mut f, "chunkSectionFadeInTime", self.chunk_fade);
         put_b(&mut f, "vignette", self.vignette);
         put_b(&mut f, "showAutosaveIndicator", self.autosave_indicator);
         put_b(&mut f, "cutoutLeaves", self.cutout_leaves);
@@ -611,7 +626,7 @@ impl Settings {
         put_i(&mut f, "menuBackgroundBlurriness", self.menu_blur);
         put_b(&mut f, "invertXMouse", self.invert_x);
         put_b(&mut f, "invertYMouse", self.invert_y);
-        put_f(
+        put_d(
             &mut f,
             "mouseWheelSensitivity",
             self.mouse_wheel_sensitivity,
@@ -638,25 +653,23 @@ impl Settings {
         put_b(&mut f, "chatColors", self.chat_colors);
         put_b(&mut f, "chatLinks", self.chat_links);
         put_b(&mut f, "chatLinksPrompt", self.chat_links_prompt);
-        put_f(&mut f, "chatOpacity", self.chat_opacity);
-        if self.chat_delay != f.double("chatDelay") {
-            f.set("chatDelay", V::Double(self.chat_delay));
-        }
-        put_f(
+        put_d(&mut f, "chatOpacity", self.chat_opacity);
+        put_d(&mut f, "chatDelay", self.chat_delay);
+        put_d(
             &mut f,
             "textBackgroundOpacity",
             self.text_background_opacity,
         );
-        put_f(&mut f, "chatScale", self.chat_scale);
-        put_f(&mut f, "chatWidth", self.chat_width);
-        put_f(&mut f, "chatHeightFocused", self.chat_height_focused);
-        put_f(&mut f, "chatHeightUnfocused", self.chat_height_unfocused);
-        put_f(&mut f, "chatLineSpacing", self.chat_line_spacing);
+        put_d(&mut f, "chatScale", self.chat_scale);
+        put_d(&mut f, "chatWidth", self.chat_width);
+        put_d(&mut f, "chatHeightFocused", self.chat_height_focused);
+        put_d(&mut f, "chatHeightUnfocused", self.chat_height_unfocused);
+        put_d(&mut f, "chatLineSpacing", self.chat_line_spacing);
         put_b(&mut f, "autoSuggestions", self.auto_suggestions);
         put_b(&mut f, "reducedDebugInfo", self.reduced_debug_info);
         put_b(&mut f, "highContrast", self.high_contrast);
         put_b(&mut f, "showSubtitles", self.show_subtitles);
-        put_f(
+        put_d(
             &mut f,
             "notificationDisplayTime",
             self.notification_display_time,
@@ -703,12 +716,33 @@ impl Settings {
             self.sunrise.save(dir);
             self.controller.save(dir);
             self.extras.save(dir);
-            sunrise_hooks::settings::engine::save_own(dir, &[crate::extras::FILE]);
-            self.mods.save(&crate::logging::shared_dir(dir));
+            for (file, e) in sunrise_hooks::settings::engine::save_own(
+                dir,
+                &[crate::extras::FILE, crate::graphics::FILE],
+            ) {
+                log::warn!("Sunrise: {file} is not saved: {e}");
+            }
+            if let Err(e) = self.mods.save(&crate::logging::shared_dir(dir)) {
+                log::warn!("Sunrise: {} is not saved: {e}", crate::mod_list::FILE);
+            }
+        }
+    }
+    /// Sets the picked shader pack, for the pack list and the toggle key alike: an empty pick
+    /// turns shaders off and keeps the last non-empty pick, a non-empty pick (or a switch to
+    /// another pack) becomes the last one too. The toggle key resumes exactly this last pick.
+    pub fn set_shader_pick(&mut self, new_key: &str) {
+        if new_key.is_empty() {
+            if !self.sunrise.shader_pack.is_empty() {
+                self.extras.last_shader_pack = self.sunrise.shader_pack.clone();
+            }
+            self.sunrise.shader_pack.clear();
+        } else {
+            self.sunrise.shader_pack = new_key.to_owned();
+            self.extras.last_shader_pack = new_key.to_owned();
         }
     }
     /// Volume of a sound source (master excluded).
-    pub fn volume(&self, source: &str) -> f32 {
+    pub fn volume(&self, source: &str) -> f64 {
         SOUND_SOURCES
             .iter()
             .position(|n| *n == source)
@@ -723,9 +757,9 @@ impl Settings {
     /// `Options.getFinalSoundSourceVolume`: a source's volume times master's.
     pub fn final_volume(&self, source: &str) -> f32 {
         if source == "master" {
-            self.master_volume
+            self.master_volume as f32
         } else {
-            self.volume(source) * self.master_volume
+            (self.volume(source) * self.master_volume) as f32
         }
     }
     /// `Options.narrator`: the `narrator` id in options.txt.
@@ -741,7 +775,7 @@ impl Settings {
     pub fn text_background(&self, default: f32) -> u32 {
         crate::hud_layout::background_color(
             self.file.bool("backgroundForChatOnly"),
-            f64::from(self.text_background_opacity),
+            self.text_background_opacity,
             default,
         )
     }
@@ -750,19 +784,19 @@ impl Settings {
     pub fn faded_text_alpha(&self, default: f32) -> u32 {
         crate::hud_layout::faded_text_alpha(
             self.file.bool("backgroundForChatOnly"),
-            f64::from(self.text_background_opacity),
+            self.text_background_opacity,
             default,
         )
     }
     pub fn chat_options(&self) -> crate::chat::ChatOptions {
         crate::chat::ChatOptions {
-            opacity: f64::from(self.chat_opacity),
-            background_opacity: f64::from(self.text_background_opacity),
-            scale: f64::from(self.chat_scale),
-            width: f64::from(self.chat_width),
-            height_focused: f64::from(self.chat_height_focused),
-            height_unfocused: f64::from(self.chat_height_unfocused),
-            line_spacing: f64::from(self.chat_line_spacing),
+            opacity: self.chat_opacity,
+            background_opacity: self.text_background_opacity,
+            scale: self.chat_scale,
+            width: self.chat_width,
+            height_focused: self.chat_height_focused,
+            height_unfocused: self.chat_height_unfocused,
+            line_spacing: self.chat_line_spacing,
             colors: self.chat_colors,
         }
     }
@@ -773,6 +807,8 @@ impl Settings {
 pub enum Opt {
     Fov,
     RenderDistance,
+    /// `RenderDistance` on the classic Video Settings page: vanilla's range (2..=32), same saved value.
+    VanillaRenderDistance,
     SimulationDistance,
     Sensitivity,
     WheelSensitivity,
@@ -887,8 +923,6 @@ pub enum Opt {
     ModelPart(usize),
     /// A slider of a page a crate registered (`sunrise_hooks::pages`): (page, row).
     Page(usize, usize),
-    /// 3D skin layers: the player's outer layer as extruded slabs.
-    SkinLayers3d,
     MainHand,
     AllowServerListing,
     RealmsNotifications,
@@ -990,35 +1024,10 @@ mod tests {
     }
 
     #[test]
-    fn three_d_skin_layers_move_from_options_txt_to_the_extras_file() {
-        // #8091 wrote the switch into options.txt; a player who had it on keeps
-        // it, and the next options.txt is vanilla's again.
-        let dir = std::env::temp_dir().join(format!(
-            "sunrise-skin-layers-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("options.txt"), "fov:0.5\nthreeDSkinLayers:true\n").unwrap();
-        let s = Settings::load(&dir.join("options.txt"));
-        assert!(s.extras.three_d_skin_layers);
-        assert_eq!(s.fov, 90.0);
-        assert!(!s.serialize().contains("threeDSkinLayers"));
-        assert!(crate::extras::Extras::parse(&s.extras.serialize()).three_d_skin_layers);
-        // Once sunrise-extras.txt has its own line, a stale options.txt one is ignored.
-        fs::write(dir.join(crate::extras::FILE), "threeDSkinLayers:false\n").unwrap();
-        assert!(
-            !Settings::load(&dir.join("options.txt"))
-                .extras
-                .three_d_skin_layers
-        );
-        let _ = fs::remove_dir_all(&dir);
-    }
-    #[test]
     fn an_option_set_keeps_sunrise_files() {
         let mut s = Settings::parse("fov:70\n");
         s.mods.enabled.insert("zoom".into());
-        s.extras.minimap = true;
+        s.extras.sort = true;
         s.sunrise.fog = !s.sunrise.fog;
         s.controller.vibration = !s.controller.vibration;
         let set = s.with_option("fov", "90").unwrap();
@@ -1124,5 +1133,21 @@ mod tests {
         assert_eq!(again.sound_device, "Headphones");
         let empty = Settings::parse("");
         assert_eq!(empty.sound_device, "");
+    }
+    #[test]
+    fn texture_atlas_settings_uses_live_validated_mipmap_and_filtering() {
+        let mut s = Settings::default();
+        assert_eq!(s.texture_atlas_settings(), (0, 2, 4));
+        // Live `mipmap_levels` wins even before `file` is rewritten.
+        s.mipmap_levels = 0;
+        assert_eq!(s.file.int("mipmapLevels"), 4);
+        assert_eq!(s.texture_atlas_settings(), (0, 2, 0));
+        // Out-of-range stored values fail `OptionInstance` validation and keep the defaults.
+        s.mipmap_levels = 4;
+        s.file
+            .set("textureFiltering", crate::options_file::V::Int(9));
+        s.file
+            .set("maxAnisotropyBit", crate::options_file::V::Int(0));
+        assert_eq!(s.texture_atlas_settings(), (0, 2, 4));
     }
 }

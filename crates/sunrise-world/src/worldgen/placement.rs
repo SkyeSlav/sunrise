@@ -345,7 +345,7 @@ impl PlacementModifier {
             Self::Biome => {
                 let feature = context
                     .top_feature()
-                    .ok_or(PlacementQueryError::Unavailable)?;
+                    .ok_or(PlacementQueryError::MissingTopFeature)?;
                 if context.biome_allows_feature(position, feature)? {
                     emit(random, position).map_err(PlacementError::Output)?;
                 }

@@ -64,19 +64,20 @@ impl GameCpuResources {
     pub(super) fn load(
         resources: &sunrise_assets::resource_source::ResourceRoot,
         document: Option<&sunrise_client::mobs::EntityModelDocument>,
+        model_library: Option<&sunrise_assets::resolve::ModelLibrary>,
+        draws: bool,
     ) -> Result<Self> {
         let root = resources.prepared();
         let owned_document;
-        let document = match document {
-            Some(document) => Some(document),
-            None => match sunrise_client::mobs::EntityModelDocument::load(root) {
-                Ok(document) => {
-                    owned_document = document;
-                    Some(&owned_document)
-                }
-                Err(_) => None,
-            },
+        let document = if !draws {
+            None
+        } else if let Some(document) = document {
+            Some(document)
+        } else {
+            owned_document = sunrise_client::mobs::EntityModelDocument::load(root).ok();
+            owned_document.as_ref()
         };
+        let visuals = draws.then(|| resources.source());
         let model = |key| document.and_then(|document| document.model(key));
         let (
             painting_variants,
@@ -91,13 +92,21 @@ impl GameCpuResources {
                 paintings::PaintingVariants::load(root)
             });
             let frames = named_scope(scope, "game_cpu.frames", move || {
-                frames::bake_frames(resources.source())
+                if draws {
+                    frames::bake_frames(model_library)
+                } else {
+                    Default::default()
+                }
             });
             let armor_stand_assets = named_scope(scope, "game_cpu.armor_stands", move || {
-                armor_stands::ArmorStandAssets::load(resources.source(), document)
+                visuals
+                    .map(|source| armor_stands::ArmorStandAssets::load(source, document))
+                    .unwrap_or_default()
             });
             let waypoint_styles = named_scope(scope, "game_cpu.waypoints", move || {
-                sunrise_client::locator_bar::WaypointStyles::load(resources.source())
+                visuals
+                    .map(sunrise_client::locator_bar::WaypointStyles::load)
+                    .unwrap_or_default()
             });
             let boat_models = named_scope(scope, "game_cpu.boats", move || {
                 boats::BoatModels::load(document)
@@ -107,9 +116,11 @@ impl GameCpuResources {
             });
             let creative_screen = named_scope(scope, "game_cpu.creative", move || {
                 let mut creative = Creative::load(root).map_err(|error| error.to_string())?;
-                let tab_modifiers =
-                    sunrise_client::polytone_creative_tabs::TabModifier::read_all(root);
-                creative.set_pack_modifiers(tab_modifiers);
+                if draws {
+                    let tab_modifiers =
+                        sunrise_client::polytone_creative_tabs::TabModifier::read_all(root);
+                    creative.set_pack_modifiers(tab_modifiers);
+                }
                 Ok::<_, String>(creative)
             });
             (
@@ -189,7 +200,38 @@ pub(super) struct Loaded {
 /// ready, then the core bundle with a handle to the rest worker.
 pub(super) enum LoaderMsg {
     Ui(UiResources, PathBuf),
-    Done(std::result::Result<Loaded, String>),
+    /// Clear the failed revision on the thread that owns settings, then acknowledge.
+    ClearPackSelection {
+        revision: u64,
+        ack: std::sync::mpsc::Sender<()>,
+    },
+    Done(std::result::Result<Loaded, LoaderFailure>),
+}
+
+impl LoaderMsg {
+    pub(super) fn done(result: Result<Loaded>) -> Self {
+        Self::Done(result.map_err(
+            |error| match error.downcast::<mods::DeclarationFailures>() {
+                Ok(refusals) => LoaderFailure::Declarations(*refusals),
+                Err(error) => LoaderFailure::Other(error.to_string()),
+            },
+        ))
+    }
+}
+
+/// Only the startup report needs its error type preserved across threads.
+pub(super) enum LoaderFailure {
+    Declarations(mods::DeclarationFailures),
+    Other(String),
+}
+
+impl From<LoaderFailure> for Box<dyn std::error::Error> {
+    fn from(error: LoaderFailure) -> Self {
+        match error {
+            LoaderFailure::Declarations(refusals) => refusals.into(),
+            LoaderFailure::Other(message) => message.into(),
+        }
+    }
 }
 
 pub(super) enum PendingWorldEntry {
@@ -203,6 +245,8 @@ pub(super) enum PendingWorldEntry {
     Server {
         address: String,
         name: String,
+        /// The saved server list row's name, when the join came from that row.
+        list_name: Option<String>,
         lan: bool,
         realm: bool,
         /// A transfer's carried-over server cookies (`TransferState`).
@@ -258,15 +302,16 @@ pub(super) fn run_loading(
     started: Instant,
 ) -> Result<()> {
     let progress = Progress::new();
+    let menu = startup_menu::StartupMenu::new(&options, pack_error.as_deref())?;
     let (receiver, loader) = startup_menu::spawn_loader(
         &options,
         &settings,
+        menu.pack_selection_revision,
         mods::LoadRole::startup(options.execution_role),
         &vanilla_root,
         started,
         &progress,
     )?;
-    let menu = startup_menu::StartupMenu::new(&options, pack_error.as_deref())?;
     let loading = Loading {
         window: None,
         renderer: None,
@@ -281,6 +326,7 @@ pub(super) fn run_loading(
         started,
         panorama_rotation: Default::default(),
         progress,
+        bar: 0.0,
         receiver,
         loaded: None,
         delivered: false,
@@ -295,15 +341,14 @@ pub(super) fn run_loading(
     let result = EventLoop::new()?.run_app(&mut app);
     narrator::stop();
     match &mut app {
-        // Ready: splitscreen around P1's game.
-        App::Ready(split) => leave_fullscreen_after(&result, &mut split.host.settings),
+        App::Ready(game) => leave_fullscreen_after(&result, &mut game.settings),
         App::Loading(loading) => leave_fullscreen_after(&result, &mut loading.settings),
     }
     result?;
     match app {
-        App::Ready(mut split) => {
-            write_report(&split.host)?;
-            if let Some(e) = split.host.error.take() {
+        App::Ready(mut game) => {
+            write_report(&game)?;
+            if let Some(e) = game.error.take() {
                 return Err(e);
             }
         }

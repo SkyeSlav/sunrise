@@ -202,9 +202,12 @@ fn without_a_part_the_break_compares_item_and_components() {
         game.inventory[0] = Some(ItemStack::new("minecraft:stick", 1));
         game.selected = 0;
         let began = game.main_hand_key();
+        // A use shrinks the stack in place: the same break.
         game.inventory[0].as_mut().unwrap().count = 5;
-        game.inventory[0].as_mut().unwrap().damage = 2;
         assert!(game.same_destroying_item(&began));
+        // The server's new stack with more wear: a damage component apart, so it restarts.
+        game.inventory[0].as_mut().unwrap().damage = 2;
+        assert!(!game.same_destroying_item(&began));
         game.inventory[0] = Some(ItemStack::new("minecraft:diamond_pickaxe", 1));
         assert!(!game.same_destroying_item(&began));
         game.inventory[0] = None;
@@ -230,7 +233,7 @@ fn remote_mining_component_update_restarts_unless_the_part_refuses() {
                     let (mut peer, _writer) = crate::game::remote::tests::connect_menu_test(game);
                     peer.set_read_timeout(Some(std::time::Duration::from_millis(50)))
                         .unwrap();
-                    game.set_mode_id(0);
+                    game.set_local_mode(sunrise_client::command::args::GameMode::Survival);
                     let mut player =
                         PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 3.5)).unwrap();
                     player.ground.on_ground = true;
@@ -247,12 +250,14 @@ fn remote_mining_component_update_restarts_unless_the_part_refuses() {
                         .default_state("minecraft:stone")
                         .unwrap();
                     game.world.set(0, 64, 0, stone).unwrap();
-                    game.tick_hit.set(Some(Some(crate::game::Hit {
+                    game.forced_hit = Some(crate::game::Hit {
                         pos: [0, 64, 0],
                         face: [0, 1, 0],
                         point: [0.5, 65.0, 0.5],
                         inside: false,
-                    })));
+                    });
+                    game.refresh_client_pick(1.0);
+                    game.forced_hit = None;
                     for _ in 0..4 {
                         game.remote_continue_attack(true);
                     }

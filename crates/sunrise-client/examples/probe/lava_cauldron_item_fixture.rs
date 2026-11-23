@@ -58,6 +58,7 @@ pub fn main() -> sunrise_client::Result<()> {
                 .ok_or("missing cauldron")?,
         )?;
         let mut item = ItemEntity {
+            size_answer: None,
             attachment_lifetime: Default::default(),
             fall_distance: 0.0,
             random: sunrise_core::random::LegacyRandom::new(0),
@@ -72,7 +73,7 @@ pub fn main() -> sunrise_client::Result<()> {
             position,
             previous: position,
             velocity: Vec3::ZERO,
-            on_ground: false,
+            ground: Default::default(),
             age: 0,
             pickup_delay: 0,
             bob_offset: 0.0,
@@ -82,7 +83,6 @@ pub fn main() -> sunrise_client::Result<()> {
             was_touching_water: false,
             no_gravity: true,
             vertical_collision: false,
-            horizontal_collision: false,
         };
         output.push_str(f[0]);
         for _ in 0..2 {

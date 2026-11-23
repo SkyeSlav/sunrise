@@ -3,7 +3,7 @@
 use crate::game::{Audio, Dim, Game, Options, Progress, Settings, execution_role, load_resources};
 use crate::save::Level;
 
-fn game() -> Game<'static> {
+fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -> Game<'a> {
     let root = std::path::PathBuf::from(
         std::env::var_os("SUNRISE_TEST_RESOURCES")
             .expect("set SUNRISE_TEST_RESOURCES to prepared resources"),
@@ -25,7 +25,7 @@ fn game() -> Game<'static> {
     let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
     options.resources = root.clone();
     options.execution_role = execution_role::ExecutionRole::IntegratedServer;
-    let res: &'static _ = Box::leak(Box::new(loaded.resources));
+    let res = &*resources.insert(loaded.resources);
     let mut game = Game::new(
         res,
         loaded.pack,
@@ -56,7 +56,8 @@ fn run(game: &mut Game<'_>, line: &str) -> String {
 #[test]
 #[ignore = "daily"]
 fn time_moves_the_clock_the_end_runs_on() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     let world = std::env::temp_dir().join(format!("sunrise-end-clock-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&world);
     game.world_root = world.clone();

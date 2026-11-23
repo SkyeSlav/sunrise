@@ -40,6 +40,9 @@ sunrise-client-lib menu::place::custom::tests::full_inventory_refuses_unchanged_
 sunrise-client-lib menu::place::custom::tests::ingredient_shortage_returns_old_inputs_but_never_fills_fuel_or_output lib daily resources
 sunrise-client-lib menu::place::custom::tests::noncontiguous_roles_place_one_increment_and_max_without_granting_a_result lib daily resources
 sunrise-client-lib menu::place::custom::tests::per_slot_caps_limit_max_and_policy_refusal_is_not_a_missing_ingredient_ghost lib daily resources
+sunrise-client-lib menu::tests::dfa::a_clients_crafting_grid_works_out_no_result lib daily resources
+sunrise-client-lib menu::tests::dfa::a_clients_smithing_table_works_out_no_result lib daily resources
+sunrise-client-lib menu::tests::dfa::a_clients_stonecutter_crafts_what_the_server_shows_once lib daily resources
 sunrise-client-lib menu::tests::dfa::dfa_baseline_recipe_placement lib daily resources
 sunrise-client-lib menu::tests::dfa::dfa_baseline_recipe_take_consumes_one_per_cell lib daily resources
 sunrise-client-lib mobs::ai::bed_wake_tests::loaded_sleeping_position_refreshes_in_actual_mob_tick lib daily resources
@@ -55,11 +58,11 @@ sunrise-client-lib mobs::ai::fall_flying_tests::the_wear_draws_once_from_the_mob
 sunrise-client-lib mobs::ai::fall_flying_tests::the_wear_of_a_glide_never_breaks_the_glider lib daily resources
 sunrise-client-lib mobs::ai::flight_effect_fall_tests::flight_effects_reset_accumulated_fall_distance_even_without_ai lib daily resources
 sunrise-client-lib mobs::ai::happy_ghast_ambient_tests::natural_happy_ghast_ambient_uses_entity_position lib daily resources
-sunrise-client-lib mobs::ai::inside_walk_tests::a_diagonal_move_walks_blocks_in_vanillas_order lib daily resources
-sunrise-client-lib mobs::ai::inside_walk_tests::a_killing_write_stops_the_mobs_flush lib daily resources
-sunrise-client-lib mobs::ai::inside_walk_tests::a_mob_without_a_part_keeps_vanilla_behavior lib daily resources
-sunrise-client-lib mobs::ai::inside_walk_tests::a_panicking_part_leaves_the_mobs_tick_restored lib daily resources
-sunrise-client-lib mobs::ai::inside_walk_tests::a_part_pushes_a_mob_once_a_block_in_walk_order lib daily resources
+sunrise-client-lib mobs::ai::inside_walk_tests::a_diagonal_move_walks_blocks_in_vanillas_order lib daily child-process
+sunrise-client-lib mobs::ai::inside_walk_tests::a_killing_write_stops_the_mobs_flush lib daily child-process
+sunrise-client-lib mobs::ai::inside_walk_tests::a_mob_without_a_part_keeps_vanilla_behavior lib daily child-process
+sunrise-client-lib mobs::ai::inside_walk_tests::a_panicking_part_leaves_the_mobs_tick_restored lib daily child-process
+sunrise-client-lib mobs::ai::inside_walk_tests::a_part_pushes_a_mob_once_a_block_in_walk_order lib daily child-process
 sunrise-client-lib mobs::ai::powder_snow_particle_tests::a_controlled_mount_uses_its_riders_known_movement lib daily resources
 sunrise-client-lib mobs::ai::same_vehicle_push_tests::leather_body_armor_prevents_freezing lib daily resources
 sunrise-client-lib mobs::ai::same_vehicle_push_tests::zombie_horse_sunburn_checks_body_not_head lib daily resources
@@ -169,6 +172,5 @@ sunrise-client-lib save::tests::a_chunk_from_before_1_17_loads_the_entities_it_k
 sunrise-client-lib save::tests::loaded_chunk_uses_saved_monument_from_its_referenced_start_chunk lib daily resources
 sunrise-client-lib vanillagen::lod::tests::decorated_lod_refines_real_seed_canopies_and_all_dimensions lib daily resources
 sunrise-client-lib vanillagen::lod::tests::end_far_columns_keep_real_chorus_plants lib daily resources
-sunrise-client-lib vanillagen::lod::tests::end_small_islands_are_estimated_over_the_void lib daily resources
 sunrise-client-lib vanillagen::lod::tests::end_small_islands_from_decoration_survive_far_columns lib daily resources
 sunrise-client-lib vanillagen::saved_biome_tests::restored_proto_keeps_saved_biomes_when_saved_again_and_finished lib daily resources

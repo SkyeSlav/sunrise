@@ -3,8 +3,8 @@
 use super::native_entity_refs::tests::with_game;
 use super::runtime_levels::RuntimeTable;
 use mod_api::{
-    Hooks, HostSide, LevelLoadEvent, LevelRef, LevelTickPostEvent, LevelUnloadEvent, ModEntry,
-    RuntimeGenerator, RuntimeLevel, RuntimeLevelError,
+    ChunkRef, ChunkUnloadEvent, Hooks, HostSide, LevelLoadEvent, LevelRef, LevelTickPostEvent,
+    LevelUnloadEvent, ModEntry, RuntimeGenerator, RuntimeLevel, RuntimeLevelError, ServerHost,
 };
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
@@ -91,6 +91,8 @@ type Seen<T> = Arc<Mutex<Vec<T>>>;
 const OPEN: u8 = 0;
 const DELETE: u8 = 1;
 const IDLE: u8 = 2;
+/// Nothing in a level tick; a Nether chunk's unload forces chunk (0, 0) of `id`.
+const RESCUE: u8 = 3;
 
 /// A mod that opens `id` in `level_tick_post` and says what each call answered.
 struct Opener {
@@ -103,6 +105,7 @@ struct Opener {
     loads: Seen<String>,
     load_contexts: Seen<(String, String, bool)>,
     unloads: Seen<String>,
+    rescued: Seen<bool>,
 }
 
 #[mod_api::__subscriptions]
@@ -141,6 +144,17 @@ impl Hooks for Opener {
             .unwrap()
             .push(event.dimension.to_owned());
     }
+    fn chunk_unload(&self, host: &mut dyn ServerHost, event: &mut ChunkUnloadEvent<'_>) {
+        if self.mode.load(Ordering::SeqCst) != RESCUE
+            || event.dimension != "minecraft:the_nether"
+            || event.chunk != [0, 0]
+        {
+            return;
+        }
+        let level = host.level(self.id).unwrap();
+        let forced = ChunkRef::new(level, [0, 0]).set_forced(host, true);
+        self.rescued.lock().unwrap().push(forced);
+    }
 }
 
 struct Fixture {
@@ -151,6 +165,7 @@ struct Fixture {
     loads: Seen<String>,
     load_contexts: Seen<(String, String, bool)>,
     unloads: Seen<String>,
+    rescued: Seen<bool>,
 }
 
 /// A mod named `name` that opens `id` each time a level ticks, in a game, for `test`.
@@ -168,6 +183,7 @@ fn with_opener(
         loads: Seen::default(),
         load_contexts: Seen::default(),
         unloads: Seen::default(),
+        rescued: Seen::default(),
     };
     let opener = Opener {
         id,
@@ -179,11 +195,11 @@ fn with_opener(
         loads: fixture.loads.clone(),
         load_contexts: fixture.load_contexts.clone(),
         unloads: fixture.unloads.clone(),
+        rescued: fixture.rescued.clone(),
     };
     let mods = vec![ModEntry::new(name, Box::new(opener))].into();
     mod_platform::testing::with_mods(mods, || {
         with_game(|game| {
-            let _phase = mod_api::__private::PhaseOwner::scope(mod_api::__private::ModPhase::World);
             // Levels' folders go under a world root of the test's own, never the checkout.
             let root = TempRoot::new(name);
             game.world_root = root.0.clone();
@@ -392,6 +408,207 @@ fn the_idle_close_keeps_a_runtime_level_open_until_its_unload() {
         assert!(!game.runtime_level_is_open("idle:a"));
         assert!(super::Dim::extra("idle:a").is_none());
         assert_eq!(*seen.unloads.lock().unwrap(), ["idle:a", "idle:a"]);
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn an_idle_level_aborts_an_abandoned_chunk_unload_transaction_before_it_closes() {
+    crate::game::in_own_process(
+        "game::runtime_levels_tests::an_idle_level_aborts_an_abandoned_chunk_unload_transaction_before_it_closes",
+        || {
+            const ID: &str = "abandon:a";
+            const POS: [i32; 3] = [1, -50, 1];
+
+            struct Abandon(Seen<bool>);
+
+            #[mod_api::__subscriptions]
+            impl Hooks for Abandon {
+                fn level_tick_post(&self, host: HostSide, _: &mut LevelTickPostEvent) {
+                    if let HostSide::Server(host) = host {
+                        host.runtime_levels().open(ID, flat()).unwrap();
+                    }
+                }
+
+                fn chunk_unload(
+                    &self,
+                    host: &mut dyn ServerHost,
+                    event: &mut ChunkUnloadEvent<'_>,
+                ) {
+                    if event.dimension == ID && event.chunk == [0, 0] {
+                        let level = host.level(ID).unwrap();
+                        assert_eq!(level.set_connection_group(host, POS, Some(30)), Ok(true));
+                        self.0.lock().unwrap().push(!host.transaction_matches(None));
+                    }
+                }
+
+                fn level_unload(
+                    &self,
+                    host: &mut dyn ServerHost,
+                    event: &mut LevelUnloadEvent<'_>,
+                ) {
+                    if event.dimension == ID {
+                        self.0.lock().unwrap().push(!host.transaction_matches(None));
+                    }
+                }
+            }
+
+            let open_frames = Seen::default();
+            let mods = vec![ModEntry::new(
+                "abandon",
+                Box::new(Abandon(Arc::clone(&open_frames))),
+            )]
+            .into();
+            mod_platform::testing::with_mods(mods, || {
+                with_game(|game| {
+                    let root = TempRoot::new("abandon");
+                    game.world_root = root.0.clone();
+                    tick_post(game);
+                    game.apply_runtime_levels();
+                    place_block(game, ID, "minecraft:stone");
+                    let dim = super::Dim::extra(ID).unwrap();
+                    let custom = game.level(ID).unwrap();
+                    let home = game.level("minecraft:overworld").unwrap();
+                    game.world
+                        .chunks
+                        .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
+                    assert_eq!(home.set_connection_group(game, POS, Some(10)), Ok(true));
+                    game.enter_level(dim).unwrap();
+                    assert_eq!(custom.set_connection_group(game, POS, Some(20)), Ok(true));
+                    // Simulate an engine-abandoned transaction left open in `dim` before close.
+                    let _ = game.open_storage_transaction();
+                    assert_eq!(custom.set_connection_group(game, POS, Some(30)), Ok(true));
+                    game.enter_level(super::Dim::Overworld).unwrap();
+                    assert!(!game.transaction_matches(None));
+
+                    game.close_parked_level(dim).unwrap();
+                    assert!(!game.levels.parked.contains_key(&dim));
+                    assert_eq!(*open_frames.lock().unwrap(), [false, false]);
+                    assert!(game.transaction_matches(None));
+                    assert_eq!(home.connection_group(game, POS), Ok(Some(10)));
+                    game.abort_abandoned_transactions(0);
+                    assert_eq!(home.connection_group(game, POS), Ok(Some(10)));
+                });
+            });
+        },
+    );
+}
+
+/// A chunk-unload listener that forces a chunk in an idle custom level while a
+/// built-in level drains, in the same server tick that would have closed it,
+/// keeps that level open with its new ticket: the close plan is made after the
+/// drains and rechecked before each close.
+#[test]
+#[ignore = "daily"]
+fn a_ticket_a_chunk_unload_listener_adds_keeps_an_idle_custom_level_open() {
+    use super::levels::IDLE_TICKS;
+    use super::native_entity_refs::tests::run_fresh_cases;
+
+    // A parallel world load can replace the process-wide dimension list during the idle ticks.
+    if run_fresh_cases(
+        "game::runtime_levels_tests::a_ticket_a_chunk_unload_listener_adds_keeps_an_idle_custom_level_open",
+        "SUNRISE_RUNTIME_LEVEL_RESCUE_CHILD",
+        &["rescue"],
+    ) {
+        return;
+    }
+    with_opener("rescue", "rescue:a", flat(), |game, seen| {
+        tick_post(game);
+        game.apply_runtime_levels();
+        seen.mode.store(IDLE, Ordering::SeqCst);
+        let dim = super::Dim::extra("rescue:a").unwrap();
+        let custom = ChunkRef::new(game.level("rescue:a").unwrap(), [0, 0]);
+        // Idle the custom level to one server tick short of its close.
+        for _ in 1..IDLE_TICKS {
+            game.tick_server(false).unwrap();
+        }
+        assert_eq!(game.levels.parked[&dim].idle, IDLE_TICKS - 1);
+        // Open the Nether only now and load its chunk (0, 0), then release it:
+        // its first drain leaves the view it opened with, so that drain unloads
+        // the chunk at once, in the tick the custom level's close is due.
+        game.settings.render_distance = 2;
+        game.enter_level(super::Dim::Nether).unwrap();
+        let nether = ChunkRef::new(game.level("minecraft:the_nether").unwrap(), [0, 0]);
+        assert!(game.chunk_set_forced(nether, true));
+        assert!(game.chunk_set_forced(nether, false));
+        game.enter_level(super::Dim::Overworld).unwrap();
+        assert!(game.chunk_loaded(nether));
+        seen.mode.store(RESCUE, Ordering::SeqCst);
+        game.tick_server(false).unwrap();
+        assert!(
+            !game.chunk_loaded(nether),
+            "the released Nether chunk unloaded"
+        );
+        assert_eq!(*seen.rescued.lock().unwrap(), [true]);
+        seen.mode.store(IDLE, Ordering::SeqCst);
+        // Through the idle close and past it, the level and the ticket both remain.
+        for _ in 0..=IDLE_TICKS {
+            game.tick_server(false).unwrap();
+        }
+        // The ticket may make this the first level to tick, leaving it in place.
+        assert!(
+            game.native_level_world(custom.level()).is_some(),
+            "the custom level stays open"
+        );
+        assert!(seen.unloads.lock().unwrap().is_empty());
+        assert_eq!(game.chunk_forced(custom), Some(true));
+        assert!(game.chunk_loaded(custom));
+    });
+}
+
+/// A chunk a mod loads (`LevelRef::load_chunk`, #4550) in an idle custom level in the tick its
+/// close is due keeps the level open, not ticking, with the chunk, while the `UNKNOWN` ticket
+/// lives; once the ticket expires, the idle level closes as before.
+#[test]
+#[ignore = "daily"]
+fn a_live_loading_ticket_keeps_an_idle_custom_level_open_until_it_expires() {
+    use super::levels::IDLE_TICKS;
+    use super::native_entity_refs::tests::run_fresh_cases;
+
+    // A parallel world load can replace the process-wide dimension list during the idle ticks.
+    if run_fresh_cases(
+        "game::runtime_levels_tests::a_live_loading_ticket_keeps_an_idle_custom_level_open_until_it_expires",
+        "SUNRISE_RUNTIME_LEVEL_LOADING_TICKET_CHILD",
+        &["loading_ticket"],
+    ) {
+        return;
+    }
+    with_opener("loading", "loading:a", flat(), |game, seen| {
+        tick_post(game);
+        game.apply_runtime_levels();
+        seen.mode.store(IDLE, Ordering::SeqCst);
+        let dim = super::Dim::extra("loading:a").unwrap();
+        let level = game.level("loading:a").unwrap();
+        let chunk = ChunkRef::new(level, [5, 5]);
+        // Idle the custom level to one server tick short of its close.
+        for _ in 1..IDLE_TICKS {
+            game.tick_server(false).unwrap();
+        }
+        assert_eq!(game.levels.parked[&dim].idle, IDLE_TICKS - 1);
+        assert!(!game.chunk_loaded(chunk));
+        let host: &mut dyn ServerHost = game;
+        assert!(level.load_chunk(host, [5, 5]));
+        // The close falls due in this tick, and the ticket outlives it.
+        game.tick_server(false).unwrap();
+        assert!(
+            game.native_level_world(level).is_some(),
+            "the custom level stays open for the live ticket"
+        );
+        assert!(game.chunk_loaded(chunk));
+        assert!(
+            !game.levels_to_tick().contains(&dim),
+            "the ticket does not make the level tick"
+        );
+        assert!(seen.unloads.lock().unwrap().is_empty());
+        // The ticket expires within two purges; the idle level then closes.
+        for _ in 0..3 {
+            game.tick_server(false).unwrap();
+        }
+        assert!(
+            game.native_level_world(level).is_none(),
+            "the idle level closes once the ticket expired"
+        );
+        assert_eq!(*seen.unloads.lock().unwrap(), ["loading:a"]);
     });
 }
 

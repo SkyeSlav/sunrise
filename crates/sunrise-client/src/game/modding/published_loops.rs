@@ -46,9 +46,9 @@ pub(crate) struct Attributed<N, T> {
 impl<N: LoopMod, T> Attributed<N, T> {
     /// Runs `call` on the slot, marked as inside the mod.
     #[inline(always)]
-    pub(crate) fn call<R>(&mut self, call: impl FnOnce(&mut T) -> R) -> R {
+    pub(crate) fn call<R>(&mut self, call: impl FnOnce(&mut T) -> R) -> Option<R> {
         let _inside = mod_api::content::crash::enter_native_mod(N::CALL);
-        call(&mut self.slot)
+        Some(call(&mut self.slot))
     }
 }
 
@@ -358,10 +358,13 @@ mod tests {
         type Slots = (Attributed<A, Count>, ());
         let mut owner = Owner::default();
         for _ in 0..2 {
-            run::<Slots>(&mut owner, |slots| slots.0.call(|count| count.0 += 1)).unwrap();
+            run::<Slots>(&mut owner, |slots| {
+                slots.0.call(|count| count.0 += 1).unwrap();
+            })
+            .unwrap();
         }
         run::<Slots>(&mut owner, |slots| {
-            assert_eq!(slots.0.call(|count| count.0), 2)
+            assert_eq!(slots.0.call(|count| count.0), Some(2))
         })
         .unwrap();
         assert_eq!((owner.slotted, owner.vanilla), (3, 0));
@@ -443,7 +446,7 @@ mod tests {
         // The outer run puts them back; the next run has them.
         owner.states.put("l", Cell::Ready(outer.unwrap()));
         run::<Slots>(&mut owner, |slots| {
-            assert_eq!(slots.0.call(|count| count.0), 0)
+            assert_eq!(slots.0.call(|count| count.0), Some(0))
         })
         .unwrap();
         assert_eq!((owner.slotted, owner.vanilla), (2, 0));

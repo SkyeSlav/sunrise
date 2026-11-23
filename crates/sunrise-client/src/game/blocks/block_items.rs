@@ -4,14 +4,56 @@
 //! placed item gives its block entity.
 use super::Game;
 use sunrise_client::{
-    Result, block_entity_item, block_entity_nbt, containers::BlockEntity, item_data,
-    items::ItemStack, save,
+    block_entity_item, block_entity_nbt, containers::BlockEntity, item_data, items::ItemStack, save,
 };
 use sunrise_core::nbt::{Compound, JavaString, Tag};
 use sunrise_world::{
-    level::{Behaviours, classes::Class, flags},
-    registry::BlockStateId,
+    level::{Behaviours, classes::Class},
+    registry::{BlockRegistry, BlockStateId},
 };
+
+/// The state to write and the state after the BlockItem's property tag, shared with prediction.
+pub(super) fn item_block_state(
+    registry: &BlockRegistry,
+    mut state: BlockStateId,
+    stack: &ItemStack,
+    game_master: bool,
+) -> (BlockStateId, BlockStateId) {
+    let Some(current) = registry.state(state) else {
+        return (state, state);
+    };
+    let saved = stack.data().and_then(|d| d.other("minecraft:block_state"));
+    let book = game_master
+        && current.name == "minecraft:lectern"
+        && block_entity_item::carries_book(stack);
+    if !book && saved.is_none() {
+        return (state, state);
+    }
+    let mut changed = current.clone();
+    if book {
+        // LecternBlock.getStateForPlacement applies this before the item tag.
+        changed.properties.insert("has_book".into(), "true".into());
+        state = registry.id(&changed).unwrap_or(state);
+    }
+    let Some(Tag::Compound(saved)) = saved else {
+        return (state, state);
+    };
+    let mut tagged = state;
+    for (key, value) in saved {
+        let key = key.to_string_lossy();
+        if let Tag::String(value) = value
+            && let Some(property) = changed.properties.get_mut(&key)
+        {
+            let previous = std::mem::replace(property, value.to_string_lossy());
+            if let Some(next) = registry.id(&changed) {
+                tagged = next;
+            } else {
+                changed.properties.insert(key, previous);
+            }
+        }
+    }
+    (state, tagged)
+}
 
 /// The component patch of `stack`.
 fn components(stack: &ItemStack) -> Compound {
@@ -90,14 +132,18 @@ impl Game<'_> {
     }
 
     /// The block entity at `key` as vanilla saves it, with its custom name.
-    fn saved_block_entity(&self, key: (i32, i32, i32)) -> Option<Tag> {
+    fn saved_block_entity(&self, key: (i32, i32, i32), for_save: bool) -> Option<Tag> {
         let entity = self.world.block_entities.get(&key)?;
         let block = &self
             .res
             .facts()
             .get(self.world.block(key.0, key.1, key.2))
             .name;
-        let mut tag = save::block_entity_encode::encode(key, entity, block, self.res.items());
+        let mut tag = if for_save {
+            self.encode_live_block_entity(key, entity, block, self.res.items())
+        } else {
+            save::block_entity_encode::encode(key, entity, block, self.res.items())
+        };
         if let (Some(name), Tag::Compound(map)) = (self.world.block_names.get(&key), &mut tag) {
             map.insert("CustomName".into(), name.clone());
         }
@@ -152,7 +198,7 @@ impl Game<'_> {
     /// `pos`, if any, onto `stack` (`BlockItem.setBlockEntityData`, then
     /// `ItemStack.applyComponents(collectComponents())`).
     pub(super) fn add_block_data(&self, pos: [i32; 3], stack: &mut ItemStack) {
-        if let Some(saved) = self.saved_block_entity((pos[0], pos[1], pos[2])) {
+        if let Some(saved) = self.saved_block_entity((pos[0], pos[1], pos[2]), true) {
             apply_patch(stack, block_entity_item::pick(&saved));
         }
     }
@@ -240,8 +286,14 @@ impl Game<'_> {
             self.world.block_entities.get(&key),
             Some(BlockEntity::CopperGolemStatue(_))
         );
-        if (include_data || banner || pot || statue)
-            && let Some(saved) = self.saved_block_entity(key)
+        // A mod entity contributes only once, to the winning stack in add_block_data.
+        let mod_entity = matches!(
+            self.world.block_entities.get(&key),
+            Some(BlockEntity::Mod(_))
+        );
+        if !mod_entity
+            && (include_data || banner || pot || statue)
+            && let Some(saved) = self.saved_block_entity(key, false)
         {
             let mut picked = block_entity_item::pick(&saved);
             if pot {
@@ -263,7 +315,7 @@ impl Game<'_> {
         if !filled {
             return;
         }
-        let Some(saved) = self.saved_block_entity(key) else {
+        let Some(saved) = self.saved_block_entity(key, false) else {
             return;
         };
         let state = self.world.block(pos[0], pos[1], pos[2]);
@@ -271,43 +323,6 @@ impl Game<'_> {
         let patch = block_entity_item::collected_components(&saved);
         (stack.damage, stack.extra) = item_data::decode_components(Some(&Tag::Compound(patch)));
         self.spawn_item_own(stack, pos.map(|v| f64::from(v) + 0.5), 10);
-    }
-
-    /// `BlockItem.updateBlockStateFromTag`: the properties of the item's
-    /// `block_state` component (a hive's honey level, a statue's pose) set on
-    /// the block just placed at `pos`. Returns the state it has now.
-    pub(super) fn apply_item_block_state(
-        &mut self,
-        pos: [i32; 3],
-        state: BlockStateId,
-        stack: &ItemStack,
-    ) -> Result<BlockStateId> {
-        let Some(Tag::Compound(saved)) =
-            stack.data().and_then(|d| d.other("minecraft:block_state"))
-        else {
-            return Ok(state);
-        };
-        let Some(current) = self.pack.assets.registry.state(state) else {
-            return Ok(state);
-        };
-        // Only the properties the block has.
-        let props: Vec<(String, String)> = saved
-            .iter()
-            .filter_map(|(k, v)| match v {
-                Tag::String(v) => Some((k.to_string_lossy(), v.to_string_lossy())),
-                _ => None,
-            })
-            .filter(|(k, v)| current.properties.get(k).is_some_and(|old| old != v))
-            .collect();
-        let props: Vec<(&str, &str)> = props.iter().map(|(k, v)| (&**k, &**v)).collect();
-        match self.with_props(state, &props) {
-            Some(new) if !props.is_empty() && new != state => {
-                // `level.setBlock(pos, modifiedState, 2)`: no neighbour pass.
-                self.level_set_with_flags(pos, new, flags::UPDATE_CLIENTS)?;
-                Ok(new)
-            }
-            _ => Ok(state),
-        }
     }
 
     /// `BlockItem.updateBlockEntityComponents` on a client's level, for the
@@ -324,6 +339,25 @@ impl Game<'_> {
         self.apply_placed_item(pos, &stack, false);
     }
 
+    /// Ensure the selected block's entity exists before applying the original stack's data.
+    pub(super) fn apply_block_item_data(
+        &mut self,
+        pos: [i32; 3],
+        state: BlockStateId,
+        stack: &ItemStack,
+        game_master: bool,
+    ) {
+        let key = (pos[0], pos[1], pos[2]);
+        if !self.world.block_entities.stateful_entity(state.0)
+            && let Some(entity) = self.new_block_entity_for_state(state)
+        {
+            self.world.block_entities.insert(key, entity);
+        }
+        if self.world.block_entities.get(&key).is_some() {
+            self.apply_placed_item(pos, stack, game_master);
+        }
+    }
+
     /// `BlockItem.updateCustomBlockEntityTag` and `updateBlockEntityComponents`
     /// for the block entity just placed at `pos` from `stack`; `game_master`:
     /// the placer can use game master blocks (a dispenser can't).
@@ -334,30 +368,36 @@ impl Game<'_> {
         game_master: bool,
     ) {
         let key = (pos[0], pos[1], pos[2]);
-        self.pending.banner.remove(&pos);
+        self.pending.clear(pos);
         let state = self.world.block(pos[0], pos[1], pos[2]);
         self.sculk_place_entity(state);
-        let Some(saved) = self.saved_block_entity(key) else {
+        let Some(saved) = self.saved_block_entity(key, false) else {
             return;
         };
-        let placed = block_entity_item::place(&saved, &components(stack), game_master);
+        let (placed, custom_data_loaded) =
+            block_entity_item::place_with_load_result(&saved, &components(stack), game_master);
         if placed == saved {
             return;
         }
         let block = self.world.block(pos[0], pos[1], pos[2]);
         let name = &self.res.facts().get(block).name;
-        let Some((_, mut entity)) = save::decode_block_entity_for_block(&placed, name) else {
+        let previous = self.world.block_entities.get(&key);
+        let Some((_, mut entity)) = save::decode_block_entity_replacing(&placed, name, previous)
+        else {
             return;
         };
         // The new crafter's state flag (CrafterBlock.newBlockEntity), which
         // its saved data has no part of.
         if let (BlockEntity::Crafter(new), Some(BlockEntity::Crafter(old))) =
-            (&mut entity, self.world.block_entities.get(&key))
+            (&mut entity, previous)
         {
             new.state_triggered = old.state_triggered;
         }
         self.load_block_name(key, &entity, &placed);
         self.world.block_entities.insert(key, entity);
+        if custom_data_loaded {
+            self.notify_block_entity_load_additional(key);
+        }
         self.update_spawner_display(key);
     }
 }
@@ -544,8 +584,8 @@ mod tests {
             }
             fn blocks(&self, _context: &mod_api::RegistrationContext, event: &mut BlocksEvent<'_>) {
                 event
-                    .blocks
-                    .push(mod_api::Block::new(CRATE, "minecraft:white_banner"));
+                    .register(mod_api::Block::new(CRATE, "minecraft:white_banner"))
+                    .unwrap();
             }
         }
         let mods: Mods = Arc::from([ModEntry::new("item_test", Box::new(TestMod))]);
@@ -666,7 +706,7 @@ mod tests {
                     let mut block = mod_api::Block::new(id, "minecraft:stone");
                     block.item = item;
                     block.pick_item = pick_item.map(Into::into);
-                    event.blocks.push(block);
+                    event.register(block).unwrap();
                 }
             }
         }
@@ -884,7 +924,7 @@ mod styled_name_model_tests {
         assert_eq!(slots[26].as_ref().unwrap().count, 5);
         assert_eq!(&*slots[0].as_ref().unwrap().item, "minecraft:diamond");
         assert_eq!(&*slots[26].as_ref().unwrap().item, "minecraft:apple");
-        let no_raw = game.saved_block_entity(pos).unwrap();
+        let no_raw = game.saved_block_entity(pos, false).unwrap();
         let command = game.block_entity_nbt([pos.0, pos.1, pos.2]).unwrap();
         let chunk = chunk_saved(game, pos);
         for (route, saved) in [

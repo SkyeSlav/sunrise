@@ -58,8 +58,9 @@ fn suggestions(receiver: &mpsc::Receiver<Out>) -> Vec<String> {
 }
 
 /// A server with two guests on it (`conn` 2 and 7).
-fn server_with_guests() -> (Game<'static>, Vec<mpsc::Receiver<Out>>) {
-    let resources = Box::leak(Box::new(None));
+fn server_with_guests<'a>(
+    resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>,
+) -> (Game<'a>, Vec<mpsc::Receiver<Out>>) {
     let mut game = server_game(resources);
     game.build_registries();
     game.set_allow_commands(true);
@@ -124,7 +125,8 @@ fn server_with_guests() -> (Game<'static>, Vec<mpsc::Receiver<Out>>) {
 #[test]
 #[ignore = "daily"]
 fn a_guests_roll_reaches_every_player_once() {
-    let (mut game, receivers) = server_with_guests();
+    let mut resources = None;
+    let (mut game, receivers) = server_with_guests(&mut resources);
     let (ok, lines) = game
         .run_guest_command_told(crate::game::lan_actions::GuestCommand {
             conn: 2,
@@ -198,11 +200,12 @@ fn a_blocks_roll_names_the_block_and_the_console_says_server() {
 #[test]
 #[ignore = "daily"]
 fn the_reset_argument_offers_the_sequences_the_world_has() {
-    let (mut game, receivers) = server_with_guests();
+    let mut resources = None;
+    let (mut game, receivers) = server_with_guests(&mut resources);
     assert!(game.run_command("random value 1..10 minecraft:test"));
     // ServerGamePacketListenerImpl.handleCustomCommandSuggestions: the
     // `ask_server` request the window's chat box sends for `/random reset `.
-    let mut w = sunrise_protocol::buf::Writer::new();
+    let mut w = ::sunrise_core::vanilla_bytes::Writer::new();
     w.varint(1);
     w.string("random reset ");
     game.guest_suggestions(2, &w.data);

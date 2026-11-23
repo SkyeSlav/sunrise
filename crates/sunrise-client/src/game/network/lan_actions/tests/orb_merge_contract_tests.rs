@@ -10,6 +10,7 @@ use sunrise_core::geometry::Vec3;
 fn orb(id: u32, x: f64, value: i32, count: u32) -> ExperienceOrb {
     let at = Vec3::new(x, 70.0, 0.5);
     ExperienceOrb {
+        size_answer: None,
         attachment_lifetime: Default::default(),
         fall_distance: 0.0,
         rotation: [0.0, 0.0],
@@ -20,7 +21,7 @@ fn orb(id: u32, x: f64, value: i32, count: u32) -> ExperienceOrb {
         velocity: Vec3::ZERO,
         value,
         age: 0,
-        on_ground: true,
+        ground: sunrise_world::ground_support::GroundState::from_ground_flag(true),
         count,
         fire_ticks: 0,
         ticks: 0,

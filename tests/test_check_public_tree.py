@@ -72,12 +72,15 @@ class CommercialDenylistTests(unittest.TestCase):
     def test_a_removed_crate_or_launcher_page_in_the_tree_fails(self):
         cases = [
             "crates/sunrise-cosmetics/Cargo.toml",
+            "crates/sunrise-client/src/game/cosmetics.rs",
+            "crates/sunrise-client/src/game/interface/cosmetics/emotes.rs",
             "crates/sunrise-official-servers/src/lib.rs",
             "launcher/src/partner.rs",
             "launcher/src/shop/mod.rs",
             "launcher/src/wardrobe.rs",
             "launcher/src/wardrobe_page.rs",
             "launcher/assets/sculk-banner.webp",
+            "launcher/src/main.rs",
         ]
         for path in cases:
             with self.subTest(path=path), TemporaryDirectory() as directory:
@@ -90,10 +93,8 @@ class CommercialDenylistTests(unittest.TestCase):
     def test_kept_paths_and_nearby_names_are_allowed(self):
         allowed = [
             "crates/sunrise-official/Cargo.toml",
-            "launcher/src/shopping.rs",
-            "launcher/src/partners.rs",
-            "launcher/assets/logo.webp",
             "docs/cosmetics.md",
+            "crates/sunrise-client/src/game/interface/names.rs",
         ]
         with TemporaryDirectory() as directory:
             self.repo(directory, [(path, "ok\n") for path in allowed])

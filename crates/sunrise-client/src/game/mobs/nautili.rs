@@ -58,8 +58,8 @@ impl Game<'_> {
             .map(|t| t.iter().cloned().collect())
             .unwrap_or_default();
         let food = nautilus::is_food(m, item, &taming);
-        let sneaking =
-            self.keys.held(Action::Sneak) || self.keys.raw(&winit::keyboard::KeyCode::ShiftRight);
+        let sneaking = self.held_mapping(Action::Sneak)
+            || self.keys.raw(&winit::keyboard::KeyCode::ShiftRight);
         let tame = m.extra.tame;
         if m.is_baby() {
             // Animal.mobInteract: food grows a baby up by a tenth.

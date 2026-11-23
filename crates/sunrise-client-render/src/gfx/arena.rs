@@ -96,6 +96,10 @@ struct Page {
 }
 
 impl Page {
+    fn bytes(&self) -> u64 {
+        self.buffer.size() + self.sources.as_ref().map_or(0, wgpu::Buffer::size)
+    }
+
     /// Vertices in the page's free ranges.
     fn free_vertices(&self) -> u64 {
         self.free.0.values().sum()
@@ -113,6 +117,7 @@ const SHRINK_MIN_BYTES: u64 = 64 << 20;
 /// buffer sizes): a section's vertices sit in one page.
 pub struct Arena {
     pages: Vec<Option<Page>>,
+    page_bytes: u64,
     stride: u64,
     page_limit: u64,
     initial_capacity: u64,
@@ -202,6 +207,7 @@ impl Arena {
         let capacity = capacity.next_multiple_of(GRAIN).min(page_limit);
         Self {
             pages: Vec::new(),
+            page_bytes: 0,
             stride,
             page_limit,
             initial_capacity: capacity,
@@ -258,11 +264,7 @@ impl Arena {
     }
     /// Bytes of every page's buffer.
     pub fn bytes(&self) -> u64 {
-        self.pages
-            .iter()
-            .flatten()
-            .map(|p| p.capacity * self.stride + p.sources.as_ref().map_or(0, wgpu::Buffer::size))
-            .sum()
+        self.page_bytes
     }
     /// The most vertices a page holds.
     pub fn page_vertices(&self) -> u64 {
@@ -330,11 +332,13 @@ impl Arena {
             self.sources_enabled = true;
             for p in self.pages.iter_mut().flatten() {
                 p.sources = Self::source_buffer(device, p.capacity);
+                self.page_bytes += p.sources.as_ref().map_or(0, wgpu::Buffer::size);
             }
         }
         let p = self.pages[page as usize].as_mut().expect("live arena page");
         if p.sources.is_none() && !sources.is_empty() {
             p.sources = Self::source_buffer(device, p.capacity);
+            self.page_bytes += p.sources.as_ref().map_or(0, wgpu::Buffer::size);
         }
         if let Some(buffer) = &p.sources {
             let bytes = vertices / 4 * 8;
@@ -424,6 +428,7 @@ impl Arena {
                 self.pages.push(None);
                 self.pages.len() - 1
             });
+        self.page_bytes += page.bytes();
         self.pages[index] = Some(page);
         Some((index as u32, start))
     }
@@ -525,7 +530,7 @@ impl Arena {
             return false;
         };
         let free = FreeList::new(capacity);
-        self.pages.push(Some(Page {
+        let page = Page {
             buffer,
             sources: self
                 .sources_enabled
@@ -534,7 +539,9 @@ impl Arena {
             capacity,
             free,
             host,
-        }));
+        };
+        self.page_bytes += page.bytes();
+        self.pages.push(Some(page));
         true
     }
     /// Stops placing vertices in `page` until `reopen`.
@@ -645,12 +652,14 @@ impl Arena {
         if let (Some(from), Some(to)) = (&old.sources, &sources) {
             encoder.copy_buffer_to_buffer(from, 0, to, 0, from.size());
         }
+        self.page_bytes -= old.bytes();
         old.sources = sources;
         let previous = old.capacity;
         old.buffer = buffer;
         old.host = host;
         old.capacity = capacity;
         old.free.give(previous, capacity - previous);
+        self.page_bytes += old.bytes();
         true
     }
     /// Reclaim after an upload batch, so replacing a section can reuse its range. Gives back
@@ -663,6 +672,7 @@ impl Arena {
                 .is_some_and(|p| p.free.0.len() == 1 && p.free.0.get(&0) == Some(&p.capacity))
                 && let Some(p) = page.take()
             {
+                self.page_bytes -= p.bytes();
                 released.push(p.buffer);
             }
         }
@@ -678,6 +688,7 @@ impl Arena {
     /// Drops every page; gives back their buffers, for a [`Graveyard`].
     pub fn clear(&mut self) -> Vec<wgpu::Buffer> {
         self.closing = None;
+        self.page_bytes = 0;
         self.pages.drain(..).flatten().map(|p| p.buffer).collect()
     }
 }
@@ -753,6 +764,64 @@ pub(super) fn try_create(
     pollster::block_on(scope.pop()).is_none().then_some(buffer)
 }
 
+/// A buffer that is recreated larger when it must hold more.
+pub(super) struct Grown {
+    pub(super) buffer: wgpu::Buffer,
+    pub(super) bytes: u64,
+    label: &'static str,
+    usage: wgpu::BufferUsages,
+}
+
+impl Grown {
+    pub(super) fn new(
+        device: &wgpu::Device,
+        label: &'static str,
+        bytes: u64,
+        usage: wgpu::BufferUsages,
+    ) -> Option<Self> {
+        Some(Self {
+            buffer: try_create(device, label, bytes, usage)?,
+            bytes,
+            label,
+            usage,
+        })
+    }
+    /// Room for `bytes`, in a power of two within the device's limits:
+    /// `Some(true)` when the buffer was made anew (its contents lost), `None`
+    /// past the limits or when the memory for it is missing.
+    pub(super) fn reserve(&mut self, device: &wgpu::Device, bytes: u64) -> Option<bool> {
+        if bytes <= self.bytes {
+            return Some(false);
+        }
+        let limits = device.limits();
+        let mut limit = limits.max_buffer_size;
+        if self.usage.contains(wgpu::BufferUsages::STORAGE) {
+            limit = limit.min(limits.max_storage_buffer_binding_size);
+        }
+        if bytes > limit {
+            return None;
+        }
+        let size = bytes.next_power_of_two().min(limit & !3);
+        self.buffer = try_create(device, self.label, size, self.usage)?;
+        self.bytes = size;
+        Some(true)
+    }
+    /// `reserve`, keeping what the buffer held (`runs`' stamps).
+    pub(super) fn reserve_keeping(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        bytes: u64,
+    ) -> Option<bool> {
+        let (old, old_bytes) = (self.buffer.clone(), self.bytes);
+        let made = self.reserve(device, bytes)?;
+        if made {
+            encoder.copy_buffer_to_buffer(&old, 0, &self.buffer, 0, old_bytes);
+        }
+        Some(made)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -781,27 +850,29 @@ mod tests {
 
     /// A device with those of `features` the adapter has.
     fn device_with(features: wgpu::Features) -> Option<(wgpu::Device, wgpu::Queue)> {
-        let instance = crate::gfx::test_gpu::instance();
-        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
+        let adapter = crate::gfx::test_gpu::adapter()?;
         eprintln!("arena GPU regression: {}", adapter.get_info().name);
         let required_features = adapter.features() & features;
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            required_features,
-            ..Default::default()
-        }))
-        .ok()
+        crate::gfx::test_gpu::optional_device_with(
+            &adapter,
+            &wgpu::DeviceDescriptor {
+                required_features,
+                ..Default::default()
+            },
+        )
     }
 
     /// A device with the adapter's own limits, as the renderer opens it: page
     /// caps past the default 256 MiB buffer limit show there.
     fn device_at_limits() -> Option<(wgpu::Device, wgpu::Queue)> {
-        let instance = crate::gfx::test_gpu::instance();
-        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            required_limits: adapter.limits(),
-            ..Default::default()
-        }))
-        .ok()
+        let adapter = crate::gfx::test_gpu::adapter()?;
+        crate::gfx::test_gpu::optional_device_with(
+            &adapter,
+            &wgpu::DeviceDescriptor {
+                required_limits: adapter.limits(),
+                ..Default::default()
+            },
+        )
     }
 
     /// `device` and `device_at_limits`: the default limits bind 128 MiB of a storage
@@ -826,6 +897,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn writes_recorded_before_a_grow_reach_the_grown_page() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device() else {
@@ -860,6 +932,7 @@ mod tests {
     /// Released together, every range of a page leaves it one free range (a far teleport
     /// empties the arena at once), while a page keeping some ranges frees only the others.
     #[test]
+    #[ignore = "daily"]
     fn ranges_released_at_once_free_exactly_their_vertices() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device() else {
@@ -894,6 +967,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn a_sparse_page_empties_into_the_others_and_is_reclaimed() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device() else {
@@ -971,6 +1045,7 @@ mod tests {
     /// `translucent_at` along. GPU culling's records of the sections with solid
     /// quads move with them.
     #[test]
+    #[ignore = "daily"]
     fn compaction_moves_what_sections_hold_in_the_section_arena() {
         let _gpu = crate::gfx::test_gpu::lock();
         use super::super::{Part, SectionGpu, gpu_culling, move_off_page};
@@ -1053,13 +1128,14 @@ mod tests {
             assert_eq!(records.page_sections(), [recorded], "split {split}");
             arena.close(0);
             let mut encoder = device.create_command_encoder(&Default::default());
-            let meshes = sections.iter_mut();
+            let meshes = sections.iter_mut().map(|s| (s, None));
             let mut budget = u64::MAX;
             assert!(move_off_page(
                 &mut arena,
                 &mut encoder,
                 None,
                 Some(&mut records),
+                None,
                 meshes,
                 0,
                 Part::Section { split },
@@ -1107,6 +1183,7 @@ mod tests {
     /// quads a shrink moves (`move_off_page`) keep naming their section, or flat draws would
     /// put them at another section's origin.
     #[test]
+    #[ignore = "daily"]
     fn moved_translucent_quads_keep_their_section_s_flat_id() {
         let _gpu = crate::gfx::test_gpu::lock();
         use super::super::{Part, SectionGpu, flat, move_off_page, upload::Uploads};
@@ -1219,7 +1296,8 @@ mod tests {
             &mut encoder,
             Some((&mut flat, &device, &mut uploads)),
             None,
-            std::iter::once(&mut section),
+            None,
+            std::iter::once((&mut section, None)),
             0,
             Part::Translucent,
             &mut budget
@@ -1243,6 +1321,7 @@ mod tests {
     /// least: wgpu clears what a binding covers and nothing wrote when the frame is
     /// submitted, so a grown page bound whole had its new tail cleared on the GPU.
     #[test]
+    #[ignore = "daily"]
     fn large_pages_are_bound_up_to_their_last_range_in_use() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device() else {
@@ -1267,6 +1346,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn empty_pages_are_reclaimed_without_moving_live_ranges() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device() else {
@@ -1312,6 +1392,7 @@ mod tests {
     /// Every arena's pages stay within its cap and the device's limits: the
     /// whole-page storage bindings of flat draws and shader packs included.
     #[test]
+    #[ignore = "daily"]
     fn pages_stay_within_their_caps_and_the_device_limits() {
         let _gpu = crate::gfx::test_gpu::lock();
         let devices = devices();
@@ -1347,6 +1428,7 @@ mod tests {
     /// storage. Otherwise, as while a shader pack's terrain draws flat (gfx's
     /// `translucent_split`), translucent quads keep to the section arena.
     #[test]
+    #[ignore = "daily"]
     fn translucent_arenas_follow_the_layout() {
         let _gpu = crate::gfx::test_gpu::lock();
         let devices = devices();
@@ -1382,6 +1464,7 @@ mod tests {
 
     /// Pages double up to `PAGE_BYTES`, then grow by `PAGE_BYTES` at most.
     #[test]
+    #[ignore = "daily"]
     fn large_pages_grow_by_bounded_steps() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, _)) = device() else {
@@ -1409,6 +1492,7 @@ mod tests {
     /// The other range of each mesh stays; the emptied page takes no new range until
     /// `trim` returns it. Translucent vertices and sorted indices alike.
     #[test]
+    #[ignore = "daily"]
     fn a_large_page_moves_into_one_of_the_size_its_ranges_get() {
         let _gpu = crate::gfx::test_gpu::lock();
         use super::super::{Part, SectionGpu, begin_shrink, move_off_page};
@@ -1423,8 +1507,12 @@ mod tests {
         ] {
             let indices = matches!(part, Part::Indices);
             let stride = arena.stride;
-            // 64 quads a mesh: their vertices, or their sorted indices.
-            let len: u64 = if indices { 64 * 6 } else { 64 * 4 };
+            // 64 quads a mesh: their vertices, or their sorted indices' range.
+            let len: u64 = if indices {
+                super::super::translucency::index_words(64)
+            } else {
+                64 * 4
+            };
             let span = len.next_multiple_of(GRAIN);
             // Its range here at `at`; the other one names a page that is not there.
             let mesh = |at: (u32, u64), solid: u32, translucent: u32| SectionGpu {
@@ -1493,9 +1581,9 @@ mod tests {
                          encoder: &mut _,
                          meshes: &mut [(u32, SectionGpu)],
                          budget: &mut u64| {
-                let held = meshes.iter_mut().map(|(_, s)| s);
+                let held = meshes.iter_mut().map(|(_, s)| (s, None));
                 assert!(move_off_page(
-                    arena, encoder, None, None, held, 0, part, budget
+                    arena, encoder, None, None, None, held, 0, part, budget
                 ));
                 let on = |s: &SectionGpu| part.of(s).is_some_and(|r| r.0 == 1);
                 meshes.iter().filter(|(_, s)| on(s)).count()
@@ -1547,6 +1635,7 @@ mod tests {
     /// them, at least the first page's size) halves them or is `PAGE_BYTES`
     /// smaller: at the smallest page that shrinks and at the largest.
     #[test]
+    #[ignore = "daily"]
     fn large_pages_shrink_when_that_halves_them_or_saves_a_page() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, _)) = device() else {
@@ -1591,6 +1680,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn clearing_an_arena_releases_buffers_and_can_allocate_again() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device() else {
@@ -1688,6 +1778,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn full_video_memory_spills_to_system_memory() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device_with(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS) else {
@@ -1723,6 +1814,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn no_memory_left_is_not_an_error() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device() else {

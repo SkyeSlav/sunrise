@@ -5,7 +5,7 @@ impl PartRegistrar {
     fn default_block<P>(
         &mut self,
         block: &crate::BlockKey,
-        declaration: P,
+        declare: impl FnOnce(&str) -> Result<P, String>,
         table: fn(&mut Parts) -> &mut HashMap<Box<str>, Vec<(usize, P)>>,
     ) {
         let id = self
@@ -27,6 +27,13 @@ impl PartRegistrar {
             self.refused.push(format!("mod {} declared a mod block default provider for vanilla block {id}; use block_capability instead", self.mod_id));
             return;
         }
+        let declaration = match declare(&id) {
+            Ok(declaration) => declaration,
+            Err(reason) => {
+                self.refuse(&reason);
+                return;
+            }
+        };
         table(&mut self.parts)
             .entry(id.into())
             .or_default()
@@ -36,15 +43,35 @@ impl PartRegistrar {
 
 impl DefaultCapabilitiesRegistrar for PartRegistrar {
     fn block_container(&mut self, block: &crate::BlockKey, container: crate::ModContainer) {
-        self.default_block(block, container, |parts| {
-            &mut parts.default_block_containers
-        });
+        self.default_block(
+            block,
+            |id| {
+                // Vanilla ItemStackWithSlot.CODEC saves each Slot as an unsigned byte.
+                const MAX_SAVED_SLOTS: usize = u8::MAX as usize + 1;
+                let slots = container.slots;
+                if slots > MAX_SAVED_SLOTS {
+                    return Err(format!(
+                        "{id}: container slots ({slots}) exceed the saved limit of {MAX_SAVED_SLOTS}"
+                    ));
+                }
+                Ok(container)
+            },
+            |parts| &mut parts.default_block_containers,
+        );
     }
     fn block_fluids(&mut self, block: &crate::BlockKey, fluids: crate::ModFluidTanks) {
-        self.default_block(block, fluids, |parts| &mut parts.default_block_fluids);
+        self.default_block(
+            block,
+            |_| Ok(fluids),
+            |parts| &mut parts.default_block_fluids,
+        );
     }
     fn block_energy(&mut self, block: &crate::BlockKey, energy: crate::ModEnergyBuffer) {
-        self.default_block(block, energy, |parts| &mut parts.default_block_energy);
+        self.default_block(
+            block,
+            |_| Ok(energy),
+            |parts| &mut parts.default_block_energy,
+        );
     }
     fn register_item_container(
         &mut self,

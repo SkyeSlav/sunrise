@@ -14,11 +14,13 @@ use crate::{
 use mod_vocab::Side;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{io::Read, path::Path};
+use std::{collections::BTreeMap, io::Read, path::Path};
 
 /// The index format this build reads and writes. A reader refuses a newer
 /// one rather than misread it.
 pub const SCHEMA: u32 = 1;
+/// Byte budget for the in-game browser's HTTPS index download.
+pub const MAX_INDEX: u64 = 16 << 20;
 /// The biggest file the registry takes (a `.smod` with content, a `.spack`).
 pub const MAX_FILE: u64 = 64 << 20;
 /// The biggest native binary build ID, in bytes.
@@ -34,6 +36,18 @@ pub struct Index {
     pub generated: String,
     #[serde(default)]
     pub projects: Vec<Project>,
+    /// Sunrise releases named by the registry, not mod releases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub releases: Option<Vec<SunriseRelease>>,
+    /// The current game Nightly, separate from a project's unreviewed source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nightly_build: Option<NightlyBuild>,
+    /// Builds for which compatibility could not be judged because of an unsupported SDK schema.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unjudged: Vec<UnjudgedBuild>,
+    /// Curated lists of existing mods. Collections have no file or version of their own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub collections: Vec<Collection>,
     #[serde(default)]
     pub revoked: Vec<Revoked>,
     /// What [`Index::parse`] left out because it breaks a rule, with the reasons: the rest of
@@ -42,11 +56,53 @@ pub struct Index {
     pub left_out: Vec<LeftOut>,
 }
 
-/// A project, a version or a takedown [`Index::parse`] left out, and why.
+/// The stable Sunrise release a package was made for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SunriseRelease {
+    pub tag: String,
+    pub commit: String,
+    /// The game version and Sunrise major version (for example, `26.3-0`).
+    pub line: String,
+}
+
+/// The current Nightly's build identity.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NightlyBuild {
+    pub commit: String,
+    /// The build's date, `YYYY-MM-DD` (UTC).
+    pub date: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnjudgedBuild {
+    /// The stable release tag or `nightly`.
+    pub build: String,
+    pub reason: String,
+}
+
+/// A canonical stable Sunrise tag: a Minecraft version of two or three numbers without leading
+/// zeros, and a full Sunrise SemVer with neither prerelease nor build metadata. Returns the game
+/// version and Sunrise major.
+pub fn stable_tag(tag: &str) -> Option<(&str, u64)> {
+    let (game, release) = tag.split_once('-')?;
+    let version = semver::Version::parse(release).ok()?;
+    let parts: Vec<_> = game.split('.').collect();
+    ((2..=3).contains(&parts.len())
+        && parts.iter().all(|n| {
+            !n.is_empty()
+                && n.bytes().all(|b| b.is_ascii_digit())
+                && (*n == "0" || !n.starts_with('0'))
+        })
+        && version.pre.is_empty()
+        && version.build.is_empty())
+    .then_some((game, version.major))
+}
+
+/// A project, version, collection or takedown [`Index::parse`] left out, and why.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LeftOut {
     pub id: String,
-    /// None: the whole project (or the takedown).
+    /// None: the whole project, collection or takedown.
     pub version: Option<String>,
     pub reason: String,
 }
@@ -158,9 +214,11 @@ pub struct Project {
     /// The GitHub logins allowed to publish its updates.
     #[serde(default)]
     pub owners: Vec<String>,
-    /// An SPDX expression.
+    /// An SPDX expression. May be empty for a Nightly-only project.
+    #[serde(default)]
     pub license: String,
     /// Where its source code is, `https://`.
+    #[serde(default)]
     pub source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
@@ -177,8 +235,11 @@ pub struct Project {
     /// it. None: unsigned (the SHA-256 still pins the reviewed file).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
-    /// Newest first.
+    /// Newest first. May be empty when the project lists Nightly source.
+    #[serde(default)]
     pub versions: Vec<Version>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nightly: Option<Nightly>,
     /// Its files' downloads from their releases, all versions together:
     /// GitHub's counts, added by the registry's publish job (hourly).
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -187,6 +248,31 @@ pub struct Project {
     /// publish job (hourly); 0 when it has none or isn't on GitHub.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub stars: u64,
+}
+
+/// A project's unreviewed Nightly source, optionally with its default branch's metadata.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Nightly {
+    pub repo: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(flatten)]
+    pub metadata: NightlyMetadata,
+}
+
+/// Facts collected from GitHub by the registry workflow, never by the registry tool.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NightlyMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// The build pinned by the source manifest, not the mod repository's commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin: Option<String>,
+    /// The date of the branch head, RFC 3339.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated: Option<String>,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -209,15 +295,55 @@ pub struct Version {
     pub capabilities: Capabilities,
     /// The Minecraft version it is for.
     pub game: String,
+    /// The stable Sunrise release tag it was made for, when declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sunrise: Option<String>,
+    /// How this version stands on its line's releases and the current Nightly.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub verdicts: BTreeMap<String, BuildVerdict>,
+    /// A mod's dependencies, sorted by id. None means the index did not list the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependencies: Option<Vec<Dependency>>,
     /// A modpack's mods, as its manifest lists them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<Requirement>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub native_binaries: Vec<NativeBinary>,
+    /// Refused optional binary rows from this index read, never written to schema 1.
+    #[serde(skip)]
+    pub native_binary_refusals: Vec<NativeBinaryRefusal>,
     pub file: File,
 }
 
-/// Registry-produced metadata; signature acceptance belongs to the binary verifier.
+/// A published fit decision and the platforms with an exact prebuilt binary for that build.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildVerdict {
+    #[serde(flatten)]
+    pub fit: FitVerdict,
+    pub targets: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "verdict", rename_all = "kebab-case")]
+pub enum FitVerdict {
+    MadeFor,
+    Fits,
+    /// Does not fit: the only changes are to function bodies. The author must update the mod.
+    Rebuild {
+        /// Paths of the functions to review.
+        review: Vec<String>,
+    },
+    Breaks {
+        /// Up to five changed item IDs or named function changes.
+        changed: Vec<String>,
+    },
+    Exact {
+        /// Why the package cannot be judged on another build.
+        reason: String,
+    },
+}
+
+/// An exact SDK host and the author-signed archive that the registry checked for it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeBinary {
@@ -226,20 +352,41 @@ pub struct NativeBinary {
     pub file: File,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeBinaryRefusal {
+    pub build: String,
+    pub target: String,
+    pub reason: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NativeBinaryAbsent;
+pub enum NativeBinaryUnavailable<'a> {
+    Absent,
+    Refused(&'a str),
+}
 
 impl Version {
-    /// Exact lookup only. Absence lets the caller prepare from source.
+    fn fits_game(&self, game: &str) -> bool {
+        self.game == game && self.capabilities.unknown().is_empty()
+    }
+
+    /// Exact lookup only. Absence or a named refusal lets the caller prepare from source.
     pub fn native_binary(
         &self,
         build: &str,
         target: &str,
-    ) -> Result<&NativeBinary, NativeBinaryAbsent> {
+    ) -> Result<&NativeBinary, NativeBinaryUnavailable<'_>> {
         self.native_binaries
             .iter()
             .find(|b| b.build == build && b.target == target)
-            .ok_or(NativeBinaryAbsent)
+            .ok_or_else(|| {
+                self.native_binary_refusals
+                    .iter()
+                    .find(|row| row.build == build && row.target == target)
+                    .map_or(NativeBinaryUnavailable::Absent, |row| {
+                        NativeBinaryUnavailable::Refused(&row.reason)
+                    })
+            })
     }
 }
 
@@ -303,6 +450,18 @@ impl From<Capabilities> for Vec<String> {
         let known = listed.known.iter().map(Capability::to_string);
         known.chain(listed.unknown).collect()
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Dependency {
+    pub id: String,
+    /// The manifest's semver requirement, rendered as text.
+    pub version: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub optional: bool,
+    /// Absent if it applies to both installations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side: Option<Side>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -371,15 +530,49 @@ impl Index {
                 head.schema
             ));
         }
-        let mut index: Index = serde_json::from_str(text).map_err(|e| format!("mod index: {e}"))?;
-        index.keep_valid(local_files);
-        Ok(index)
+        let read: read::ReadIndex =
+            serde_json::from_str(text).map_err(|e| format!("mod index: {e}"))?;
+        Ok(read.validated(local_files))
+    }
+
+    /// Apply archive takedowns, then advertise only targets with an available record.
+    fn prune_native_binaries(&mut self) {
+        let mut builds: BTreeMap<&str, &str> = self
+            .releases
+            .iter()
+            .flatten()
+            .map(|release| (release.tag.as_str(), release.commit.as_str()))
+            .collect();
+        if let Some(nightly) = &self.nightly_build {
+            builds.insert("nightly", &nightly.commit);
+        }
+        for project in &mut self.projects {
+            for version in &mut project.versions {
+                version.native_binaries.retain(|binary| {
+                    !self
+                        .revoked
+                        .iter()
+                        .any(|r| r.covers(&project.id, &binary.file.sha256))
+                });
+                for (release, verdict) in &mut version.verdicts {
+                    verdict.targets.retain(|target| {
+                        builds.get(release.as_str()).is_some_and(|build| {
+                            version
+                                .native_binaries
+                                .iter()
+                                .any(|binary| binary.build == *build && binary.target == *target)
+                        })
+                    });
+                }
+            }
+        }
     }
 
     /// Every rule a reader relies on: unique valid ids, at least one
-    /// version each, plain file names with the kind's extension, `https`
+    /// version or a Nightly source each, plain file names with the kind's extension, `https`
     /// URLs, hex hashes, keys and signatures that decode, and each
-    /// modpack's mods present in the index with the same hash.
+    /// modpack's mods present in the index with the same hash. A mod dependency row must be
+    /// well-formed, but resolving it is a separate install decision.
     pub fn check(&self) -> Result<(), String> {
         self.check_with(false)
     }
@@ -390,29 +583,69 @@ impl Index {
                 return Err(format!("{}: listed twice", p.id));
             }
             check_project(p)?;
-            if p.versions.is_empty() {
+            if p.versions.is_empty() && p.nightly.is_none() {
                 return Err(format!("{}: has no version", p.id));
+            }
+            if p.nightly.is_some() && self.taken_down(&p.id) {
+                return Err(format!(
+                    "{}: the project was taken down, so it lists no Nightly source",
+                    p.id
+                ));
             }
             for (j, v) in p.versions.iter().enumerate() {
                 if p.versions[..j].iter().any(|w| w.version == v.version) {
                     return Err(format!("{} {}: empty or repeated version", p.id, v.version));
                 }
-                check_version(p, v, local_files)?;
+                check_version(p, v, self.releases.as_deref(), local_files)?;
+                let mut pairs = std::collections::HashSet::new();
+                for binary in &v.native_binaries {
+                    let at = |e| {
+                        format!(
+                            "{} {}: native binary {} / {}: {e}",
+                            p.id, v.version, binary.build, binary.target
+                        )
+                    };
+                    if !pairs.insert((&binary.build, &binary.target)) {
+                        return Err(at("duplicate native build and target".to_owned()));
+                    }
+                    check_binary(p, binary, local_files).map_err(at)?;
+                }
                 self.check_requires(p, v)?;
             }
         }
         for r in &self.revoked {
             check_revoked(r)?;
         }
+        let mut seen_collections = std::collections::HashSet::new();
+        for collection in &self.collections {
+            if !seen_collections.insert(&collection.id) {
+                return Err(format!(
+                    "collection {}: listed twice; pick distinct ids",
+                    collection.id
+                ));
+            }
+            if let Some(error) = collection
+                .check(self.project(&collection.id).is_some(), |id| {
+                    self.project(id)
+                        .filter(|p| !p.versions.is_empty())
+                        .map(|p| &p.kind)
+                })
+                .into_iter()
+                .next()
+            {
+                return Err(error);
+            }
+        }
         Ok(())
     }
 
     /// What a reader keeps of an index that fails [`Index::check`]: each project, version and
-    /// takedown that fails its own rule is left out with its reason ([`Index::left_out`]), and
+    /// collection or takedown that fails its own rule is left out with its reason ([`Index::left_out`]), and
     /// the rest loads. A modpack version whose mod was left out goes too, and so does a project
-    /// left with no version. An id listed twice leaves out every project with that id.
+    /// left with neither a version nor a Nightly source. An id listed twice leaves out every
+    /// project with that id.
     fn keep_valid(&mut self, local_files: bool) {
-        let mut left_out = Vec::new();
+        let mut left_out = std::mem::take(&mut self.left_out);
         let mut listed: std::collections::HashMap<String, usize> = Default::default();
         for p in &self.projects {
             *listed.entry(p.id.clone()).or_default() += 1;
@@ -427,12 +660,23 @@ impl Index {
             }
             reason.is_none()
         });
+        let whole_takedowns: Vec<String> = self
+            .revoked
+            .iter()
+            .filter(|r| r.sha256.is_none())
+            .map(|r| r.id.clone())
+            .collect();
+        let releases = self.releases.as_deref();
         for p in &mut self.projects {
+            // A takedown of the whole project covers its unreviewed source as well as its files.
+            if whole_takedowns.contains(&p.id) {
+                p.nightly = None;
+            }
             let mut seen: Vec<String> = Vec::new();
             for v in std::mem::take(&mut p.versions) {
                 let checked = match seen.contains(&v.version) {
                     true => Err(format!("{} {}: empty or repeated version", p.id, v.version)),
-                    false => check_version(p, &v, local_files),
+                    false => check_version(p, &v, releases, local_files),
                 };
                 seen.push(v.version.clone());
                 match checked {
@@ -464,11 +708,49 @@ impl Index {
             }
         }
         self.projects.retain(|p| {
-            if p.versions.is_empty() {
+            if p.versions.is_empty() && p.nightly.is_none() {
                 let reason = format!("{}: has no version this Sunrise can use", p.id);
                 left_out.push(LeftOut::project(p, reason));
+                return false;
             }
-            !p.versions.is_empty()
+            true
+        });
+        let mut collection_counts = std::collections::HashMap::new();
+        for collection in &self.collections {
+            *collection_counts.entry(collection.id.clone()).or_insert(0) += 1;
+        }
+        self.collections.retain(|collection| {
+            let reason = if collection_counts[&collection.id] > 1 {
+                Some(format!(
+                    "collection {}: listed twice; pick distinct ids",
+                    collection.id
+                ))
+            } else if listed.contains_key(&collection.id) {
+                Some(format!(
+                    "collection {}: its id is already a project id: pick another collection id",
+                    collection.id
+                ))
+            } else {
+                collection
+                    .check(false, |id| {
+                        self.projects
+                            .iter()
+                            .find(|p| p.id == id && !p.versions.is_empty())
+                            .map(|p| &p.kind)
+                    })
+                    .into_iter()
+                    .next()
+            };
+            if let Some(reason) = reason {
+                left_out.push(LeftOut {
+                    id: collection.id.clone(),
+                    version: None,
+                    reason,
+                });
+                false
+            } else {
+                true
+            }
         });
         self.revoked.retain(|r| match check_revoked(r) {
             Ok(()) => true,
@@ -513,24 +795,41 @@ impl Index {
     /// A project's newest version for Minecraft `game` that wasn't taken down and asks for no
     /// capability this build doesn't know.
     pub fn installable<'a>(&self, project: &'a Project, game: &str) -> Option<&'a Version> {
-        project.versions.iter().find(|v| {
-            v.game == game
-                && v.capabilities.unknown().is_empty()
-                && self.revoked(&project.id, &v.file.sha256).is_none()
-        })
+        project
+            .versions
+            .iter()
+            .find(|v| v.fits_game(game) && self.revoked(&project.id, &v.file.sha256).is_none())
     }
     pub fn project(&self, id: &str) -> Option<&Project> {
         self.projects.iter().find(|p| p.id == id)
     }
 
+    pub fn collection(&self, id: &str) -> Option<&Collection> {
+        self.collections.iter().find(|c| c.id == id)
+    }
+
+    /// Whether the whole project `id` was taken down: a takedown that names no hash.
+    pub fn taken_down(&self, id: &str) -> bool {
+        self.revoked
+            .iter()
+            .any(|r| r.id == id && r.sha256.is_none())
+    }
+
     /// Why the file of `id` with this hash was taken down, if it was.
     pub fn revoked(&self, id: &str, sha256: &str) -> Option<&Revoked> {
-        self.revoked.iter().find(|r| {
-            r.id == id
-                && r.sha256
-                    .as_ref()
-                    .is_none_or(|h| h.eq_ignore_ascii_case(sha256))
-        })
+        self.revoked.iter().find(|r| r.covers(id, sha256))
+    }
+}
+
+impl Revoked {
+    /// Whether this takedown covers `id`'s file with this hash: every file of the project when it
+    /// names no hash.
+    pub fn covers(&self, id: &str, sha256: &str) -> bool {
+        self.id == id
+            && self
+                .sha256
+                .as_ref()
+                .is_none_or(|h| h.eq_ignore_ascii_case(sha256))
     }
 }
 
@@ -541,10 +840,25 @@ fn check_project(p: &Project) -> Result<(), String> {
     if !valid_id(&p.id) {
         return Err(format!("project id {:?} is not [a-z0-9_]{{1,64}}", p.id));
     }
-    if p.name.trim().is_empty() || p.license.trim().is_empty() {
-        return Err(at("needs a name and a licence".into()));
+    if let Some(nightly) = &p.nightly {
+        registry::check_nightly_source(&nightly.repo, nightly.path.as_deref()).map_err(at)?;
     }
-    https(&p.source).map_err(at)?;
+    if p.nightly.is_some() && p.versions.is_empty() {
+        if let Some(problem) = page::check_title(&p.name, &p.summary).into_iter().next() {
+            return Err(at(problem));
+        }
+        if p.owners.is_empty() {
+            return Err(at("needs at least one owner (a GitHub login)".into()));
+        }
+        if !p.source.is_empty() {
+            https(&p.source).map_err(at)?;
+        }
+    } else {
+        if p.name.trim().is_empty() || p.license.trim().is_empty() {
+            return Err(at("needs a name and a licence".into()));
+        }
+        https(&p.source).map_err(at)?;
+    }
     if let Some(icon) = &p.icon {
         https(icon).map_err(at)?;
     }
@@ -564,47 +878,25 @@ fn check_project(p: &Project) -> Result<(), String> {
     Ok(())
 }
 
-/// A version's own rules: a name, valid native binaries, a plain file name with the kind's
+/// A source version's rules: a name, a stable release that is in `releases` when the index lists
+/// them, a plain file name with the kind's
 /// extension, an `https` address, a hex hash, a size in bounds and a signature as the project's
 /// key asks.
-fn check_version(p: &Project, v: &Version, local_files: bool) -> Result<(), String> {
+fn check_version(
+    p: &Project,
+    v: &Version,
+    releases: Option<&[SunriseRelease]>,
+    local_files: bool,
+) -> Result<(), String> {
     let at = |e: String| format!("{} {}: {e}", p.id, v.version);
     if v.version.trim().is_empty() {
         return Err(at("empty or repeated version".into()));
     }
-    let mut pairs = std::collections::HashSet::new();
-    for b in &v.native_binaries {
-        if b.build.len() > MAX_NATIVE_BUILD
-            || b.build.bytes().any(|c| c.is_ascii_control())
-            || b.build.is_empty()
-            || b.build.trim() != b.build
-            || b.target.split('-').count() < 3
-            || !b
-                .target
-                .bytes()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"-_.".contains(&c))
-            || b.target.split('-').any(str::is_empty)
-        {
-            return Err(at("invalid native build or canonical target triple".into()));
-        }
-        if !pairs.insert((&b.build, &b.target)) {
-            return Err(at("duplicate native build and target".into()));
-        }
-        let f = &b.file;
-        if !plain_name(&f.name) || f.size == 0 || f.size > MAX_FILE {
-            return Err(at("invalid native binary file".into()));
-        }
-        if !(local_files && f.url.starts_with("file:///")) {
-            https(&f.url).map_err(at)?;
-        }
-        hex64(&f.sha256).map_err(at)?;
-        let signature = f
-            .signature
-            .as_deref()
-            .ok_or_else(|| at("native binary needs a signature".into()))?;
-        minisign_verify::Signature::decode(signature)
-            .map_err(|e| at(format!("native signature: {e}")))?;
+    if let Some(tag) = &v.sunrise {
+        check_stable_tag(tag, &v.game).map_err(at)?;
     }
+    find_release(releases, v.sunrise.as_deref()).map_err(at)?;
+    dependencies::check_shape(p, v)?;
     let f = &v.file;
     let extension_ok = p
         .kind
@@ -641,6 +933,34 @@ fn check_version(p: &Project, v: &Version, local_files: bool) -> Result<(), Stri
     Ok(())
 }
 
+fn check_binary(p: &Project, b: &NativeBinary, local_files: bool) -> Result<(), String> {
+    if p.kind != Kind::NativeMod || p.key.is_none() {
+        return Err("a native binary needs a native project and its signing key".into());
+    }
+    if b.build.len() > MAX_NATIVE_BUILD
+        || b.build.bytes().any(|c| c.is_ascii_control())
+        || b.build.is_empty()
+        || b.build.trim() != b.build
+        || !binary_target(&b.target)
+    {
+        return Err("invalid native build or canonical target triple".into());
+    }
+    let f = &b.file;
+    if !plain_name(&f.name) || f.size == 0 || f.size > MAX_FILE {
+        return Err("invalid native binary file".into());
+    }
+    if !(local_files && f.url.starts_with("file:///")) {
+        https(&f.url)?;
+    }
+    hex64(&f.sha256)?;
+    let signature = f
+        .signature
+        .as_deref()
+        .ok_or("native binary needs a signature")?;
+    minisign_verify::Signature::decode(signature).map_err(|e| format!("native signature: {e}"))?;
+    Ok(())
+}
+
 /// A takedown's hash, when it names one, is hex.
 fn check_revoked(r: &Revoked) -> Result<(), String> {
     match &r.sha256 {
@@ -655,6 +975,31 @@ pub fn valid_id(id: &str) -> bool {
         && id
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+fn check_stable_tag(tag: &str, game: &str) -> Result<(), String> {
+    let (tag_game, _) = stable_tag(tag)
+        .ok_or_else(|| format!("sunrise {tag:?}: expected a stable release tag like 26.3-0.1.0"))?;
+    if game != tag_game {
+        return Err(format!(
+            "sunrise {tag:?} is for Minecraft {tag_game}, not {game}"
+        ));
+    }
+    Ok(())
+}
+
+fn find_release<'a>(
+    releases: Option<&'a [SunriseRelease]>,
+    tag: Option<&str>,
+) -> Result<Option<&'a SunriseRelease>, String> {
+    match (releases, tag) {
+        (Some(releases), Some(tag)) => releases
+            .iter()
+            .find(|r| r.tag == tag)
+            .map(Some)
+            .ok_or_else(|| format!("sunrise {tag:?} is not in the supplied Sunrise releases")),
+        _ => Ok(None),
+    }
 }
 
 fn https(url: &str) -> Result<(), String> {
@@ -676,14 +1021,22 @@ fn hex64(h: &str) -> Result<(), String> {
 }
 
 /// One plain file name: no folder, no hidden file, nothing a file system
-/// reads as something else.
-fn plain_name(name: &str) -> bool {
+/// reads as something else, at most 128 ASCII bytes.
+pub fn plain_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 128
         && !name.starts_with('.')
         && name
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"._-+".contains(&b))
+}
+
+fn binary_target(target: &str) -> bool {
+    target.split('-').count() >= 3
+        && target
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"-_.".contains(&c))
+        && target.split('-').all(|part| !part.is_empty())
 }
 
 /// The SHA-256 of a file, lowercase hex.
@@ -733,6 +1086,15 @@ pub fn verify_signature(key: &str, signature: &str, path: &Path) -> Result<(), S
         .map_err(|_| "the signature doesn't match the project's key".to_string())
 }
 
+fn verify_signature_bytes(key: &str, signature: &str, bytes: &[u8]) -> Result<(), String> {
+    let key =
+        minisign_verify::PublicKey::from_base64(key.trim()).map_err(|e| format!("key: {e}"))?;
+    let sig =
+        minisign_verify::Signature::decode(signature).map_err(|e| format!("signature: {e}"))?;
+    key.verify(bytes, &sig, false)
+        .map_err(|_| "the signature doesn't match the project's key".to_string())
+}
+
 /// Checks the file at `path` against its entry before it is installed:
 /// size, SHA-256, revocation, signature, and that its manifest says what the
 /// index says (id, version, API, side, capabilities; a modpack's mods).
@@ -772,7 +1134,11 @@ pub fn check_file(
             project.kind.name()
         ));
     }
-    inspect(&project.kind, path)?.matches(project, version)?;
+    let facts = inspect(&project.kind, path)?;
+    facts.matches(project, version)?;
+    if let Some(release) = find_release(index.releases.as_deref(), version.sunrise.as_deref())? {
+        facts.matches_release(release)?;
+    }
     Ok(trust)
 }
 
@@ -791,12 +1157,53 @@ pub struct Facts {
     pub capabilities: Vec<Capability>,
     /// The Minecraft version, when the file names one (a modpack does).
     pub game: Option<String>,
+    /// A native package's `[native] sunrise` pin.
+    pub sunrise_pin: Option<String>,
+    /// The mod's dependencies, sorted by id.
+    pub dependencies: Vec<Dependency>,
     pub requires: Vec<Requirement>,
 }
 
+/// Whether a package's own `found` version and a registry's `listed` label are one version. A mod's
+/// are the same when both parse to the same semver (`1.2-beta` is `1.2.0-beta`); every other
+/// kind, and a label that does not parse, compares exactly.
+pub(crate) fn same_version(kind: &Kind, found: &str, listed: &str) -> bool {
+    if matches!(kind, Kind::Mod | Kind::NativeMod)
+        && let (Ok(found), Ok(listed)) = (
+            crate::manifest::parse_version(found),
+            crate::manifest::parse_version(listed),
+        )
+    {
+        return found == listed;
+    }
+    found == listed
+}
+
 impl Facts {
+    fn matches_release(&self, release: &SunriseRelease) -> Result<(), String> {
+        if let Some(pin) = &self.sunrise_pin
+            && *pin != release.commit
+        {
+            return Err(format!(
+                "its [native] sunrise pin {pin} does not match the commit {} of Sunrise release {}",
+                release.commit, release.tag
+            ));
+        }
+        Ok(())
+    }
+
     /// Whether the file is the one `version` of `project` describes.
     pub fn matches(&self, project: &Project, version: &Version) -> Result<(), String> {
+        // Schema 1 predates this field, and a new index omits it when empty. There is no
+        // dependency assertion to compare when it is absent; the file's hash still pins it.
+        if let Some(listed) = &version.dependencies
+            && *listed != self.dependencies
+        {
+            return Err(format!(
+                "{} {}: its sunrise-mod.toml dependencies aren't what the index lists: use the reviewed file and rebuild the index",
+                project.id, version.version
+            ));
+        }
         let (mut caps, mut listed) = (
             self.capabilities.clone(),
             version.capabilities.known().to_vec(),
@@ -804,7 +1211,10 @@ impl Facts {
         caps.sort();
         listed.sort();
         let differs = self.id.as_ref().is_some_and(|id| *id != project.id)
-            || self.version.as_ref().is_some_and(|v| *v != version.version)
+            || self
+                .version
+                .as_ref()
+                .is_some_and(|v| !same_version(&project.kind, v, &version.version))
             || self.api != version.api
             || self.side != version.side
             || caps != listed
@@ -855,9 +1265,10 @@ pub fn inspect(kind: &Kind, path: &Path) -> Result<Facts, String> {
             let m = package.manifest;
             crate::Content::read(path, &m)?;
             Ok(Facts {
+                dependencies: manifest_dependencies(&m),
                 capabilities: m.capabilities,
                 id: Some(m.id),
-                version: Some(m.version),
+                version: Some(m.version.to_string()),
                 api: m.api,
                 side: Some(m.side),
                 ..Facts::default()
@@ -914,6 +1325,22 @@ pub fn inspect(kind: &Kind, path: &Path) -> Result<Facts, String> {
         }),
         Kind::Other(name) => Err(format!("this Sunrise can't read a {name} yet")),
     }
+}
+
+fn manifest_dependencies(manifest: &crate::Manifest) -> Vec<Dependency> {
+    manifest
+        .dependencies
+        .iter()
+        .map(|(id, dependency)| {
+            let details = dependency.details();
+            Dependency {
+                id: id.clone(),
+                version: details.version.to_string(),
+                optional: details.optional,
+                side: (details.side != Side::Both).then_some(details.side),
+            }
+        })
+        .collect()
 }
 
 /// A resource pack: a zip with `pack.mcmeta` at its root holding a `pack`
@@ -1030,8 +1457,15 @@ fn names(caps: &[Capability]) -> String {
     format!("[{}]", names.join(", "))
 }
 
+pub mod browser_state;
+mod collections;
+pub use collections::{Collection, MAX_COLLECTION_MEMBERS, Member};
+mod dependencies;
 pub mod native;
 pub mod page;
+mod read;
 pub mod registry;
+pub mod resolve;
 #[cfg(test)]
 mod tests;
+pub mod v2;

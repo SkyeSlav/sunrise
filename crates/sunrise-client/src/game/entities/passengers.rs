@@ -33,7 +33,10 @@ impl Game<'_> {
     ) {
         if self.riding == Some(id)
             || self.ridden_by_guest(id)
-            || self.mob_objects().any(|mob| mob.extra.mount == Some(id))
+            || self
+                .mob_objects()
+                .any(|mob| !mob.removed && mob.extra.mount == Some(id))
+            || self.general_passengers(id).next().is_some()
         {
             vehicle.retire_attachment_registration();
             self.persist.removed_vehicles.insert(id, vehicle);
@@ -45,7 +48,10 @@ impl Game<'_> {
         if self.persist.removed_vehicles.contains_key(&id)
             && self.riding != Some(id)
             && !self.ridden_by_guest(id)
-            && !self.mob_objects().any(|mob| mob.extra.mount == Some(id))
+            && !self
+                .mob_objects()
+                .any(|mob| !mob.removed && mob.extra.mount == Some(id))
+            && self.general_passengers(id).next().is_none()
         {
             self.persist.removed_vehicles.remove(&id);
             self.forget_entity(id);
@@ -58,7 +64,11 @@ impl Game<'_> {
         if self.persist.off_level.is_empty() {
             return Default::default();
         }
-        let mounts: HashMap<_, _> = self.mob_objects().map(|m| (m.id, m.extra.mount)).collect();
+        let mounts: HashMap<_, _> = self
+            .mob_objects()
+            .filter(|m| !m.removed)
+            .map(|m| (m.id, m.extra.mount))
+            .collect();
         self.mobs
             .iter()
             .filter_map(|m| {
@@ -166,20 +176,22 @@ impl Game<'_> {
         let invalid: Vec<_> = self
             .mob_objects()
             .filter_map(|m| {
+                if m.removed {
+                    return None;
+                }
                 let v = m.extra.mount?;
                 // Removed vehicles are retried only in the passenger's own
                 // eligible entity tick, after its cancellable Pre event.
                 if self.persist.removed_vehicles.contains_key(&v) {
                     return None;
                 }
-                let valid = !m.removed
-                    && (self.mob_object(v).is_some_and(|m| !m.removed)
-                        || self.boat_object(v).is_some()
-                        || self.cart_object(v).is_some()
-                        || self.cushions.iter().any(|c| c.id == v)
-                        || self.tnts.iter().any(|t| t.id == v && v != 0)
-                        || self.seat(v).is_some()
-                        || self.player_vehicle(v).is_some());
+                let valid = self.mob_object(v).is_some_and(|m| !m.removed)
+                    || self.boat_object(v).is_some()
+                    || self.cart_object(v).is_some()
+                    || self.cushions.iter().any(|c| c.id == v)
+                    || self.tnts.iter().any(|t| t.id == v && v != 0)
+                    || self.seat(v).is_some()
+                    || self.player_vehicle(v).is_some();
                 (!valid).then_some((m.id, v))
             })
             .collect();
@@ -217,7 +229,7 @@ impl Game<'_> {
     /// Shared by ordinary positioning and Entity.teleportPassengers after dismount.
     pub(super) fn mob_passenger_attachment(
         vehicle: &sunrise_client::mobs::Mob,
-        rider: &sunrise_client::mobs::Mob,
+        rider_is_animal: bool,
         seat: usize,
         count: usize,
     ) -> [f64; 3] {
@@ -226,10 +238,8 @@ impl Game<'_> {
                 vehicle,
                 seat,
                 count,
-                sunrise_client::mobs::drops::is_animal(rider.species()),
+                rider_is_animal,
             )
-        } else if vehicle.species() == Species::HappyGhast {
-            riders::happy_ghast_attachment(seat)
         } else {
             riders::passenger_attachment_at(vehicle, seat)
         }
@@ -238,7 +248,7 @@ impl Game<'_> {
     /// `Entity.positionRider` for every mob passenger: in its boat, then on
     /// its mob. A server's client places them itself too, as the server sends
     /// no passenger's position.
-    pub(super) fn position_riders(&mut self) {
+    pub(in crate::game) fn position_riders(&mut self) {
         let blocked = self.mobs_below_off_level();
         // Every vehicle's riders in one pass over the mobs, not one pass per
         // boat, minecart and primed TNT. Seating moves the riders but changes
@@ -252,10 +262,25 @@ impl Game<'_> {
                 riders.entry(v).or_default().push(j);
             }
         }
+        // The general vehicles mobs ride, for the general tick that follows: from this pass's own
+        // map, so a level with no general rows pays nothing.
+        let mut general_vehicles =
+            std::mem::take(&mut self.resident_entities.general.riders.mob_vehicles);
+        general_vehicles.clear();
+        if !self.resident_entities.general.rows.is_empty() {
+            general_vehicles.extend(
+                riders
+                    .keys()
+                    .copied()
+                    .filter(|&vehicle| self.general_object(vehicle).is_some()),
+            );
+        }
+        self.resident_entities.general.riders.mob_vehicles = general_vehicles;
         self.seat_boat_mobs(&riders);
         self.seat_cart_mobs(&riders);
         self.seat_tnt_mobs(&riders);
         self.seat_cushion_mobs(&riders);
+        self.position_remote_general_passengers();
         self.seat_static_mobs(&riders);
         let index: HashMap<u32, usize> = self
             .mobs
@@ -277,7 +302,7 @@ impl Game<'_> {
                     // riders above, each in its own seat and from the
                     // vehicle's drawn position; re-seating them here from the
                     // shared seat 0 yanked boat riders between two places.
-                    if self.seats_own_riders(v) {
+                    if self.seats_own_riders(v) || self.general_seat(v, false).is_some() {
                         continue;
                     }
                     // A mob a mod seated on a server player (`native_ride_player.rs`).
@@ -320,74 +345,27 @@ impl Game<'_> {
                     m.previous = Vec3::new(before.x, before.y - offset, before.z);
                     m.velocity = Vec3::ZERO;
                     m.fall_distance = 0.0;
-                    m.on_ground = false;
+                    m.ground.on_ground = false;
                     m.extra.passenger = true;
                     m.ai.nav.stop();
                     continue;
                 };
                 let vehicle = &self.mobs[j];
-                let mut place = (0, 1);
-                if sunrise_client::mobs::camel::is_camel(vehicle.species()) {
-                    // Camel.getPassengerAttachmentPoint: the seat follows the
-                    // rider's place in `getPassengers` (load order).
-                    let mut aboard: Vec<usize> = (0..self.mobs.len())
-                        .filter(|&k| self.mobs[k].extra.mount == Some(v))
-                        .collect();
-                    let player_aboard = vehicle.rider.is_some() || self.riding == Some(v);
-                    let (seat, count) = if player_aboard {
-                        let mob_seat = aboard.iter().position(|&k| k == i).unwrap_or(0);
-                        (mob_seat + 1, aboard.len() + 1)
-                    } else {
-                        if let Some(driver) = vehicle.extra.rider
-                            && let Some(pos) =
-                                aboard.iter().position(|&k| self.mobs[k].id == driver)
-                            && pos != 0
-                        {
-                            let driver_idx = aboard.remove(pos);
-                            aboard.insert(0, driver_idx);
-                        }
-                        let seat = aboard.iter().position(|&k| k == i).unwrap_or(0);
-                        (seat, aboard.len())
-                    };
-                    let (seat, count) = if self.persist.off_level.is_empty() {
-                        (seat, count)
-                    } else {
-                        let seats = self.seated_passengers(v);
-                        (
-                            seats
-                                .iter()
-                                .position(|&(_, id, _)| id == self.mobs[i].id)
-                                .unwrap_or(seat),
-                            seats.len(),
-                        )
-                    };
-                    place = (seat, count);
-                }
-                if vehicle.species() == sunrise_client::mobs::Species::HappyGhast
+                // Camel, happy ghast and content seats follow the rider's place in `getPassengers`.
+                let place = if sunrise_client::mobs::camel::is_camel(vehicle.species())
+                    || vehicle.species() == sunrise_client::mobs::Species::HappyGhast
                     || vehicle.kind.passenger_attachments.len() > 1
                 {
-                    // Built-in and content seats follow the rider's actual
-                    // place in getPassengers, including retained objects.
-                    // `Entity.addPassenger` puts a player first, so a mob that
-                    // boards after one sits at index 1.
-                    let player_aboard = vehicle.rider.is_some() || self.riding == Some(v);
-                    let seat = usize::from(player_aboard)
-                        + self.mobs[..i]
-                            .iter()
-                            .filter(|r| r.extra.mount == Some(v))
-                            .count();
-                    let seat = if self.persist.off_level.is_empty() {
-                        seat
-                    } else {
-                        self.seated_passengers(v)
-                            .iter()
-                            .position(|&(_, id, _)| id == self.mobs[i].id)
-                            .unwrap_or(seat)
-                    };
-                    place = (seat, 1);
-                }
-                let attach =
-                    Self::mob_passenger_attachment(vehicle, &self.mobs[i], place.0, place.1);
+                    self.passenger_place(v, self.mobs[i].id)
+                } else {
+                    (0, 1)
+                };
+                let attach = Self::mob_passenger_attachment(
+                    vehicle,
+                    sunrise_client::mobs::drops::is_animal(self.mobs[i].species()),
+                    place.0,
+                    place.1,
+                );
                 let (pos, prev) = (vehicle.position, vehicle.previous);
                 let (yaw, prev_yaw) = (vehicle.yaw, vehicle.previous_yaw);
                 let (body, prev_body) = (vehicle.body_yaw, vehicle.previous_body_yaw);
@@ -396,9 +374,10 @@ impl Game<'_> {
                     vehicle,
                     rider,
                     vehicle.rider.is_some() || self.riding == Some(v),
-                    self.res
-                        .mob_data()
-                        .entity_has("minecraft:non_controlling_rider", &rider.kind.id),
+                    self.items().entity_type_tags.has_bit(
+                        rider.kind.flags.entity_tag_slot,
+                        sunrise_client::items::EntityTypeTags::NON_CONTROLLING_RIDER,
+                    ),
                 );
                 let takes_body = riders::takes_vehicle_body(vehicle, rider, controlling);
                 let vehicle_width = vehicle.width();
@@ -413,7 +392,7 @@ impl Game<'_> {
                 m.previous = riders::seat(attach, offset, prev, prev_yaw);
                 m.velocity = Vec3::ZERO;
                 m.fall_distance = 0.0;
-                m.on_ground = false;
+                m.ground.on_ground = false;
                 if takes_body {
                     m.body_yaw = body;
                     m.previous_body_yaw = prev_body;
@@ -424,6 +403,8 @@ impl Game<'_> {
                 m.ai.nav.stop();
             }
         }
+        // General rows riding a mob that was just seated.
+        self.position_remote_general_passengers();
         // Displays and interaction boxes riding anything the client tracks,
         // as NPC plugins put a name over a head or a model's bones on a
         // pivot: `Entity.rideTick` -> `positionRider`, the vehicle's passenger
@@ -453,9 +434,11 @@ impl Game<'_> {
                         .map(|at| (v, at))
                 })
                 .collect();
-            for display in self.text_displays.values_mut() {
+            let sections = self.client_pick.sections.get_mut();
+            for (&id, display) in &mut self.text_displays {
                 if let Some(at) = display.vehicle.and_then(|v| seats.get(&v)) {
                     display.ride(*at);
+                    sections.move_id(id as u32, display.position().to_array());
                 }
             }
             for interaction in self.interactions.values_mut() {
@@ -497,6 +480,7 @@ impl Game<'_> {
             stand.previous = before;
             stand.velocity = Vec3::ZERO;
         }
+        self.sync_seated_pick_sections();
     }
 
     /// Armor stands riding the local player, on the top of its box. Vanilla
@@ -532,6 +516,53 @@ impl Game<'_> {
             || self.carts.iter().any(|c| c.id == vehicle)
             || self.cushions.iter().any(|c| c.id == vehicle)
             || self.tnts.iter().any(|t| t.id == vehicle && t.id != 0)
+    }
+
+    /// The passengers of `vehicle` in `getPassengers` order, from the one source of each side: the
+    /// server's own list, or the applied `SetPassengers` seats on a client.
+    pub(super) fn passenger_order(&self, vehicle: u32) -> Vec<u32> {
+        if let Some(remote) = &self.remote {
+            let mut seats: Vec<_> = remote.passenger_seats(vehicle).collect();
+            seats.sort_unstable_by_key(|&(_, index)| index);
+            return seats.into_iter().map(|(id, _)| id).collect();
+        }
+        self.seated_passengers(vehicle)
+            .into_iter()
+            .map(|(_, id, _)| id)
+            .collect()
+    }
+
+    /// `rider`'s seat index and the passenger count on `vehicle`.
+    pub(super) fn passenger_place(&self, vehicle: u32, rider: u32) -> (usize, usize) {
+        let order = self.passenger_order(vehicle);
+        let index = order.iter().position(|&id| id == rider).unwrap_or(0);
+        (index, order.len().max(1))
+    }
+
+    /// `Entity.positionRider` for a general passenger, whose own vehicle attachment is zero: the
+    /// same per-vehicle seat the mobs of that vehicle use (`Seat`, `Boat::seat`, the cart and TNT
+    /// seats, `mob_passenger_attachment`), with no rider offset.
+    pub(super) fn general_passenger_position(&self, vehicle: u32, rider: u32) -> Option<Vec3> {
+        if let Some(seat) = self.seat(vehicle) {
+            return Some(seat.passenger_position(0.0));
+        }
+        if let Some(b) = self.boats.iter().find(|b| b.id == vehicle) {
+            let (index, count) = self.passenger_place(vehicle, rider);
+            return Some(b.seat(index, count, false, 0.0, false));
+        }
+        if let Some(c) = self.carts.iter().find(|c| c.id == vehicle) {
+            return Some(super::minecarts::cart_general_seat(c.position));
+        }
+        if let Some(t) = self.tnts.iter().find(|t| t.id == vehicle && t.id != 0) {
+            return Some(super::tnt::tnt_general_seat(t.position));
+        }
+        if let Some(v) = self.mobs.iter().find(|m| m.id == vehicle && !m.removed) {
+            let (index, count) = self.passenger_place(vehicle, rider);
+            let attachment = Self::mob_passenger_attachment(v, false, index, count);
+            return Some(riders::seat(attachment, 0.0, v.position, v.yaw));
+        }
+        let at = self.passenger_riding_position(vehicle, None, None, &HashMap::new())?;
+        Some(Vec3::new(at.x, at.y, at.z))
     }
 
     /// `Entity.getPassengerRidingPosition` of a vehicle: where the feet of a
@@ -622,12 +653,16 @@ impl Game<'_> {
             };
             return Some(at + glam::DVec3::Y * height);
         }
+        if let Some(seat) = self.general_seat(vehicle, false) {
+            let at = seat.passenger_position(0.0);
+            return Some(glam::DVec3::new(at.x, at.y, at.z));
+        }
         // Any other tracked entity sits on its feet; an area effect cloud is
         // 0.5 tall, and ModelEngine parks a model's pivot half a block below
         // its feet for exactly that.
         let remote = self.remote.as_ref()?;
         let (kind, position) = remote.tracked(vehicle as i32)?;
-        let position = if let Some(&parent) = remote.passenger_vehicles.get(&vehicle) {
+        let position = if let Some(parent) = remote.passenger_vehicle(vehicle) {
             let at = self.passenger_riding_position_inner(parent, me, own_seat, index, path)?;
             [at.x, at.y, at.z]
         } else {
@@ -1190,6 +1225,7 @@ mod off_level_tests {
 #[cfg(test)]
 mod nested_vehicle_discard_tests {
     use super::*;
+    use crate::game::native_entity_refs::tests::{collect_all_entities, collect_entities_in};
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -1350,20 +1386,18 @@ mod nested_vehicle_discard_tests {
     impl mod_api::Hooks for CancelPassengerTick {
         fn entity_tick_listened(
             &self,
-            _: &mut dyn mod_api::ServerHost,
+            _: mod_api::HostSide<'_>,
             event: &mut mod_api::EntityTickListenedEvent,
         ) {
             event.listened = true;
         }
         fn entity_tick_pre(
             &self,
-            _: &mut dyn mod_api::ServerHost,
+            _: mod_api::HostSide<'_>,
             event: &mut mod_api::EntityTickPreEvent<'_>,
-        ) -> mod_api::Flow {
-            if event.entity == 72 && self.0.load(Ordering::Relaxed) {
-                mod_api::Flow::Cancel
-            } else {
-                mod_api::Flow::Continue
+        ) {
+            if event.entities.contains(&72) && self.0.load(Ordering::Relaxed) {
+                event.canceled.push(72);
             }
         }
     }
@@ -1662,23 +1696,22 @@ mod nested_vehicle_discard_tests {
         sync: false,
     };
 
-    fn bind_vehicle_test_attachment(game: &mut Game<'_>, cart: bool) {
+    fn set_vehicle_test_attachment(game: &mut Game<'_>) {
+        // The real store path binds the resident owner's registration. Rebinding
+        // it manually would replace that lifetime before removal is exercised.
         VEHICLE_VALUE
             .set(game, mod_api::Holder::Entity(71), 37)
             .unwrap();
-        let entity = game.entity(71).unwrap();
-        let index = game.attachment_indexes[&game.dim].clone();
-        let holder = mod_api::AttachmentHolder::Entity(entity);
-        let values = game.entity_attachments.get_mut(&71).unwrap();
-        if cart {
-            game.carts.update(0, |owner| {
-                owner.attachment_lifetime.bind(values, &index, holder)
-            });
-        } else {
-            game.boats.update(0, |owner| {
-                owner.attachment_lifetime.bind(values, &index, holder)
-            });
-        }
+    }
+
+    fn vehicle_attachment_count(host: &dyn mod_api::Host) -> usize {
+        let query = host
+            .attachment_query("vehicle_boundary", "value")
+            .unwrap()
+            .query(&VEHICLE_VALUE)
+            .unwrap();
+        let mut rows = query.iter();
+        std::iter::from_fn(|| rows.try_next().unwrap()).count()
     }
 
     fn assert_vehicle_queries_hidden(host: &mut dyn mod_api::ServerHost, kind: &str) {
@@ -1689,11 +1722,8 @@ mod nested_vehicle_discard_tests {
         );
         let level = host.level("minecraft:overworld").unwrap();
         for entities in [
-            level
-                .all_entities(host)
-                .expect("the level remains queryable"),
-            level
-                .entities_in(host, [-1000.0; 3], [1000.0; 3])
+            collect_all_entities(host, level).expect("the level remains queryable"),
+            collect_entities_in(host, level, [-1000.0; 3], [1000.0; 3])
                 .expect("spatial queries remain available"),
         ] {
             assert!(!entities.iter().any(|entity| entity.id() == 71));
@@ -1709,15 +1739,7 @@ mod nested_vehicle_discard_tests {
                 .commands()
                 .run_command("execute if entity 000000a0-0000-0000-0000-000000000047")
         );
-        assert_eq!(
-            host.attachment_query("vehicle_boundary", "value")
-                .unwrap()
-                .query(&VEHICLE_VALUE)
-                .unwrap()
-                .iter()
-                .count(),
-            0
-        );
+        assert_eq!(vehicle_attachment_count(host), 0);
     }
 
     struct RemovalBoundaryObserver {
@@ -1822,7 +1844,7 @@ mod nested_vehicle_discard_tests {
                         game.carts
                             .update(0, |cart| cart.kind = super::super::minecarts::CartKind::Tnt);
                     }
-                    bind_vehicle_test_attachment(game, cart);
+                    set_vehicle_test_attachment(game);
                     let vehicle = game.entity(71).unwrap();
                     let uuid = [160, 0, 0, 71];
                     let holder = sunrise_client::save::uuid_text(uuid);
@@ -1922,7 +1944,13 @@ mod nested_vehicle_discard_tests {
         }
     }
 
-    struct ObserveSpillItem(Arc<AtomicUsize>);
+    #[derive(Default)]
+    struct SpillJoins {
+        vehicle: AtomicUsize,
+        items: AtomicUsize,
+    }
+
+    struct ObserveSpillItem(Arc<SpillJoins>);
     #[mod_api::__subscriptions]
     impl mod_api::Hooks for ObserveSpillItem {
         fn entity_join_level(
@@ -1930,16 +1958,23 @@ mod nested_vehicle_discard_tests {
             host: &mut dyn mod_api::ServerHost,
             event: &mut mod_api::EntityJoinLevelEvent<'_>,
         ) -> mod_api::Flow {
-            assert_ne!(
-                event.entity, 71,
-                "a removed vehicle must not join during its sweep"
-            );
-            if event.kind == "minecraft:item" {
-                assert!(
-                    host.entity(71).is_none(),
-                    "spill callbacks cannot resolve the removed owner"
+            if event.entity == 71 {
+                assert_eq!(
+                    self.0.vehicle.fetch_add(1, Ordering::Relaxed),
+                    0,
+                    "the vehicle must not join again during its sweep"
                 );
-                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+            if event.kind == "minecraft:item" {
+                if self.0.items.fetch_add(1, Ordering::Relaxed) == 0 {
+                    let vehicle = host.entity(71).expect("contents drop before removal");
+                    assert!(!vehicle.discard(host), "the spill must not reenter removal");
+                } else {
+                    assert!(
+                        host.entity(71).is_none(),
+                        "the vehicle item drops after removal"
+                    );
+                }
             }
             mod_api::Flow::Continue
         }
@@ -1952,7 +1987,7 @@ mod nested_vehicle_discard_tests {
             for mode in 0..3 {
                 let cancel = Arc::new(AtomicBool::new(true));
                 let calls = Arc::new(AtomicUsize::new(0));
-                let item_joins = Arc::new(AtomicUsize::new(0));
+                let joins = Arc::new(SpillJoins::default());
                 let mods: mod_api::Mods = vec![
                     mod_api::ModEntry::new(
                         "cancel_spilling_vehicle",
@@ -1963,7 +1998,7 @@ mod nested_vehicle_discard_tests {
                     ),
                     mod_api::ModEntry::new(
                         "observe_spill",
-                        Box::new(ObserveSpillItem(item_joins.clone())),
+                        Box::new(ObserveSpillItem(joins.clone())),
                     ),
                 ]
                 .into();
@@ -1985,6 +2020,8 @@ mod nested_vehicle_discard_tests {
                                 vehicle.items = items;
                             });
                         }
+                        game.native_joins_flush(false, 0);
+                        assert_eq!(joins.vehicle.load(Ordering::Relaxed), 1);
                         match mode {
                             0 if cart => game.hurt_cart(
                                 0,
@@ -2014,7 +2051,7 @@ mod nested_vehicle_discard_tests {
                                 .sum()
                         };
                         assert_eq!(diamonds(game), 5);
-                        assert!(item_joins.load(Ordering::Relaxed) > 0);
+                        assert!(joins.items.load(Ordering::Relaxed) > 0);
                         assert_eq!(calls.load(Ordering::Relaxed), 1);
                         assert!(game.persist.removed_vehicles.contains_key(&71));
                         for _ in 0..2 {
@@ -2062,8 +2099,7 @@ mod nested_vehicle_discard_tests {
                     "execute if entity @e[type=minecraft:{}]",
                     self.kind
                 )));
-                let batch = host.attachment_query("vehicle_boundary", "value").unwrap();
-                assert_eq!(batch.query(&VEHICLE_VALUE).unwrap().iter().count(), 0);
+                assert_eq!(vehicle_attachment_count(host), 0);
                 return mod_api::Flow::Cancel;
             }
             mod_api::Flow::Continue
@@ -2090,16 +2126,8 @@ mod nested_vehicle_discard_tests {
                     game.native_level_opened(super::super::Dim::Overworld);
                     game.build_registries();
                     game.set_allow_commands(true);
-                    bind_vehicle_test_attachment(game, cart);
-                    assert_eq!(
-                        game.attachment_query("vehicle_boundary", "value")
-                            .unwrap()
-                            .query(&VEHICLE_VALUE)
-                            .unwrap()
-                            .iter()
-                            .count(),
-                        1
-                    );
+                    set_vehicle_test_attachment(game);
+                    assert_eq!(vehicle_attachment_count(game), 1);
                     if cart {
                         game.hurt_cart(
                             0,
@@ -2141,9 +2169,8 @@ mod nested_vehicle_discard_tests {
                     let kind = if cart { "minecart" } else { "oak_boat" };
                     let command = format!("execute if entity @e[type=minecraft:{kind}]");
                     assert!(game.run_command(&command));
-                    bind_vehicle_test_attachment(game, cart);
-                    let batch = game.attachment_query("vehicle_boundary", "value").unwrap();
-                    assert_eq!(batch.query(&VEHICLE_VALUE).unwrap().iter().count(), 1);
+                    set_vehicle_test_attachment(game);
+                    assert_eq!(vehicle_attachment_count(game), 1);
                     let vehicle = game.entity(71).unwrap();
                     if cart {
                         game.hurt_cart(
@@ -2161,8 +2188,7 @@ mod nested_vehicle_discard_tests {
                     assert!(game.native_entity_target(vehicle).is_none());
                     assert!(game.entity_passengers(vehicle).is_none());
                     assert!(!game.run_command(&command));
-                    let batch = game.attachment_query("vehicle_boundary", "value").unwrap();
-                    assert_eq!(batch.query(&VEHICLE_VALUE).unwrap().iter().count(), 0);
+                    assert_eq!(vehicle_attachment_count(game), 0);
                 });
             });
         }
@@ -2650,28 +2676,6 @@ mod nested_vehicle_discard_tests {
                 assert_eq!(game.mob_object(72).unwrap().extra.mount, None);
             })
         });
-    }
-}
-
-impl Game<'_> {
-    pub(super) fn dismount_killed_boat(&mut self, id: u32) {
-        if let Some(y) = self.boats.iter().find(|b| b.id == id).map(|b| b.position.y) {
-            self.dismount_destroyed_vehicle_mobs(id, y);
-        }
-    }
-}
-
-impl Game<'_> {
-    pub(super) fn dismount_killed_cart(&mut self, id: u32) {
-        if let Some(y) = self.carts.iter().find(|c| c.id == id).map(|c| c.position.y) {
-            self.dismount_destroyed_vehicle_mobs(id, y);
-        }
-    }
-}
-
-impl Game<'_> {
-    pub(super) fn dismount_cart_mob_at(&mut self, rider: u32, y: f64) {
-        self.dismount_mob_from_removed_vehicle(rider, y);
     }
 }
 

@@ -19,10 +19,8 @@ Builds are GitHub releases of `horizon-rust/horizon`, one archive per platform:
 | Platform | Archive |
 | --- | --- |
 | Windows x64 | `sunrise-windows-x64.zip` |
-| Windows ARM64 | `sunrise-windows-arm64.zip` |
 | Linux x86_64 | `sunrise-linux-x86_64.tar.gz` |
 | macOS Apple silicon | `sunrise-macos-arm64.zip` |
-| macOS Intel | `sunrise-macos-x64.zip` |
 
 - The newest is the release tagged `nightly`. Each one is also published as `nightly-<date>`, kept for **seven
   days** and then deleted, so remember the tag you installed and expect it to disappear (a signed release index

@@ -14,8 +14,9 @@ name stops startup with a message naming your mod.
 ## Generating a start
 
 `StructureType::find_generation_point(&self, context: &mut dyn GenerationContext)` returns
-`Some(FoundStructure { position, pieces })` for a start, or `None` to skip the chunk. Supply at
-least one piece, each an `Arc<dyn StructurePiece>`.
+`Some(FoundStructure { position, pieces })` for a start, or `None` to skip the chunk. Each piece
+is an `Arc<dyn StructurePiece>`. The start needs at least one piece, counting the jigsaw pieces
+below.
 
 World generation has no `Host`. Starts run on worker threads, and pieces place per chunk. Your
 `StructureType` must be `Send + Sync`, stateless and deterministic: the same seed produces the
@@ -29,14 +30,41 @@ same pieces, even when workers generate neighbouring chunks concurrently.
 | `noise_biome`, `column_has_valid_biome` | Opaque biome identities and the structure's valid-biome test |
 | `metadata` | Borrowed immutable block metadata |
 | `config` | The structure JSON converted to a shared `Arc<Tag>` |
+| `assemble_jigsaw` | Lay out pieces from the data pack's template pools (below) |
 
 Config conversion runs when definitions load or reload, not per start. Nested JSON nulls are
 refused at load. The engine handles structure-set spacing, `biomes` and `terrain_adaptation`.
 
 Both contexts are traits, and `random` hands you a `&mut dyn RandomSource`: see
-[Randomness](../../concepts/randomness.md) for its draws. These interfaces also support structures in `mod.wasm`.
-Wasm worker calls share the dependency group's store lock and use a per-call fuel or epoch
-budget; a trap stops the group with a typed refusal.
+[Randomness](../../concepts/randomness.md) for its draws.
+
+## Laying out from template pools
+
+`context.assemble_jigsaw(&settings, position)` runs vanilla's `JigsawPlacement.addPieces` from the
+data pack's template pools, as a NeoForge structure type calls it from its own
+`findGenerationPoint`. Build the settings with `JigsawSettings::new(start_pool, max_depth)`, then
+set the fields your type decodes from its config:
+
+| Field | Vanilla setting |
+|---|---|
+| `start_jigsaw_name` | `start_jigsaw_name` |
+| `use_expansion_hack` | `use_expansion_hack` |
+| `project_start_to_heightmap` | `project_start_to_heightmap` |
+| `max_distance_from_center` | `max_distance_from_center` (`JigsawReach { horizontal, vertical }`) |
+| `pool_aliases` | `pool_aliases` (`PoolAliasBinding::Direct`, `Random`, `RandomGroup`) |
+| `dimension_padding` | `dimension_padding` (`DimensionPadding { bottom, top }`) |
+| `liquid_settings` | `liquid_settings` |
+
+Your type chooses its own depth and reach: the limits `minecraft:jigsaw`'s codec puts on `size`
+(0 to 20) and `max_distance_from_center` (1 to 128 across) belong to that type only. Every
+placement check of the layout is vanilla's. Aliases are drawn from the world seed at `position`.
+A depth of 0 or below places no piece, as in vanilla.
+
+The call draws from `context.random()` and returns a `JigsawLayout` with the start position and
+every piece's box, or `None` when no start fits there. The game keeps the laid-out pieces itself:
+they join your start, ahead of your own pieces, when `find_generation_point` returns `Some`, and
+they save, load and place as `minecraft:jigsaw` pieces do. Return `layout.position` as the
+start's position to match vanilla's `JigsawStructure`.
 
 ## Placing pieces
 
@@ -57,7 +85,7 @@ The bounds are independent of the placement box; the ground is `bounds.min[1] + 
 The rules are `None`, `Bury`, `BeardThin`, `BeardBox` and `Encapsulate`. An answer with
 adjustment `None` disables only that piece. No answer inherits the structure's setting.
 An override works even when the structure's `terrain_adaptation` is `"none"`.
-Native and wasm pieces are queried once when generated or loaded, and the answer is cached
+Pieces are queried once when generated or loaded, and the answer is cached
 on the engine piece; terrain generation never calls the mod for it per chunk.
 
 Use `PieceContext` to work within the chunk:

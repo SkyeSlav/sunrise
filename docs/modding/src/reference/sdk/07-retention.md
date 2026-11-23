@@ -4,7 +4,7 @@ An SDK release is never deleted whole. Pruning deletes only the assets whose `ki
 `sdk.json` is `runtime`, `api` or `engine`. A pruned build keeps `sdk.json`, `surface.json`, `build-data.tar.xz`,
 `api-source.tar.xz`, `SHA256SUMS` and `SHA256SUMS.sig`, so for it:
 
-- `cargo sunrise-mod sdk diff` and `fits`, and the launcher's fit test, keep working;
+- `cargo sunrise-mod sdk diff` and `check --build`, and the launcher's fit test, keep working;
 - a mod project pinned to it still fetches its `.sunrise/sdk/`;
 - building a mod against it on a player's computer needs its compiled slices, which are gone.
 

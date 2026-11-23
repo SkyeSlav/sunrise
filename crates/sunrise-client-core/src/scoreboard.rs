@@ -499,6 +499,8 @@ impl CollisionRule {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Team {
+    /// Told apart from a team added later under this name.
+    pub identity: Identity,
     pub name: String,
     pub display_name: Comp,
     pub color: Option<String>,
@@ -513,8 +515,9 @@ pub struct Team {
     pub players: HashSetOrder,
 }
 impl Team {
-    fn new(name: &str) -> Self {
+    fn new(name: &str, identity: Identity) -> Self {
         Self {
+            identity,
             name: name.to_owned(),
             display_name: literal(name),
             color: None,
@@ -688,7 +691,7 @@ pub fn death_message_reaches(board: &Scoreboard, dying: &str, other: &str) -> bo
 
 // ---- objectives and scores ---------------------------------------------
 
-/// The identity the board gives each objective it adds: never reused, not saved, and left out of
+/// The identity the board gives each objective and team it adds: never reused, not saved, and left out of
 /// comparisons, so two boards with the same contents are equal.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Identity(pub u64);
@@ -815,6 +818,9 @@ impl Scoreboard {
         let next = self.next_identity.0.max(saved.next_identity.0);
         *self = saved;
         self.next_identity = Identity(next);
+    }
+    pub fn team_by_identity(&self, identity: u64) -> Option<&Team> {
+        self.teams.iter().find(|t| t.identity.0 == identity)
     }
     pub fn objective_by_identity(&self, identity: u64) -> Option<&Objective> {
         self.objectives.iter().find(|o| o.identity.0 == identity)
@@ -1013,7 +1019,9 @@ impl Scoreboard {
     }
     pub fn add_team(&mut self, name: &str) -> &mut Team {
         if self.team(name).is_none() {
-            self.teams.push(Team::new(name));
+            let identity = self.next_identity;
+            self.next_identity = Identity(identity.0 + 1);
+            self.teams.push(Team::new(name, identity));
             self.team_order.insert(name);
             self.reorder();
         }
@@ -1304,7 +1312,7 @@ fn entity_uuids(tag: &mut Tag) {
     match tag {
         Tag::Compound(c) => {
             let show_entity = matches!(c.get(&"action".into()), Some(Tag::String(a)) if a.to_string_lossy() == "show_entity");
-            for (k, v) in c.iter_mut() {
+            c.for_each_mut(|k, v| {
                 if show_entity && k.to_string_lossy() == "uuid" {
                     let ints = match v {
                         Tag::List(l) => l
@@ -1325,7 +1333,7 @@ fn entity_uuids(tag: &mut Tag) {
                 } else {
                     entity_uuids(v);
                 }
-            }
+            });
         }
         Tag::List(l) => l.iter_mut().for_each(entity_uuids),
         _ => {}
@@ -1450,7 +1458,7 @@ mod tests {
     /// and as insertion; `getFormattedDisplayName` brackets the name in it.
     #[test]
     fn a_teams_formatted_name_inserts_the_team_name() {
-        let team = Team::new("reds");
+        let team = Team::new("reds", Identity::default());
         let c = team.formatted_display_name().component();
         assert_eq!(c["translate"], "chat.square_brackets");
         let inner = &c["with"][0];
@@ -1498,6 +1506,24 @@ mod tests {
         add(&mut twin, "x");
         twin.remove_objective("y");
         assert_eq!(other, twin);
+    }
+
+    /// A team added again under a removed one's name is another team, and a restored board never
+    /// gives a rolled-back team's identity to a later one.
+    #[test]
+    fn a_team_added_again_under_its_name_has_a_new_identity() {
+        let mut sb = Scoreboard::default();
+        let first = sb.add_team("a").identity.0;
+        sb.remove_team("a");
+        assert!(sb.team_by_identity(first).is_none());
+        let second = sb.add_team("a").identity.0;
+        assert_ne!(first, second);
+        let saved = sb.clone();
+        let rolled_back = sb.add_team("b").identity.0;
+        sb.restore(saved);
+        assert!(sb.team("b").is_none());
+        assert!(sb.team_by_identity(rolled_back).is_none());
+        assert_ne!(sb.add_team("b").identity.0, rolled_back);
     }
 
     fn board() -> Scoreboard {

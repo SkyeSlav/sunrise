@@ -119,6 +119,32 @@ impl SizeAnswer {
     pub fn effective(&self) -> [f32; 3] {
         self.size.unwrap_or(self.vanilla)
     }
+    /// The box of an entity whose pose doesn't size it, at `position`: `vanilla_box`, the one
+    /// its kind makes for its vanilla size `vanilla`, unless `answer` resized it and still
+    /// holds for that size. Then `EntityDimensions.makeBoundingBox` of the answer, on the same
+    /// bottom (a wind charge's sits below its position).
+    pub fn sized_box(
+        answer: Option<Self>,
+        vanilla: [f32; 3],
+        position: Vec3,
+        vanilla_box: Aabb,
+    ) -> Aabb {
+        let Some([width, height, _]) =
+            answer.and_then(|answer| answer.size.filter(|_| answer.vanilla == vanilla))
+        else {
+            return vanilla_box;
+        };
+        let half = f64::from(width / 2.0);
+        let bottom = vanilla_box.min_position().y;
+        Aabb::new(
+            Vec3::new(position.x - half, bottom, position.z - half),
+            Vec3::new(
+                position.x + half,
+                bottom + f64::from(height),
+                position.z + half,
+            ),
+        )
+    }
 }
 impl Dimensions {
     pub fn to_array(self) -> [f32; 3] {
@@ -299,16 +325,50 @@ impl MotionWorld<'_, '_, '_> {
     /// allows (the boat the game stores in the player's fluid state), so a boat
     /// afloat keeps the eyes dry.
     pub fn passenger_pose_tick(&mut self) -> Result<()> {
-        self.player.fluids.was_eye_in_water = self.player.is_eye_in_fluid(crate::motion::WATER);
-        self.update_fluids()?;
+        self.passenger_base_tick()?;
+        self.passenger_sits_up()
+    }
+    /// `Entity.rideTick` for a rider this client moves (`LocalPlayer`): `Player.tick` takes it off
+    /// the ground and `Entity.baseTick` samples its fluids, as for any passenger; then
+    /// `LivingEntity.aiStep` travels it from where it sat (`rider_travel_tick`), and that move's
+    /// ground and collisions are what its look packet sends; `updatePlayerPose` sits it up.
+    pub fn rider_tick(&mut self, direction: [f32; 2]) -> Result<()> {
+        self.begin_fluid_tick()?;
+        self.finish_rider_base_tick(None);
+        self.finish_rider_tick(direction)
+    }
+    /// Apply the rider's swimming decision before `LocalPlayer.aiStep`.
+    pub fn finish_rider_base_tick(&mut self, answer: Option<(crate::motion::SwimEntry, bool)>) {
+        self.apply_swim_entry(answer);
+        self.clear_passenger_flags();
+    }
+    /// `LivingEntity.aiStep` travels the rider after its sprint decision.
+    pub fn finish_rider_tick(&mut self, direction: [f32; 2]) -> Result<()> {
+        if self.player.may_fly && self.player.local_spectator {
+            self.player.flying = true;
+        }
+        self.rider_travel_tick(direction)?;
+        self.passenger_sits_up()
+    }
+    /// A passenger's tick before it could move: the fluids in the box its vehicle allows, off the
+    /// ground, and neither swimming nor gliding.
+    fn passenger_base_tick(&mut self) -> Result<()> {
+        self.begin_fluid_tick()?;
+        self.clear_passenger_flags();
+        Ok(())
+    }
+    fn clear_passenger_flags(&mut self) {
         // Player.tick: a passenger is never on the ground (setOnGround(false)
-        // clears the supporting block too), so its look packets say so.
+        // clears the supporting block too) until its own move says otherwise.
         self.player.ground.on_ground = false;
         self.player.ground.on_ground_no_blocks = false;
         self.player.ground.supporting_block = None;
         self.player.swimming = false;
         self.player.fall_flying = false;
         self.player.fall_fly_ticks = 0;
+    }
+    /// `Player.updatePlayerPose` for a passenger.
+    fn passenger_sits_up(&mut self) -> Result<()> {
         self.update_player_pose()?;
         // A cushion's seat puts the feet in the support block, so neither
         // standing nor crawling fits and `updatePlayerPose` keeps the old

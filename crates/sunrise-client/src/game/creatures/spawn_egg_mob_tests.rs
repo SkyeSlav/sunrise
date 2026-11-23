@@ -15,7 +15,7 @@ use sunrise_core::geometry::Vec3;
 use sunrise_core::position::ChunkPos;
 use sunrise_core::random::{LegacyRandom, RandomSource};
 
-fn game() -> Game<'static> {
+fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -> Game<'a> {
     let root = std::path::PathBuf::from(
         std::env::var_os("SUNRISE_TEST_RESOURCES")
             .expect("set SUNRISE_TEST_RESOURCES to prepared resources"),
@@ -37,7 +37,7 @@ fn game() -> Game<'static> {
     let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
     options.resources = root.clone();
     options.execution_role = execution_role::ExecutionRole::IntegratedServer;
-    let res: &'static _ = Box::leak(Box::new(loaded.resources));
+    let res = &*resources.insert(loaded.resources);
     let mut game = Game::new(
         res,
         loaded.pack,
@@ -91,7 +91,8 @@ fn posted() -> Vec<(&'static str, [f64; 3], Option<Who>)> {
 #[test]
 #[ignore = "daily"]
 fn an_egg_used_on_a_mob_posts_entity_interact() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     watch();
     spawn(&mut game, "minecraft:cow", 7, [2.5, 64.0, 2.5]);
     game.inventory[0] = Some(ItemStack::new("minecraft:cow_spawn_egg", 1));
@@ -123,7 +124,8 @@ fn an_egg_used_on_a_mob_posts_entity_interact() {
 #[test]
 #[ignore = "daily"]
 fn a_mooshroom_egg_child_rolls_the_colour_flip() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     // `MushroomCow.getBreedOffspring(level, this)` on the egg path: the mate is
     // the parent, so `nextInt(1024) == 0` always changes the colour, and every
     // other roll spends the coin flip that can only pick the same colour.

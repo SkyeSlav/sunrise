@@ -1,11 +1,20 @@
 //! Vanilla's `context_int_provider` and `context_float_provider` values (furnace
 //! fuel times, brewing times), evaluated from the data pack's JSON.
-use crate::items::{ItemStack, Items};
+mod evaluation;
+
+pub use evaluation::{ConditionContext, Evaluation};
 use serde_json::Value;
-use std::{collections::HashMap, fs, path::Path};
+use std::{collections::HashMap, fs, path::Path, sync::Arc};
+
+pub(crate) const NUMBER_PROVIDER_KINDS: [&str; 2] =
+    ["context_int_provider", "context_float_provider"];
 
 /// Evaluator for `context_int_provider` / `context_float_provider` values.
-pub struct Providers {
+#[derive(Clone)]
+pub struct Providers(Arc<Definitions>);
+
+#[derive(Default)]
+struct Definitions {
     ints: HashMap<String, Value>,
     floats: HashMap<String, Value>,
 }
@@ -21,8 +30,8 @@ fn load_dir(dir: &Path, namespace: &str, out: &mut HashMap<String, Value>) {
         }
     }
 }
-impl Providers {
-    pub fn load(root: &Path) -> Self {
+impl Definitions {
+    fn load(root: &Path) -> Self {
         let mut ints = HashMap::new();
         let mut floats = HashMap::new();
         let mut namespaces: std::collections::BTreeSet<String> =
@@ -48,11 +57,40 @@ impl Providers {
         }
         Self { ints, floats }
     }
+}
+
+impl Providers {
+    pub fn load(root: &Path) -> Self {
+        Self(Arc::new(Definitions::load(root)))
+    }
+    /// The world's registry definitions: the enabled pack winner replaces
+    /// each resource-root entry before the world publishes its tables.
+    pub fn load_with(
+        root: &Path,
+        overlay: &sunrise_world::loot::PackOverlay<'_>,
+    ) -> Result<Self, String> {
+        let mut providers = Definitions::load(root);
+        for (kind, table) in NUMBER_PROVIDER_KINDS
+            .into_iter()
+            .zip([&mut providers.ints, &mut providers.floats])
+        {
+            for (id, files) in overlay.kind(kind) {
+                let value = serde_json::from_slice(sunrise_world::loot::PackOverlay::top(files))
+                    .map_err(|error| format!("{kind} {id}: {error}"))?;
+                if overlay.conditions.allows_id(&value, kind, id) {
+                    table.insert(id.to_owned(), value);
+                } else {
+                    table.remove(id);
+                }
+            }
+        }
+        Ok(Self(Arc::new(providers)))
+    }
     /// The accepted definitions used by provider evaluation, never a resource-file inventory.
     pub fn registry(&self, registry: &str) -> Option<&HashMap<String, Value>> {
         match registry {
-            "minecraft:context_int_provider" => Some(&self.ints),
-            "minecraft:context_float_provider" => Some(&self.floats),
+            "minecraft:context_int_provider" => Some(&self.0.ints),
+            "minecraft:context_float_provider" => Some(&self.0.floats),
             _ => None,
         }
     }
@@ -101,7 +139,7 @@ impl Providers {
     /// layers in the default distribution (the composter's empty-level case is left out), or its
     /// plain number.
     pub fn layer_chance(&self, v: &Value) -> f32 {
-        let def = v.as_str().and_then(|n| self.ints.get(n)).unwrap_or(v);
+        let def = v.as_str().and_then(|n| self.0.ints.get(n)).unwrap_or(v);
         let base = def.get("default").unwrap_or(def);
         if let Some(n) = base.as_f64() {
             return n as f32;
@@ -130,36 +168,19 @@ impl Providers {
     }
     /// A plain `context_int_provider` value or reference (no context conditions).
     pub fn int_value(&self, v: &Value) -> i32 {
-        Self::eval(v, false, &self.ints, 0) as i32
+        Self::eval(v, false, &self.0.ints, 0) as i32
     }
     /// A plain `context_float_provider` value or reference; `default` when absent.
     pub fn float_value(&self, v: &Value, default: f32) -> f32 {
         if v.is_null() {
             default
         } else {
-            Self::eval(v, false, &self.floats, 0) as f32
+            Self::eval(v, false, &self.0.floats, 0) as f32
         }
     }
     #[cfg(test)]
     pub fn empty() -> Self {
-        Self {
-            ints: HashMap::new(),
-            floats: HashMap::new(),
-        }
-    }
-    pub fn burn_time(&self, items: &Items, stack: &ItemStack, fast: bool) -> i32 {
-        items
-            .get(&stack.item)
-            .and_then(|i| i.fuel.as_ref())
-            .map_or(0, |(time, _)| Self::eval(time, fast, &self.ints, 0) as i32)
-    }
-    pub fn speed(&self, items: &Items, stack: &ItemStack, fast: bool) -> f32 {
-        items
-            .get(&stack.item)
-            .and_then(|i| i.fuel.as_ref())
-            .map_or(1.0, |(_, speed)| {
-                Self::eval(speed, fast, &self.floats, 0) as f32
-            })
+        Self(Arc::new(Definitions::default()))
     }
 }
 

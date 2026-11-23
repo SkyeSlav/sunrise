@@ -13,7 +13,9 @@ use sunrise_core::geometry::Vec3;
 
 pub fn main() -> Result<()> {
     let args: Vec<_> = crate::args().collect();
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local/sunrise-client/26.3");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.local/sunrise-client")
+        .join(sunrise_core::VANILLA_VERSION);
     let types = MobTypes::load(&root)?;
     let mut out = BufWriter::new(File::create(&args[2])?);
     for line in BufReader::new(File::open(&args[1])?).lines() {

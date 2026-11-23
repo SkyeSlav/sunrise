@@ -11,12 +11,43 @@ use crate::registry::BlockStateId;
 use sunrise_core::{geometry::Direction, position::BlockPos};
 
 impl<L: LevelAccess + ?Sized> Sim<'_, L> {
+    /// Count the carried block as already present for inert survival only.
+    pub(super) fn while_landing<T>(
+        &mut self,
+        pos: BlockPos,
+        state: BlockStateId,
+        check: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let previous = self.landing_block.replace((pos, state));
+        let answer = check(self);
+        self.landing_block = previous;
+        answer
+    }
+
+    fn retains_block(&self, state: BlockStateId, pos: BlockPos) -> bool {
+        let block = self.b.block(state);
+        self.landing_block
+            .is_some_and(|(target, carried)| target == pos && self.b.block(carried) == block)
+            || self.block_of(self.state(pos)) == block
+    }
+
     /// `BlockState.canSurvive(level, pos)`.
     pub fn can_survive(&self, state: BlockStateId, pos: BlockPos) -> bool {
         let mut survives = None;
-        self.level
-            .before_can_survive(&*self.ticks, pos, state, &mut survives);
-        survives.unwrap_or_else(|| self.can_survive_at(0, state, pos))
+        if self
+            .level
+            .before_can_survive(&*self.ticks, None, pos, state, &mut survives)
+        {
+            return self.retains_block(state, pos);
+        }
+        survives.unwrap_or_else(|| {
+            if self.b.data(state).declared_vegetation {
+                let ground = below(pos);
+                self.may_place_on(state, self.state(ground), ground)
+            } else {
+                self.can_survive_at(0, state, pos)
+            }
+        })
     }
     fn can_survive_at(&self, depth: usize, state: BlockStateId, pos: BlockPos) -> bool {
         let chain = &self.b.data(state).chain;
@@ -365,20 +396,35 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     ) -> bool {
         // NeoForge's `BushBlock.canSurvive`: the soil's answer first, the plant's second.
         let mut sustains = None;
-        self.level
-            .before_can_sustain_plant(state, ground, ground_pos, &mut sustains);
+        if self.level.before_can_sustain_plant(
+            &*self.ticks,
+            None,
+            state,
+            ground,
+            ground_pos,
+            &mut sustains,
+        ) {
+            return self.retains_block(state, above(ground_pos));
+        }
         if let Some(sustains) = sustains {
             return sustains;
         }
         let mut may = None;
-        self.level
-            .before_may_place_on(state, ground, ground_pos, &mut may);
+        if self
+            .level
+            .before_may_place_on(&*self.ticks, None, state, ground, ground_pos, &mut may)
+        {
+            return self.retains_block(state, above(ground_pos));
+        }
         if let Some(may) = may {
             return may;
         }
         let b = self.b;
         let t = &b.tags;
         let data = b.data(state);
+        if data.declared_vegetation {
+            return b.in_set(ground, &t.supports_vegetation);
+        }
         for class in &data.chain {
             let result = match class {
                 Class::AttachedStem | Class::NetherFungus | Class::NetherRoots | Class::Stem => {

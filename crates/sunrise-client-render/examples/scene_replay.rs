@@ -361,9 +361,7 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
             frame.detail_distance = frame.distance;
         }
         let draw = |renderer: &mut Renderer| -> sunrise_client_render::Result<Duration> {
-            if frame.cave_culling {
-                renderer.start_occlusion(frame.camera, frame.distance);
-            }
+            renderer.start_occlusion(frame.camera, frame.detail_distance, frame.cave_culling);
             let started = Instant::now();
             renderer.render(&frame)?;
             Ok(started.elapsed())
@@ -764,7 +762,7 @@ fn world_seed(save: &Path) -> Option<i64> {
 }
 
 /// A saved full chunk's blocks, biomes and light, as the client's own save
-/// loader reads them (`save::decode_lit`, in sunrise-client).
+/// loader reads them (`save::decode_with`, then `save::load_light`, in sunrise-client).
 fn decode(root: &NamedTag, registry: &BlockRegistry, biomes: &Biomes) -> Option<Chunk> {
     let tag = &root.tag;
     let text = |t: Option<&Tag>| match t {

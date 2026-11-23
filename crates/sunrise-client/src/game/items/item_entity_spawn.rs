@@ -35,6 +35,7 @@ impl Game<'_> {
                 bob,
             )
         }));
+        self.wake_hoppers_near_dropped_item(self.next_entity);
         velocity
     }
 
@@ -43,6 +44,14 @@ impl Game<'_> {
     /// Whether the item entity is in the level after its join: false when a join listener kept
     /// it out (or no such item entity was made).
     pub(in crate::game) fn join_item_entity(&mut self, id: u32, position: [f64; 3]) -> bool {
+        self.announce_item_entity(id, position, false)
+    }
+
+    pub(super) fn join_removal_item(&mut self, id: u32, position: [f64; 3]) {
+        self.announce_item_entity(id, position, true);
+    }
+
+    fn announce_item_entity(&mut self, id: u32, position: [f64; 3], in_removal: bool) -> bool {
         let Some((item, count)) = self
             .dropped
             .iter()
@@ -56,7 +65,11 @@ impl Game<'_> {
             self.native_lifecycle
                 .pending_item_spawns
                 .push((id, item.to_string(), count, position));
-            self.native_joins_flush(false, id)
+            if in_removal {
+                self.flush_removal_join(id)
+            } else {
+                self.native_joins_flush(false, id)
+            }
         } else if self.native_joins_flush(false, id) {
             self.native_item_spawn(id, &item, count, position);
             true

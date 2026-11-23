@@ -1,6 +1,30 @@
 //! Owned placement and loot data; none of these snapshots borrows an engine context.
-use crate::{BlockPos, Direction, ItemKey};
+use crate::{BlockPos, Direction, ItemKey, PlayerRef};
 use sunrise_core::nbt::Tag;
+
+/// The placement rules a block placement follows: a player's (`BlockPlaceContext`) or a
+/// directional non-player context's (`DirectionalPlaceContext`). A placement-context rewrite can
+/// change them; [`PlacementPlacer`] still names the actual placer, if there is one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub enum PlacementSource {
+    /// A player's placement (`BlockPlaceContext`, non-null `getPlayer()`).
+    Player {
+        /// Placer yaw in degrees (`getYRot` / `getRotation`).
+        yaw: f32,
+        /// Placer pitch in degrees (`getXRot`).
+        pitch: f32,
+        /// Whether secondary use is active (`isSecondaryUseActive`).
+        sneaking: bool,
+    },
+    /// A non-player directional placement (`DirectionalPlaceContext`, `getPlayer() == null`),
+    /// such as a dispenser placing a shulker box or a falling block checking replaceability.
+    Directional {
+        /// The direction the placer acts along (`DirectionalPlaceContext`'s direction).
+        direction: Direction,
+    },
+}
 
 /// Inputs to selecting a block's placement state.
 #[derive(Clone, Debug, PartialEq)]
@@ -17,20 +41,23 @@ pub struct PlacementContext {
     pub hit: [f64; 3],
     /// Whether the click originated inside the block's shape.
     pub inside: bool,
-    /// Placer yaw in degrees.
-    pub yaw: f32,
-    /// Placer pitch in degrees.
-    pub pitch: f32,
-    /// Whether secondary use is active.
-    pub sneaking: bool,
+    /// The placement rules in effect: a player's view and sneak state, or a
+    /// directional non-player context (`DirectionalPlaceContext`). A rewrite can change them
+    /// without changing who placed the block.
+    pub source: PlacementSource,
     /// The resolved item in the placing hand; `None` for an empty hand.
     pub item: Option<ItemKey>,
-    /// Whether the clicked block itself is replaced.
+    /// Whether the clicked block itself is replaced (`replacingClickedOnBlock`). A player's
+    /// `BlockPlaceContext` keeps the value it was built with, so a player context is read as
+    /// written. A `DirectionalPlaceContext` answers it from the level every time it is asked
+    /// (`canPlace()`: whether the block at `hit_pos` can be replaced in this context), so for
+    /// `PlacementSource::Directional` the game works it out from the clicked block and never
+    /// reads the value written here. Contexts the game hands to a hook carry its answer.
     pub replace_clicked: bool,
 }
 
 impl PlacementContext {
-    /// A placement at `pos`, with a click on `face` and an optional held item.
+    /// A player placement at `pos`, with a click on `face` and an optional held item.
     /// The click starts at the block origin, with zero view angles and no flags set.
     pub fn new(pos: BlockPos, face: Direction, item: Option<ItemKey>) -> Self {
         Self {
@@ -39,12 +66,111 @@ impl PlacementContext {
             face,
             hit: [f64::from(pos.x), f64::from(pos.y), f64::from(pos.z)],
             inside: false,
-            yaw: 0.0,
-            pitch: 0.0,
-            sneaking: false,
+            source: PlacementSource::Player {
+                yaw: 0.0,
+                pitch: 0.0,
+                sneaking: false,
+            },
             item,
             replace_clicked: false,
         }
+    }
+
+    /// A non-player directional placement at `pos` along `direction`, with a click on `face`
+    /// and an optional item (`DirectionalPlaceContext`), targeting the bottom center of `pos`.
+    /// It places at the clicked block itself, so `hit_pos` is `pos`. `replace_clicked` is
+    /// `true` here, but the game answers it from the block at `pos` (see the field).
+    pub fn directional(
+        pos: BlockPos,
+        direction: Direction,
+        face: Direction,
+        item: Option<ItemKey>,
+    ) -> Self {
+        Self {
+            pos,
+            hit_pos: pos,
+            face,
+            hit: [
+                f64::from(pos.x) + 0.5,
+                f64::from(pos.y),
+                f64::from(pos.z) + 0.5,
+            ],
+            inside: false,
+            source: PlacementSource::Directional { direction },
+            item,
+            replace_clicked: true,
+        }
+    }
+}
+
+/// Why `LevelRef::state_for_placement` gave no state. Vanilla's `null` is `Ok(None)`, not an
+/// error: these are reads that can't be made, and questions vanilla's
+/// `DirectionalPlaceContext` throws on instead of answering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub enum PlacementStateError {
+    /// The handle's level is gone or has been reopened.
+    Stale,
+    /// The level is parked, the host or load phase can't answer, or the state isn't one the
+    /// API can represent.
+    Unavailable,
+    /// A `PlacementSource::Directional` query for a block whose placement rule reads
+    /// `getNearestLookingVerticalDirection`. That reads the player's pitch, and a
+    /// `DirectionalPlaceContext` has no player and doesn't override it, so vanilla throws.
+    /// In vanilla that is `SpeleothemBlock` (pointed dripstone and sulfur spikes), and so a
+    /// block built on either as its template when no Part answers for it.
+    NoVerticalLook,
+    /// A `PlacementSource::Directional` query whose clicked block's `canBeReplaced` reads
+    /// `replacingClickedOnBlock`. A `DirectionalPlaceContext` answers that with `canPlace()`,
+    /// which is the same `canBeReplaced` of the same block, so vanilla never returns. In
+    /// vanilla that is a slab that isn't double, or a snow layer under eight layers,
+    /// clicked holding its own item.
+    ReplacingClickedCycle,
+}
+
+impl From<crate::LevelReadError> for PlacementStateError {
+    fn from(error: crate::LevelReadError) -> Self {
+        match error {
+            crate::LevelReadError::Stale => Self::Stale,
+            crate::LevelReadError::Unavailable => Self::Unavailable,
+        }
+    }
+}
+
+impl crate::NoBackend for PlacementStateError {
+    fn no_backend() -> Self {
+        Self::Unavailable
+    }
+}
+
+/// Vanilla's `BlockPlaceContext.getPlayer()` and the placer's eyes at the time of the click.
+/// The engine reads the acting or locally predicted player's eyes before borrowing the level.
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub struct PlacementPlacer {
+    player: PlayerRef,
+    eye_position: [f64; 3],
+}
+
+impl PlacementPlacer {
+    // hidden: only the engine constructs the snapshot of the acting player.
+    #[doc(hidden)]
+    pub fn new(player: PlayerRef, eye_position: [f64; 3]) -> Self {
+        Self {
+            player,
+            eye_position,
+        }
+    }
+
+    /// The placing player on this logical side.
+    pub fn player(self) -> PlayerRef {
+        self.player
+    }
+
+    /// World-space eye position when this placement was attempted.
+    pub fn eye_position(self) -> [f64; 3] {
+        self.eye_position
     }
 }
 
@@ -121,7 +247,7 @@ pub struct LootContext {
     pub luck: f32,
     /// Biome identifier, when available.
     pub biome: Option<String>,
-    /// Seed drawn by the engine only when the mod's kind participates.
+    /// Zero in registered codec contexts; use `LootTypeContext::random` for actual roll draws.
     pub seed: i64,
     /// Origin, block entity and level facts at the moment of the roll.
     pub place: Option<LootPlace>,
@@ -231,7 +357,7 @@ impl LootStack {
     }
 }
 impl LootContext {
-    /// An empty roll context with its captured random seed.
+    /// An empty facts snapshot. Registered codec contexts pass zero for `seed`.
     pub fn new(seed: i64) -> Self {
         Self {
             queried_table_id: sunrise_core::UNKNOWN_LOOT_TABLE.into(),

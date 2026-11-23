@@ -117,6 +117,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         self.emit(LevelEvent::Sound {
             pos,
             sound: sound.into(),
+            source: None,
             volume,
             pitch,
         });
@@ -574,6 +575,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                         self.emit(LevelEvent::Sound {
                             pos,
                             sound: sounds.place.clone(),
+                            source: None,
                             volume: 1.0,
                             pitch: 1.0,
                         });

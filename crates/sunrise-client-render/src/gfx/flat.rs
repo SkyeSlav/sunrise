@@ -1496,14 +1496,15 @@ mod tests {
     /// plus the base vertex. With culling, phase 2's runs hold the indices
     /// of the draws the test saw, in order, and their calls count them.
     #[test]
+    #[ignore = "daily"]
     fn flatten_writes_the_indices_of_the_per_section_draws() {
         let _gpu = crate::gfx::test_gpu::lock();
-        let instance = crate::gfx::test_gpu::instance();
-        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+        let Some(adapter) = crate::gfx::test_gpu::adapter() else {
             eprintln!("no GPU adapter: skipped");
             return;
         };
-        let Ok((device, queue)) = pollster::block_on(adapter.request_device(&Default::default()))
+        let Some((device, queue)) =
+            crate::gfx::test_gpu::optional_device_with(&adapter, &Default::default())
         else {
             eprintln!("no GPU device: skipped");
             return;

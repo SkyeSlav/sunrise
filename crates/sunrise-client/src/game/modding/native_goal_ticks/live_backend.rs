@@ -12,5 +12,9 @@ impl GoalCx<'_, '_> {
             return false;
         }
         self.host.entity(entity.id()) == Some(entity)
+            || self
+                .w
+                .goal_host
+                .is_some_and(|host| host.mob_in_other_level(entity))
     }
 }

@@ -428,12 +428,13 @@ fn cast_fangs(m: &mut Mob, cx: &mut Cx) {
     }
 }
 /// `createSpellEntity`: the first block below `max_y` whose up face is
-/// sturdy, standing on the top of whatever collision shape is in the way.
+/// sturdy, standing on the top of whatever collision shape is in the way
+/// ([`super::MobWorld::collision_top`]: a published shape's, #1710).
 ///
 /// The floor test is `BlockState.isFaceSturdy(.., UP)`, not a full cube: a
 /// soul sand or mud block is 14/16 high and still supports a fang, where
 /// requiring a full collision shape drops the fang into the block.
-fn fang_floor(w: &super::MobWorld, x: f64, z: f64, min_y: f64, max_y: f64) -> Option<f64> {
+pub fn fang_floor(w: &super::MobWorld, x: f64, z: f64, min_y: f64, max_y: f64) -> Option<f64> {
     let (bx, bz) = (x.floor() as i32, z.floor() as i32);
     let mut y = max_y.floor() as i32;
     while y >= min_y.floor() as i32 - 1 {
@@ -443,7 +444,7 @@ fn fang_floor(w: &super::MobWorld, x: f64, z: f64, min_y: f64, max_y: f64) -> Op
             let top = if w.facts.is_air(here) {
                 0.0
             } else {
-                f64::from(w.data.state(here).top)
+                w.collision_top(bx, y, bz)
             };
             return Some(f64::from(y) + top);
         }
@@ -631,14 +632,19 @@ impl Goal for CrossbowAttack {
                 if sees {
                     shoot_crossbow(m, who, cx);
                     self.state = Crossbow::Uncharged;
-                    set_crossbow_charged(m, false);
                 }
             }
         }
     }
 }
 /// `CrossbowAttackMob.performCrossbowAttack` at power 1.6: one arrow aimed a
-/// third of the way up the target, lifted by a fifth of the distance.
+/// third of the way up the target, lifted by a fifth of the distance: the shot of
+/// `Pillager.performRangedAttack`, and of `Piglin.performRangedAttack`. The shot uses up the
+/// loaded projectile (`CrossbowItem.performShooting` empties `CHARGED_PROJECTILES`), so a
+/// cancelled shot leaves the crossbow loaded. A native mod takes the shot here through
+/// `[[native.mixin]]`, where a Java mod's mixin on `Pillager.performRangedAttack` cancels or
+/// delays it (#4678).
+#[sunrise_mod_api_macros::replaceable]
 fn shoot_crossbow(m: &mut Mob, who: Who, cx: &mut Cx) {
     let Some(t) = cx.w.target_info(who) else {
         return;
@@ -695,6 +701,7 @@ fn shoot_crossbow(m: &mut Mob, who: Who, cx: &mut Cx) {
         1.0,
         pitch,
     ));
+    set_crossbow_charged(m, false);
 }
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ArmPose {
@@ -1038,6 +1045,44 @@ mod tests {
         );
     }
 
+    /// `CrossbowItem.performShooting` empties `CHARGED_PROJECTILES`: `shoot_crossbow`, the
+    /// replaceable `Pillager.performRangedAttack`, uses up the loaded arrow itself, so a mod
+    /// that cancels the shot leaves the crossbow loaded for the one it lets through later.
+    #[test]
+    #[ignore = "daily"]
+    fn the_crossbow_shot_uses_up_the_loaded_arrow() {
+        use crate::mobs::world::{test_player, with_test_world};
+        let mut outcome = None;
+        let ran = with_test_world(&[], |w, types| {
+            let mut world = w.clone();
+            world.player = Some(test_player(Vec3::new(0.5, 64.0, 6.5)));
+            let kind = Arc::new(types.types["minecraft:pillager"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            m.extra
+                .set_main_hand_stack(Some(ItemStack::new("minecraft:crossbow", 1)));
+            set_crossbow_charged(&mut m, true);
+            let mut fixture = crate::health::TestLevel::new(0);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w: &world,
+                level: &mut fixture.level(),
+                events: &mut events,
+            };
+            shoot_crossbow(&mut m, Who::Player, &mut cx);
+            let shot = events
+                .iter()
+                .any(|e| matches!(e, MobEvent::CrossbowShot { .. }));
+            let loaded = m
+                .extra
+                .main_hand_stack()
+                .and_then(|s| s.data())
+                .is_some_and(|d| !d.charged.is_empty());
+            outcome = Some((shot, loaded));
+        });
+        assert!(ran, "vanilla data is missing");
+        assert_eq!(outcome, Some((true, false)));
+    }
+
     /// A shot crossbow keeps its stack; only the loaded arrow goes.
     #[test]
     fn charging_leaves_anything_but_a_crossbow_alone() {
@@ -1181,6 +1226,7 @@ mod tests {
                 }
                 let seen = [sheep.seen(None, &crate::items::Items::empty())];
                 let world = crate::mobs::MobWorld {
+                    side: sunrise_client::motion::dry_side(),
                     others: &seen,
                     ..world
                 };
@@ -1228,6 +1274,7 @@ mod tests {
                 sheep.invisible = invisible;
                 let seen = [sheep.seen(None, &crate::items::Items::empty())];
                 let world = crate::mobs::MobWorld {
+                    side: sunrise_client::motion::dry_side(),
                     others: &seen,
                     ..world
                 };

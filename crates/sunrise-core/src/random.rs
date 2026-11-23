@@ -11,6 +11,19 @@ pub use positional::{
 };
 pub use worldgen::{WorldgenPositional, WorldgenRandom, WorldgenSource, slime_chunk_random};
 
+/// `BlockState.getOffset`: column jitter from `Mth.getSeed(x, 0, z)`.
+/// Limits are finite and nonnegative, validated by the owning data boundary.
+pub fn column_offset((horizontal, vertical): (f32, f32), x: i32, z: i32) -> [f64; 3] {
+    let seed = position_seed(crate::position::BlockPos::new(x, 0, z));
+    let nibble = |shift: u32| ((seed >> shift) & 15) as f32 / 15.0;
+    let h = f64::from(horizontal);
+    [
+        ((f64::from(nibble(0)) - 0.5) * 0.5).clamp(-h, h),
+        (f64::from(nibble(4)) - 1.0) * f64::from(vertical),
+        ((f64::from(nibble(8)) - 0.5) * 0.5).clamp(-h, h),
+    ]
+}
+
 /// Call sites of `LegacyRandom` draws, recorded while switched on (the
 /// counterpart of the mob AI oracle's `TracingRandom`).
 #[cfg(feature = "rng-trace")]
@@ -151,6 +164,11 @@ impl LegacyRandom {
     /// The 48-bit generator state (differential tests compare it).
     pub fn state(&self) -> u64 {
         self.state
+    }
+
+    /// The cached second `nextGaussian` value, if one is pending.
+    pub fn cached_gaussian(&self) -> Option<f64> {
+        self.gaussian
     }
 
     fn bits(&mut self, count: u32) -> i32 {

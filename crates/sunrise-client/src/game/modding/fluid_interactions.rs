@@ -175,4 +175,20 @@ impl Game<'_> {
             },
         ))
     }
+
+    /// The open world's fluid interaction table, read for one neighbour and the block below.
+    pub(super) fn fluid_interaction_result(
+        &self,
+        source: mod_api::FluidState,
+        neighbour: sunrise_world::registry::BlockStateId,
+        below: sunrise_world::registry::BlockStateId,
+    ) -> Option<sunrise_world::registry::BlockStateId> {
+        let registry = &self.pack.assets.registry;
+        registry.state(neighbour)?;
+        registry.state(below)?;
+        let source = super::native_block_states::engine_fluid_state(source)?;
+        self.res
+            .behaviours()
+            .fluid_interaction_result(source, neighbour, below)
+    }
 }

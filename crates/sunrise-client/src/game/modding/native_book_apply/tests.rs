@@ -1,4 +1,6 @@
 use super::*;
+use mod_api::__private::game::Fields;
+use mod_api::{Hand, HostTransaction, ItemPlace, ItemResource, MenuSlotPlace, ServerHost};
 use sunrise_client::{
     containers::{BlockEntity, ModBlockEntity, ModMenuType},
     crafting::{Ingredient, Placement},
@@ -12,9 +14,13 @@ fn open_mod_menu(game: &mut Game<'_>) -> ((i32, i32, i32), MenuSnapshot, sync::S
     let pos = (3, 64, 5);
     let kind = Box::leak(Box::new(ModMenuType {
         id: "review:menu",
+        owner: "review",
         slots: 3,
+        player_inventory: true,
         data_slots: 0,
+        owned_slots: None,
         results: vec![2],
+        inputs: Vec::new(),
         crafting: None,
         links: None,
     }));
@@ -52,11 +58,14 @@ fn open_mod_menu(game: &mut Game<'_>) -> ((i32, i32, i32), MenuSnapshot, sync::S
             sent: vec![],
             drag: None,
             sent_data: vec![],
-            hidden: vec![],
+            reported_unsent_data_len: None,
+            blockless_data: Vec::new(),
+
             mod_type: Some(kind),
             craft: None,
             links: vec![],
             asks_still_valid: false,
+            opening_item: None,
         });
     });
     let before = game.mod_book_menu_snapshot(12, 1, "review:menu").unwrap();
@@ -115,34 +124,36 @@ fn actual_game_stage_refuses_nested_frame_and_mutated_actor() {
             &layout,
         )
         .unwrap();
-        let root = game.transaction_open();
-        assert!(game.mod_book_placement_context(&before, &selection));
-        let child = game.transaction_open();
-        assert_eq!(
-            game.stage_mod_book_place(&before, &selection, &plan, false),
-            Err(sync::Refusal::Changed)
-        );
-        game.transaction_close(&child, false);
-        assert!(game.mod_book_placement_context(&before, &selection));
-        game.lan
-            .as_mut()
-            .unwrap()
-            .hub
-            .guests
-            .update(0, |g| g.health = 1.0);
-        assert_eq!(
-            game.stage_mod_book_place(&before, &selection, &plan, false),
-            Err(sync::Refusal::Changed)
-        );
-        assert_eq!(
-            game.world.block_entities.get(&pos).unwrap().slots()[0]
-                .as_ref()
+        game.storage_scope(|game, _| {
+            assert!(game.mod_book_placement_context(&before, &selection));
+            game.storage_scope(|game, _| {
+                assert_eq!(
+                    game.stage_mod_book_place(&before, &selection, &plan, false),
+                    Err(sync::Refusal::Changed)
+                );
+                ((), false)
+            });
+            assert!(game.mod_book_placement_context(&before, &selection));
+            game.lan
+                .as_mut()
                 .unwrap()
-                .count,
-            1
-        );
-        assert!(game.world.modified.is_empty());
-        game.transaction_close(&root, false);
+                .hub
+                .guests
+                .update(0, |g| g.health = 1.0);
+            assert_eq!(
+                game.stage_mod_book_place(&before, &selection, &plan, false),
+                Err(sync::Refusal::Changed)
+            );
+            assert_eq!(
+                game.world.block_entities.get(&pos).unwrap().slots()[0]
+                    .as_ref()
+                    .unwrap()
+                    .count,
+                1
+            );
+            assert!(game.world.modified.is_empty());
+            ((), false)
+        });
     });
 }
 #[test]
@@ -158,20 +169,21 @@ fn a_mod_layout_without_a_listening_part_refuses_and_changes_nothing() {
             ),
         )
         .unwrap();
-        let root = game.transaction_open();
-        assert_eq!(
-            game.stage_mod_book_place(&before, &selection, &plan, false),
-            Err(sync::Refusal::Unsupported)
-        );
-        assert_eq!(
-            game.world.block_entities.get(&pos).unwrap().slots()[0]
-                .as_ref()
-                .unwrap()
-                .count,
-            1
-        );
-        assert!(game.world.modified.is_empty());
-        game.transaction_close(&root, false);
+        game.storage_scope(|game, _| {
+            assert_eq!(
+                game.stage_mod_book_place(&before, &selection, &plan, false),
+                Err(sync::Refusal::Unsupported)
+            );
+            assert_eq!(
+                game.world.block_entities.get(&pos).unwrap().slots()[0]
+                    .as_ref()
+                    .unwrap()
+                    .count,
+                1
+            );
+            assert!(game.world.modified.is_empty());
+            ((), false)
+        });
     });
 }
 #[test]
@@ -221,6 +233,15 @@ fn place_recipe_in_grid_places_once_per_click() {
     });
 }
 
+struct BackedPack;
+#[mod_api::__subscriptions]
+impl mod_api::Hooks for BackedPack {
+    fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+        let item = r.item_key("minecraft:shulker_box");
+        r.item_container(&item, |_: &dyn mod_api::Host| Some(27));
+    }
+}
+
 /// The menu's part: it places the clicked recipe in a one-slot grid, as a mod would.
 struct Placer;
 #[mod_api::sunrise_part]
@@ -245,17 +266,41 @@ impl mod_api::Hooks for PlacerMod {
 #[test]
 #[ignore = "daily"]
 fn a_listening_part_places_the_recipe_through_the_real_stage() {
-    let mods: mod_api::Mods = vec![mod_api::ModEntry::new("review", Box::new(PlacerMod))].into();
+    let mods: mod_api::Mods = vec![
+        mod_api::ModEntry::new("backed_pack_fixture", Box::new(BackedPack)),
+        mod_api::ModEntry::new("review", Box::new(PlacerMod)),
+    ]
+    .into();
     crate::game::api_values::install_parts(&mods).unwrap();
     mod_platform::testing::with_mods(mods, || {
         super::super::native_guest_turn_tests::with_guests(|game| {
-            let (pos, _, selection) = open_mod_menu(game);
+            let (_, opened, selection) = open_mod_menu(game);
             game.lan.as_mut().unwrap().hub.guests.update(0, |g| {
+                let open = g.menu.as_mut().unwrap();
+                open.slots = Slots::Native;
+                open.pos = None;
+                g.native_menu = vec![None; open.size];
+                g.inventory[0] = Some(sunrise_client::items::ItemStack::new(
+                    "minecraft:shulker_box",
+                    1,
+                ));
                 g.inventory[9] = Some(sunrise_client::items::ItemStack::new(
                     "minecraft:iron_ore",
                     3,
                 ));
             });
+            game.player_menu_opening(opened.conn);
+            let menu = game.menu(opened.uuid, opened.window).unwrap();
+            let places = (0..3)
+                .map(|slot| MenuSlotPlace::HeldItem {
+                    hand: Hand::Main,
+                    slot,
+                })
+                .collect();
+            assert_eq!(
+                game.player_back_mod_menu_slots(menu.fields().player, 1, places),
+                Ok(())
+            );
             let before = game.mod_book_menu_snapshot(12, 1, "review:menu").unwrap();
             let plan = MenuPlacement::for_mod(
                 "review:menu".into(),
@@ -265,24 +310,93 @@ fn a_listening_part_places_the_recipe_through_the_real_stage() {
                 ),
             )
             .unwrap();
-            let root = game.transaction_open();
+            game.storage_scope(|game, _| {
+                assert_eq!(
+                    game.stage_mod_book_place(&before, &selection, &plan, false),
+                    Ok(PostPlace::Nothing)
+                );
+                ((), true)
+            });
+            let placed = {
+                let host: &mut dyn ServerHost = game;
+                ItemPlace::MenuSlot { menu, slot: 0 }
+                    .with_stack(host, |stack| stack.project())
+                    .flatten()
+                    .unwrap()
+            };
             assert_eq!(
-                game.stage_mod_book_place(&before, &selection, &plan, false),
-                Ok(PostPlace::Nothing)
+                placed.item(),
+                mod_api::__private::item_key("minecraft:iron_ore").unwrap()
             );
-            game.transaction_close(&root, true);
-            let placed = game.world.block_entities.get(&pos).unwrap().slots()[0]
-                .clone()
-                .unwrap();
-            assert_eq!(
-                (placed.item.to_string(), placed.count),
-                ("minecraft:iron_ore".to_owned(), 1)
-            );
+            assert_eq!(placed.count(), 1);
             let left = game.lan.as_ref().unwrap().hub.guest(12).unwrap().inventory[9]
                 .as_ref()
                 .unwrap()
                 .count;
             assert_eq!(left, 2);
+
+            let mut stale_contents = game.mod_book_menu_snapshot(12, 1, "review:menu").unwrap();
+            let nested = ItemPlace::Nested {
+                parent: Box::new(ItemPlace::PlayerHand {
+                    player: stale_contents.uuid,
+                    hand: Hand::Main,
+                }),
+                slot: 0,
+            };
+            let dirt =
+                mod_api::ItemStack::new(mod_api::__private::item_key("minecraft:dirt").unwrap(), 1)
+                    .unwrap();
+            let dirt = ItemResource::of(&dirt);
+            let host: &mut dyn ServerHost = game;
+            assert_eq!(
+                host.transaction(|host, tx| {
+                    let old = nested.resource(host).ok_or(())?;
+                    let count = nested.amount(host);
+                    if nested.extract(host, tx, &old, count) != Ok(count)
+                        || nested.insert(host, tx, &dirt, 1) != Ok(1)
+                    {
+                        return Err(());
+                    }
+                    Ok(())
+                }),
+                Ok(())
+            );
+            stale_contents.inventory = game
+                .lan
+                .as_ref()
+                .unwrap()
+                .hub
+                .guest(12)
+                .unwrap()
+                .inventory
+                .clone();
+            game.storage_scope(|game, _| {
+                assert_eq!(
+                    game.stage_mod_book_place(&stale_contents, &selection, &plan, false),
+                    Err(sync::Refusal::Changed)
+                );
+                ((), false)
+            });
+
+            let stale_identity = game.mod_book_menu_snapshot(12, 1, "review:menu").unwrap();
+            let places = [4, 1, 2]
+                .into_iter()
+                .map(|slot| MenuSlotPlace::HeldItem {
+                    hand: Hand::Main,
+                    slot,
+                })
+                .collect();
+            assert_eq!(
+                game.player_back_mod_menu_slots(menu.fields().player, 1, places),
+                Ok(())
+            );
+            game.storage_scope(|game, _| {
+                assert_eq!(
+                    game.stage_mod_book_place(&stale_identity, &selection, &plan, false),
+                    Err(sync::Refusal::Changed)
+                );
+                ((), false)
+            });
         });
     });
 }

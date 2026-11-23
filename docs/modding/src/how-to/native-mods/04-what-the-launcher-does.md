@@ -9,6 +9,7 @@ sunrise-launcher native-build path/to/mod --instance INSTANCE --trust-native-cod
 
 The compile steps below are `cargo sunrise-mod native-build`'s too, the tool every SDK ships for each host
 ([`native-build`](../../reference/sdk/08-native-build.md)).
+This is the player's side: a developer builds and runs with `cargo sunrise-mod build` and `run` ([Your first native mod](../../start/first-mod.md#5-build-against-the-prebuilt-game)).
 
 Omit the folder to build the instance's enabled native mods. The launcher keeps the instance on
 its pinned Sunrise commit; `--update` selects a newer installed base and rebuilds the mods against

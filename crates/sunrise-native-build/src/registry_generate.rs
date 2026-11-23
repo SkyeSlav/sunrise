@@ -4,8 +4,10 @@ use crate::rust::Toolchain;
 use std::{
     collections::BTreeSet,
     fs,
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
+use sunrise_mod_package::native_route::PACKAGES;
 
 /// Copies only inert manifests. Source files, build scripts and Cargo config never enter it.
 pub fn stage(bundle: &Bundle, output: &Path) -> Result<(), String> {
@@ -31,14 +33,6 @@ pub fn stage(bundle: &Bundle, output: &Path) -> Result<(), String> {
                 return Err(format!(
                     "{}: [{section}] is refused",
                     manifest_path.display()
-                ));
-            }
-        }
-        for config in [".cargo/config", ".cargo/config.toml"] {
-            if input.join(config).exists() {
-                return Err(format!(
-                    "{}: Cargo source configuration is refused",
-                    input.display()
                 ));
             }
         }
@@ -85,13 +79,7 @@ pub fn rewrite_dependencies(
     table: &mut toml::Table,
     todo: &mut Vec<PathBuf>,
 ) -> Result<(), String> {
-    for kind in [
-        "dependencies",
-        "dev-dependencies",
-        "build-dependencies",
-        "dev_dependencies",
-        "build_dependencies",
-    ] {
+    for kind in super::crates::DEPENDENCY_KINDS {
         let Some(deps) = table.get_mut(kind).and_then(toml::Value::as_table_mut) else {
             continue;
         };
@@ -99,7 +87,7 @@ pub fn rewrite_dependencies(
         for (key, dep) in deps.iter_mut() {
             let get = |field| dep.get(field).and_then(toml::Value::as_str);
             let package = get("package").unwrap_or(key);
-            if let Some(&(name, _)) = api::PACKAGES.iter().find(|(name, _)| *name == package) {
+            if let Some(&(name, _)) = PACKAGES.iter().find(|(name, _)| *name == package) {
                 api::sdk_source(key, name, dep)?;
                 sdk.push(key.clone());
                 continue;
@@ -130,12 +118,75 @@ pub fn rewrite_dependencies(
     Ok(())
 }
 
+/// The `Cargo.lock` of the game build `revision`, which a mod's lock starts from: kept in the
+/// build's folder, and downloaded from that commit once. A kept file that no longer reads as a
+/// lock is downloaded again.
+pub fn game_lock(revision: &str) -> Result<String, String> {
+    let kept = super::root()
+        .join("game-lock")
+        .join(format!("{revision}.lock"));
+    if let Ok(text) = fs::read_to_string(&kept)
+        && super::registry_lock::RegistryLock::parse(&text).is_ok()
+    {
+        crate::host::mark_used(&kept)?;
+        return Ok(text);
+    }
+    let url = format!(
+        "{}/{revision}/Cargo.lock",
+        sunrise_addresses::GAME_SOURCE_FILES
+    );
+    let unavailable = |error: String| {
+        crate::host::trf(
+            "The mod's lock starts from the Cargo.lock of its game build, {revision}, which could not be downloaded: {error}. To lock without the network, put that file at {path}.",
+            &[
+                ("revision", revision),
+                ("error", &error),
+                ("path", &kept.display().to_string()),
+            ],
+        )
+    };
+    let mut text = String::new();
+    // One byte past the limit shows an answer that is too large, where a cut one could still parse.
+    crate::host::get(&url)
+        .map_err(unavailable)?
+        .take(GAME_LOCK_LIMIT + 1)
+        .read_to_string(&mut text)
+        .map_err(|e| unavailable(e.to_string()))?;
+    if text.len() as u64 > GAME_LOCK_LIMIT {
+        return Err(unavailable("the answer is too large to be a lock".into()));
+    }
+    super::registry_lock::RegistryLock::parse(&text).map_err(unavailable)?;
+    let folder = kept.parent().expect("a file in the build's folder");
+    fs::create_dir_all(folder).map_err(|e| e.to_string())?;
+    let mut pending = tempfile::NamedTempFile::new_in(folder).map_err(|e| e.to_string())?;
+    pending
+        .write_all(text.as_bytes())
+        .map_err(|e| e.to_string())?;
+    pending.persist(&kept).map_err(|e| e.to_string())?;
+    crate::host::mark_used(&kept)?;
+    Ok(text)
+}
+
+/// More than any game lock holds; a larger answer is not one.
+const GAME_LOCK_LIMIT: u64 = 16 << 20;
+
 /// The mod's registry pins resolved with the toolchain `rust` gives, once the mod's inputs passed.
+/// Resolution starts from `game`, the `Cargo.lock` of the mod's game build: a package the game
+/// also locks keeps the game's version, so mods made for one build agree on those packages, and
+/// only the mod's own packages take the newest version that fits. `game` is asked for the lock of
+/// the build the mod pins.
 pub fn generate<T: Toolchain>(
     rust: impl FnOnce() -> Result<T, String>,
+    game: impl FnOnce(&str) -> Result<String, String>,
     bundle: &Bundle,
     update: bool,
 ) -> Result<(), String> {
+    let native = bundle.manifest.native.as_ref().ok_or_else(|| {
+        crate::host::trf(
+            "{path} is not a native mod.",
+            &[("path", &bundle.dir.display().to_string())],
+        )
+    })?;
     // Project owns the original API declaration and source-policy boundary.
     api::Project::read(bundle).map_err(|e| e.to_string())?;
     let destination = bundle.dir.join("Cargo.lock");
@@ -144,16 +195,22 @@ pub fn generate<T: Toolchain>(
             "Cargo.lock already exists; use --update-lock to replace its pins explicitly".into(),
         );
     }
+    fs::create_dir_all(super::root()).map_err(|e| e.to_string())?;
     let work = tempfile::tempdir_in(super::root()).map_err(|e| e.to_string())?;
     stage(bundle, work.path())?;
+    let seed = super::registry_lock::RegistryLock::parse(&game(&native.sunrise)?)?;
     let rust = rust()?;
-    let command = super::cargo(&rust, work.path(), "generate-lockfile");
-    super::run(command, "Resolving registry dependency pins", |_| {})?;
-    let text = super::read_lock(work.path())?;
-    super::registry_lock::RegistryLock::parse(&text)?;
+    let text = super::registry_resolve::resolve(work.path(), &seed, &seed, None, |subcommand| {
+        super::cargo(&rust, work.path(), subcommand)
+    })
+    .map_err(|error| {
+        crate::host::trf(
+            "{mod}: could not write Cargo.lock.\n{error}",
+            &[("mod", &bundle.manifest.id), ("error", &error)],
+        )
+    })?;
     // Refusals and resolution errors above never mutate the existing lock.
     let mut pending = tempfile::NamedTempFile::new_in(&bundle.dir).map_err(|e| e.to_string())?;
-    use std::io::Write;
     pending
         .write_all(text.as_bytes())
         .map_err(|e| e.to_string())?;
@@ -180,8 +237,15 @@ mod tests {
         let output = tempfile::tempdir().unwrap();
         let bundle = fixture(input.path());
         fs::write(input.path().join("build.rs"), "panic!(\"do not run\");").unwrap();
+        fs::create_dir_all(input.path().join(".cargo")).unwrap();
+        fs::write(
+            input.path().join(".cargo/config.toml"),
+            "[source.crates-io]\nreplace-with='local'\n",
+        )
+        .unwrap();
         let before = fs::read(input.path().join("Cargo.toml")).unwrap();
         stage(&bundle, output.path()).unwrap();
+        assert!(!output.path().join(".cargo").exists());
         let generated = fs::read_to_string(output.path().join("Cargo.toml")).unwrap();
         assert!(!generated.contains("sunrise-mod-api"));
         assert!(generated.contains("itoa"));
@@ -226,9 +290,14 @@ mod tests {
             panic!("no toolchain before the refusal")
         };
         assert!(
-            generate(unreached, &bundle, false)
-                .unwrap_err()
-                .contains("--update-lock")
+            generate(
+                unreached,
+                |_| panic!("no game lock before the refusal"),
+                &bundle,
+                false
+            )
+            .unwrap_err()
+            .contains("--update-lock")
         );
         for extra in [
             "[patch.crates-io]\nitoa={path='outside'}\n",
@@ -275,5 +344,176 @@ mod tests {
                 .unwrap_err()
                 .contains("outside the mod")
         );
+    }
+
+    struct GameSeedFixture {
+        input: tempfile::TempDir,
+        bundle: Bundle,
+        game: String,
+        toolchain: crate::rust::Unpacked,
+    }
+
+    fn game_seed_fixture() -> GameSeedFixture {
+        let input = tempfile::tempdir().unwrap();
+        let vendor = input.path().join("vendor");
+        let bundle = fixture(input.path());
+        for (name, version, dependency) in [
+            ("zipish", "1.0.0", "getrandom='0.4'"),
+            ("zipish", "1.0.1", "getrandom='=0.4.4'"),
+            ("getrandom", "0.4.3", "libc='0.2'"),
+            ("getrandom", "0.4.4", "libc='0.2'"),
+            ("libc", "0.2.190", ""),
+            ("libc", "0.2.191", "[features]\nnew_api=[]"),
+            ("libc", "0.3.0", ""),
+            ("unused", "1.0.0", ""),
+        ] {
+            let folder = vendor.join(format!("{name}-{version}"));
+            fs::create_dir_all(folder.join("src")).unwrap();
+            fs::write(folder.join("src/lib.rs"), "").unwrap();
+            fs::write(
+                folder.join("Cargo.toml"),
+                format!(
+                    "[package]\nname='{name}'\nversion='{version}'\n[dependencies]\n{dependency}\n"
+                ),
+            )
+            .unwrap();
+            fs::write(
+                folder.join(".cargo-checksum.json"),
+                format!(r#"{{"package":"{}","files":{{}}}}"#, "a".repeat(64)),
+            )
+            .unwrap();
+        }
+        fs::write(
+            input.path().join("Cargo.toml"),
+            "[package]\nname='fixture'\nversion='0.1.0'\n[dependencies]\nsunrise-mod-api={ path='.sunrise/sdk/api/crates/sunrise-mod-api' }\nzipish='1'\nother-libc={package='libc',version='0.3'}\n",
+        )
+        .unwrap();
+        let package = |name: &str, version: &str, dependencies: &str| {
+            format!(
+                "[[package]]\nname = \"{name}\"\nversion = \"{version}\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"{}\"\ndependencies = [{dependencies}]\n",
+                "a".repeat(64)
+            )
+        };
+        // The game's own crate and a package only the game uses stay out of the mod's lock.
+        let game = format!(
+            "version = 4\n[[package]]\nname = \"game\"\nversion = \"1.0.0\"\ndependencies = [\"getrandom\", \"unused\"]\n{}{}{}",
+            package("getrandom", "0.4.3", "\"libc\""),
+            package("libc", "0.2.190", ""),
+            package("unused", "1.0.0", "")
+        );
+        let sysroot = std::process::Command::new("rustc")
+            .args(["--print", "sysroot"])
+            .output()
+            .unwrap()
+            .stdout;
+        let host = std::process::Command::new("rustc")
+            .args(["--print", "host-tuple"])
+            .output()
+            .unwrap()
+            .stdout;
+        let toolchain = crate::rust::Unpacked {
+            dir: String::from_utf8(sysroot).unwrap().trim().into(),
+            target: String::from_utf8(host).unwrap().trim().into(),
+            cargo_home: input.path().join("cargo-home"),
+            cargo_config: vec![
+                "net.offline=true".into(),
+                "source.crates-io.replace-with='fixture'".into(),
+                format!("source.fixture.directory='{}'", vendor.display()),
+            ],
+            c_bin: None,
+        };
+        GameSeedFixture {
+            input,
+            bundle,
+            game,
+            toolchain,
+        }
+    }
+
+    /// A mod's own package needs packages the game locks: the lock gives the game's version of
+    /// each, not the newest, and a build's check takes it. A different semver slot is still free.
+    #[test]
+    #[ignore = "daily"]
+    fn a_mods_lock_starts_from_the_games_versions() {
+        use crate::registry_lock::RegistryLock;
+        let GameSeedFixture {
+            input,
+            bundle,
+            game,
+            toolchain,
+        } = game_seed_fixture();
+        generate(|| Ok(toolchain), |_| Ok(game.clone()), &bundle, false).unwrap();
+        let text = fs::read_to_string(input.path().join("Cargo.lock")).unwrap();
+        let pins = RegistryLock::parse(&text).unwrap();
+        let locked: Vec<_> = pins
+            .packages
+            .keys()
+            .map(|id| format!("{} {}", id.name, id.version))
+            .collect();
+        assert_eq!(
+            locked,
+            [
+                "getrandom 0.4.3",
+                "libc 0.2.190",
+                "libc 0.3.0",
+                "zipish 1.0.0"
+            ],
+            "{text}"
+        );
+        let mut allowed = RegistryLock::parse(&game).unwrap();
+        allowed.extend(&pins).unwrap();
+        allowed.check_pins(&pins).unwrap();
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_requirement_that_moves_a_game_pin_leaves_the_old_lock_untouched() {
+        let GameSeedFixture {
+            input,
+            bundle,
+            game,
+            toolchain,
+        } = game_seed_fixture();
+        let manifest = input.path().join("Cargo.toml");
+        let original = fs::read_to_string(&manifest).unwrap();
+        let older_parent = original.replace("zipish='1'", "zipish='=1.0.0'");
+        let lock = input.path().join("Cargo.lock");
+        generate(
+            || Ok(toolchain.clone()),
+            |_| Ok(game.clone()),
+            &bundle,
+            false,
+        )
+        .unwrap();
+        let old = fs::read(&lock).unwrap();
+        for (cargo, expected) in [
+            (
+                format!(
+                    "{older_parent}\n[target.'cfg(unix)'.build-dependencies]\nnewer={{package='libc',version='=0.2.191'}}\n"
+                ),
+                ["libc", "0.2.190", "=0.2.191", "fixture v0.1.0"],
+            ),
+            (
+                original.replace("zipish='1'", "zipish='=1.0.1'"),
+                ["getrandom", "0.4.3", "=0.4.4", "zipish v1.0.1"],
+            ),
+            (
+                format!("{older_parent}\nlibc={{version='0.2',features=['new_api']}}\n"),
+                ["libc", "0.2.190", "0.2.191", "`new_api`"],
+            ),
+        ] {
+            fs::write(&manifest, cargo).unwrap();
+            let error = generate(
+                || Ok(toolchain.clone()),
+                |_| Ok(game.clone()),
+                &bundle,
+                true,
+            )
+            .unwrap_err();
+            for detail in expected.into_iter().chain(["registry_fixture"]) {
+                assert!(error.contains(detail), "{error}");
+            }
+            assert_eq!(fs::read(&lock).unwrap(), old);
+        }
     }
 }

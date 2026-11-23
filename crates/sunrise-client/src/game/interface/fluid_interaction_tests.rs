@@ -120,6 +120,40 @@ fn a_declared_interaction_runs_after_vanillas_and_a_veto_stops_it() {
         );
         assert_eq!(meet_with(game, 30, flowing_lava, honey), glass);
 
+        // The pure read answers what one cell becomes beside one neighbour, from the same table
+        // and with no world: nothing is placed and the hook is not asked.
+        let read = |game: &super::Game<'_>, liquid, beside, below| {
+            let source = game.res.behaviours().fluid(liquid);
+            let source = super::native_world_read::api_fluid_state(source).unwrap();
+            game.fluid_interaction_result(source, beside, below)
+        };
+        let soul_soil = state("minecraft:soul_soil");
+        let blue_ice = state("minecraft:blue_ice");
+        assert_eq!(read(game, lava, water, stone), Some(obsidian));
+        assert_eq!(read(game, flowing_lava, water, stone), Some(cobblestone));
+        assert_eq!(
+            read(game, lava, blue_ice, soul_soil),
+            Some(state("minecraft:basalt"))
+        );
+        assert_eq!(read(game, lava, blue_ice, stone), None);
+        assert_eq!(read(game, lava, honey, stone), Some(glass));
+        assert_eq!(read(game, lava, stone, stone), None);
+        assert_eq!(read(game, water, lava, stone), None, "water has no entries");
+        let waterlogged = registry
+            .resolve(&sunrise_world::chunk::BlockState {
+                name: "minecraft:oak_slab".into(),
+                properties: [("waterlogged".to_string(), "true".to_string())].into(),
+            })
+            .unwrap();
+        assert_eq!(read(game, lava, waterlogged, stone), Some(obsidian));
+        let unknown = sunrise_world::registry::BlockStateId(u32::MAX);
+        let source = super::native_world_read::api_fluid_state(game.res.behaviours().fluid(lava));
+        assert_eq!(
+            game.fluid_interaction_result(source.unwrap(), unknown, stone),
+            None,
+            "a state the registry does not hold is no interaction"
+        );
+
         // The hook vetoes what the table decided: nothing is written.
         VETO.store(true, Ordering::Relaxed);
         assert_eq!(meet(game, 10, honey), lava);

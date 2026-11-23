@@ -72,18 +72,22 @@ impl Game<'_> {
         }
         self.award_stat("used", &stack.item, 1);
     }
-    pub(super) fn consume_held(&mut self) {
+    /// `BlockItem.place`'s shrink of the stack it placed, and
+    /// `SolidBucketItem.useOn`'s `BucketItem.getEmptySuccessItem`: a placed
+    /// powder snow bucket leaves an empty bucket in that hand, unless the player
+    /// has infinite materials. The client predicts the same as the server does.
+    pub(super) fn consume_placed(&mut self, placed: &ItemStack) {
         if self.creative {
             return;
         }
-        self.edit_block_use_stack(|cell| {
-            if let Some(s) = cell.as_mut() {
-                s.count = s.count.saturating_sub(1);
-                if s.count == 0 {
-                    *cell = None;
-                }
-            }
-        });
+        let slot = self.held_slot();
+        let last = self.stack_in(slot).is_some_and(|stack| stack.count == 1);
+        self.consume_player_slot(slot, 1);
+        if &*placed.item == "minecraft:powder_snow_bucket"
+            && (!last || self.stack_in(slot).is_none())
+        {
+            *self.stack_in_mut(slot) = Some(ItemStack::new("minecraft:bucket", 1));
+        }
     }
     pub(super) fn tick_using(&mut self) {
         let Some(hand) = self.used_hand() else {
@@ -111,7 +115,7 @@ impl Game<'_> {
             return;
         }
         let hand_changed = self.use_hand_changed(slot);
-        if !self.right || hand_changed || self.screen != Screen::Playing {
+        if !self.mapped_key_down("key.use") || hand_changed || self.screen != Screen::Playing {
             self.using = None;
             self.release_used_item(&stack, ticks, hand_changed);
             return;

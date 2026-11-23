@@ -260,8 +260,8 @@ const DIM: f32 = 0.3;
 const WAITING_DIM: f32 = 0.55;
 
 /// The vanilla sprites a tile is drawn with (the F3+F4 game mode switcher's).
-const SLOT_SPRITE: &str = "gui/sprites/gamemode_switcher/slot";
-const SELECTION_SPRITE: &str = "gui/sprites/gamemode_switcher/selection";
+const SLOT_SPRITE: &str = "gamemode_switcher/slot";
+const SELECTION_SPRITE: &str = "gamemode_switcher/selection";
 /// The hotbar's size, to dim it under a small view's dial.
 const HOTBAR: [f32; 2] = [182.0, 22.0];
 
@@ -1076,7 +1076,7 @@ mod tests {
     }
 
     /// A 1280x720 window (and 854x480, and a quarter of a 1708x960 one), GUI scale 4 on
-    /// 1280x720, a small view and a wide splitscreen half.
+    /// 1280x720, a small view and a wide short view.
     const VIEWS: [(f32, f32); 4] = [
         (427.0, 240.0),
         (320.0, 180.0),

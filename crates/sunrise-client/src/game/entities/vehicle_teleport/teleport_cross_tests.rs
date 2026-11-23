@@ -5,7 +5,7 @@ use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_core::position::ChunkPos;
 
-fn game() -> Game<'static> {
+fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -> Game<'a> {
     let root = std::path::PathBuf::from(
         std::env::var_os("SUNRISE_TEST_RESOURCES")
             .expect("set SUNRISE_TEST_RESOURCES to prepared resources"),
@@ -27,7 +27,7 @@ fn game() -> Game<'static> {
     let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
     options.resources = root.clone();
     options.execution_role = execution_role::ExecutionRole::IntegratedServer;
-    let res: &'static _ = Box::leak(Box::new(loaded.resources));
+    let res = &*resources.insert(loaded.resources);
     let mut game = Game::new(
         res,
         loaded.pack,
@@ -59,7 +59,8 @@ fn game() -> Game<'static> {
 #[test]
 #[ignore = "daily"]
 fn tp_moves_a_frame_and_a_painting() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     assert!(game.run_command("summon minecraft:painting 0 2 0 {facing:0b}"));
     assert!(game.run_command("summon minecraft:item_frame 0 2 2 {Facing:3b}"));
     assert!(game.run_command("tp @e[type=minecraft:painting,limit=1] 3 2 0"));
@@ -75,7 +76,8 @@ fn tp_moves_a_frame_and_a_painting() {
 #[test]
 #[ignore = "daily"]
 fn every_entity_kind_follows_a_cross_dimension_tp() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     let back = game.enter_command_level(Dim::Nether);
     assert_eq!(game.dim, Dim::Nether);
     game.world
@@ -155,7 +157,8 @@ fn every_entity_kind_follows_a_cross_dimension_tp() {
 #[test]
 #[ignore = "daily"]
 fn tp_accepts_the_spawnable_border_coordinates() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     assert!(game.run_command("summon minecraft:armor_stand 0.5 2 0.5"));
     for command in [
         "tp @e[type=minecraft:armor_stand,limit=1] -30000000 64 0",

@@ -1,7 +1,7 @@
 //! The engine side of pending children (docs/design/mod-api/pending-children.md):
 //! it constructs the children of a split or a breeding, lends them to `mob_split` and
 //! `baby_entity_spawn` listeners as an engine-owned, ordered list, then freezes, validates and
-//! hands back what is left, once. Native and wasm listeners reach the same arena through
+//! hands back what is left, once. Mod listeners reach the same arena through
 //! the same editor (`native_pending_children`), so a call has the same effect from either.
 //!
 //! Nothing here replays construction or draws randomness: a veto, a stale parent or an invalid
@@ -34,8 +34,12 @@ struct ParentState {
     tame: bool,
 }
 
-fn parent_state(mob: &Mob) -> ParentState {
-    ParentState {
+fn parent_state(game: &Game<'_>, id: u32) -> Option<ParentState> {
+    if game.resident_target_dimension(super::commands::Target::Mob(id)) != Some(game.dim) {
+        return None;
+    }
+    let mob = game.mobs.iter().find(|mob| mob.id == id)?;
+    Some(ParentState {
         kind: mob.kind.id.clone(),
         position: [mob.position.x, mob.position.y, mob.position.z],
         age: mob.extra.age,
@@ -44,7 +48,7 @@ fn parent_state(mob: &Mob) -> ParentState {
         variant2: mob.extra.variant2,
         color: mob.extra.color,
         tame: mob.extra.tame,
-    }
+    })
 }
 
 /// Restores the hook the pending arena was serving when a dispatch ends, even by unwinding.
@@ -59,36 +63,37 @@ impl Drop for HookScope {
 }
 
 impl Game<'_> {
-    /// Lends `initial` to the listeners `fire` calls and returns the children that survive them,
-    /// in order, each with its entity number issued but not yet in any level. Empty means no
-    /// child: a cancel, a list a listener emptied, a trapped wasm listener, a stale parent (one of
-    /// `parents` is gone or no longer in the state the children were built from, or the world or
-    /// dimension changed) or a final child that breaks an invariant. Nothing is recomputed.
+    /// Lends `initial` to the listeners `fire` calls, then issues and applies the accepted list
+    /// inside the action savepoint. Commit callbacks cannot intervene between validation and
+    /// applying the list. Returns `None` for a cancel (including a contained listener panic), a
+    /// list a listener emptied, a stale parent or level, or an invalid final child. A refusal rolls
+    /// back journaled listener writes in the action's level, not construction. Nothing is recomputed.
     ///
     /// `hook` is the hook `fire` dispatches: its listener count ends each listener's leases.
     /// `breeding` selects the one-baby limit and requires every child to be a baby. A child that
     /// already has an entity number keeps its UUID and constructor attachments here, outside the
     /// game's tables, until it joins; children a listener removed or replaced are forgotten, also
     /// when a listener panics, so none leaves state behind.
-    pub(super) fn dispatch_pending_children(
+    pub(super) fn dispatch_pending_children<T>(
         &mut self,
         hook: mod_api::HookId,
         breeding: bool,
         initial: Vec<Mob>,
         parents: &[u32],
         fire: impl FnOnce(&mut Self, &dyn PendingChildrenEdits, &mut bool),
-    ) -> Vec<Mob> {
+        apply: impl FnOnce(&mut Self, Vec<Mob>) -> T,
+    ) -> Option<T> {
         use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
         let capacity = if breeding { 1 } else { SPLIT_CAPACITY };
         let (dim, epoch, resources) = (self.dim, self.lend_epoch(), self.res.clone());
         let before: Vec<(u32, Option<ParentState>)> = parents
             .iter()
-            .map(|&id| (id, self.mobs.iter().find(|m| m.id == id).map(parent_state)))
+            .map(|&id| (id, parent_state(self, id)))
             .collect();
         // A child with a number already published state: take its UUID and, where nothing is
         // bound to it, its constructor attachments back out of the game's tables, so none of
         // it is visible before the child joins.
-        let reserved: Vec<u32> = initial.iter().map(|m| m.id).filter(|&id| id != 0).collect();
+        let mut reserved: Vec<u32> = initial.iter().map(|m| m.id).filter(|&id| id != 0).collect();
         let initial = initial
             .into_iter()
             .map(|mob| {
@@ -114,76 +119,78 @@ impl Game<'_> {
             let lent = self.lent_mobs.borrow();
             (lent.pending.clone(), lent.hook.clone())
         };
-        let _scope = HookScope {
-            previous: hook_cell.replace(Some(hook)),
-            cell: hook_cell.clone(),
-        };
-        let failures = self.wasm_dispatch_failures.clone();
         let run = catch_unwind(AssertUnwindSafe(|| {
-            PendingChildren::run_scoped(
-                &arena,
-                epoch.get(),
-                capacity,
-                initial,
-                |action| {
-                    let editor = Children::new(&*self, action, breeding);
-                    // The baseline: listeners entered from here on end the previous lease.
-                    super::native_pending_children::sync_listener(&arena, &hook_cell);
-                    let failed_before = failures.get();
-                    let mut cancel = false;
-                    fire(self, &editor, &mut cancel);
-                    // A trapped wasm listener leaves its edits behind: none of them may commit.
-                    if failures.get() != failed_before {
-                        return Decision::Failed;
-                    }
-                    // A listener's Host writes ran against the live world: the frozen list is
-                    // only valid if what it was made from still stands.
-                    if self.lend_epoch() != epoch
-                        || self.dim != dim
-                        || before.iter().any(|(id, state)| {
-                            let now = self.mobs.iter().find(|m| m.id == *id).map(parent_state);
-                            now.is_none() || now.as_ref() != state.as_ref()
-                        })
-                    {
-                        return Decision::Stale;
-                    }
-                    if cancel {
-                        // Monotonic: a later reader of the frame sees it cancelled too.
-                        let _ = arena.borrow_mut().cancel(action);
-                        return Decision::Cancel;
-                    }
-                    Decision::Accept
-                },
-                |child| valid_child(&resources, dim, breeding, child),
-            )
-        }));
-        let mut kept = Vec::new();
-        let panic = match run {
-            Ok(Ok(mut frozen)) => {
+            self.storage_transaction(|game, _| {
+                let mut cancel = false;
+                let mut frozen = {
+                    let _scope = HookScope {
+                        previous: hook_cell.replace(Some(hook)),
+                        cell: hook_cell.clone(),
+                    };
+                    PendingChildren::run_scoped(
+                        &arena,
+                        epoch.get(),
+                        capacity,
+                        initial,
+                        |action| {
+                            let editor = Children::new(game, action, breeding);
+                            // The baseline: listeners entered from here on end the previous lease.
+                            super::native_pending_children::sync_listener(&arena, &hook_cell);
+                            let failures = mod_api::runtime::isolated_failures();
+                            fire(game, &editor, &mut cancel);
+                            if mod_api::runtime::isolated_failures() != failures {
+                                cancel = true;
+                            }
+                            if cancel || arena.borrow().is_empty(action) == Ok(true) {
+                                cancel = true;
+                                return Decision::Cancel;
+                            }
+                            if game.lend_epoch() != epoch
+                                || game.dim != dim
+                                || before.iter().any(|(id, state)| {
+                                    let now = parent_state(game, *id);
+                                    now.is_none() || now.as_ref() != state.as_ref()
+                                })
+                            {
+                                return Decision::Stale;
+                            }
+                            Decision::Accept
+                        },
+                        |child| valid_child(&resources, dim, breeding, child),
+                    )
+                    .map_err(|_| ())?
+                };
+                // A cancelled arena finishes successfully with an empty batch; the journal aborts.
+                if cancel {
+                    return Err(());
+                }
+                let mut kept = Vec::new();
                 while frozen
                     .consume_next::<()>(|child| {
-                        kept.push(child);
+                        kept.push(game.issue_pending_child(child));
                         Ok(())
                     })
                     .unwrap_or(false)
                 {}
-                None
-            }
-            Ok(Err(_)) => None,
-            Err(panic) => Some(panic),
-        };
-        // The numbers reserved for children that did not survive; also before a panic resumes.
+                // Keep track until apply returns: if it unwinds, the journal aborts and all the
+                // reservations are retired. A later unwind in commit publication is not a rollback.
+                let published = reserved
+                    .iter()
+                    .copied()
+                    .filter(|id| kept.iter().any(|child| child.id == *id))
+                    .collect::<Vec<_>>();
+                let result = apply(game, kept);
+                reserved.retain(|id| !published.contains(id));
+                Ok(result)
+            })
+        }));
         for id in reserved {
-            if !kept.iter().any(|child| child.mob.id == id) {
-                self.forget_entity(id);
-            }
+            self.forget_entity(id);
         }
-        if let Some(panic) = panic {
-            resume_unwind(panic);
+        match run {
+            Ok(result) => result.ok(),
+            Err(panic) => resume_unwind(panic),
         }
-        kept.into_iter()
-            .map(|child| self.issue_pending_child(child))
-            .collect()
     }
 
     /// The child as an ordinary unjoined mob. A child a mod constructed gets its entity number
@@ -254,7 +261,7 @@ impl Game<'_> {
             super::native_hooks::mob_kind(dying),
             dying.extra.size,
         );
-        let kept = self.dispatch_pending_children(
+        let _ = self.dispatch_pending_children(
             mod_api::HookId::MobSplit,
             false,
             children,
@@ -270,23 +277,25 @@ impl Game<'_> {
                     cancel,
                 });
             },
+            |game, kept| {
+                for child in kept {
+                    game.mobs.push(child);
+                    game.native_mobs_joined(game.mobs.len() - 1, false);
+                }
+            },
         );
-        for child in kept {
-            self.mobs.push(child);
-            self.native_mobs_joined(self.mobs.len() - 1, false);
-        }
     }
 
-    /// `Animal.spawnChildFromBreeding` once `baby` is constructed: lends it to
-    /// `baby_entity_spawn` listeners and returns the baby that remains (the listener's
-    /// replacement when it swapped one in), or `None` when the baby is vetoed.
-    pub(super) fn breed_with_listeners(
+    /// `Animal.spawnChildFromBreeding` once `baby` is constructed: lends it to the listeners and
+    /// applies the remaining baby (or its replacement) before publishing the action's effects.
+    pub(super) fn breed_with_listeners<T>(
         &mut self,
         parent: u32,
         partner: u32,
         player: (Option<u128>, Option<i32>),
         baby: Mob,
-    ) -> Option<Mob> {
+        apply: impl FnOnce(&mut Self, Mob) -> T,
+    ) -> Option<T> {
         let dimension = self.dim.id();
         self.dispatch_pending_children(
             mod_api::HookId::BabyEntitySpawn,
@@ -304,7 +313,7 @@ impl Game<'_> {
                     cancel,
                 });
             },
+            |game, mut kept| apply(game, kept.pop().expect("accepted breeding has one child")),
         )
-        .pop()
     }
 }

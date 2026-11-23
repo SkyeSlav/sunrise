@@ -369,6 +369,18 @@ fn find_end(data: &[u8]) -> Option<usize> {
 /// or empty.
 fn normalize_end(data: &mut [u8]) {
     let Some(end) = find_end(data) else { return };
+    // The Zip64 record and locator sit between the directory and END, so `END - cenlen`
+    // can land inside the directory. Keep the END markers the archive reader needs to find
+    // the real counts. Match `zip`'s `may_be_zip64`: a ZIP32 entry comment can mimic the
+    // locator signature, but it doesn't put a Zip64 marker in the END record.
+    if end >= 20
+        && data[end - 20..end - 16] == *b"PK\x06\x07"
+        && (u16_at(data, end + 10) == u16::MAX
+            || u32_at(data, end + 12) == u32::MAX
+            || u32_at(data, end + 16) == u32::MAX)
+    {
+        return;
+    }
     // The directory's real position and length, as Java derives them; the
     // recorded offset is relative to the archive's start.
     let cenlen = u32_at(data, end + 12) as usize;
@@ -437,12 +449,98 @@ mod tests {
     }
     #[test]
     fn a_file_is_opened_past_end_counts_java_ignores() {
-        let mut bytes = archive();
+        use std::io::Write as _;
+        let body = b"hello hello hello hello";
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file("pack.mcmeta", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"{\"pack\":{}}").unwrap();
+        let commented = zip::write::FullFileOptions::default()
+            .compression_method(CompressionMethod::Deflated)
+            .with_file_comment("PK\u{0006}\u{0007}zip32-entry-note");
+        writer.start_file("a/b.txt", commented).unwrap();
+        writer.write_all(body).unwrap();
+        let mut bytes = writer.finish().unwrap().into_inner();
         let end = bytes.len() - END_HEADER;
+        assert_eq!(&bytes[end - 20..end - 16], b"PK\x06\x07");
         bytes[end + 4..end + 6].fill(0xFF);
         bytes[end + 8..end + 12].fill(0);
         let zip = opened("end-counts", &bytes).unwrap();
-        assert_eq!(zip.read("a/b.txt").unwrap(), b"hello hello hello hello");
+        assert_eq!(zip.read("a/b.txt").unwrap(), body);
+    }
+    /// A pack of more entries than the ZIP32 record counts (CraftEngine's, with its many generated
+    /// files) opens as an archive of its entries, not an empty one: `pack.mcmeta` is read.
+    #[test]
+    fn a_zip64_archive_opens_with_all_its_entries() {
+        use std::io::Write as _;
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options =
+            zip::write::SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        writer.start_file("pack.mcmeta", options).unwrap();
+        writer.write_all(b"{\"pack\":{}}").unwrap();
+        for i in 0..65_537 {
+            writer
+                .start_file(format!("assets/ruby/{i}.json"), options)
+                .unwrap();
+        }
+        let mut bytes = writer.finish().unwrap().into_inner();
+        // As Java's `ZipOutputStream` writes the END record of a Zip64 archive: the directory's real
+        // size and offset (the `zip` crate writes all ones there), the counts all ones.
+        let end = bytes.len() - END_HEADER;
+        let record = end - 76;
+        assert_eq!(bytes[record..record + 4], [0x50, 0x4b, 0x06, 0x06]);
+        let (size, offset) = (
+            bytes[record + 40..record + 48].to_vec(),
+            bytes[record + 48..record + 56].to_vec(),
+        );
+        bytes[end + 12..end + 16].copy_from_slice(&size[..4]);
+        bytes[end + 16..end + 20].copy_from_slice(&offset[..4]);
+        let zip = opened("zip64-open", &bytes).unwrap();
+        assert_eq!(zip.names().count(), 65_538);
+        assert_eq!(zip.read("pack.mcmeta").unwrap(), b"{\"pack\":{}}");
+        let zip = Zip::from_bytes(bytes).unwrap();
+        assert_eq!(zip.read("pack.mcmeta").unwrap(), b"{\"pack\":{}}");
+    }
+    /// A Zip64 archive whose misaligned recount would find an entry (a fake directory header planted where
+    /// `END - cenlen` starts) still opens with all its entries: the Zip64 record's counts are not rewritten.
+    #[test]
+    fn a_zip64_archive_is_not_rewritten_by_a_faked_directory_header() {
+        use std::io::Write as _;
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options =
+            zip::write::SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        // A long entry comment, where the planted header sits: comments are free bytes no reader parses.
+        let commented = zip::write::FullFileOptions::default()
+            .compression_method(CompressionMethod::Stored)
+            .with_file_comment("c".repeat(200));
+        writer.start_file("pack.mcmeta", commented).unwrap();
+        writer.write_all(b"{\"pack\":{}}").unwrap();
+        for i in 0..65_537 {
+            writer
+                .start_file(format!("assets/ruby/{i}.json"), options)
+                .unwrap();
+        }
+        let mut bytes = writer.finish().unwrap().into_inner();
+        let end = bytes.len() - END_HEADER;
+        let record = end - 76;
+        let size = u64::from_le_bytes(bytes[record + 40..record + 48].try_into().unwrap()) as usize;
+        let offset =
+            u64::from_le_bytes(bytes[record + 48..record + 56].try_into().unwrap()) as usize;
+        // As Java writes the END record: the directory's real size and offset, counts all ones.
+        bytes[end + 12..end + 16].copy_from_slice(&(size as u32).to_le_bytes());
+        bytes[end + 16..end + 20].copy_from_slice(&(offset as u32).to_le_bytes());
+        // `END - cenlen`, where the misaligned recount starts: a fake header there, with no fields after it.
+        let planted = end - size;
+        assert!(
+            planted > offset + 57 && planted + 46 < offset + 57 + 200,
+            "planted in the comment"
+        );
+        bytes[planted..planted + 46].fill(0);
+        bytes[planted..planted + 4].copy_from_slice(&[0x50, 0x4b, 0x01, 0x02]);
+        let zip = Zip::from_bytes(bytes).unwrap();
+        assert_eq!(zip.names().count(), 65_538);
+        assert_eq!(zip.read("pack.mcmeta").unwrap(), b"{\"pack\":{}}");
     }
     #[test]
     fn a_file_is_opened_with_equal_nonzero_disk_numbers() {

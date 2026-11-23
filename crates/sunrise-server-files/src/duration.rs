@@ -1,4 +1,4 @@
-//! Moderation durations: `/tempmute` and `/tempban`'s argument, and how long a mute or ban lasts when the
+//! Moderation durations: `/tempmute`'s argument, and how long a mute or ban lasts when the
 //! server tells it.
 
 const MINUTE: i64 = 60_000;

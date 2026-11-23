@@ -3,11 +3,13 @@ use crate::prebuilt::{self, Package, Route};
 use crate::rust::Unpacked;
 use crate::{Target, api, dependencies, library_record, scan_bundles};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 /// The contract this tool speaks: a plan naming another is refused, so a caller never misreads a reply.
-pub const CONTRACT: u32 = 1;
+pub const CONTRACT: u32 = 2;
 
 /// What to build, the first line of standard input.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -31,6 +33,58 @@ pub struct Plan {
     /// Build horizon-mixins from its pinned source instead of downloading its prebuilt release.
     #[serde(default)]
     pub mixins_from_source: bool,
+}
+
+/// What `native-discover` reads: one mod's internals, or its pinned game's build data with its modules applied.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiscoverPlan {
+    /// Must be [`CONTRACT`].
+    pub contract: u32,
+    /// The tool's own folder: the pinned game's source and the discovery caches.
+    pub work: PathBuf,
+    /// The Rust toolchain the mod's SDK was built with.
+    pub toolchain: Unpacked,
+    /// The mod's folder.
+    pub mods: PathBuf,
+    /// Where to copy `internals.json`, a folder that doesn't exist yet; absent, the reply lists the mod's internals.
+    #[serde(default)]
+    pub catalog: Option<PathBuf>,
+}
+
+/// What `native-lock` reads: the mod whose registry dependencies to pin in its `Cargo.lock`.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LockPlan {
+    /// Must be [`CONTRACT`].
+    pub contract: u32,
+    /// The tool's own folder.
+    pub work: PathBuf,
+    /// The Rust toolchain the mod's SDK was built with.
+    pub toolchain: Unpacked,
+    /// The mod's folder.
+    pub mods: PathBuf,
+    /// Resolve again even when the mod has a lock.
+    #[serde(default)]
+    pub update: bool,
+}
+
+/// What `native-layout` reads: a local prebuilt game (`tools/prebuilt_game.py build`) to check and lay out as an SDK's slices.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LayoutPlan {
+    /// Must be [`CONTRACT`].
+    pub contract: u32,
+    /// The local prebuilt game's folder; it is never changed.
+    pub prebuilt: PathBuf,
+    /// The build id (the game's full commit) it must be.
+    pub build: String,
+    /// The host triple it must be built for.
+    pub host: String,
+    /// `client` or `server`: the side it must be.
+    pub target: TargetName,
+    /// Where to lay out its slices, by links: replaced when it exists.
+    pub out: PathBuf,
 }
 
 /// [`Target`] as a plan names it.
@@ -76,9 +130,83 @@ pub enum Event {
         records: Vec<library_record::Library>,
         /// The mods compiled, in dependency order.
         mods: Vec<String>,
+        /// Each compiled mod's `[[internals]]`, every absent hash taken from the SDK's catalog: the build record's form.
+        internals: BTreeMap<String, serde_json::Value>,
+        /// The horizon-mixins revision the build ran.
+        mixins: String,
+        /// The kept folders and files the build used, for the caller's cache to count as used.
+        used: Vec<PathBuf>,
     },
     /// It didn't: the error as the build log ends with it.
-    Failed { error: String },
+    Failed {
+        error: String,
+        /// The mod the error is that mod's own, and how: the one a caller leaves out next time.
+        blame: Option<Blame>,
+        /// The kept folders and files the build used before it stopped.
+        used: Vec<PathBuf>,
+    },
+}
+
+/// The mod a failed build stops at.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Blame {
+    #[serde(rename = "mod")]
+    pub mod_id: String,
+    pub kind: BlameKind,
+}
+
+/// How a mod stopped a build.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BlameKind {
+    /// Its own library didn't compile.
+    Compile,
+    /// It has a build script, which a prebuilt build refuses.
+    BuildScript,
+    /// It asks for Cargo features, which a prebuilt build refuses.
+    Features,
+}
+
+/// What the build used of its kept folders, for the events.
+static USED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Notes that the build used `path`: the tool's [`crate::host::Host::mark_used`].
+pub fn note_used(path: &Path) -> Result<(), String> {
+    USED.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(path.to_owned());
+    Ok(())
+}
+
+fn take_used() -> Vec<PathBuf> {
+    let mut used = std::mem::take(
+        &mut *USED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+    used.sort();
+    used.dedup();
+    used
+}
+
+/// The mod among `ids` that `error` blames by name, as the build log says it.
+fn blame(error: &str, ids: &[String]) -> Option<Blame> {
+    ids.iter().find_map(|id| {
+        let kind = if error.contains(&format!("{} failed (", prebuilt::compiling(id))) {
+            BlameKind::Compile
+        } else if error.contains(&prebuilt::Refusal::BuildScript { mod_id: id.clone() }.to_string())
+        {
+            BlameKind::BuildScript
+        } else if error.contains(&prebuilt::Refusal::Features { mod_id: id.clone() }.to_string()) {
+            BlameKind::Features
+        } else {
+            return None;
+        };
+        Some(Blame {
+            mod_id: id.clone(),
+            kind,
+        })
+    })
 }
 
 /// Why the first line of standard input isn't a plan this tool builds.
@@ -105,6 +233,11 @@ impl std::fmt::Display for PlanError {
 /// Reads the plan from the first line of `input`. The contract is checked first, so a plan of another contract is
 /// refused for that and never for a field this contract doesn't have.
 pub fn read_plan(input: &mut dyn BufRead) -> Result<Plan, PlanError> {
+    read_line(input)
+}
+
+/// Reads one line of `input` as a `T` of this contract: [`read_plan`] for `native-build`, and `native-check`'s plan.
+pub fn read_line<T: serde::de::DeserializeOwned>(input: &mut dyn BufRead) -> Result<T, PlanError> {
     let mut line = String::new();
     input
         .read_line(&mut line)
@@ -134,10 +267,12 @@ pub fn emit(out: &mut dyn Write, event: &Event) -> Result<(), String> {
 pub fn run(plan: &Plan, input: &mut dyn BufRead, out: &mut dyn Write) -> Result<(), String> {
     crate::mixins_from_source(plan.mixins_from_source);
     let events = std::cell::RefCell::new(out);
+    let ids = std::cell::RefCell::new(Vec::new());
     let built = compile(
         plan,
         &|event| emit(&mut **events.borrow_mut(), &event),
         input,
+        &ids,
     );
     let out = events.into_inner();
     match built {
@@ -146,7 +281,9 @@ pub fn run(plan: &Plan, input: &mut dyn BufRead, out: &mut dyn Write) -> Result<
             emit(
                 out,
                 &Event::Failed {
+                    blame: blame(&error, &ids.borrow()),
                     error: error.clone(),
+                    used: take_used(),
                 },
             )?;
             Err(error)
@@ -154,17 +291,7 @@ pub fn run(plan: &Plan, input: &mut dyn BufRead, out: &mut dyn Write) -> Result<
     }
 }
 
-fn compile(
-    plan: &Plan,
-    say: &dyn Fn(Event) -> Result<(), String>,
-    input: &mut dyn BufRead,
-) -> Result<Event, String> {
-    let work = crate::root();
-    std::fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
-    let side = match Target::from(plan.target) {
-        Target::Client => sunrise_mod_package::manifest::Side::Client,
-        Target::Server => sunrise_mod_package::manifest::Side::Server,
-    };
+fn native_projects(plan: &Plan) -> Result<Vec<crate::Bundle>, String> {
     let mods: Vec<_> = scan_bundles(&plan.mods)?
         .into_iter()
         .filter(|bundle| bundle.manifest.native.is_some())
@@ -172,9 +299,24 @@ fn compile(
     if mods.is_empty() {
         return Err(format!("{} holds no native mod.", plan.mods.display()));
     }
+    Ok(mods)
+}
+
+fn code_links(
+    mods: &[crate::Bundle],
+    target: Target,
+) -> Result<(Vec<Vec<dependencies::Dependency>>, dependencies::Resolution), String> {
+    let side = match target {
+        Target::Client => sunrise_mod_package::manifest::Side::Client,
+        Target::Server => sunrise_mod_package::manifest::Side::Server,
+    };
     let declared: Vec<Vec<dependencies::Dependency>> = mods
         .iter()
-        .map(|bundle| dependencies::from_manifest(&bundle.manifest.dependencies, side))
+        .map(|bundle| {
+            dependencies::build_dependencies(&bundle.manifest, side, |id| {
+                mods.iter().any(|project| project.manifest.id == id)
+            })
+        })
         .collect();
     let inputs: Vec<_> = mods
         .iter()
@@ -189,6 +331,53 @@ fn compile(
         .collect();
     let resolution = dependencies::resolve_links(&inputs)
         .map_err(|error| format!("code link requirements refused: {error}"))?;
+    Ok((declared, resolution))
+}
+
+/// Type-check a developer's staged native projects through the build's own route and SDK
+/// bindings, without producing or installing native libraries.
+pub fn check_rust(plan: &Plan) -> Result<(), String> {
+    let work = crate::root();
+    let mods = native_projects(plan)?;
+    let (declared, resolution) = code_links(&mods, plan.target.into())?;
+    let projects = mods
+        .iter()
+        .map(api::Project::read)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    if let Some(reason) = prebuilt::refusal(&projects) {
+        return Err(reason.to_string());
+    }
+    prebuilt::compile(
+        &plan.toolchain,
+        &plan.package,
+        &work.join("prebuilt-check"),
+        &plan.mods,
+        Route::of(&projects),
+        &projects,
+        &declared,
+        &resolution,
+        Some(&|_| plan.registry == Some(true)),
+        &|_, _, _| {},
+        true,
+    )
+    .map(drop)
+}
+
+fn compile(
+    plan: &Plan,
+    say: &dyn Fn(Event) -> Result<(), String>,
+    input: &mut dyn BufRead,
+    ids: &std::cell::RefCell<Vec<String>>,
+) -> Result<Event, String> {
+    let work = crate::root();
+    std::fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
+    let mods = native_projects(plan)?;
+    *ids.borrow_mut() = mods
+        .iter()
+        .map(|bundle| bundle.manifest.id.clone())
+        .collect();
+    let (declared, resolution) = code_links(&mods, plan.target.into())?;
     let projects: Vec<_> = mods
         .iter()
         .map(api::Project::read)
@@ -226,7 +415,17 @@ fn compile(
                 total,
             });
         },
-    )?;
+        false,
+    )?
+    .expect("build mode returns artifacts");
+    let catalog = crate::internals::Catalog::read(&plan.package.api)?;
+    let mut internals = BTreeMap::new();
+    for &index in &resolution.order {
+        let manifest = &mods[index].manifest;
+        let pinned =
+            serde_json::to_value(catalog.pinned(manifest).internals).map_err(|e| e.to_string())?;
+        internals.insert(manifest.id.clone(), pinned);
+    }
     Ok(Event::Built {
         route: route.name().into(),
         records: library_record::collect(&libraries)?,
@@ -237,6 +436,9 @@ fn compile(
             .iter()
             .map(|&index| mods[index].manifest.id.clone())
             .collect(),
+        internals,
+        mixins: crate::MIXINS_REV.into(),
+        used: take_used(),
     })
 }
 
@@ -289,12 +491,12 @@ mod tests {
 
     #[test]
     fn another_contract_is_refused_for_its_number_before_any_other_field() {
-        let error = read_plan(&mut "{\"contract\":2}\n".as_bytes()).unwrap_err();
-        assert_eq!(error, PlanError::Contract(2.into()));
+        let error = read_plan(&mut "{\"contract\":1}\n".as_bytes()).unwrap_err();
+        assert_eq!(error, PlanError::Contract(1.into()));
         assert!(
             error
                 .to_string()
-                .starts_with("the plan speaks contract 2; this tool speaks contract 1"),
+                .starts_with("the plan speaks contract 1; this tool speaks contract 2"),
             "{error}"
         );
         let error = read_plan(&mut "{\"contract\":\"1\",\"later\":true}\n".as_bytes()).unwrap_err();
@@ -313,10 +515,21 @@ mod tests {
             },
         )
         .unwrap();
-        emit(&mut out, &Event::Failed { error: "no".into() }).unwrap();
+        emit(
+            &mut out,
+            &Event::Failed {
+                error: "no".into(),
+                blame: Some(Blame {
+                    mod_id: "greeter".into(),
+                    kind: BlameKind::Compile,
+                }),
+                used: vec!["kept".into()],
+            },
+        )
+        .unwrap();
         assert_eq!(
             String::from_utf8(out).unwrap(),
-            "{\"event\":\"mod\",\"id\":\"greeter\",\"done\":1,\"total\":2}\n{\"event\":\"failed\",\"error\":\"no\"}\n"
+            "{\"event\":\"mod\",\"id\":\"greeter\",\"done\":1,\"total\":2}\n{\"event\":\"failed\",\"error\":\"no\",\"blame\":{\"mod\":\"greeter\",\"kind\":\"compile\"},\"used\":[\"kept\"]}\n"
         );
     }
 
@@ -342,7 +555,39 @@ mod tests {
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
-        assert_eq!(lines, [Event::Failed { error }]);
+        assert_eq!(
+            lines,
+            [Event::Failed {
+                error,
+                blame: Some(Blame {
+                    mod_id: "scripted".into(),
+                    kind: BlameKind::BuildScript,
+                }),
+                used: Vec::new(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_failure_blames_the_mod_its_error_names() {
+        let ids = ["alpha".to_owned(), "beta".to_owned()];
+        let compile = format!("{} failed (exit status: 101)", prebuilt::compiling("beta"));
+        assert_eq!(
+            blame(&compile, &ids),
+            Some(Blame {
+                mod_id: "beta".into(),
+                kind: BlameKind::Compile
+            })
+        );
+        let features = prebuilt::Refusal::Features {
+            mod_id: "alpha".into(),
+        }
+        .to_string();
+        assert_eq!(
+            blame(&features, &ids).map(|b| b.kind),
+            Some(BlameKind::Features)
+        );
+        assert_eq!(blame("the linker ran out of memory", &ids), None);
     }
 
     #[test]

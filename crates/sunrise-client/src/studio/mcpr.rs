@@ -13,7 +13,9 @@ use std::{
     io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
-use sunrise_protocol::buf::{Reader, write_varint};
+use sunrise_core::crc32::Crc32;
+use sunrise_core::vanilla_bytes::write_varint;
+use sunrise_protocol::buf::Reader;
 
 /// The most `metaData.json` may inflate to: real files are a few hundred bytes.
 const MAX_METADATA_BYTES: u64 = 1 << 20;
@@ -508,7 +510,7 @@ fn package_stream(
     // Zip64, so a recording past 4 GiB still finishes.
     zip.start_file("recording.tmcpr", options.large_file(true))?;
     let mut input = BufReader::new(File::open(stream)?).take(bytes);
-    let mut checksum = crc32fast::Hasher::new();
+    let mut checksum = Crc32::new();
     let mut copied = 0u64;
     let mut buffer = [0; 64 * 1024];
     loop {
@@ -749,7 +751,7 @@ impl McprReader {
         }
         let mut stream = TemporaryStream::create()?;
         let mut stream_size = 0u64;
-        let mut stream_crc = crc32fast::Hasher::new();
+        let mut stream_crc = Crc32::new();
         let mut buffer = [0; 64 * 1024];
         loop {
             let count = stream_entry.read(&mut buffer)?;
@@ -1142,14 +1144,23 @@ mod tests {
         let mut writer = McprWriter::new(mcpr_path.clone(), meta).unwrap();
         writer.write_packet(0, 0x01, &[10, 20, 30]).unwrap();
         writer.write_packet(50, 0x24, &[40, 50]).unwrap();
-        writer
-            .write_packet(100, 0x1A, &[99, 100, 101, 102])
-            .unwrap();
+        let large_payload: Vec<_> = (0..70_000).map(|i| i as u8).collect();
+        writer.write_packet(100, 0x1A, &large_payload).unwrap();
         writer.write_packet(500, 0x05, &[]).unwrap();
 
         assert_eq!(writer.packet_count(), 4);
         let finished_path = writer.finish(550).unwrap();
         assert_eq!(finished_path, mcpr_path);
+        {
+            let mut zip = zip::ZipArchive::new(File::open(&mcpr_path).unwrap()).unwrap();
+            let member_crc = zip.by_name("recording.tmcpr").unwrap().crc32();
+            let mut recorded_crc = String::new();
+            zip.by_name("recording.tmcpr.crc32")
+                .unwrap()
+                .read_to_string(&mut recorded_crc)
+                .unwrap();
+            assert_eq!(recorded_crc, format!("{member_crc:08x}"));
+        }
 
         let mut reader = McprReader::open(&mcpr_path).unwrap();
         assert_eq!(reader.metadata.server_name, "Studio Test Server");
@@ -1168,7 +1179,7 @@ mod tests {
         let p2 = reader.next_packet().unwrap().unwrap();
         assert_eq!(p2.timestamp_ms, 100);
         assert_eq!(p2.id, 0x1A);
-        assert_eq!(p2.payload, vec![99, 100, 101, 102]);
+        assert_eq!(p2.payload, large_payload);
         let p3 = reader.next_packet().unwrap().unwrap();
         assert_eq!(p3.timestamp_ms, 500);
         assert_eq!(p3.id, 0x05);

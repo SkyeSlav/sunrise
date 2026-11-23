@@ -12,6 +12,29 @@ impl Game<'_> {
         feature: &str,
         pos: [i32; 3],
     ) -> Result<bool, PlaceFeatureRefusal> {
+        self.place_feature_by_id(level, feature, pos, false)
+    }
+
+    /// `PlacedFeature.place` of `placed_feature` at `pos` in the level in place:
+    /// its modifiers from `pos`, then its feature at each position.
+    /// `Ok(false)` when no position remains or every feature invocation reports failure.
+    pub(super) fn level_place_placed_feature(
+        &mut self,
+        level: LevelRef,
+        placed_feature: &str,
+        pos: [i32; 3],
+    ) -> Result<bool, PlaceFeatureRefusal> {
+        self.place_feature_by_id(level, placed_feature, pos, true)
+    }
+
+    /// The refusals and the placement both calls share; `placed` picks the registry.
+    fn place_feature_by_id(
+        &mut self,
+        level: LevelRef,
+        feature: &str,
+        pos: [i32; 3],
+        placed: bool,
+    ) -> Result<bool, PlaceFeatureRefusal> {
         match self.native_level_world_result(level) {
             Err(LevelReadError::Unavailable) => return Err(PlaceFeatureRefusal::Client),
             Err(_) => return Err(PlaceFeatureRefusal::Stale),
@@ -37,15 +60,28 @@ impl Game<'_> {
                 .res
                 .behaviours()
                 .live_features()
-                .is_some_and(|features| features.configured(feature).is_some());
+                .is_some_and(|features| {
+                    if placed {
+                        features.placed(feature).is_some()
+                    } else {
+                        features.configured(feature).is_some()
+                    }
+                });
         if !known {
             return Err(PlaceFeatureRefusal::UnknownFeature);
         }
         let at = sunrise_core::position::BlockPos::new(pos[0], pos[1], pos[2]);
-        let placed = self
-            .with_level(|b, level, ticks| b.place_feature(level, ticks, feature, at))
+        let answer = self
+            .with_level(|b, level, ticks| {
+                if placed {
+                    b.place_placed_feature(level, ticks, feature, at)
+                        .map(|result| result.map_err(|_| PlaceFeatureRefusal::BiomeFilter))
+                } else {
+                    b.place_feature(level, ticks, feature, at).map(Ok)
+                }
+            })
             .ok_or(PlaceFeatureRefusal::UnknownFeature)?;
         let _ = self.process_level_events();
-        Ok(placed)
+        answer
     }
 }

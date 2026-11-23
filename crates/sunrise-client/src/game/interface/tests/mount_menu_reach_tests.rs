@@ -18,8 +18,10 @@ const DONKEY: u32 = 7;
 
 /// A player at `(8.5, 64, 8.5)` with a tamed, chested donkey's menu open, its
 /// box `gap` blocks from the eyes along +x.
-fn game_with_open_donkey(gap: f64) -> Game<'static> {
-    let resources = Box::leak(Box::new(None));
+fn game_with_open_donkey<'a>(
+    resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>,
+    gap: f64,
+) -> Game<'a> {
     let mut game = crate::game::game_tests::tests::server_game(resources);
     game.player =
         Some(PlayerMotion::new(game.motion, Vec3::new(8.5, 64.0, 8.5)).expect("a player"));
@@ -50,7 +52,8 @@ fn game_with_open_donkey(gap: f64) -> Game<'static> {
 #[test]
 #[ignore = "daily"]
 fn a_mount_moved_five_blocks_away_keeps_its_menu_open() {
-    let mut game = game_with_open_donkey(5.0);
+    let mut resources = None;
+    let mut game = game_with_open_donkey(&mut resources, 5.0);
     game.tick_mount_menu();
     assert_eq!(
         game.mount_menu.opened_mob(),
@@ -72,7 +75,8 @@ fn a_mount_moved_five_blocks_away_keeps_its_menu_open() {
 #[test]
 #[ignore = "daily"]
 fn a_mount_past_seven_blocks_closes_its_menu() {
-    let mut game = game_with_open_donkey(7.5);
+    let mut resources = None;
+    let mut game = game_with_open_donkey(&mut resources, 7.5);
     game.tick_mount_menu();
     assert_eq!(
         game.mount_menu.opened_mob(),
@@ -85,8 +89,10 @@ fn a_mount_past_seven_blocks_closes_its_menu() {
 /// A tamed, chested donkey at `(8.5, 64, 8.5)` and a guest whose eyes are
 /// `gap` blocks east of its box (the box's east face is at 8.5 + its half
 /// width, and the eyes sit inside its height).
-fn guest_beside_a_donkey(gap: f64) -> (Game<'static>, Guest) {
-    let resources = Box::leak(Box::new(None));
+fn guest_beside_a_donkey<'a>(
+    resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>,
+    gap: f64,
+) -> (Game<'a>, Guest) {
     let mut game = crate::game::game_tests::tests::server_game(resources);
     let kind = game
         .res
@@ -134,7 +140,8 @@ fn box_face(game: &Game<'_>) -> f64 {
 #[test]
 #[ignore = "daily"]
 fn a_guests_mount_menu_holds_to_its_own_entity_interaction_range_plus_four() {
-    let (game, mut guest) = guest_beside_a_donkey(6.5);
+    let mut resources = None;
+    let (game, mut guest) = guest_beside_a_donkey(&mut resources, 6.5);
     assert!(
         game.lan_mount_valid(&guest, DONKEY),
         "the menu closed 6.5 blocks from the donkey's box"

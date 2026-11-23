@@ -61,7 +61,7 @@ fn with_enchantments(defs: &[(&str, Value)], test: impl FnOnce(&mut super::Game<
         game.world_tables = game
             .stage_world_tables(&stack, false, &resources)
             .unwrap()
-            .0;
+            .tables;
         for (name, _) in defs {
             assert!(
                 game.stations()

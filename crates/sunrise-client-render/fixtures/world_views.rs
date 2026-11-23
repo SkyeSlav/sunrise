@@ -24,11 +24,11 @@ use client::{
     },
 };
 use glam::DVec3;
-use sunrise_client_render as client;
 use std::{
     path::Path,
     sync::{Arc, Mutex},
 };
+use sunrise_client_render as client;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -902,6 +902,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         yaw: 0.0,
         pitch: 0.0,
         fov_degrees: 85.0,
+        cull_fov_degrees: 85.0,
         eye: glam::DVec3::new(8.0, 104.0, 0.5),
         eye_rotation: [0.0, 0.0],
         first_person: true,
@@ -912,6 +913,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         shadow_cache: false,
         distance: 128.0,
         detail_distance: 128.0,
+        shadow_distance: None,
         depth_far: 1000.0,
         underwater: false,
         water_plane: None,
@@ -938,6 +940,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         glint_ticks: 0.0,
         nether_lighting: false,
         entities: &[],
+        explicit_particles: None,
         static_block_entities: &[],
         visible_static_block_entity_sections: &[],
         static_block_entity_stats: Default::default(),
@@ -956,6 +959,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         world_primitives: Default::default(),
         shadow_only: &[],
         celestial: &[],
+        celestial_bodies: &[],
         stars: None,
         hand: &[],
         hand_items: &[],

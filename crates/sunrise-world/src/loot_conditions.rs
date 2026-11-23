@@ -29,26 +29,19 @@ mod tests {
         )
     }
 
-    /// Conditions that report an unknown condition kind as a load error of the
-    /// folder it is evaluated in, so a nested key that got evaluated shows.
-    fn strict() -> LoadConditions {
-        LoadConditions::new(["create"])
-            .with_diagnostics()
-            .with_lookup(std::collections::BTreeMap::new(), |_, _| None)
-    }
-
     fn read(kind: &str, value: Value) -> Value {
         let files = [file(kind, value)];
-        let conditions = strict();
+        let conditions = LoadConditions::new(["create"]);
         let overlay = PackOverlay {
             files: &files,
             conditions: &conditions,
+            ..PackOverlay::default()
         };
         let mut out = HashMap::new();
         overlay_map(&overlay, kind, &mut out);
         // A nested key outside pool entries is never evaluated: its unknown
         // condition leaves no diagnostic.
-        assert_eq!(conditions.check_resource_errors(kind), Ok(()), "{kind}");
+        assert_eq!(conditions.check_errors(), Ok(()), "{kind}");
         out.remove("demo:file").expect("the file loads")
     }
 
@@ -98,6 +91,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_pool_with_an_unknown_condition_refuses_its_whole_table() {
+        let files = [file(
+            "loot_table",
+            json!({"pools":[
+                {"rolls":1},
+                {"rolls":1,"neoforge:conditions":[{"type":"unknown:pool"}]}
+            ]}),
+        )];
+        let conditions = LoadConditions::new([]);
+        let mut out = HashMap::new();
+        overlay_map(
+            &PackOverlay {
+                files: &files,
+                conditions: &conditions,
+                ..PackOverlay::default()
+            },
+            "loot_table",
+            &mut out,
+        );
+        assert!(out.is_empty());
+        let error = conditions.check_errors().unwrap_err();
+        assert!(
+            error
+                .contains("data/demo/loot_table/file.json: unknown load conditions [unknown:pool]"),
+            "{error}"
+        );
+    }
+
     /// The whole-file check still holds for every kind.
     #[test]
     fn a_files_own_failing_conditions_still_omit_it() {
@@ -110,6 +132,7 @@ mod tests {
             let overlay = PackOverlay {
                 files: &files,
                 conditions: &conditions,
+                ..PackOverlay::default()
             };
             let mut out = HashMap::new();
             overlay_map(&overlay, kind, &mut out);

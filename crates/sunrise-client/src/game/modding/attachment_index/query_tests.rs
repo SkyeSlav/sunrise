@@ -1,7 +1,7 @@
 //! Observable host query semantics through real holder writes and transaction journals.
 use super::*;
 use crate::game::native_entity_refs::tests::with_game;
-use mod_api::{AttachmentQueries, AttachmentQueriesMut, AttachmentType, HostTransaction};
+use mod_api::{AttachmentQueries, AttachmentQueriesMut, AttachmentType};
 use sunrise_client::chunk::Chunk;
 
 static VALUE: AttachmentType<u32> = AttachmentType {
@@ -14,10 +14,13 @@ static VALUE: AttachmentType<u32> = AttachmentType {
 };
 fn values(game: &Game<'_>) -> Vec<u32> {
     let host: &dyn mod_api::Host = game;
-    host.query(&VALUE)
-        .unwrap()
-        .iter()
-        .map(|row| *row.unwrap().value)
+    let query = host.query(&VALUE).unwrap();
+    let mut rows = query.iter();
+    std::iter::from_fn(|| rows.try_next().unwrap())
+        .map(|row| {
+            row.with_value(game.attachment_frame_borrow(), |value| *value)
+                .unwrap()
+        })
         .collect()
 }
 
@@ -33,9 +36,13 @@ fn query_snapshot_dimension_and_stale_writes() {
             .insert((2, 3), Arc::new(Chunk::empty(2, 3)));
         VALUE.set(game, Holder::Chunk([2, 3]), 10).unwrap();
         let batch = game.query_mut(&VALUE).unwrap();
-        let row = batch.iter().next().unwrap().unwrap();
+        let row = batch.iter().try_next().unwrap().unwrap();
         VALUE.set(game, Holder::Chunk([2, 3]), 11).unwrap();
-        assert_eq!(*row.value(), 10);
+        assert_eq!(
+            row.with_value(game.attachment_frame_borrow(), |value| *value)
+                .unwrap(),
+            10
+        );
         assert_eq!(values(game), [11]);
         game.enter_level(Dim::Nether).unwrap();
         assert!(values(game).is_empty());
@@ -54,7 +61,11 @@ fn query_snapshot_dimension_and_stale_writes() {
         assert_eq!(values(game), [12]);
         let retained = game.world.chunks.remove(&(2, 3)).unwrap();
         assert!(values(game).is_empty());
-        assert_eq!(*row.value(), 10);
+        assert_eq!(
+            row.with_value(game.attachment_frame_borrow(), |value| *value)
+                .unwrap(),
+            10
+        );
         assert_eq!(
             row.remove(game),
             Err(mod_api::AttachmentRowError::StaleHolder)
@@ -65,7 +76,7 @@ fn query_snapshot_dimension_and_stale_writes() {
             Err(mod_api::AttachmentRowError::StaleHolder)
         );
         let fresh = game.query_mut(&VALUE).unwrap();
-        let fresh_row = fresh.iter().next().unwrap().unwrap();
+        let fresh_row = fresh.iter().try_next().unwrap().unwrap();
         game.world
             .chunks
             .insert((2, 3), Arc::new(Chunk::empty(2, 3)));
@@ -88,14 +99,14 @@ fn query_writes_join_transaction_journal_without_implicit_commit() {
             .insert((2, 3), Arc::new(Chunk::empty(2, 3)));
         VALUE.set(game, Holder::Chunk([2, 3]), 10).unwrap();
         let batch = game.query_mut(&VALUE).unwrap();
-        let row = batch.iter().next().unwrap().unwrap();
-        let aborted: Result<(), ()> = game.transaction(|host, _| {
+        let row = batch.iter().try_next().unwrap().unwrap();
+        let aborted: Result<(), ()> = game.storage_transaction(|host, _| {
             row.set(host, 11).unwrap();
             assert_eq!(values(host), [11]);
             let current = host.query_mut(&VALUE).unwrap();
             current
                 .iter()
-                .next()
+                .try_next()
                 .unwrap()
                 .unwrap()
                 .remove(host)
@@ -105,12 +116,16 @@ fn query_writes_join_transaction_journal_without_implicit_commit() {
         });
         assert_eq!(aborted, Err(()));
         assert_eq!(values(game), [10]);
-        assert_eq!(*row.value(), 10);
-        let committed: Result<(), ()> = game.transaction(|host, _| {
+        assert_eq!(
+            row.with_value(game.attachment_frame_borrow(), |value| *value)
+                .unwrap(),
+            10
+        );
+        let committed: Result<(), ()> = game.storage_transaction(|host, _| {
             let current = host.query_mut(&VALUE).unwrap();
             current
                 .iter()
-                .next()
+                .try_next()
                 .unwrap()
                 .unwrap()
                 .set(host, 15)
@@ -120,5 +135,97 @@ fn query_writes_join_transaction_journal_without_implicit_commit() {
         assert_eq!(committed, Ok(()));
         drop(batch);
         assert_eq!(values(game), [15]);
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn rolled_back_attachment_queries_cannot_read_or_write_a_resident_holder() {
+    use mod_api::AttachmentRowError::OutsideTransaction;
+
+    with_game(|game| {
+        game.options.dedicated = Some(Vec::new());
+        game.native_level_opened(Dim::Overworld);
+        game.world
+            .chunks
+            .insert((2, 3), Arc::new(Chunk::empty(2, 3)));
+        let holder = Holder::Chunk([2, 3]);
+        VALUE.set(game, holder, 10).unwrap();
+        let before = game.query_mut(&VALUE).unwrap();
+        let before_row = before.iter().try_next().unwrap().unwrap();
+        let scoped_holder = before_row.holder();
+
+        let reader = std::cell::OnceCell::new();
+        let writer = std::cell::OnceCell::new();
+        let (mut retained_iter, read_row, write_row) = game.storage_scope(|game, _| {
+            VALUE.set(game, holder, 11).unwrap();
+            let reader = reader.get_or_init(|| game.query(&VALUE).unwrap());
+            let writer = writer.get_or_init(|| game.query_mut(&VALUE).unwrap());
+            let mut retained_iter = reader.iter();
+            let read_row = retained_iter.try_next().unwrap().unwrap();
+            let write_row = writer.iter().try_next().unwrap().unwrap();
+            assert_eq!(
+                read_row.with_value(Default::default(), |value| {
+                    panic!("backend-less scope read ran: {value}")
+                }),
+                Err(OutsideTransaction)
+            );
+            let mut foreign = sunrise_mod_runtime::attachments::AttachmentQueryScopes::default();
+            foreign.enter();
+            assert_eq!(
+                write_row.with_value(
+                    mod_api::__private::game::attachment_read_scope(&foreign),
+                    |value| { panic!("foreign scope read ran: {value}") },
+                ),
+                Err(OutsideTransaction)
+            );
+            let host: &dyn mod_api::ServerHost = game;
+            let scope = host.attachment_read_scope().unwrap();
+            assert_eq!(read_row.with_value(scope, |value| *value), Ok(11));
+            assert_eq!(write_row.with_value(scope, |value| *value), Ok(11));
+            assert_eq!(reader.get(scope, scoped_holder), Ok(Some(11)));
+            assert_eq!(
+                reader.get(
+                    mod_api::__private::game::attachment_read_scope(&foreign),
+                    scoped_holder,
+                ),
+                Err(OutsideTransaction)
+            );
+            game.storage_scope(|game, _| {
+                assert_eq!(
+                    read_row.with_value(game.attachment_frame_borrow(), |value| *value),
+                    Err(OutsideTransaction)
+                );
+                ((), false)
+            });
+            assert_eq!(
+                read_row.with_value(game.attachment_frame_borrow(), |value| *value),
+                Ok(11)
+            );
+            ((retained_iter, read_row, write_row), false)
+        });
+        let reader = reader.get().unwrap();
+        let writer = writer.get().unwrap();
+
+        assert_eq!(values(game), [10]);
+        assert_eq!(
+            reader.get(game.attachment_frame_borrow(), scoped_holder),
+            Err(OutsideTransaction)
+        );
+        assert!(matches!(retained_iter.try_next(), Err(OutsideTransaction)));
+        assert!(matches!(writer.iter().try_next(), Err(OutsideTransaction)));
+        assert_eq!(
+            read_row.with_value(game.attachment_frame_borrow(), |value| *value),
+            Err(OutsideTransaction)
+        );
+        assert_eq!(
+            write_row.with_value(game.attachment_frame_borrow(), |value| *value),
+            Err(OutsideTransaction)
+        );
+        assert_eq!(write_row.set(game, 99), Err(OutsideTransaction));
+        assert_eq!(write_row.remove(game), Err(OutsideTransaction));
+        assert_eq!(values(game), [10]);
+        before_row.set(game, 12).unwrap();
+        assert_eq!(values(game), [12]);
     });
 }

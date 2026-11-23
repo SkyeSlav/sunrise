@@ -89,7 +89,10 @@ fn with_stick_table(game: &mut Game<'_>, name: &str) {
         &[],
         &[],
     );
-    game.world_tables = game.stage_world_tables(&stack, false, &root).unwrap().0;
+    game.world_tables = game
+        .stage_world_tables(&stack, false, &root)
+        .unwrap()
+        .tables;
     // Publish the world's snapshot exactly as world open does. Do not prime
     // the process or thread-local structure-generation cache: entity drops
     // must read the server's pack-aware snapshot instead.

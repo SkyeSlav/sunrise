@@ -28,6 +28,10 @@ pub use args::{
     MAX_PROVIDER_SUGGESTIONS, MAX_SUGGESTION_TEXT, MAX_SUGGESTION_TOOLTIP, ParsedArgument,
     Registries, modify_custom_completions,
 };
+use std::{
+    collections::HashMap,
+    sync::atomic::{AtomicU64, Ordering},
+};
 use sunrise_client_core::text::Text;
 
 /// The command id of a mod's command (`Dispatcher::with_mod_commands`).
@@ -98,23 +102,30 @@ impl CommandError {
             None => self.cursor,
         }
     }
-    /// CommandSyntaxException.getContext: up to ten characters before the
-    /// cursor followed by "<--[HERE]". Java's characters are UTF-16 code units, so a
-    /// character outside the Basic Multilingual Plane counts two, and a pair the ten-unit
-    /// window cuts in half shows its kept half as U+FFFD.
-    pub fn context(&self) -> Option<String> {
+    /// The parts of CommandSyntaxException.getContext: up to ten characters before the
+    /// cursor, whether more precede them (the leading "..."), and the rest of the input.
+    /// Java's characters are UTF-16 code units, so a character outside the Basic
+    /// Multilingual Plane counts two, and a pair the ten-unit window cuts in half shows
+    /// its kept half as U+FFFD.
+    pub fn context_window(&self) -> Option<ContextWindow<'_>> {
         let input = self.input.as_ref()?;
-        let before: Vec<u16> = input[..floor_char_boundary(input, self.cursor)]
-            .encode_utf16()
-            .collect();
-        let cursor = before.len();
+        let cursor = floor_char_boundary(input, self.cursor);
+        let before: Vec<u16> = input[..cursor].encode_utf16().collect();
+        Some(ContextWindow {
+            ellipsis: before.len() > 10,
+            before: String::from_utf16_lossy(&before[before.len().saturating_sub(10)..]),
+            after: &input[cursor..],
+        })
+    }
+    /// CommandSyntaxException.getContext: the window before the cursor followed by
+    /// "<--[HERE]".
+    pub fn context(&self) -> Option<String> {
+        let window = self.context_window()?;
         let mut out = String::new();
-        if cursor > 10 {
+        if window.ellipsis {
             out.push_str("...");
         }
-        out.push_str(&String::from_utf16_lossy(
-            &before[cursor.saturating_sub(10)..],
-        ));
+        out.push_str(&window.before);
         out.push_str("<--[HERE]");
         Some(out)
     }
@@ -132,6 +143,16 @@ impl CommandError {
             None => self.message.clone(),
         }
     }
+}
+/// The input around a [`CommandError`]'s cursor, as `CommandSyntaxException.getContext` cuts it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContextWindow<'a> {
+    /// More than ten UTF-16 units precede the cursor, so the window starts with "...".
+    pub ellipsis: bool,
+    /// The last ten UTF-16 units before the cursor (fewer near the start).
+    pub before: String,
+    /// The input from the cursor on.
+    pub after: &'a str,
 }
 pub type CmdResult<T> = Result<T, CommandError>;
 
@@ -244,6 +265,9 @@ impl<'a> Reader<'a> {
     }
     pub fn read_int(&mut self) -> CmdResult<i32> {
         self.number("int")
+    }
+    pub fn read_long(&mut self) -> CmdResult<i64> {
+        self.number("long")
     }
     pub fn read_double(&mut self) -> CmdResult<f64> {
         self.number("double")
@@ -399,6 +423,21 @@ pub struct ParsedArg {
     pub value: Arg,
     pub range: Range,
 }
+/// Identifies an executor registration within one authoritative command tree.
+// no wire: the incarnation and slot identify code in this process only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExecutorKey {
+    incarnation: u64,
+    slot: usize,
+}
+
+impl ExecutorKey {
+    /// The registration slot, usable only while the dispatcher owns this key.
+    pub fn slot(self) -> usize {
+        self.slot
+    }
+}
+
 /// CommandContextBuilder: the nodes and arguments parsed so far.
 #[derive(Clone, Debug)]
 pub struct Context {
@@ -406,6 +445,8 @@ pub struct Context {
     pub nodes: Vec<(usize, Range)>,
     pub args: Vec<ParsedArg>,
     pub command: Option<&'static str>,
+    /// The authorized executable node's process-local registration, if any.
+    pub executor: Option<ExecutorKey>,
     pub range: Range,
     pub child: Option<Box<Context>>,
     /// Literal words parsed so far (mode keywords such as `masked`).
@@ -418,6 +459,7 @@ impl Context {
             nodes: Vec::new(),
             args: Vec::new(),
             command: None,
+            executor: None,
             range: (start, start),
             child: None,
             literals: Vec::new(),
@@ -820,10 +862,17 @@ impl Suggests {
 /// command nesting.
 const MAX_PARSE_DEPTH: usize = 128;
 
+#[derive(Clone, Debug)]
+struct ExecutorBindings {
+    incarnation: u64,
+    slots: HashMap<usize, usize>,
+}
+
 /// The command tree (CommandDispatcher). Node 0 is the root.
 #[derive(Clone, Debug)]
 pub struct Dispatcher {
     pub nodes: Vec<Node>,
+    executors: Option<ExecutorBindings>,
 }
 impl Default for Dispatcher {
     fn default() -> Self {
@@ -845,7 +894,23 @@ impl Dispatcher {
                 suggests: None,
                 restricted: false,
             }],
+            executors: None,
         }
+    }
+    /// After building the server tree, install its node-to-registration table under a fresh
+    /// incarnation. Clones preserve the keys, but another installation invalidates them.
+    pub fn replace_executor_bindings(&mut self, slots: HashMap<usize, usize>) {
+        static NEXT_INCARNATION: AtomicU64 = AtomicU64::new(0);
+        self.executors = (!slots.is_empty()).then(|| ExecutorBindings {
+            incarnation: NEXT_INCARNATION.fetch_add(1, Ordering::Relaxed),
+            slots,
+        });
+    }
+    /// Check the incarnation before using a parsed key or its node IDs with this tree.
+    pub fn owns_executor(&self, key: ExecutorKey) -> bool {
+        self.executors
+            .as_ref()
+            .is_some_and(|bindings| bindings.incarnation == key.incarnation)
     }
     /// This tree as a player without elevated permissions has it
     /// (ClientPacketListener.restrictedSuggestionsProvider): no restricted node.
@@ -1103,6 +1168,16 @@ impl Dispatcher {
             context.command = self.nodes[child]
                 .command
                 .filter(|_| self.nodes[child].execution_permission <= level);
+            context.executor = None;
+            if context.command.is_some()
+                && let Some(bindings) = &self.executors
+                && let Some(&slot) = bindings.slots.get(&child)
+            {
+                context.executor = Some(ExecutorKey {
+                    incarnation: bindings.incarnation,
+                    slot,
+                });
+            }
             let redirect = self.nodes[child].redirect;
             if reader.can_read_n(if redirect.is_none() { 2 } else { 1 }) {
                 reader.skip();
@@ -1174,6 +1249,10 @@ impl Dispatcher {
         reg: &Registries,
     ) -> (Range, Vec<Suggestion>) {
         let (range, list, _, _) = self.suggestions_within(parse, cursor, reg, u8::MAX);
+        // CommandDispatcher.getCompletionSuggestions: a merged empty list is
+        // `Suggestions.empty()` — `StringRange.at(0)`. The token range the chat
+        // merge needs is only kept by the `client_suggestions` entries.
+        let range = if list.is_empty() { (0, 0) } else { range };
         (range, list)
     }
     /// The suggestions the player's chat shows: the client's tree only holds

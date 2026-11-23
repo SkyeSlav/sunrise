@@ -15,7 +15,7 @@ use sunrise_core::position::ChunkPos;
 /// The cushion's position: `Vec3.atCenterOfWithY(4 199 4, 200.0)`.
 const AT: [f64; 3] = [4.5, 200.0, 4.5];
 
-fn game() -> Game<'static> {
+fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -> Game<'a> {
     let root = std::path::PathBuf::from(
         std::env::var_os("SUNRISE_TEST_RESOURCES")
             .expect("set SUNRISE_TEST_RESOURCES to prepared resources"),
@@ -37,7 +37,7 @@ fn game() -> Game<'static> {
     let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
     options.resources = root.clone();
     options.execution_role = execution_role::ExecutionRole::IntegratedServer;
-    let res: &'static _ = Box::leak(Box::new(loaded.resources));
+    let res = &*resources.insert(loaded.resources);
     let mut game = Game::new(
         res,
         loaded.pack,
@@ -104,7 +104,8 @@ fn events() -> Vec<(&'static str, [f64; 3], Option<Who>)> {
 #[test]
 #[ignore = "daily"]
 fn a_placed_cushion_keeps_its_stacks_custom_name() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     game.creative = true;
     assert!(game.place_cushion(&top_hit(), &named_stack()));
     assert_eq!(game.cushions.len(), 1);
@@ -136,7 +137,8 @@ fn a_placed_cushion_keeps_its_stacks_custom_name() {
 #[test]
 #[ignore = "daily"]
 fn a_creative_blast_leaves_no_cushion_item() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     // (creative, the TNT's owner is a player, the guest behind it, drops)
     for (creative, owner_player, guest, dropped) in [
         // A creative player's TNT: no item.
@@ -195,7 +197,8 @@ fn a_creative_blast_leaves_no_cushion_item() {
 #[test]
 #[ignore = "daily"]
 fn a_cushion_that_loses_its_support_is_discarded_silently() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     game.creative = true;
     assert!(game.place_cushion(&top_hit(), &named_stack()));
     capture();
@@ -217,4 +220,65 @@ fn a_cushion_that_loses_its_support_is_discarded_silently() {
     assert_eq!(events(), [], "a discarded cushion posts no game event");
     assert_eq!(game.dropped.len(), 1, "it still drops its item");
     assert_eq!(game.dropped[0].stack.custom_name().as_deref(), Some("Seat"));
+}
+
+fn doubles(v: [f64; 3]) -> Tag {
+    Tag::List(v.map(|d| Tag::Double(d.to_bits())).to_vec())
+}
+
+fn floats(v: [f32; 2]) -> Tag {
+    Tag::List(v.map(|f| Tag::Float(f.to_bits())).to_vec())
+}
+
+/// The cushion's entity root as the save path writes it.
+fn saved_cushion(game: &mut Game<'_>) -> Tag {
+    let mut chunks = game.entity_chunks(&std::collections::HashSet::from([(0, 0)]), false);
+    assert_eq!(chunks.len(), 1);
+    let (_, mut roots) = chunks.pop().unwrap();
+    assert_eq!(roots.len(), 1);
+    roots.pop().unwrap()
+}
+
+/// #2681: a supported cushion loaded with Motion and Rotation keeps them
+/// through a tick and a save, and again through a reload; a Motion component
+/// above 10 in magnitude loads as 0, and a freshly placed cushion saves zeros with its own yaw.
+#[test]
+#[ignore = "daily"]
+fn a_loaded_cushion_keeps_its_motion_and_pitch_through_tick_and_reload() {
+    let mut resources = None;
+    let mut game = game(&mut resources);
+    let loaded = Tag::compound([
+        ("id", Tag::String("minecraft:cushion".into())),
+        ("Pos", doubles(AT)),
+        ("block_pos", Tag::IntArray(vec![4, 199, 4])),
+        ("Motion", doubles([0.5, 20.0, -0.25])),
+        ("Rotation", floats([90.0, 10.0])),
+    ]);
+    game.load_cushion(loaded, Some([1, 2, 3, 4]));
+    assert_eq!(game.cushions.len(), 1);
+    // The check at 100 ticks finds the stone under it.
+    for _ in 0..102 {
+        game.tick_cushions();
+    }
+    assert_eq!(game.cushions.len(), 1, "a supported cushion stays");
+    let saved = saved_cushion(&mut game);
+    assert_eq!(saved.get("Motion"), Some(&doubles([0.5, 0.0, -0.25])));
+    assert_eq!(saved.get("Rotation"), Some(&floats([90.0, 10.0])));
+
+    game.cushions.clear();
+    game.load_cushion(saved, Some([1, 2, 3, 4]));
+    assert_eq!(game.cushions.len(), 1);
+    let again = saved_cushion(&mut game);
+    assert_eq!(again.get("Motion"), Some(&doubles([0.5, 0.0, -0.25])));
+    assert_eq!(again.get("Rotation"), Some(&floats([90.0, 10.0])));
+
+    game.cushions.clear();
+    game.creative = true;
+    assert!(game.place_cushion(&top_hit(), &named_stack()));
+    let placed = saved_cushion(&mut game);
+    assert_eq!(placed.get("Motion"), Some(&doubles([0.0, 0.0, 0.0])));
+    assert_eq!(
+        placed.get("Rotation"),
+        Some(&floats([game.cushions[0].yaw, 0.0]))
+    );
 }

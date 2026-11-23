@@ -9,7 +9,7 @@ use sunrise_client::mobs::leash::Holder;
 use sunrise_client::particles::{ParticleOptions, ParticleType};
 use sunrise_core::geometry::Vec3;
 use sunrise_core::random::RandomSource;
-use sunrise_protocol::entity_data::Value;
+use sunrise_protocol::entity_data::{PaintingHolder, Value};
 
 /// `Mth.rotLerp(alpha, from, to)`: `from` turned `alpha` of the way to `to` by
 /// the shorter arc (`wrapDegrees` of the difference).
@@ -65,15 +65,11 @@ impl Game<'_> {
                     b.leash = Some(Holder::Knot(block));
                 }
             });
-        } else if let Some(shows) = match kind {
-            "minecraft:text_display" => Some(super::text_displays::Shows::Text),
-            "minecraft:block_display" => Some(super::text_displays::Shows::Block),
-            "minecraft:item_display" => Some(super::text_displays::Shows::Item),
-            _ => None,
-        } {
+        } else if let Some(shows) = super::text_displays::Shows::from_kind(kind) {
             self.text_displays.insert(
                 id as i32,
-                super::text_displays::RemoteTextDisplay::new(shows, position, yaw),
+                super::text_displays::RemoteTextDisplay::new(shows, position, yaw)
+                    .with_pitch(pitch),
             );
         } else if kind == "minecraft:ominous_item_spawner" {
             self.add_remote_ominous_item_spawner(id, position);
@@ -81,7 +77,7 @@ impl Game<'_> {
             // The width, height and response follow in SetEntityData.
             self.interactions.insert(
                 id as i32,
-                super::interactions::RemoteInteraction::new(position),
+                super::interactions::RemoteInteraction::new_with_rotation(position, yaw, pitch),
             );
         } else if let Some(cart) = super::minecarts::CartKind::from_id(kind) {
             let mut c = super::minecarts::Minecart::new(id, cart, at);
@@ -99,7 +95,11 @@ impl Game<'_> {
             }
             self.boats.push(b);
         } else if kind == "minecraft:armor_stand" {
-            self.armor_stands.push(ArmorStand::new(id, at, yaw));
+            let mut stand = ArmorStand::new(id, at, yaw);
+            let clamped = (pitch % 360.0).clamp(-90.0, 90.0);
+            stand.pitch = clamped;
+            stand.previous_pitch = clamped;
+            self.armor_stands.push(stand);
         } else if kind == "minecraft:item_frame" || kind == "minecraft:glow_item_frame" {
             self.item_frames.push(ItemFrame {
                 attachment_lifetime: Default::default(),
@@ -136,10 +136,10 @@ impl Game<'_> {
         } else if kind == "minecraft:painting" {
             // The variant comes with the entity data; until then the
             // registry's first one (VariantUtils.getAny).
-            let (variant, width, height) = self
+            let (variant, asset, width, height) = self
                 .remote_painting_variant(0)
-                .map_or((Arc::from("minecraft:kebab"), 1, 1), |v| {
-                    (v.id, v.width, v.height)
+                .map_or((Arc::from("minecraft:kebab"), None, 1, 1), |v| {
+                    (v.id, Some(Arc::from(v.asset)), v.width, v.height)
                 });
             // Direction 3D data value (north 2, south 3, west 4, east 5) to 2D.
             let facing = match data {
@@ -155,6 +155,7 @@ impl Game<'_> {
                 pos: block,
                 facing,
                 variant,
+                asset,
                 width,
                 height,
                 check_interval: 0,
@@ -166,10 +167,14 @@ impl Game<'_> {
         true
     }
 
-    /// A `painting_variant` by its network id, from the server's registry.
+    /// A `painting_variant` by its network id, preferring the synced registry entry over local resources.
     fn remote_painting_variant(&self, id: i32) -> Option<super::paintings::Variant> {
         let r = self.remote.as_ref()?;
-        let name = r.registries.name("minecraft:painting_variant", id)?;
+        let (name, tag) = r.registries.entry("minecraft:painting_variant", id)?;
+        if let Some(tag) = tag {
+            let json = sunrise_client::scoreboard::tag_to_json(tag);
+            return super::paintings::Variant::decode(name, &json).ok();
+        }
         self.painting_variants.get(name).cloned()
     }
 
@@ -230,18 +235,31 @@ impl Game<'_> {
                 {
                     p.facing = facing;
                 }
-                // Painting.DATA_PAINTING_VARIANT_ID: a registry holder (id + 1).
-                if let (9, Value::Id(holder)) = (index, value)
-                    && let Some(v) = self.remote_painting_variant(holder - 1)
+                // Painting.DATA_PAINTING_VARIANT_ID: holder already resolved during packet decode.
+                if let (9, Value::PaintingVariant(holder)) = (index, value)
                     && let Some(p) = self.paintings.iter_mut().find(|p| p.id == id)
                 {
-                    p.variant = v.id;
+                    let (variant_name, v) = match holder {
+                        PaintingHolder::Reference { name, variant, .. } => {
+                            (Arc::from(name.as_str()), variant)
+                        }
+                        PaintingHolder::Direct(v) => (Arc::from(v.asset_id.as_str()), v),
+                    };
+                    p.variant = variant_name;
+                    p.asset = Some(Arc::from(
+                        v.asset_id.strip_prefix("minecraft:").unwrap_or(&v.asset_id),
+                    ));
                     p.width = v.width;
                     p.height = v.height;
                 }
             } else if let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == id) {
                 match (index, value) {
-                    (0, Value::Byte(flags)) => a.invisible = flags & 0x20 != 0,
+                    // Entity.DATA_SHARED_FLAGS_ID: FLAG_ONFIRE (`Entity.isOnFire` on a client, which
+                    // draws the flames; the client never counts it down) and FLAG_INVISIBLE.
+                    (0, Value::Byte(flags)) => {
+                        a.fire_ticks = i32::from(flags & 1);
+                        a.invisible = flags & 0x20 != 0;
+                    }
                     // Entity.DATA_CUSTOM_NAME and DATA_CUSTOM_NAME_VISIBLE.
                     (2, Value::OptText(name)) => {
                         a.custom_name = name.as_ref().map(sunrise_client::entity_nbt::name_text);
@@ -358,7 +376,7 @@ impl Game<'_> {
                 // the target of the three-tick lerp (`tick_remote_objects`), not
                 // the boat's yaw at once.
                 let _ = yaw;
-                b.on_ground = on_ground;
+                b.ground.on_ground = on_ground;
             });
         } else if let Some(i) = self.carts.iter().position(|c| c.id == id)
             && let Some(yaw) = yaw
@@ -547,10 +565,11 @@ impl Game<'_> {
         self.item_frames.clear();
         self.paintings.clear();
         self.orbs.clear();
+        self.pick_section_clear();
     }
 
     pub(super) fn remove_remote_object(&mut self, id: u32) {
-        self.text_displays.remove(&(id as i32));
+        self.text_displays.shift_remove(&(id as i32));
         self.interactions.remove(&(id as i32));
         self.ominous_spawners.retain(|s| s.id != id);
         self.remote_knots.remove(&id);
@@ -572,6 +591,7 @@ impl Game<'_> {
         self.item_frames.retain(|f| f.id != id);
         self.paintings.retain(|p| p.id != id);
         self.bolts.retain(|b| b.id != id);
+        self.pick_section_remove(id);
     }
 }
 

@@ -25,7 +25,7 @@ fn owner_launch_sets_owner_before_insertion_and_uses_projectile_random() {
             .clone();
         let mut mob = Mob::new(21, kind, Vec3::new(0.0, 64.0, 0.0), 0.0);
         mob.previous = Vec3::new(-0.2, 63.7, 0.4);
-        mob.on_ground = false;
+        mob.ground.on_ground = false;
         game.mobs.push(mob);
         let source = game.entity(21).unwrap();
         let owner = game.living(source).unwrap();

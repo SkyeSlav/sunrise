@@ -1,15 +1,14 @@
 //! The chunk writer's isolated mod attachment callback boundary.
 //! Server code captures encoded envelopes; only workers execute mod code.
 use super::*;
-use mod_api::{ChunkDiskContextWire, ChunkDiskJob, ChunkDiskKind, ChunkDiskPhase, WorldEpoch};
+use mod_api::{ChunkDiskContext, ChunkDiskJob, ChunkDiskKind, ChunkDiskPhase, WorldEpoch};
+use sunrise_client_render::api_context::WorldgenReader;
 use sunrise_mod_runtime::attachments::Attachments;
 
 pub(super) struct DiskRuntime {
     /// Chunks whose load listener failed: their stored record is kept as it was read and no
     /// save listener runs for them for the rest of the session.
     save_suppressed: Mutex<HashSet<(i32, i32)>>,
-    /// Chunks whose captured save did not reach disk; the game marks them dirty again.
-    failed_saves: Mutex<Vec<(i32, i32)>>,
     world: WorldEpoch,
     dimension: mod_api::Identifier,
     resources: Arc<sunrise_world::native_load_context::WorldgenContext>,
@@ -22,7 +21,7 @@ impl DiskRuntime {
         kind: ChunkDiskKind,
         phase: ChunkDiskPhase,
     ) -> Option<ChunkDiskJob> {
-        let context = ChunkDiskContextWire::new(
+        let context = ChunkDiskContext::new(
             self.world,
             self.dimension.clone(),
             [chunk.x, chunk.z],
@@ -40,16 +39,13 @@ impl DiskRuntime {
     }
 
     fn run(&self, job: &ChunkDiskJob) -> std::io::Result<Compound> {
-        let registry = |name: &str| self.resources.registry(name);
-        let setting = |owner: &str, key: &str| self.resources.setting(owner, key);
+        let reader = WorldgenReader(&self.resources);
         // A disk job has no block-state index (that is the game's, published for worldgen), so
         // `state_with_property` answers None, as worldgen does before the index is published.
-        let state_with_property = |_: mod_api::BlockState, _: &str, _: &str| None;
-        job.run(&mod_api::OwningWorldgen::new(
-            &registry,
-            &setting,
-            &state_with_property,
-        ))
+        job.run(
+            &mod_api::OwningWorldgen::new(&reader, &|_, _, _| None),
+            sunrise_world::datafix::upgrade_compound,
+        )
         .clone()
         .map_err(|failure| {
             std::io::Error::other(format!("chunk disk callback refused: {failure:?}"))
@@ -58,30 +54,58 @@ impl DiskRuntime {
 }
 
 pub(super) struct DiskRecord {
-    original: Record,
+    pub(super) original: Record,
     job: ChunkDiskJob,
     runtime: Arc<DiskRuntime>,
     encoded: OnceLock<std::result::Result<Option<Arc<NamedTag>>, String>>,
 }
 impl DiskRecord {
+    pub(super) fn cancel(&self) {
+        let _ = self
+            .encoded
+            .set(Err("chunk save cancelled before encoding".into()));
+    }
+
     fn encode(&self) -> std::io::Result<Option<Arc<NamedTag>>> {
         self.encoded
             .get_or_init(|| {
-                let entries = self.runtime.run(&self.job).map_err(|e| e.to_string())?;
-                let mut tag = self
-                    .original
-                    .tag()
-                    .ok_or("captured chunk has no disk record")?;
-                replace_entries(Arc::make_mut(&mut tag), entries).map_err(|e| e.to_string())?;
-                Ok(Some(tag))
+                // The writer can encode a captured callback before the compression pool. Cache
+                // panics as refusals here too, so pending readers are released by OnceLock.
+                super::compression_pool::catch_encoding_panic(|| {
+                    let entries = self.runtime.run(&self.job)?;
+                    let mut tag = self.original.tag_for_write().ok_or_else(|| {
+                        std::io::Error::other("captured chunk has no disk record")
+                    })?;
+                    replace_entries(Arc::make_mut(&mut tag), entries)?;
+                    Ok(Some(tag))
+                })
+                .map_err(|e| e.to_string())
             })
             .clone()
             .map_err(std::io::Error::other)
     }
 
+    pub(super) fn without_block_entity_edits(&self) -> Option<Arc<NamedTag>> {
+        let mut tag = self.original.without_block_entity_edits()?;
+        // The original encoding has already run the chunk-data callback.
+        // Replay only its result, not the callback or its other writes.
+        if let Some(Ok(Some(encoded))) = self.encoded.get() {
+            let entries = match encoded.tag.get(ATTACHMENTS_KEY) {
+                Some(Tag::Compound(entries)) => entries.clone(),
+                _ => Compound::new(),
+            };
+            replace_entries(Arc::make_mut(&mut tag), entries).ok()?;
+        }
+        Some(tag)
+    }
+
     // Readers may wait for the owning writer, but never execute save callbacks.
     pub(super) fn read(&self) -> Option<Arc<NamedTag>> {
-        self.encoded.wait().as_ref().ok().cloned().flatten()
+        match self.encoded.wait() {
+            Ok(tag) => tag.clone(),
+            // A reader that borrowed this snapshot before completion still owns that read.
+            Err(_) => self.original.tag(),
+        }
     }
 }
 
@@ -96,26 +120,11 @@ fn admit_disk_save() -> Result<()> {
 }
 
 pub(super) fn encode_record(record: &Record) -> std::io::Result<Option<Arc<NamedTag>>> {
-    match record {
-        Record::Disk(record) => record.encode(),
-        _ => Ok(record.tag()),
+    match record.disk_job() {
+        Some(record) => record.encode(),
+        None => Ok(record.tag_for_write()),
     }
 }
-
-pub(super) fn prepare_batch(batch: &WriteBatchRecords) -> std::io::Result<()> {
-    // Coalescing may skip a disk write, never the callback of a captured record.
-    let mut refusal = None;
-    for (_, record, _) in batch {
-        if let Record::Disk(record) = record
-            && let Err(error) = record.encode()
-        {
-            refusal.get_or_insert(error);
-        }
-    }
-    refusal.map_or(Ok(()), Err)
-}
-
-type WriteBatchRecords = [((i32, i32), Record, u64)];
 
 fn replace_entries(tag: &mut NamedTag, entries: Compound) -> std::io::Result<()> {
     let Tag::Compound(root) = &mut tag.tag else {
@@ -146,7 +155,6 @@ impl SaveDir {
         }
         let _ = self.disk.set(Arc::new(DiskRuntime {
             save_suppressed: Mutex::default(),
-            failed_saves: Mutex::default(),
             world,
             dimension,
             resources,
@@ -261,68 +269,44 @@ impl SaveDir {
                         .flatten()
                 })
                 .collect();
-            let work = || -> std::io::Result<Vec<_>> {
+            let work = || {
                 chunks
                     .iter()
                     .zip(&jobs)
-                    .map(|(chunk, job)| {
-                        let entries = job.as_ref().map(|job| runtime.run(job)).transpose()?;
-                        let blending = self.calculated_blending(chunk.x, chunk.z);
-                        let mut tag = encode_saved(
-                            chunk,
-                            registry,
-                            biomes,
-                            self.tables.get().map(|t| &**t),
-                            self.shape,
-                            blending.as_deref(),
-                            items,
-                        );
-                        if let Some(entries) = entries {
-                            replace_entries(&mut tag, entries)?;
+                    .filter_map(|(chunk, job)| {
+                        let key = (chunk.x, chunk.z);
+                        let tag = compression_pool::catch_encoding_panic(|| {
+                            let entries = job.as_ref().map(|job| runtime.run(job)).transpose()?;
+                            let blending = self.calculated_blending(chunk.x, chunk.z);
+                            let mut tag = encode_saved(
+                                chunk,
+                                registry,
+                                biomes,
+                                self.tables.get().map(|t| &**t),
+                                self.shape,
+                                blending.as_deref(),
+                                items,
+                            );
+                            if let Some(entries) = entries {
+                                replace_entries(&mut tag, entries)?;
+                            }
+                            Ok(tag)
+                        });
+                        match tag {
+                            Ok(tag) => Some((key, Some(tag))),
+                            Err(error) => {
+                                self.report_record_failure(Folder::Region, key, &error);
+                                None
+                            }
                         }
-                        Ok(((chunk.x, chunk.z), Some(tag)))
                     })
                     .collect()
             };
             let records = std::thread::scope(|scope| scope.spawn(work).join())
-                .map_err(|_| "chunk disk worker unwound")??;
+                .map_err(|_| "chunk disk worker unwound")?;
             self.write_records("region", records, true)?;
             self.save_poi(chunks, true)?;
             Ok(chunks.len())
         })())
-    }
-}
-
-/// Remember the chunks of a failed write so the game can mark them dirty again.
-pub(super) fn note_failed(batch: &WriteBatchRecords) {
-    for (key, record, _) in batch {
-        if let Record::Disk(record) = record
-            && let Ok(mut failed) = record.runtime.failed_saves.lock()
-        {
-            failed.push(*key);
-        }
-    }
-}
-
-impl SaveDir {
-    /// Chunks whose subscribed save was refused or failed, once each. The
-    /// caller marks them modified again, so dirty state is never lost to a
-    /// save that did not complete. Empty without a subscriber.
-    pub fn take_failed_chunk_saves(&self) -> Vec<(i32, i32)> {
-        self.disk.get().map_or_else(Vec::new, |runtime| {
-            runtime
-                .failed_saves
-                .lock()
-                .map_or_else(|_| Vec::new(), |mut failed| std::mem::take(&mut *failed))
-        })
-    }
-
-    pub(super) fn note_refused_saves(&self, folder: Folder, keys: &[(i32, i32)]) {
-        if folder == Folder::Region
-            && let Some(runtime) = self.disk.get()
-            && let Ok(mut failed) = runtime.failed_saves.lock()
-        {
-            failed.extend_from_slice(keys);
-        }
     }
 }

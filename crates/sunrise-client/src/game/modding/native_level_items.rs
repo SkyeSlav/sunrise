@@ -175,7 +175,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 game.entity_kind(popped)
-                    .map(|kind| kind.id(game))
+                    .and_then(|kind| kind.id(game))
                     .as_deref(),
                 Some("minecraft:item")
             );
@@ -293,6 +293,7 @@ mod tests {
                 let orb = |id, x, value, ticks| {
                     let p = Vec3::new(x, 70.0, 0.5);
                     ExperienceOrb {
+                        size_answer: None,
                         attachment_lifetime: Default::default(),
                         fall_distance: 0.0,
                         rotation: [0.0, 0.0],
@@ -303,7 +304,7 @@ mod tests {
                         velocity: Vec3::ZERO,
                         value,
                         age: 0,
-                        on_ground: true,
+                        ground: sunrise_world::ground_support::GroundState::from_ground_flag(true),
                         count: 1,
                         fire_ticks: 0,
                         ticks,

@@ -13,14 +13,20 @@ name = "sunrise-official"
 path = "src/main.rs"
 test = false
 
+[features]
+default = ["sunrise-extras"]
+sunrise-extras = ["dep:sunrise-reconnect", "dep:sunrise-perf-overlay", "sunrise-game/sunrise-extras"]
+
 [dependencies]
-sunrise-game = { path = "../sunrise-game" }
+sunrise-game = { path = "../sunrise-game", default-features = false, features = ["audio", "controllers"] }
 sunrise-platform = { path = "../sunrise-platform" }
 sunrise-heartbeat = { path = "../sunrise-heartbeat" }
 sunrise-friends = { path = "../sunrise-friends", features = ["game"] }
 sunrise-addresses = { path = "../sunrise-addresses" }
 sunrise-discord = { path = "../sunrise-discord" }
 sunrise-perf-share = { path = "../sunrise-perf-share" }
+sunrise-reconnect = { path = "../sunrise-reconnect", optional = true }
+sunrise-perf-overlay = { path = "../sunrise-perf-overlay", optional = true }
 log = "0.4"
 
 [build-dependencies]

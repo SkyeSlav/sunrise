@@ -79,7 +79,7 @@ impl Hooks for Probe {
             ),
             zero_bound: attacker.next_int(level, 0),
         });
-        event.container.set_new_damage(0.0);
+        event.container.set_new_damage(0.0).unwrap();
         Flow::Cancel
     }
 }
@@ -96,6 +96,37 @@ fn check(attacker: i32, expected_at: [f64; 3], hit: impl FnOnce(&mut super::Game
     .into();
     mod_platform::testing::with_mods(mods, || {
         with_game(|game| {
+            // Server-level sounds need the live server hub's sound-seed stream.
+            // with_game constructs the game but does not open its server.
+            game.lan_host(
+                crate::game::lan::LanSettings {
+                    port: 0,
+                    guest_commands: false,
+                    force_game_mode: false,
+                },
+                sunrise_client::lan::NetConfig {
+                    listen: false,
+                    announce: false,
+                    lod_distance: 0,
+                    ..sunrise_client::lan::NetConfig::lan(0, String::new(), 2)
+                },
+                sunrise_client::lan::hub::HubConfig {
+                    default_game_mode: 0,
+                    guest_commands: false,
+                    force_game_mode: false,
+                    hardcore: false,
+                    view_distance: 2,
+                    simulation_distance: 2,
+                    dimension: game.dim.id().to_owned(),
+                    allow_flight: true,
+                    seed: 0,
+                    max_players: 2,
+                    integrated: true,
+                    levels: game.level_shapes,
+                    level_seeds: game.levels.runtime.seeds(),
+                },
+            )
+            .unwrap();
             game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
             bind_local_player(game, 7, 7);
             game.set_game_mode(GameMode::Survival);

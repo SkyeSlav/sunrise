@@ -26,9 +26,10 @@ def main():
     harness.java_run(build, classes, dependencies, 'VanillaDragonRenderOracle', [build / 'client.json'], 'client')
     (build / 'rust.json').unlink(missing_ok=True)
     harness.run_logged(
-        ['cargo', 'test', '--locked', '-p', 'sunrise-client', '--lib',
-         'game::dragon::tests::', '--', '--include-ignored'],
-        build, 'rust', env=dict(os.environ, SUNRISE_DRAGON_RENDER_OUTPUT=str(build / 'rust.json')))
+        [lab.parity_fixtures(),
+         'game::dragon::tests::dragon_render_parity_fixture', '--exact'],
+        build, 'rust', env=dict(os.environ, SUNRISE_DRAGON_RENDER_OUTPUT=str(build / 'rust.json'),
+                                SUNRISE_TEST_RESOURCES=os.environ.get('SUNRISE_TEST_RESOURCES', str(lab.RESOURCES))))
     expected = json.loads((build / 'client.json').read_text())
     actual = json.loads((build / 'rust.json').read_text())
     assert len(actual) == len(expected) == 8

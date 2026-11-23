@@ -1109,6 +1109,7 @@ mod tests {
     use wgpu::{SurfaceColorSpaces as S, TextureFormat as F};
 
     #[test]
+    #[ignore = "daily"]
     fn shared_light_matches_the_original_for_every_mark() {
         let _gpu = crate::gfx::test_gpu::lock();
         use wgpu::util::DeviceExt;
@@ -1208,13 +1209,14 @@ var<private> params: ReferenceParams;
     }
 
     #[test]
+    #[ignore = "daily"]
     fn coverage_target_resizes_resets_and_shows_in_the_debug_view() {
         let _gpu = crate::gfx::test_gpu::lock();
-        let instance = crate::gfx::test_gpu::instance();
-        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+        let Some(adapter) = crate::gfx::test_gpu::adapter() else {
             return;
         };
-        let Ok((device, queue)) = pollster::block_on(adapter.request_device(&Default::default()))
+        let Some((device, queue)) =
+            crate::gfx::test_gpu::optional_device_with(&adapter, &Default::default())
         else {
             return;
         };
@@ -1295,16 +1297,17 @@ var<private> params: ReferenceParams;
     }
 
     pub(super) fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
-        let instance = crate::gfx::test_gpu::instance();
-        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
+        let adapter = crate::gfx::test_gpu::adapter()?;
         eprintln!("HDR GPU {:?}", adapter.get_info());
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            required_features: adapter.features()
-                & (wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
-                    | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES),
-            ..Default::default()
-        }))
-        .ok()
+        crate::gfx::test_gpu::optional_device_with(
+            &adapter,
+            &wgpu::DeviceDescriptor {
+                required_features: adapter.features()
+                    & (wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+                        | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES),
+                ..Default::default()
+            },
+        )
     }
 
     /// Clears all of `texture` to `color`.
@@ -1469,6 +1472,7 @@ struct ReferenceParams { peak: f32, unused: f32, world: f32, debug: f32, share: 
     }
 
     #[test]
+    #[ignore = "daily"]
     fn direct_light_matches_the_legacy_non_float_display_below_the_tone_knee() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = gpu() else {
@@ -1562,6 +1566,7 @@ struct ReferenceParams { peak: f32, unused: f32, world: f32, debug: f32, share: 
     /// reaches them: the scene's up to a display at it, so there nothing differs; above it the
     /// display's, up to `SUN_CAP`.
     #[test]
+    #[ignore = "daily"]
     fn the_writers_light_is_the_same_on_every_display_but_the_suns_disc() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = gpu() else {
@@ -1600,6 +1605,7 @@ struct ReferenceParams { peak: f32, unused: f32, world: f32, debug: f32, share: 
     /// EETF, keeping hue, after holding light above S at S. Checkpoints are worked out apart
     /// from the shader, in f64 from SMPTE ST 2084 and BT.2390.
     #[test]
+    #[ignore = "daily"]
     fn the_tone_curve_maps_the_scene_peak_onto_the_display() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = gpu() else {
@@ -1799,6 +1805,7 @@ struct ReferenceParams { peak: f32, unused: f32, world: f32, debug: f32, share: 
     /// stays, each swapchain gets the same light in its own encoding, and the HDR10 capture
     /// and the HDR10 picture after the switch back are the ones before it.
     #[test]
+    #[ignore = "daily"]
     fn a_switched_encoding_keeps_the_tuning_and_shows_the_same_light() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = gpu() else {
@@ -1889,6 +1896,7 @@ struct ReferenceParams { peak: f32, unused: f32, world: f32, debug: f32, share: 
     /// share of it. Both outputs show the same light, grey or coloured: scRGB's, decoded to
     /// BT.2020, is HDR10's.
     #[test]
+    #[ignore = "daily"]
     fn the_black_level_lift_follows_bt2390_in_pq_and_scrgb() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = gpu() else {
@@ -2006,6 +2014,7 @@ struct ReferenceParams { peak: f32, unused: f32, world: f32, debug: f32, share: 
     }
 
     #[test]
+    #[ignore = "daily"]
     fn a_scaled_screenshot_shoots_at_its_size_and_leaves_the_window_its_own_targets() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = gpu() else {
@@ -2033,6 +2042,7 @@ struct ReferenceParams { peak: f32, unused: f32, world: f32, debug: f32, share: 
     }
 
     #[test]
+    #[ignore = "daily"]
     fn sdr_screenshots_roll_off_the_world_and_keep_the_hud_as_drawn() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = gpu() else {
@@ -2161,6 +2171,7 @@ struct ReferenceParams { peak: f32, unused: f32, world: f32, debug: f32, share: 
     }
 
     #[test]
+    #[ignore = "daily"]
     fn the_hud_lays_over_the_worlds_light_by_its_coverage() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = gpu() else {
@@ -2218,6 +2229,7 @@ struct ReferenceParams { peak: f32, unused: f32, world: f32, debug: f32, share: 
     /// On the frame without the HUD's layer, the HUD at UI Brightness reaches its nits, and
     /// above the peak stops there, as on the layered frame.
     #[test]
+    #[ignore = "daily"]
     fn the_hud_at_ui_brightness_stops_at_the_peak() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = gpu() else {
@@ -2261,6 +2273,7 @@ struct ReferenceParams { peak: f32, unused: f32, world: f32, debug: f32, share: 
     }
 
     #[test]
+    #[ignore = "daily"]
     fn the_menu_blur_keeps_the_light_it_blurs() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = gpu() else {

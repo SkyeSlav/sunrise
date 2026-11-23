@@ -41,7 +41,7 @@ impl Screen for Probe {
                 SLIDER,
                 "Level".to_owned(),
                 Value::Slider {
-                    position: self.slider,
+                    position: f64::from(self.slider),
                     steps: Some(10),
                     text: s.fov.to_string(),
                 },
@@ -94,8 +94,8 @@ impl Screen for Probe {
         s.fov = before.fov;
         Vec::new()
     }
-    fn slide(&mut self, _: &mut Settings, _: u32, position: f32) {
-        self.slider = position;
+    fn slide(&mut self, _: &mut Settings, _: u32, position: f64) {
+        self.slider = position as f32;
     }
     fn wheel_step(&mut self, _: &mut Settings, row: u32, _: bool) -> Option<Vec<Output>> {
         (row == CHOICE).then(|| {
@@ -288,8 +288,9 @@ fn one_scroll_path_moves_the_list_for_wheel_and_stick_alike() {
     let mut s = Settings::default();
     let mut shell = Shell::<Probe>::default();
     let rate = SCROLL_RATE;
-    // The wheel away from any row, and `scroll`, which a stick and a D-pad use.
-    shell.wheel(&mut s, SIZE, (0.0, 0.0), -1.0);
+    // Wheel over the list and `scroll`, which a stick and a D-pad use.
+    let over_list = middle_of(&mut shell, CHOICE, SIZE);
+    assert!(shell.wheel(&mut s, SIZE, over_list, -1.0).0);
     assert_eq!(shell.scroll.amount, rate);
     shell.scroll(&s, SIZE, -2.0);
     assert_eq!(shell.scroll.amount, 3.0 * rate);
@@ -307,13 +308,14 @@ fn the_wheel_steps_a_row_only_with_the_extra_on_and_only_where_the_screen_says()
     assert_eq!(shell.scroll.amount, SCROLL_RATE);
     s.extras.wheel_cycles_settings = true;
     shell.scroll.amount = 0.0;
-    let outputs = shell.wheel(&mut s, SIZE, over_choice, -1.0);
+    let (handled, outputs) = shell.wheel(&mut s, SIZE, over_choice, -1.0);
+    assert!(handled);
     assert_eq!(outputs, vec![CHANGED]);
     assert_eq!(shell.screen.choice, 1);
     assert_eq!(shell.scroll.amount, 0.0);
     // A row the screen doesn't step scrolls, the greyed one too.
     let over_grey = middle_of(&mut shell, GREY, SIZE);
-    assert!(shell.wheel(&mut s, SIZE, over_grey, -1.0).is_empty());
+    assert!(shell.wheel(&mut s, SIZE, over_grey, -1.0).1.is_empty());
     assert_eq!(shell.scroll.amount, SCROLL_RATE);
 }
 

@@ -41,13 +41,13 @@ fn biome_key_world_install_reload_and_unavailable_sides() {
                 game.world_tables = game
                     .stage_world_tables(&packs, previous.is_some(), &resources)
                     .unwrap()
-                    .0;
+                    .tables;
                 let plains = game.biome_key("minecraft:plains").unwrap();
-                assert_eq!(plains.id(game), Ok("minecraft:plains".into()));
+                assert_eq!(plains.id(game), Ok("minecraft:plains"));
                 assert_eq!(game.biome_key("test:nope"), None);
                 assert_eq!(
                     plains.data(game, &VillagerTypes),
-                    Ok(Some(Tag::Compound(std::collections::BTreeMap::from([(
+                    Ok(Some(Tag::Compound(sunrise_core::nbt::Compound::from([(
                         "villager_type".into(),
                         Tag::String(value.into())
                     )]))))

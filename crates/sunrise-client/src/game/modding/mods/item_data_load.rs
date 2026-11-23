@@ -63,12 +63,7 @@ pub(in super::super) fn load_item_data(
     role: ExecutionRole,
     owning_load: OwningLoad,
 ) -> sunrise_client::Result<ItemData> {
-    let phase = mod_api::__private::PhaseOwner::scope(if role.is_client() {
-        mod_api::__private::ModPhase::Setup
-    } else {
-        mod_api::__private::ModPhase::World
-    });
-    let _reload = phase.reloading()?;
+    let _ = role;
     let inputs = LoadInputs::new(builtin_registry_names(root)?, Game::mod_data_root());
     let inventory = sunrise_mod_package::enabled::EnabledMods::read(root)?;
     let ids: Vec<_> = if role.is_logical_server() {
@@ -111,23 +106,17 @@ mod tests {
             )
         };
         assert_eq!(
-            make(OwningLoad::Startup)
-                .setting("reader", "count")
-                .as_deref(),
+            make(OwningLoad::Startup).setting("reader", "count"),
             Some("3")
         );
         std::fs::write(reader.join("count"), "7").unwrap();
         assert_eq!(
-            make(OwningLoad::Later)
-                .setting("reader", "count")
-                .as_deref(),
+            make(OwningLoad::Later).setting("reader", "count"),
             Some("7")
         );
         // Another initial consumer still has the registration publication.
         assert_eq!(
-            make(OwningLoad::Startup)
-                .setting("reader", "count")
-                .as_deref(),
+            make(OwningLoad::Startup).setting("reader", "count"),
             Some("3")
         );
         assert_eq!(make(OwningLoad::Later).setting("reader", "absent"), None);
@@ -143,6 +132,6 @@ mod tests {
         }
         let fallback =
             OwningLoad::Startup.context(DataLoadOrigin::ClientPreload, inputs, &["reader"], None);
-        assert_eq!(fallback.setting("reader", "count").as_deref(), Some("7"));
+        assert_eq!(fallback.setting("reader", "count"), Some("7"));
     }
 }

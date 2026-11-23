@@ -7,7 +7,6 @@ use crate::{Identifier, UnspawnedMobError, UnspawnedMobRef, WorldEpoch};
 /// next listener, a nested dispatch or the callback's return expires it. Acquire it again in each
 /// callback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
 #[non_exhaustive]
 pub struct PendingChildrenRef {
     pub(crate) epoch: WorldEpoch,
@@ -38,7 +37,6 @@ impl PendingChildrenRef {
 /// A detached, action-owned child. Append or replacement consumes its ownership exactly
 /// once, even if a mod retained a copy of this token. It cannot name a resident entity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
 #[non_exhaustive]
 pub struct UnattachedMob {
     pub(crate) mob: UnspawnedMobRef,
@@ -97,9 +95,9 @@ impl PendingMobSpec {
     }
 }
 
-/// An editor lent beside a collection. Native and wasm use the same scoped operations and
-/// ownership checks. Reads and rejected operations leave the collection unchanged. Accepted
-/// edits are visible to the next listener; unattached children die when this lease ends.
+/// An editor lent beside a collection. Reads and rejected operations leave the collection
+/// unchanged. Accepted edits are visible to the next listener; unattached children die
+/// when this lease ends.
 /// This edits only nonresident objects; the action's transaction controls eventual insertion.
 pub trait PendingChildrenEdits {
     /// The collection for this listener. Call it in every callback: a lease from an earlier

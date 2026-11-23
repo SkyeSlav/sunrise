@@ -53,6 +53,12 @@ fn a_pack_biome_is_sent_with_its_data_and_read_back_by_a_client() {
     let pack: Value = serde_json::from_str(r##"{"effects":{"grass_color":"#123456"}}"##).unwrap();
     let world = base.with_packs([("minecraft:tundra_x", &pack)]);
     let defaults = sunrise_world::item_defaults::read(&root).unwrap();
+    let items = sunrise_client::items::Items::catalog(
+        &root,
+        &sunrise_world::loot::PackOverlay::NONE,
+        &defaults,
+    )
+    .unwrap();
     let sync = SyncData::load_with(
         &root,
         &sunrise_world::loot::PackOverlay::NONE,
@@ -60,6 +66,7 @@ fn a_pack_biome_is_sent_with_its_data_and_read_back_by_a_client() {
         &defaults,
         &sunrise_client::crafting::ResolvedSources::load(
             &root,
+            &items,
             &sunrise_world::loot::PackOverlay::NONE,
             &server_load(),
         )
@@ -174,12 +181,19 @@ fn a_biome_the_mods_modifiers_changed_is_sent_to_a_client_that_knows_the_vanilla
     )
     .unwrap();
     let defaults = sunrise_world::item_defaults::read(&root).unwrap();
+    let items = sunrise_client::items::Items::catalog(
+        &root,
+        &sunrise_world::loot::PackOverlay::NONE,
+        &defaults,
+    )
+    .unwrap();
     let sync = SyncData::load(
         &root,
         &sunrise_world::loot::PackOverlay::NONE,
         &defaults,
         &sunrise_client::crafting::ResolvedSources::load(
             &root,
+            &items,
             &sunrise_world::loot::PackOverlay::NONE,
             &server_load(),
         )

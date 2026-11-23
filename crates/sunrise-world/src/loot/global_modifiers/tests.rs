@@ -33,7 +33,7 @@ fn winning_files_mask_lower_readers_and_fail_independently() {
     files.push(file(
         "test:shadow",
         "high",
-        json!({"neoforge:conditions":[{"type":"neoforge:not","value":{"type":"neoforge:true"}}]}),
+        json!({"neoforge:conditions":[{"type":"neoforge:not","value":{"type":"neoforge:always"}}]}),
     ));
     files.push(ModifierFile {
         id: "test:broken".into(),

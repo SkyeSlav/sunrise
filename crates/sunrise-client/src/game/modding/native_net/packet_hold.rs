@@ -1,21 +1,54 @@
 //! Actor-owned holds. Overflow and partial publication are isolated in Holds.
 use super::Game;
+use crate::game::remote::{PendingCauldron, Remote};
 use mod_api::{HoldError, HoldId, SendPacketError, ServerboundPlayPacket};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
-use sunrise_protocol::{buf::Writer, packets::play::Serverbound as S};
+use sunrise_core::vanilla_bytes::Writer;
+use sunrise_protocol::packets::play::Serverbound as S;
 
 const PACKETS: usize = 256;
 const BYTES: usize = 1_048_576;
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Default)]
-pub(in crate::game) struct Holds {
+pub(in crate::game) struct HeldPlay {
+    body: Vec<u8>,
+    cauldron: Option<(i64, PendingCauldron)>,
+}
+
+impl AsRef<[u8]> for HeldPlay {
+    fn as_ref(&self) -> &[u8] {
+        &self.body
+    }
+}
+
+impl HeldPlay {
+    fn publish(self, remote: &Remote, incarnation: (u64, u64)) -> Result<(), SendPacketError> {
+        remote.session.send_held_body(self.body, incarnation)?;
+        if let Some((receipt, click)) = self.cauldron {
+            remote.pending_cauldrons.borrow_mut().insert(receipt, click);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+pub(in crate::game) struct Holds<T = HeldPlay> {
     incarnation: Option<(u64, u64)>,
-    active: Option<(HoldId, Vec<Vec<u8>>, usize)>,
+    active: Option<(HoldId, Vec<T>, usize)>,
     overflowed: HashSet<HoldId>,
 }
-impl Holds {
+impl Holds<HeldPlay> {
+    pub(in crate::game) fn clear_cauldron_continuations(&mut self) {
+        if let Some((_, packets, _)) = &mut self.active {
+            for packet in packets {
+                packet.cauldron = None;
+            }
+        }
+    }
+}
+impl<T: AsRef<[u8]> + Default> Holds<T> {
     pub(in crate::game) fn clear(&mut self) {
         *self = Self::default();
     }
@@ -36,7 +69,7 @@ impl Holds {
         self.active = Some((id, Vec::new(), 0));
         Ok(id)
     }
-    fn take(&mut self, id: HoldId) -> Result<Vec<Vec<u8>>, HoldError> {
+    fn take(&mut self, id: HoldId) -> Result<Vec<T>, HoldError> {
         if self.overflowed.remove(&id) {
             return Err(Self::limit());
         }
@@ -54,20 +87,21 @@ impl Holds {
     // Overflow policy: end and flush, then report Limit on the id once.
     fn queue(
         &mut self,
-        body: Vec<u8>,
-        send: impl FnMut(Vec<u8>) -> Result<(), SendPacketError>,
+        packet: T,
+        send: impl FnMut(T) -> Result<(), SendPacketError>,
     ) -> Result<usize, HoldError> {
         let Some((id, packets, bytes)) = self.active.as_mut() else {
-            return Self::publish(vec![body], send);
+            return Self::publish([packet], send);
         };
-        if packets.len() < PACKETS && body.len() <= BYTES.saturating_sub(*bytes) {
-            *bytes += body.len();
-            packets.push(body);
+        let len = packet.as_ref().len();
+        if packets.len() < PACKETS && len <= BYTES.saturating_sub(*bytes) {
+            *bytes += len;
+            packets.push(packet);
             return Ok(0);
         }
         self.overflowed.insert(*id);
         let mut packets = self.active.take().unwrap().1;
-        packets.push(body);
+        packets.push(packet);
         let result = Self::publish(packets, send);
         if matches!(
             &result,
@@ -82,14 +116,13 @@ impl Holds {
     }
     // Send refusal policy: discard the tail and report the published prefix.
     fn publish(
-        packets: Vec<Vec<u8>>,
-        mut send: impl FnMut(Vec<u8>) -> Result<(), SendPacketError>,
+        packets: impl IntoIterator<Item = T>,
+        mut send: impl FnMut(T) -> Result<(), SendPacketError>,
     ) -> Result<usize, HoldError> {
-        let count = packets.len();
-        for (sent, body) in packets.into_iter().enumerate() {
-            send(body).map_err(|error| HoldError::Send { sent, error })?;
-        }
-        Ok(count)
+        packets.into_iter().try_fold(0, |sent, packet| {
+            send(packet).map_err(|error| HoldError::Send { sent, error })?;
+            Ok(sent + 1)
+        })
     }
 }
 
@@ -113,33 +146,45 @@ impl Game<'_> {
             let packets = holds.take(hold)?;
             (holds.incarnation.ok_or(HoldError::Unknown)?, packets)
         };
-        let count = packets.len();
         let remote = self.remote.as_ref().ok_or(HoldError::Unknown)?;
-        Holds::publish(packets, |body| {
-            remote.session.send_held_body(body, incarnation)
-        })?;
-        Ok(count)
+        Holds::publish(packets, |packet| packet.publish(remote, incarnation))
     }
     pub(in crate::game) fn drop_held(&mut self, hold: HoldId) -> Result<(), HoldError> {
         let mut holds = self.native_net.holds.borrow_mut();
         holds.sync(self.hold_incarnation());
         holds.take(hold).map(|_| ())
     }
-    pub(in crate::game) fn send_or_hold_play(&self, packet: S) {
+    /// The logical play packet already passed the client send hook. A cauldron
+    /// continuation travels with its envelope; only a published packet expects a reply.
+    pub(in crate::game) fn send_or_hold_play(
+        &self,
+        packet: S,
+        cauldron: Option<(i64, PendingCauldron)>,
+    ) {
         let Some(remote) = &self.remote else {
             return;
         };
         let mut holds = self.native_net.holds.borrow_mut();
         holds.sync(self.hold_incarnation());
-        if holds.active.is_none() {
+        let tracked = cauldron.is_some();
+        if holds.active.is_none() && !tracked {
             remote.session.send(packet);
             return;
         }
-        let incarnation = holds.incarnation.expect("active hold has an incarnation");
-        if let Ok(body) = packet.try_encode() {
-            let _ = holds.queue(body, |body| {
-                remote.session.send_held_body(body, incarnation)
-            });
+        let Some(incarnation) = holds.incarnation else {
+            return;
+        };
+        match packet.try_encode() {
+            Ok(body) => {
+                let result = holds.queue(HeldPlay { body, cauldron }, |packet| {
+                    packet.publish(remote, incarnation)
+                });
+                if tracked && let Err(error) = result {
+                    log::warn!("cauldron use request was not published: {error:?}");
+                }
+            }
+            Err(error) if tracked => log::warn!("cauldron use request encoding failed: {error}"),
+            Err(_) => {}
         }
     }
     pub(in crate::game) fn publish_mod_held(
@@ -170,18 +215,20 @@ impl Game<'_> {
         body.varint(id as i32);
         body.bytes(&packet.body);
         let incarnation = holds.incarnation.expect("active hold has an incarnation");
-        let _ = holds.queue(body.data, |body| {
-            remote.session.send_held_body(body, incarnation)
-        });
+        let packet = HeldPlay {
+            body: body.data,
+            cauldron: None,
+        };
+        let _ = holds.queue(packet, |packet| packet.publish(remote, incarnation));
     }
 }
 impl Game<'_> {
-    /// `Connection.send` for the game's play packets: a mod may cancel one
-    /// (`client_packet_send`), and the server never hears of it. True when queued.
+    /// `Connection.send` for the game's play packets. True if there is a remote
+    /// and `client_packet_send` did not cancel; publication can still be held or refused.
     pub(in crate::game) fn send_play(&self, packet: S) -> bool {
         let queued = self.remote.is_some() && !self.client_packet_send_canceled(&packet);
         if queued {
-            self.send_or_hold_play(packet);
+            self.send_or_hold_play(packet, None);
         }
         queued
     }

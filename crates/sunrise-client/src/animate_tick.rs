@@ -480,6 +480,10 @@ pub struct AnimateContext<'a> {
     pub thundering: bool,
     /// The dimension has `water_evaporates` and drips lava from dripstone (the Nether).
     pub ultrawarm: bool,
+    /// Whether a picked state's block has a mod part answering `animate_tick`, asked after the
+    /// block's vanilla effects: [`AnimateSampling::run`] stops there for the game to call it.
+    /// `None` (no part answers it) asks nothing.
+    pub block_parts: Option<&'a dyn Fn(BlockStateId) -> bool>,
 }
 
 /// `ClientLevel.getMarkerParticleTarget`: only the selected main-hand item counts.
@@ -593,16 +597,71 @@ fn redstone(engine: &mut ParticleEngine, p: [f64; 3]) {
     engine.add(&ParticleOptions::dust([1.0, 0.0, 0.0], 1.0), p, [0.0; 3]);
 }
 
-/// `ClientLevel.animateTick` around the player's block position.
+/// `ClientLevel.animateTick` around the player's block position. A pick whose block has a part
+/// (`AnimateContext::block_parts`) gets no part call here: the game runs the tick through
+/// [`AnimateSampling`] to call them.
 pub fn animate_tick(
     tables: &AnimateTables,
     engine: &mut ParticleEngine,
     ctx: &AnimateContext,
     player: [i32; 3],
 ) {
-    for _ in 0..667 {
-        do_animate_tick(tables, engine, ctx, player, 16, true);
-        do_animate_tick(tables, engine, ctx, player, 32, true);
+    let mut sampling = AnimateSampling::new(player);
+    while sampling.run(tables, engine, ctx).is_some() {}
+}
+
+/// The picks of one `ClientLevel.animateTick` (667 within 16 blocks and 667 within 32,
+/// alternating), run in steps so the game can call a mod block's part (`Block.animateTick`) in
+/// the middle of its pick, where vanilla calls a block's `animateTick`: after the block's own
+/// effects, before its fluid's and before the next pick.
+pub struct AnimateSampling {
+    player: [i32; 3],
+    /// Picks made so far, of the tick's `2 * 667`.
+    picks: u32,
+    /// The pick [`AnimateSampling::run`] stopped in for its part: its state and position.
+    rest: Option<(BlockStateId, [i32; 3])>,
+}
+
+impl AnimateSampling {
+    /// The picks of one tick around the player's block position.
+    pub fn new(player: [i32; 3]) -> Self {
+        Self {
+            player,
+            picks: 0,
+            rest: None,
+        }
+    }
+    /// Some pick made already.
+    pub fn started(&self) -> bool {
+        self.picks > 0
+    }
+    /// Picks on until one whose block has a part (`ctx.block_parts`), and returns its state and
+    /// position after the block's own effects: the caller calls the part, then runs again,
+    /// which ends that pick (the position's pack emitters, fluid, marker and biome ambience)
+    /// before making the next. `None` once the tick's picks are all done.
+    pub fn run(
+        &mut self,
+        tables: &AnimateTables,
+        engine: &mut ParticleEngine,
+        ctx: &AnimateContext,
+    ) -> Option<(BlockStateId, [i32; 3])> {
+        if let Some((state, pos)) = self.rest.take() {
+            animate_rest(tables, engine, ctx, state, pos, true);
+        }
+        while self.picks < 2 * 667 {
+            let r = if self.picks.is_multiple_of(2) { 16 } else { 32 };
+            self.picks += 1;
+            let pos = pick(engine, self.player, r);
+            let Some((state, part)) = animate_block(tables, engine, ctx, pos, self.player) else {
+                continue;
+            };
+            if part {
+                self.rest = Some((state, pos));
+                return Some((state, pos));
+            }
+            animate_rest(tables, engine, ctx, state, pos, true);
+        }
+        None
     }
 }
 
@@ -632,6 +691,15 @@ pub fn animate_scene(
 fn next_int(r: &mut LegacyRandom, bound: i32) -> i32 {
     r.next_int_bound(bound).unwrap_or(0)
 }
+/// `ClientLevel.doAnimateTick`'s position: within `r` of `center` on each axis.
+fn pick(engine: &mut ParticleEngine, center: [i32; 3], r: i32) -> [i32; 3] {
+    let random = engine.random();
+    let x = center[0] + next_int(random, r) - next_int(random, r);
+    let y = center[1] + next_int(random, r) - next_int(random, r);
+    let z = center[2] + next_int(random, r) - next_int(random, r);
+    [x, y, z]
+}
+#[cfg(test)]
 fn do_animate_tick(
     tables: &AnimateTables,
     engine: &mut ParticleEngine,
@@ -640,15 +708,12 @@ fn do_animate_tick(
     r: i32,
     level: bool,
 ) {
-    let random = engine.random();
-    let x = center[0] + next_int(random, r) - next_int(random, r);
-    let y = center[1] + next_int(random, r) - next_int(random, r);
-    let z = center[2] + next_int(random, r) - next_int(random, r);
-    animate_at(tables, engine, ctx, [x, y, z], center, level);
+    let pos = pick(engine, center, r);
+    animate_at(tables, engine, ctx, pos, center, level);
 }
 
 /// One picked position's animate tick: its block's and fluid's, and with `level` the
-/// level's own (pack emitters, the creative marker, biome ambience).
+/// level's own (pack emitters, the creative marker, biome ambience). No block part is called.
 fn animate_at(
     tables: &AnimateTables,
     engine: &mut ParticleEngine,
@@ -657,15 +722,45 @@ fn animate_at(
     center: [i32; 3],
     level: bool,
 ) {
-    let [x, y, z] = pos;
-    if !ctx.world.loaded(x, z) {
-        return;
+    if let Some((state, _)) = animate_block(tables, engine, ctx, pos, center) {
+        animate_rest(tables, engine, ctx, state, pos, level);
+    }
+}
+
+/// A picked position's block's own animate tick: its state, and whether a mod block's part
+/// (`ctx.block_parts`) is to be called next, before [`animate_rest`]. `None`, with nothing
+/// drawn, where the position isn't loaded.
+fn animate_block(
+    tables: &AnimateTables,
+    engine: &mut ParticleEngine,
+    ctx: &AnimateContext,
+    pos: [i32; 3],
+    center: [i32; 3],
+) -> Option<(BlockStateId, bool)> {
+    if !ctx.world.loaded(pos[0], pos[2]) {
+        return None;
     }
     let state = ctx.state(pos);
     // A Polytone block modifier's `disable_particles` stops the block's own animate tick.
-    if !engine.polytone_disables_particles(state) {
-        block_animate_tick(tables, engine, ctx, state, pos, center);
+    if engine.polytone_disables_particles(state) {
+        return Some((state, false));
     }
+    block_animate_tick(tables, engine, ctx, state, pos, center);
+    Some((state, ctx.block_parts.is_some_and(|parts| parts(state))))
+}
+
+/// The rest of a picked position's animate tick, after its block's (and the block's parts'):
+/// with `level` the pack emitters, then its fluid's, then with `level` the creative marker and
+/// the biome ambience.
+fn animate_rest(
+    tables: &AnimateTables,
+    engine: &mut ParticleEngine,
+    ctx: &AnimateContext,
+    state: BlockStateId,
+    pos: [i32; 3],
+    level: bool,
+) {
+    let [x, y, z] = pos;
     // Resource packs' Polytone block emitters (#11486): nothing without such a pack.
     if level {
         let level = ParticleLevel {
@@ -1997,58 +2092,65 @@ pub fn campfire_particles<'a>(
     cooking: &dyn Fn([i32; 3]) -> [bool; 4],
 ) {
     for &(pos, state) in blocks {
-        if !tables.is_lit_campfire(state) {
+        campfire_particle_tick(tables, engine, ctx.registry, pos, state, cooking(pos));
+    }
+}
+/// `CampfireBlockEntity.particleTick` of the campfire at `pos` in `state`, if it is lit.
+pub fn campfire_particle_tick(
+    tables: &AnimateTables,
+    engine: &mut ParticleEngine,
+    registry: &BlockRegistry,
+    pos: [i32; 3],
+    state: u32,
+    occupied: [bool; 4],
+) {
+    if !tables.is_lit_campfire(state) {
+        return;
+    }
+    let properties = registry.state(BlockStateId(state)).map(|s| &s.properties);
+    let prop = |k: &str| properties.and_then(|p| p.get(k)).map(String::as_str);
+    let signal = prop("signal_fire") == Some("true");
+    // Direction.get2DDataValue: south, west, north, east.
+    let rotation = match prop("facing") {
+        Some("west") => 1,
+        Some("north") => 2,
+        Some("east") => 3,
+        _ => 0,
+    };
+    let r = engine.level_random();
+    if r.next_float() < 0.11 {
+        // `for (int i = 0; i < random.nextInt(2) + 2; i++)`: the iteration
+        // bound is drawn again on every pass, so the loop keeps asking the
+        // random whether to make one more puff.
+        let mut made = 0;
+        loop {
+            let count = next_int(engine.level_random(), 2) + 2;
+            if made >= count {
+                break;
+            }
+            make_campfire_smoke(engine, pos, signal, false);
+            made += 1;
+        }
+    }
+    // The smoke over each cooking item, at the slot's corner of the fire.
+    for (slot, _) in occupied.iter().enumerate().filter(|(_, held)| **held) {
+        if engine.level_random().next_float() >= 0.2 {
             continue;
         }
-        let properties = ctx
-            .registry
-            .state(BlockStateId(state))
-            .map(|s| &s.properties);
-        let prop = |k: &str| properties.and_then(|p| p.get(k)).map(String::as_str);
-        let signal = prop("signal_fire") == Some("true");
-        // Direction.get2DDataValue: south, west, north, east.
-        let rotation = match prop("facing") {
-            Some("west") => 1,
-            Some("north") => 2,
-            Some("east") => 3,
-            _ => 0,
+        // Direction.from2DDataValue((slot + rotation) % 4) and its clockwise side.
+        let (step, clockwise) = match (slot + rotation) % 4 {
+            0 => ([0.0, 1.0], [-1.0, 0.0]),
+            1 => ([-1.0, 0.0], [0.0, -1.0]),
+            2 => ([0.0, -1.0], [1.0, 0.0]),
+            _ => ([1.0, 0.0], [0.0, 1.0]),
         };
-        let r = engine.random();
-        if r.next_float() < 0.11 {
-            // `for (int i = 0; i < random.nextInt(2) + 2; i++)`: the iteration
-            // bound is drawn again on every pass, so the loop keeps asking the
-            // random whether to make one more puff.
-            let mut made = 0;
-            loop {
-                let count = next_int(engine.random(), 2) + 2;
-                if made >= count {
-                    break;
-                }
-                make_campfire_smoke(engine, pos, signal, false);
-                made += 1;
-            }
-        }
-        // The smoke over each cooking item, at the slot's corner of the fire.
-        let occupied = cooking(pos);
-        for (slot, _) in occupied.iter().enumerate().filter(|(_, held)| **held) {
-            if engine.random().next_float() >= 0.2 {
-                continue;
-            }
-            // Direction.from2DDataValue((slot + rotation) % 4) and its clockwise side.
-            let (step, clockwise) = match (slot + rotation) % 4 {
-                0 => ([0.0, 1.0], [-1.0, 0.0]),
-                1 => ([-1.0, 0.0], [0.0, -1.0]),
-                2 => ([0.0, -1.0], [1.0, 0.0]),
-                _ => ([1.0, 0.0], [0.0, 1.0]),
-            };
-            let at = [
-                f64::from(pos[0]) + 0.5 - step[0] * 0.3125 + clockwise[0] * 0.3125,
-                f64::from(pos[1]) + 0.5,
-                f64::from(pos[2]) + 0.5 - step[1] * 0.3125 + clockwise[1] * 0.3125,
-            ];
-            for _ in 0..4 {
-                add(engine, T::Smoke, at, [0.0, 5.0e-4, 0.0]);
-            }
+        let at = [
+            f64::from(pos[0]) + 0.5 - step[0] * 0.3125 + clockwise[0] * 0.3125,
+            f64::from(pos[1]) + 0.5,
+            f64::from(pos[2]) + 0.5 - step[1] * 0.3125 + clockwise[1] * 0.3125,
+        ];
+        for _ in 0..4 {
+            add(engine, T::Smoke, at, [0.0, 5.0e-4, 0.0]);
         }
     }
 }
@@ -2062,7 +2164,7 @@ pub fn make_campfire_smoke(
     signal: bool,
     smoking: bool,
 ) {
-    let r = engine.random();
+    let r = engine.level_random();
     let sign = |r: &mut LegacyRandom| if r.next_boolean() { 1.0 } else { -1.0 };
     let dx = r.next_double() / 3.0;
     let x = f64::from(pos[0]) + 0.5 + dx * sign(r);
@@ -2082,7 +2184,7 @@ pub fn make_campfire_smoke(
         true,
     );
     if smoking {
-        let r = engine.random();
+        let r = engine.level_random();
         let dx = r.next_double() / 4.0 * sign(r);
         let dz = r.next_double() / 4.0 * sign(r);
         let at = [
@@ -2181,11 +2283,26 @@ mod tests {
         assert_eq!(run(0, near), (20, 20), "All");
         assert_eq!(run(2, near), (20, 0), "Minimal");
         assert_eq!(run(0, [100.5, 65.0, 0.5]), (20, 0), "100 blocks away");
-        // Decreased: per puff the cosy smoke's roll, then the plain smoke's.
+        // Decreased: per puff the level random draws the cosy smoke's place, rolls it, draws the
+        // plain smoke's place, then rolls that.
         let mut level = LegacyRandom::new(9);
         let kept = (0..20)
             .filter(|_| {
+                for draw in [0, 1, 0, 0, 0, 1] {
+                    if draw == 0 {
+                        level.next_double();
+                    } else {
+                        level.next_boolean();
+                    }
+                }
                 level.next_int_bound(3).unwrap();
+                for draw in [0, 1, 0, 1] {
+                    if draw == 0 {
+                        level.next_double();
+                    } else {
+                        level.next_boolean();
+                    }
+                }
                 level.next_int_bound(3).unwrap() != 0
             })
             .count();
@@ -2294,6 +2411,7 @@ mod tests {
                 thundering: false,
                 ultrawarm: false,
                 enchant_power: &EnchantPower::default(),
+                block_parts: None,
             };
             let mut engine = ParticleEngine::new(
                 &crate::resource_source::ResourceSource::directory(Path::new("").to_path_buf()),
@@ -2376,3 +2494,7 @@ mod tests {
 #[cfg(test)]
 #[path = "animate_tick_biome_tests.rs"]
 mod biome_particle_tests;
+
+#[cfg(test)]
+#[path = "animate_tick_parts_tests.rs"]
+mod parts_tests;

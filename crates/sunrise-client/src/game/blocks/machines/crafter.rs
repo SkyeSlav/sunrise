@@ -130,7 +130,9 @@ impl Game<'_> {
         // The remainders come from the grid as it was before anything moved.
         let remainders = self
             .recipes()
-            .remainders(&recipe, &grid, 3, &|s| self.crafting_remainder(s));
+            .remainders(&self.loop_context, &recipe, &grid, 3, &|s| {
+                self.crafting_remainder(s)
+            });
         self.crafter_eject(key, facing, result, &recipe);
         for rest in remainders.into_iter().flatten() {
             self.crafter_eject(key, facing, rest, &recipe);
@@ -171,15 +173,14 @@ impl Game<'_> {
             if rest.count == 0 {
                 return;
             }
-            self.spawn_dispensed(pos, facing, rest, 6);
+            self.spawn_dispensed(pos, facing, rest);
             self.crafter_crafted_notice(pos, facing, recipe);
             return;
         }
         self.with_container_at(target, side, |game, into| match into {
             ContainerTarget::Part(part) => {
                 // `insertCrafterOutput`: the handler takes what it will; the rest is dispensed.
-                let at = [target.0, target.1, target.2];
-                rest.count -= game.put_into_part(&part, at, &rest, |_, _| Some(()));
+                rest.count -= game.put_into_part(&part, &rest, |_, _| Some(()));
             }
             ContainerTarget::View(into) => {
                 let into_is_crafter = game.crafter_at(target).is_some();
@@ -189,7 +190,7 @@ impl Game<'_> {
         if rest.count == 0 {
             return;
         }
-        self.spawn_dispensed(pos, facing, rest, 6);
+        self.spawn_dispensed(pos, facing, rest);
         self.crafter_crafted_notice(pos, facing, recipe);
     }
     /// The trigger and the sound and particle events after an ejected result.
@@ -215,6 +216,8 @@ impl Game<'_> {
                     origin: me.position,
                     tool: None,
                     block_pos: None,
+                    target: None,
+                    interacting: None,
                 };
                 adv::conditions(&c["player"], &ctx, w) && recipe_matches(&c["recipes"], &id)
             });

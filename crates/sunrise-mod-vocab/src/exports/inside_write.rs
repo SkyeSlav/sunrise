@@ -1,4 +1,7 @@
 pub use world::inside_write::{
-    EntityLookup, EntityWrite, HurtSourceError, InsideEffect, InsideEffects, InsideWrite,
-    PlannedInside,
+    EntityWrite, InsideEffect, InsideEffects, InsideWrite, PlannedInside,
 };
+
+mod __private {
+    pub use crate::world::inside_write::{InsideAction, InsideCollector};
+}

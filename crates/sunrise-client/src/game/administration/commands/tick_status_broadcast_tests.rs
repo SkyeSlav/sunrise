@@ -56,8 +56,9 @@ fn admin_line(message: serde_json::Value) -> serde_json::Value {
 }
 
 /// A LAN world the host opened, with one other operator (conn 7) connected.
-fn lan_game() -> (Game<'static>, mpsc::Receiver<sunrise_client::lan::Out>) {
-    let resources = Box::leak(Box::new(None));
+fn lan_game<'a>(
+    resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>,
+) -> (Game<'a>, mpsc::Receiver<sunrise_client::lan::Out>) {
     let mut game = crate::game::game_tests::tests::server_game(resources);
     game.build_registries();
     game.set_allow_commands(true);
@@ -117,7 +118,8 @@ fn lan_game() -> (Game<'static>, mpsc::Receiver<sunrise_client::lan::Out>) {
 #[test]
 #[ignore = "daily"]
 fn tick_status_lines_reach_the_other_operators() {
-    let (mut game, rx) = lan_game();
+    let mut resources = None;
+    let (mut game, rx) = lan_game(&mut resources);
     assert!(game.run_command("tick freeze"));
     assert_eq!(
         flush_to_operator(&mut game, &rx),

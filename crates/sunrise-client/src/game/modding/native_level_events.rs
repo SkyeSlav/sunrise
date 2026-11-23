@@ -22,7 +22,7 @@ fn in_bounds(at: [f64; 3]) -> bool {
 
 /// Whether level event `id` can play with `data`: the events that carry a
 /// block state (2001, 2014, 3008) need `data` to be one of the `states`.
-fn level_event_data_ok(id: i32, data: i32, states: usize) -> bool {
+pub(super) fn level_event_data_ok(id: i32, data: i32, states: usize) -> bool {
     !matches!(id, 2001 | 2014 | 3008) || usize::try_from(data).is_ok_and(|d| d < states)
 }
 
@@ -68,7 +68,12 @@ impl Game<'_> {
         if !level_event_data_ok(id, data, self.res.facts().states.len()) {
             return false;
         }
-        self.level_event_at(id, pos, data);
+        self.emit_level_effect(super::journal_level_write::PendingWrite::Event {
+            level: super::Dim::from_id(level.dimension_id()),
+            id,
+            pos,
+            data,
+        });
         true
     }
     /// Plays the break effect of `state` at `pos` (`Level.levelEvent(2001, pos,
@@ -97,7 +102,12 @@ impl Game<'_> {
         if !level_event_data_ok(id, data, self.res.facts().states.len()) {
             return false;
         }
-        self.global_level_event(id, pos, data);
+        self.emit_level_effect(super::journal_level_write::PendingWrite::GlobalEvent {
+            level: super::Dim::from_id(level.dimension_id()),
+            id,
+            pos,
+            data,
+        });
         true
     }
     /// Sends game event `event` (`minecraft:block_change`...) from `at`, as

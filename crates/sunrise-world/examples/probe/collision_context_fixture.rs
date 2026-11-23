@@ -396,8 +396,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ]
                 .into(),
             };
-            let rule =
-                sunrise_world::block_collision::ScaffoldingCollision::from_state(&state)?.unwrap();
+            let rule = sunrise_world::block_collision::ScaffoldingCollision::from_state(&state)?;
             emit(
                 &mut out,
                 &rule.shape(

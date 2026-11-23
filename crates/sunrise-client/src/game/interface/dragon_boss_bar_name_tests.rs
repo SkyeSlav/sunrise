@@ -6,7 +6,7 @@ use sunrise_client::chunk::Chunk;
 use sunrise_core::geometry::Vec3;
 use sunrise_core::nbt::Tag;
 
-fn end_game() -> Game<'static> {
+fn end_game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -> Game<'a> {
     let root = std::path::PathBuf::from(
         std::env::var_os("SUNRISE_TEST_RESOURCES")
             .expect("set SUNRISE_TEST_RESOURCES to prepared resources"),
@@ -28,7 +28,7 @@ fn end_game() -> Game<'static> {
     let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
     options.resources = root.clone();
     options.execution_role = execution_role::ExecutionRole::IntegratedServer;
-    let res: &'static _ = Box::leak(Box::new(loaded.resources));
+    let res = &*resources.insert(loaded.resources);
     let mut game = Game::new(
         res,
         loaded.pack,
@@ -51,7 +51,8 @@ fn end_game() -> Game<'static> {
 #[test]
 #[ignore = "daily"]
 fn the_dragon_boss_bar_takes_the_dragons_custom_name() {
-    let mut game = end_game();
+    let mut resources = None;
+    let mut game = end_game(&mut resources);
     game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 128.0, 0.5)).unwrap());
     // The chunks `EnderDragonFight.isArenaLoaded` waits for, lit as received
     // chunks are, so the fight's next player scan adopts or makes its dragon.

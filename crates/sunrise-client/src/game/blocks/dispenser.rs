@@ -3,117 +3,50 @@
 //! entities for. A behaviour returns what is left in the slot and the level
 //! event it plays (`DefaultDispenseItemBehavior.dispense` then plays that
 //! event and the smoke animation, event 2000).
+use super::api_values::{TryIntoApi, TryIntoEnginePreservingCount};
 use super::level_sounds::LevelSound;
-use super::{Game, item_abilities::ability};
+use super::{Dim, Game, item_abilities::ability};
 use mod_api::SoundSource;
+use std::ops::ControlFlow;
 use sunrise_client::{
     Result,
+    block_entities::BlockEntityIdentity,
     collisions::SceneCollisions,
     containers::BlockEntity,
     items::{ItemStack, Items},
-    mobs::{Mob, Species, equip::equippable, sulfur_cube},
+    mobs::{Species, equip::equippable, sulfur_cube},
     particles::{ParticleOptions, ParticleType},
     projectiles::{Projectile, ProjectileKind},
 };
-// Its old home, for mixin code that names it here.
-use std::sync::Arc;
 use sunrise_core::{
     geometry::{Aabb, Direction, Vec3},
     position::BlockPos,
     random::RandomSource,
 };
+pub(super) use sunrise_gameplay::dispense_rules::{
+    CLICK, Dispensed, FAIL, Pos, Slot, body_equipment_species, equip_sound, mob_set_slot,
+    mob_slot_item, offset, tipped_effect,
+};
+use sunrise_gameplay::dispense_rules::{
+    LAUNCH, block_box, data_value, mob_can_dispenser_equip, mob_can_use_slot, overlaps,
+    section_order, shrink, step, y_rot,
+};
 use sunrise_world::{
     fluid::FluidKind,
-    level::{PlaceContext, PlaceOutcome},
+    level::{PlaceContext, PlacementSource},
     registry::BlockStateId,
 };
 
-pub(super) type Pos = (i32, i32, i32);
-
-/// The sound event of a plain click, a failed dispense and a launched projectile.
-pub(super) const CLICK: i32 = 1000;
-pub(super) const FAIL: i32 = 1001;
-const LAUNCH: i32 = 1002;
-
-fn step(d: Direction) -> [i32; 3] {
-    match d {
-        Direction::Down => [0, -1, 0],
-        Direction::Up => [0, 1, 0],
-        Direction::North => [0, 0, -1],
-        Direction::South => [0, 0, 1],
-        Direction::West => [-1, 0, 0],
-        Direction::East => [1, 0, 0],
-    }
-}
-pub(super) fn offset(p: Pos, d: Direction) -> Pos {
-    let s = step(d);
-    (p.0 + s[0], p.1 + s[1], p.2 + s[2])
-}
-/// `Direction.get3DDataValue`.
-fn data_value(d: Direction) -> i32 {
-    match d {
-        Direction::Down => 0,
-        Direction::Up => 1,
-        Direction::North => 2,
-        Direction::South => 3,
-        Direction::West => 4,
-        Direction::East => 5,
-    }
-}
-/// `Direction.toYRot` (vertical directions give 270 through `data2d = -1`).
-fn y_rot(d: Direction) -> f32 {
-    match d {
-        Direction::South => 0.0,
-        Direction::West => 90.0,
-        Direction::North => 180.0,
-        Direction::East => 270.0,
-        _ => 270.0,
-    }
-}
-/// `DirectionalPlaceContext.getRotation`: `get2DDataValue() * 90`, so a
-/// vertical direction (`data2d = -1`) gives -90 where `toYRot` gives 270: the
-/// same horizontal facing, but the raw value a mod's placement hook reads.
-fn place_rotation(d: Direction) -> f32 {
-    match d {
-        Direction::Up | Direction::Down => -90.0,
-        _ => y_rot(d),
-    }
-}
-fn block_box(p: Pos) -> Aabb {
-    Aabb::new(
-        Vec3::new(f64::from(p.0), f64::from(p.1), f64::from(p.2)),
-        Vec3::new(f64::from(p.0 + 1), f64::from(p.1 + 1), f64::from(p.2 + 1)),
-    )
-}
-/// `EntitySectionStorage.forEachAccessibleNonEmptySection`: x ascending, then
-/// the packed key (`SectionPos.asLong`: z as 22 unsigned bits, then y as 20);
-/// within a section the entities go in the order they joined, which ids follow.
-fn section_order(at: Vec3) -> (i32, u32, u32) {
-    let s = |v: f64| (v.floor() as i32) >> 4;
-    let (x, y, z) = (s(at.x), s(at.y), s(at.z));
-    (x, z as u32 & 0x3F_FFFF, y as u32 & 0xF_FFFF)
-}
-fn overlaps(a: Aabb, b: Aabb) -> bool {
-    let (a0, a1, b0, b1) = (
-        a.min_position(),
-        a.max_position(),
-        b.min_position(),
-        b.max_position(),
-    );
-    a0.x < b1.x && b0.x < a1.x && a0.y < b1.y && b0.y < a1.y && a0.z < b1.z && b0.z < a1.z
-}
-/// `ItemStack.shrink(1)`; the slot is empty at zero.
-fn shrink(mut stack: ItemStack) -> Option<ItemStack> {
-    stack.count = stack.count.saturating_sub(1);
-    (stack.count > 0).then_some(stack)
-}
-/// A dispenser's answer: the slot's new content and the level event played.
-pub(super) type Dispensed = (Option<ItemStack>, i32);
-
-/// None keeps vanilla's behaviour; an explicit empty remainder consumes the stack.
-fn mod_dispensed(answer: Option<mod_api::Dispensed>, items: &Items) -> Option<Dispensed> {
-    use super::api_values::TryIntoEngine;
-    answer.and_then(|(stack, event)| Some((stack.try_into_engine(items).ok()?, event)))
+/// A behaviour returns a detached stack; the dispenser applies the slot limit afterwards.
+fn mod_dispensed(
+    (stack, event): mod_api::Dispensed,
+    items: &Items,
+) -> std::result::Result<Dispensed, mod_api::StackWriteError> {
+    let stack = stack
+        .as_ref()
+        .map(|stack| stack.try_into_engine_preserving_count(items))
+        .transpose()?;
+    Ok((stack, event))
 }
 
 thread_local! {
@@ -146,148 +79,22 @@ enum Target {
     Stand(usize),
 }
 
-/// `EquipmentSlot`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum Slot {
-    MainHand,
-    OffHand,
-    Feet,
-    Legs,
-    Chest,
-    Head,
-    Body,
-    Saddle,
-}
-impl Slot {
-    pub(super) fn from_name(name: &str) -> Option<Self> {
-        Some(match name {
-            "mainhand" => Self::MainHand,
-            "offhand" => Self::OffHand,
-            "feet" => Self::Feet,
-            "legs" => Self::Legs,
-            "chest" => Self::Chest,
-            "head" => Self::Head,
-            "body" => Self::Body,
-            "saddle" => Self::Saddle,
-            _ => return None,
-        })
-    }
-    /// The player's armour array index (head, chest, legs, feet).
-    fn armor_index(self) -> Option<usize> {
-        match self {
-            Self::Head => Some(0),
-            Self::Chest => Some(1),
-            Self::Legs => Some(2),
-            Self::Feet => Some(3),
-            _ => None,
-        }
-    }
-    /// `ArmorStand` equipment index (mainhand, offhand, feet, legs, chest, head).
-    fn stand_index(self) -> Option<usize> {
-        match self {
-            Self::MainHand => Some(0),
-            Self::OffHand => Some(1),
-            Self::Feet => Some(2),
-            Self::Legs => Some(3),
-            Self::Chest => Some(4),
-            Self::Head => Some(5),
-            _ => None,
-        }
-    }
+#[derive(Clone, Copy)]
+pub(super) struct DispenseSource {
+    dim: Dim,
+    pos: Pos,
+    holder: Option<BlockEntityIdentity>,
 }
 
-fn equine(s: Species) -> bool {
-    matches!(
-        s,
-        Species::Horse
-            | Species::Donkey
-            | Species::Mule
-            | Species::SkeletonHorse
-            | Species::ZombieHorse
-            | Species::Camel
-            | Species::CamelHusk
-            | Species::Llama
-            | Species::TraderLlama
-    )
+struct DispenseScope<'a, 'g> {
+    game: &'a mut Game<'g>,
+    outer: Option<DispenseSource>,
 }
-/// Mobs with species-specific body equipment.
-pub(super) fn body_equipment_species(s: Species) -> bool {
-    equine(s)
-        || matches!(s, Species::Wolf | Species::HappyGhast | Species::SulfurCube)
-        || sunrise_client::mobs::nautilus::is_nautilus(s)
-}
-/// What a mob holds in a slot.
-pub(super) fn mob_slot_item(m: &Mob, slot: Slot) -> Option<Arc<str>> {
-    let x = &m.extra;
-    match slot {
-        Slot::MainHand | Slot::OffHand | Slot::Feet | Slot::Legs | Slot::Chest | Slot::Head => {
-            sunrise_client::mobs::finalize::item(m, slot as usize)
-        }
-        Slot::Body => x.body_stack().map(|s| s.item.clone()),
-        Slot::Saddle => m.saddle_item().map(|s| s.item),
+
+impl Drop for DispenseScope<'_, '_> {
+    fn drop(&mut self) {
+        self.game.dispense_source = self.outer.take();
     }
-}
-/// `LivingEntity.canUseSlot` and its overrides.
-fn mob_can_use_slot(m: &Mob, slot: Slot) -> bool {
-    let s = m.species();
-    let grown = m.alive() && !m.is_baby();
-    match s {
-        Species::Pig | Species::Strider if slot == Slot::Saddle => grown,
-        Species::Horse
-        | Species::SkeletonHorse
-        | Species::ZombieHorse
-        | Species::Llama
-        | Species::TraderLlama => true,
-        _ if equine(s) && slot == Slot::Saddle => grown && m.extra.tame,
-        _ if sunrise_client::mobs::nautilus::is_nautilus(s)
-            && matches!(slot, Slot::Saddle | Slot::Body) =>
-        {
-            grown && m.extra.tame
-        }
-        Species::SulfurCube | Species::HappyGhast if slot == Slot::Body => grown,
-        _ => true,
-    }
-}
-/// `Mob.canDispenserEquipIntoSlot` and its overrides.
-fn mob_can_dispenser_equip(m: &Mob, slot: Slot) -> bool {
-    let s = m.species();
-    let loot = m.extra.pick_up_loot;
-    match s {
-        Species::Pig | Species::Strider => slot == Slot::Saddle || loot,
-        _ if equine(s) => matches!(slot, Slot::Body | Slot::Saddle) && m.extra.tame || loot,
-        _ if sunrise_client::mobs::nautilus::is_nautilus(s) => {
-            matches!(slot, Slot::Body | Slot::Saddle) || loot
-        }
-        Species::SulfurCube | Species::HappyGhast => slot == Slot::Body,
-        Species::Dolphin | Species::Panda | Species::Fox => slot == Slot::MainHand && loot,
-        Species::Allay => false,
-        _ => loot,
-    }
-}
-/// `getEquipSound`: the saddle overrides of pigs, striders, horses, camels and nautili.
-pub(super) fn equip_sound(m: &Mob, slot: Slot, default: Option<String>) -> Option<String> {
-    if slot != Slot::Saddle {
-        return default;
-    }
-    let s = m.species();
-    Some(match s {
-        Species::Pig => "minecraft:entity.pig.saddle".into(),
-        Species::Strider => "minecraft:entity.strider.saddle".into(),
-        Species::Camel => "minecraft:entity.camel.saddle".into(),
-        Species::CamelHusk => "minecraft:entity.camel_husk.saddle".into(),
-        _ if equine(s) => "minecraft:entity.horse.saddle".into(),
-        _ if sunrise_client::mobs::nautilus::is_nautilus(s) => {
-            if m.fluids.eye_in_water {
-                "minecraft:item.nautilus_saddle_underwater_equip".into()
-            } else {
-                "minecraft:item.nautilus_saddle_equip".into()
-            }
-        }
-        _ => return default,
-    })
-}
-pub(super) fn mob_set_slot(m: &mut Mob, slot: Slot, stack: ItemStack) {
-    m.set_equipment_stack(slot as usize, Some(stack));
 }
 
 impl Game<'_> {
@@ -444,27 +251,85 @@ impl Game<'_> {
         )
     }
     /// `DefaultDispenseItemBehavior.spawnItem` at `getDispensePosition`.
-    pub(super) fn spawn_dispensed(
+    fn prepared_dispensed(
         &mut self,
         pos: Pos,
         facing: Direction,
         stack: ItemStack,
-        accuracy: i32,
-    ) {
+    ) -> super::spill::Spawn {
         let s = step(facing);
         let p = Self::dispense_position(pos, facing, 0.7, [0.0; 3]);
         let mut at = [p.x, p.y, p.z];
         at[1] -= if s[1] != 0 { 0.125 } else { 0.156_25 };
+        // Vanilla constructs the entity and samples the source level's RNG before adding it.
+        // Keep those draws in order even when publication is deferred by the journal.
+        let random = super::spill::prepare_item_random(None);
         let r = &mut self.world.random;
         let pow = r.next_double() * 0.1 + 0.2;
-        let spread = 0.017_227_5 * f64::from(accuracy);
+        let spread = 0.017_227_5 * 6.0;
         let v = [
             r.triangle(f64::from(s[0]) * pow, spread),
             r.triangle(0.2, spread),
             r.triangle(f64::from(s[2]) * pow, spread),
         ];
-        self.spawn_item_thrown(stack, at, v);
+        super::spill::Spawn {
+            random: Some(random),
+            stack,
+            pos: at,
+            motion: Some(v),
+            delay: 0,
+        }
     }
+
+    pub(super) fn spawn_dispensed(&mut self, pos: Pos, facing: Direction, stack: ItemStack) {
+        let spawn = self.prepared_dispensed(pos, facing, stack);
+        self.commit_dispensed(pos, facing, spawn, false);
+    }
+
+    fn stage_dispensed(
+        &mut self,
+        pos: Pos,
+        facing: Direction,
+        stack: ItemStack,
+        play_events: bool,
+    ) {
+        let spawn = self.prepared_dispensed(pos, facing, stack);
+        if self.has_level_transaction() {
+            self.after_commit(super::transactions::After::DispenserDrop {
+                pos,
+                facing,
+                spawn: Box::new(spawn),
+                play_events,
+            });
+        } else {
+            self.commit_dispensed(pos, facing, spawn, play_events);
+        }
+    }
+
+    pub(super) fn commit_dispensed(
+        &mut self,
+        pos: Pos,
+        facing: Direction,
+        spawn: super::spill::Spawn,
+        play_events: bool,
+    ) {
+        self.add_item_entity_prepared(
+            spawn.stack,
+            spawn.pos,
+            spawn.motion,
+            spawn.delay,
+            spawn.random,
+        );
+        if play_events {
+            self.commit_dispense_feedback(pos, facing, CLICK);
+        }
+    }
+
+    pub(super) fn commit_dispense_feedback(&mut self, pos: Pos, facing: Direction, event: i32) {
+        self.dispenser_event(event, pos, 0);
+        self.dispenser_event(2000, pos, data_value(facing));
+    }
+
     /// `DefaultDispenseItemBehavior.execute`: drop one item.
     fn default_execute(
         &mut self,
@@ -477,31 +342,31 @@ impl Game<'_> {
             ..stack.clone()
         };
         stack.count -= 1;
-        self.spawn_dispensed(pos, facing, one, 6);
+        self.stage_dispensed(pos, facing, one, false);
         (stack.count > 0).then_some(stack)
     }
     /// Drop one item as DefaultDispenseItemBehavior does. For a dispenser hook:
     /// return this remainder in its answer with `CLICK`; the caller plays the
     /// answer's event and smoke once. A client, another dimension or an unloaded
     /// chunk keeps the input stack unchanged.
-    #[allow(dead_code)]
     pub(super) fn dispense_default(
         &mut self,
         dimension: &str,
         pos: [i32; 3],
         facing: Direction,
-        stack: ItemStack,
-    ) -> Option<ItemStack> {
-        if !(self.serving.is_some() || self.options.dedicated.is_some())
+        stack: mod_api::ItemStack,
+    ) -> std::result::Result<Option<mod_api::ItemStack>, mod_api::StackWriteError> {
+        let stack = stack.try_into_engine_preserving_count(self.items())?;
+        let left = if !(self.serving.is_some() || self.options.dedicated.is_some())
             || dimension != self.dim.id()
             || !self.world.chunks.contains_key(&(pos[0] >> 4, pos[2] >> 4))
         {
-            return Some(stack);
-        }
-        if stack.count == 0 {
-            return None;
-        }
-        self.default_execute((pos[0], pos[1], pos[2]), facing, stack)
+            Some(stack)
+        } else {
+            self.default_execute((pos[0], pos[1], pos[2]), facing, stack)
+        };
+        left.try_into_api()
+            .map_err(|error| error.into_write_error())
     }
     /// `dispense_with_remainder`: `consume_with_remainder` for a mod's dispense answer, in the
     /// level in place; `stack` unchanged off it, as `dispense_default` keeps it.
@@ -522,6 +387,24 @@ impl Game<'_> {
         }
         self.consume_with_remainder((pos[0], pos[1], pos[2]), facing, stack, remainder)
     }
+    /// `DefaultDispenseItemBehavior.addToInventoryOrDispense` for a mod's dispense helper, in the
+    /// level in place: refuses a client, another dimension or an unloaded chunk.
+    pub(super) fn dispense_add_remainder(
+        &mut self,
+        dimension: &str,
+        pos: [i32; 3],
+        facing: Direction,
+        remainder: ItemStack,
+    ) -> std::result::Result<(), mod_api::LevelWriteError> {
+        if !(self.serving.is_some() || self.options.dedicated.is_some())
+            || dimension != self.dim.id()
+            || !self.world.chunks.contains_key(&(pos[0] >> 4, pos[2] >> 4))
+        {
+            return Err(mod_api::LevelWriteError::Unavailable);
+        }
+        self.add_to_inventory_or_dispense((pos[0], pos[1], pos[2]), facing, remainder);
+        Ok(())
+    }
     /// `new DefaultDispenseItemBehavior().dispense(..)` including its events.
     pub(super) fn dispense_default_in_level(
         &mut self,
@@ -530,9 +413,94 @@ impl Game<'_> {
         stack: ItemStack,
     ) -> Option<ItemStack> {
         let left = self.default_execute(pos, facing, stack);
-        self.dispenser_event(CLICK, pos, 0);
-        self.dispenser_event(2000, pos, data_value(facing));
+        self.after_commit(super::transactions::After::DispenserFeedback {
+            pos,
+            facing,
+            event: CLICK,
+        });
         left
+    }
+    /// `DefaultDispenseItemBehavior.addToInventoryOrDispense`: inserts `remainder` into the
+    /// dispenser (`insertItem`) or drops what does not fit with the dispenser click and smoke.
+    /// Journals each slot write and defers dropped items and level events while a storage
+    /// transaction is open.
+    pub(super) fn add_to_inventory_or_dispense(
+        &mut self,
+        pos: Pos,
+        facing: Direction,
+        mut rest: ItemStack,
+    ) {
+        if rest.count == 0 {
+            return;
+        }
+        let max = self.containers().max_stack(&rest);
+        let resident = self.world.block_entities.identity(pos);
+        // Like BlockSource, a running behaviour retains its original dispenser even if
+        // the transfer or its commit listeners replace the block. A stand-alone helper
+        // call has no BlockSource and uses the currently resident container.
+        let holder = match self.dispense_source {
+            Some(source) if source.dim == self.dim && source.pos == pos => source.holder,
+            _ => resident,
+        };
+        let slots = self
+            .world
+            .block_entities
+            .get(&pos)
+            .filter(|_| holder == resident)
+            .map_or(0, |entity| entity.slots().len());
+        let mut set_item = false;
+        for slot in 0..slots {
+            let room = self
+                .world
+                .block_entities
+                .get(&pos)
+                .and_then(|entity| entity.slots().get(slot))
+                .map_or(0, |existing| match existing {
+                    None => max,
+                    Some(item)
+                        if item.same_item_same_components_with_prototype(&rest, self.items()) =>
+                    {
+                        max.saturating_sub(item.count)
+                    }
+                    Some(_) => 0,
+                });
+            let n = rest.count.min(room);
+            if n == 0 {
+                continue;
+            }
+            self.journal_block_entity_slot(pos, slot);
+            if let Some(cell) = self
+                .world
+                .block_entities
+                .get_mut(&pos)
+                .and_then(|entity| entity.slot_mut(slot))
+            {
+                match cell {
+                    None => {
+                        *cell = Some(ItemStack {
+                            count: n,
+                            ..rest.clone()
+                        });
+                        set_item = true;
+                    }
+                    Some(e) => {
+                        e.count += n;
+                    }
+                }
+                rest.count -= n;
+            }
+            if rest.count == 0 {
+                break;
+            }
+        }
+        // DispenserBlockEntity.insertItem calls setItem only for an empty slot; an in-place
+        // merge is covered by dispenseFrom's normal final setItem on the active slot.
+        if set_item && let Some(holder) = holder {
+            self.after_holder_changed(holder);
+        }
+        if rest.count > 0 {
+            self.stage_dispensed(pos, facing, rest, true);
+        }
     }
     /// `DefaultDispenseItemBehavior.consumeWithRemainder`: the remainder goes
     /// into the dispenser (`insertItem`) or is dropped.
@@ -547,41 +515,7 @@ impl Game<'_> {
         if stack.count == 0 {
             return Some(remainder);
         }
-        let mut rest = remainder;
-        if let Some(entity) = self.world.block_entities.get_mut(&pos) {
-            let max = self
-                .res
-                .items()
-                .get(&rest.item)
-                .map_or(64, |i| i.max_stack)
-                .max(1);
-            for cell in entity.slots_mut() {
-                match cell {
-                    None => {
-                        let n = rest.count.min(max);
-                        *cell = Some(ItemStack {
-                            count: n,
-                            ..rest.clone()
-                        });
-                        rest.count -= n;
-                    }
-                    Some(e) if e.same_item_same_components(&rest) => {
-                        let n = rest.count.min(max.saturating_sub(e.count));
-                        e.count += n;
-                        rest.count -= n;
-                    }
-                    Some(_) => {}
-                }
-                if rest.count == 0 {
-                    break;
-                }
-            }
-        }
-        if rest.count > 0 {
-            self.spawn_dispensed(pos, facing, rest, 6);
-            self.dispenser_event(CLICK, pos, 0);
-            self.dispenser_event(2000, pos, data_value(facing));
-        }
+        self.add_to_inventory_or_dispense(pos, facing, remainder);
         Some(stack)
     }
     /// `ItemStack.hurtAndBreak(amount)` without an entity.
@@ -592,19 +526,35 @@ impl Game<'_> {
 
     // ---- the registry ----
 
-    /// `DispenserBlock.getDispenseMethod(..).dispense(source, stack)`: what the
-    /// slot holds afterwards.
+    /// `DispenserBlock.getDispenseMethod(..).dispense(source, stack)`: the replacement
+    /// for the slot, or `Break` when the slot must not be written at all.
     pub(super) fn dispense_item(
         &mut self,
         pos: Pos,
         facing: Direction,
         stack: ItemStack,
-    ) -> Result<Option<ItemStack>> {
+    ) -> Result<ControlFlow<(), Option<ItemStack>>> {
+        let outer = self.dispense_source.replace(DispenseSource {
+            dim: self.dim,
+            pos,
+            holder: self.world.block_entities.identity(pos),
+        });
+        let scope = DispenseScope { game: self, outer };
+        scope.game.dispense_item_from_source(pos, facing, stack)
+    }
+
+    fn dispense_item_from_source(
+        &mut self,
+        pos: Pos,
+        facing: Direction,
+        stack: ItemStack,
+    ) -> Result<ControlFlow<(), Option<ItemStack>>> {
         let mut answer = None;
         if self.serving.is_some() || self.options.dedicated.is_some() {
             // The block the dispenser faces has the first say (`dispense_method`), then the
             // item's own part (`dispense_item`); the first answer wins.
             let front = self.block_at(offset(pos, facing));
+            let mut inert = false;
             self.native_dispense_method(
                 self.dim.id(),
                 [pos.0, pos.1, pos.2],
@@ -612,7 +562,11 @@ impl Game<'_> {
                 front,
                 &stack,
                 &mut answer,
+                &mut inert,
             );
+            if inert {
+                return Ok(ControlFlow::Break(()));
+            }
             if answer.is_none() {
                 self.native_dispense_item(
                     self.dim.id(),
@@ -623,7 +577,16 @@ impl Game<'_> {
                 );
             }
         }
-        if let Some((left, event)) = mod_dispensed(answer, self.items()) {
+        if let Some(answer) = answer {
+            let (left, event) = match mod_dispensed(answer, self.items()) {
+                Ok(dispensed) => dispensed,
+                Err(error) => {
+                    // The chosen behaviour may have committed effects already. Do not run a
+                    // second behaviour on the original stack if its remainder is refused.
+                    log::warn!("mod dispense remainder refused at {pos:?}: {error:?}");
+                    return Ok(ControlFlow::Break(()));
+                }
+            };
             if event == FAIL {
                 self.native_block_failed_dispense(
                     self.dim.id(),
@@ -631,13 +594,16 @@ impl Game<'_> {
                     &stack.item,
                 );
             }
-            // DefaultDispenseItemBehavior.dispense: playSound, then playAnimation;
-            // a NOOP behaviour (event 0) plays neither.
+            // Feedback follows the behaviour's effects. Event 0 still replaces the slot,
+            // but plays neither sound nor smoke.
             if event != 0 {
-                self.dispenser_event(event, pos, 0);
-                self.dispenser_event(2000, pos, data_value(facing));
+                self.after_commit(super::transactions::After::DispenserFeedback {
+                    pos,
+                    facing,
+                    event,
+                });
             }
-            return Ok(left);
+            return Ok(ControlFlow::Continue(left));
         }
         let item = stack.item.to_string();
         // A stack able to `shears_harvest` is dispensed as shears are, whatever its item.
@@ -696,9 +662,8 @@ impl Game<'_> {
         if event == FAIL {
             self.native_block_failed_dispense(self.dim.id(), [pos.0, pos.1, pos.2], &item);
         }
-        self.dispenser_event(event, pos, 0);
-        self.dispenser_event(2000, pos, data_value(facing));
-        Ok(left)
+        self.after_commit(super::transactions::After::DispenserFeedback { pos, facing, event });
+        Ok(ControlFlow::Continue(left))
     }
     /// `DispenserBlock.getDefaultDispenseMethod`: equipment, spawn eggs, or a drop.
     fn dispense_default_method(
@@ -728,12 +693,7 @@ impl Game<'_> {
             }
             return Ok((self.default_execute(pos, facing, stack), CLICK));
         }
-        // DispenserBlock.getDefaultDispenseMethod: an egg without ENTITY_DATA drops as an item.
-        if stack.item.ends_with("_spawn_egg")
-            && stack
-                .data()
-                .is_none_or(|data| data.other("!minecraft:entity_data").is_none())
-        {
+        if stack.item.ends_with("_spawn_egg") {
             return self.dispense_spawn_egg(pos, facing, stack);
         }
         Ok((self.default_execute(pos, facing, stack), CLICK))
@@ -937,49 +897,9 @@ impl Game<'_> {
         // `Equippable.canBeEquippedBy`, then the item's parts (`canEquip`) with the stack converted
         // once, for the entity in front.
         let targets = self.targets_at(front);
-        let observed = mod_api::__private::item_listens(mod_api::HookId::CanEquip, &stack.item);
-        let mut source_slot = observed.then(|| Some(stack.clone()));
-        let mut source = source_slot.as_mut().map(|slot| {
-            sunrise_client::mobs::equip::EquipDecision::new(stack as *const _ as usize as u64, slot)
-        });
-        let kinds = if observed {
-            targets
-                .iter()
-                .map(|target| match target {
-                    Target::Mob(i) => self.mobs[*i].kind.id.as_str(),
-                    Target::Stand(_) => "minecraft:armor_stand",
-                    _ => "minecraft:player",
-                })
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
-        let entities = if observed {
-            targets
-                .iter()
-                .filter_map(|target| match target {
-                    Target::Player => Some(self.own_entity_id() as u32),
-                    Target::Guest(conn) => self
-                        .lan
-                        .as_ref()?
-                        .hub
-                        .guest(*conn)
-                        .map(|guest| guest.entity_id as u32),
-                    Target::Stand(i) => Some(self.armor_stands[*i].id),
-                    Target::Mob(i) => Some(self.mobs[*i].id),
-                })
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
-        let input = source.as_deref().map_or(&*stack, |source| source);
-        let (tags, prepared) = (
-            &self.stations().enchantments.entity_tags,
-            self.equip_stack(input, &kinds, &entities),
-        );
-        let stamp = source.as_ref().and_then(|source| source.stamp());
+        let prepared = self.equip_stack(stack);
         let allows = |entity: u32, id: &str| {
-            let data = equippable.allows(id, tags);
+            let data = equippable.allows(id);
             self.can_equip(&prepared, equippable.slot, entity, id, data)
         };
         // LivingEntity.canEquipWithDispenser: alive, the slot usable, the
@@ -1024,28 +944,7 @@ impl Game<'_> {
         let Some(target) = target else {
             return false;
         };
-        let entity = match target {
-            Target::Player => Some(self.own_entity_id() as u32),
-            Target::Guest(conn) => self
-                .lan
-                .as_ref()
-                .and_then(|lan| lan.hub.guest(conn))
-                .map(|guest| guest.entity_id as u32),
-            Target::Stand(i) => Some(self.armor_stands[i].id),
-            Target::Mob(i) => Some(self.mobs[i].id),
-        };
-        if !entity.is_some_and(|id| self.equip_can_apply(&prepared, id)) {
-            return false;
-        }
-        if let Some(source) = source.as_mut() {
-            if !stamp.is_some_and(|stamp| source.matches(stamp)) {
-                return false;
-            }
-            *source.count_mut().expect("live dispenser source") -= 1;
-            stack.count = source.count;
-        } else {
-            stack.count -= 1;
-        }
+        stack.count -= 1;
         // setItemSlot: onEquipItem plays the equip sound and the equip event.
         let (at, sound) = match target {
             Target::Guest(conn) => {
@@ -1179,9 +1078,16 @@ impl Game<'_> {
         facing: Direction,
         stack: ItemStack,
     ) -> Result<Dispensed> {
-        let (kind, _) = sunrise_client::block_entity_item::spawn_egg_on_spawner(&stack, false);
+        let items = self.res.shared_items();
+        let Some(data) = sunrise_client::block_entity_item::item_entity_data(&stack, &items) else {
+            // Without effective ENTITY_DATA, DispenserBlock selects the ordinary drop.
+            return Ok((self.default_execute(pos, facing, stack), CLICK));
+        };
+        if !self.spawn_egg_allowed(&data.kind) {
+            return Ok((Some(stack), CLICK));
+        }
         let front = offset(pos, facing);
-        let Some(id) = self.spawn_mob_at(&kind, front, facing != Direction::Up) else {
+        let Some(id) = self.spawn_mob_at(&data.kind, front, facing != Direction::Up) else {
             return Ok((Some(stack), CLICK));
         };
         // EntityType.create: `finalizeSpawn` first, the egg's components after.
@@ -1195,7 +1101,7 @@ impl Game<'_> {
         // EntityType.updateCustomEntityTag: a configured egg
         // (`/give @s pig_spawn_egg[minecraft:entity_data={…}]`) spawns the mob
         // it describes from a dispenser too, not only from a player's hand.
-        self.apply_spawn_egg_entity_data(id, &stack);
+        self.apply_spawn_egg_entity_data(id, &data);
         self.mob_ambient(id)?;
         // SpawnEggItemBehavior: the entity was placed by the dispenser.
         self.post_block_game_event("minecraft:entity_place", [pos.0, pos.1, pos.2], None, None);
@@ -1385,8 +1291,7 @@ impl Game<'_> {
     }
     /// `BoatDispenseItemBehavior`.
     fn dispense_boat(&mut self, pos: Pos, facing: Direction, stack: ItemStack) -> Dispensed {
-        let Some((wood, chest)) =
-            super::boats::any_boat_wood(&stack.item).map(|(w, c)| (w.to_owned(), c))
+        let Some((wood, chest)) = super::boats::registered_boat_item(&stack.item, self.res.items())
         else {
             return (self.dispense_default_in_level(pos, facing, stack), CLICK);
         };
@@ -1408,13 +1313,10 @@ impl Game<'_> {
         } else {
             return (self.dispense_default_in_level(pos, facing, stack), CLICK);
         };
-        if !self.boat_models.has(&wood, chest) {
-            return (self.dispense_default_in_level(pos, facing, stack), CLICK);
-        }
         self.next_entity += 1;
         let mut boat = super::boats::Boat::new(
             self.next_entity,
-            wood.as_str().into(),
+            wood.into(),
             Vec3::new(x, y + y_offset, z),
             y_rot(facing),
         );
@@ -1751,6 +1653,7 @@ impl Game<'_> {
         self.find_wither_pattern(
             sunrise_client::block_pattern::WITHER_BASE,
             [head.0, head.1, head.2],
+            self.world.block(head.0, head.1, head.2),
         )
         .is_some()
     }
@@ -1784,6 +1687,28 @@ impl Game<'_> {
         ))
     }
     /// `ShulkerBoxDispenseBehavior`: place it like a `DirectionalPlaceContext`.
+    fn shulker_box_place_context(
+        front: Pos,
+        facing: Direction,
+        below_empty: bool,
+        item: String,
+    ) -> PlaceContext {
+        let clicked_face = if below_empty { facing } else { Direction::Up };
+        PlaceContext {
+            clicked_pos: Self::pos_of(front),
+            face: clicked_face,
+            hit: Vec3::new(
+                f64::from(front.0) + 0.5,
+                f64::from(front.1),
+                f64::from(front.2) + 0.5,
+            ),
+            inside: false,
+            source: PlacementSource::Directional { direction: facing },
+            item,
+            can_use_game_master_blocks: false,
+        }
+    }
+    /// `ShulkerBoxDispenseBehavior`: place it like a `DirectionalPlaceContext`.
     fn dispense_shulker_box(
         &mut self,
         pos: Pos,
@@ -1795,61 +1720,19 @@ impl Game<'_> {
             .res
             .facts()
             .is_air(self.block_at((front.0, front.1 - 1, front.2)));
-        let clicked_face = if below_empty { facing } else { Direction::Up };
-        let ctx = PlaceContext {
-            clicked_pos: Self::pos_of(front),
-            face: clicked_face,
-            hit: Vec3::new(
-                f64::from(front.0) + 0.5,
-                f64::from(front.1),
-                f64::from(front.2) + 0.5,
-            ),
-            inside: false,
-            yaw: place_rotation(facing),
-            pitch: 0.0,
-            sneaking: false,
-            item: stack.item.to_string(),
-            can_use_game_master_blocks: false,
-        };
-        // DirectionalPlaceContext places at the front block or nowhere.
-        if !self.with_level(|b, level, ticks| b.directional_can_place(level, ticks, &ctx)) {
+        let ctx =
+            Self::shulker_box_place_context(front, facing, below_empty, stack.item.to_string());
+        // DirectionalPlaceContext places at the front block or nowhere. A shulker box is
+        // neither a slab nor snow, so `canPlace` always has an answer here.
+        if self.with_level(|b, level, ticks| b.directional_can_place(level, ticks, &ctx))
+            != Ok(true)
+        {
             return Ok((Some(stack), FAIL));
         }
-        if mod_api::__private::listened(mod_api::HookId::EntityPlace)
-            && let Some(preview) =
-                self.with_level(|b, level, ticks| b.placement_preview(level, ticks, &ctx))
-        {
-            let against = ctx.placed_against_pos(preview.pos);
-            let against = self.world.block(against.x, against.y, against.z);
-            let mut canceled = false;
-            self.native_entity_place(
-                None,
-                preview.pos,
-                preview.state,
-                against,
-                mod_api::Placement::Single,
-                &mut canceled,
-            );
-            if canceled {
-                return Ok((Some(stack), FAIL));
-            }
-        }
-        let outcome = self.with_level(|b, level, ticks| b.place_block(level, ticks, &ctx));
-        let PlaceOutcome::Placed { pos: placed, state } = outcome else {
+        if self.place_item_block(&ctx, false, &stack)?.is_none() {
             self.process_level_events()?;
             return Ok((Some(stack), FAIL));
-        };
-        let target = (placed.x, placed.y, placed.z);
-        let state = self.apply_item_block_state([target.0, target.1, target.2], state, &stack)?;
-        if !self.world.block_entities.stateful_entity(state.0)
-            && let Some(entity) = self.new_block_entity_for_state(state)
-        {
-            self.world.block_entities.insert(target, entity);
         }
-        if self.world.block_entities.get(&target).is_some() {
-            self.apply_placed_item([target.0, target.1, target.2], &stack, false);
-        }
-        self.block_item_placed(&stack, None, placed, &ctx);
         self.process_level_events()?;
         Ok((shrink(stack), CLICK))
     }
@@ -2097,7 +1980,9 @@ impl Game<'_> {
                 LevelSound::new(name, [at.x, at.y, at.z], 1.0, 1.0).in_source(SoundSource::Blocks)
             };
             match m.species() {
-                _ if let Some((part, _)) = part => self.part_shear(i, part, None, &shears),
+                _ if let Some((part, _)) = part => {
+                    self.part_shear(i, part, None, &shears);
+                }
                 Species::SulfurCube if sulfur_cube::has_body(m) => {
                     // SulfurCube.shear: the swallowed block comes out at the
                     // passenger attachment, and nothing is swallowed for 5 s.
@@ -2441,28 +2326,89 @@ impl Game<'_> {
         ))
     }
 }
-/// A tipped arrow's lasting effect at an eighth of the potion's duration
-/// (`Arrow.doPostHurtEffects`).
-pub(super) fn tipped_effect(stack: &ItemStack) -> Option<(&'static str, i32)> {
-    stack
-        .potion()
-        .and_then(sunrise_client::brewing::potion)
-        .and_then(|def| {
-            def.effects
-                .iter()
-                .find(|(id, _, _)| !sunrise_client::brewing::effect(id).is_some_and(|e| e.instant))
-                .map(|(id, duration, _)| {
-                    (
-                        sunrise_client::brewing::namespaced(id),
-                        (duration / 8).max(1),
-                    )
-                })
-        })
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sunrise_client::mobs::Mob;
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_dispenser_keeps_the_egg_if_its_type_cannot_spawn_in_peaceful() {
+        use crate::game::{commands::peaceful_tests, execution_role::ExecutionRole};
+
+        peaceful_tests::with_types(ExecutionRole::IntegratedServer, |game| {
+            let egg = peaceful_tests::trader_egg();
+            let dispense = |game: &mut Game<'_>| {
+                game.dispense_spawn_egg((4, 64, 4), Direction::Up, egg.clone())
+                    .unwrap()
+                    .0
+            };
+            assert_eq!(dispense(game).unwrap().count, 1);
+            assert!(game.mobs.is_empty());
+            game.set_difficulty_forced(2);
+            assert!(dispense(game).is_none());
+            assert_eq!(game.mobs.len(), 1);
+            assert_eq!(game.mobs[0].kind.id, peaceful_tests::TRADER);
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_dispenser_drops_an_egg_without_prototype_entity_data() {
+        use crate::game::native_entity_refs::tests::{fixture_root, with_game_at};
+        use std::{fs, path::Path};
+
+        fn link_fixture_source(source: &Path, target: &Path) {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(source, target).unwrap();
+            #[cfg(not(unix))]
+            if source.is_dir() {
+                fs::create_dir(target).unwrap();
+                for entry in fs::read_dir(source).unwrap() {
+                    let entry = entry.unwrap();
+                    link_fixture_source(&entry.path(), &target.join(entry.file_name()));
+                }
+            } else if fs::hard_link(source, target).is_err() {
+                fs::copy(source, target).unwrap();
+            }
+        }
+
+        let source = fixture_root().canonicalize().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        for entry in fs::read_dir(&source).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_name() != "items.json" {
+                link_fixture_source(&entry.path(), &root.path().join(entry.file_name()));
+            }
+        }
+        let egg = "minecraft:cow_spawn_egg";
+        let mut items: serde_json::Value =
+            serde_json::from_slice(&fs::read(source.join("items.json")).unwrap()).unwrap();
+        assert!(
+            items[egg]
+                .as_object_mut()
+                .unwrap()
+                .remove("minecraft:entity_data")
+                .is_some()
+        );
+        fs::write(
+            root.path().join("items.json"),
+            serde_json::to_vec(&items).unwrap(),
+        )
+        .unwrap();
+
+        with_game_at(root.path().to_owned(), |game| {
+            let stack = ItemStack::new(egg, 1);
+            let (left, event) = game
+                .dispense_default_method((4, 64, 4), Direction::Up, stack.clone())
+                .unwrap();
+            assert_eq!((left, event), (None, CLICK));
+            assert!(game.mobs.is_empty());
+            assert_eq!(game.dropped.len(), 1);
+            assert_eq!(game.dropped[0].stack, stack);
+        });
+    }
 
     /// What a dispense probe part heard: which part, and the dispenser it was for.
     #[derive(Clone, Default)]
@@ -2564,6 +2510,8 @@ mod tests {
                 game.audio.capture = Some(Vec::new());
                 let dispense = |game: &mut Game<'_>, item: &str| {
                     game.dispense_item((5, 64, 5), Direction::East, ItemStack::new(item, 1))
+                        .unwrap()
+                        .continue_value()
                         .unwrap()
                 };
 
@@ -2750,20 +2698,11 @@ mod tests {
                 assert_eq!((done, worn, stand), (false, None, false));
                 assert_eq!(fits.asked().len(), 2);
                 // A missing entity is refused, and the part never hears of it.
-                let prepared = game.equip_stack(
-                    &helmet,
-                    &[
-                        "minecraft:player",
-                        "minecraft:zombie",
-                        "minecraft:armor_stand",
-                    ],
-                    &[],
-                );
+                let prepared = game.equip_stack(&helmet);
                 assert!(!game.can_equip(&prepared, "head", 9_999, "minecraft:zombie", true));
                 assert!(fits.asked().is_empty());
                 // With no part to ask, the component's answer stands for any entity.
-                let chestplate =
-                    game.equip_stack(&ItemStack::new("minecraft:iron_chestplate", 1), &[], &[]);
+                let chestplate = game.equip_stack(&ItemStack::new("minecraft:iron_chestplate", 1));
                 assert!(game.can_equip(&chestplate, "chest", 9_999, "minecraft:zombie", true));
             });
         });
@@ -2986,19 +2925,14 @@ mod tests {
     fn mod_dispenser_answers_preserve_fallback_and_own_consumption() {
         use super::super::api_values::{StackReadError, TryIntoApi};
         super::super::native_entity_refs::tests::with_game(|game| {
-            assert!(
-                mod_dispensed(None, game.items()).is_none(),
-                "no registered behaviour keeps vanilla"
-            );
             assert_eq!(
-                mod_dispensed(Some((None, CLICK)), game.items()),
-                Some((None, CLICK))
+                mod_dispensed((None, CLICK), game.items()),
+                Ok((None, CLICK))
             );
             let stack = ItemStack::new("minecraft:stone", 7);
-            let Some((Some(left), event)) = mod_dispensed(
-                Some((Some(stack.try_into_api().unwrap()), FAIL)),
-                game.items(),
-            ) else {
+            let Ok((Some(left), event)) =
+                mod_dispensed((Some(stack.try_into_api().unwrap()), FAIL), game.items())
+            else {
                 panic!("handled stack")
             };
             assert_eq!(left, stack, "the returned remainder is not consumed again");
@@ -3008,10 +2942,7 @@ mod tests {
                 ItemStack { count: 0, ..stack }.try_into_api(),
                 Err(StackReadError::Empty)
             );
-            assert_eq!(
-                mod_dispensed(Some((None, 0)), game.items()),
-                Some((None, 0))
-            );
+            assert_eq!(mod_dispensed((None, 0), game.items()), Ok((None, 0)));
         });
     }
 
@@ -3257,6 +3188,41 @@ mod tests {
         // x is the outer loop, ascending as a signed coordinate.
         assert!(at(-1.0, 0.0, 0.0) < at(0.0, 0.0, 0.0));
         assert!(at(15.9, 0.0, 0.0) < at(16.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn shulker_box_dispenser_builds_directional_place_context() {
+        use sunrise_core::{geometry::Vec3, position::BlockPos};
+        for facing in Direction::ALL {
+            let over_air = super::Game::shulker_box_place_context(
+                (10, 64, 5),
+                facing,
+                true,
+                "minecraft:shulker_box".into(),
+            );
+            assert_eq!(over_air.clicked_pos, BlockPos::new(10, 64, 5));
+            assert_eq!(over_air.face, facing);
+            assert_eq!(over_air.hit, Vec3::new(10.5, 64.0, 5.5));
+            assert!(!over_air.inside);
+            assert_eq!(
+                over_air.source,
+                super::PlacementSource::Directional { direction: facing }
+            );
+            assert_eq!(over_air.item, "minecraft:shulker_box");
+            assert!(!over_air.can_use_game_master_blocks);
+
+            let over_solid = super::Game::shulker_box_place_context(
+                (10, 64, 5),
+                facing,
+                false,
+                "minecraft:shulker_box".into(),
+            );
+            assert_eq!(over_solid.face, Direction::Up);
+            assert_eq!(
+                over_solid.source,
+                super::PlacementSource::Directional { direction: facing }
+            );
+        }
     }
 }
 

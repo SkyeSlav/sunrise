@@ -9,7 +9,7 @@
 use super::{Game, lan_actions::guest_within_entity_range};
 use sunrise_client::{
     items::ItemStack,
-    menu::{Kind, Menu},
+    menu::{Kind, Menu, QuickCraftDrag},
 };
 use sunrise_protocol::packets::play::{self, Clientbound as C};
 
@@ -19,8 +19,10 @@ pub(super) struct GuestMount {
     pub(super) mob: u32,
     columns: usize,
     state: i32,
-    /// The menu's slots and the carried stack the client was last sent.
-    sent: Option<(Vec<Option<ItemStack>>, Option<ItemStack>)>,
+    /// Persistent quick-craft (drag) state across rebuilt mount menus.
+    drag: QuickCraftDrag,
+    /// The menu's slots the client was last sent.
+    sent: Option<Vec<Option<ItemStack>>>,
 }
 
 impl Game<'_> {
@@ -31,7 +33,7 @@ impl Game<'_> {
             return;
         };
         let columns = super::mount_menu::mount_columns(&self.mobs[index]);
-        if !self.guest_may_open(conn, "minecraft:horse_inventory", None) {
+        if self.guest_may_open(conn, "minecraft:horse_inventory", None) != Some(true) {
             return;
         }
         // ServerPlayer.openMenu closes the menu that was open.
@@ -47,6 +49,7 @@ impl Game<'_> {
             mob,
             columns,
             state: 0,
+            drag: QuickCraftDrag::default(),
             sent: None,
         });
         self.lan_send_mount(conn);
@@ -69,8 +72,8 @@ impl Game<'_> {
         menu
     }
 
-    /// The menu's slots (the mount's, then the inventory and the hotbar)
-    /// and the carried stack, sent when they changed since the last time.
+    /// The whole menu when its slots changed or a click requires a full correction.
+    /// Cursor-only changes use the hub's carried-item broadcast.
     fn lan_send_mount(&mut self, conn: u32) {
         let Some(host) = self.lan.as_ref() else {
             return;
@@ -82,15 +85,17 @@ impl Game<'_> {
         let Some(index) = self.mobs.iter().position(|m| m.id == mob) else {
             return;
         };
-        let Some(g) = host.hub.guests.iter().find(|g| g.conn == conn) else {
+        let Some(gi) = host.hub.guests.connection_index(conn) else {
             return;
         };
         let (saddle, body, items) = self.mount_contents(index);
         let mut slots = vec![saddle, body.flatten()];
         slots.extend(items.into_iter().take(columns * 3));
-        slots.extend((9..36).chain(0..9).map(|i| g.inventory[i].clone()));
-        let carried = g.carried.clone();
-        let now = Some((slots, carried));
+        slots.extend(
+            (9..36)
+                .chain(0..9)
+                .map(|i| host.hub.guests[gi].inventory[i].clone()),
+        );
         let Some(host) = self.lan.as_mut() else {
             return;
         };
@@ -101,20 +106,12 @@ impl Game<'_> {
         else {
             return;
         };
-        if gm.sent == now {
+        if gm.sent.as_ref() == Some(&slots) {
             return;
         }
         gm.state = (gm.state + 1) & 0x7FFF;
-        let (window, state) = (gm.window, gm.state);
-        let (slots, carried) = now.clone().unwrap_or_default();
-        gm.sent = now;
-        let content = C::ContainerSetContent(play::ContainerSetContent {
-            container: window,
-            state,
-            items: slots.iter().map(|s| host.hub.stack(s)).collect(),
-            carried: host.hub.stack(&carried),
-        });
-        host.hub.send_to(conn, &content);
+        host.hub.send_menu_snapshot(gi, gm.window, gm.state, &slots);
+        gm.sent = Some(slots);
     }
 
     /// A click on the guest's mount window; false for other windows.
@@ -122,12 +119,12 @@ impl Game<'_> {
         let Some(host) = self.lan.as_ref() else {
             return false;
         };
-        let Some((mob, columns)) = host
+        let Some((mob, columns, drag)) = host
             .play
             .get(&conn)
             .and_then(|pl| pl.mount_window.as_ref())
             .filter(|m| m.window == p.container)
-            .map(|m| (m.mob, m.columns))
+            .map(|m| (m.mob, m.columns, m.drag.clone()))
         else {
             return false;
         };
@@ -136,11 +133,24 @@ impl Game<'_> {
             && let Some(index) = self.mobs.iter().position(|m| m.id == mob)
         {
             let mut menu = self.mount_engine_menu(index, columns);
+            menu.set_quick_craft_state(drag);
             let click = super::lan_pickup::click_of(p);
-            self.guest_menu_op_decided(gi, &mut menu, Some(click), None, |menu, env| {
-                let _ = menu.click(env, click.0, click.1, click.2);
-            });
-            self.lan_mount_store(index, columns, &menu);
+            if self
+                .guest_menu_op_decided(gi, &mut menu, Some(click), None, |menu, env| {
+                    let _ = menu.click(env, click.0, click.1, click.2);
+                })
+                .is_some()
+            {
+                self.lan_mount_store(index, columns, &menu);
+                if let Some(gm) = self
+                    .lan
+                    .as_mut()
+                    .and_then(|host| host.play.get_mut(&conn))
+                    .and_then(|pl| pl.mount_window.as_mut())
+                {
+                    gm.drag = menu.quick_craft_state();
+                }
+            }
         }
         // The client is told what the server has, whatever it predicted.
         let Some(host) = self.lan.as_mut() else {
@@ -177,24 +187,21 @@ impl Game<'_> {
         let Some(host) = self.lan.as_mut() else {
             return false;
         };
-        let closed = host
-            .play
-            .get_mut(&conn)
-            .and_then(|p| {
-                p.mount_window
-                    .take_if(|m| window.is_none_or(|w| m.window == w))
-            })
-            .is_some();
-        if closed
-            && let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn)
-            && let Some(carried) = host.hub.guests.update(gi, |g| g.carried.take())
+        let Some(mount) = host.play.get_mut(&conn).and_then(|p| {
+            p.mount_window
+                .take_if(|m| window.is_none_or(|w| m.window == w))
+        }) else {
+            return false;
+        };
+        if let Some(gi) = host.hub.guests.connection_index(conn)
+            && let Some(carried) = self.close_guest_menu_cursor(gi, mount.window)
         {
             self.lan_place_back(gi, vec![carried]);
         }
-        if closed && window.is_some() {
+        if window.is_some() {
             self.player_menu_closing(conn);
         }
-        closed
+        true
     }
 
     /// `AbstractMountInventoryMenu.stillValid`: the mount is alive and the
@@ -229,7 +236,7 @@ impl Game<'_> {
             let Some(g) = host.hub.guests.iter().find(|g| g.conn == conn) else {
                 continue;
             };
-            if !host.hub.here(g) {
+            if !host.hub.here(g) || self.player_tick_canceled(conn) {
                 continue;
             }
             if self.lan_mount_valid(g, mob) {

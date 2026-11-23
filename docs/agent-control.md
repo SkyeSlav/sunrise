@@ -8,7 +8,7 @@ Players read [Control Sunrise with your AI agent](https://playsunrise.net/docs/a
 
 The command lists are generated, so they can't drift:
 
-- [launcher-commands.md](launcher-commands.md): every `sunrise-launcher` command, its arguments
+- [launcher-commands.md](https://github.com/sunrise-org/sunrise-launcher/blob/main/docs/launcher-commands.md): every `sunrise-launcher` command, its arguments
   and its MCP tool. It comes from the CLI's clap definition (`cli_tools::markdown`), and the
   launcher test `the_launcher_reference_is_up_to_date` fails when it is stale or a tool is missing.
 - [sunrise-ctl-commands.md](sunrise-ctl-commands.md): every `sunrise-ctl` command, its MCP tool
@@ -22,9 +22,9 @@ The command lists are generated, so they can't drift:
 | Game control socket | `sunrise-client --control` / `--control-socket PATH`, or Agent Control on in Sunrise Settings > AI Agent (`crates/sunrise-client/src/control.rs`; commands in `src/game/runtime/control.rs`, `agent.rs`, `ui_control.rs`, `saves_control.rs` and friends) | text line in, one JSON line out; Unix socket, or localhost TCP and a token where there is none |
 | `sunrise-ctl` | `crates/sunrise-client/src/bin/sunrise-ctl/` | CLI over the socket; one table of commands (`commands.rs`) gives the help, the argument checks, the MCP tools and the reference |
 | `sunrise-ctl mcp` | same | MCP over stdio, one tool per command of the table |
-| Launcher CLI | `launcher/src/cli.rs` | `sunrise-launcher <command> [--json]` |
-| Launcher MCP | `launcher/src/mcp.rs`, `cli_tools.rs`, `game_tools.rs` | `sunrise-launcher mcp` (stdio): every CLI command as a tool, the session tools, and the game's tools as `game_*` |
-| Connecting | `launcher/src/agents.rs`, `agents_page.rs`; `src/game/runtime/agent_settings.rs` | `sunrise-launcher agent-config`; Settings > AI in the launcher; Sunrise Settings > AI Agent in the game |
+| Launcher CLI | `https://github.com/sunrise-org/sunrise-launcher/blob/main/src/cli.rs` | `sunrise-launcher <command> [--json]` |
+| Launcher MCP | `https://github.com/sunrise-org/sunrise-launcher/blob/main/src/mcp.rs`, `cli_tools.rs`, `game_tools.rs` | `sunrise-launcher mcp` (stdio): every CLI command as a tool, the session tools, and the game's tools as `game_*` |
+| Connecting | `https://github.com/sunrise-org/sunrise-launcher/blob/main/src/agents.rs`, `agents_page.rs`; `src/game/runtime/agent_settings.rs` | `sunrise-launcher agent-config`; Settings > AI in the launcher; Sunrise Settings > AI Agent in the game |
 | No AI | `crates/sunrise-core/src/no_ai.rs` | `noAi:true` in `<game home>/sunrise-extras.txt`, read by every surface |
 
 ## One MCP server for everything
@@ -64,8 +64,12 @@ left alone.
 
 ## Protocol revisions
 
-All three servers share one implementation, `crates/sunrise-mcp`, so they advertise and answer
-the same revisions. There are two of them.
+`sunrise-ctl mcp` and [`sunrise-server mcp`](server.md#8-control-api-and-mcp) share the
+implementation in `crates/sunrise-mcp`. The separate launcher has its own MCP implementation.
+Its `game_*` tools depend on the stdio wire contract with the installed game's `sunrise-ctl mcp`,
+not on this crate.
+
+The shared implementation serves two revisions:
 
 - `2026-07-28` is stateless: there is no handshake, and every request carries its version and
   its capabilities in `_meta` (`io.modelcontextprotocol/protocolVersion`,
@@ -134,7 +138,7 @@ passes on without checking it).
 | Open to LAN | Pause > Open to LAN | yes | yes | `lan open\|close\|status` |
 | Play with Friends: host, stop, status | Pause | yes | yes | `friends host\|stop\|status` |
 | Vanilla options, every page | Options | yes | yes | `options-get`, `options-set` (all of options.txt, typed) |
-| Sunrise Settings: Extras, PvP & HUD, AI Agent; the graphics screen (Video Settings); Controller (Controls) | Sunrise Settings, Video Settings, Controls | yes | yes | `options sunrise\|graphics\|extras\|agent...`, then `ui`/`click`/`set` |
+| Sunrise Settings: Extras, PvP & HUD, AI Agent; the graphics screen (Extras → Sunrise Graphics...); Controller (Controls) | Sunrise Settings, Extras, Controls | yes | yes | `options sunrise\|graphics\|extras\|agent...`, then `ui`/`click`/`set` |
 | Agent control on or off, status, connection details | Sunrise Settings > AI Agent | yes | yes | `options sunrise`, the page's widgets (`ai-agent`) |
 | Key binds | Controls > Key Binds | yes | yes | `options-set key_key.jump key.keyboard.j` |
 | Resource packs | Options > Resource Packs | yes | yes | `options packs`, then `ui` rows and `click`; `options-set resourcePacks` |
@@ -470,8 +474,7 @@ of the frame ([#8750](https://github.com/horizon-rust/horizon/issues/8750)).
   - `setting`: Agent Control on opens the endpoint, the AI Agent page, Copy, and off closes it;
   - `repro`: origins in `state`/`input-log`, record-start/stop, the bundle's entries, and a
     replay ending near the recorded state.
-- **`tools/launcher_mcp_e2e.py`** drives `sunrise-launcher mcp`: the generated tools, `play` and
-  the `game_*` tools, `confirm`, `agent-config` and `--test`, and No AI.
+- The launcher's MCP server (`sunrise-launcher mcp`) is tested in [sunrise-launcher](https://github.com/sunrise-org/sunrise-launcher).
 
 ## Later
 

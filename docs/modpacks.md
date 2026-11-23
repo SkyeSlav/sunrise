@@ -191,7 +191,7 @@ A content mod (`.smod`) carries `assets/` and `data/` and no code:
 
 ```
 ruby.smod
-├── sunrise-mod.toml          id = "ruby", api = "0.2", side = "both", capabilities = ["registries"]
+├── sunrise-mod.toml          id = "ruby", side = "both" (the build adds api and capabilities)
 ├── data/ruby/sunrise/block/ruby_block.json
 ├── data/ruby/sunrise/item/ruby.json
 ├── data/ruby/recipe/ruby_block.json            (26.3 data-pack formats)
@@ -312,7 +312,8 @@ inspected:
 │   ├── port/                 the agent's Rust crate (tiers logic and up)
 │   ├── harness/              per-mod harness results and logs
 │   └── <id>.smod
-└── coverage.json, coverage.md
+├── coverage.json, coverage.md
+└── launcher-status.json      the launcher's copy of the porter's last status reply (docs/api/port-pack.md)
 ```
 
 **Status.** `import`, `inventory`, `fetch`, `carry` and `report` run today, and `port` runs
@@ -329,7 +330,20 @@ cargo run -p sunrise-port-pack -- carry ~/.sunrise/ports/pack         # content 
 cargo run -p sunrise-port-pack -- report ~/.sunrise/ports/pack        # coverage.json and coverage.md
 cargo run -p sunrise-port-pack -- events ~/.sunrise/ports/pack/jars   # NeoForge events the mods listen to, and their hooks
 cargo run -p sunrise-port-pack -- port ~/Downloads/pack.zip ~/.sunrise/ports/pack [--from <folder>] [--resources <root>]
+cargo run -p sunrise-port-pack -- port-work ~/.sunrise/ports/pack      # the port step alone, on an imported folder
+cargo run -p sunrise-port-pack -- status ~/.sunrise/ports/pack         # what the folder holds, as the launcher shows it
+cargo run -p sunrise-port-pack -- profile ~/.sunrise/ports/pack        # the staged resource packs into the profile's home
 ```
+
+### Versions of carried mods
+
+A manifest's `version` must be semver, and a Java jar's version often isn't. The carry drops a leading
+`<Minecraft version>-` when it equals the pack's own (`26.3-3.6.30+refabricated` becomes
+`3.6.30+refabricated`) and pads an omitted minor or patch. A version that is still not semver is written
+as `0.0.0+unresolved.<the jar's version, with characters outside [0-9A-Za-z-.] replaced by '-'>`. The jar's original
+string stays in the manifest's header comment. Dependency resolution never lets a
+`0.0.0+unresolved.…` version satisfy a requirement, `*` and `=0.0.0` included: the port report says that the mod's version couldn't be read, and it
+must be set by hand in the carried `sunrise-mod.toml` before anything can depend on the mod.
 
 ### Data packs in mod jars
 
@@ -364,7 +378,8 @@ conflicting and unsupported entries; they also appear in `coverage.json` and `co
 reported as partial, not as a rendering-verified port. Shader packs are reported as pending conversion.
 Old import folders without this report still open.
 
-The launcher copies staged packs into `<work>/home/resourcepacks/` on import, port and launch. It preserves any
+`sunrise-port-pack profile <work>` copies staged packs into `<work>/home/resourcepacks/`; the launcher runs it on
+import, port and launch. It preserves any
 existing profile pack as a whole, including edits inside a directory pack, and lists name/content conflicts.
 `<work>/profile-resourcepacks.json` records those results. A profile with resource packs and no carried mods can
 play. Enable packs in the game's Resource Packs screen; importing never changes the enabled-pack list.
@@ -395,7 +410,7 @@ events a mod listens to and the capabilities it uses. A listener is an `@Subscri
 parameter, or a method reference or lambda that takes one event
 (`NeoForge.EVENT_BUS.addListener(this::onTick)`). It looks each name up in the hook catalog's
 `neoforge` names, generated at build time from the Rust hook declarations (see the
-[hook notes](https://sunrise-org.github.io/sunrise/reference/hook-notes.html)). An optional JSON
+[hook notes](https://playsunrise.net/docs/modding/reference/hook-notes)). An optional JSON
 file with `hooks` entries containing `name` and `neoforge` can replace those labels for a report.
 Over a folder of jars it ranks the names by how many mods use them. Each name gets one of eight answers:
 
@@ -412,7 +427,7 @@ Over a folder of jars it ranks the names by how many mods use them. Each name ge
 - none.
 
 The load-phase events follow the modding book's
-[load phases](https://sunrise-org.github.io/sunrise/concepts/load-phases.html).
+[load phases](https://playsunrise.net/docs/modding/concepts/load-phases).
 `FMLCommonSetupEvent`'s work goes in `Hooks::register`, then the first server reload.
 `FMLLoadCompleteEvent`'s goes after the initial config and before `server_about_to_start`.
 `FMLDedicatedServerSetupEvent`'s goes in `server_about_to_start`, when its `dedicated` flag is set.
@@ -770,20 +785,13 @@ Two cases the oracle fills in:
     `add_template_pool_elements` modifiers whose load conditions hold for the mods ported
     along, and from CTOV's Java registration: its 21 village types and 11 outposts join
     vanilla's `villages` and `pillager_outposts` with the mod's default weights.
-  - **YUNG's API** (#839, #846 in the game; #840, #847 in carry). `yungsapi:yung_jigsaw` and its
-    elements become vanilla's jigsaw and single element, with their rules under
-    `sunrise:yungsapi`. The game assembles them as YUNG's `JigsawManager` does: priority
-    pieces, caps by name, depth ranges, `ignore_bounds` and the conditions tree, with
-    `piece_in_range`. Dead-end pools swap a piece that got no child for one of its dead-end
-    pool, and once the layout is done each piece's modifiers can turn it into another template
-    (`transform`) or place it last (`delay_generation`). Better Fortresses' bridges need all
-    three: over seed 1234's Nether chunks -64..63 it goes from 3,765 to 4,106 pieces. YUNG's
-    placements become `sunrise:` keys on a random spread: `sunrise:exclusion_zone` for the
-    enhanced exclusion zone, `sunrise:avoid_biomes` for the temples' ocean and river search,
-    `sunrise:ring_sections` for Better Strongholds' rings. `sunrise:disables` on a YUNG
-    structure turns off the vanilla type its mod's mixin turns off. It is written only when
-    the game can start the replacement, so vanilla mineshafts stay while Better Mineshafts (a
-    Java type) can't.
+  - **YUNG's API.** The game names no mod's structure type: `yungsapi:yung_jigsaw` and its
+    `yungsapi:yung_single_element` elements need YUNG's API itself, a mod that registers that
+    structure type and lays its starts out from its pools through the engine's jigsaw assembly
+    with its own depth and reach. Carry lists them as unsupported. YUNG's placements become
+    `sunrise:` keys on a random spread: `sunrise:exclusion_zone` for the enhanced exclusion
+    zone, `sunrise:avoid_biomes` for the temples' ocean and river search, `sunrise:ring_sections`
+    for Better Strongholds' rings.
   - **Repurposed Structures' and Moog's own assembler** (#850 in the game, #851 in carry). Both
     lay out their jigsaws with `PieceLimitedJigsawManager`, not vanilla's. Their structures, the
     Nether variants too, get `sunrise:piece_limited`: `y_allowance`, burying, the pools whose
@@ -969,9 +977,9 @@ for libraries, performance mods, pack tooling and what Sunrise has built in. Unc
 not read) is carried with its data files moved to 1.21's folder names (`recipe/`, `loot_table/`,
 `tags/block/`..., counted as `folders_renamed`); a file the jar also holds under the new name
 keeps that copy. Their JSON stays 1.20's: a recipe result naming its item as `item` (before
-1.20.5), which 26.3 skips, is kept as it is and counted as `recipes_old_result`, and NBT in loot
+1.20.5), which 26.3 can't decode (one such recipe fails the whole data load), is moved to `outside/` as it is and counted as `recipes_old_result`, and NBT in loot
 functions, ingredients and predicates is not upgraded yet (#10262). In the game each such file
-fails alone and the rest load: those recipes are skipped, `set_nbt` and `copy_nbt` drop their item
+fails alone and the rest load: `set_nbt` and `copy_nbt` drop their item
 without the NBT, an advancement's NBT predicate matches any item, a template's block renamed since
 1.20 is air, and a 1.20 command in a function fails. Such a mod is partial whatever its harness
 says, with that in its reason. `check` still says it doesn't run.

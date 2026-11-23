@@ -47,7 +47,7 @@ impl LevelAccess for StateChangeLevel {
     fn game_time(&self) -> i64 {
         self.inner.game_time()
     }
-    fn observe_block_changed(&self, _pos: BlockPos, old: BlockStateId, new: BlockStateId) {
+    fn observe_block_changed(&self, _pos: BlockPos, old: BlockStateId, new: BlockStateId, _: i32) {
         let east = self.east();
         self.changed.borrow_mut().push((old, new, east));
     }

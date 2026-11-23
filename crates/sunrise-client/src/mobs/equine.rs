@@ -1,7 +1,7 @@
 //! Horses, donkeys, mules and the undead horses (`AbstractHorse`): random
 //! stats, coat colours and markings, eating, rearing, taming by riding,
 //! the ridden movement and jump, offspring stats and `AbstractEquineModel`.
-use super::finalize::{Attr, set_base};
+use super::finalize::{Attr, base_value, set_base};
 use super::{
     Mob, MobEvent, MobWorld, Seen, Species,
     anim::{Poses, State},
@@ -223,7 +223,7 @@ pub fn register(m: &mut Mob) {
         g.add(
             9,
             RandomStand {
-                next: -stand_interval,
+                next: stand_interval.wrapping_neg(),
             },
         );
     }
@@ -316,17 +316,17 @@ pub struct OffspringAttributes {
 }
 impl OffspringAttributes {
     pub fn draw(m: &mut Mob, partner: &Seen) -> Self {
+        // `setOffspringAttribute` reads `getAttributeBaseValue`: an effect's
+        // modifier is not inherited.
+        let (health, speed) = (
+            base_value(m, Attr::MaxHealth),
+            base_value(m, Attr::MovementSpeed),
+        );
         let r = &mut m.random;
         Self {
-            max_health: offspring(
-                f64::from(m.attrs.max_health),
-                partner.stats[0],
-                15.0,
-                30.0,
-                r,
-            ) as f32,
+            max_health: offspring(health, partner.stats[0], 15.0, 30.0, r) as f32,
             jump: offspring(m.extra.vector[0], partner.stats[1], 0.4, 1.0, r),
-            speed: offspring(m.attrs.speed, partner.stats[2], 0.1125, 0.3375, r),
+            speed: offspring(speed, partner.stats[2], 0.1125, 0.3375, r),
         }
     }
 }
@@ -633,9 +633,10 @@ impl Goal for RandomStand {
         0
     }
     fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
-        self.next += 1;
+        // `nextStand++` and `-getAmbientStandInterval()`, in int arithmetic.
+        self.next = self.next.wrapping_add(1);
         if self.next > 0 && m.random.next_int_bound(1000).unwrap_or(1000) < self.next {
-            self.next = -m.kind.ambient_interval;
+            self.next = m.kind.ambient_interval.wrapping_neg();
             return !immobile(m) && m.random.next_int_bound(10).unwrap_or(1) == 0;
         }
         false
@@ -675,7 +676,7 @@ pub fn is_vehicle(m: &Mob) -> bool {
 /// it splashes for the first five steps, then gallops through the water every
 /// third and swims in between.
 pub fn skeleton_horse_swim_sound(m: &mut Mob) -> &'static str {
-    if !m.on_ground {
+    if !m.ground.on_ground {
         return "entity.skeleton_horse.swim";
     }
     if !is_vehicle(m) {
@@ -698,7 +699,7 @@ pub fn swim_volume(m: &Mob, f: f32) -> f32 {
     if m.species() != Species::SkeletonHorse {
         return f;
     }
-    if m.on_ground {
+    if m.ground.on_ground {
         0.3
     } else {
         (f * 25.0).min(0.1)
@@ -883,7 +884,7 @@ pub fn ridden_step(m: &mut Mob, context: &LoopContext) {
     // AbstractHorse.getRiddenInput: no input on the ground while rearing,
     // unless a jump let it slide.
     let standing = m.extra.counter > 0;
-    if m.on_ground && r.jump == 0.0 && standing && !m.extra.stand_sliding {
+    if m.ground.on_ground && r.jump == 0.0 && standing && !m.extra.stand_sliding {
         m.ai.xxa = 0.0;
         m.ai.zza = 0.0;
         return;
@@ -897,7 +898,7 @@ pub fn ridden_step(m: &mut Mob, context: &LoopContext) {
     m.set_speed(speed);
     m.ai.xxa = r.strafe * 0.5;
     m.ai.zza = forward;
-    if m.on_ground && r.jump > 0.0 {
+    if m.ground.on_ground && r.jump > 0.0 {
         // executeRidersJump
         let impulse = m.extra.vector[0] as f32 * r.jump;
         m.velocity.y = f64::from(impulse);
@@ -906,7 +907,7 @@ pub fn ridden_step(m: &mut Mob, context: &LoopContext) {
             m.velocity.x += f64::from(-0.4 * s * r.jump);
             m.velocity.z += f64::from(0.4 * c * r.jump);
         }
-        crate::motion::native_living_jump(context, m.id, &m.kind.id);
+        m.living_jumped(context);
         if let Some(rider) = m.rider.as_mut() {
             rider.jump = 0.0;
         }
@@ -1317,6 +1318,7 @@ mod tests {
                 .unwrap();
             for asks_animal_tame in [false, true] {
                 let world = crate::mobs::MobWorld {
+                    side: sunrise_client::motion::dry_side(),
                     goal_host: None,
                     asks_animal_tame,
                     ..world.clone()
@@ -1593,10 +1595,10 @@ mod tests {
         let mut m = equine(1, Species::SkeletonHorse, "minecraft:skeleton_horse");
         // In the water it swims; every other animal's default is the generic
         // splash (Entity.getSwimSound).
-        m.on_ground = false;
+        m.ground.on_ground = false;
         assert_eq!(sound(&mut m), "entity.skeleton_horse.swim");
         // Standing on the ground with nobody on it, it splashes.
-        m.on_ground = true;
+        m.ground.on_ground = true;
         assert_eq!(sound(&mut m), "entity.skeleton_horse.step_water");
         m.extra.rider = Some(9);
         let ridden: Vec<&str> = (0..9).map(|_| sound(&mut m)).collect();
@@ -1626,14 +1628,14 @@ mod tests {
     #[test]
     fn a_skeleton_horses_splash_is_quiet_in_the_water() {
         let mut m = equine(1, Species::SkeletonHorse, "minecraft:skeleton_horse");
-        m.on_ground = true;
+        m.ground.on_ground = true;
         assert_eq!(swim_volume(&m, 0.35), 0.3);
-        m.on_ground = false;
+        m.ground.on_ground = false;
         assert_eq!(swim_volume(&m, 0.35), 0.1);
         assert_eq!(swim_volume(&m, 1.0), 0.1);
         assert!((swim_volume(&m, 0.001) - 0.025).abs() < 1.0e-6);
         let mut horse = equine(2, Species::Horse, "minecraft:horse");
-        horse.on_ground = false;
+        horse.ground.on_ground = false;
         assert_eq!(swim_volume(&horse, 0.35), 0.35);
     }
 
@@ -1646,7 +1648,7 @@ mod tests {
         use crate::mobs::world::with_built_test_world;
         let mut horse = horse(Species::Horse);
         horse.position = Vec3::new(0.5, 1.0, 0.5);
-        horse.on_ground = true;
+        horse.ground.on_ground = true;
         horse.extra.rider = Some(9);
         let mut zombie = zombie_horse();
         zombie.extra.rider = Some(9);
@@ -1706,7 +1708,7 @@ mod tests {
     fn zombie_horse() -> Mob {
         let mut m = horse(Species::ZombieHorse);
         m.position = Vec3::new(0.5, 1.0, 0.5);
-        m.on_ground = true;
+        m.ground.on_ground = true;
         m
     }
 }
@@ -1729,7 +1731,7 @@ mod follow_mommy_tests {
         with_test_world(&[], |_, types| {
             let mob = |id: u32, name: &str, at: Vec3| {
                 let mut m = Mob::new(id, Arc::new(types.types[name].clone()), at, 0.0);
-                m.on_ground = true;
+                m.ground.on_ground = true;
                 m
             };
             let seen: Vec<_> = others

@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 // no wire: in-process testing harness state, not a mod boundary payload.
 /// The server's command service: the commands run, in order, of which those listed as known
-/// succeed, and the feedback given.
+/// succeed, and the feedback and failure lines given.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct FakeCommands {
@@ -14,6 +14,8 @@ pub struct FakeCommands {
     pub ran: Vec<String>,
     /// Each feedback line given, in order.
     pub feedback: Vec<Text>,
+    /// Each failure line given, in order.
+    pub failure: Vec<Text>,
 }
 
 impl FakeCommands {
@@ -37,24 +39,22 @@ impl Commands for FakeCommands {
         self.feedback.push(line);
         Ok(())
     }
+    fn failure(&mut self, line: Text) -> Result<(), crate::text::TextFormError> {
+        line.validate_depth()?;
+        self.failure.push(line);
+        Ok(())
+    }
 }
 
 // no wire: in-process testing harness state, not a mod boundary payload.
-/// The server's message service: the lines broadcast, in order, and the texts the chat filter
-/// blocks.
+/// The server's message service: the lines broadcast, in order.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct FakeMessages {
-    blocked: HashSet<String>,
     broadcast: RefCell<Vec<Text>>,
 }
 
 impl FakeMessages {
-    /// Makes the chat filter block text `text`.
-    pub fn blocked(&mut self, text: &str) -> &mut Self {
-        self.blocked.insert(text.to_owned());
-        self
-    }
     /// Each line broadcast, in order.
     pub fn broadcast_lines(&self) -> Vec<Text> {
         self.broadcast.borrow().clone()
@@ -66,8 +66,5 @@ impl Messages for FakeMessages {
         line.validate_depth()?;
         self.broadcast.borrow_mut().push(line);
         Ok(())
-    }
-    fn text_allowed(&self, text: &str) -> Option<bool> {
-        Some(!self.blocked.contains(text))
     }
 }

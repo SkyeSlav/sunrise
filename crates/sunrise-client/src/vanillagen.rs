@@ -93,7 +93,7 @@ pub struct VanillaTerrain {
 /// The far ring of a mod's terrain: none, as for the mod's terrain alone.
 struct NoFarGround;
 impl LodSampler for NoFarGround {
-    fn sample(&mut self, _: i32, _: i32) -> Option<crate::lod::Surface> {
+    fn sample(&mut self, _: i32, _: i32) -> Option<crate::columns::Surface> {
         None
     }
 }
@@ -209,8 +209,8 @@ impl VanillaTerrain {
             }
         }
     }
-    fn client_surface(&self, surface: SurfaceSample) -> crate::lod::Surface {
-        crate::lod::Surface {
+    fn client_surface(&self, surface: SurfaceSample) -> crate::columns::Surface {
+        crate::columns::Surface {
             height: surface.height,
             state: surface.state,
             water: surface.water,
@@ -764,7 +764,7 @@ impl VanillaTerrain {
     }
     /// Exact undecorated surface queries, sharing the generator's bounded query worker.
     /// Custom terrain without a noise surface has no answer. No gameplay chunk is allocated.
-    pub fn terrain_surfaces(&self, columns: &[(i32, i32)]) -> Vec<Option<crate::lod::Surface>> {
+    pub fn terrain_surfaces(&self, columns: &[(i32, i32)]) -> Vec<Option<crate::columns::Surface>> {
         if self.mod_terrain {
             return vec![None; columns.len()];
         }
@@ -810,7 +810,8 @@ impl VanillaTerrain {
         const QUIET: u64 = 2_000;
         const LATEST: u64 = 60_000;
         let terrain = Arc::downgrade(self);
-        let spawned = sunrise_guest_stack::builder()
+        let spawned = std::thread::Builder::new()
+            .stack_size(sunrise_threads::GAME_THREAD_STACK_BYTES)
             .name("Ring search".into())
             .spawn(move || {
                 sunrise_threads::idle_current();
@@ -953,6 +954,9 @@ pub fn shared_data_with(
 }
 impl ChunkGenerator for VanillaTerrain {
     type Worker = GeneratorWorker;
+    fn spawn_height(&self) -> i32 {
+        self.generator.flat_spawn_height().unwrap_or(64)
+    }
     fn set_saved_starts(
         &self,
         source: Arc<sunrise_world::worldgen::generator::SavedStructureStarts>,
@@ -981,7 +985,7 @@ impl ChunkGenerator for VanillaTerrain {
         worker: &mut GeneratorWorker,
         x: i32,
         z: i32,
-    ) -> Option<crate::lod::Surface> {
+    ) -> Option<crate::columns::Surface> {
         if self.mod_terrain {
             return None;
         }

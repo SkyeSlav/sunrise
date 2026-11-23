@@ -139,7 +139,7 @@ fn consuming_cancellation_has_one_outer_on_local_and_packet_routes() {
                         .iter()
                         .position(|guest| guest.conn == 12)
                         .unwrap();
-                    assert!(g.guest_use_item_on(12, gi, hit, Hand::Main).is_ok());
+                    assert!(g.guest_use_item_on(12, gi, hit, Hand::Main, None).is_ok());
                 } else {
                     g.as_guest(12, |g| {
                         g.forced_hit = Some(hit);
@@ -179,7 +179,7 @@ fn consuming_cancellation_has_one_outer_on_local_and_packet_routes() {
                         .iter()
                         .position(|guest| guest.conn == 12)
                         .unwrap();
-                    assert!(g.guest_use_item_on(12, gi, hit, Hand::Main).is_ok());
+                    assert!(g.guest_use_item_on(12, gi, hit, Hand::Main, None).is_ok());
                 } else {
                     g.as_guest(12, |g| {
                         g.forced_hit = Some(hit);
@@ -228,7 +228,7 @@ fn consuming_cancellation_has_one_outer_on_local_and_packet_routes() {
                         .iter()
                         .position(|guest| guest.conn == 12)
                         .unwrap();
-                    assert!(g.guest_use_item_on(12, gi, hit, Hand::Main).is_ok());
+                    assert!(g.guest_use_item_on(12, gi, hit, Hand::Main, None).is_ok());
                 } else {
                     g.as_guest(12, |g| {
                         g.forced_hit = Some(hit);
@@ -308,7 +308,7 @@ fn resource_gated_block_use_order_and_stacks_on_server_and_guest() {
                     .position(|guest| guest.conn == 12)
                     .unwrap();
                 assert!(matches!(
-                    g.guest_use_item_on(12, gi, hit, Hand::Main),
+                    g.guest_use_item_on(12, gi, hit, Hand::Main, None),
                     Ok(true)
                 ));
                 g.as_guest(12, |g| assert_eq!(g.held(), Some(&after)))
@@ -402,7 +402,7 @@ fn resource_gated_map_on_banner_fires_once_and_toggles_the_real_marker() {
                 .position(|guest| guest.conn == 12)
                 .unwrap();
             assert!(matches!(
-                g.guest_use_item_on(12, gi, hit, Hand::Main),
+                g.guest_use_item_on(12, gi, hit, Hand::Main, None),
                 Ok(true)
             ));
             SEEN.with_borrow(|seen| {
@@ -470,8 +470,7 @@ fn block_use_original_shrink_and_damage_values() {
 #[test]
 #[ignore = "daily"]
 fn block_use_listener_replacements_keep_original_on_both_routes() {
-    // Instantiate and invoke the real wasm guest on the production-sized stack.
-    crate::game::native_entity_refs::tests::run_on_guest_stack(|| {
+    crate::game::native_entity_refs::tests::run_with_game_stack(|| {
         struct Replace(Arc<AtomicUsize>);
         #[mod_api::__subscriptions]
         impl mod_api::Hooks for Replace {
@@ -481,16 +480,8 @@ fn block_use_listener_replacements_keep_original_on_both_routes() {
                 event: &mut mod_api::RightClickBlockEvent<'_>,
             ) -> mod_api::Flow {
                 let mode = self.0.load(Ordering::SeqCst);
-                if matches!(mode, 2 | 3 | 5) {
-                    return block_use_wasm_replace(
-                        host,
-                        event,
-                        if mode == 5 { 1 } else { mode % 2 },
-                        mode == 5,
-                    );
-                }
                 if let mod_api::HostSide::Server(host) = host {
-                    let item = if self.0.load(Ordering::SeqCst) == 0 {
+                    let item = if mode == 0 {
                         "minecraft:diamond"
                     } else {
                         "minecraft:glowstone"
@@ -529,7 +520,7 @@ fn block_use_listener_replacements_keep_original_on_both_routes() {
                 point: [3.5, 65.0, 4.5],
                 inside: false,
             };
-            for replacement in [0, 1, 2, 3, 4, 5] {
+            for replacement in [0, 1, 4] {
                 mode.store(replacement, Ordering::SeqCst);
                 for packet in [false, true] {
                     let anchor = g
@@ -560,7 +551,7 @@ fn block_use_listener_replacements_keep_original_on_both_routes() {
                             .iter()
                             .position(|guest| guest.conn == 12)
                             .unwrap();
-                        assert!(g.guest_use_item_on(12, gi, hit, Hand::Main).is_ok());
+                        assert!(g.guest_use_item_on(12, gi, hit, Hand::Main, None).is_ok());
                     } else {
                         g.as_guest(12, |g| {
                             g.forced_hit = Some(hit);
@@ -570,7 +561,7 @@ fn block_use_listener_replacements_keep_original_on_both_routes() {
                         .unwrap();
                     }
                     g.as_guest(12, |g| {
-                        let expected_item = if replacement < 4 && replacement % 2 == 0 {
+                        let expected_item = if replacement == 0 {
                             "minecraft:diamond"
                         } else {
                             "minecraft:glowstone"
@@ -636,9 +627,8 @@ fn block_use_nested_originals_and_replacements_are_isolated() {
 #[test]
 #[ignore = "daily"]
 fn block_use_registry_guard_final_hand_matches_original() {
-    mod_platform::__private::install(Arc::from([]));
     let _recording = Recording::start();
-    crate::game::native_guest_turn_tests::with_guests(|g| {
+    let scan_registry = |g: &mut Game<'_>| {
         g.build_registries();
         g.set_mode_id(0);
         g.world
@@ -691,65 +681,10 @@ fn block_use_registry_guard_final_hand_matches_original() {
             reports > 0,
             "registry guard exercised no consuming block uses"
         );
+    };
+    mod_platform::testing::with_mods(Arc::from([]), || {
+        crate::game::native_guest_turn_tests::with_guests(scan_registry);
     });
-}
-
-fn block_use_wasm_replace(
-    host: mod_api::HostSide,
-    event: &mut mod_api::RightClickBlockEvent<'_>,
-    same: usize,
-    continue_use: bool,
-) -> mod_api::Flow {
-    use mod_api::{Hooks as _, wire::Writer};
-    let mod_api::HostSide::Server(host) = host else {
-        return mod_api::Flow::Continue;
-    };
-    let living = host
-        .living(host.player(event.click.player).unwrap().entity())
-        .unwrap();
-    let mut input = Writer::new();
-    input.put(&living);
-    input.put(&Hand::Main);
-    let item = if same == 0 {
-        "minecraft:diamond"
-    } else {
-        "minecraft:glowstone"
-    };
-    input.put(&Some(ItemStack::new(item, 19).try_into_api().unwrap()));
-    let mut output = Writer::new();
-    output.put(&if continue_use {
-        mod_api::Flow::Continue
-    } else {
-        mod_api::Flow::Cancel
-    });
-    output.put(&!continue_use);
-    output.put(&mod_api::TriState::Default);
-    output.put(&mod_api::TriState::Default);
-    output.put(&mod_api::InteractionResult::Consume);
-    let escape = |bytes: &[u8]| {
-        bytes
-            .iter()
-            .map(|b| format!("\\{b:02x}"))
-            .collect::<String>()
-    };
-    let setter =
-        sunrise_mod_wasm::fixture::import_id("BackendMut", "living_set_hand_item").unwrap();
-    let bytes = wat::parse_str(format!(r#"(module
-      (@custom "dylink.0" "\01\04\00\00\00\00")
-      (import "env" "memory" (memory 1))
-      (import "env" "__indirect_function_table" (table 1 funcref))
-      (import "sunrise" "host" (func $host (param i32 i32 i32 i32 i32) (result i32)))
-      (import "sunrise" "host_reply" (func (param i32)))
-      (func (export "sunrise_layout") (result i64) i64.const {layout})
-      (data (i32.const 4096) "{input}")
-      (data (i32.const 8192) "{output}")
-      (func (export "sunrise_in") (param i32) (result i32) i32.const 512)
-      (func (export "sunrise_hook") (param i32) (result i64)
-        i32.const {setter} i32.const 4096 i32.const {input_len} i32.const 16384 i32.const 4096 call $host drop
-        i64.const 8192 i64.const 32 i64.shl i64.const {output_len} i64.or)
-    )"#, layout=*mod_api::wire::LAYOUT, input=escape(input.bytes()), output=escape(output.bytes()), input_len=input.bytes().len(), output_len=output.bytes().len())).unwrap();
-    let module = sunrise_mod_wasm::fixture::module(&bytes).unwrap();
-    module.right_click_block(mod_api::HostSide::Server(host), event)
 }
 
 fn run_block_use_regression(g: &mut Game<'_>, packet: bool, stack: ItemStack) {
@@ -779,7 +714,7 @@ fn run_block_use_regression(g: &mut Game<'_>, packet: bool, stack: ItemStack) {
             .iter()
             .position(|guest| guest.conn == 12)
             .unwrap();
-        assert!(g.guest_use_item_on(12, gi, hit, Hand::Main).is_ok());
+        assert!(g.guest_use_item_on(12, gi, hit, Hand::Main, None).is_ok());
     } else {
         g.as_guest(12, |g| {
             g.set_mode_id(0);

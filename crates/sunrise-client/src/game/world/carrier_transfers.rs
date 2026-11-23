@@ -1027,9 +1027,7 @@ impl Game<'_> {
 
 /// Stops the session after a failed carrier commit, the same way any
 /// fatal save error does: `Game::error` is set (the first error wins),
-/// the event loop exits through it — a tick's error reaches
-/// `Game::exit_on_error` from the event handler's result
-/// (runtime/window_handler.rs), which calls `event_loop.exit()` — and
+/// the event handler sees the error and exits the loop (`runtime/window_handler.rs`), and
 /// every world save refuses while the fences are broken
 /// (`save_game_with`, world/autosave.rs), so the exit path's save and
 /// any autosave write nothing over the affected regions. The prepared
@@ -1911,8 +1909,7 @@ mod tests {
             );
 
             // The session stopped like a fatal save error: `Game::error`
-            // is set — the same flag the event loop's error path exits
-            // the loop through (`exit_on_error`).
+            // is set, which tells the event handler to exit the loop.
             assert!(game.error.is_some(), "the failed commit stops the session");
 
             // A further edit of the fenced cell refuses.

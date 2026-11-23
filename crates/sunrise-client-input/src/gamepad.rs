@@ -1857,8 +1857,8 @@ bind_key.hotbar.2:north
                 .unwrap()
                 .as_nanos()
         ));
-        let p2 = dir.join("P2");
-        fs::create_dir_all(&p2).unwrap();
+        let other_dir = dir.join("other");
+        fs::create_dir_all(&other_dir).unwrap();
         let fresh = PadSettings::load(&dir);
         assert_eq!(fresh, PadSettings::default());
         // An older file, with the removed menuNavigation key: bindings kept.
@@ -1873,9 +1873,13 @@ bind_key.hotbar.2:north
         other.scroll_speed = 24.0;
         other.repeat_delay = 0.6;
         other.repeat_interval = 0.12;
-        other.save(&p2);
-        assert_eq!(PadSettings::load(&p2), other);
-        assert_eq!(PadSettings::load(&dir), fresh, "P2 did not write P1");
+        other.save(&other_dir);
+        assert_eq!(PadSettings::load(&other_dir), other);
+        assert_eq!(
+            PadSettings::load(&dir),
+            fresh,
+            "the other settings directory did not overwrite this one"
+        );
         let invalid = PadSettings::parse(
             "pointerSpeed:NaN\nscrollSpeed:inf\nrepeatDelay:-10\nrepeatInterval:20\n",
         );

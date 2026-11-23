@@ -153,7 +153,7 @@ fn golem_dies(game: &mut super::Game<'_>, at: [f64; 3]) -> Vec<ItemEntity> {
     golem.health = 0.0;
     game.mobs.push(golem.clone());
     let before = game.dropped.len();
-    game.mob_died(&golem);
+    game.mob_die(&golem);
     game.dropped[before..].to_vec()
 }
 

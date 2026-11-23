@@ -105,47 +105,10 @@ impl Game<'_> {
             {
                 continue;
             }
-            let facts = self.res.facts().get(state);
-            let offset = if facts.outline_offset {
-                self.pack
-                    .context
-                    .tables
-                    .offset(state, pos[0], pos[2])
-                    .unwrap_or([0.0; 3])
-            } else {
-                [0.0; 3]
-            };
-            let origin = pos.map(f64::from);
-            let custom = self
-                .collision
-                .cached_shapes()
-                .context_outline_edges(state, self.outline_context_kind());
-            let box_shape = custom
-                .is_none()
-                .then(|| self.context_outline(pos, state, true, &self.be_anims))
-                .flatten();
-            let cube = sunrise_client::blocks::cube_edges();
-            let segments = if let Some(edges) = custom {
-                edges
-            } else if box_shape.is_some() {
-                cube.as_slice()
-            } else {
-                facts.outline_edges.as_ref()
-            };
-            for edge in segments.iter().take(256 - edges) {
-                let point = |end: usize| {
-                    std::array::from_fn(|i| {
-                        let v = edge[i + 3 * end];
-                        if let Some(b) = box_shape {
-                            origin[i] + b[i] + v * (b[i + 3] - b[i])
-                        } else {
-                            origin[i] + offset[i] + v
-                        }
-                    })
-                };
+            for edge in self.outline_edges_iter(state, pos).take(256 - edges) {
                 lines.push(gizmos::Line {
-                    start: point(0),
-                    end: point(1),
+                    start: [edge[0], edge[1], edge[2]],
+                    end: [edge[3], edge[4], edge[5]],
                     color: rim.argb,
                     width: rim.width,
                 });

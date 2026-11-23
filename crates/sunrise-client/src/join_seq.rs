@@ -291,7 +291,7 @@ impl<T> ResidentSlot<T> {
     }
     /// Report the existing allocator's delayed zero-to-live id assignment.
     pub fn id_assigned(&self) {
-        self.emit_current(residency::Change::Install);
+        self.emit_current(residency::Change::Spawned);
     }
     /// Finish a consumed extraction after its terminal work has completed.
     pub fn retire_extracted(&self, id: u32, join: JoinSeq) {
@@ -423,6 +423,10 @@ impl<T: Joined> ResidentList<T> {
     pub fn id_assigned(&self, index: usize) {
         self.0.id_assigned(index);
     }
+    /// Write stamp advancing whenever the list mutates.
+    pub fn stamp(&self) -> ListStamp {
+        self.0.stamp()
+    }
     /// Find an owner using the same lookup as the joined entity lists.
     pub fn locate(&self, join: JoinSeq) -> Option<usize> {
         self.0.locate(join)
@@ -551,7 +555,7 @@ impl<T, const DIRECT: bool> JoinList<T, DIRECT> {
     /// Report the existing allocator's delayed zero-to-live id assignment.
     pub fn id_assigned(&self, index: usize) {
         if let Some(binding) = &self.1 {
-            binding.entity(&self.0[index], residency::Change::Install);
+            binding.entity(&self.0[index], residency::Change::Spawned);
         }
     }
     /// Finish a consumed extraction after its terminal work has completed.
@@ -851,20 +855,6 @@ impl<T: sunrise_mod_runtime::attachments::HasAttachmentLifetime, const DIRECT: b
         entity.attachment_lifetime().retire();
         entity
     }
-}
-
-impl<T: sunrise_mod_runtime::attachments::HasAttachmentLifetime> JoinList<T, false> {
-    /// Audited state edit; debug assertions detect a changed bound registration.
-    pub fn update<R>(&mut self, index: usize, edit: impl FnOnce(&mut T) -> R) -> R {
-        self.written();
-        checked_edit(&mut self.0[index], edit)
-    }
-    pub fn for_each_mut(&mut self, mut edit: impl FnMut(&mut T)) {
-        self.written();
-        for entity in &mut self.0 {
-            checked_edit(entity, &mut edit);
-        }
-    }
     /// Store a tick clone without dropping the owner's lifetime slot.
     pub fn store_back(&mut self, index: usize, entity: T) -> bool
     where
@@ -880,6 +870,20 @@ impl<T: sunrise_mod_runtime::attachments::HasAttachmentLifetime> JoinList<T, fal
         };
         store_back(&mut self.0[index], entity);
         true
+    }
+}
+
+impl<T: sunrise_mod_runtime::attachments::HasAttachmentLifetime> JoinList<T, false> {
+    /// Audited state edit; debug assertions detect a changed bound registration.
+    pub fn update<R>(&mut self, index: usize, edit: impl FnOnce(&mut T) -> R) -> R {
+        self.written();
+        checked_edit(&mut self.0[index], edit)
+    }
+    pub fn for_each_mut(&mut self, mut edit: impl FnMut(&mut T)) {
+        self.written();
+        for entity in &mut self.0 {
+            checked_edit(entity, &mut edit);
+        }
     }
 }
 
@@ -1873,7 +1877,7 @@ mod tests {
 
     #[test]
     fn journal_snapshots_are_detached_and_delayed_ids_install_only_after_assignment() {
-        use residency::Change::{Install, Remove};
+        use residency::Change::{Remove, Spawned};
         let (mut list, journal) = journal_list();
         changes(&journal);
         let mut snapshot = list.clone();
@@ -1890,7 +1894,7 @@ mod tests {
         list.id_assigned(0);
         let assigned = residency::Identity::new(7, join).unwrap();
         list.clear();
-        assert_eq!(changes(&journal), [Install(assigned), Remove(assigned)]);
+        assert_eq!(changes(&journal), [Spawned(assigned), Remove(assigned)]);
     }
 
     #[test]
@@ -1985,7 +1989,7 @@ mod tests {
             events,
             [Event {
                 owner: home,
-                change: Install(identity)
+                change: residency::Change::Spawned(identity)
             }]
         );
         events.clear();
@@ -2042,7 +2046,10 @@ mod tests {
         list.id_assigned(0);
         list.clear();
         let assigned = residency::Identity::new(7, join).unwrap();
-        assert_eq!(changes(&journal), [Install(assigned), Remove(assigned)]);
+        assert_eq!(
+            changes(&journal),
+            [residency::Change::Spawned(assigned), Remove(assigned)]
+        );
     }
 
     const SINGLETON_OWNER: residency::Owner = residency::Owner {

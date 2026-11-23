@@ -54,8 +54,8 @@ mod tests {
         sync::Arc,
         time::{Duration, Instant},
     };
+    use sunrise_core::vanilla_bytes::Writer;
     use sunrise_protocol::{
-        buf::Writer,
         connection::Connection,
         crypto::offline_uuid,
         packets::{Empty, configuration as cfg, handshake, login},
@@ -173,7 +173,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
             for receipt in lan.poll() {
-                if let (NetEvent::Joined(j), _) = receipt.into_parts() {
+                if let (NetEvent::Joined(j, _), _) = receipt.into_parts() {
                     return Joined {
                         asked,
                         kept: Ok(j.sender.viewed_levels),

@@ -1,9 +1,24 @@
-//! The command tree (`ClientboundCommandsPacket`): its nodes, the 26.3 argument types
-//! and their parser properties.
+//! The command tree (`ClientboundCommandsPacket`) and server-supplied suggestions.
 use crate::{
     Result,
-    buf::{Codec, Reader, Writer},
+    buf::{Codec, List, Opt, Reader, Str, TrustedComponent, VarInt},
+    packet,
 };
+use sunrise_core::{nbt::Tag, vanilla_bytes::Writer};
+
+packet!(
+    /// One `ClientboundCommandSuggestionsPacket.Entry`: suggestion text and optional tooltip.
+    CommandSuggestion { text: String => Str, tooltip: Option<Tag> => Opt<TrustedComponent> }
+);
+packet!(
+    /// `ClientboundCommandSuggestionsPacket.STREAM_CODEC`.
+    CommandSuggestions {
+        id: i32 => VarInt,
+        start: i32 => VarInt,
+        length: i32 => VarInt,
+        suggestions: Vec<CommandSuggestion> => List<CommandSuggestion>,
+    }
+);
 
 /// One entry of ClientboundCommandsPacket: a literal or an argument node.
 #[derive(Clone, Debug, PartialEq)]
@@ -256,7 +271,7 @@ impl Codec<Commands> for Commands {
                 name = r.string(32767)?;
             }
             if kind == 2 {
-                let id = crate::adapter::ids::command_argument_type(r.varint()?);
+                let id = r.varint()?;
                 let start = r.position();
                 read_argument_properties(r, id)?;
                 parser = Some((id, r.since(start).to_vec()));

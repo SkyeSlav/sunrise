@@ -3,23 +3,37 @@
 
 pub trait Hooks {
     /// Before a player's tick on both logical sides (NeoForge 26.3
-    /// `PlayerTickEvent.Pre`). Non-cancellable, including death-screen ticks.
+    /// `PlayerTickEvent.Pre`). Non-cancellable. On the client, fires through death tick 20,
+    /// but not after the local player is removed.
     /// `player` identifies the ticked player; on the server their state is
     /// acting. Fires before sleep, cooldowns and body work. Players still tick
     /// under `/tick freeze`, but not while the level is paused.
     /// On the server, neither player tick hook fires for a spectator whose
     /// bounds touch an unloaded chunk; that player's body tick is skipped.
-    #[hook(side = "both", contract = "listen", neoforge = "PlayerTickEvent.Pre")]
+    #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_player_tick_pre",
+        dispatch = "api_carrier",
+        side = "both",
+        contract = "listen",
+        neoforge = "PlayerTickEvent.Pre"
+    )]
     fn player_tick_pre(player: PlayerRef);
     /// After a player's tick on both logical sides (NeoForge 26.3
-    /// `PlayerTickEvent.Post`). Non-cancellable, including death-screen ticks.
+    /// `PlayerTickEvent.Post`). Non-cancellable. On the client, fires through death tick 20,
+    /// but not after the local player is removed.
     /// `player` is the same identity as in `player_tick_pre`; on the server
     /// their state is acting. Runs after body work and server-side item,
     /// arrow and XP pickups, so reads see the completed tick. Client reads
     /// see only the state available to that client, not future server updates.
     /// On the server, neither player tick hook fires for a spectator whose
     /// bounds touch an unloaded chunk; that player's body tick is skipped.
-    #[hook(side = "both", contract = "listen", neoforge = "PlayerTickEvent.Post")]
+    #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_player_tick_post",
+        dispatch = "api_carrier",
+        side = "both",
+        contract = "listen",
+        neoforge = "PlayerTickEvent.Post"
+    )]
     fn player_tick_post(player: PlayerRef);
     /// An entity joins the server level `dimension` (NeoForge's
     /// `EntityJoinLevelEvent`): vanilla's `PersistentEntitySectionManager.addEntity`.
@@ -47,7 +61,10 @@ pub trait Hooks {
     /// runs. An aborted transaction tells nothing, and the entity it spawned
     /// is gone. A join cancelled at the commit leaves the spawn's handle
     /// stale. Joins at one commit come in the order the entities were added,
-    /// before the removals the transaction asked for take effect.
+    /// before the removals the transaction asked for take effect. Join
+    /// notifications in the same level requested while a commit is announcing
+    /// its joins (from a direct spawn or a committed transaction in that level)
+    /// are delivered after that announcing batch, in request order.
     /// Live fallback-store entities also notify: displays, markers, interactions,
     /// and summoned or chunk-restored eyes of ender and explicit leash knots.
     /// Gameplay-thrown eyes and naturally tied leash knots live in separate lists
@@ -55,11 +72,20 @@ pub trait Hooks {
     /// entity. Saved data kept for a missing mod is not an entity in the level
     /// and does not notify. Server-side.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_entity_join_level",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "canceled",
         neoforge = "EntityJoinLevelEvent",
         version = 3
     )]
-    fn entity_join_level();
+    fn entity_join_level(
+        dimension: &str,
+        entity: u32,
+        kind: &str,
+        pos: [f64; 3],
+        loaded_from_disk: bool,
+        canceled: &mut bool,
+    );
 }

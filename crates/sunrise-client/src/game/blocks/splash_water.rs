@@ -15,26 +15,6 @@ use sunrise_core::{
 };
 use sunrise_world::{chunk::BlockState, registry::BlockStateId};
 
-/// The block a thrown potion hit and the face it hit it on, as the
-/// `BlockHitResult` of `ProjectileUtil.getHitResultOnMoveVector`: `end` is a
-/// point of the path inside the block, `start` where the step began. The face
-/// is the one the path enters the block cube through, or, when the step began
-/// inside the block, the one facing back along the motion.
-pub(super) fn thrown_block_hit(start: Vec3, end: Vec3, velocity: Vec3) -> ([i32; 3], Direction) {
-    let cell = [end.x, end.y, end.z].map(|v| v.floor() as i32);
-    let face = Aabb::clip_boxes(
-        [Aabb::unit_cube(Vec3::ZERO)],
-        start,
-        end,
-        BlockPos::new(cell[0], cell[1], cell[2]),
-    )
-    .map_or_else(
-        || Direction::approximate_nearest(velocity.reverse()),
-        |hit| hit.direction,
-    );
-    (cell, face)
-}
-
 impl Game<'_> {
     /// `PotionContents.is`: the potion of `stack` is in the potion tag `tag`
     /// (`minecraft:douses_fire` and the others, read from the data pack's
@@ -177,6 +157,10 @@ impl Game<'_> {
                         1.0,
                         source,
                     );
+                    self.complete_mob_hurt(index, false);
+                    let Some(m) = self.mobs.get_mut(index) else {
+                        continue;
+                    };
                     // `Enderman.hurtServer` for a thrown potion: the hit is
                     // `Enderman.hurtWithCleanWater`, then
                     // `Enderman.repeatedlyTryToTeleport`, which does nothing
@@ -189,6 +173,7 @@ impl Game<'_> {
                     {
                         m.extra.counter2 = 64;
                     }
+                    self.finish_mob_damage_at(index);
                 }
                 let m = &mut self.mobs[index];
                 if extinguishes && m.is_on_fire() && m.alive() {

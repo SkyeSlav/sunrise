@@ -88,3 +88,18 @@ Side: server, on the level being ticked. Each refusal changes nothing: `PlaceFea
 `Client`, `NotInPlace` (another level than the one in place), `NotLoaded` (a chunk of the ring is not
 loaded, or `pos` is out of height) and `UnknownFeature` (the id has no namespace or names no
 feature). Each is checked before the feature runs.
+
+`level.place_placed_feature(host, "minecraft:oak_checked", pos)` places a
+`minecraft:worldgen/placed_feature` the way direct `PlacedFeature.place` does: its placement
+modifiers run in order from `pos`, depth first, and its feature runs at every position they give.
+There is no top feature, so a position reaching `minecraft:biome` refuses with
+`PlaceFeatureRefusal::BiomeFilter`, not a biome membership check. If an earlier modifier leaves
+no positions, the result is `Ok(false)` instead. Earlier modifiers draw the level random even
+when the biome filter refuses. This call's feature has not run when its filter refuses, since
+all its positions must first pass the filter. A nested placed feature may still have written
+before an inner refusal; there is no rollback.
+
+`Ok(true)` means at least one feature invocation reported success; `Ok(false)` means no positions
+remained or every invocation reported failure. Blocks set before failure are kept. Other refusals
+are checked before placement, as for `place_feature`, with `UnknownFeature` for an id the
+placed-feature registry lacks.

@@ -31,7 +31,7 @@ impl Player for Stand<'_> {
     fn add(&mut self, stack: &mut ItemStack) -> bool {
         // The held stack lives in inventory slot 0 for Inventory.add.
         self.menu.set_player_item(0, self.hand.take());
-        let added = self.menu.give(self.env, stack);
+        let added = self.menu.give(self.env.items, stack);
         self.hand = self.menu.player_item(0).cloned();
         self.menu.set_player_item(0, None);
         added

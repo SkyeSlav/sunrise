@@ -186,7 +186,7 @@ impl Mob {
                     let y_rot = trig::atan2_degrees(zd, xd) - 90.0;
                     self.yaw = rotlerp(self.yaw, y_rot, 90.0);
                     let speed = (self.ai.mov.speed_modifier
-                        * if self.on_ground {
+                        * if self.ground.on_ground {
                             attr_speed
                         } else {
                             // getAttributeValue(FLYING_SPEED): a summon's base counts.
@@ -326,7 +326,7 @@ impl Mob {
             }
             Operation::Jumping => {
                 self.set_speed((self.ai.mov.speed_modifier * attr_speed) as f32);
-                if self.on_ground || self.is_in_liquid() {
+                if self.ground.on_ground || self.is_in_liquid() {
                     self.ai.mov.operation = Operation::Wait;
                 }
             }

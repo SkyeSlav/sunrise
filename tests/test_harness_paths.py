@@ -14,7 +14,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 # Where a harness's sources live; build output (target/, .local/) is made by the run.
-SOURCES = ("crates/", "mods/", "tools/", "docs/", "launcher/", "xtask/")
+SOURCES = ("crates/", "mods/", "tools/", "docs/", "xtask/")
 
 
 class HarnessPaths(unittest.TestCase):
@@ -34,9 +34,9 @@ class HarnessPaths(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("cargo"), "needs cargo for the workspace's targets")
     def test_every_cargo_target_a_tool_builds_is_in_its_package(self):
+        owners = {}
         metadata = json.loads(subprocess.check_output(
             ["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=ROOT, text=True))
-        owners = {}
         for package in metadata["packages"]:
             for target in package["targets"]:
                 for kind in target["kind"]:

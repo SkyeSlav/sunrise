@@ -9,23 +9,26 @@ pub mod tests {
     #[cfg(test)]
     use crate::*;
 
+    #[cfg(test)]
+    struct Tree;
+
+    #[cfg(test)]
+    impl mod_api::FeatureType for Tree {
+        fn place(
+            &self,
+            _: &mut dyn mod_api::FeatureContext,
+            _: [i32; 3],
+        ) -> Result<bool, mod_api::FeatureError> {
+            Ok(false)
+        }
+    }
+
     /// A feature type twice, one in an unowned namespace, one without a name, one taking a
     /// vanilla feature type's id, one with an invalid schema and one with a reference field:
-    /// every registration is refused at startup, naming the mod. A wasm mod's type is refused
-    /// by name too.
+    /// every invalid registration is refused at startup, naming the mod.
     #[test]
-    pub(crate) fn invalid_and_wasm_feature_types_refuse_registration() {
+    pub(crate) fn invalid_feature_types_refuse_registration() {
         use mod_api::{DatapackField, DatapackFieldKind, DatapackValue};
-        struct Tree;
-        impl mod_api::FeatureType for Tree {
-            fn place(
-                &self,
-                _: &mut dyn mod_api::FeatureContext,
-                _: [i32; 3],
-            ) -> Result<bool, mod_api::FeatureError> {
-                Ok(false)
-            }
-        }
         let height = || {
             vec![DatapackField::with_default(
                 "height",
@@ -90,15 +93,27 @@ pub mod tests {
         assert!(errors[3].contains("namespace"), "{}", errors[3]);
         assert!(errors[4].contains("test:doubled: invalid config schema: InvalidFieldName"));
         assert!(errors[5].contains("test:linked: config field \"next\" is a Reference"));
+    }
 
-        let errors = install_parts(
-            &[ModEntry::wasm("test", Box::new(Valid(height())))],
-            &crate::parts::tests::rule_schema(),
-            |_| false,
-        )
-        .unwrap_err();
-        assert_eq!(errors.len(), 1, "{errors:?}");
-        assert!(errors[0].contains("test:tree: feature types run on the worldgen workers"));
+    #[test]
+    fn a_nested_config_is_refused_without_adding_the_feature() {
+        use mod_api::{DatapackField, DatapackFieldKind, DatapackKeyKind};
+        let mut registrar = PartRegistrar::new("test");
+        registrar.add_feature_type(
+            "nested",
+            vec![DatapackField::required(
+                "by_spell",
+                DatapackFieldKind::Map {
+                    key: DatapackKeyKind::Reference {
+                        registry: "test:spell".into(),
+                    },
+                    value: Box::new(DatapackFieldKind::Bool),
+                },
+            )],
+            Arc::new(Tree),
+        );
+        assert_eq!(registrar.refused.len(), 1);
+        assert!(registrar.feature_types.is_empty());
     }
 }
 
@@ -118,14 +133,7 @@ impl FeaturesRegistrar for PartRegistrar {
         };
         let refuse =
             |reason: String| format!("{} registered feature type {id}: {reason}", self.mod_id);
-        // Feature calls run on the worldgen workers; a wasm group's single store lock can't
-        // serve them, so a wasm type is refused before any world loads.
-        let refusal = if self.mod_wasm {
-            Some(refuse(
-                "feature types run on the worldgen workers and are not yet available to wasm mods"
-                    .into(),
-            ))
-        } else if self.feature_types.iter().any(|t| *t.id == *id) {
+        let refusal = if self.feature_types.iter().any(|t| *t.id == *id) {
             Some(format!(
                 "{} registered feature type {id} twice",
                 self.mod_id
@@ -138,19 +146,23 @@ impl FeaturesRegistrar for PartRegistrar {
                 "config field {:?} is a Reference, which feature configs don't resolve; use Identifier",
                 field.name
             )))
+        } else if let Some(field) = config.iter().find(|field| {
+            matches!(
+                field.kind,
+                crate::DatapackFieldKind::List { .. }
+                    | crate::DatapackFieldKind::Map { .. }
+                    | crate::DatapackFieldKind::Record { .. }
+                    | crate::DatapackFieldKind::Optional { .. }
+            )
+        }) {
+            // A feature config is a flat record of scalars: nested kinds (and the references
+            // they could hide, a reference map key's included) are a datapack registry's.
+            Some(refuse(format!(
+                "config field {:?} is nested, and a feature config is a flat record of scalars",
+                field.name
+            )))
         } else {
-            let mut defaults = Ok(());
-            for field in &mut config {
-                if matches!(field.kind, crate::DatapackFieldKind::Identifier)
-                    && let Some(crate::DatapackValue::Text(value)) = &mut field.default
-                {
-                    match crate::Identifier::parse(value) {
-                        Ok(parsed) => *value = parsed.to_string(),
-                        Err(_) => defaults = Err(crate::DatapackRegistrationError::InvalidDefault),
-                    }
-                }
-            }
-            defaults
+            mod_vocab::__private::parts_installation::normalize_datapack_defaults(&mut config)
                 .and_then(|()| {
                     mod_vocab::__private::parts_installation::validate_datapack_schema(&config)
                 })

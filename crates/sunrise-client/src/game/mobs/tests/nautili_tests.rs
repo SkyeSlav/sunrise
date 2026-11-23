@@ -10,7 +10,7 @@ use sunrise_client::mobs::Mob;
 use sunrise_client::motion::PlayerMotion;
 use sunrise_core::{geometry::Vec3, position::ChunkPos};
 
-fn game() -> Game<'static> {
+fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -> Game<'a> {
     let root = std::path::PathBuf::from(
         std::env::var_os("SUNRISE_TEST_RESOURCES")
             .expect("set SUNRISE_TEST_RESOURCES to prepared resources"),
@@ -32,7 +32,7 @@ fn game() -> Game<'static> {
     let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
     options.resources = root.clone();
     options.execution_role = execution_role::ExecutionRole::IntegratedServer;
-    let res: &'static _ = Box::leak(Box::new(loaded.resources));
+    let res = &*resources.insert(loaded.resources);
     let mut game = Game::new(
         res,
         loaded.pack,
@@ -81,7 +81,8 @@ fn target(id: u32) -> Option<InteractTarget> {
 #[test]
 #[ignore = "daily"]
 fn a_click_that_does_nothing_still_keeps_the_nautilus() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     for (id, item) in [(7, ""), (8, "minecraft:dirt")] {
         spawn(&mut game, "minecraft:nautilus", id, [2.5, 64.0, 2.5]);
         game.inventory[0] = if item.is_empty() {
@@ -111,7 +112,8 @@ fn a_click_that_does_nothing_still_keeps_the_nautilus() {
 #[test]
 #[ignore = "daily"]
 fn a_tame_zombie_nautilus_at_full_health_falls_in_love() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     for (id, kind, eat) in [
         (
             11,

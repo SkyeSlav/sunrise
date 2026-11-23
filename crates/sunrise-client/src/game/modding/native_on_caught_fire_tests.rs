@@ -2,8 +2,8 @@
 //! and the face toward the fire, and what it writes through its level is in the world.
 use super::native_entity_refs::tests::with_game;
 use mod_api::{
-    self, BlockPart, BlockUpdateFlags, FireOddsEvent, Hooks, LevelHost, LevelWriteHost,
-    OnCaughtFireEvent, Registrar,
+    self, BlockPart, BlockUpdateFlags, FireOddsEvent, Hooks, LevelWriteHost, OnCaughtFireEvent,
+    Registrar,
 };
 use sunrise_core::{geometry::Direction, position::BlockPos};
 use sunrise_world::level::LevelAccess;
@@ -13,7 +13,7 @@ struct Ember(std::sync::Arc<std::sync::atomic::AtomicUsize>);
 
 #[mod_api::sunrise_part]
 impl BlockPart for Ember {
-    fn fire_odds(&self, _: &dyn LevelHost, _: &mut FireOddsEvent) -> Option<(i32, i32)> {
+    fn fire_odds(&self, _: mod_api::LevelSide<'_>, _: &mut FireOddsEvent) -> Option<(i32, i32)> {
         Some((0, 300))
     }
     fn on_caught_fire(&self, level: &mut dyn LevelWriteHost, event: &mut OnCaughtFireEvent) {
@@ -95,6 +95,7 @@ fn a_block_part_hears_it_burned_and_writes_the_level() {
             assert_eq!(calls.load(Ordering::SeqCst), 1);
             game.world.set(1, 64, 0, wool).unwrap();
             game.world.set(1, 65, 0, air).unwrap();
+            game.options.execution_role = crate::game::execution_role::ExecutionRole::Client;
             game.options.dedicated = None;
             assert_eq!(
                 burn(game, Direction::West),

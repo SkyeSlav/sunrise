@@ -624,6 +624,8 @@ impl Game<'_> {
                     let (tag, _) = sunrise_core::nbt::parse_snbt(&table)
                         .map_err(|e| err("argument.nbt.invalid", &[&e]))?;
                     let json = sunrise_client::scoreboard::tag_to_json(&tag);
+                    sunrise_world::loot::validate_loot_table(&json)
+                        .map_err(|e| err("argument.nbt.invalid", &[&e]))?;
                     // LootCommand's omitted fishing tool is EMPTY, not mainhand.
                     let held = if id == "loot.fish"
                         && (ctx.get("tool").is_some() || ctx.has("mainhand") || ctx.has("offhand"))
@@ -742,22 +744,11 @@ impl Game<'_> {
                 let tool = self.tool_stack(ctx)?;
                 let mut pending = crate::game::spill::Pending::default();
                 let key = (p[0], p[1], p[2]);
-                let has_block_entity = if let Some(entity) = self.world.block_entities.get(&key) {
-                    pending.record(
-                        p,
-                        entity,
-                        &name,
-                        self.world.block_names.get(&key).cloned(),
-                        self.world.block_lock(key),
-                        self.res.items(),
-                    );
-                    true
-                } else if let Some(saved) = self.block_entity_nbt(p) {
+                if !self.world.block_entities.contains_key(&key)
+                    && let Some(saved) = self.block_entity_nbt(p)
+                {
                     pending.record_saved(p, &saved);
-                    true
-                } else {
-                    false
-                };
+                }
                 // LootCommand: the source's entity is `this`, if it has one.
                 let entity = match self.command_source.map(|s| s.entity) {
                     None | Some(Some(Target::Player)) => Some(self.native_clicker().1 as u32),
@@ -788,12 +779,10 @@ impl Game<'_> {
                     breaker: entity.is_some(),
                     ..Default::default()
                 };
-                let mut drops = self.roll_block_loot(p, state, entity, roll);
-                if has_block_entity {
-                    for drop in &mut drops {
-                        pending.attach(p, drop);
-                    }
-                }
+                let source = pending.source(p);
+                let drops = sunrise_world::loot::copy::with_block_source(source.as_deref(), || {
+                    self.roll_block_loot(p, state, entity, roll)
+                });
                 (drops, Some(table))
             }
         };
@@ -1477,6 +1466,8 @@ mod loot_kill_target_tests {
         )
         .unwrap();
         game.build_registries();
+        // A real world open publishes its owned loot evaluator before commands run.
+        game.load_server_loot();
         game.set_allow_commands(true);
         game.world
             .chunks
@@ -1617,7 +1608,7 @@ mod loot_mine_location_tests {
             game.world_tables = game
                 .stage_world_tables(&stack, false, &game.options.resources.clone())
                 .unwrap()
-                .0;
+                .tables;
             assert!(game.world_tables.is_some());
             game.ensure_datapacks();
             assert!(game.run_command("scoreboard objectives add h079 dummy"));

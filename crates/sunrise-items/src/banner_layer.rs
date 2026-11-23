@@ -3,7 +3,7 @@ use std::sync::Arc;
 use sunrise_core::nbt::Tag;
 
 /// `BannerPatternLayers.Layer`: a pattern id and the dye name it is painted in.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct BannerLayer {
     pub pattern: Arc<str>,
     pub color: Arc<str>,

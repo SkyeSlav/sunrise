@@ -1,4 +1,3 @@
-#![cfg(test)]
 //! Post-placement notices through the actual player and dispenser block-item paths.
 use crate::game::native_entity_refs::tests::{bind_local_player, run_fresh_cases, with_game_at};
 use crate::game::{Game, GuestUse, Hit};
@@ -18,6 +17,7 @@ use sunrise_core::{
 };
 
 const CRATE: &str = "placed_probe:crate";
+const SKULL: &str = "minecraft:wither_skeleton_skull";
 
 #[derive(Debug, PartialEq)]
 struct Notice {
@@ -55,7 +55,12 @@ impl ItemPart for Probe {
         let level = event.level;
         assert_eq!(level, host.level("minecraft:overworld").unwrap());
         assert_eq!(level.block_state(host, event.pos), Some(event.state));
-        let item = event.stack.item().id(host);
+        let item = event
+            .stack
+            .item()
+            .id(host)
+            .expect("placed item is registered")
+            .to_owned();
         match item.as_str() {
             CRATE => {
                 let entity = host
@@ -114,6 +119,10 @@ impl ItemPart for Probe {
                     .expect("shulker entity exists");
                 assert_eq!(entity.name(host).as_deref(), Some("Shulker"));
             }
+            SKULL => {
+                assert_eq!(event.state.block().id(host), Some("minecraft:air"));
+                crate::game::dispense_fixture::record(|| "item notice".into());
+            }
             _ => panic!("unsubscribed item {item}"),
         }
         self.notices.lock().unwrap().push(Notice {
@@ -132,15 +141,15 @@ impl Hooks for Probe {
     fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
         let kind = r.block_entity_type("crate").blocks(&[CRATE]).build();
         r.block_entity_part(&kind, Crate).unwrap();
-        for item in [CRATE, "minecraft:red_bed", "minecraft:shulker_box"] {
+        for item in [CRATE, "minecraft:red_bed", "minecraft:shulker_box", SKULL] {
             let key = r.item_key(item);
             r.item_part(key, self.clone());
         }
     }
     fn blocks(&self, _: &mod_api::RegistrationContext, event: &mut mod_api::BlocksEvent<'_>) {
         event
-            .blocks
-            .push(mod_api::Block::new(CRATE, "minecraft:stone"));
+            .register(mod_api::Block::new(CRATE, "minecraft:stone"))
+            .unwrap();
     }
     fn entity_place(
         &self,
@@ -160,7 +169,7 @@ impl Hooks for Probe {
 
 fn place(game: &mut Game<'_>, pos: [i32; 3], stack: ItemStack) {
     *game.held_mut() = Some(stack);
-    game.guest_use = Some(GuestUse::OnBlock(mod_api::Hand::Main));
+    game.guest_use = Some(GuestUse::on_block(mod_api::Hand::Main));
     let [x, y, z] = pos;
     let hit = Hit {
         pos: [x, y - 1, z],
@@ -281,6 +290,8 @@ fn block_items_notify_after_setup_and_before_consumption() {
         let left = game
             .dispense_item((9, 64, 6), Direction::East, shulker_stack())
             .unwrap()
+            .continue_value()
+            .unwrap()
             .unwrap();
         assert_eq!(left.count, 3);
         let notices = probe.notices.lock().unwrap();
@@ -319,6 +330,8 @@ fn block_items_notify_after_setup_and_before_consumption() {
         let left = game
             .dispense_item((9, 64, 8), Direction::East, shulker_stack())
             .unwrap()
+            .continue_value()
+            .unwrap()
             .unwrap();
         assert_eq!(left.count, 4);
         assert_eq!(game.world.block(10, 64, 8), air);
@@ -326,6 +339,8 @@ fn block_items_notify_after_setup_and_before_consumption() {
         game.world.set(10, 64, 10, stone).unwrap();
         let left = game
             .dispense_item((9, 64, 10), Direction::East, shulker_stack())
+            .unwrap()
+            .continue_value()
             .unwrap()
             .unwrap();
         assert_eq!(left.count, 4);
@@ -335,5 +350,45 @@ fn block_items_notify_after_setup_and_before_consumption() {
         assert_eq!(game.world.block(4, 64, 2), stone);
         assert_eq!(game.held().unwrap().count, 1);
         assert_eq!(probe.notices.lock().unwrap().len(), 3);
+
+        // Completing a wither clears its pattern in setPlacedBy. Ordinary
+        // placement effects must not drain with those callback effects.
+        game.ui.difficulty = 2;
+        let skull = game.pack.assets.registry.default_state(SKULL).unwrap();
+        let soul = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:soul_sand")
+            .unwrap();
+        for (x, y, state) in [
+            (9, 66, skull),
+            (11, 66, skull),
+            (9, 65, soul),
+            (10, 65, soul),
+            (11, 65, soul),
+            (10, 64, soul),
+        ] {
+            game.world.set(x, y, 12, state).unwrap();
+        }
+        let before = game.mobs.len();
+        crate::game::dispense_fixture::start_recording();
+        place(game, [10, 66, 12], ItemStack::new(SKULL, 1));
+        let effects = crate::game::dispense_fixture::stop_recording();
+        let cleared = effects
+            .iter()
+            .rposition(|line| line.starts_with("L 2001 "))
+            .unwrap();
+        let notice = effects
+            .iter()
+            .position(|line| line == "item notice")
+            .unwrap();
+        let placed = effects
+            .iter()
+            .position(|line| line == "G 10,66,12 minecraft:block_place")
+            .unwrap();
+        assert!(cleared < notice && notice < placed, "{effects:?}");
+        assert_eq!(game.mobs.len(), before + 1);
+        assert_eq!(game.held(), None);
     });
 }

@@ -5,47 +5,34 @@ use mod_api::__private::game::*;
 use mod_api::{
     BlockEntityDataError, BlockEntityError, BlockEntityItemError, BlockEntityRef,
     BlockEntityShapes, BlockEntityShapesError, BlockEntityTypeKey, LevelRef, PlayerRef,
-    Transaction,
+    TransactionContext,
 };
 use sunrise_client::{
     block_entity_nbt,
     containers::{BlockEntity, ModBlockEntity},
-    lan::menu::{Menu, Slots},
     save,
     world::World,
 };
 use sunrise_core::nbt::{Compound, Tag};
+use sunrise_core::position::BlockPos;
 use sunrise_items::items::ItemStack;
 use sunrise_world::registry::BlockStateId;
 
 impl Game<'_> {
     fn native_block_entity_target(&self, entity: BlockEntityRef) -> Option<(&World, &BlockEntity)> {
         let world = self.native_level_read_world(entity.fields().level)?;
-        let fields = entity.fields();
-        if world.block_entities.generation(&(
-            fields.position[0],
-            fields.position[1],
-            fields.position[2],
-        )) != Some(fields.generation)
-        {
-            return None;
-        }
-        Some((world, loaded_block_entity(world, fields.position)?))
+        Some((world, resident_block_entity(world, entity)?))
     }
 
     /// Find a block entity in a loaded chunk of an open level, or on a client in
-    /// the level it shows. An entity taken out for its tick cannot be read in that tick.
+    /// the level it shows.
     pub(super) fn block_entity(&self, level: LevelRef, pos: [i32; 3]) -> Option<BlockEntityRef> {
         let world = self.native_level_read_world(level)?;
-        loaded_block_entity(world, pos)?;
-        let generation = world.block_entities.generation(&(pos[0], pos[1], pos[2]))?;
-        Some(mod_api::__private::game::block_entity_ref(
-            level, pos, generation,
-        ))
+        world_block_entity(world, level, pos)
     }
 
-    /// `block_entity`, also for a block entity taken out for its own tick: its generation
-    /// stays in place while it is out.
+    /// `block_entity`, also for a block entity temporarily taken out by an engine operation:
+    /// its generation stays in place while it is out.
     pub(super) fn block_entity_identity(
         &self,
         level: LevelRef,
@@ -122,6 +109,9 @@ impl Game<'_> {
         }) else {
             return Ok(false);
         };
+        if self.menu_click_in_progress(conn) {
+            return Ok(false);
+        }
         let [x, y, z] = entity.fields().position;
         match self.open_block_menu(conn, (x, y, z)) {
             super::lan_actions::MenuOpen::Stale => Err(BlockEntityError::Stale),
@@ -152,18 +142,16 @@ impl Game<'_> {
     /// The data saved without identity or position metadata
     /// (`BlockEntity.saveWithoutMetadata`).
     pub(super) fn block_entity_data(&self, entity: BlockEntityRef) -> Option<Compound> {
-        let (world, block_entity) = self.native_block_entity_target(entity)?;
-        let [x, y, z] = entity.fields().position;
-        let block = &self.pack.assets.registry.state(world.block(x, y, z))?.name;
-        save_without_metadata(world, (x, y, z), block_entity, block, self.res.items())
+        let world = self.native_level_read_world(entity.fields().level)?;
+        world_block_entity_data(world, self.pack.assets.registry, self.res.items(), entity)
     }
 
-    /// The vanilla lock's item predicate, if present on a loaded block entity.
-    pub(super) fn block_entity_lock(&self, entity: BlockEntityRef) -> Option<Compound> {
+    /// The resident lock, independent of the block entity's synthesized save payload.
+    pub(super) fn block_entity_lock(&self, entity: BlockEntityRef) -> Option<&Compound> {
         let (world, _) = self.native_block_entity_target(entity)?;
         let [x, y, z] = entity.fields().position;
         match world.block_lock((x, y, z))? {
-            Tag::Compound(lock) => Some(lock.clone()),
+            Tag::Compound(lock) => Some(lock),
             _ => None,
         }
     }
@@ -203,7 +191,10 @@ impl Game<'_> {
     }
 
     /// A loaded block entity of the server level in place, when a write may change it.
-    fn native_block_entity_write_key(&self, entity: BlockEntityRef) -> Option<(i32, i32, i32)> {
+    pub(super) fn native_block_entity_write_key(
+        &self,
+        entity: BlockEntityRef,
+    ) -> Option<(i32, i32, i32)> {
         if !self.level_in_place(entity.fields().level) {
             return None;
         }
@@ -264,20 +255,13 @@ impl Game<'_> {
         Ok(true)
     }
 
-    /// Sizes a mod block entity's menu data explicitly, using the same write
-    /// target, journal and Changed notice as scalar data-slot writes.
+    /// Sizes a mod block entity's transient menu data using the same silent
+    /// write and journal as scalar data-slot writes.
     pub(super) fn block_entity_set_data_slots(
         &mut self,
         entity: BlockEntityRef,
         values: Vec<i32>,
     ) -> Result<bool, BlockEntityDataError> {
-        let limit = usize::from(sunrise_mod_package::content::MAX_MENU_SLOTS);
-        if values.len() > limit {
-            return Err(BlockEntityDataError::TooManySlots {
-                count: values.len() as u64,
-                limit: limit as u64,
-            });
-        }
         let key = self
             .native_block_entity_write_key(entity)
             .ok_or(BlockEntityDataError::Stale)?;
@@ -343,12 +327,12 @@ impl Game<'_> {
     pub(super) fn block_entity_set_item_slot(
         &mut self,
         entity: BlockEntityRef,
-        tx: &Transaction,
+        tx: &TransactionContext,
         slot: u32,
         stack: Option<ItemStack>,
     ) -> Result<bool, BlockEntityItemError> {
-        if !self.transaction_holds(tx) {
-            return Ok(false);
+        if !self.transaction_context_is_current(tx) {
+            return Err(BlockEntityItemError::InvalidContext);
         }
         let key = self
             .native_block_entity_write_key(entity)
@@ -373,23 +357,25 @@ impl Game<'_> {
             }
         }
         let index = slot as usize;
-        if block_entity.items.get(index).and_then(Option::as_ref) == stack.as_ref() {
+        if block_entity.items.get(index).and_then(Option::as_ref) == stack.as_ref()
+            && !block_entity.has_opaque_item_slot(index)
+        {
             return Ok(false);
         }
         // A slot of a list already its full length: the journal keeps that slot, not the
         // entity's whole saved data. A list still to grow is kept whole, length and all.
         if index < block_entity.items.len() {
             self.journal_block_entity_slot(key, index);
-            self.edit_mod_block_entity(key, |block_entity| block_entity.items[index] = stack);
-            return Ok(true);
+            self.edit_mod_block_entity(key, |block_entity| {
+                *block_entity.item_slot_mut(index).unwrap() = stack;
+            });
+        } else {
+            self.write_mod_block_entity(key, |block_entity| {
+                block_entity.items.resize(slots, None);
+                *block_entity.item_slot_mut(index).unwrap() = stack;
+            });
         }
-        self.write_mod_block_entity(key, |block_entity| {
-            let items = &mut block_entity.items;
-            if items.len() < slots {
-                items.resize(slots, None);
-            }
-            items[index] = stack;
-        });
+        self.journal_chunk_save((key.0 >> 4, key.2 >> 4));
         Ok(true)
     }
 
@@ -507,8 +493,9 @@ impl Game<'_> {
     }
 
     /// Publishes the shapes the block entity's block has in place of its declared ones, or
-    /// clears them with None. Applied at once, to the queries that follow; clients get them
-    /// with the block entity update. Inside a transaction an abort puts the old ones back.
+    /// clears them with None. Applied at once, to the queries that follow, and the block's
+    /// neighbours are notified; clients get them with the block entity update. Inside a
+    /// transaction an abort puts the old ones back.
     pub(super) fn block_entity_set_shapes(
         &mut self,
         entity: BlockEntityRef,
@@ -556,6 +543,13 @@ impl Game<'_> {
             block_entity.set_shapes(shapes);
         });
         self.block_entity_updated(key);
+        // Fluids and other neighbours read the shape: tell them it changed (the shulker lid's
+        // `doNeighborUpdates`, without its shape updates).
+        let at = BlockPos::new(key.0, key.1, key.2);
+        self.with_level(|b, level, ticks| {
+            let block = b.block(state);
+            b.update_neighbors_at(level, ticks, at, block);
+        });
         Ok(true)
     }
 
@@ -587,16 +581,17 @@ impl Game<'_> {
         }
         self.native_block_entity_target(entity)?;
         let epoch = self.native_lifecycle.epoch()?;
-        let level = entity.fields().level;
-        let [x, y, z] = entity.fields().position;
+        let fields = entity.fields();
+        let level = fields.level;
+        let [x, y, z] = fields.position;
         let key = (x, y, z);
         let mut viewers: Vec<PlayerRef> = self
             .lan
             .iter()
-            .flat_map(|host| host.hub.guests.simulation_iter())
-            .filter(|g| {
+            .flat_map(|host| host.hub.guests.simulation_iter().map(move |g| (host, g)))
+            .filter(|(host, g)| {
                 // The acting guest's mode is live in `Game` during its turn; the hub
-                // hears of a change only in `leave_guest`.
+                // hears of a change only in the put-back at the end of `guest_turn`.
                 let spectator = if self.lan_acting_uuid == Some(g.uuid) {
                     self.spectator()
                 } else {
@@ -606,9 +601,11 @@ impl Game<'_> {
                     && g.placed
                     && !spectator
                     && g.dimension == level.dimension_id()
-                    && g.menu.as_ref().is_some_and(|m| menu_holds(m, key))
+                    && host.menus.get(&g.conn).is_some_and(|menus| {
+                        menus.menu_holds(g.menu.as_ref(), key, fields.generation)
+                    })
             })
-            .filter_map(|g| {
+            .filter_map(|(_, g)| {
                 let id = u32::try_from(g.entity_id).ok()?;
                 Some(player_ref(mod_api::EntityRef::new(epoch, id), g.uuid))
             })
@@ -684,7 +681,7 @@ fn loaded_payload(old: &Tag, payload: &Tag, replace: bool) -> Tag {
 
 /// A mod's data payload as the block entity takes it: without the fields the engine owns, which
 /// are its identity and position, and its published shapes (`set_shapes` alone writes those).
-fn mod_payload(mut data: Compound) -> Compound {
+pub(in crate::game) fn mod_payload(mut data: Compound) -> Compound {
     for field in ["id", "x", "y", "z", sunrise_client::containers::SHAPES_KEY] {
         data.remove(&field.into());
     }
@@ -738,14 +735,25 @@ fn save_with_metadata(
     block: &str,
     items: &crate::items::Items,
 ) -> Option<Compound> {
-    let mut tag = save::block_entity_data(pos, entity, block, world.block_lock(pos), items);
-    Game::write_pending_loot(world, pos, &mut tag);
-    let Tag::Compound(mut data) = tag else {
+    let pending = world
+        .chunks
+        .get(&(pos.0 >> 4, pos.2 >> 4))
+        .and_then(|chunk| chunk.saved.as_ref())
+        .and_then(|saved| saved.pending_loot.get(&pos));
+    let Tag::Compound(data) = save::block_entity_encode::data(
+        pos,
+        entity,
+        block,
+        save::block_entity_encode::DataFields {
+            lock: world.block_lock(pos),
+            custom_name: world.block_names.get(&pos),
+            pending,
+            ..Default::default()
+        },
+        items,
+    ) else {
         return None;
     };
-    if let Some(name) = world.block_names.get(&pos) {
-        data.insert("CustomName".into(), name.clone());
-    }
     Some(data)
 }
 
@@ -756,11 +764,15 @@ pub(super) fn save_without_metadata(
     block: &str,
     items: &crate::items::Items,
 ) -> Option<Compound> {
-    let mut data = save_with_metadata(world, pos, entity, block, items)?;
+    save_with_metadata(world, pos, entity, block, items).map(block_entity_payload)
+}
+
+/// The saved block entity's payload, with its world identity and position removed.
+pub(super) fn block_entity_payload(mut data: Compound) -> Compound {
     for key in ["id", "x", "y", "z"] {
         data.remove(&key.into());
     }
-    Some(data)
+    data
 }
 
 /// Whether the block entity keeps a `CustomName` (`Nameable`): its saved form does.
@@ -796,25 +808,101 @@ fn mod_item_slots(
     Ok(slots)
 }
 
-fn loaded_block_entity(world: &World, [x, y, z]: [i32; 3]) -> Option<&BlockEntity> {
-    if !world.loaded(x, z) {
-        return None;
+pub(super) fn part_snapshot(
+    world: &World,
+    level: Option<LevelRef>,
+    authoritative: bool,
+    index: Option<
+        &std::sync::Arc<
+            std::sync::Mutex<
+                sunrise_mod_runtime::attachments::index::AttachmentIndex<mod_api::AttachmentHolder>,
+            >,
+        >,
+    >,
+    scopes: &sunrise_mod_runtime::attachments::AttachmentQueryScopes,
+    entity: BlockEntityRef,
+    (namespace, name): (&str, &str),
+) -> Result<mod_api::AttachmentBatch, mod_api::PartStateError> {
+    use sunrise_mod_runtime::attachments::AttachmentBatch;
+
+    let fields = entity.fields();
+    if level != Some(fields.level) {
+        return Err(mod_api::PartStateError::OtherLevel);
     }
-    world
-        .block_entities
-        .get(&(x, y, z))
-        .filter(|entity| !save::block_entity_placeholder(entity))
+    let key = (fields.position[0], fields.position[1], fields.position[2]);
+    if !world.is_loaded_at(key.0, key.1, key.2)
+        || world.block_entities.generation(&key) != Some(fields.generation)
+    {
+        return Err(mod_api::PartStateError::Stale);
+    }
+    mod_api::__private::validate_attachment_use(namespace, name, false).map_err(|error| {
+        mod_api::PartStateError::Attachment {
+            namespace: "",
+            name: "",
+            error,
+        }
+    })?;
+    let batch = if authoritative {
+        index.map_or_else(AttachmentBatch::empty, |index| {
+            AttachmentBatch::new(index.lock().unwrap().snapshot_named(namespace, name))
+        })
+    } else {
+        AttachmentBatch::empty()
+    };
+    Ok(batch.in_scope(scopes).into())
 }
 
-/// Whether an open menu holds the container at `key` (`isOwnContainer`): a double
-/// chest's holds both halves, an ender chest's the block it was opened from.
-fn menu_holds(menu: &Menu, key: (i32, i32, i32)) -> bool {
-    match menu.slots {
-        Slots::Block(at) => at == key,
-        Slots::Double(first, second) => first == key || second == key,
-        Slots::Ender => menu.pos == Some(key),
-        Slots::Native => false,
+/// The handle of the loaded block entity at `pos`, without loading a chunk or taking one
+/// temporarily absent from the resident table.
+pub(super) fn world_block_entity(
+    world: &World,
+    level: LevelRef,
+    pos: [i32; 3],
+) -> Option<BlockEntityRef> {
+    loaded_block_entity(world, pos)?;
+    block_entity_handle(world, level, pos)
+}
+
+/// Construct a handle after the caller has checked that the entry is resident.
+pub(super) fn block_entity_handle(
+    world: &World,
+    level: LevelRef,
+    pos: [i32; 3],
+) -> Option<BlockEntityRef> {
+    let [x, y, z] = pos;
+    let generation = world.block_entities.generation(&(x, y, z))?;
+    Some(mod_api::__private::game::block_entity_ref(
+        level, pos, generation,
+    ))
+}
+
+/// Read a resident entity's saved data after the caller has resolved its level to `world`.
+pub(super) fn world_block_entity_data(
+    world: &World,
+    registry: &sunrise_world::registry::BlockRegistry,
+    items: &crate::items::Items,
+    entity: BlockEntityRef,
+) -> Option<Compound> {
+    let block_entity = resident_block_entity(world, entity)?;
+    let [x, y, z] = entity.fields().position;
+    let block = &registry.state(world.block(x, y, z))?.name;
+    save_without_metadata(world, (x, y, z), block_entity, block, items)
+}
+
+fn resident_block_entity(world: &World, entity: BlockEntityRef) -> Option<&BlockEntity> {
+    let fields = entity.fields();
+    let [x, y, z] = fields.position;
+    if world.block_entities.generation(&(x, y, z)) != Some(fields.generation) {
+        return None;
     }
+    loaded_block_entity(world, fields.position)
+}
+
+fn loaded_block_entity(world: &World, [x, y, z]: [i32; 3]) -> Option<&BlockEntity> {
+    if !world.loaded(x, z) || !world.shape.contains_y(y) {
+        return None;
+    }
+    world.block_entities.get(&(x, y, z))
 }
 
 #[cfg(test)]
@@ -822,8 +910,9 @@ mod tests {
     use super::*;
     use mod_api::HostTransaction;
     use mod_api::ServerHost;
+    use mod_api::TransactionError;
     use std::sync::Arc;
-    use sunrise_client::chunk::Chunk;
+    use sunrise_client::{chunk::Chunk, containers::ModBlockEntityFields, lan::menu::Slots};
     use sunrise_world::registry::BlockStateId;
 
     #[test]
@@ -844,10 +933,99 @@ mod tests {
         assert!(data.contains_key(&"Items".into()));
     }
 
+    /// What a reader of a vanilla machine's progress (a crafting CPU's estimate, a progress
+    /// line) needs is in `BlockEntity.saveWithoutMetadata`, which `block_entity_data` returns:
+    /// a furnace's cooking and burning timers and the fuel's speed, a brewing stand's brew
+    /// timer counting down, its total, its fuel and its bottles.
+    #[test]
+    fn saved_data_carries_vanilla_machine_progress() {
+        use sunrise_client::{
+            brewing::BrewingStand,
+            containers::{Furnace, FurnaceKind},
+        };
+        let world = World::new(BlockStateId(0), 0);
+        let int = |data: &Compound, key: &str| match data.get(&key.into()) {
+            Some(Tag::Int(value)) => *value,
+            other => panic!("{key} is {other:?}"),
+        };
+        let float = |data: &Compound, key: &str| match data.get(&key.into()) {
+            Some(Tag::Float(bits)) => f32::from_bits(*bits),
+            other => panic!("{key} is {other:?}"),
+        };
+        let slots = |data: &Compound| match data.get(&"Items".into()) {
+            Some(Tag::List(items)) => items
+                .iter()
+                .map(|item| match item.get("Slot") {
+                    Some(Tag::Byte(slot)) => *slot,
+                    other => panic!("slot is {other:?}"),
+                })
+                .collect::<Vec<_>>(),
+            other => panic!("Items is {other:?}"),
+        };
+
+        let furnace = BlockEntity::Furnace(Furnace {
+            kind: FurnaceKind::BlastFurnace,
+            items: [Some(ItemStack::new("minecraft:raw_iron", 3)), None, None],
+            lit_remaining: 750,
+            lit_total: 800,
+            cooking_timer: 40,
+            cooking_total: 100,
+            speed: 2.0,
+            recipes_used: Default::default(),
+        });
+        let data = save_without_metadata(
+            &world,
+            (0, 64, 0),
+            &furnace,
+            "minecraft:blast_furnace",
+            &Default::default(),
+        )
+        .unwrap();
+        assert_eq!(int(&data, "cooking_time_spent"), 40);
+        assert_eq!(int(&data, "cooking_total_time"), 100);
+        assert_eq!(int(&data, "lit_time_remaining"), 750);
+        assert_eq!(int(&data, "lit_total_time"), 800);
+        assert_eq!(float(&data, "speed_multiplier"), 2.0);
+        assert_eq!(slots(&data), vec![0], "the input slot is held");
+
+        let mut stand = BrewingStand::new();
+        stand.brew_time = 150;
+        stand.total_brew_time = 400;
+        stand.fuel = 12;
+        stand.items[0] = Some(ItemStack::new("minecraft:potion", 1));
+        stand.items[2] = Some(ItemStack::new("minecraft:potion", 1));
+        stand.items[3] = Some(ItemStack::new("minecraft:nether_wart", 1));
+        let stand = BlockEntity::Brewing(Box::new(stand));
+        let data = save_without_metadata(
+            &world,
+            (1, 64, 0),
+            &stand,
+            "minecraft:brewing_stand",
+            &Default::default(),
+        )
+        .unwrap();
+        assert_eq!(int(&data, "BrewTime"), 150);
+        assert_eq!(int(&data, "total_brew_time"), 400);
+        assert_eq!(int(&data, "Fuel"), 12);
+        assert_eq!(float(&data, "speed_multiplier"), 1.0);
+        assert_eq!(
+            slots(&data),
+            vec![0, 2, 3],
+            "two bottles and the ingredient"
+        );
+    }
+
     #[test]
     #[ignore = "daily"]
     fn retained_handles_reject_replacements_and_rollback_restores_identity() {
-        use super::super::native_entity_refs::tests::with_game;
+        use super::super::native_entity_refs::tests::{run_fresh_cases, with_game};
+        if run_fresh_cases(
+            "game::native_block_entity_refs::tests::retained_handles_reject_replacements_and_rollback_restores_identity",
+            "SUNRISE_RETAINED_HANDLES_CHILD",
+            &["holder"],
+        ) {
+            return;
+        }
         with_game(|game| {
             game.options.dedicated = Some(Vec::new());
             game.world
@@ -858,14 +1036,42 @@ mod tests {
             let holder = || {
                 BlockEntity::Mod(Box::new(ModBlockEntity::new(
                     "test:holder".into(),
-                    Default::default(),
+                    ModBlockEntityFields {
+                        nbt: compound("{count:3}"),
+                        ..Default::default()
+                    },
                 )))
             };
             game.world.block_entities.insert(pos, holder());
             let original = game.block_entity(level, [1, 64, 1]).unwrap();
+            game.with_level(|_, host, ticks| {
+                let wrapped = super::super::mod_api_host::LevelTicks::new(&*host, ticks);
+                assert_eq!(
+                    mod_api::LevelHost::block_entity(&wrapped, [1, 64, 1]),
+                    mod_api::LevelHost::block_entity(&*host, [1, 64, 1]),
+                );
+                assert_eq!(
+                    mod_api::LevelHost::block_entity(&wrapped, [1, 64, 1]),
+                    Some(original),
+                );
+                assert_eq!(
+                    mod_api::LevelHost::block_entity(&wrapped, [1, 400, 1]),
+                    None,
+                );
+                // The ticks wrapper hands the same reads through, saved data included.
+                let data = mod_api::LevelHost::block_entity_data(&*host, original);
+                assert_eq!(
+                    data.as_ref().and_then(|data| data.get(&"count".into())),
+                    Some(&mod_api::Tag::Int(3))
+                );
+                assert_eq!(
+                    mod_api::LevelHost::block_entity_data(&wrapped, original),
+                    data,
+                );
+            });
             assert_eq!(original.set_data_slots(game, vec![7]), Ok(true));
             let mut tentative = None;
-            let _: Result<(), ()> = game.transaction(|game, _| {
+            let _: Result<(), ()> = game.storage_transaction(|game, _| {
                 game.journal_block_entity(pos);
                 game.world
                     .block_entities
@@ -930,10 +1136,23 @@ mod tests {
             loaded_block_entity(&world, pos),
             Some(BlockEntity::DaylightDetector)
         ));
+        let (lease, detached) = world.block_entities.take(&key).unwrap();
+        assert!(loaded_block_entity(&world, pos).is_none());
+        assert!(world.block_entities.put(lease, detached));
+        assert!(matches!(
+            loaded_block_entity(&world, pos),
+            Some(BlockEntity::DaylightDetector)
+        ));
+        let outside_pos = [-1, world.shape.max_y(), 0];
         world
             .block_entities
-            .insert(key, BlockEntity::Mod(Box::default()));
-        assert!(loaded_block_entity(&world, pos).is_none());
+            .insert((-1, outside_pos[1], 0), BlockEntity::DaylightDetector);
+        assert!(loaded_block_entity(&world, outside_pos).is_none());
+        let below_pos = [-1, world.shape.min_y - 1, 0];
+        world
+            .block_entities
+            .insert((-1, below_pos[1], 0), BlockEntity::DaylightDetector);
+        assert!(loaded_block_entity(&world, below_pos).is_none());
     }
 
     fn compound(snbt: &str) -> Compound {
@@ -1126,15 +1345,24 @@ mod tests {
             let mut guest = game.lan.as_mut().unwrap().hub.guests.remove(0);
             guest.kind = sunrise_client::lan::guest::GuestKind::Fake;
             game.lan.as_mut().unwrap().hub.guests.insert(0, guest);
-            assert_eq!(game.open_block_menu(12, (0, 64, 0)), MenuOpen::Cancelled);
+            // Fake players have no client menu. This is a refusal, not a hook cancellation.
+            assert_eq!(game.open_block_menu(12, (0, 64, 0)), MenuOpen::Refused);
             assert!(!player.open_menu(game, chest).unwrap());
             let mut guest = game.lan.as_mut().unwrap().hub.guests.remove(0);
             guest.kind = sunrise_client::lan::guest::GuestKind::Network;
             game.lan.as_mut().unwrap().hub.guests.insert(0, guest);
             assert!(player.open_menu(game, chest).unwrap());
+            assert_eq!(chest.lock(game), None);
+            assert!(chest.set_lock(game, Some(Compound::new())).unwrap());
+            assert_eq!(chest.lock(game), Some(&Compound::new()));
             let stick_lock = compound("{items:\"minecraft:stick\"}");
             assert!(chest.set_lock(game, Some(stick_lock.clone())).unwrap());
-            assert_eq!(chest.lock(game), Some(stick_lock));
+            let lock = chest.lock(game).unwrap();
+            assert_eq!(lock, &stick_lock);
+            let Some(Tag::Compound(resident)) = game.world.block_lock((0, 64, 0)) else {
+                panic!("the lock was not stored with the block entity");
+            };
+            assert!(std::ptr::eq(lock, resident));
             assert!(!player.open_menu(game, chest).unwrap());
             {
                 let value = Some(sunrise_client::items::ItemStack::new("minecraft:stick", 1));
@@ -1156,6 +1384,7 @@ mod tests {
                     .update(0, |g| g.inventory[0] = value);
             }
             assert!(chest.set_lock(game, None).unwrap());
+            assert_eq!(chest.lock(game), None);
             assert!(player.open_menu(game, chest).unwrap());
             assert!(player.open_menu(game, furnace).unwrap());
 
@@ -1368,8 +1597,8 @@ mod tests {
             );
             assert_eq!(slot3(game), Some(3));
             assert_eq!(
-                chest.kind(game).map(|kind| kind.id(game)),
-                Some("minecraft:chest".to_owned())
+                chest.kind(game).and_then(|kind| kind.id(game)),
+                Some("minecraft:chest")
             );
             assert_eq!(chest.position(game), Some([0, 64, 0]));
             assert!(
@@ -1411,17 +1640,17 @@ mod tests {
 
             // An abort puts back data and name; a commit keeps them.
             let host: &mut dyn ServerHost = game;
-            let aborted: Result<(), ()> = host.transaction(|host, _| {
+            let aborted: Result<(), TransactionError<()>> = host.transaction(|host, _| {
                 assert!(chest.merge_data(host, compound(stick)).unwrap());
                 assert!(chest.set_name(host, Some("Gone")).unwrap());
                 assert!(chest.set_changed(host).unwrap());
                 Err(())
             });
-            assert_eq!(aborted, Err(()));
+            assert_eq!(aborted, Err(TransactionError::Aborted(())));
             assert_eq!((slot3(game), chest.name(game)), (None, None));
             assert!(game.transactions.is_empty());
             let host: &mut dyn ServerHost = game;
-            let committed: Result<(), ()> = host.transaction(|host, _| {
+            let committed: Result<(), TransactionError<()>> = host.transaction(|host, _| {
                 assert!(chest.merge_data(host, compound(stick)).unwrap());
                 assert!(chest.set_name(host, Some("Kept")).unwrap());
                 Ok(())
@@ -1433,11 +1662,12 @@ mod tests {
             );
 
             // Replacement uses the same journal and restores the original payload on abort.
-            let aborted: Result<(), ()> = (game as &mut dyn ServerHost).transaction(|host, _| {
-                assert!(chest.replace_data(host, compound("{}")).unwrap());
-                Err(())
-            });
-            assert_eq!(aborted, Err(()));
+            let aborted: Result<(), TransactionError<()>> = (game as &mut dyn ServerHost)
+                .transaction(|host, _| {
+                    assert!(chest.replace_data(host, compound("{}")).unwrap());
+                    Err(())
+                });
+            assert_eq!(aborted, Err(TransactionError::Aborted(())));
             assert_eq!(
                 (slot3(game), chest.name(game)),
                 (Some(3), Some("Kept".to_owned()))
@@ -1501,7 +1731,7 @@ mod tests {
             let before = game.world.block_entity_extras(key);
 
             let host: &mut dyn ServerHost = game;
-            let aborted: Result<(), ()> = host.transaction(|host, _| {
+            let aborted: Result<(), TransactionError<()>> = host.transaction(|host, _| {
                 assert!(
                     chest
                         .set_lock(host, Some(compound("{items:\"minecraft:stick\"}")))
@@ -1510,12 +1740,12 @@ mod tests {
                 assert!(chest.merge_data(host, table.clone()).unwrap());
                 Err(())
             });
-            assert_eq!(aborted, Err(()));
+            assert_eq!(aborted, Err(TransactionError::Aborted(())));
             assert_eq!(game.world.block_entity_extras(key), before);
             assert!(game.world.block_lock(key).is_none());
 
             let host: &mut dyn ServerHost = game;
-            let committed: Result<(), ()> = host.transaction(|host, _| {
+            let committed: Result<(), TransactionError<()>> = host.transaction(|host, _| {
                 assert!(chest.merge_data(host, lock.clone()).unwrap());
                 assert!(chest.merge_data(host, table.clone()).unwrap());
                 Ok(())
@@ -1600,7 +1830,7 @@ mod tests {
             assert!(!write(
                 game,
                 [0, 64, 0],
-                mod_api::BlockStateRecord::new(api_stone.block(), u16::MAX).into(),
+                mod_api::__private::block_state_from_ordinal(api_stone.block(), u16::MAX),
                 flags
             ));
             assert_eq!(game.world.chunks.len(), chunks);
@@ -1614,6 +1844,7 @@ mod tests {
             ));
 
             // A client's copy of the level is not the server's.
+            game.options.execution_role = crate::game::execution_role::ExecutionRole::Client;
             game.options.dedicated = None;
             assert!(!write(game, [0, 64, 0], api_stone, flags));
             assert_eq!(game.world.block(0, 64, 0), grown);

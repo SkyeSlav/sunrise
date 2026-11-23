@@ -7,7 +7,10 @@ use sunrise_client::chunk::Chunk;
 use sunrise_client::motion::PlayerMotion;
 
 /// A world with one player standing at (0.5, 64, 0.5) and nothing else.
-fn game(creative: bool) -> Game<'static> {
+fn game<'a>(
+    resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>,
+    creative: bool,
+) -> Game<'a> {
     let root = std::path::PathBuf::from(
         std::env::var_os("SUNRISE_TEST_RESOURCES")
             .expect("set SUNRISE_TEST_RESOURCES to prepared resources"),
@@ -29,7 +32,7 @@ fn game(creative: bool) -> Game<'static> {
     let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
     options.resources = root.clone();
     options.execution_role = execution_role::ExecutionRole::IntegratedServer;
-    let res: &'static _ = Box::leak(Box::new(loaded.resources));
+    let res = &*resources.insert(loaded.resources);
     let mut game = Game::new(
         res,
         loaded.pack,
@@ -98,7 +101,8 @@ fn aim_at_mob(game: &mut Game<'_>) {
 #[test]
 #[ignore = "daily"]
 fn a_hit_that_deals_no_damage_has_no_knockback_anger_or_exhaustion() {
-    let mut game = game(false);
+    let mut resources = None;
+    let mut game = game(&mut resources, false);
     summon_pig(&mut game, "");
     set_base(
         game.player.as_mut().unwrap(),
@@ -118,7 +122,7 @@ fn a_hit_that_deals_no_damage_has_no_knockback_anger_or_exhaustion() {
     assert_eq!(pig.invulnerable, 0, "the hit started a hurt cooldown");
     assert_eq!(pig.ai.last_hurt_by_player, 0, "the pig was angered");
     assert!(
-        game.combat.last_hurt_mob.is_none(),
+        game.player.as_ref().unwrap().health.last_hurt_mob.is_none(),
         "setLastHurtMob ran for a hit that dealt no damage"
     );
     let player = game.player.as_ref().unwrap();
@@ -138,7 +142,8 @@ fn a_hit_that_deals_no_damage_has_no_knockback_anger_or_exhaustion() {
 #[test]
 #[ignore = "daily"]
 fn the_melee_knockback_scales_with_the_attackers_attack_knockback() {
-    let mut game = game(false);
+    let mut resources = None;
+    let mut game = game(&mut resources, false);
     summon_pig(&mut game, "");
     // A held item, so `getKnockback` runs `EnchantmentHelper.modifyKnockback` over the
     // attribute value (no Knockback enchantment: it returns that value unchanged).
@@ -175,7 +180,8 @@ fn the_melee_knockback_scales_with_the_attackers_attack_knockback() {
 #[test]
 #[ignore = "daily"]
 fn a_creative_player_hurts_an_invulnerable_mob() {
-    let mut game = game(false);
+    let mut resources = None;
+    let mut game = game(&mut resources, false);
     summon_pig(&mut game, ",Invulnerable:1b");
     assert!(game.mobs[0].invulnerable_flag, "the pig is Invulnerable");
     aim_at_mob(&mut game);

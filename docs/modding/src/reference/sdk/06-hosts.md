@@ -4,10 +4,8 @@ The compiled slices are built for these computers, the game's and, where listed,
 
 {{#sdk-hosts}}
 
-On any other computer the launcher builds no native mods and says `E_NATIVE_HOST: no prebuilt game supports this
-computer; use a supported host`. Intel Macs and Windows on ARM run the launcher but have no SDK, and a dedicated
-server takes native mods on Linux x86-64 only.
+Building a native mod requires a matching prebuilt game slice. Sunrise does not publish game or SDK builds for
+Intel Macs, Windows on ARM or musl Linux. Dedicated server slices are available only for Linux x86-64.
 
-Writing a mod needs no compiled slice: the API source in `.sunrise/sdk/` is the same on every computer, so
-`cargo sunrise-mod` writes and checks a mod on any computer `cargo` runs on. Only building it into the game needs the
-slices of the computer that plays it.
+Authoring a mod can use the API source in `.sunrise/sdk/` on any host where Cargo runs. Running native
+`cargo sunrise-mod check` or `cargo sunrise-mod build` requires matching compiled SDK slices for the target host.

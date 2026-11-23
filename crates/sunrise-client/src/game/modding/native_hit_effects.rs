@@ -16,6 +16,7 @@ impl From<HitSound<'_>> for NativeSound {
             seed: sound.seed,
             except: None,
             entity: sound.emitter,
+            skip_hooks: false,
         }
     }
 }

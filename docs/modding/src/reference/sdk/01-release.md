@@ -34,7 +34,7 @@ number, removing or redefining one changes it.
 | `build.game` | The vanilla version the build implements (`26.3`). |
 | `build.date` | The commit's date, `YYYY-MM-DD`, UTC. |
 | `build.nightly` | The Nightly name that ships this build, when one does. |
-| `package_format` | The prebuilt package's layout number. A reader takes only the number it was made for. |
+| `package_format` | The prebuilt package's layout number. Readers of compiled packages require a match. The [offline registry fit check](../registry-index.md#fit-on-stable-and-nightly) does not open compiled packages and does not need a match. |
 | `toolchain.rust` | The Rust release everything in the SDK was compiled with. |
 | `content_api` | The content manifest's version: the `api` key of `sunrise-mod.toml`. |
 | `surface.hash` | `surface.json`'s own hash: equal hashes, equal surface. |
@@ -54,7 +54,8 @@ it came from, and refuse it by name at the first step that fails:
 1. `SHA256SUMS` carries Sunrise's signature for the tag `sdk-<build id>`. That signature never passes for a game
    release, and a game release's never passes for an SDK.
 2. `sdk.json` is the file those sums list, names this build, has a schema and package format the reader knows, and
-   lists only assets of known kinds and codecs under plain file names.
+   lists its assets under plain file names with codecs the reader knows. An asset of a kind the reader doesn't know
+   (a newer SDK's) is left out, and a route that needs one is refused by name only when it is used.
 3. Every other file has the size and SHA-256 `sdk.json` gives, checked before it is decoded. An archive unpacks into
    a temporary folder, renamed into place only when every entry unpacked, and is refused past an unpacked size
    limit or for any entry that is not a plain file or folder inside it.

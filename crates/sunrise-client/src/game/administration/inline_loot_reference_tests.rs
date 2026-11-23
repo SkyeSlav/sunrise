@@ -94,7 +94,10 @@ fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -
         &[],
         &[],
     );
-    game.world_tables = game.stage_world_tables(&stack, false, &root).unwrap().0;
+    game.world_tables = game
+        .stage_world_tables(&stack, false, &root)
+        .unwrap()
+        .tables;
     game.load_server_loot();
     // As the world opens: its registries, with the packs' tables.
     game.build_registries();

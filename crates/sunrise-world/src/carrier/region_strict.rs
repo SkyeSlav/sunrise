@@ -49,13 +49,6 @@ pub enum Strict {
     /// Plain I/O.
     Io(String),
 }
-impl Strict {
-    /// Whether this refusal means damage rather than a well-formed
-    /// absence. Damage refuses the world's load.
-    pub fn is_damage(&self) -> bool {
-        !matches!(self, Self::NoRegion | Self::Missing)
-    }
-}
 impl fmt::Display for Strict {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

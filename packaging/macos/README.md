@@ -1,6 +1,8 @@
-# The macOS launcher: Sunrise.app in a .dmg
+# macOS packaging
 
-`package.sh BINARY VERSION OUTDIR` (run by `.github/workflows/launcher.yml` on macOS) makes:
+The launcher's own packaging (`package.sh`, `Info.plist`, the .dmg background) moved with the launcher to [sunrise-org/sunrise-launcher](https://github.com/sunrise-org/sunrise-launcher); the sections below describe it and the signing and notarization this folder's `keychain.sh` and `notarize.sh` still do for the game's macOS builds.
+
+`package.sh BINARY VERSION OUTDIR` (in sunrise-launcher's release workflow, on macOS) makes:
 
 - `Sunrise.app`: `Contents/MacOS/sunrise-launcher`, `Contents/Info.plist` (this folder's, bundle
   id `dev.sunrise.launcher`, macOS 11 or later), `Contents/Resources/sunrise.icns`
@@ -41,10 +43,14 @@ Releases are signed with Ludovic's **Developer ID** ("Developer ID Application: 
   `accepted` and `source=Notarized Developer ID`.
 - the game (`.github/workflows/game-build.yml`): `sunrise-client`, `sunrise-ctl`, `sunrise-perf`,
   `sunrise-prepare` and `sunrise-server` are signed right after they are built (so the checks and the 1500-frame smoke
-  run use them as players will), and the zip is notarized. Programs outside a bundle can't hold a
+  run use them as players will), and the zip is notarized. `sunrise-client` embeds
+  `packaging/macos/game-info.plist` in `__TEXT,__info_plist` (providing `CFBundleIdentifier`,
+  `CFBundleName` and `NSMicrophoneUsageDescription`) and is signed with
+  `packaging/macos/game-entitlements.plist` (`com.apple.security.device.audio-input`) so hardened-runtime
+  builds can open microphone capture for mods. Programs outside a bundle can't hold a
   ticket: Gatekeeper asks Apple online the first time each one runs.
 
-No entitlements are needed. The launcher checks an update's signature before swapping the new
+The other helper binaries need no entitlements. The launcher checks an update's signature before swapping the new
 Sunrise.app in, and again where it lands; when it doesn't hold, the old app is put back.
 
 The switch is the repository variable `MACOS_SIGN_IDENTITY`: set to the identity's name, the
@@ -87,7 +93,7 @@ Signing by hand, as the workflow does:
 export MACOS_SIGN_IDENTITY="Developer ID Application: Ludovic Marie (YYJU63HSD4)"
 export MACOS_SIGN_KEYCHAIN=~/Library/Keychains/sunrise-signing.keychain-db MACOS_NOTARY_PROFILE=sunrise-notary
 packaging/macos/keychain.sh unlock
-packaging/macos/package.sh target/release/sunrise-launcher 0.0.0 out
+packaging/macos/package.sh target/release/sunrise-launcher 0.0.0 out   # run in sunrise-launcher, which holds package.sh
 packaging/macos/keychain.sh lock
 ```
 

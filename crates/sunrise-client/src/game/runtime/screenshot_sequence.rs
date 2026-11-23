@@ -65,7 +65,7 @@ impl Game<'_> {
             || self.player.is_none()
             || self.integrated_starting.is_some()
             || self.pending_entry.is_some()
-            || self.pack_reload.is_some()
+            || self.reload_overlay.is_some()
             || self.pending_save.is_some()
             || self
                 .remote

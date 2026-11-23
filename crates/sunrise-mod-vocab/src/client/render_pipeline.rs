@@ -10,7 +10,8 @@ use crate::{Identifier, WorldDepth};
 #[derive(sunrise_mod_api_macros::Wire)]
 pub struct RenderPipeline {
     owner: String,
-    /// The pipeline's own name (`mymod:glow`), in a namespace the mod owns.
+    /// The pipeline's own name (`mymod:glow`). Unique among all mod pipelines,
+    /// regardless of whether they are required or optional.
     pub id: Identifier,
     /// The fragment shader (`mymod:glow` is `assets/mymod/shaders/pipeline/glow.wgsl`), as the
     /// mod's assets or a resource pack supply it.
@@ -220,44 +221,16 @@ pub enum PipelineDrawError {
     CapacityExceeded,
 }
 
-/// What `owner` added to `pipelines` in `register_render_pipelines`, checked as it returns: a
-/// pipeline outside the mod's namespaces or whose id an earlier registration took is logged
-/// with the mod and dropped.
+/// Stamp the owning mod onto every pipeline `owner` added in `register_render_pipelines`.
+/// Duplicate IDs are rejected when the engine freezes the collected registrations at startup.
 pub(crate) fn validate_render_pipelines(
     owner: &str,
     previous: &[RenderPipeline],
-    pipelines: &mut Vec<RenderPipeline>,
+    pipelines: &mut [RenderPipeline],
 ) {
-    validate_in(owner, previous, pipelines, &|namespace| {
-        crate::parts::owns_namespace(owner, namespace)
-    });
-}
-
-fn validate_in(
-    owner: &str,
-    previous: &[RenderPipeline],
-    pipelines: &mut Vec<RenderPipeline>,
-    owns: &dyn Fn(&str) -> bool,
-) {
-    let added = pipelines.split_off(previous.len().min(pipelines.len()));
-    for mut pipeline in added {
-        let refusal = if !owns(pipeline.id.namespace()) {
-            Some("its id is outside the mod's namespaces")
-        } else if pipelines.iter().any(|kept| kept.id == pipeline.id) {
-            Some("an earlier registration has that id")
-        } else {
-            None
-        };
-        match refusal {
-            Some(reason) => log::warn!(
-                "register_render_pipelines: mod {owner}: pipeline {} refused: {reason}",
-                pipeline.id
-            ),
-            None => {
-                pipeline.owner = owner.to_owned();
-                pipelines.push(pipeline);
-            }
-        }
+    let start = previous.len().min(pipelines.len());
+    for pipeline in &mut pipelines[start..] {
+        pipeline.owner = owner.to_owned();
     }
 }
 
@@ -279,41 +252,43 @@ mod tests {
     }
 
     #[test]
-    fn a_mod_keeps_only_new_pipelines_in_its_own_namespace() {
-        let previous = vec![pipeline("other:glow")];
+    fn stamps_owner_on_new_pipelines_across_namespaces_and_preserves_duplicates_for_freeze() {
+        let mut previous = vec![pipeline("other:glow")];
+        validate_render_pipelines("first_mod", &[], &mut previous);
         let mut pipelines = previous.clone();
         pipelines.extend([
-            pipeline("mine:glow"),
+            pipeline("minecraft:glow"),
             pipeline("other:beam"),
-            pipeline("mine:glow"),
+            pipeline("other:glow"),
             pipeline("mine:beam"),
         ]);
-        validate_in("owning_mod", &previous, &mut pipelines, &|namespace| {
-            namespace == "mine"
-        });
-        assert_eq!(ids(&pipelines), ["other:glow", "mine:glow", "mine:beam"]);
-        assert_eq!(pipelines[1].owner(), "owning_mod");
-    }
-
-    #[test]
-    fn a_mod_cannot_take_an_id_registered_before_it() {
-        let previous = vec![pipeline("shared:glow")];
-        let mut pipelines = previous.clone();
-        pipelines.push(pipeline("shared:glow"));
-        validate_in("late", &previous, &mut pipelines, &|_| true);
-        assert_eq!(pipelines, previous);
+        validate_render_pipelines("owning_mod", &previous, &mut pipelines);
+        assert_eq!(
+            ids(&pipelines),
+            [
+                "other:glow",
+                "minecraft:glow",
+                "other:beam",
+                "other:glow",
+                "mine:beam",
+            ]
+        );
+        assert_eq!(pipelines[0].owner(), "first_mod");
+        for added in &pipelines[1..] {
+            assert_eq!(added.owner(), "owning_mod");
+        }
     }
 
     #[test]
     fn a_mod_can_register_more_than_vanillas_pipeline_count() {
         let mut pipelines: Vec<_> = (0..131).map(|i| pipeline(&format!("mine:p{i}"))).collect();
-        validate_in("mine", &[], &mut pipelines, &|_| true);
+        validate_render_pipelines("mine", &[], &mut pipelines);
         assert_eq!(pipelines.len(), 131);
         assert_eq!(pipelines.last().unwrap().id.to_string(), "mine:p130");
 
         let previous = pipelines.clone();
         pipelines.push(pipeline("next:glow"));
-        validate_in("next", &previous, &mut pipelines, &|_| true);
+        validate_render_pipelines("next", &previous, &mut pipelines);
         assert_eq!(pipelines.len(), 132);
     }
 }

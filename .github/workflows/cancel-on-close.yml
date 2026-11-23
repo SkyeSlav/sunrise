@@ -27,8 +27,8 @@ jobs:
           # A failed listing stops the job: an empty list of open pull requests would cancel every run.
           set -euo pipefail
           # A pull request's runs are named by its head branch in its own repository (another fork can have a branch
-          # of the same name). Every head it had counts, not only its last: a run-parity label added on an older
-          # head left that run queued after the merge (#3104, 2026-10-29).
+          # of the same name). Every head it had counts, not only its last: a run started on an older head was left
+          # queued after the merge (#3104, 2026-10-29).
           # The runs first, then the open pull requests: a run listed belongs to a pull request opened before the
           # second listing, so one opened meanwhile is never taken for closed.
           for status in queued in_progress waiting pending requested; do
