@@ -179,6 +179,13 @@ pub struct CartSound {
     pub position: [f64; 3],
     /// `getDeltaMovement().horizontalDistance()`.
     pub speed: f64,
+    pub new_behavior: bool,
+    pub on_rails: bool,
+}
+impl CartSound {
+    fn can_roll(&self) -> bool {
+        self.on_rails || !self.new_behavior
+    }
 }
 /// What a bee's or a guardian's sound instance reads about it.
 #[derive(Clone, Copy, Debug)]
@@ -194,6 +201,8 @@ pub struct MobSound {
     pub silent: bool,
     /// `Guardian.getAttackAnimationScale(0)`.
     pub attack_scale: f32,
+    /// `Guardian.getTarget()`, not the synchronized beam target.
+    pub guardian_has_target: bool,
     /// `getTarget() == null && Sniffer.canPlayDiggingSound()`.
     pub sniffer_digging: bool,
 }
@@ -615,6 +624,11 @@ impl SoundInstance {
         s.ticking = Ticking::GuardianAttack {
             guardian: guardian.id,
         };
+        s.bound_entity = Some(SoundEntity::new(
+            guardian.id,
+            guardian.position,
+            guardian.silent,
+        ));
         s
     }
     /// `new SnifferSoundInstance(sniffer)`: the digging sound, which sits at
@@ -802,7 +816,7 @@ impl SoundInstance {
                 ];
                 // Its own `pitch` field shadows the instance's, which stays 1.
                 let speed = cart.speed as f32;
-                self.volume = if speed >= 0.01 && !ctx.frozen {
+                self.volume = if speed >= 0.01 && !ctx.frozen && cart.can_roll() {
                     speed.clamp(0.0, 0.5) * 0.7
                 } else {
                     0.0
@@ -898,9 +912,16 @@ impl SoundInstance {
             }
             Ticking::GuardianAttack { guardian } => {
                 let id = *guardian;
-                // The client's guardian never has a target of its own, so
-                // only its removal or silence ends the loop.
-                let Some(guardian) = ctx.mobs.iter().find(|m| m.id == id && !m.silent) else {
+                let Some(guardian) = ctx
+                    .mobs
+                    .iter()
+                    .find(|m| m.id == id && !m.guardian_has_target)
+                    .filter(|_| {
+                        self.bound_entity
+                            .as_ref()
+                            .is_none_or(|e| !e.state().removed)
+                    })
+                else {
                     self.stop();
                     return;
                 };
@@ -946,7 +967,7 @@ impl SoundInstance {
                 } else {
                     // Mth.clampedLerp(speed, 0, 0.75), amplified by 1.
                     let speed = cart.speed as f32;
-                    self.volume = if speed >= 0.01 {
+                    self.volume = if speed >= 0.01 && cart.can_roll() {
                         if speed > 1.0 { 0.75 } else { speed * 0.75 }
                     } else {
                         0.0
@@ -2046,6 +2067,7 @@ mod tests {
             angry: false,
             silent: false,
             attack_scale: 0.0,
+            guardian_has_target: false,
             sniffer_digging: true,
         };
         let mut s = SoundInstance::sniffer(3, crate::random_source::create());
@@ -2174,11 +2196,54 @@ mod tests {
         }
     }
     #[test]
+    fn guardian_attack_loop_is_silent_or_stops_when_its_guardian_cannot_play() {
+        let guardian = MobSound {
+            id: 21,
+            position: [1.0, 64.0, 1.0],
+            speed: 0.0,
+            baby: false,
+            angry: false,
+            silent: false,
+            attack_scale: 0.5,
+            guardian_has_target: false,
+            sniffer_digging: false,
+        };
+        let mut ctx = TickContext {
+            mobs: vec![guardian],
+            ..TickContext::default()
+        };
+        let mut live = SoundInstance::guardian_attack(&guardian, LegacyRandom::new(1));
+        assert!(live.can_play_sound());
+        live.tick(&ctx);
+        assert!(!live.stopped, "a live, targetless guardian keeps charging");
+
+        let silent = MobSound {
+            silent: true,
+            ..guardian
+        };
+        assert!(!SoundInstance::guardian_attack(&silent, LegacyRandom::new(2)).can_play_sound());
+
+        let mut removed = SoundInstance::guardian_attack(&guardian, LegacyRandom::new(3));
+        ctx.mobs.clear();
+        removed.tick(&ctx);
+        assert!(removed.stopped, "removal stops the loop");
+
+        ctx.mobs.push(MobSound {
+            guardian_has_target: true,
+            ..guardian
+        });
+        live.tick(&ctx);
+        assert!(live.stopped, "getTarget also stops the loop");
+    }
+
+    #[test]
     fn minecart_sound_volume_scales_with_speed_and_silences_when_stopped() {
         let cart = CartSound {
             id: 42,
             position: [10.0, 64.0, 5.0],
             speed: 0.0,
+            new_behavior: false,
+            on_rails: false,
         };
         let mut s = SoundInstance::minecart(&cart, crate::random_source::create());
         assert!(s.can_start_silent);
@@ -2196,11 +2261,11 @@ mod tests {
         // Moving cart scales volume with clamp(speed, 0, 0.5) * 0.7.
         ctx.carts[0].speed = 0.2;
         s.tick(&ctx);
-        assert!((s.volume - 0.2 * 0.7).abs() < 1e-6, "volume: {}", s.volume);
+        assert_eq!(s.volume.to_bits(), 0x3e0f5c29);
 
         ctx.carts[0].speed = 1.0;
         s.tick(&ctx);
-        assert!((s.volume - 0.5 * 0.7).abs() < 1e-6, "volume: {}", s.volume);
+        assert_eq!(s.volume.to_bits(), 0x3eb33333);
 
         // Frozen clock silences cart.
         ctx.frozen = true;
@@ -2219,6 +2284,8 @@ mod tests {
             id: 99,
             position: [0.0, 60.0, 0.0],
             speed: 0.4,
+            new_behavior: false,
+            on_rails: false,
         };
         let mut surface =
             SoundInstance::riding_minecart(&cart, false, crate::random_source::create());
@@ -2235,11 +2302,7 @@ mod tests {
         // Surface riding active on surface.
         surface.tick(&ctx);
         underwater.tick(&ctx);
-        assert!(
-            (surface.volume - 0.4 * 0.75).abs() < 1e-6,
-            "{}",
-            surface.volume
-        );
+        assert_eq!(surface.volume.to_bits(), 0x3e99999a);
         assert_eq!(underwater.volume, 0.0);
 
         // Submerged player switches active sound.
@@ -2247,11 +2310,7 @@ mod tests {
         surface.tick(&ctx);
         underwater.tick(&ctx);
         assert_eq!(surface.volume, 0.0);
-        assert!(
-            (underwater.volume - 0.4 * 0.75).abs() < 1e-6,
-            "{}",
-            underwater.volume
-        );
+        assert_eq!(underwater.volume.to_bits(), 0x3e99999a);
 
         // Dismounting stops both instances.
         ctx.vehicle = None;
