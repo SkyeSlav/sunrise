@@ -26,6 +26,25 @@ pub enum InsideShape {
     Empty,
 }
 
+/// A filled cauldron's shell plus its `Block.column(12, 4, top)` fill.
+pub(crate) fn filled_cauldron_inside_shape(
+    shell: &sunrise_core::geometry::VoxelShape,
+    at: BlockPos,
+    top: f64,
+) -> InsideShape {
+    let offset = Vec3::from_block(at);
+    let mut boxes = Vec::with_capacity(shell.boxes().len() + 1);
+    boxes.extend(shell.boxes().iter().map(|shape| shape.move_by(offset)));
+    boxes.push(
+        Aabb::new(
+            Vec3::new(2.0 / 16.0, 4.0 / 16.0, 2.0 / 16.0),
+            Vec3::new(14.0 / 16.0, top, 14.0 / 16.0),
+        )
+        .move_by(offset),
+    );
+    InsideShape::Boxes(boxes)
+}
+
 /// The collector a walk queues its per-step effects into. `advanceStep` is the only
 /// call the shared walk makes on it; the kind's own moments queue the effects.
 pub trait StepCollector {
@@ -33,9 +52,11 @@ pub trait StepCollector {
     fn advance_step(&mut self, step: i32);
 }
 
-impl StepCollector for mod_api::InsideEffects {
+impl<W, P: From<mod_api::__private::InsideAction<W>>> StepCollector
+    for mod_api::__private::InsideCollector<W, P>
+{
     fn advance_step(&mut self, step: i32) {
-        mod_api::InsideEffects::advance_step(self, step);
+        mod_api::__private::InsideCollector::advance_step(self, step);
     }
 }
 

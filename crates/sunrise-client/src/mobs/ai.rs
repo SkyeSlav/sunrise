@@ -25,11 +25,16 @@ use super::{
 use crate::blocks::Fluid;
 use crate::breathing::{AirStep, Breath};
 use crate::health::DamageLevel;
+use mod_api::{
+    __private::{InsideAction, InsideCollector},
+    InsideEffect,
+};
 use sunrise_core::{
     geometry::{Aabb, Axis, ShapeOp, Vec3, VoxelShape},
+    position::BlockPos,
     random::RandomSource,
 };
-use sunrise_world::native_load_context::LoopContext;
+use sunrise_world::{native_load_context::LoopContext, registry::BlockStateId};
 
 #[cfg(test)]
 mod inside_walk_tests {
@@ -2047,8 +2052,20 @@ struct MobBlockWalk {
     stationary_done: bool,
     travel: crate::block_contact::MovementSweep,
     visited: crate::fast_hash::FxHashSet<i64>,
-    effects: mod_api::InsideEffects,
-    writes: Option<std::vec::IntoIter<mod_api::PlannedInside>>,
+    effects: InsideCollector<MobInsideWrite>,
+    writes: Option<std::vec::IntoIter<InsideAction<MobInsideWrite>>>,
+}
+
+#[derive(Debug)]
+enum MobInsideWrite {
+    LavaHurt,
+    Part(mod_api::EntityWrite),
+}
+
+impl From<mod_api::EntityWrite> for MobInsideWrite {
+    fn from(write: mod_api::EntityWrite) -> Self {
+        Self::Part(write)
+    }
 }
 
 impl MobBlockWalk {
@@ -2105,11 +2122,22 @@ impl MobBlockWalk {
             if !m.alive() {
                 break;
             }
-            if let mod_api::PlannedInside::Write(write) = planned {
-                apply_entity_write(m, w, level, events, write);
-                if pause_damage && m.hurt_needs_owner() {
-                    return false;
+            match planned {
+                InsideAction::Effect(InsideEffect::ClearFreeze) => m.ticks_frozen = 0,
+                InsideAction::Effect(InsideEffect::LavaIgnite) if !m.fire_immune() => {
+                    m.ignite_for_ticks(300);
                 }
+                InsideAction::Write(MobInsideWrite::LavaHurt) if !m.fire_immune() => {
+                    m.damage(level, 4.0, Damage::of(DamageKind::Lava));
+                    hurt_teleports(m, w, events);
+                }
+                InsideAction::Write(MobInsideWrite::Part(write)) => {
+                    apply_entity_write(m, w, level, events, write);
+                }
+                _ => {}
+            }
+            if pause_damage && m.hurt_needs_owner() {
+                return false;
             }
         }
         true
@@ -2176,7 +2204,7 @@ struct MobInside<'a, 'w, 'l> {
 }
 
 impl crate::block_contact::InsideWalk for MobInside<'_, '_, '_> {
-    type Effects = mod_api::InsideEffects;
+    type Effects = InsideCollector<MobInsideWrite>;
     type Error = ();
     fn bounds_at(&self, at: Vec3) -> sunrise_core::geometry::Aabb {
         self.m.bounds_at(at)
@@ -2197,23 +2225,37 @@ impl crate::block_contact::InsideWalk for MobInside<'_, '_, '_> {
     }
     fn inside_shape(
         &mut self,
-        _state: sunrise_world::registry::BlockStateId,
-        _at: sunrise_core::position::BlockPos,
+        state: BlockStateId,
+        at: BlockPos,
     ) -> crate::block_contact::InsideShape {
-        // `getEntityInsideCollisionShape` is the whole block for every block a
-        // mob meets, as the mob's own walk always treated it.
-        crate::block_contact::InsideShape::Full
+        use crate::block_contact::InsideShape;
+        if &*self.w.facts.get(state).name != "minecraft:lava_cauldron" {
+            return InsideShape::Full;
+        }
+        // LavaCauldronBlock.getEntityInsideCollisionShape: the vanilla shell
+        // and its lava column, independently of movement collision overrides.
+        let Ok(Some(shell)) = self.w.collision.cached_shapes().cached_shape(state) else {
+            return InsideShape::Empty;
+        };
+        crate::block_contact::filled_cauldron_inside_shape(shell, at, 15.0 / 16.0)
     }
     fn entity_inside(
         &mut self,
-        at: sunrise_core::position::BlockPos,
-        state: sunrise_world::registry::BlockStateId,
+        at: BlockPos,
+        state: BlockStateId,
         _step: i32,
         precise: bool,
-        effects: &mut mod_api::InsideEffects,
+        effects: &mut Self::Effects,
     ) -> std::result::Result<(), ()> {
         let (x, y, z) = (at.x, at.y, at.z);
         let p = [x, y, z];
+        let name = &*self.w.facts.get(state).name;
+        // LavaCauldronBlock.entityInside queues a hurt after this step's ignition.
+        if name == "minecraft:lava_cauldron" {
+            effects.apply(InsideEffect::ClearFreeze);
+            effects.apply(InsideEffect::LavaIgnite);
+            effects.run_after(InsideEffect::LavaIgnite, MobInsideWrite::LavaHurt);
+        }
         // The part's contact, mid-walk, staged: its writes join this step only
         // when it answered, and a panic is contained.
         if let Some(hooks) = crate::block_contact::HOOKS.get()
@@ -2240,7 +2282,7 @@ impl crate::block_contact::InsideWalk for MobInside<'_, '_, '_> {
         }
         // PowderSnowBlock.entityInside: a burning mob destroys the
         // block (`canEntityGrief` for the mob), then EXTINGUISH puts it out.
-        if self.w.block_name(x, y, z) == "minecraft:powder_snow" {
+        if name == "minecraft:powder_snow" {
             // InsideBlockEffectType.FREEZE: `setIsInPowderSnow(true)`.
             self.m.in_powder_snow = true;
             if self.m.is_on_fire() && self.w.can_grief(self.m.id) {
@@ -2253,7 +2295,7 @@ impl crate::block_contact::InsideWalk for MobInside<'_, '_, '_> {
             }
             self.m.extinguish_fire();
         }
-        match self.w.block_name(x, y, z) {
+        match name {
             "minecraft:cactus" => {
                 self.m
                     .damage(self.level, 1.0, Damage::of(DamageKind::Cactus));
@@ -2673,7 +2715,7 @@ fn base_tick(
         super::undead::drowned_update_swimming(m, w);
     }
     let fire = crate::motion::environment::fire_contact(w.world, w.registry, m.bounds());
-    let lava = m.fluids.in_lava || touches_lava_cauldron(m, w);
+    let lava = m.fluids.in_lava;
     let contact = Contact {
         fire,
         lava,
@@ -2898,7 +2940,7 @@ fn continue_base_tick(
                 } else {
                     (
                         crate::motion::environment::fire_contact(w.world, w.registry, m.bounds()),
-                        touches_lava(m, w) || touches_lava_cauldron(m, w),
+                        touches_lava(m, w),
                     )
                 };
                 let next = BaseStage::ContactLava { lava, was_on_fire };
@@ -2987,35 +3029,6 @@ fn touches_lava(m: &Mob, w: &MobWorld) -> bool {
         for y in min.y.floor() as i32..=max.y.floor() as i32 {
             for z in min.z.floor() as i32..=max.z.floor() as i32 {
                 if &*w.facts.get(w.world.block(x, y, z)).name == "minecraft:lava" {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-/// `LavaCauldronBlock.entityInside` (LAVA_IGNITE, then `lavaHurt`, as lava's own) for a mob
-/// whose box meets `getEntityInsideCollisionShape`'s `FILLED_SHAPE`: the cauldron's own shape
-/// and its lava, `Block.column(12, 4, 15)`. A mob standing on the rim is not inside.
-fn touches_lava_cauldron(m: &Mob, w: &MobWorld) -> bool {
-    let b = m.bounds().deflate(Vec3::new(1e-5, 1e-5, 1e-5));
-    let (min, max) = (b.min_position(), b.max_position());
-    for x in min.x.floor() as i32..=max.x.floor() as i32 {
-        for y in min.y.floor() as i32..=max.y.floor() as i32 {
-            for z in min.z.floor() as i32..=max.z.floor() as i32 {
-                let state = w.world.block(x, y, z);
-                if &*w.facts.get(state).name != "minecraft:lava_cauldron" {
-                    continue;
-                }
-                let at = Vec3::new(f64::from(x), f64::from(y), f64::from(z));
-                let lava = Aabb::new(
-                    Vec3::new(2.0 / 16.0, 4.0 / 16.0, 2.0 / 16.0),
-                    Vec3::new(14.0 / 16.0, 15.0 / 16.0, 14.0 / 16.0),
-                );
-                let shell = w.collision.static_shape(state).ok().flatten();
-                if lava.move_by(at).intersects(b)
-                    || shell.is_some_and(|s| s.boxes().iter().any(|c| c.move_by(at).intersects(b)))
-                {
                     return true;
                 }
             }
@@ -7237,6 +7250,29 @@ mod burn_and_rose_tests {
                     assert_eq!(m.health, expected, "at y {y}");
                     assert_eq!(m.fire_ticks > 0, hurt, "at y {y}");
                 }
+
+                let kind = Arc::new(types.types["minecraft:pig"].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.96875, 0.5), 0.0);
+                register(&mut m);
+                crate::mobs::finalize::set_baby(&mut m, true);
+                m.previous = m.position;
+                let start = m.health;
+                let (mut lr, mut events) = (crate::health::TestLevel::new(0), Vec::new());
+                // A baby fits between the walls: above the fill but within
+                // the block bounds is still outside the inside shape.
+                effects_from_blocks(&mut m, w, &mut lr.level(), &mut events);
+                assert_eq!(m.fire_ticks, 0);
+                assert_eq!(m.health, start);
+
+                // Neither box overlaps the cauldron at the ends of the move,
+                // but the sweep crosses it and ignites, thaws and hurts once.
+                m.previous = Vec3::new(-0.5, 64.5, 0.5);
+                m.position = Vec3::new(1.5, 64.5, 0.5);
+                m.ticks_frozen = 100;
+                effects_from_blocks(&mut m, w, &mut lr.level(), &mut events);
+                assert_eq!(m.fire_ticks, 300);
+                assert_eq!(m.health, start - 4.0);
+                assert_eq!(m.ticks_frozen, 0);
             },
         );
         assert!(ran, "vanilla data is missing");
