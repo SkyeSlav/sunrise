@@ -6753,6 +6753,124 @@ fn signs_take_their_form_wood_and_wall_block_from_their_declaration() {
     let _ = fs::remove_dir_all(&scratch);
 }
 
+/// A content block's own `SoundType` (`BlockBehaviour.Properties.sound`) reaches both the
+/// client's block facts and the server's behaviours, events of the mod's own and vanilla's
+/// alike, beside a block that names a vanilla block's sounds and one that inherits its
+/// template's.
+#[test]
+#[ignore = "daily"]
+fn a_content_block_plays_its_own_sound_type() {
+    use sunrise_world::level::Behaviours;
+
+    let Some(base) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("sunrise-mod-sounds-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let m = folder_mod(
+        &scratch.join("metal"),
+        &[
+            ("sunrise-mod.toml", &manifest("metal", "")),
+            (
+                "data/metal/sunrise/block/plate.json",
+                r#"{"template": "minecraft:iron_block", "properties": {"sounds": {"volume": 0.8,
+                    "pitch": 1.25, "break": "metal:plate.break", "step": "metal:plate.step",
+                    "place": "minecraft:block.chain.place", "hit": "metal:plate.hit",
+                    "fall": "metal:plate.fall"}}}"#,
+            ),
+            (
+                "data/metal/sunrise/block/glassy.json",
+                r#"{"template": "minecraft:iron_block", "properties": {"sounds": "minecraft:glass"}}"#,
+            ),
+            (
+                "data/metal/sunrise/block/plain.json",
+                r#"{"template": "minecraft:iron_block"}"#,
+            ),
+        ],
+    );
+    let root = resource_root_fixture(
+        &base,
+        Path::new(""),
+        std::slice::from_ref(&m),
+        &scratch.join("cache"),
+    )
+    .unwrap();
+    let registry = Assets::load(&root).unwrap().registry;
+    let facts = BlockFacts::load(&root, registry).unwrap();
+    let behaviours = Behaviours::load(registry, &root).unwrap();
+    let state = |name: &str| registry.default_state(name).unwrap();
+    let client = |name: &str| {
+        let s = &facts.get(state(name)).sounds;
+        (
+            s.volume,
+            s.pitch,
+            [&s.break_sound, &s.step, &s.place, &s.hit, &s.fall].map(|e| e.to_string()),
+        )
+    };
+    let server = |name: &str| {
+        let s = &behaviours.data(state(name)).sounds;
+        (
+            s.volume,
+            s.pitch,
+            [&s.break_, &s.place, &s.fall].map(|e| e.to_string()),
+        )
+    };
+    let events = |e: [&str; 5]| e.map(str::to_owned);
+    assert_eq!(
+        client("metal:plate"),
+        (
+            0.8,
+            1.25,
+            events([
+                "metal:plate.break",
+                "metal:plate.step",
+                "minecraft:block.chain.place",
+                "metal:plate.hit",
+                "metal:plate.fall",
+            ])
+        )
+    );
+    assert_eq!(
+        server("metal:plate"),
+        (
+            0.8,
+            1.25,
+            ["metal:plate.break", "minecraft:block.chain.place", "metal:plate.fall"]
+                .map(str::to_owned)
+        )
+    );
+    // The vanilla block's `SoundType.GLASS` and the template's `SoundType.METAL`.
+    assert_eq!(
+        client("metal:glassy"),
+        (
+            1.0,
+            1.0,
+            events([
+                "minecraft:block.glass.break",
+                "minecraft:block.glass.step",
+                "minecraft:block.glass.place",
+                "minecraft:block.glass.hit",
+                "minecraft:block.glass.fall",
+            ])
+        )
+    );
+    assert_eq!(
+        client("metal:plain"),
+        (
+            1.0,
+            1.5,
+            events([
+                "minecraft:block.metal.break",
+                "minecraft:block.metal.step",
+                "minecraft:block.metal.place",
+                "minecraft:block.metal.hit",
+                "minecraft:block.metal.fall",
+            ])
+        )
+    );
+    let _ = fs::remove_dir_all(&scratch);
+}
+
 /// A fence gate of a mod is a vanilla `FenceGateBlock` through its template, with
 /// its wood's sounds unless the file names its own: `open_sound` and
 /// `close_sound` override every site or just the named sites, retaining the

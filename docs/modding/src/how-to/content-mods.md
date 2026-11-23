@@ -266,6 +266,19 @@ A block names its template and what differs from it:
   "item": true }
 ```
 
+`"sounds"` names a vanilla block whose sounds the block uses, or gives the block a sound type of its own, as
+`BlockBehaviour.Properties.sound` takes a mod-built `SoundType` (NeoForge's `DeferredSoundType`): its `volume`
+and `pitch`, and a sound event id for each of `break`, `step`, `place`, `hit` and `fall`, vanilla's or one of
+the mod's own `sounds.json`:
+
+```json
+"sounds": { "volume": 1.0, "pitch": 1.2, "break": "factory:metal.break", "step": "factory:metal.step",
+            "place": "minecraft:block.chain.place", "hit": "factory:metal.hit", "fall": "factory:metal.fall" }
+```
+
+All seven keys are required. An id that is not `namespace:path` fails the load. Code declarations use
+`BlockSounds::Block` or `BlockSounds::Own` with a `BlockSoundType`.
+
 A fence gate needs no kind of its own: a block whose template is a vanilla `minecraft:*_fence_gate` is a
 `FenceGateBlock`, with the template wood's open and close sounds. `"open_sound"` and `"close_sound"` accept a sound
 event id, such as `"minecraft:block.chain.break"` or a sound of the mod's own `sounds.json`, to replace that sound at
@@ -1279,7 +1292,7 @@ by writing exactly the listed registry and tag path under `data/sunrise/tags/`.
 Other `data/sunrise/` and all `assets/sunrise/` files remain refused; the namespace cannot be claimed.
 Generated `sunrise:class/*` tags are refused by name: attach a part with `block_part_tag` instead.
 The SDK surface's `extension_tags` lists these same declarations, and `sdk diff` treats a removed tag as breaking.
-Templates and `sounds` name vanilla blocks; unknown keys are refused.
+Templates and a `sounds` string name vanilla blocks; unknown keys are refused.
 
 Some Java mods ship their files under other names than their mod id (Towns and Towers, mod id `t_and_t`, under
 `kaisyn` and `towns_and_towers`). A content mod lists those in its manifest:

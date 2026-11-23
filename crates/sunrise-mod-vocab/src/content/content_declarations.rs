@@ -45,6 +45,18 @@ mod gate_sound_tests {
     }
 }
 
+/// A declared block's `SoundType`: a vanilla block's, by name (`minecraft:glass`), or one of its
+/// own (`BlockBehaviour.Properties.sound` with a mod-built `SoundType`, NeoForge's
+/// `DeferredSoundType`), whose sound events may be vanilla's or the mod's own.
+// exhaustive: the declaration format has exactly these two forms.
+#[derive(Clone, Debug, PartialEq, sunrise_mod_api_macros::Wire)]
+pub enum BlockSounds {
+    /// A vanilla block whose sounds this block uses.
+    Block(String),
+    /// The block's own volume, pitch and sound event ids.
+    Own(crate::BlockSoundType),
+}
+
 /// BlockProperties in a load-time content declaration.
 #[derive(Clone, Debug, PartialEq, Default)]
 // exhaustive: declaration drafts mirror the closed content schema and support record construction.
@@ -65,8 +77,8 @@ pub struct BlockProperties {
     pub friction: Option<f32>,
     /// A `MapColor` id, 0 to 61.
     pub map_color: Option<u8>,
-    /// A vanilla block whose sounds this block uses.
-    pub sounds: Option<String>,
+    /// The block's `SoundType` (`BlockBehaviour.Properties.sound`): a vanilla block's, or its own.
+    pub sounds: Option<BlockSounds>,
     /// Which states tick randomly, whatever the template does (`isRandomlyTicking`).
     pub random_ticks: Option<RandomTicks>,
     /// How the block is drawn, whatever the template does (`BlockBehaviour.getRenderShape`).

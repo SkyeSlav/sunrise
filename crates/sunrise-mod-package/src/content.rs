@@ -159,8 +159,9 @@ pub struct BlockProperties {
     pub friction: Option<f32>,
     /// A `MapColor` id, 0 to 61.
     pub map_color: Option<u8>,
-    /// A vanilla block whose sounds this block uses.
-    pub sounds: Option<String>,
+    /// The block's `SoundType` (`BlockBehaviour.Properties.sound`): a vanilla block's
+    /// whose sounds it uses, or its own volume, pitch and sound events.
+    pub sounds: Option<BlockSounds>,
     /// Which states tick randomly, whatever the template does (`isRandomlyTicking`).
     pub random_ticks: Option<RandomTicks>,
     /// How the block is drawn, whatever the template does (`BlockBehaviour.getRenderShape`).
@@ -614,6 +615,40 @@ fn deserialize_stew_duration<'de, D: serde::Deserializer<'de>>(
 
 fn yes() -> bool {
     true
+}
+
+/// A block's `SoundType`: a vanilla block's, by name (`"minecraft:glass"`), or one of its own
+/// (`BlockBehaviour.Properties.sound` with a mod-built `SoundType`, NeoForge's
+/// `DeferredSoundType`), whose sound events may be vanilla's or the mod's own.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum BlockSounds {
+    /// A vanilla block whose sounds this block uses.
+    Block(String),
+    /// The block's own `SoundType`.
+    Own(SoundType),
+}
+
+/// Vanilla's `SoundType`: the volume and pitch its sounds play at, and a sound event id
+/// for each moment.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SoundType {
+    /// `SoundType.getVolume`.
+    pub volume: f32,
+    /// `SoundType.getPitch`.
+    pub pitch: f32,
+    /// `getBreakSound`: the block broken.
+    #[serde(rename = "break")]
+    pub break_sound: String,
+    /// `getStepSound`: walked on.
+    pub step: String,
+    /// `getPlaceSound`: placed.
+    pub place: String,
+    /// `getHitSound`: hit while being mined.
+    pub hit: String,
+    /// `getFallSound`: landed on.
+    pub fall: String,
 }
 
 /// A fence gate's sound event at every site, or only the named sites.
@@ -2287,8 +2322,18 @@ fn check_block(file: &Block) -> Result<(), String> {
     if p.map_color.is_some_and(|c| c > 61) {
         return Err("map_color is a MapColor id, 0 to 61".into());
     }
-    if p.sounds.as_deref().is_some_and(|s| !vanilla_id(s)) {
-        return Err("sounds names a vanilla block (minecraft:...)".into());
+    match &p.sounds {
+        Some(BlockSounds::Block(block)) if !vanilla_id(block) => {
+            return Err("sounds names a vanilla block (minecraft:...)".into());
+        }
+        Some(BlockSounds::Own(own))
+            if ![&own.break_sound, &own.step, &own.place, &own.hit, &own.fall]
+                .into_iter()
+                .all(|id| namespaced_id(id)) =>
+        {
+            return Err("sounds' break, step, place, hit and fall are sound event ids, namespace:path".into());
+        }
+        _ => {}
     }
     if !file.item && !file.components.is_empty() {
         return Err("item is false, so the block has no item to take components".into());
@@ -3983,6 +4028,46 @@ capabilities = ["registries"]
             error.contains("state_properties.waterlogged") && error.contains("plant.json"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn a_block_names_vanilla_sounds_or_declares_its_own() {
+        let block = |json: &str| {
+            smod(
+                "sounds",
+                MANIFEST_TEXT,
+                &[("data/ruby/sunrise/block/plate.json", json.as_bytes())],
+            )
+        };
+        let sounds = |json: &str| block(json).unwrap().blocks[0].properties.sounds.clone();
+        assert_eq!(
+            sounds(r#"{"template": "minecraft:stone", "properties": {"sounds": "minecraft:glass"}}"#),
+            Some(BlockSounds::Block("minecraft:glass".into()))
+        );
+        let own = r#"{"template": "minecraft:stone", "properties": {"sounds": {"volume": 0.5, "pitch": 2.0,
+            "break": "ruby:plate.break", "step": "ruby:plate.step", "place": "minecraft:block.chain.place",
+            "hit": "ruby:plate.hit", "fall": "ruby:plate.fall"}}}"#;
+        assert_eq!(
+            sounds(own),
+            Some(BlockSounds::Own(SoundType {
+                volume: 0.5,
+                pitch: 2.0,
+                break_sound: "ruby:plate.break".into(),
+                step: "ruby:plate.step".into(),
+                place: "minecraft:block.chain.place".into(),
+                hit: "ruby:plate.hit".into(),
+                fall: "ruby:plate.fall".into(),
+            }))
+        );
+        for bad in [
+            r#"{"template": "minecraft:stone", "properties": {"sounds": "ruby:plate"}}"#,
+            r#"{"template": "minecraft:stone", "properties": {"sounds": {"volume": 1.0, "pitch": 1.0,
+                "break": "plate", "step": "ruby:s", "place": "ruby:p", "hit": "ruby:h", "fall": "ruby:f"}}}"#,
+            r#"{"template": "minecraft:stone", "properties": {"sounds": {"volume": 1.0, "pitch": 1.0,
+                "break": "ruby:b", "step": "ruby:s", "place": "ruby:p", "hit": "ruby:h"}}}"#,
+        ] {
+            assert!(block(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

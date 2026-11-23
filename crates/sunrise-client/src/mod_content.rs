@@ -36,7 +36,7 @@ use sunrise_core::{
     nbt::{Compound, JavaString, Limits, Tag},
 };
 use sunrise_mod_package::content::{
-    Block, BlockEntityType, BlockShapes, Content, ContextCollision, CreativeTab, EntityType,
+    Block, BlockEntityType, BlockShapes, BlockSounds, Content, ContextCollision, CreativeTab, EntityType,
     FluidLook, Item, LocalDeclaration, MenuType, MobEffect, Rarity, StateProperty, StateValues,
 };
 use sunrise_mod_package::manifest::{
@@ -1713,7 +1713,7 @@ impl<'a> Plan<'a> {
                     u32::try_from(states.len() as u64 * combos.len() as u64).unwrap_or(u32::MAX);
                 next = next.saturating_add(count);
                 rename.states = states;
-                if let Some(s) = &decl.properties.sounds {
+                if let Some(BlockSounds::Block(s)) = &decl.properties.sounds {
                     if !defaults.contains_key(s) {
                         return Err(format!("{}: sounds {s} is not a block", decl.id).into());
                     }
@@ -2153,8 +2153,25 @@ impl<'a> Plan<'a> {
             let col = if v == 0 { 0 } else { MAP_COLORS[v as usize] };
             row.set("map_color", J::Num(col.into()));
         }
-        if let Some(s) = &p.sounds {
-            row.set("sound", self.sounds[s].clone());
+        match &p.sounds {
+            Some(BlockSounds::Block(s)) => row.set("sound", self.sounds[s].clone()),
+            // The block's own `SoundType`, in the vanilla rows' shape.
+            Some(BlockSounds::Own(own)) => {
+                let event = |id: &String| J::Obj(vec![("id".into(), J::Str(id.clone()))]);
+                row.set(
+                    "sound",
+                    J::Obj(vec![
+                        ("volume".into(), J::f64(own.volume.into())),
+                        ("pitch".into(), J::f64(own.pitch.into())),
+                        ("break".into(), event(&own.break_sound)),
+                        ("step".into(), event(&own.step)),
+                        ("place".into(), event(&own.place)),
+                        ("hit".into(), event(&own.hit)),
+                        ("fall".into(), event(&own.fall)),
+                    ]),
+                );
+            }
+            None => {}
         }
     }
 
