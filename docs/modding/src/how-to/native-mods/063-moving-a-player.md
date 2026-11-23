@@ -38,7 +38,7 @@ The client moves its own player. Write a prediction (a conveyor moving a player,
 `player_tick_pre` on `HostSide::Client`, when `host.local_player() == Some(event.player)`, before the player's own
 movement:
 
-- `host.move_local_player_by([x, y, z])` applies a displacement in blocks as `Entity.move(MoverType.SELF, delta)`.
+- `player.move_by(host, [x, y, z])` (the local player's handle, on a `&mut dyn ClientHost`) applies a displacement in blocks as `Entity.move(MoverType.SELF, delta)`.
   It steps up and collides as the player's own move does, including moving colliders and collision exclusions.
   It updates the ground flag and fall state, and has the usual effects on velocity. It returns `Ok(Some(delta))`
   with the displacement actually made. It returns `Ok(None)` without moving if there is no local player, the
@@ -48,10 +48,12 @@ movement:
   fire the server's `entity_move` hook. A crossing notifies `entity_entering_section` at the position write,
   before the move updates the ground flag, even when another move returns the player to its starting section in
   the same tick.
-- `host.set_local_player_velocity([x, y, z])` replaces the local player's velocity, in blocks per tick (`false`, and
-  nothing changes, for a value that is not finite or with no player of its own).
-- `host.set_local_player_on_ground(flag)` sets its on-ground flag, which this tick's jump decision reads and the move
-  then sets again from the collision (`false` with no player of its own).
+- `player.set_velocity(host, [x, y, z])` replaces the local player's velocity, in blocks per tick (`false`, and
+  nothing changes, for a value that is not finite or for a stale or non-local handle).
+- `player.push(host, [x, y, z])` adds an impulse to that velocity as `Entity.push` does: any game mode, no clamp, refused (`false`)
+  only for a value that is not finite.
+- `player.set_on_ground(host, flag)` sets its on-ground flag, which this tick's jump decision reads and the move
+  then sets again from the collision (`false` for a stale or non-local handle).
 - `player.reset_fall_distance(host)` clears the local player's accumulated fall distance without moving it.
   It returns `Ok(false)` for a stale or non-local handle or when there is no local player, and
   `Err(LevelWriteError::Unavailable)` if the hook has no writable client world, including while

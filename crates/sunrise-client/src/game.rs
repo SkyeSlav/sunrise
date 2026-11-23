@@ -1468,8 +1468,6 @@ mod native_mob_wanted_position_tests;
 mod native_mobs;
 #[path = "game/modding/native_model_3d.rs"]
 mod native_model_3d;
-#[path = "game/modding/native_motion.rs"]
-mod native_motion;
 #[path = "game/modding/native_mounts.rs"]
 mod native_mounts;
 #[cfg(test)]

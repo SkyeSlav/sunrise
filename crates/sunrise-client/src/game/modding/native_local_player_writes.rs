@@ -7,28 +7,47 @@ use sunrise_world::entity_move::MoverType;
 
 impl Game<'_> {
     /// `Entity.setDeltaMovement` on the local player. `false`, with the velocity unchanged,
-    /// with no player of its own and for a value that is not finite.
-    pub(super) fn set_local_player_velocity(&mut self, velocity: [f64; 3]) -> bool {
+    /// for a handle that is not the local player and for a value that is not finite.
+    pub(super) fn player_set_velocity(&mut self, player: PlayerRef, velocity: [f64; 3]) -> bool {
         let velocity = Vec3::new(velocity[0], velocity[1], velocity[2]);
-        match self.player.as_mut() {
-            Some(body) if velocity.is_finite() => {
-                body.velocity = velocity;
-                true
-            }
-            _ => false,
+        if self.native_local_status(player).is_none() || !velocity.is_finite() {
+            return false;
         }
+        self.player.as_mut().is_some_and(|body| {
+            body.velocity = velocity;
+            true
+        })
+    }
+
+    /// `Entity.push(double, double, double)` on the local player: finite deltas only, in any mode.
+    pub(super) fn player_push(&mut self, player: PlayerRef, delta: [f64; 3]) -> bool {
+        if self.native_local_status(player).is_none() || !delta.iter().all(|v| v.is_finite()) {
+            return false;
+        }
+        let Some(body) = self.player.as_mut() else {
+            return false;
+        };
+        body.velocity = Vec3::new(
+            body.velocity.x + delta[0],
+            body.velocity.y + delta[1],
+            body.velocity.z + delta[2],
+        );
+        if delta[1] > 0.0 {
+            body.ground.on_ground = false;
+        }
+        true
     }
 
     /// The local player's on-ground flag, which this tick's jump decision reads and its move
-    /// then sets again from the collision. `false` with no player of its own.
-    pub(super) fn set_local_player_on_ground(&mut self, on_ground: bool) -> bool {
-        match self.player.as_mut() {
-            Some(body) => {
-                body.ground.on_ground = on_ground;
-                true
-            }
-            None => false,
+    /// then sets again from the collision. `false` for a handle that is not the local player.
+    pub(super) fn player_set_on_ground(&mut self, player: PlayerRef, on_ground: bool) -> bool {
+        if self.native_local_status(player).is_none() {
+            return false;
         }
+        self.player.as_mut().is_some_and(|body| {
+            body.ground.on_ground = on_ground;
+            true
+        })
     }
 
     /// Whether the local player can move itself rather than being held in place.
@@ -50,11 +69,13 @@ impl Game<'_> {
         Ok(true)
     }
 
-    pub(super) fn move_local_player_by(
+    pub(super) fn player_move_by(
         &mut self,
+        player: PlayerRef,
         delta: [f64; 3],
     ) -> Result<Option<[f64; 3]>, LevelWriteError> {
-        if self.player.is_none()
+        if self.native_local_status(player).is_none()
+            || self.player.is_none()
             || !self.can_move_local_player()
             || !delta.iter().all(|v| v.is_finite())
         {
@@ -92,9 +113,9 @@ mod tests {
                 return;
             }
             let wrote = vec![
-                host.set_local_player_velocity(self.velocity),
-                host.set_local_player_on_ground(true),
-                host.set_local_player_velocity([f64::NAN, 0.0, 0.0]),
+                event.player.set_velocity(host, self.velocity),
+                event.player.set_on_ground(host, true),
+                event.player.set_velocity(host, [f64::NAN, 0.0, 0.0]),
             ];
             self.saw.lock().unwrap().push((wrote, self.velocity));
         }
@@ -139,7 +160,7 @@ mod tests {
                 // The write itself sets the flag, either way, before any tick can overwrite it.
                 for flag in [true, false, true] {
                     game.player.as_mut().unwrap().ground.on_ground = !flag;
-                    assert!(game.set_local_player_on_ground(flag));
+                    assert!(game.player_set_on_ground(game.local_player().unwrap(), flag));
                     assert_eq!(game.player.as_ref().unwrap().ground.on_ground, flag);
                 }
                 let before = game.player.as_ref().unwrap().position;
@@ -169,7 +190,7 @@ mod tests {
                 if let HostSide::Client(host) = host
                     && host.local_player() == Some(event.player)
                 {
-                    *self.0.lock().unwrap() = host.move_local_player_by([3.0, 0.0, 0.0]).unwrap();
+                    *self.0.lock().unwrap() = event.player.move_by(host, [3.0, 0.0, 0.0]).unwrap();
                 }
             }
         }
@@ -240,7 +261,7 @@ mod tests {
                 let health = player.health.health();
                 let host: &mut dyn ClientHost = game;
                 assert_eq!(
-                    host.move_local_player_by([0.0, -5.0, 0.0]),
+                    local.move_by(host, [0.0, -5.0, 0.0]),
                     Ok(Some([0.0, -5.0, 0.0]))
                 );
                 assert_eq!(game.player.as_ref().unwrap().fall_distance, 5.0);
@@ -250,7 +271,7 @@ mod tests {
                 }
                 let host: &mut dyn ClientHost = game;
                 assert_eq!(
-                    host.move_local_player_by([0.0, -2.0, 0.0]),
+                    local.move_by(host, [0.0, -2.0, 0.0]),
                     Ok(Some([0.0, -1.0, 0.0]))
                 );
                 let player = game.player.as_ref().unwrap();
@@ -316,7 +337,9 @@ mod tests {
                         },
                     }]),
                 );
-                game.move_local_player_by([2.0, 0.0, 0.0]).unwrap().unwrap()
+                game.player_move_by(game.local_player().unwrap(), [2.0, 0.0, 0.0])
+                    .unwrap()
+                    .unwrap()
             };
 
             let wall = Vec3::new(1.5, 63.0, 0.0);
@@ -346,15 +369,15 @@ mod tests {
                 if let HostSide::Client(host) = host
                     && host.local_player() == Some(event.player)
                 {
-                    assert!(host.set_local_player_on_ground(true));
+                    assert!(event.player.set_on_ground(host, true));
                     assert_eq!(
-                        host.move_local_player_by([16.0, 0.0, 0.0]),
+                        event.player.move_by(host, [16.0, 0.0, 0.0]),
                         Ok(Some([16.0, 0.0, 0.0]))
                     );
                     assert_eq!(self.0.lock().unwrap().len(), 1);
                     assert_eq!(event.player.entity().on_ground(host), Some(false));
                     assert_eq!(
-                        host.move_local_player_by([-16.0, 0.0, 0.0]),
+                        event.player.move_by(host, [-16.0, 0.0, 0.0]),
                         Ok(Some([-16.0, 0.0, 0.0]))
                     );
                     assert_eq!(self.0.lock().unwrap().len(), 2);
@@ -415,10 +438,12 @@ mod tests {
     #[ignore = "daily"]
     fn with_no_player_of_its_own_both_writes_answer_false() {
         with_game(|game| {
+            let me = game.local_player().unwrap();
             game.player = None;
-            assert!(!game.set_local_player_velocity([0.0; 3]));
-            assert!(!game.set_local_player_on_ground(true));
-            assert_eq!(game.move_local_player_by([1.0, 0.0, 0.0]), Ok(None));
+            assert!(!game.player_set_velocity(me, [0.0; 3]));
+            assert!(!game.player_set_on_ground(me, true));
+            assert!(!game.player_push(me, [1.0, 0.0, 0.0]));
+            assert_eq!(game.player_move_by(me, [1.0, 0.0, 0.0]), Ok(None));
         });
     }
 
@@ -482,16 +507,28 @@ mod tests {
             loaded_client(game);
             let before = game.player.as_ref().unwrap().position;
             for x in [f64::NAN, f64::INFINITY, -f64::INFINITY] {
-                assert_eq!(game.move_local_player_by([x, 0.0, 0.0]), Ok(None));
+                assert_eq!(
+                    game.player_move_by(game.local_player().unwrap(), [x, 0.0, 0.0]),
+                    Ok(None)
+                );
             }
             game.riding = Some(43);
-            assert_eq!(game.move_local_player_by([1.0, 0.0, 0.0]), Ok(None));
+            assert_eq!(
+                game.player_move_by(game.local_player().unwrap(), [1.0, 0.0, 0.0]),
+                Ok(None)
+            );
             game.riding = None;
             game.sleeping = Some([0, 64, 0]);
-            assert_eq!(game.move_local_player_by([1.0, 0.0, 0.0]), Ok(None));
+            assert_eq!(
+                game.player_move_by(game.local_player().unwrap(), [1.0, 0.0, 0.0]),
+                Ok(None)
+            );
             game.sleeping = None;
             game.screen = crate::game::Screen::Dead;
-            assert_eq!(game.move_local_player_by([1.0, 0.0, 0.0]), Ok(None));
+            assert_eq!(
+                game.player_move_by(game.local_player().unwrap(), [1.0, 0.0, 0.0]),
+                Ok(None)
+            );
             assert_eq!(game.player.as_ref().unwrap().position, before);
         });
     }
@@ -558,6 +595,23 @@ mod tests {
                 Ok(Some(diamonds(1)))
             );
             assert_eq!(game.inventory[selected].as_ref().unwrap().count, 64);
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_push_adds_to_the_velocity_as_given_in_any_mode() {
+        with_game(|game| {
+            loaded_client(game);
+            let me = game.local_player().unwrap();
+            let body = game.player.as_mut().unwrap();
+            body.spectator = true;
+            body.velocity = Vec3::new(0.1, -0.08, 0.0);
+            assert!(game.player_push(me, [9.0, -9.0, 0.5]));
+            let v = game.player.as_ref().unwrap().velocity;
+            assert_eq!([v.x, v.y, v.z], [9.1, -9.08, 0.5]);
+            assert!(!game.player_push(me, [f64::NAN, 0.0, 0.0]));
+            assert_eq!(game.player.as_ref().unwrap().velocity.x, 9.1);
         });
     }
 }

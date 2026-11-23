@@ -1,11 +1,21 @@
-ids = ["method:prelude::PlayersClientHost::push_player"]
+ids = [
+    "method:prelude::PlayersClientHost::push_player",
+    "method:prelude::PlayersClientHost::set_local_player_velocity",
+    "method:prelude::PlayersClientHost::set_local_player_on_ground",
+    "method:prelude::PlayersClientHost::move_local_player_by",
+]
 why = """
-`push_player` took an `f32` kick, clamped each component to 4 blocks per tick and ignored a spectator. Vanilla
-`Entity.push(double, double, double)` adds the impulse as given and only refuses one that is not finite, in
-any game mode. It now takes `[f64; 3]` and does exactly that. `move_local_player_by` and `EntityRef::move_by`
-likewise refuse only a delta that is not finite, not one beyond 64 blocks: `Entity.move` sweeps any delta.
+The client's movement writes were flat calls on the window's implicit player, with a ±4 clamp on a push, a
+spectator exception and a ±64-block bound on a move. They are now operations on the resolved local `PlayerRef`
+(`push`, `set_velocity`, `set_on_ground`, `move_by`, on a `ClientHost`), the client counterparts of the
+`EntityRef` calls a server mod makes, and they follow vanilla: `Entity.push(double, double, double)` adds the
+impulse as given in any game mode and only refuses one that is not finite, and `Entity.move` sweeps any
+finite delta. An impulse, an ordinary collision move and a teleport stay three operations (`push`,
+`move_by`, `EntityRef::teleport_to`).
 """
 migrate = """
-Pass `[f64; 3]` to `push_player`; do not rely on the game clamping a push to 4 blocks or dropping it for a
-spectator, or on refusing a move delta past 64 blocks.
+Replace `host.push_player(kick)` with `player.push(host, delta)` (`[f64; 3]`), `host.set_local_player_velocity(v)`
+with `player.set_velocity(host, v)`, `host.set_local_player_on_ground(f)` with `player.set_on_ground(host, f)` and
+`host.move_local_player_by(d)` with `player.move_by(host, d)`, where `player` is `host.local_player()`. Do not rely
+on the game clamping a push to 4 blocks, dropping it for a spectator, or refusing a move beyond 64 blocks.
 """

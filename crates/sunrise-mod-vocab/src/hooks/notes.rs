@@ -1163,9 +1163,9 @@ position and aim are unchanged.
 
 ### A player's motion
 
-`crates/sunrise-client/src/game/modding/native_motion.rs`: a push on a client.
+`crates/sunrise-client/src/game/modding/native_local_player_writes.rs`: a push on a client.
 
-- `native_push_player([x, y, z])` (client) adds a push to the player's own velocity, in blocks a tick, as an
+- `PlayerRef::push(host, [x, y, z])` (client) adds a push to the player's own velocity, in blocks a tick, as an
   explosion's knockback does: the player's own game moves them. The server didn't send it, so a server's movement checks
   may see a move they can't explain; for a push the server should stand behind, have the server send it. Each component is
   added as given; an upward push lifts the player off the ground. No player, or a value that isn't
@@ -1916,7 +1916,7 @@ A sprite reload resolves particle types against those groups without running fac
 
 - the open screen hears of a key press (`screen_key_pressed_pre`) and of each character it types (`screen_char_typed_pre`), as vanilla's `ScreenEvent.KeyPressed.Pre` and `.CharacterTyped.Pre`: the screen, vanilla's key name (`key.keyboard.e`; a key with no name fires nothing), whether the press is an auto-repeat, the character, GLFW's modifier bits (shift 1, control 2, alt 4, super 8), and `screen.mouse` for the pointer. A cancelled press goes no further — no focus move, no Escape-close, no inventory or hotbar key, no typing by the key itself — while its release still arrives and the characters no mod cancelled still reach the text box, as vanilla's separate `charTyped` comes for a cancelled `keyPressed` too. A cancelled character drops only that character and never reaches a text box, and the character hook's `field` is a copy of the focused box whose edits the box takes through its own filter, length limit and responders; control characters (Enter, Backspace, Tab, Delete, Escape, a Control letter) are keys and fire nothing. A key's characters fire after the key has acted, as GLFW's char callback comes after its key callback, so a key that closes the screen (the inventory key) reports no character (the closed screen hears none) and one that moves the focus types into the box it moved to. The input method's committed text fires the character hook too. They fire for the window and the control socket's `key` and `type` (not its `\b` backspace), after the fullscreen, screenshot, debug and narrator keys, on the receiving screen, including prompts, books and sign editors, not on the loading overlay or while a world saves.
 
-- `native_push_player([x, y, z])` on a client, added to the local player's velocity as an explosion's knockback is.
+- `PlayerRef::push(host, [x, y, z])` on a client, added to the local player's velocity as an explosion's knockback is.
 
 - `data_pack_files(files)`, a native mod's own pack files in the data the server loads: while the tables are assembled (a world's first open, and again on every `/reload`), push `(path, bytes)` and they join that load. `path` is the overlay's key, `<kind>/<namespace>:<path>` without `.json`, over the kinds the tables read: `recipe/mymod:thing`, `tags/mymod:block/thing`, `loot_table/…`, `advancement/…`, `trade_set/…`, `villager_trade/…`, `dialog/…`; a file that isn't JSON is skipped with a warning. Asked once per load on both paths, so it is where a mod recomputes them from its config or the world. Contributed files sit below the world's own data packs: a pack's file for the same path still overrides a mod's, and a later contribution overrides an earlier one.
 
