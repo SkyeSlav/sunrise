@@ -461,16 +461,30 @@ impl Biomes {
         }
         out
     }
-    /// The built-in biomes alone: this table without what packs gave it.
+    /// Gives every biome entry a fresh `Biome.getTemperature` cache identity, as
+    /// `RegistryDataCollector.loadNewElementsAndTags` builds a fresh client biome registry on
+    /// each connection.
+    pub fn with_fresh_temperature_caches(&self) -> Self {
+        let mut out = self.clone();
+        out.renew_temperature_caches();
+        out
+    }
+    fn renew_temperature_caches(&mut self) {
+        for biome in &mut self.list {
+            biome.temperature_cache_key = Arc::new(());
+        }
+    }
+    /// The built-in biomes alone: this table without what packs gave it, with fresh
+    /// `Biome.getTemperature` cache identities for every biome.
     pub fn builtin_only(&self) -> Self {
         let mut out = self.clone();
-        if self.packs.is_empty() {
-            return out;
+        if !self.packs.is_empty() {
+            out.list = self.builtin.to_vec();
+            let builtin = out.list.len();
+            out.index.retain(|_, id| usize::from(*id) < builtin);
+            out.packs.clear();
         }
-        out.list = self.builtin.to_vec();
-        let builtin = out.list.len();
-        out.index.retain(|_, id| usize::from(*id) < builtin);
-        out.packs.clear();
+        out.renew_temperature_caches();
         out
     }
     /// The file a world's biome `name` came from, if a pack added or replaced it or a content
@@ -935,16 +949,29 @@ mod precipitation_tests {
 
     #[test]
     fn precipitation_caches_belong_to_the_biome_and_thread() {
-        let biomes = Biomes::from_jsons(&[("test:taiga", json!({"temperature": 0.25}))]);
+        let biomes = Biomes::from_jsons(&[
+            ("test:plains", json!({"temperature": 0.8})),
+            ("test:taiga", json!({"temperature": 0.25})),
+        ]);
+        let taiga = biomes.id("test:taiga");
         let pos = BlockPos::new(0, 170, 0);
-        assert_eq!(biomes.get(0).snows_at(pos, 63), Some(true));
-        assert_eq!(biomes.clone().get(0).snows_at(pos, 120), Some(true));
+        assert_eq!(biomes.get(taiga).snows_at(pos, 63), Some(true));
+        assert_eq!(biomes.clone().get(taiga).snows_at(pos, 120), Some(true));
+        let recolored = biomes
+            .with_colors(|_, colors| colors.grass = 0x112233)
+            .expect("grass tint changed");
+        assert_eq!(recolored.get(taiga).snows_at(pos, 120), Some(true));
         std::thread::scope(|thread| {
-            thread.spawn(|| assert_eq!(biomes.get(0).snows_at(pos, 120), Some(false)));
+            thread.spawn(|| assert_eq!(biomes.get(taiga).snows_at(pos, 120), Some(false)));
         });
 
-        let replaced = biomes.with_packs([("test:taiga", &json!({"temperature": 0.25}))]);
-        assert_eq!(replaced.get(0).snows_at(pos, 120), Some(false));
+        // A fresh registry gives every biome a fresh cache, including unchanged built-ins.
+        let fresh = biomes.with_fresh_temperature_caches();
+        assert_eq!(fresh.get(taiga).snows_at(pos, 120), Some(false));
+        let builtin = biomes.builtin_only();
+        assert_eq!(builtin.get(taiga).snows_at(pos, 120), Some(false));
+        let other_replaced = biomes.with_packs([("test:plains", &json!({"temperature": 0.9}))]);
+        assert_eq!(other_replaced.get(taiga).snows_at(pos, 120), Some(false));
     }
 }
 

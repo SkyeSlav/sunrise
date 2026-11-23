@@ -216,14 +216,18 @@ impl Game<'_> {
         };
         // The server's biomes the game lacks (a world data pack's) join the
         // game's table, from the data it sent: colours, meshing and the
-        // chunk format all go through that table. The window's own server
-        // thread set the world's table already.
+        // chunk format all go through that table. Even when every biome is a
+        // known built-in, `RegistryDataCollector.loadNewElementsAndTags` builds
+        // a fresh client biome registry per connection so `Biome.getTemperature`
+        // caches do not leak across connections. The window's own server thread
+        // set the world's table already.
         if self.integrated.is_none() {
-            let table = registries
-                .registries
-                .get(BIOME_REGISTRY)
-                .and_then(|list| client_biomes(self.res.biomes(), list))
-                .map(Arc::new);
+            let table = registries.registries.get(BIOME_REGISTRY).map(|list| {
+                Arc::new(
+                    client_biomes(self.res.biomes(), list)
+                        .unwrap_or_else(|| self.res.biomes().with_fresh_temperature_caches()),
+                )
+            });
             if table.is_some() || self.world_biomes.is_some() {
                 self.world_biomes_base = table.clone();
                 self.world_biomes = table;

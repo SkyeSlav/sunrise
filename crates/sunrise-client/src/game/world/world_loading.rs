@@ -619,7 +619,7 @@ pub(super) fn packed_biomes(
         .filter_map(|(id, json)| Some((id.to_owned(), serde_json::from_str(json).ok()?)))
         .collect();
     if packed.is_empty() {
-        return base.clone();
+        return Arc::new(base.with_fresh_temperature_caches());
     }
     Arc::new(base.with_packs(packed.iter().map(|(i, v)| (i.as_str(), v))))
 }

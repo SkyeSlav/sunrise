@@ -1,3 +1,4 @@
 # The daily tests of sunrise-client: each is #[ignore = "daily"] in its source and runs once a day in the daily run,
 # where it must pass (README.md). Rows: PACKAGE TEST TARGET daily REASON, sorted; tools/ci/move_to_daily.py writes them.
+sunrise-client game::remote::tests::client_level_environment_tests::biome_temperature_cache_resets_across_connections_but_keeps_dimension_travel lib daily child-process
 sunrise-client game::remote::tests::client_level_environment_tests::client_clouds_fog_and_precipitation_follow_the_joined_level lib daily child-process

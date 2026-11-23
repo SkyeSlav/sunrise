@@ -497,3 +497,129 @@ fn an_unchanged_type_reuses_its_environments_and_a_changed_one_is_built_again() 
         ));
     });
 }
+
+/// `RegistryDataCollector.loadNewElementsAndTags`: each connection builds a fresh client biome
+/// registry (even for unchanged built-ins sent as known packs), while dimension travel on one
+/// connection keeps the same biome instances and `Biome.getTemperature` caches.
+#[test]
+#[ignore = "daily"]
+fn biome_temperature_cache_resets_across_connections_but_keeps_dimension_travel() {
+    use sunrise_client::{chunk::Chunk, lan::data::BIOME_REGISTRY};
+    use sunrise_core::position::BlockPos;
+
+    let sample = |game: &Game<'_>, x, y, z| {
+        crate::game::weather::precipitation_at(
+            &game.world,
+            world_biomes!(game),
+            game.streaming.biome_zoom,
+            BlockPos::new(x, y, z),
+            game.weather_sea_level(),
+        )
+    };
+    let fill_taiga = |game: &mut Game<'_>| {
+        let taiga = world_biomes!(game).id("minecraft:taiga");
+        let layout = game.world.layout();
+        let mut chunk = Chunk::with_layout(0, 0, layout);
+        for qy in 0..(layout.max_y() - layout.min_y()) / 4 {
+            for qz in 0..4 {
+                for qx in 0..4 {
+                    chunk.set_biome_cell(qx, qy, qz, taiga);
+                }
+            }
+        }
+        game.world.chunks.insert((0, 0), Arc::new(chunk));
+    };
+    let send_registries =
+        |game: &mut Game<'_>, biomes: Vec<(String, Option<sunrise_core::nbt::Tag>)>| {
+            let mut registries = (*game.remote.as_ref().unwrap().registries).clone();
+            registries.registries.insert(
+                "minecraft:dimension_type".into(),
+                server_types()
+                    .iter()
+                    .map(|(name, json)| {
+                        (
+                            (*name).into(),
+                            Some(sunrise_client::scoreboard::json_to_tag(json)),
+                        )
+                    })
+                    .collect(),
+            );
+            registries.registries.insert(BIOME_REGISTRY.into(), biomes);
+            game.set_registries(Arc::new(registries));
+        };
+
+    crate::game::in_own_process(
+        "game::remote::tests::client_level_environment_tests::biome_temperature_cache_resets_across_connections_but_keeps_dimension_travel",
+        || {
+            with_client_game(|game| {
+                // Connection 1: built-in biomes sent as known packs, sea level 63 -> snow at y=170.
+                let (client, _server1) = Pipe::pair();
+                game.connect_local(client, "BiomeCacheTest1").unwrap();
+                send_registries(
+                    game,
+                    vec![
+                        ("minecraft:plains".into(), None),
+                        ("minecraft:taiga".into(), None),
+                    ],
+                );
+                let mut first = spawn(0, "minecraft:overworld");
+                first.sea_level = 63;
+                login(game, first);
+                fill_taiga(game);
+                assert_eq!(sample(game, 10, 170, 10), Some(true));
+
+                // Dimension travel on the same connection keeps the biome cache identity:
+                // already-sampled (10, 170, 10) keeps snow, fresh (11, 170, 10) sees rain.
+                let mut other_dim = spawn(1, "minecraft:the_nether");
+                other_dim.sea_level = 120;
+                respawn(game, other_dim);
+                fill_taiga(game);
+                assert_eq!(sample(game, 10, 170, 10), Some(true));
+                assert_eq!(sample(game, 11, 170, 10), Some(false));
+
+                // Connection 2: fresh connection with the same known built-in biomes and
+                // sea level 120 -> fresh cache identity, so (10, 170, 10) now sees rain.
+                let (client, _server2) = Pipe::pair();
+                game.connect_local(client, "BiomeCacheTest2").unwrap();
+                send_registries(
+                    game,
+                    vec![
+                        ("minecraft:plains".into(), None),
+                        ("minecraft:taiga".into(), None),
+                    ],
+                );
+                let mut second = spawn(0, "minecraft:overworld");
+                second.sea_level = 120;
+                login(game, second);
+                fill_taiga(game);
+                assert_eq!(sample(game, 10, 170, 10), Some(false));
+
+                // Connection 3: replacement table changes only plains; unchanged built-in taiga
+                // still receives a fresh cache identity and sees snow at sea level 63.
+                let (client, _server3) = Pipe::pair();
+                game.connect_local(client, "BiomeCacheTest3").unwrap();
+                let custom_plains = serde_json::json!({
+                    "has_precipitation": true,
+                    "temperature": 0.9,
+                    "downfall": 0.4,
+                    "effects": { "water_color": "#112233" }
+                });
+                send_registries(
+                    game,
+                    vec![
+                        (
+                            "minecraft:plains".into(),
+                            Some(sunrise_client::scoreboard::json_to_tag(&custom_plains)),
+                        ),
+                        ("minecraft:taiga".into(), None),
+                    ],
+                );
+                let mut third = spawn(0, "minecraft:overworld");
+                third.sea_level = 63;
+                login(game, third);
+                fill_taiga(game);
+                assert_eq!(sample(game, 10, 170, 10), Some(true));
+            });
+        },
+    );
+}
