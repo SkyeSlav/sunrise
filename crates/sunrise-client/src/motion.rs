@@ -1032,13 +1032,14 @@ pub struct PlayerMovePause {
 }
 
 pub struct PlayerMoveTail {
-    movement: entity_move::MoveTail,
+    movement: entity_move::MoveStage,
     auto_jump_from: Option<Vec3>,
 }
 
 impl PlayerMoveTail {
     pub fn finish(self, world: &mut MotionWorld<'_, '_, '_>) -> Result<()> {
-        self.movement.finish(world)?;
+        self.movement
+            .resume(world, |_, _, _, _, _| Ok(None::<std::convert::Infallible>))?;
         if let Some(before) = self.auto_jump_from {
             world.auto_jump_after_move(before)?;
         }
@@ -2105,6 +2106,7 @@ impl MotionWorld<'_, '_, '_> {
                 self,
                 mover,
                 gate.delta(),
+                |_, _, _| Ok(None),
                 |world, dy, grounded, state, p| {
                     world.check_guest_fall_damage(dy, grounded, state, p)
                 },
