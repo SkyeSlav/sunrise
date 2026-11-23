@@ -4513,7 +4513,8 @@ mod tests {
                             let pig = as_pig.entity.expect("the pig executes the command");
                             assert_eq!(as_pig.player(), None);
                             assert_eq!(as_pig.rotation, [10.0, 20.0]);
-                            assert_eq!(as_pig.position, [2.0, 64.0, 3.0]);
+                            // `Vec3Argument.vec3()` centres whole x and z (`centerCorrect`).
+                            assert_eq!(as_pig.position, [2.5, 64.0, 3.5]);
                             // `execute rotated as` takes the entity's rotation, not its identity.
                             assert!(
                                 game.run_console_command(
