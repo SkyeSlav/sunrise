@@ -15,6 +15,7 @@ use super::{
         LanSettings, Owner,
         sync::{SyncPreload, preload_sync_data},
     },
+    native_singleplayer_owner::SingleplayerProfile,
     owner_link::{OwnerRequest, Reply},
     world_loading::{WorldLoader, WorldRequest},
 };
@@ -771,6 +772,13 @@ impl Game<'_> {
         ready: &Sender<Ready>,
         opening: Opening,
     ) -> Result<()> {
+        // `IntegratedServer`'s constructor: `setSingleplayerProfile(minecraft.getGameProfile())`,
+        // fixed before the configs and startup hooks, which mods may read it in.
+        self.singleplayer_profile = Some(SingleplayerProfile::launched(
+            launch.player.clone(),
+            launch.owner,
+            launch.owner_profile.as_deref(),
+        ));
         let result = self.run_server_lifecycle(false, |game, startup_began| {
             *startup_began = true;
             game.run_integrated_inner(launch, flags, tasks, ready, opening)
@@ -1002,7 +1010,10 @@ impl Game<'_> {
             owner_profile: launch.owner_profile.clone(),
             // `IntegratedServer.getSingleplayerProfile`: the window's own player logs in
             // through memory as the account's profile, whatever the hello says.
-            singleplayer_profile: Some((launch.player.clone(), owner)),
+            singleplayer_profile: self
+                .singleplayer_profile
+                .as_ref()
+                .map(|profile| (profile.name.clone(), profile.uuid)),
             // IntegratedServer.initServer: the MOTD names the owner and the world.
             ..NetConfig::lan(
                 0,

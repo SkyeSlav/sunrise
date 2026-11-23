@@ -165,7 +165,10 @@ impl Goal for RangedAttack {
     }
 }
 /// Witch.performRangedAttack: harming by default, slowness at range, poison
-/// on healthy targets, weakness up close.
+/// on healthy targets, weakness up close. A native mod takes the throw here through
+/// `[[native.mixin]]`, where a Java mod's mixin on `Witch.performRangedAttack` cancels or
+/// delays it (#4678).
+#[sunrise_mod_api_macros::replaceable]
 fn witch_attack(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
     // isDrinkingPotion
     if m.extra.flag {

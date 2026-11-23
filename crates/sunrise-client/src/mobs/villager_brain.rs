@@ -452,19 +452,22 @@ fn make_brain(m: &mut Mob, packed: Memories, shuffle_seed: i64, w_times: (i64, i
     b
 }
 
+fn initial_memories(m: &Mob) -> Memories {
+    let mut memories = Memories::default();
+    memories.job_site.set_opt(m.extra.home);
+    memories.home.set_opt(m.extra.bed);
+    memories.meeting_point.set_opt(m.extra.meeting);
+    memories
+        .last_slept
+        .set_opt(super::villager::ext(m).and_then(|e| e.last_slept));
+    memories
+}
+
 /// Builds the villager's brain as its constructor does, at this game time:
 /// the memories it remembers (job site, bed, bell) come from the mob.
 pub fn init(m: &mut Mob, game_time: i64, day_time: i64, shuffle_seed: i64) {
     let saved = super::villager::ext_mut(m).saved_memories.take();
-    let mut packed = saved.as_deref().cloned().unwrap_or_default();
-    if saved.is_none() {
-        packed.job_site.set_opt(m.extra.home);
-        packed.home.set_opt(m.extra.bed);
-        packed.meeting_point.set_opt(m.extra.meeting);
-        if let Some(t) = super::villager::ext(m).and_then(|e| e.last_slept) {
-            packed.last_slept.set(t);
-        }
-    }
+    let packed = saved.map_or_else(|| initial_memories(m), |saved| *saved);
     let b = make_brain(m, packed, shuffle_seed, (game_time, day_time));
     super::villager::ext_mut(m).brain = Some(Box::new(b));
 }
@@ -1777,7 +1780,6 @@ impl B {
                 || {
                     if !brain_mut(m).is_active(Act::Rest) && super::villager::sleeping(m) {
                         super::villager::stop_sleeping(m, cx.w, cx.events);
-                        mem(m).last_woken.set(now);
                         true
                     } else {
                         false
@@ -3101,7 +3103,6 @@ impl B {
                 t.running = false;
                 if super::villager::sleeping(m) {
                     super::villager::stop_sleeping(m, cx.w, cx.events);
-                    mem(m).last_woken.set(now);
                     *next_ok = now + 40;
                 }
             }
@@ -4517,9 +4518,20 @@ pub fn describe(m: &Mob) -> Option<(String, String)> {
     Some((acts.join("|"), out.join(" ")))
 }
 /// `Villager.stopSleeping`: remember waking.
-pub fn woken(m: &mut Mob, now: i64) {
-    if brain(m).is_some() {
-        mem(m).last_woken.set(now);
+pub(super) fn woken(m: &mut Mob, now: i64) {
+    if m.species() != Species::Villager {
+        return;
+    }
+    let extra = super::villager::ext_mut(m);
+    if let Some(brain) = extra.brain.as_deref_mut() {
+        brain.mem.last_woken.set(now);
+    } else {
+        // A villager can sleep and wake before it has ever ticked. Seed the same
+        // memories initialization would have used, without initializing its sensors.
+        let saved = extra.saved_memories.take();
+        let mut memories = saved.unwrap_or_else(|| Box::new(initial_memories(m)));
+        memories.last_woken.set(now);
+        super::villager::ext_mut(m).saved_memories = Some(memories);
     }
 }
 /// `BellBlockEntity.updateEntities`: a bell rung within 32 blocks sets

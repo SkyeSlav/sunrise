@@ -576,8 +576,8 @@ impl Game<'_> {
     }
 
     /// A client handles one packet from its server ([`Game::apply_packet`]). A packet that adds,
-    /// moves or removes an entity is a position-update boundary: `handleAddEntity` files the
-    /// entity untold, a move (`handleMoveEntity`, `handleEntityPositionSync`,
+    /// moves or removes an entity is a position-update boundary. The add handler files an
+    /// admitted entity untold; a move (`handleMoveEntity`, `handleEntityPositionSync`,
     /// `handleTeleportEntity`, `handleMovePlayer`'s `PlayerPosition`, a vehicle's) is told when
     /// it put the entity in another section, and `handleRespawn`'s new player starts over.
     /// An entity a move only starts interpolating moves at the client's entity tick.
@@ -594,21 +594,8 @@ impl Game<'_> {
                 self.entity_section_forget(id as u32);
             }
         }
-        let packet_section = match &packet {
-            C::AddEntity(p) => Some((true, p.id as u32, p.position)),
-            _ => None,
-        };
         let respawned = matches!(packet, C::Respawn(_));
         let result = self.apply_packet(packet);
-        if result.is_ok()
-            && let Some((joined, id, at)) = packet_section
-        {
-            if joined {
-                self.entity_section_joined(id, at);
-            } else {
-                self.entity_section_moved_id(id);
-            }
-        }
         if respawned {
             self.entity_section_forget(self.own_entity_id() as u32);
         }
