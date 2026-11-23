@@ -84,7 +84,11 @@ impl ChunkRecord {
                 .compression
                 .decode_into(&self.compressed, limits.max_bytes, bytes);
             match nbt::read_named(bytes, limits) {
-                Ok((root, _)) => Ok(root),
+                // `NbtIo.readUnnamedTag` skips the root's name, so a rewrite writes "".
+                Ok((mut root, _)) => {
+                    root.name = Default::default();
+                    Ok(root)
+                }
                 Err(e) => Err(decoded.err().unwrap_or_else(|| invalid(e.to_string()))),
             }
         })
