@@ -1,0 +1,18 @@
+ids = [
+    "hook:entity_entering_section",
+    "method:Hooks::entity_entering_section",
+]
+why = """
+`entity_entering_section` told while a mob's view is borrowed answered `EntityResidency::Gone` for every
+entity but the crossing one, as if they did not exist. They are in the lists the borrowed view holds, so
+that Host now answers `Busy` (resident, not readable from here) for every other entity of the world open,
+and `Gone` only for a handle of another world. Vanilla 26.3 `PersistentEntitySectionManager.Callback.onMove`
+moves the entity between section lists of a level that still holds all the others, and NeoForge posts
+`EntityEvent.EnteringSection` after it. The game also puts back its hold on an entity lent for its own tick
+when a listener unwinds, so the entity is writable again afterwards.
+"""
+migrate = """
+Pin `entity_entering_section` at `hook_version = 3` instead of `2`. A listener that read `Gone` from the
+borrowed Host to mean "that entity does not exist" must treat `Busy` as "present, read it later with the
+owning Host", and drop an index entry only on `Gone`.
+"""

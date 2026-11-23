@@ -309,9 +309,13 @@ impl LiveSectionHost {
     }
 
     fn entity_residency(&self, entity: EntityRef) -> EntityResidency {
-        self.writer
-            .filter(|writer| writer.entity == entity)
-            .map_or(EntityResidency::Gone, |writer| writer.residency)
+        match self.writer {
+            Some(writer) if writer.entity == entity => writer.residency,
+            // Every other entity of this world is in the lists the borrowed view holds: it is
+            // there, but not readable from here (not `Gone`).
+            Some(writer) if writer.entity.epoch() == entity.epoch() => EntityResidency::Busy,
+            _ => EntityResidency::Gone,
+        }
     }
 
     fn entity_on_ground(&self, entity: EntityRef) -> Option<bool> {

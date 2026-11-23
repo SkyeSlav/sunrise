@@ -1390,6 +1390,7 @@ sunrise-client game::native_hanging_tests::a_frame_turns_to_every_direction_and_
 sunrise-client game::native_hanging_tests::a_frames_item_turns_with_vanillas_wrap_and_other_kinds_are_refused lib daily resources
 sunrise-client game::native_hanging_tests::a_hanging_entity_turned_back_to_south_is_sent_south lib daily resources
 sunrise-client game::native_hanging_tests::a_painting_turns_only_to_a_horizontal_direction lib daily resources
+sunrise-client game::native_held_out_tests::an_unwinding_hold_restores_the_stored_entity lib daily resources
 sunrise-client game::native_held_out_tests::boat_tick_refuses_a_write_from_a_leash_drop_hook lib daily resources
 sunrise-client game::native_held_out_tests::cart_tick_refuses_a_write_from_a_mount_hook lib daily resources
 sunrise-client game::native_held_out_tests::leash_interaction_keeps_the_stored_boat_writable lib daily resources

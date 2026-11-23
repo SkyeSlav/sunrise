@@ -111,8 +111,8 @@ fn live_section_host_reports_moved_entity_residency_in_callback() {
     assert_eq!(
         *observed.lock().unwrap(),
         vec![
-            (true, EntityResidency::InPlace, EntityResidency::Gone),
-            (false, EntityResidency::Busy, EntityResidency::Gone),
+            (true, EntityResidency::InPlace, EntityResidency::Busy),
+            (false, EntityResidency::Busy, EntityResidency::Busy),
         ]
     );
 }

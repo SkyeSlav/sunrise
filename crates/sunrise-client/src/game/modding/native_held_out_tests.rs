@@ -168,3 +168,28 @@ fn nested_held_out_entities_both_refuse() {
         }
     });
 }
+
+#[test]
+#[ignore = "daily"]
+fn an_unwinding_hold_restores_the_stored_entity() {
+    with_observer(|game, _| {
+        game.carts.push(Minecart::new(
+            107,
+            CartKind::Rideable,
+            Vec3::new(0.5, 64.0, 0.5),
+        ));
+        let handle = game.entity(107).unwrap();
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            game.with_entity_held_out(107, |_| panic!("listener failed"))
+        }));
+        assert!(unwound.is_err());
+        assert!(handle.set_velocity(game, [2.0, 0.0, 0.0]));
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            game.with_entity_held_out(107, |game| {
+                game.with_held_entity_read(107, |_| panic!("reader failed"))
+            })
+        }));
+        assert!(unwound.is_err());
+        assert!(handle.set_velocity(game, [2.0, 0.0, 0.0]));
+    });
+}
