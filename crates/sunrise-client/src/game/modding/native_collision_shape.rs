@@ -269,6 +269,7 @@ mod tests {
                 )]
                 .into();
                 crate::game::api_values::install_parts(&mods).unwrap();
+                crate::entry::install_client_hooks();
                 mod_platform::testing::with_mods(mods, || {
                     crate::game::native_entity_refs::tests::with_game(|game| {
                         game.options.dedicated = Some(Vec::new());
