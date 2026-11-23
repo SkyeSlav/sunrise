@@ -1,5 +1,8 @@
 # Custom consume effects
 
+To run an existing effect without consuming an item, see
+[Applying a consume effect](#applying-a-consume-effect).
+
 In `Hooks::register`, call `register_consume_effect_type` on the engine's
 `Registrar`. If you implement `Registrar` yourself, also implement
 `ConsumeEffectsRegistrar`. Use your package ID as the type's namespace;
@@ -28,25 +31,7 @@ stack or the other slots in the update. The client hashes the admitted effects
 for menu prediction.
 
 ```rust
-use mod_api::{Compound, ConsumeEffectType, Identifier, Registrar, Tag, Wire};
-
-#[derive(Wire)]
-struct Charge { points: u16 }
-
-fn register(r: &mut dyn Registrar) -> Result<(), String> {
-    r.register_consume_effect_type(
-        Identifier::parse("example:charge").map_err(|e| e.to_string())?,
-        ConsumeEffectType::new::<Charge>(
-            |fields| match fields.get(&"points".into()) {
-                Some(Tag::Int(n)) => u16::try_from(*n)
-                    .map(|points| Charge { points })
-                    .map_err(|e| e.to_string()),
-                _ => Err("expected integer points".into()),
-            },
-            |effect| Ok(Compound::from([("points".into(), Tag::Int(effect.points.into()))])),
-        ),
-    )
-}
+{{#include ../../../examples/src/item_behaviors.rs:register_consume_effect}}
 ```
 
 An entry then reads `{type: "example:charge", points: 10}` in SNBT, in either
@@ -76,8 +61,21 @@ built-in effects; stack patches can change or remove the list.
   materialized. The refused effect does not run, and the other effects remain
   usable. Reopening a save likewise retains refused data without running it.
 
-To apply an effect without consuming an item, use
-[`LivingRef::apply_consume_effect`](consumable-effects.md).
+## Applying a consume effect
+
+On the server, call `living.apply_consume_effect(host, &stack, index)` to apply one effect
+without eating, shrinking the stack or running consume triggers. The zero-based index is
+into the effective consumable list, including overrides or removals from the stack patch.
+
+The return type is `Result<Option<bool>, StackWriteError>`. `Err` reports a stack-validation
+error. `Ok(Some(result))` gives the effect's result; `Ok(None)` means the item, index or target
+is unavailable, or the effect is unsupported. Armor stands and dragons are unsupported.
+Random teleport uses the level random for a player and is unsupported for mobs in this call.
+
+Custom effects use the `consume_effect` hook described above. `Ok(Some(true))` means dispatch
+was entered, not that a listener changed game state; an unclaimed kind does nothing.
+Applying the same kind again within its handler returns `Ok(Some(false))` without recursion.
+Other kinds can dispatch normally, and a later independent call can apply the original kind.
 
 ## Food eligibility
 

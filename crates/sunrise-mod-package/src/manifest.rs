@@ -563,7 +563,8 @@ pub fn revision(value: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-pub(super) fn valid_mod_id(id: &str) -> bool {
+/// Whether an in-game mod ID has the manifest's syntax and is not a reserved device name.
+pub fn valid_mod_id(id: &str) -> bool {
     (1..=64).contains(&id.len())
         && !reserved_mod_id(id)
         && id

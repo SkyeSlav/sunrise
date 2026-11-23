@@ -182,15 +182,13 @@ Which to take:
   pinned SDK as long as that SDK has what the tool needs; when it does not, `build` stops and names both ways out:
   `cargo sunrise-mod update --sunrise nightly`, or the tool in that SDK's own release.
 
-`cargo sunrise-mod --version` prints the commit a tool is built from, or `dev` for a tool you built yourself without
+`cargo sunrise-mod --version` prints the commit a tool is built from, or `commit local` for a tool you built yourself without
 naming one (`cargo install`); a tool older than that option answers with its usage instead. The newest tool's commit is `commit` in
 [`tool.json`](https://github.com/sunrise-org/sunrise/releases/download/mod-tool/tool.json).
 
-For [tagged native releases](../how-to/publish.md#tagged-native-releases-in-github-actions), use a signed `mod-tool`
-that supports both `cargo sunrise-mod release plan` and `cargo sunrise-mod release scripts`. The generated workflow
-verifies the tool and `tool.json` against the signed sums before running it, pins the same tool commit across all
-jobs and extracts the release scripts shipped in that tool. The mod's stable SDK is a separate pin, even if that
-SDK ships an older tool.
+[`cargo sunrise-mod release`](../how-to/publish.md#releasing) pushes a tag that runs the registry's shared
+release workflow. That workflow installs the signed `mod-tool` itself and checks it against the signed sums, so
+a release needs nothing else from this page. The mod's SDK is a separate pin.
 
 ## With `cargo install`
 

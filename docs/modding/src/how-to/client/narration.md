@@ -6,17 +6,7 @@ in Java). It goes through the game's own narrator, so the Narrator option, the v
 the narrator's log of recent lines apply as to the game's own narration. Nothing reaches the server.
 
 ```rust
-use mod_api::prelude::*;
-use mod_api::{NarrateError, Narration, Text};
-
-fn target_changed(host: &mut dyn ClientHost, name: &Text) {
-    match host.narrate(name, Narration::Now) {
-        Ok(()) => {}
-        // The player turned narration off, or chose Chat only: nothing to do.
-        Err(NarrateError::Off) => {}
-        Err(other) => log::debug!("not narrated: {other}"),
-    }
-}
+{{#include ../../../examples/src/client_misc.rs:target_changed}}
 ```
 
 ## When

@@ -168,6 +168,9 @@ a level, such as lava's current or source conversion, isn't in the record.
 The record also carries three `Fluid` facts: `explosion_resistance` (100 for water, lava and a mod's
 world fluid, 0 for the empty or a tank-only fluid), `randomly_ticks` (lava only) and `drip_particle`
 (`minecraft:dripping_water` or `minecraft:dripping_lava`, none for the rest).
+Last come `FluidType`'s `temperature`, `density` and `viscosity`. Water is 300, 1000 and 1000, lava 1300, 3000 and 6000,
+and the empty fluid 0, 0 and 0. A mod's fluid answers what its `data/<id>/sunrise/fluid/` file states, and 300, 1000
+and 1000 for a key it leaves out ([content mods](../content-mods.md)).
 
 `legacy_block(state)` is `FluidState.createLegacyBlock`: it returns the canonical `BlockState` of the
 water, lava or mod-fluid block that holds a fluid state (a source is level 0, a flowing amount is

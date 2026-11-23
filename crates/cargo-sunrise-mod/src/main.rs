@@ -10,13 +10,14 @@
 //! - `internals add <path>… [--kind <kind>]`: declare internals from the prebuilt catalog.
 //! - `build [--update-lock]`: the `.smod` in `target/sunrise-mod/`, with the mod's `assets/`
 //!   and `data/`; a native mod is compiled first (`dev.rs`).
+//! - `release [<version>|patch|minor|major] [--check]`, `release setup`: prepare or publish a tagged
+//!   release using the registry's shared workflow (`author_release.rs`).
 //! - `publish`: build, then write the registry entry, the staged file and the pull request text (`publish.rs`).
 //! - `keygen`, `sign`: make an author-held Minisign key pair or sign a release asset (`signing.rs`).
 //! - `run [--game <sunrise-client>] [--resources <folder>] [--jars <dir>] [-- <game args>]`: build, then play with
 //!   the mod.
-//! - `check [--uses]` in a mod folder: the package rules and render pipeline shaders; for a native
-//!   mod, `cargo check` and what the mod uses of its pinned build
-//!   (`sdk_cmds.rs`).
+//! - `check [--uses] [--release <tag>]` in a mod folder: the package rules, page and render pipeline
+//!   shaders; for a native mod, Rust and what the mod uses of its pinned build (`sdk_cmds.rs`).
 //! - `check <file> [--kind <kind>] [--key <public key> --signature <file.minisig>] [--json]`: what the registry checks of a submission
 //!   (`.smod`, `.spack`, resource pack `.zip`, `.sshader`).
 //! - `hooks <text> [--all]`: search the pinned build's hooks (or every item) offline.
@@ -31,6 +32,7 @@
 //! - `native-discover < plan.json`, `native-lock < plan.json`: a native mod's internals or its pinned game's build data, and its registry lock (the same page).
 //! - `native-layout < plan.json`: a local prebuilt game checked and laid out as an SDK's slices (the same page).
 use sunrise_mod_package::{Content, Manifest, Package, manifest::MANIFEST};
+mod author_release;
 mod bounded;
 mod check;
 mod dev;
@@ -39,6 +41,7 @@ mod internals;
 mod jar;
 mod native_build;
 mod options;
+mod page;
 mod publish;
 mod registry;
 mod registry_source;
@@ -99,12 +102,21 @@ fn main() -> ExitCode {
         }),
         Some("build") => build_command(entry, &args[1..]).map(drop),
         Some("publish") => publish::run(entry, &args[1..]),
-        Some("release") => release::run(Path::new("."), &args[1..]),
+        Some("release") => match args.get(1).map(String::as_str) {
+            Some("plan" | "scripts" | "prepare-rebuild") => {
+                release::run(Path::new("."), &args[1..])
+            }
+            _ => author_release::run(entry, Path::new("."), &args[1..]),
+        },
         Some("keygen") => signing::keygen(&args[1..]),
         Some("sign") => signing::sign(&args[1..]),
         Some("run") => run(&args[1..]).map_err(|e| e.to_string()),
         Some("check") => check_args(&args[1..]).and_then(|wanted| match wanted {
-            Check::Folder { uses, with } => sdk_cmds::check_mod(entry, uses, &with),
+            Check::Folder {
+                uses,
+                with,
+                release,
+            } => sdk_cmds::check_mod(entry, Path::new("."), uses, &with, release),
             Check::File(file) => check(file),
         }),
         Some("hooks") => sdk_cmds::hooks(&args[1..]),
@@ -296,6 +308,7 @@ fn build_command(
                 archive
                     .as_ref()
                     .map(|(_, tag, _, version)| (*tag, version.as_str())),
+                archive.is_some(),
             )
         })
         .transpose()?;
@@ -306,6 +319,9 @@ fn build_command(
         built.as_ref().map(|built| built.mixins.as_str()),
     )?;
     println!("Built {}", path.display());
+    if let Some(bundle) = page::write_bundle(root, &output.0, &package.manifest)? {
+        println!("Built {}", bundle.display());
+    }
     if let Some((dir, _, _, _)) = archive {
         let (library, name) = built
             .and_then(|built| built.release)
@@ -343,6 +359,14 @@ fn fetched(dir: &Path) -> Result<(), String> {
 
 /// Fetches a build's verified SDK for a project: the SDK the build's `sdk.json` describes.
 type FetchSdk<'a> = &'a dyn Fn(&Path, &str) -> Result<sdk_fetch::PinnedSdk, String>;
+
+const PAGE_TEMPLATE: [(&str, &str); 2] = [
+    (
+        sunrise_mod_package::page::PAGE_FILE,
+        include_str!("../template/page.toml"),
+    ),
+    ("page/.gitkeep", ""),
+];
 
 /// Makes the mod `args` asks for; a code mod's folder is returned, with its SDK fetched into it
 /// by `fetch`.
@@ -443,7 +467,7 @@ fn new(args: &[String], fetch: FetchSdk) -> Result<Option<PathBuf>, String> {
         ),
         (".gitignore", include_str!("../template/gitignore")),
     ];
-    for (file, text) in files {
+    for (file, text) in files.into_iter().chain(PAGE_TEMPLATE) {
         let file = fill(file);
         let file = file.as_str();
         let to = dir.join(file);
@@ -454,6 +478,7 @@ fn new(args: &[String], fetch: FetchSdk) -> Result<Option<PathBuf>, String> {
     let manifest =
         Manifest::parse(&std::fs::read_to_string(dir.join(MANIFEST)).map_err(|e| e.to_string())?)?;
     Content::read(dir, &manifest)?;
+    author_release::scaffold(dir)?;
     println!(
         "Created {} (mod id {id}). Next: cd {path} && cargo sunrise-mod build, then copy \
          target/sunrise-mod/{id}.smod into your game folder's sunrise-mods/ \
@@ -564,24 +589,8 @@ fn new_native(
         (MANIFEST, manifest.as_str()),
         (".gitignore", include_str!("../template/gitignore")),
         ("README.md", include_str!("../template/native/README.md")),
-        (
-            ".github/workflows/release.yml",
-            include_str!("../template/native/release.yml"),
-        ),
-        (
-            ".github/workflows/rebuild.yml",
-            include_str!("../template/native/rebuild.yml"),
-        ),
-        (
-            ".github/workflows/sunrise-release-jobs.yml",
-            include_str!("../template/native/sunrise-release-jobs.yml"),
-        ),
-        (
-            ".github/actions/sunrise-release-tool/action.yml",
-            include_str!("../template/native/release-tool.yml"),
-        ),
     ];
-    for (file, text) in files {
+    for (file, text) in files.into_iter().chain(PAGE_TEMPLATE) {
         let to = dir.join(file);
         std::fs::create_dir_all(to.parent().expect("a file in the mod"))
             .map_err(|e| e.to_string())?;
@@ -590,6 +599,7 @@ fn new_native(
     for folder in ["assets", "data"] {
         std::fs::create_dir_all(dir.join(folder)).map_err(|e| e.to_string())?;
     }
+    author_release::scaffold(dir)?;
     println!(
         "Created {} (native mod id {id}). Your editor resolves sunrise-mod-api once the SDK is in .sunrise/sdk/: \
          `cargo sunrise-mod check` fetches it in a fresh clone. Next: cd {} && cargo sunrise-mod build",
@@ -618,7 +628,7 @@ fn build(
         let scanned = uses_table::scan(entry, root, &package.manifest, &surface)?;
         match scanned {
             uses_table::Scanned::Uses(uses) => Some(
-                uses_table::table(&uses, root, &package.manifest, &sdk)?
+                uses_table::table(&uses, None, &package.manifest, &sdk)?
                     .to_json()
                     .into_bytes(),
             ),
@@ -717,6 +727,7 @@ enum Check<'a> {
     Folder {
         uses: bool,
         with: Vec<&'a Path>,
+        release: Option<&'a str>,
     },
     File(CheckFile<'a>),
 }
@@ -734,7 +745,12 @@ struct CheckFile<'a> {
 /// `check`'s two forms, told apart by whether a file is named, wherever it stands; an option of
 /// the other form is refused by name.
 fn check_args(args: &[String]) -> Result<Check<'_>, String> {
-    let mut options = Options::new("check", args, &["--kind", "--key", "--signature", "--with"]);
+    let mut options = Options::new(
+        "check",
+        args,
+        &["--kind", "--key", "--signature", "--with", "--release"],
+    );
+    let release = options.value("--release")?;
     let with = options
         .values("--with")?
         .into_iter()
@@ -767,6 +783,9 @@ fn check_args(args: &[String]) -> Result<Check<'_>, String> {
         Some(file) if !with.is_empty() => Err(format!(
             "check --with supplies libraries to the mod in this folder; `check {file}` does not take it"
         )),
+        Some(file) if release.is_some() => Err(format!(
+            "check --release checks the mod in this folder; `check {file}` does not take it"
+        )),
         Some(file) => Ok(Check::File(CheckFile {
             file,
             kind,
@@ -776,7 +795,11 @@ fn check_args(args: &[String]) -> Result<Check<'_>, String> {
         })),
         None => match given(&of_file) {
             Some(name) => Err(format!("check {name} needs a file: check <file> {name}")),
-            None => Ok(Check::Folder { uses, with }),
+            None => Ok(Check::Folder {
+                uses,
+                with,
+                release,
+            }),
         },
     }
 }
@@ -970,6 +993,34 @@ mod tests {
     }
 
     #[test]
+    fn both_templates_scaffold_an_unfinished_registry_page() {
+        use sunrise_mod_package::page::Page;
+        let workspace = tempfile::tempdir().unwrap();
+        for template in ["content", "native"] {
+            let project = workspace.path().join(template);
+            new(&code_args(&project, template), &offline).unwrap();
+            assert!(project.join("page/.gitkeep").is_file());
+            let caller =
+                std::fs::read_to_string(project.join(".github/workflows/sunrise-release.yml"))
+                    .unwrap();
+            assert!(caller.contains("tags: ['v*']"));
+            assert!(caller.contains(
+                "uses: sunrise-org/sunrise-mods/.github/workflows/release.yml@release-v1"
+            ));
+            let manifest = Package::read(&project).unwrap().manifest;
+            let (page, _) = Page::read(&project, &manifest).unwrap().unwrap();
+            assert_eq!(
+                page.release_problems(None),
+                [
+                    "page.toml: summary needs at least 25 characters",
+                    "page.toml: description needs at least 125 characters",
+                    "page.toml: add at least one [[screenshots]] entry",
+                ]
+            );
+        }
+    }
+
+    #[test]
     fn new_accepts_a_name_beginning_with_a_dash() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("garden");
@@ -1103,7 +1154,13 @@ mod tests {
         ];
         new(&new_args, &offline).unwrap();
         assert!(!path.join("Cargo.toml").exists());
-        assert!(!path.join(".github").exists());
+        // The only workflow is the release caller.
+        assert_eq!(
+            std::fs::read_dir(path.join(".github/workflows"))
+                .unwrap()
+                .count(),
+            1
+        );
         let smod = build_in(&path).unwrap();
         assert_eq!(smod, path.join("target/sunrise-mod/gems.smod"));
         let package = Package::read(&smod).unwrap();
@@ -1271,22 +1328,15 @@ mod tests {
             commit.into(),
         ];
         assert_eq!(new(&args, &offline).unwrap(), Some(path.clone()));
-        for file in [
-            "README.md",
-            ".github/workflows/release.yml",
-            ".github/workflows/rebuild.yml",
-            ".github/workflows/sunrise-release-jobs.yml",
-            ".github/actions/sunrise-release-tool/action.yml",
-        ] {
-            assert!(path.join(file).is_file(), "template missing {file}");
-        }
-        let github_files: Vec<_> = std::fs::read_dir(path.join(".github"))
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect();
-        assert_eq!(github_files.len(), 2);
-        assert!(github_files.contains(&"actions".into()));
-        assert!(github_files.contains(&"workflows".into()));
+        assert!(path.join("README.md").is_file());
+        assert!(path.join(".github/workflows/sunrise-release.yml").is_file());
+        assert_eq!(
+            std::fs::read_dir(path.join(".github/workflows"))
+                .unwrap()
+                .count(),
+            1
+        );
+        assert!(!path.join(".github/actions").exists());
         // The template writes none of the fields the tool derives.
         let text = std::fs::read_to_string(path.join(MANIFEST)).unwrap();
         for key in ["api", "capabilities", "mixins"] {
@@ -1513,16 +1563,21 @@ mod tests {
             }))
         );
         assert_eq!(
-            check_args(&argv("--uses --with library --with second.smod")),
+            check_args(&argv(
+                "--uses --with library --release v0.1.0 --with second.smod"
+            )),
             Ok(Check::Folder {
                 uses: true,
-                with: vec![Path::new("library"), Path::new("second.smod")]
+                with: vec![Path::new("library"), Path::new("second.smod")],
+                release: Some("v0.1.0"),
             })
         );
         for (line, named) in [
             ("--json", "--json"),
             ("mod.smod --uses", "--uses"),
             ("mod.smod --with library", "--with"),
+            ("mod.smod --release v0.1.0", "--release"),
+            ("--release", "--release"),
             ("--with", "--with"),
             ("a.smod b.smod", "b.smod"),
             ("--use", "--use"),

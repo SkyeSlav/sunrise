@@ -1,11 +1,59 @@
 # Publishing your mod
 
+## Releasing
+
+Commit your mod's source, [`page.toml` and screenshots](#your-mods-page), and `Cargo.lock` for a native mod.
+`cargo sunrise-mod new` includes a release workflow for a new repository. For an existing repository or a
+package in a subfolder, the first release writes the workflow and removes the old copied Sunrise release files
+in its commit. To review those changes first, run `cargo sunrise-mod release setup` from the mod's folder on a
+clean tree, then commit and push them. Register the repository at
+[Submit a mod](https://playsunrise.net/mods/submit).
+
+From the mod's folder on a clean branch that is up to date with its upstream:
+
+```sh
+cargo sunrise-mod release patch --check
+cargo sunrise-mod release patch
+```
+
+Use `minor`, `major`, or a higher SemVer instead of `patch` to choose another version. `--check` runs the
+release checks for the proposed version without changing the checkout. Without it, `release` refreshes the
+workflow, commits the version bump, and pushes the branch and tag together to `origin`. The tag is `v<version>`
+at the repository root or `<id>/v<version>` for a subfolder package. GitHub Actions builds and attests both the
+`.smod` and its page bundle, with no signing key for you to manage. The registry bot submits them for review.
+
+## The old registry
+
 Sunrise's registry, [sunrise-org/sunrise-mods](https://github.com/sunrise-org/sunrise-mods), lists mods, modpacks,
 resource packs and shader packs at [playsunrise.net/mods](https://playsunrise.net/mods). Every new or changed
 registry version row must name a stable Sunrise release in `sunrise`. A native mod submits a version through
 [the stable source submission](#publishing-a-stable-source-version); for any other kind, a content-only mod
 included, write the row by hand as [the registry reference](../reference/registry-index.md#the-entry) shows. The steps below show how to prepare and check
 a local draft, and what review does with a submission.
+
+## Your mod's page
+
+For a tagged registry release, edit `page.toml` beside `sunrise-mod.toml`:
+
+- `summary`: a short description of at least 25 characters.
+- `description`: a long description of at least 125 characters. You can use Markdown. Without it the page
+  uses the manifest's `description`.
+- `categories`: an optional list of up to eight distinct IDs from the registry's `registry/categories.toml`.
+  Each category must apply to your package kind (`mod` or `native-mod`).
+- `[[screenshots]]`: at least one entry, with a `path` such as `page/recipes.png` and an optional `caption`.
+  Put the images under `page/`. Use readable PNG (`.png`) or JPEG (`.jpg` or `.jpeg`) files, at most 5 MiB each.
+
+Text minimums count Unicode scalar values after trimming surrounding whitespace. `description`, `name`,
+`authors`, `homepage` and `issues` default to the values in `sunrise-mod.toml`; set them in `page.toml` to
+show different ones on the page. The name and each listed author must not be
+blank. Links must be absolute HTTP(S) URLs without credentials. The page uses the mod's own `icon.png`, which a release needs, as it needs a `license` in
+`sunrise-mod.toml`. Screenshot paths must be distinct, must not be `page/icon.png`, and must be names Windows
+can create, and the page bundle must fit the registry's 64 MiB for one release file.
+
+Run `cargo sunrise-mod check` to see what you still need before release. Run
+[`cargo sunrise-mod check --release <tag>`](../reference/sdk/05-commands.md) to require a complete page and
+check the tag against the manifest's version. `build` writes `target/sunrise-mod/<id>.page.tar` separately from the
+`.smod` whenever the project has a `page.toml`.
 
 ## 1. Build and write the submission
 
@@ -108,9 +156,8 @@ not written into the entry. The dependencies are read from the package itself, s
 themselves require.
 
 Published source files never change. Removing a row published with `sunrise` requires a takedown by the
-registry's maintainers in `revoked.toml` naming the project id and file hash. Legacy rows without `sunrise`
-can be removed without a takedown, but the project entry must stay. The only update `publish` makes to an
-existing version is an [append of signed native builds](#publishing-native-binaries).
+registry's maintainers in `revoked.toml` naming the project id and file hash. The only update `publish`
+makes to an existing version is an [append of signed native builds](#publishing-native-binaries).
 
 ## Signing
 
@@ -178,11 +225,8 @@ Upload only the author-release assets listed in `PULL_REQUEST.md`: the exact `.s
 Submit `mods/<id>.toml` to the registry with `icons/<id>.png` if an icon was staged. The `file` field already
 points to your release asset. Registry CI downloads it from there, verifies it and mirrors it after merge.
 For a new version of an existing listing, use `--registry <checkout>` instead of the page flags.
-
-An entry that still lists unsigned versions from before stable releases cannot take a key through
-`--registry`. Run `publish` without it for the signed package, then edit the entry in your checkout by hand:
-add the `key`, remove the unsigned rows and add the new row. Review notes each removed row and needs no
-takedown for it.
+If the existing listing is unsigned and still contains unsigned version rows, `publish --registry` refuses
+adding a key; see [Adding a signing key to an unsigned entry](../reference/registry-index.md#adding-a-signing-key-to-an-unsigned-entry).
 
 ## Publishing native binaries
 
@@ -240,10 +284,10 @@ pin and the target commit. To describe the archives with `--describe-binaries`, 
 
 ## Tagged native releases in GitHub Actions
 
-New native projects include `.github/workflows/release.yml`, `.github/workflows/rebuild.yml`, a shared workflow
-and an action that verifies and installs the release tool. The repository does not carry the release scripts: every job extracts them
-from its verified tool with `cargo sunrise-mod release scripts`. Development still starts on Nightly. When
-you are ready to publish a stable version from GitHub:
+Older copies of the native template include `.github/workflows/release.yml`, `.github/workflows/rebuild.yml`,
+a shared workflow and an action that verifies and installs the release tool. Every job extracts the release
+scripts with `cargo sunrise-mod release scripts`. The following applies only to repositories still using those
+copied workflows; [Releasing](#releasing) uses the new shared workflow instead.
 
 1. Set `homepage` to your mod's GitHub repository and pin the mod to the commit of a stable Sunrise release.
    The tag you push must be `v` followed by the full version in `sunrise-mod.toml`, such as `v0.1.0`. Check in
@@ -265,8 +309,7 @@ A tag build verifies Sunrise's rolling signed [`mod-tool`](../start/install-tool
 plans against the tag's independently signed SDK. All jobs require the same authenticated tool commit. A
 standalone API mod builds an archive for each host in that SDK. Other valid native mods get a signed source
 package only, including mods with required content dependencies. If your code imports another mod's library,
-the standalone check cannot supply it and the tag workflow stops before signing. Dependency-aware tagged
-releases are tracked in [#3885](https://github.com/sunrise-org/sunrise/issues/3885). A failed check or binary
+the standalone check cannot supply it and the tag workflow stops before signing. A failed check or binary
 build stops the release; it does not publish a source-only substitute.
 
 The workflow keeps the verified signed batch as a run artifact before uploading. If an upload stops partway,

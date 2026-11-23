@@ -284,8 +284,16 @@ yourself; see [Publishing your mod](../how-to/publish.md) for the steps. A proje
 - 1–8 PNG or JPEG screenshots stored in the registry as `screenshots/<id>/<name>.png|.jpg`. `registry review` refuses a new project with none, and a pull request that adds a version to a project that still has none. Existing listings the pull request leaves without a new version stay valid, and collections need none. `registry check` and `registry review` apply the same rule, and the listed file must be a non-empty PNG or JPEG in the checkout. A `mod` or `native-mod` in the `library` category needs no screenshot: it does not take a placeholder image.
 
 The generated index supplies HTTPS URLs for images. Unknown entry keys are refused. A project’s kind cannot change.
-If you set a minisign key, sign every version with it. The registry takes no new entry that follows a repository's
-releases (`repo = ...`): every version is listed as its own file.
+If you set a minisign key, sign every version with it. The registry takes no
+new entry that follows a repository's releases (`repo = ...`): every version is listed as its own file.
+
+### Adding a signing key to an unsigned entry
+
+`publish --registry` refuses to add a `key` to an existing unsigned entry that still has unsigned version rows.
+To switch an unsigned listing to signed releases, prepare the signed release without `--registry`, keep the existing
+project entry, edit its `key`, remove its unsigned legacy version rows, and add the new signed row in your registry
+checkout. Only unsigned legacy rows without `sunrise` can be removed without a takedown (review notes each removed
+row while the project entry stays).
 
 ### The entry
 

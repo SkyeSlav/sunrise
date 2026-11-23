@@ -120,4 +120,18 @@ pub trait ClientViewClientHost {
     /// or on a miss. Consumption never recasts or rechecks target liveness;
     /// a block broken earlier in a tick remains that tick's use target.
     fn crosshair_target(&self) -> Option<CrosshairTarget>;
+    /// Side: client.
+    /// The vehicle the local player controls that can jump now (`LocalPlayer.jumpableVehicle`):
+    /// the player is its controlling passenger (`getControlledVehicle`: the first one, on its
+    /// saddle) and it can jump (`PlayerRideableJumping.canJump`): a saddled horse, donkey,
+    /// mule, nautilus or camel, the camel neither sitting nor getting up or down; a pig or a
+    /// strider never jumps. The HUD's jump bar makes the same decision. None when the player
+    /// controls no such vehicle (a second passenger included), or outside a client world.
+    fn jumpable_vehicle(&self) -> Option<EntityRef>;
+    /// Side: client.
+    /// Whether the server tracks any waypoint for this client
+    /// (`ClientWaypointManager.hasWaypoints`), the waypoints the locator bar draws. The HUD's
+    /// contextual bar reads the same fact. Which bar the HUD shows is not exposed: vanilla's
+    /// `Hud.nextContextualInfoState` is private.
+    fn has_waypoints(&self) -> bool;
 }

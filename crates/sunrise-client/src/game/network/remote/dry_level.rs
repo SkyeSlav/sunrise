@@ -66,11 +66,13 @@ impl<'w> DryLevel<'w> {
 
 impl crate::game::Game<'_> {
     /// Ask for the candidate state without spending the level random or scheduling live ticks.
+    /// A directional context's `replace_clicked` is read from the level; a question vanilla
+    /// throws on is refused (`Behaviours::state_for_resolved_placement`).
     pub(in crate::game) fn preview_state_for_placement(
         &mut self,
         block: BlockId,
         context: &PlacementContext,
-    ) -> Option<BlockStateId> {
+    ) -> std::result::Result<Option<BlockStateId>, sunrise_world::level::DirectionalRefusal> {
         self.with_placement_preview_level(|behaviours, level, ticks| {
             let mut dry = DryLevel::new(level);
             dry.random = (*level.world.random).clone();

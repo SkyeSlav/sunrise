@@ -44,10 +44,15 @@ impl Renderer {
     pub(super) fn after_submit(&mut self) -> Option<submit::AfterSubmit> {
         let cull = self.cull.as_mut().and_then(|c| c.submitted());
         let gpu = self.gpu_culling.as_mut().and_then(|g| g.submitted());
+        let sourced = self
+            .gpu_sourced_frame
+            .then(|| self.sourced.submitted())
+            .flatten()
+            .map(|s| Box::new(s) as submit::AfterSubmit);
         let lightmap = self.core_lightmap.as_mut().and_then(|l| l.submitted());
         let cull = cull.map(|c| Box::new(c) as submit::AfterSubmit);
         let gpu = gpu.map(|g| Box::new(g) as submit::AfterSubmit);
-        chain(chain(cull, gpu), lightmap)
+        chain(chain(cull, gpu), chain(sourced, lightmap))
     }
     /// Frame `frame`'s statistics shown, unless a newer frame's are: a CPU frame's as it is
     /// drawn, a GPU frame's when its counts come back (`GpuCulling::collect`).

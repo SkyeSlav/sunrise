@@ -63,6 +63,7 @@ pub(super) fn initialize(resources: &MotionResources, guest: &mut Guest) -> bool
     let accepted_hit = guest.carried_hit.take();
     if let Some(motion) = guest.motion.as_mut() {
         motion.health.accepted_hit = accepted_hit;
+        motion.health.last_hurt_mob = guest.carried_last_hurt_mob.take();
         motion.random = sunrise_core::random::EntityRandom::own(
             sunrise_client::mobs::entity_random(entity_id, p),
         );
@@ -284,9 +285,7 @@ impl Game<'_> {
             if !body {
                 return;
             }
-            if !g.effects.list.is_empty() {
-                self.as_guest(conn, |game| game.tick_mob_effects());
-            }
+            self.as_guest(conn, |game| game.tick_mob_effects());
             self.as_guest(conn, |game| {
                 game.handle_shoulder_entities();
                 let rules = game.world.health_rules;

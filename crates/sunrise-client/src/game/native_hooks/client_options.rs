@@ -43,6 +43,12 @@ impl Game<'_> {
             self.settings.force_unicode,
         )
     }
+    /// `Window.getWidth` and `getHeight`: the window's framebuffer pixels, the size
+    /// `window_resize` reports; none on a server or when no window exists.
+    pub(in crate::game) fn window_size(&self) -> Option<[u32; 2]> {
+        let size = self.window.as_ref()?.inner_size();
+        Some([size.width, size.height])
+    }
     /// A snapshot of the current chat preferences.
     pub(in crate::game) fn chat_options(&self) -> ClientChatOptions {
         let s = &self.settings;

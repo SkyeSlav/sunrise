@@ -28,3 +28,15 @@ The game asks these abilities at the following action sites:
 | `shield_block` | Raising a blocking item and blocking attacks. |
 
 `event.can_perform` starts with vanilla's answer. Set it to `true` to grant an ability or `false` to deny it. The answer controls permission, not the action's world effects or item wear.
+
+## Tool transformation previews
+
+Use `LevelRef::block_transform` to preview a tool's effect on a loaded block in the server's active level. Pass the
+live player, hand, stack, position and hit; the call returns an owned `BlockTransformPreview` holding the new block
+state, durability cost, sound, optional loot-table ID and particle or level-event ID without applying it.
+
+- Supported tool abilities reach the global `block_tool_modification` hook after the block Part unless the Part
+  cancels, with `ToolUse::simulated` set to `true` for preview queries and `false` for actual use. Your listener must
+  not change the level during a simulation.
+- A stale or unavailable player or level, a player in another dimension, an inactive level, an unloaded position, an
+  invalid face, or a tool with no transformation returns `None`.

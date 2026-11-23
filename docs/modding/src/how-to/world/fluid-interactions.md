@@ -80,10 +80,7 @@ This is the question a cobblestone-generator shortcut asks (what do this lava so
 fluid beside it make?) without running the interaction on a level that records its writes:
 
 ```rust
-// Does lava here, over `below`, become something beside any of these neighbours?
-fn makes_stone(host: &dyn ServerHost, lava: FluidState, around: [BlockState; 5], below: BlockState) -> Option<BlockState> {
-    around.into_iter().find_map(|neighbour| host.fluid_interaction_result(lava, neighbour, below))
-}
+{{#include ../../../examples/src/world_helpers.rs:makes_stone}}
 ```
 
 ## Diverges from NeoForge

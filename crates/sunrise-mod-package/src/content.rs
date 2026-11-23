@@ -734,6 +734,31 @@ struct FluidFile {
     sprite: Option<String>,
     tint: Option<u32>,
     world: Option<WorldFluid>,
+    temperature: Option<i32>,
+    density: Option<i32>,
+    viscosity: Option<i32>,
+}
+
+/// A fluid's `FluidType` numbers, which mods read for one another's fluids: NeoForge's
+/// `FluidType.getTemperature`, `getDensity` and `getViscosity`. Each defaults to
+/// `FluidType.Properties`' own, which are water's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FluidMeasures {
+    /// How hot it is, room temperature in kelvin by default: 300.
+    pub temperature: i32,
+    /// How dense it is, water's kg/m³ by default: 1000. Below 0 is lighter than air.
+    pub density: i32,
+    /// How thick it is, 0 or more, water's by default: 1000.
+    pub viscosity: i32,
+}
+impl Default for FluidMeasures {
+    fn default() -> Self {
+        Self {
+            temperature: 300,
+            density: 1000,
+            viscosity: 1000,
+        }
+    }
 }
 
 /// What makes a fluid exist in the world: a block holding it, as `minecraft:water`'s does, and
@@ -782,8 +807,8 @@ impl WorldFluid {
 }
 
 /// How a fluid the mod names looks on the client (`data/<id>/sunrise/fluid/`), as
-/// NeoForge's `IClientFluidTypeExtensions`: `getStillTexture` and `getTintColor`.
-/// The fluid needs no block, so it can be a fluid only a tank holds.
+/// NeoForge's `IClientFluidTypeExtensions`: `getStillTexture` and `getTintColor`, and its
+/// [`FluidMeasures`]. The fluid needs no block, so it can be a fluid only a tank holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FluidLook {
     /// `<mod id>:<path>`.
@@ -794,6 +819,8 @@ pub struct FluidLook {
     pub tint: Option<u32>,
     /// How it exists in the world; none for a fluid only a tank holds.
     pub world: Option<WorldFluid>,
+    /// Its temperature, density and viscosity.
+    pub measures: FluidMeasures,
 }
 impl FluidLook {
     /// The registry name of its flowing form: `<namespace>:flowing_<path>`.
@@ -1882,11 +1909,21 @@ impl Content {
             if let Some(world) = &file.world {
                 world.check().map_err(|e| format!("{name}: world: {e}"))?;
             }
+            // `FluidType.Properties.viscosity` throws for a negative one; the others take any.
+            if file.viscosity.is_some_and(|viscosity| viscosity < 0) {
+                return Err(format!("{name}: viscosity is never negative"));
+            }
+            let defaults = FluidMeasures::default();
             let look = FluidLook {
                 id: fluid,
                 sprite: file.sprite,
                 tint: file.tint,
                 world: file.world,
+                measures: FluidMeasures {
+                    temperature: file.temperature.unwrap_or(defaults.temperature),
+                    density: file.density.unwrap_or(defaults.density),
+                    viscosity: file.viscosity.unwrap_or(defaults.viscosity),
+                },
             };
             if self.fluids.iter().any(|known| {
                 known.id == look.id
@@ -4435,12 +4472,14 @@ capabilities = ["registries"]
                     sprite: None,
                     tint: None,
                     world: None,
+                    measures: FluidMeasures::default(),
                 },
                 FluidLook {
                     id: "ruby:steam".into(),
                     sprite: Some("ruby:gui/fluids/steam".into()),
                     tint: Some(4291343520),
                     world: None,
+                    measures: FluidMeasures::default(),
                 },
             ]
         );
@@ -4454,6 +4493,52 @@ capabilities = ["registries"]
             let e = smod("fluid", MANIFEST_TEXT, bad).unwrap_err();
             assert!(e.contains("sprite"), "{e}");
         }
+    }
+
+    /// `FluidType.Properties`: a file states its own numbers, a missing key keeps water's, and
+    /// only a negative viscosity is refused.
+    #[test]
+    fn fluids_declare_their_temperature_density_and_viscosity() {
+        let files: &[(&str, &[u8])] = &[
+            (
+                "data/ruby/sunrise/fluid/molten.json",
+                br#"{"temperature":1500,"density":-200,"viscosity":0}"#,
+            ),
+            (
+                "data/ruby/sunrise/fluid/cold.json",
+                br#"{"temperature":-5}"#,
+            ),
+        ];
+        let content = smod("fluid-measures", MANIFEST_TEXT, files).unwrap();
+        let measures: Vec<_> = content
+            .fluids
+            .iter()
+            .map(|look| (look.id.as_str(), look.measures))
+            .collect();
+        assert_eq!(
+            measures,
+            [
+                (
+                    "ruby:cold",
+                    FluidMeasures {
+                        temperature: -5,
+                        density: 1000,
+                        viscosity: 1000,
+                    }
+                ),
+                (
+                    "ruby:molten",
+                    FluidMeasures {
+                        temperature: 1500,
+                        density: -200,
+                        viscosity: 0,
+                    }
+                ),
+            ]
+        );
+        let bad: &[(&str, &[u8])] = &[("data/ruby/sunrise/fluid/tar.json", br#"{"viscosity":-1}"#)];
+        let e = smod("fluid-viscosity", MANIFEST_TEXT, bad).unwrap_err();
+        assert!(e.contains("tar.json") && e.contains("viscosity"), "{e}");
     }
 
     #[test]

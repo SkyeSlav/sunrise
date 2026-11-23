@@ -123,7 +123,11 @@ impl Game<'_> {
             cart: None,
         }
     }
+    /// `Entity.getYRot` and `getXRot`: the entity's angles, not the direction its model faces.
     pub(in crate::game) fn target_rotation(&self, t: Target) -> [f32; 2] {
+        use crate::game::entity::Entity;
+        use sunrise_client::entity_nbt::loaded_rotation;
+        let saved_rotation = |id| self.persist.raw.get(&id).map_or([0.0; 2], loaded_rotation);
         match t {
             Target::Player => [self.yaw, self.pitch],
             Target::Guest(conn) => self
@@ -133,28 +137,101 @@ impl Game<'_> {
                 .mobs
                 .iter()
                 .find(|m| m.id == id)
-                .map_or([0.0; 2], |m| [m.yaw, m.head_pitch]),
+                .map_or([0.0; 2], Entity::rotation),
+            Target::Item(id) => self
+                .dropped
+                .iter()
+                .find(|a| a.id == id)
+                .map_or([0.0; 2], Entity::rotation),
+            Target::Orb(id) => self
+                .orbs
+                .iter()
+                .find(|a| a.id == id)
+                .map_or([0.0; 2], Entity::rotation),
+            Target::Projectile(id) => self
+                .creatures
+                .projectiles
+                .iter()
+                .find(|a| a.id == id)
+                .map_or([0.0; 2], Entity::rotation),
             Target::Stand(id) => self
                 .armor_stands
                 .iter()
                 .find(|a| a.id == id)
-                .map_or([0.0; 2], |a| [a.yaw, 0.0]),
+                .map_or([0.0; 2], Entity::rotation),
+            Target::Frame(id) => self
+                .item_frames
+                .iter()
+                .find(|a| a.id == id)
+                .map_or([0.0; 2], crate::entities::ItemFrame::entity_rotation),
+            Target::Painting(id) => self
+                .paintings
+                .iter()
+                .find(|a| a.id == id)
+                .map_or([0.0; 2], |a| {
+                    [f32::from(a.facing) * 90.0, saved_rotation(id)[1]]
+                }),
             Target::Boat(id) => self
                 .boats
                 .iter()
                 .find(|b| b.id == id)
-                .map_or([0.0; 2], |b| [b.yaw, b.pitch]),
+                .map_or([0.0; 2], Entity::rotation),
             Target::Cart(id) => self
                 .carts
                 .iter()
                 .find(|c| c.id == id)
-                .map_or([0.0; 2], |c| [c.yaw, c.pitch]),
+                .map_or([0.0; 2], Entity::rotation),
             Target::Fangs(id) => self
                 .fangs
                 .list
                 .iter()
                 .find(|f| f.id == id)
-                .map_or([0.0; 2], |f| [f.yaw, 0.0]),
+                .map_or([0.0; 2], |f| [f.yaw, saved_rotation(id)[1]]),
+            Target::Crystal(id) => self
+                .crystals
+                .iter()
+                .find(|c| c.id == id)
+                .map_or([0.0; 2], |c| c.rotation),
+            Target::Cloud(id) => saved_rotation(id),
+            Target::Dragon(id) => self
+                .dragon
+                .as_ref()
+                .filter(|a| a.id == id)
+                .map_or([0.0; 2], |a| [a.yaw, a.pitch]),
+            Target::Tnt(id) => self
+                .tnts
+                .iter()
+                .find(|a| a.id == id)
+                .map_or([0.0; 2], Entity::rotation),
+            Target::Cushion(id) => self
+                .cushions
+                .iter()
+                .find(|a| a.id == id)
+                .map_or([0.0; 2], |a| [a.yaw, saved_rotation(id)[1]]),
+            Target::Falling(id) => self
+                .falling
+                .iter()
+                .find(|a| a.id == id)
+                .map_or([0.0; 2], Entity::rotation),
+            Target::Rocket(id) => self
+                .rockets
+                .iter()
+                .find(|a| a.id == id)
+                .map_or([0.0; 2], Entity::rotation),
+            Target::Trident(id) => self
+                .tridents
+                .iter()
+                .find(|a| a.id == id)
+                .map_or([0.0; 2], Entity::rotation),
+            Target::Spawner(id) => self
+                .ominous_spawners
+                .iter()
+                .find(|a| a.id == id)
+                .and_then(|a| a.raw.as_deref())
+                .map_or([0.0; 2], sunrise_client::entity_nbt::rotation),
+            Target::Hook(id) => self
+                .fishing_hook_by_id(id)
+                .map_or([0.0; 2], |(hook, _)| [hook.yaw, hook.pitch]),
             Target::Other(id) => self
                 .others
                 .iter()
@@ -172,7 +249,8 @@ impl Game<'_> {
                         .map(|row| row.rotation)
                 })
                 .unwrap_or([0.0; 2]),
-            _ => [0.0; 2],
+            // Dragon parts aren't admitted by UUID. Natural fence knots never turn.
+            Target::DragonPart(_) | Target::Knot(_) => [0.0; 2],
         }
     }
     pub(in crate::game) fn target_eye_height(&self, t: Target) -> f64 {

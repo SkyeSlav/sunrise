@@ -564,12 +564,13 @@ impl Goal for Charge {
         let amount = m.attrs.attack_damage;
         cx.events.push(match who {
             Who::Player => {
-                cx.w.route_player_event(MobEvent::AttackPlayer(amount, from))
+                cx.w.route_player_event(MobEvent::AttackPlayer(amount, from, None))
             }
             Who::Mob(id) => MobEvent::AttackMob {
                 target: id,
                 amount,
                 source: super::Damage::mob(m.id, from),
+                remember_target: false,
             },
         });
         let level = |e: &str| {

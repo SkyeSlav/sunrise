@@ -99,6 +99,7 @@ macro_rules! game_side {
             items: $s.res.items(),
             damage_types: &$s.health_resources.damage,
             player_equipment: acting_equipment!($s),
+            hit_reads: $crate::game::entity::hit_reads_of!($s),
             tag_items: if $s.options.execution_role.is_client() {
                 $s.remote.as_ref().and_then(|remote| remote.tags.as_ref())
             } else {
@@ -1320,6 +1321,9 @@ mod native_hit_effects;
 #[cfg(test)]
 #[path = "game/modding/native_hit_sounds_tests.rs"]
 mod native_hit_sounds_tests;
+#[cfg(test)]
+#[path = "game/modding/native_hit_view_tests.rs"]
+mod native_hit_view_tests;
 mod native_hooks;
 #[path = "game/modding/native_hotbar_slot.rs"]
 mod native_hotbar_slot;
@@ -1421,6 +1425,8 @@ mod native_live_holder_tests;
 mod native_living_absorption;
 #[path = "game/modding/native_living_blocking.rs"]
 mod native_living_blocking;
+#[path = "game/modding/native_living_body.rs"]
+mod native_living_body;
 #[path = "game/modding/native_living_effects.rs"]
 mod native_living_effects;
 #[path = "game/modding/native_living_flags.rs"]
@@ -4797,6 +4803,64 @@ impl Game<'_> {
             sunrise_core::LevelKey::parse(dim.id()).unwrap_or(sunrise_core::LevelKey::OVERWORLD),
         )
     }
+    /// Sets up the same block-entity scene for both world draw paths.
+    fn with_block_entity_scene(
+        &self,
+        camera: glam::DVec3,
+        partial: f32,
+        dynamic_visible: &dyn Fn([i32; 3], u32, glam::DVec3, glam::DVec3) -> bool,
+        draw: impl FnOnce(&BlockEntityScene<'_>),
+    ) {
+        let lid = |p: [i32; 3]| self.chest_lid(p, partial);
+        let anim = |p: [i32; 3]| self.block_anim(p, partial);
+        let substitute = |text: &sunrise_client::text::Text| self.substitute_inline_images(text);
+        let inline_sprite = |atlas: &str, sprite: &str| self.gui.atlas.inline_sprite(atlas, sprite);
+        use block_entity_render::SignOutline;
+        let sign_outline =
+            if self.player.is_some() && self.camera_type.is_first_person() && self.scoping() {
+                SignOutline::FirstPersonScope
+            } else {
+                self.camera_subject().map_or(SignOutline::None, |subject| {
+                    SignOutline::CameraEntity(glam::DVec3::from_array(subject.camera.position))
+                })
+            };
+        let scene = BlockEntityScene {
+            camera,
+            sign_outline,
+            orientation: self.camera_orientation(),
+            anim: &anim,
+            texts: None,
+            partial,
+            game_time: self.world.game_time,
+            max_y: self.world.shape.max_y() - 1,
+            world: &self.world,
+            sprites: &self.gui.atlas.sprites,
+            emissive: &self.gui.atlas.emissive,
+            translucent_sprites: &self.gui.atlas.translucent,
+            atlas_revision: self.gui.atlas.revision,
+            nether: self.nether_lighting(),
+            lid: &lid,
+            sign: &|p| match self.world.block_entities.get(&(p[0], p[1], p[2])) {
+                Some(BlockEntity::Sign(sign)) => Some(sign),
+                _ => None,
+            },
+            inline_images: self.inline_images_revision().map(|revision| {
+                block_entity_render::SignInlineImages {
+                    revision,
+                    substitute: &substitute,
+                    sprite: &inline_sprite,
+                }
+            }),
+            banner: &|p| self.banner_layers_at(p),
+            skull: &|p| self.skull_skin_at(p),
+            glyph: &|c| self.gui.atlas.glyph_cell(c),
+            glyphs: self.gui.atlas.font.epoch(),
+            font: Some(&self.gui.atlas.font),
+            dynamic_visible: Some(dynamic_visible),
+        };
+        draw(&scene);
+    }
+
     fn eye_position(&self) -> Option<[f64; 3]> {
         let p = self.player.as_ref()?;
         Some([
@@ -8445,135 +8509,103 @@ impl Game<'_> {
                 );
                 !self.block_entity_occluded(bounds)
             };
-            let lid = |p: [i32; 3]| self.chest_lid(p, alpha as f32);
-            let anim = |p: [i32; 3]| self.block_anim(p, alpha as f32);
-            let substitute =
-                |text: &sunrise_client::text::Text| self.substitute_inline_images(text);
-            let inline_sprite =
-                |atlas: &str, sprite: &str| self.gui.atlas.inline_sprite(atlas, sprite);
-            let scene = BlockEntityScene {
-                camera,
-                orientation: self.camera_orientation(),
-                anim: &anim,
-                texts: None,
-                partial: alpha as f32,
-                game_time: self.world.game_time,
-                max_y: self.world.shape.max_y() - 1,
-                world: &self.world,
-                sprites: &self.gui.atlas.sprites,
-                emissive: &self.gui.atlas.emissive,
-                translucent_sprites: &self.gui.atlas.translucent,
-                atlas_revision: self.gui.atlas.revision,
-                nether: self.nether_lighting(),
-                lid: &lid,
-                sign: &|p| match self.world.block_entities.get(&(p[0], p[1], p[2])) {
-                    Some(BlockEntity::Sign(sign)) => Some(sign),
-                    _ => None,
-                },
-                inline_images: self.inline_images_revision().map(|revision| {
-                    block_entity_render::SignInlineImages {
-                        revision,
-                        substitute: &substitute,
-                        sprite: &inline_sprite,
-                    }
-                }),
-                banner: &|p| self.banner_layers_at(p),
-                skull: &|p| self.skull_skin_at(p),
-                glyph: &|c| self.gui.atlas.glyph_cell(c),
-                glyphs: self.gui.atlas.font.epoch(),
-                font: Some(&self.gui.atlas.font),
-                dynamic_visible: Some(&dynamic_visible),
-            };
-            let visible = camera_list.into_iter().chain(shadow_only.iter().copied());
-            let block_entity_cache = CacheOptions {
-                shulker_boxes: self.settings.sunrise.cache_shulker_boxes,
-                signs: self.settings.sunrise.cache_signs,
-                decorated_pots: self.settings.sunrise.cache_decorated_pots,
-                bells: self.settings.sunrise.cache_bells,
-                chests: self.settings.sunrise.cache_chests,
-                banners: self.settings.sunrise.cache_banners,
-                copper_golem_statues: self.settings.sunrise.cache_copper_golem_statues,
-            };
-            // Entity occlusion is for ordinary entity meshes. Block entities
-            // already have section and per-block frustum culling; routing them
-            // through the per-vertex occlusion callback both repeats that work
-            // and disables their per-section GPU cache. Shader packs still need
-            // per-entity span marks, so they keep the callback path.
-            if self.pack_ids.is_some() {
-                let section_revision = |pos| r.block_entity_section_revision(pos);
-                static_block_entity_stats = self
-                    .res
-                    .block_entity_render()
-                    .render_with_cache_options_and_callbacks(
-                        &scene,
-                        visible,
-                        block_entity_cache,
-                        r.block_entity_revision(),
-                        Some(&section_revision),
-                        &mut out,
-                        |pos, state, start| {
-                            self.mark_block_entity(start, state);
-                            self.mark_motion(start, motion_block_entity(pos));
-                        },
-                        |pos, _, start, out| {
-                            if shadow_only_at.contains(&pos) {
-                                self.hide_spans_from(start, out.len());
-                            }
-                        },
-                    );
-            } else {
-                (
-                    static_block_entities,
-                    visible_static_block_entity_sections,
-                    static_block_entity_stats,
-                ) = self
-                    .res
-                    .block_entity_render()
-                    .render_with_gpu_cache_options(
-                        &scene,
-                        visible,
-                        cache_candidates.into_iter(),
-                        block_entity_cache,
-                        r.block_entity_revision(),
-                        |pos| r.block_entity_section_revision(pos),
-                        &mut out,
-                    );
-            }
-            // Mod block entities: their mods draw them (`native_block_entity_submit`),
-            // culled by the eye-visible section filter (ordinary renderers) and the bounds
-            // they give. A world without any (`has_mods`) has none to find among its other
-            // unrendered block entities (furnaces, hoppers...).
-            let radius = self.effective_render_distance();
-            let untemplated = self.untemplated_mod_block_entities(camera);
-            let mods = self
-                .world
-                .block_entities
-                .has_mods()
-                .then(|| {
-                    r.visible_block_entities(self.settings.chunk_fade as f32, camera, view, radius)
+            self.with_block_entity_scene(camera, alpha as f32, &dynamic_visible, |scene| {
+                let visible = camera_list.into_iter().chain(shadow_only.iter().copied());
+                let block_entity_cache = CacheOptions {
+                    shulker_boxes: self.settings.sunrise.cache_shulker_boxes,
+                    signs: self.settings.sunrise.cache_signs,
+                    decorated_pots: self.settings.sunrise.cache_decorated_pots,
+                    bells: self.settings.sunrise.cache_bells,
+                    chests: self.settings.sunrise.cache_chests,
+                    banners: self.settings.sunrise.cache_banners,
+                    copper_golem_statues: self.settings.sunrise.cache_copper_golem_statues,
+                };
+                // Entity occlusion is for ordinary entity meshes. Block entities
+                // already have section and per-block frustum culling; routing them
+                // through the per-vertex occlusion callback both repeats that work
+                // and disables their per-section GPU cache. Shader packs still need
+                // per-entity span marks, so they keep the callback path.
+                if self.pack_ids.is_some() {
+                    let section_revision = |pos| r.block_entity_section_revision(pos);
+                    static_block_entity_stats = self
+                        .res
+                        .block_entity_render()
+                        .render_with_cache_options_and_callbacks(
+                            scene,
+                            visible,
+                            block_entity_cache,
+                            r.block_entity_revision(),
+                            Some(&section_revision),
+                            &mut out,
+                            |pos, state, start| {
+                                self.mark_block_entity(start, state);
+                                self.mark_motion(start, motion_block_entity(pos));
+                            },
+                            |pos, _, start, out| {
+                                if shadow_only_at.contains(&pos) {
+                                    self.hide_spans_from(start, out.len());
+                                }
+                            },
+                        );
+                } else {
+                    (
+                        static_block_entities,
+                        visible_static_block_entity_sections,
+                        static_block_entity_stats,
+                    ) = self
+                        .res
+                        .block_entity_render()
+                        .render_with_gpu_cache_options(
+                            scene,
+                            visible,
+                            cache_candidates.into_iter(),
+                            block_entity_cache,
+                            r.block_entity_revision(),
+                            |pos| r.block_entity_section_revision(pos),
+                            &mut out,
+                        );
+                }
+                // Mod block entities: their mods draw them (`native_block_entity_submit`),
+                // culled by the eye-visible section filter (ordinary renderers) and the bounds
+                // they give. A world without any (`has_mods`) has none to find among its other
+                // unrendered block entities (furnaces, hoppers...).
+                let radius = self.effective_render_distance();
+                let untemplated = self.untemplated_mod_block_entities(camera);
+                let mods = self
+                    .world
+                    .block_entities
+                    .has_mods()
+                    .then(|| {
+                        r.visible_block_entities(
+                            self.settings.chunk_fade as f32,
+                            camera,
+                            view,
+                            radius,
+                        )
                         .filter(|((_, state), _)| !self.res.block_entity_render().renders(*state))
-                })
-                .into_iter()
-                .flatten();
-            let untemplated_eye = untemplated.iter().map(|block| {
-                (
-                    block,
-                    r.block_entity_section_in_eye_view(block.0, camera, view.as_ref(), radius),
-                )
+                    })
+                    .into_iter()
+                    .flatten();
+                let untemplated_eye = untemplated.iter().map(|block| {
+                    (
+                        block,
+                        r.block_entity_section_in_eye_view(block.0, camera, view.as_ref(), radius),
+                    )
+                });
+                self.mod_block_entity_geometry(
+                    mods.chain(untemplated_eye),
+                    camera,
+                    alpha as f32,
+                    &mut out,
+                );
+                self.mark_stage(out.len(), "DESTROY");
+                for &(pos, stage) in &cracks {
+                    let state = self.world.block(pos[0], pos[1], pos[2]);
+                    self.res
+                        .block_entity_render()
+                        .render_breaking(scene, pos, state.0, stage, &mut out);
+                }
             });
-            self.mod_block_entity_geometry(
-                mods.chain(untemplated_eye),
-                camera,
-                alpha as f32,
-                &mut out,
-            );
-            self.mark_stage(out.len(), "DESTROY");
-            for &(pos, stage) in &cracks {
-                let state = self.world.block(pos[0], pos[1], pos[2]);
-                self.res
-                    .block_entity_render()
-                    .render_breaking(&scene, pos, state.0, stage, &mut out);
-            }
         }
         laps.lap("eg_block_entities");
         self.mark_motion(out.len(), 0);
@@ -14734,6 +14766,10 @@ impl Game<'_> {
 #[cfg(test)]
 #[path = "game/interface/tests/sign_chain_tests.rs"]
 mod sign_chain_tests;
+
+#[cfg(test)]
+#[path = "game/interface/tests/sign_outline_tests.rs"]
+mod sign_outline_tests;
 
 #[cfg(test)]
 #[path = "game/interface/tests/sign_use_tests.rs"]

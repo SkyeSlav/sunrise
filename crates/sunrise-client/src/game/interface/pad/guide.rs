@@ -301,7 +301,7 @@ impl Game<'_> {
         let glider = self.glider_worn();
         let hands_busy = self.hands_busy();
         let riding = self.riding.is_some();
-        let vehicle_jumps = self.jumpable_mount();
+        let vehicle_jumps = self.jumpable_mount().is_some();
         let using = self.pad_guide_active();
         let blind = self.potions.effects.get("blindness").is_some();
         let latching = self.settings.controller.toggle_sneak || self.settings.toggle_crouch;

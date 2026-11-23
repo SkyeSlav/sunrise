@@ -127,12 +127,22 @@ Content {
                     bucket: true,
                 },
             ),
+            measures: FluidMeasures {
+                temperature: 300,
+                density: 1000,
+                viscosity: 1000,
+            },
         },
         FluidLook {
             id: "fluid_minimal:tank_only",
             sprite: None,
             tint: None,
             world: None,
+            measures: FluidMeasures {
+                temperature: 300,
+                density: 1000,
+                viscosity: 1000,
+            },
         },
     ],
     fluid_interactions: [],

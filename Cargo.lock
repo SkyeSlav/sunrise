@@ -520,6 +520,7 @@ dependencies = [
  "rpassword",
  "rustc-demangle",
  "same-file",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -538,6 +539,7 @@ dependencies = [
  "toml",
  "toml_edit",
  "ureq",
+ "url",
  "windows-sys 0.61.2",
  "zeroize",
  "zip",
@@ -4903,9 +4905,11 @@ dependencies = [
  "tar",
  "tempfile",
  "toml",
+ "url",
  "windows-sys 0.61.2",
  "xz4rust",
  "zip",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -4972,6 +4976,7 @@ dependencies = [
 name = "sunrise-modding-examples"
 version = "0.0.0"
 dependencies = [
+ "log",
  "sunrise-mod-api",
 ]
 

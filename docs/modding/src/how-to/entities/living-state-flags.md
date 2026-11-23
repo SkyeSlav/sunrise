@@ -100,6 +100,13 @@ its turn reads the motion kept in the guest record, or its carried count while a
 admitted player with no body has count 0. The value wraps like Java's `int`, and a stale handle or another entity
 kind returns `None`.
 
+On a client, the read answers for every entity of the level the client shows, whatever its kind, from the client's
+own copy: as in vanilla, each copy counts the ticks the client level gives it from when the server added it
+(`Entity.commonTick` in `ClientLevel.tickNonPassenger` and `tickPassenger`), not the server's count. A frozen level
+ticks only the players and the entities carrying them. The local player counts before its own update, so also before
+it has loaded and while it sleeps, and an entity tick callback already reads the new count. The new local player that a
+respawn or a dimension change makes starts again at 0.
+
 `MobRef::can_use_portal` reads the existing server portal decision for a mob in the current level, including mounts and player riders. It takes `&dyn Host`: `Some(false)` means the mob is ineligible, while `None` means a client, stale or unavailable handle, parked mob, or the separately modelled dragon. It does not load a level.
 
 `EntityRef::leash_holder` takes `&dyn Host` and reads the live lead of a mob or boat. `LeashHolder::Unleashed`
@@ -153,10 +160,7 @@ For an Allay, the expiring liked-player memory, liked-note-block cooldown and it
 stop during the pause. Passive healing, the duplication countdown, dancing and animation continue.
 
 ```rust
-// A spawner's movable no-AI mob: paused once, and still paused after a reload.
-if let Some(mob) = host.mob(entity) {
-    let _ = mob.set_ai_paused(host, true);
-}
+{{#include ../../../examples/src/entity_and_native.rs:pause_mob_ai}}
 ```
 
 The persistence pair `persistence_required`/`set_persistence_required` reads and sets `Mob.isPersistenceRequired`;

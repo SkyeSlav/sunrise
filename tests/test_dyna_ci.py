@@ -689,6 +689,66 @@ class PersistentTargetTests(unittest.TestCase):
         self.assertGreater(checked, 8)
 
 
+class IgnoredTestsKeepTests(unittest.TestCase):
+    STEP = "Keep a failed run's full output beyond this slot"
+
+    def setUp(self):
+        from test_ci_concurrency import yaml
+        steps = yaml.load((ROOT / ".github/workflows/ignored-tests.yml").read_text(),
+                          Loader=yaml.BaseLoader)["jobs"]["ignored-tests-shards"]["steps"]
+        self.steps = {step.get("name"): step for step in steps}
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.keep = self.root / "keep"
+        self.private = self.root / "private"
+        self.env = {**os.environ, "DYNA_CI_KEEP": str(self.keep), "PRIVATE_LOGS": str(self.private),
+                    "NAME": "77-2-3"}
+
+    def keep_step(self):
+        return subprocess.run(["bash", "-e", "-c", self.steps[self.STEP]["run"]], cwd=self.root, env=self.env,
+                              capture_output=True, text=True)
+
+    def test_the_run_step_writes_where_the_keep_step_reads(self):
+        run = self.steps["Run the ignored tests that need prepared data"]["env"]
+        step = self.steps[self.STEP]
+        self.assertEqual(step["if"], "always()")
+        self.assertEqual(run["IGNORED_TESTS_PRIVATE_LOGS"], step["env"]["PRIVATE_LOGS"])
+        self.assertEqual(step["env"]["NAME"],
+                         "${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}")
+
+    def test_a_failed_runs_output_is_kept_under_its_run_attempt_and_job(self):
+        self.private.mkdir()
+        (self.private / "sunrise-client#1of2.test.log").write_text("synthetic private payload")
+        result = self.keep_step()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        kept = self.keep / "ignored-tests-failed-logs/77-2-3"
+        self.assertEqual([path.name for path in kept.iterdir()], ["sunrise-client#1of2.test.log"])
+        self.assertEqual((kept / "sunrise-client#1of2.test.log").read_text(), "synthetic private payload")
+        self.assertIn("ignored-tests-failed-logs/77-2-3", result.stdout)
+        self.assertNotIn("synthetic private payload", result.stdout + result.stderr)
+
+    def test_expired_entries_are_pruned_and_a_clean_run_adds_none(self):
+        root = self.keep / "ignored-tests-failed-logs"
+        stale, fresh = root / "70-1-0", root / "76-1-0"
+        for path in (stale, fresh):
+            path.mkdir(parents=True)
+        os.utime(stale, (0, 0))
+        # Nothing captured (a clean run, or no private directory at all).
+        result = self.keep_step()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([path.name for path in root.iterdir()], ["76-1-0"])
+        self.private.mkdir()
+        result = self.keep_step()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([path.name for path in root.iterdir()], ["76-1-0"])
+        # A host with no keep variable is left alone.
+        result = subprocess.run(["bash", "-e", "-c", self.steps[self.STEP]["run"]], cwd=self.root,
+                                env={key: value for key, value in self.env.items() if key != "DYNA_CI_KEEP"},
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
 class ParityWorkflowTests(unittest.TestCase):
     def setUp(self):
         from test_ci_concurrency import yaml

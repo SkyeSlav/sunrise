@@ -1705,6 +1705,19 @@ pub struct ItemFrame {
     pub random: LegacyRandom,
 }
 impl ItemFrame {
+    /// `ItemFrame.setDirection`: wall frames use the horizontal direction's yaw;
+    /// ceiling and floor frames use the vertical direction's pitch.
+    pub fn entity_rotation(&self) -> [f32; 2] {
+        match self.facing {
+            0 => [0.0, 90.0],
+            1 => [0.0, -90.0],
+            2 => [180.0, 0.0],
+            3 => [0.0, 0.0],
+            4 => [90.0, 0.0],
+            _ => [270.0, 0.0],
+        }
+    }
+
     /// `ItemFrame.setItem`: the adopted stack holds one item. The caller owns
     /// the old map association, sounds and neighbour updates.
     pub fn set_item(&mut self, item: Option<ItemStack>) {
@@ -1763,6 +1776,9 @@ pub struct ArmorStand {
     /// Unsaved fire immunity granted on this logical side.
     pub mod_fire_immune: bool,
     pub health: f32,
+    pub tick_count: i32,
+    /// Transient `LivingEntity.lastHurtMob`; an owned arrow or wind charge can set it.
+    pub last_hurt_mob: Option<(u32, i32)>,
     pub id: u32,
     pub position: Vec3,
     /// `Entity.xo`, `yo`, `zo`: the position at the start of the tick, which
@@ -2062,6 +2078,8 @@ impl ArmorStand {
             fire_ticks: 0,
             mod_fire_immune: false,
             health: 20.0,
+            tick_count: 0,
+            last_hurt_mob: None,
             id,
             position,
             previous: position,

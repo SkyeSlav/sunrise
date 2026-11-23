@@ -6,17 +6,20 @@ folder.
 
 | Command | What it does |
 |---|---|
-| `new <path> --template native [--sunrise <build>]` | Makes a code mod pinned to the current Nightly's build, or the one named, and fetches its SDK. Without `--template` it makes a content mod, which has no SDK. |
-| `build [--with <path>]…` | Compiles a native mod and its [declared libraries](../../concepts/dependencies.md) against the pinned SDK, then packs only the project into a `.smod` with its [`uses.json`](04-fit.md#usesjson). For content-only mods it just packs the project. See [`build` for a native mod](#build-for-a-native-mod). |
+| `new <path> --template native [--sunrise <build>]` | Makes a code mod pinned to the current Nightly's build, or the one named, and fetches its SDK. Without `--template` it makes a content mod, which has no SDK. Both templates scaffold [`page.toml` and `page/`](../../how-to/publish.md#your-mods-page) and the [release workflow caller](#release). |
+| `build [--with <path>]…` | Compiles a native mod and its [declared libraries](../../concepts/dependencies.md) against the pinned SDK, then packs only the project into a `.smod` with its [`uses.json`](04-fit.md#usesjson). For content-only mods it just packs the project. If the project has `page.toml`, writes the page and its named images separately to `target/sunrise-mod/<id>.page.tar`. See [`build` for a native mod](#build-for-a-native-mod). |
 | `build --binaries <dir> --sunrise-release <tag> --releases <file> [--server]` | Builds and packs a standalone API native mod pinned to that stable SDK. Writes the unsigned archive for this computer's SDK host; `--server` selects the dedicated-server host. |
 | `build --describe-binaries <dir> --sunrise-release <tag> --releases <file> --sdk-data <dir>` | Reads the SDK host list, checks each signed archive's structure and identity, and writes the unsigned descriptor. Does not compile or sign. |
+| [`release [<version>\|patch\|minor\|major] [--check]`](#release) | Checks a registered mod, commits the version bump, and pushes the branch and tag. `--check` previews without changing the checkout. |
+| [`release setup`](#release) | Updates only the shared workflow caller and removes old release files. No registration or commit required. |
 | [`release plan`](#release-plan) | Writes a native release or rebuild plan and fetches the SDK metadata it needs, without building or publishing. |
 | [`release scripts`](#release-scripts) | Writes the workflow scripts embedded in this tool. |
 | [`release prepare-rebuild`](#release-prepare-rebuild) | Checks the exact reviewed package and prepares a disposable project or manifest. |
 | `keygen [--out <dir>] [--no-password]` | Makes a Minisign pair in the [mod’s per-user key folder](../../how-to/publish.md#signing) or the named folder. Prints the public key; the private key is passphrase-encrypted by default and always on Windows. Refuses to overwrite either file. |
 | `sign <file> [--key <path>] [--no-password]` or `sign <file> --key-env` | Writes the detached `<file>.minisig`, without overwriting an existing signature. Uses the current mod’s per-user signing key by default. For CI, `--key-env` reads `SUNRISE_MOD_SIGNING_KEY` and optional `SUNRISE_MOD_SIGNING_PASSPHRASE` with no prompt; see [Signing](../../how-to/publish.md#signing). |
 | `run [--resources <folder>] [--jars <dir>] [--with <path>]… [-- <game args>]` | For a native mod, builds, stages the game with the mod and its libraries in `target/sunrise-mod/run/` and starts it. |
-| `check [--uses] [--with <path>]…` | Checks the package rules and each [render pipeline shader](../../how-to/client/render-pipelines.md). For a native mod it then type-checks through the same SDK route and with the same libraries as `build`, without packaging or linking mod binaries, and reports what the project uses of its pinned build. `--uses` lists each item with the line that brought it in, and how the mod builds each struct it builds with a literal. |
+| `check [--uses] [--with <path>]…` | Checks the package rules and each [render pipeline shader](../../how-to/client/render-pipelines.md). For a native mod it then type-checks through the same SDK route and with the same libraries as `build`, without packaging or linking mod binaries, and reports what the project uses of its pinned build. `--uses` lists each item with the line that brought it in, and how the mod builds each struct it builds with a literal. [Page problems](../../how-to/publish.md#your-mods-page) are reported without failing the check. Only pages that select categories fetch the registry's list; if the list is unavailable, category IDs and their kinds cannot be checked. |
+| `check --release <tag>` | Checks the project, compiles a native mod as `build` does, and fails on missing or invalid page data. If the page selects categories, the registry's list must be available and every selected ID must apply to the package kind. The tag must be `v<version>` at the Git repository root or `<id>/v<version>` for a mod in a subfolder. |
 | `hooks <text> [--all]` | Searches the pinned build's hooks offline, by id, doc and their NeoForge, Fabric and Paper names; every word must match. `--all` searches every record. Matches in the id come first, then in a counterpart, then in the doc. |
 | `sdk diff <build> <build>` | What changed in the surface from the first build to the second, [classified](02-surface.md#what-a-change-is), with the second build's change notes (why, and what a mod does now) under the changes they name: the notes of the changes since the SDK published before it. It reads only the builds' small files, so it works for builds whose compiled files are pruned. |
 | `fits [<file.smod>] [--build <build>]…` | Whether the mod, or a package, fits the current Nightly or each build named: one line per build, `made for`, `fits`, or `does not fit` with the changed items. |
@@ -58,6 +61,22 @@ live in the terminal. The full client log is normally in `target/sunrise-mod/run
 For a native mod, `run` verifies and stages the required originals after building, before replacing the development
 app or starting the game. See [Java jars as external assets](../../how-to/content-mods.md#java-jars-as-external-assets)
 for the default store, `--jars <dir>` and the development home requirements.
+
+## `release`
+
+Run from a registered mod's package folder with a clean Git working tree and `origin` pointing at GitHub.
+The default version bump is `patch`. The version must increase and its tag must not already exist, either
+locally or on `origin`. A root package gets `v<version>` and `.github/workflows/sunrise-release.yml`; a
+subfolder package gets `<id>/v<version>` and `.github/workflows/sunrise-release-<id>.yml`. A native release
+updates the mod manifest, Cargo manifest, and the mod's own entry in its committed `Cargo.lock` without
+changing its pinned dependencies.
+
+`release --check` checks the proposed version and tag in a separate checkout. `release setup` reads the
+registry's current shared workflow reference and refreshes the caller without requiring registration. It
+removes old copied Sunrise release files, but leaves the manifest, commit history and tags alone; it needs a
+clean tree, so each file it replaces or removes can be restored from Git. Without `setup`, a release makes the
+same workflow changes in its own commit. Follow
+the [releasing guide](../../how-to/publish.md#releasing) to register and publish.
 
 ## `release plan`
 

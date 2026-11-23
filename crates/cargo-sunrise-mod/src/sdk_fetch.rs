@@ -83,7 +83,13 @@ pub(crate) fn ensure_sdk(project: &Path) -> Result<PinnedSdk, String> {
 
 /// `build`'s SDK in the project's `.sunrise/sdk/`, API source included.
 pub(crate) fn fetch_pinned(project: &Path, build: &str) -> Result<PinnedSdk, String> {
-    fetch(&Base::from_env(), &keys(), build, &project.join(DIR), true)
+    let dir = project.join(DIR);
+    // A linked `.sunrise` or `.sunrise/sdk` would send the cache's removal and writes outside
+    // the project.
+    for folder in dir.ancestors().take(2) {
+        crate::internals::check_output_dir(folder)?;
+    }
+    fetch(&Base::from_env(), &keys(), build, &dir, true)
 }
 
 /// The game checkout the project at `project` builds against, when its `sunrise-mod-api`
@@ -355,8 +361,8 @@ impl Base {
     }
 }
 
-/// `build`'s verified SDK in `dir`: reused when the stamp matches the build and trusted keys,
-/// otherwise fetched afresh. With `api`, unpack the API source too.
+/// `build`'s verified SDK in `dir`: reused when the stamp matches the build and trusted keys and
+/// the kept index and surface verify against the kept signed sums, otherwise fetched afresh. With `api`, unpack the API source too.
 pub(crate) fn fetch(
     base: &Base,
     keys: &[PublicKey],
@@ -377,8 +383,30 @@ fn fetch_index(
     let tag = format!("sdk-{build}");
     let stamp = CacheStamp::new(build, keys);
     if stamp.matches(dir) {
-        let bytes = fs::read(dir.join(sdk::INDEX)).map_err(|e| format!("{DIR}: {e}"))?;
-        return Index::read(&bytes, build).map_err(|e| format!("{tag}: {e}"));
+        // The stamp only says which build and keys the folder was made for, and the folder may
+        // come from the checkout: what is read from it is verified again against its signed sums.
+        let read = |name: &str| {
+            crate::bounded::read_bytes(&dir.join(name), SMALL, crate::bounded::Symlinks::Refuse)
+                .map_err(|e| e.to_string())
+        };
+        let kept = (|| {
+            verified(
+                &tag,
+                keys,
+                build,
+                &read(sunrise_release_sign::SUMS)?,
+                &read(sunrise_release_sign::SIGNATURE)?,
+                &read(sdk::INDEX)?,
+                &read(SURFACE)?,
+            )
+        })();
+        match kept {
+            Ok(index) => return Ok(index),
+            Err(e) => println!(
+                "{} does not verify against its signed sums ({e}); fetching it again",
+                dir.display()
+            ),
+        }
     }
     if let Err(e) = fs::remove_dir_all(dir)
         && e.kind() != std::io::ErrorKind::NotFound
@@ -390,10 +418,36 @@ fn fetch_index(
         .read(&tag, sunrise_release_sign::SUMS, SMALL)
         .map_err(|e| format!("game build {build} has no signed SDK (release {tag}): {e}"))?;
     let signature = base.read(&tag, sunrise_release_sign::SIGNATURE, SMALL)?;
-    let listed =
-        sunrise_release_sign::verify(&tag, &sums, &String::from_utf8_lossy(&signature), keys)?;
     let bytes = base.read(&tag, sdk::INDEX, SMALL)?;
-    let digest = format!("{:x}", Sha256::digest(&bytes));
+    let surface = base.read(&tag, SURFACE, SMALL)?;
+    let index = verified(&tag, keys, build, &sums, &signature, &bytes, &surface)?;
+    let write = |name: &str, bytes: &[u8]| {
+        fs::write(dir.join(name), bytes).map_err(|e| format!("{}: {e}", dir.join(name).display()))
+    };
+    write(SURFACE, &surface)?;
+    if api {
+        unpack(base, &index, API_SOURCE, dir, "api", API_LIMIT)?;
+    }
+    write(sunrise_release_sign::SUMS, &sums)?;
+    write(sunrise_release_sign::SIGNATURE, &signature)?;
+    write(sdk::INDEX, &bytes)?;
+    stamp.write(dir)?;
+    Ok(index)
+}
+
+/// The SDK index `bytes`, once the signed sums list it and it lists `surface`.
+fn verified(
+    tag: &str,
+    keys: &[PublicKey],
+    build: &str,
+    sums: &[u8],
+    signature: &[u8],
+    bytes: &[u8],
+    surface: &[u8],
+) -> Result<Index, String> {
+    let listed =
+        sunrise_release_sign::verify(tag, sums, &String::from_utf8_lossy(signature), keys)?;
+    let digest = format!("{:x}", Sha256::digest(bytes));
     if !listed
         .iter()
         .any(|(name, sha)| name == sdk::INDEX && *sha == digest)
@@ -404,20 +458,10 @@ fn fetch_index(
             sunrise_release_sign::SUMS
         ));
     }
-    let index = Index::read(&bytes, build).map_err(|e| format!("{tag}: {e}"))?;
-    let surface = base.read(&tag, SURFACE, SMALL)?;
+    let index = Index::read(bytes, build).map_err(|e| format!("{tag}: {e}"))?;
     index
-        .verify(SURFACE, surface.as_slice())
+        .verify(SURFACE, surface)
         .map_err(|e| format!("{tag}: {e}"))?;
-    let write = |name: &str, bytes: &[u8]| {
-        fs::write(dir.join(name), bytes).map_err(|e| format!("{}: {e}", dir.join(name).display()))
-    };
-    write(SURFACE, &surface)?;
-    if api {
-        unpack(base, &index, API_SOURCE, dir, "api", API_LIMIT)?;
-    }
-    write(sdk::INDEX, &bytes)?;
-    stamp.write(dir)?;
     Ok(index)
 }
 
@@ -540,6 +584,10 @@ fn build_data_from(
     build: &str,
 ) -> Result<PathBuf, String> {
     let dir = project.join(CACHE).join(build);
+    // A linked folder on the way would send the cache's removal and writes outside the project.
+    for folder in [project.join(".sunrise"), project.join(CACHE), dir.clone()] {
+        crate::internals::check_output_dir(&folder)?;
+    }
     let into = dir.join(BUILD_DATA);
     // The stamp is written only after the folder's SDK verified, and the build data is renamed
     // into place only after it unpacked whole from a verified archive.
@@ -579,7 +627,13 @@ pub(crate) fn release_data(
         fs::remove_file(&lock).map_err(|e| format!("{}: {e}", lock.display()))?;
     }
     // A transported artifact must never be mistaken for a verified local SDK cache.
-    fs::remove_file(dir.join(STAMP)).map_err(|e| format!("{}: {e}", dir.display()))?;
+    for name in [
+        STAMP,
+        sunrise_release_sign::SUMS,
+        sunrise_release_sign::SIGNATURE,
+    ] {
+        fs::remove_file(dir.join(name)).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
     Ok(index)
 }
 

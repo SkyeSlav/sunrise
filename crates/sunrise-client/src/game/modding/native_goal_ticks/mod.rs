@@ -714,6 +714,10 @@ impl mobs::part_goals::GoalHost for Game<'_> {
             && Game::mob_in_other_level(self, entity.id()).is_some()
     }
 
+    fn living_last_hurt_record(&self, living: LivingRef) -> Option<(u32, i32)> {
+        Game::living_last_hurt_record(self, living)
+    }
+
     fn mob_player_credit(&self, mob: &Mob) -> Option<Option<u32>> {
         let credit = *self.last_hurt_by_player.get(&mob.id)?;
         Some(
