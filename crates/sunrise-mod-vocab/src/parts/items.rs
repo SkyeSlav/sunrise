@@ -64,50 +64,47 @@ pub(crate) struct PlaceProviderPart {
 #[derive(Clone)]
 // exhaustive: its fields are private, so mods cannot build or destructure it
 pub struct TooltipAppenderPart {
-    pub(crate) mod_id: &'static str,
-    pub(crate) mod_index: usize,
-    pub(crate) component: Box<str>,
-    pub(crate) placement: crate::TooltipPlacement,
+    pub(crate) owner: crate::callback_owner::CallbackOwner,
+    pub(crate) component: crate::Identifier,
+    pub(crate) slot: usize,
     pub(crate) appender: Arc<dyn crate::TooltipAppender>,
 }
 
 impl TooltipAppenderPart {
     /// The data component whose stacks it is asked about.
     pub fn component(&self) -> &str {
-        &self.component
+        self.component.as_str()
     }
-    /// Where its lines go among the other components' lines.
-    pub fn placement(&self) -> &crate::TooltipPlacement {
-        &self.placement
+    /// The mod that submitted the callback (not necessarily the component's namespace).
+    pub fn mod_id(&self) -> &'static str {
+        self.owner.id()
     }
-    /// The appender that adds the lines.
-    pub fn appender(&self) -> &dyn crate::TooltipAppender {
-        self
+    /// The number of stock component appenders preceding this one.
+    pub fn slot(&self) -> usize {
+        self.slot
     }
-    /// Whether its mod is enabled.
+    /// Whether this callback can still run.
     pub fn enabled(&self) -> bool {
-        crate::mod_index_on(self.mod_index)
+        self.owner.is_enabled()
     }
-}
-
-impl crate::TooltipAppender for TooltipAppenderPart {
-    fn append(
+    /// Run the callback under its registration owner. A panic discards its lines.
+    pub fn append(
         &self,
-        host: &dyn crate::ClientHost,
-        stack: &crate::ItemStack,
+        host: &dyn ClientHost,
+        stack: &ItemStack,
         context: &crate::TooltipAppendContext,
-        lines: &mut Vec<(crate::Text, u32)>,
-    ) {
-        let _guard = crate::content::crash::enter_native_mod(crate::content::crash::ModCall {
-            id: self.mod_id,
-            hook: "tooltip_appender",
-            part: Some(std::any::type_name_of_val(&*self.appender)),
-        });
-        self.appender.append(host, stack, context, lines);
+    ) -> Vec<(crate::Text, u32)> {
+        self.owner
+            .call("tooltip appender", "tooltip_appender", || {
+                let mut lines = Vec::new();
+                self.appender.append(host, stack, context, &mut lines);
+                lines
+            })
+            .unwrap_or_default()
     }
 }
 
-/// The tooltip appenders the mods registered, in registration order.
+/// The installed mod appenders in resolved component order.
 pub fn tooltip_appenders() -> &'static [TooltipAppenderPart] {
     installed().map_or(&[], |installed| &installed.keys.tooltip_appenders)
 }
@@ -248,10 +245,10 @@ pub trait ItemsRegistrar {
 
     /// Register `appender` as the lines data component `component` (`mymod:charge`) adds to a
     /// stack's tooltip, where `placement` puts them (NeoForge's `RegisterTooltipAppendersEvent`).
-    /// Only this mod's appender is asked, for a stack that carries the component and whose
-    /// tooltip shows it, and only while the mod is enabled. A component id that isn't namespaced,
-    /// or a `Before`/`After` anchor the game doesn't list as a component detail, refuses the mods
-    /// at startup, naming the mod.
+    /// `component` must name a registered data component. A component may have only one
+    /// appender, including vanilla's. Relative anchors must themselves have an appender;
+    /// missing anchors, duplicate registrations and dependency cycles are startup errors.
+    /// The callback runs only for a stack showing that component and while its mod is enabled.
     fn register_tooltip_appender(
         &mut self,
         component: &str,

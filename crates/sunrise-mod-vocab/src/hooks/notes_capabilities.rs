@@ -51,18 +51,18 @@ pub trait Notes {
   `creative`), and may add, change or remove any line. It also fires for `ItemResource::tooltip`
   queries; reentrant queries return base lines. Creative search uses exported lines and does not fire it.
 
-- Data component tooltip lines: `Registrar::register_tooltip_appender(component, placement, appender)` (NeoForge's
-  `RegisterTooltipAppendersEvent`) gives one component's `TooltipAppender` a `TooltipPlacement`: `BeforeAll`, `AfterAll`,
-  or `Before(id)` and `After(id)` for a component detail Sunrise lists (`minecraft:lore`, `minecraft:enchantments`...), where
-  the lines go among the other components' lines. The game asks only that appender, only for a stack that carries the
-  component (live, transient ones included) and whose `tooltip_display` shows it, and only while its mod is enabled. It gets
-  the stack and a `TooltipAppendContext` (local player, `advanced`/`creative`/`nested` flags, and the client level's
-  `tick_rate`, or 20 without a level). Its lines go after the item's own and before durability and advanced lines.
-  Creative search doesn't read these lines or `item_tooltip`; mods reacting to every item use `item_tooltip`.
-  `Before`/`After` accept only the 23 vanilla anchors listed in `tooltip_appender.rs`, not other registered
-  components. The `registerAppender(TooltipLocation, ...)` overload is not represented. Several appenders may register
-  for one component; all run in registration order at an equal placement. The player is always the local player,
-  including for nested crossbow projectiles where vanilla passes no player; use `nested` to distinguish those calls.
+- Data component tooltip lines: `Registrar::register_tooltip_appender(component, placement, appender)` follows
+  NeoForge's `RegisterTooltipAppendersEvent`. Register one `TooltipAppender` per data component, including vanilla's
+  own entries. `BeforeAll` and `AfterAll` bracket the vanilla component sequence, including durability. `Before(id)` and
+  `After(id)` constrain order relative to any component with an appender, including a modded one registered later.
+  These are ordering constraints, not adjacent slots: among ready entries, vanilla goes first and then mod registrations
+  in order. Missing anchors, unregistered components, duplicates and cycles refuse startup. The
+  `registerAppender(TooltipLocation, ...)` overload is not represented.
+  Only an enabled appender whose component the stack carries and shows (transient components included) runs, with the
+  stack and `TooltipAppendContext`; hiding a component does not affect its dependents' order. A panicking callback loses
+  its own lines and is disabled for the session. The player is the local player, even for nested projectiles; use the
+  `nested` flag to distinguish them. Creative search doesn't run appenders or `item_tooltip`; mods reacting to every
+  item or adding to a vanilla component's tooltip use `item_tooltip`.
 
 - `ItemPart::use_on` and `use_item` run on both sides (`HostSide`), version 2, with
   `Option<InteractionResult>` answers. `None` defers; `Some` replaces the template.

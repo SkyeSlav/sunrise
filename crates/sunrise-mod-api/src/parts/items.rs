@@ -2154,63 +2154,21 @@ impl ItemsRegistrar for PartRegistrar {
         placement: crate::TooltipPlacement,
         appender: Arc<dyn crate::TooltipAppender>,
     ) {
-        let refusal = if !namespaced(component) {
-            Some(format!(
-                "{} registers a tooltip appender for {component:?}, which is not a namespaced data component id",
+        let Some(id) = crate::Identifier::parse_namespaced(component) else {
+            self.refused.push(format!(
+                "mod {}: tooltip appender component {component:?} is not a namespaced data component id",
                 self.mod_id
-            ))
-        } else {
-            match &placement {
-                crate::TooltipPlacement::Before(anchor)
-                | crate::TooltipPlacement::After(anchor)
-                    if !TOOLTIP_DETAILS.contains(&anchor.as_str()) =>
-                {
-                    Some(format!(
-                        "{} anchors a tooltip appender for {component:?} to {anchor:?}, which is not a component detail Sunrise lists",
-                        self.mod_id
-                    ))
-                }
-                _ => None,
-            }
-        };
-        if let Some(refusal) = refusal {
-            self.refused.push(refusal);
+            ));
             return;
-        }
-        self.parts.tooltip_appenders.push(TooltipAppenderPart {
-            mod_id: self.mod_id,
-            mod_index: self.mod_index,
-            component: component.into(),
+        };
+        self.tooltip_appenders.push((
             placement,
-            appender,
-        });
+            TooltipAppenderPart {
+                owner: mod_vocab::__private::game::CallbackOwner::for_mod(self.mod_id),
+                component: id,
+                slot: 0,
+                appender,
+            },
+        ));
     }
 }
-
-/// The component details a tooltip lists, in the order the game lists them after the item's own
-/// lines. `TooltipPlacement::Before` and `After` name one of these.
-pub(crate) const TOOLTIP_DETAILS: &[&str] = &[
-    "minecraft:tropical_fish/pattern",
-    "minecraft:instrument",
-    "minecraft:map_id",
-    "minecraft:bees",
-    "minecraft:container",
-    "minecraft:banner_patterns",
-    "minecraft:written_book_content",
-    "minecraft:charged_projectiles",
-    "minecraft:fireworks",
-    "minecraft:potion_contents",
-    "minecraft:jukebox_playable",
-    "minecraft:trim",
-    "minecraft:stored_enchantments",
-    "minecraft:enchantments",
-    "minecraft:dyed_color",
-    "minecraft:lore",
-    "minecraft:attribute_modifiers",
-    "minecraft:unbreakable",
-    "minecraft:ominous_bottle_amplifier",
-    "minecraft:suspicious_stew_effects",
-    "minecraft:block_state",
-    "minecraft:entity_data",
-    "minecraft:block_entity_data",
-];

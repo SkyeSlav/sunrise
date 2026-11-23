@@ -429,12 +429,13 @@ fn builtin_registries(root: &Path) -> sunrise_client::Result<sunrise_protocol::r
 }
 
 /// Freeze native component IDs before reading content or opening a connection.
-/// With no mod registering any, nothing is installed, which every reader
-/// treats as no custom components, and `registries.json` isn't read.
+/// Tooltip registrations must refer to the same built-in and admitted native types.
+/// With neither a native component nor a tooltip registration, this does no I/O.
 pub(super) fn register_components(root: &std::path::Path) -> sunrise_client::Result<()> {
     let mut entries = Vec::new();
     Game::native_component_types(&RegistrationContext::new(), &mut entries);
-    if entries.is_empty() {
+    let appenders = mod_api::__private::tooltip_appenders();
+    if entries.is_empty() && appenders.is_empty() {
         return Ok(());
     }
     let builtin = builtin_registries(root)?;
@@ -462,6 +463,19 @@ pub(super) fn register_components(root: &std::path::Path) -> sunrise_client::Res
             .into());
         }
         names.push(id);
+    }
+    for appender in appenders {
+        let id = appender.component();
+        if !types.names.iter().any(|name| name == id) && !seen.contains_key(id) {
+            return Err(format!(
+                "mod {}: tooltip appender uses unregistered data component {id}",
+                appender.mod_id(),
+            )
+            .into());
+        }
+    }
+    if names.is_empty() {
+        return Ok(());
     }
     let first = i32::try_from(types.names.len())?;
     sunrise_protocol::item::custom::install(first, names)

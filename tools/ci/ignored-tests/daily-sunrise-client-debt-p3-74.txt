@@ -1,0 +1,1 @@
+sunrise-client game::stations::tooltip_appender_tests::appended_lines_go_where_their_placement_puts_them lib daily child-process # freezes native data-component IDs in isolated processes and builds a tooltip with prepared resources

@@ -330,8 +330,19 @@ receive the same context: local player identity, `advanced` (F3+H), `creative`
 (creative-tab slot), `nested` (a loaded crossbow projectile), and `tick_rate`.
 The rate follows vanilla 26.3's `Item.TooltipContext.tickRate()`: the current
 client level's tick-rate manager, or 20 when no level is present. It is not
-measured TPS or the frame rate. The item hook still does not fire for nested
-projectiles or hidden tooltips; adding context does not change line ordering.
+measured TPS or the frame rate. The item hook does not fire for nested
+projectiles or hidden tooltips.
+
+Use `Registrar::register_tooltip_appender` to attach a single appender to a
+registered data component. `TooltipPlacement::Before(id)` and `After(id)` order
+it relative to another appender, including one registered later by a mod. An
+anchor only needs to exist at startup: it still orders the tooltip if its lines
+are hidden. Constraints do not guarantee adjacency; of the appenders ready to
+run, vanilla's come first, then mods' in registration order. Missing anchors,
+duplicates and cycles are registration errors. `AfterAll` comes after vanilla's
+durability line but before the advanced item ID and component count. Use
+`Before("minecraft:damage".into())` to stay before durability, and use
+`Hooks::item_tooltip` to add lines to a tooltip for a component vanilla already handles.
 
 ## Level hosts
 

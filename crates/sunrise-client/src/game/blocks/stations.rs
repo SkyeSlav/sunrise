@@ -1748,6 +1748,7 @@ impl Game<'_> {
         advanced: bool,
         mod_callbacks: bool,
     ) -> Vec<(sunrise_client::text::Text, u32)> {
+        use mod_api::__private::VanillaTooltipDetail as Detail;
         use sunrise_client::item_tooltip::{
             self, EnchantmentComponent, PaintingTooltip, TooltipHolders,
         };
@@ -1814,19 +1815,45 @@ impl Game<'_> {
             self.native_tooltip(stack, &context, &mut own);
             lines.extend(own);
         }
-        // The component details, marked for the placements of the registered appenders.
-        let appenders = if mod_callbacks {
+        // Walk the frozen component order once. Stock details that emit no lines
+        // still occupy their slots; modded anchors need not be visible to order dependents.
+        let appenders = if mod_callbacks && (shown || nested) {
             mod_api::__private::tooltip_appenders()
         } else {
             &[]
         };
-        let mut details = sunrise_client::item_tooltip::DetailMarks::new(!appenders.is_empty());
-        details.start("minecraft:tropical_fish/pattern", lines.len());
+        let mut appenders = appenders.iter().peekable();
+        let mut api_stack = None;
+        let mut append_through = |slot, lines: &mut Vec<(sunrise_client::text::Text, u32)>| {
+            while let Some(part) = appenders.next_if(|part| part.slot() <= slot) {
+                if part.enabled()
+                    && item_tooltip::appender_component_visible(
+                        stack,
+                        item_info,
+                        &display,
+                        part.component(),
+                    )
+                    && let Some(api_stack) = api_stack
+                        .get_or_insert_with(|| stack.try_into_api().ok())
+                        .as_ref()
+                {
+                    lines.extend(part.append(self, api_stack, &context).into_iter().map(
+                        |(text, color)| {
+                            (
+                                sunrise_client_lib::api_text::to_engine_inprocess(&text),
+                                color,
+                            )
+                        },
+                    ));
+                }
+            }
+        };
+        append_through(Detail::TropicalFishPattern as usize, &mut lines);
         // TropicalFish.Pattern.addToTooltip.
         for text in sunrise_client::item_tooltip::tropical_fish_lines(stack, &display) {
             lines.push((text, gray));
         }
-        details.start("minecraft:instrument", lines.len());
+        append_through(Detail::Instrument as usize, &mut lines);
         // InstrumentComponent.addToTooltip.
         if let Some(text) = item_tooltip::instrument_line(
             stack,
@@ -1838,7 +1865,7 @@ impl Game<'_> {
         ) {
             push(&mut lines, text, gray);
         }
-        details.start("minecraft:map_id", lines.len());
+        append_through(Detail::MapId as usize, &mut lines);
         // MapId.addToTooltip: the saved data's lock and scale, when it is known.
         let map = stack
             .data()
@@ -1850,12 +1877,12 @@ impl Game<'_> {
         {
             push(&mut lines, text, gray);
         }
-        details.start("minecraft:bees", lines.len());
+        append_through(Detail::Bees as usize, &mut lines);
         // Bees.addToTooltip.
         if let Some(text) = sunrise_client::item_tooltip::bees_line(stack, &display, &translate) {
             push(&mut lines, text, gray);
         }
-        details.start("minecraft:container", lines.len());
+        append_through(Detail::Container as usize, &mut lines);
         // ItemContainerContents.addToTooltip.
         if display.shows("minecraft:container") {
             for text in sunrise_client::item_tooltip::container_lines(
@@ -1866,7 +1893,7 @@ impl Game<'_> {
                 push(&mut lines, text, u32::MAX);
             }
         }
-        details.start("minecraft:banner_patterns", lines.len());
+        append_through(Detail::BannerPatterns as usize, &mut lines);
         // BannerPatternLayers.addToTooltip: up to six layer names.
         if display.shows("minecraft:banner_patterns") {
             for layer in sunrise_client::banner::tooltip_layers(stack).iter().take(6) {
@@ -1878,12 +1905,12 @@ impl Game<'_> {
                 );
             }
         }
-        details.start("minecraft:written_book_content", lines.len());
+        append_through(Detail::WrittenBookContent as usize, &mut lines);
         // WrittenBookContent.addToTooltip.
         for text in sunrise_client::item_tooltip::written_book_lines(stack, &display, &translate) {
             push(&mut lines, text, gray);
         }
-        details.start("minecraft:charged_projectiles", lines.len());
+        append_through(Detail::ChargedProjectiles as usize, &mut lines);
         // ChargedProjectiles.addToTooltip: each run of equal projectiles, then
         // the projectile's own details indented under it.
         if display.shows("minecraft:charged_projectiles") {
@@ -1911,9 +1938,13 @@ impl Game<'_> {
                     )
                 };
                 lines.push((line, u32::MAX));
-                for (text, c) in
-                    self.build_stack_tooltip_lines(projectile, true, false, false, mod_callbacks)
-                {
+                for (text, c) in self.build_stack_tooltip_lines(
+                    projectile,
+                    true,
+                    false,
+                    false,
+                    mod_callbacks && (shown || nested),
+                ) {
                     // `literal("  ").append(line).withStyle(GRAY)`: the line's
                     // own colours win over the gray.
                     let rgb = if c == u32::MAX {
@@ -1928,12 +1959,18 @@ impl Game<'_> {
                 }
             }
         }
-        details.start("minecraft:fireworks", lines.len());
         // Fireworks / FireworkExplosion.addToTooltip.
-        for text in sunrise_client::item_tooltip::firework_lines(stack, &translate) {
-            push(&mut lines, text, rgba(170, 170, 170, 255));
+        let [fireworks, explosion] = item_tooltip::firework_lines_by_component(stack, &translate);
+        for (detail, section) in [
+            (Detail::Fireworks, fireworks),
+            (Detail::FireworkExplosion, explosion),
+        ] {
+            append_through(detail as usize, &mut lines);
+            for text in section {
+                push(&mut lines, text, gray);
+            }
         }
-        details.start("minecraft:potion_contents", lines.len());
+        append_through(Detail::PotionContents as usize, &mut lines);
         if display.shows("minecraft:potion_contents")
             && (stack.item.ends_with("potion") || &*stack.item == "minecraft:tipped_arrow")
         {
@@ -1958,14 +1995,14 @@ impl Game<'_> {
                 push(&mut lines, text, c);
             }
         }
-        details.start("minecraft:jukebox_playable", lines.len());
+        append_through(Detail::JukeboxPlayable as usize, &mut lines);
         // JukeboxPlayable.addToTooltip.
         if let Some(text) =
             sunrise_client::item_tooltip::jukebox_line(stack, item_info, &display, &translate)
         {
             push(&mut lines, text, gray);
         }
-        details.start("minecraft:trim", lines.len());
+        append_through(Detail::Trim as usize, &mut lines);
         if display.shows("minecraft:trim")
             && let Some((material, pattern)) = stack
                 .data()
@@ -1986,8 +2023,11 @@ impl Game<'_> {
             push(&mut lines, format!(" {p}"), rgba(170, 170, 170, 255));
             push(&mut lines, format!(" {m}"), rgba(170, 170, 170, 255));
         }
-        for component in [EnchantmentComponent::Stored, EnchantmentComponent::Applied] {
-            details.start(component.id(), lines.len());
+        for (detail, component) in [
+            (Detail::StoredEnchantments, EnchantmentComponent::Stored),
+            (Detail::Enchantments, EnchantmentComponent::Applied),
+        ] {
+            append_through(detail as usize, &mut lines);
             for (text, curse) in
                 item_tooltip::enchantment_lines(stack, &display, component, holders, &translate)
             {
@@ -1998,7 +2038,7 @@ impl Game<'_> {
                 );
             }
         }
-        details.start("minecraft:dyed_color", lines.len());
+        append_through(Detail::DyedColor as usize, &mut lines);
         // DyedItemColor.addToTooltip.
         if let Some((text, italic)) =
             sunrise_client::item_tooltip::dyed_line(stack, &display, advanced, &translate)
@@ -2006,7 +2046,7 @@ impl Game<'_> {
             let text = sunrise_client::text::Text::legacy(&text);
             lines.push((if italic { text.italic() } else { text }, gray));
         }
-        details.start("minecraft:lore", lines.len());
+        append_through(Detail::Lore as usize, &mut lines);
         // ItemLore.addToTooltip: after the enchantments, before the attributes
         // (ItemStack.addDetailsToTooltip).
         if display.shows("minecraft:lore") {
@@ -2014,7 +2054,7 @@ impl Game<'_> {
                 lines.push((text, u32::MAX));
             }
         }
-        details.start("minecraft:attribute_modifiers", lines.len());
+        append_through(Detail::AttributeModifiers as usize, &mut lines);
         let attributes_shown = display.shows("minecraft:attribute_modifiers");
         let (modifier_lines, added) = self.stack_attribute_tooltip(
             stack,
@@ -2028,21 +2068,21 @@ impl Game<'_> {
             push(&mut lines, text, c);
         }
         lines.extend(added);
-        details.start("minecraft:unbreakable", lines.len());
+        append_through(Detail::Unbreakable as usize, &mut lines);
         // ItemStack.UNBREAKABLE_TOOLTIP.
         if let Some(text) =
             sunrise_client::item_tooltip::unbreakable_line(stack, &display, &translate)
         {
             push(&mut lines, text, rgba(85, 85, 255, 255));
         }
-        details.start("minecraft:ominous_bottle_amplifier", lines.len());
+        append_through(Detail::OminousBottleAmplifier as usize, &mut lines);
         // OminousBottleAmplifier.addToTooltip.
         if let Some((text, c)) =
             sunrise_client::item_tooltip::ominous_bottle_line(stack, &display, &translate)
         {
             push(&mut lines, text, c);
         }
-        details.start("minecraft:suspicious_stew_effects", lines.len());
+        append_through(Detail::SuspiciousStewEffects as usize, &mut lines);
         // SuspiciousStewEffects.addToTooltip: the creative flag, which vanilla
         // sets for the creative screen's own slots, as `name_visible` above.
         for (text, c) in
@@ -2050,12 +2090,12 @@ impl Game<'_> {
         {
             push(&mut lines, text, c);
         }
-        details.start("minecraft:block_state", lines.len());
+        append_through(Detail::BlockState as usize, &mut lines);
         // BlockItemStateProperties.addToTooltip.
         if let Some(text) = sunrise_client::item_tooltip::honey_line(stack, &display, &translate) {
             push(&mut lines, text, gray);
         }
-        details.start("minecraft:entity_data", lines.len());
+        append_through(Detail::EntityData as usize, &mut lines);
         // TypedEntityData.addToTooltip: a type disallowed in Peaceful.
         let entity_data = block_entity_item::item_entity_data(stack, self.items());
         if let Some(text) = sunrise_client::item_tooltip::spawn_egg_peaceful_line(
@@ -2072,7 +2112,7 @@ impl Game<'_> {
         ) {
             push(&mut lines, text, rgba(255, 85, 85, 255));
         }
-        details.start("minecraft:block_entity_data", lines.len());
+        append_through(Detail::BlockEntityData as usize, &mut lines);
         // Spawner.appendHoverText: what a spawner or trial spawner item spawns.
         if display.shows("minecraft:block_entity_data")
             && matches!(
@@ -2102,7 +2142,7 @@ impl Game<'_> {
         // AdventureModePredicate.addToTooltip under its header, for
         // can_break and then can_place_on. A block tag's blocks are listed by
         // id, as this side keeps tags unordered.
-        for (text, c) in sunrise_client::item_tooltip::adventure_lines(
+        let [can_break, can_place_on] = item_tooltip::adventure_lines(
             stack,
             &display,
             &|tag| {
@@ -2116,10 +2156,17 @@ impl Game<'_> {
                 blocks
             },
             &translate,
-        ) {
-            push(&mut lines, text, c);
+        );
+        for (detail, section) in [
+            (Detail::CanBreak, can_break),
+            (Detail::CanPlaceOn, can_place_on),
+        ] {
+            append_through(detail as usize, &mut lines);
+            for (text, color) in section {
+                push(&mut lines, text, color);
+            }
         }
-        details.end(lines.len());
+        append_through(Detail::Damage as usize, &mut lines);
         if display.shows("minecraft:damage")
             && let Some(info) = item_info
             && info.max_damage > 0
@@ -2140,6 +2187,7 @@ impl Game<'_> {
                 u32::MAX,
             ));
         }
+        append_through(Detail::Damage as usize + 1, &mut lines);
         // ItemStack.addDetailsToTooltipTail: with advanced tooltips the item id
         // and how many components the stack has.
         if advanced {
@@ -2187,30 +2235,6 @@ impl Game<'_> {
                     rgba(255, 85, 85, 255),
                 ));
             }
-        }
-        // RegisterTooltipAppendersEvent: each registered appender's lines, where its placement puts them.
-        if !appenders.is_empty() {
-            sunrise_client::item_tooltip::add_appender_lines(
-                &mut lines,
-                &details,
-                stack,
-                item_info,
-                |appender, stack, out| {
-                    if let Ok(stack) = stack.try_into_api() {
-                        let mut added = Vec::new();
-                        appender.append(self, &stack, &context, &mut added);
-                        out.extend(added.into_iter().map(|(text, color)| {
-                            (
-                                sunrise_client_lib::api_text::to_engine_inprocess(&text),
-                                color,
-                            )
-                        }));
-                    }
-                },
-                appenders
-                    .iter()
-                    .map(|p| (p.component(), p.placement(), p.enabled(), p.appender())),
-            );
         }
         // ItemTooltipEvent, once the tooltip vanilla shows is complete.
         if mod_callbacks
@@ -3780,6 +3804,10 @@ mod tests {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "stations/tooltip_appender_tests.rs"]
+mod tooltip_appender_tests;
 
 #[cfg(test)]
 mod cycling_tests {

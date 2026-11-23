@@ -112,6 +112,7 @@ pub struct PartRegistrar {
     /// Parts registered so far, by every mod: the next part's `order`.
     pub(crate) registered: usize,
     pub(crate) parts: Parts,
+    pub(crate) tooltip_appenders: Vec<(crate::TooltipPlacement, TooltipAppenderPart)>,
     pub(crate) tags: TagParts,
     pub(crate) block_entity_types: Vec<(&'static str, BlockEntityTypeDecl)>,
     pub(crate) block_entity_transforms:
@@ -172,6 +173,7 @@ impl PartRegistrar {
             mod_index: 0,
             registered: 0,
             parts: Self::capability_parts(),
+            tooltip_appenders: Vec::new(),
             tags: TagParts::default(),
             block_entity_types: Vec::new(),
             block_entity_transforms: HashMap::new(),
@@ -368,6 +370,31 @@ pub(crate) fn install_registrar(
         return Err(registrar.refused);
     }
     registrar.validate_attachment_admission()?;
+    if !registrar.tooltip_appenders.is_empty() {
+        let sorted = mod_vocab::__private::sort_tooltip_appenders(
+            registrar
+                .tooltip_appenders
+                .iter()
+                .map(|(placement, part)| (&part.component, placement, part.owner.id())),
+        );
+        let order = match sorted {
+            Ok(order) => order,
+            Err(error) => {
+                for (_, part) in registrar.tooltip_appenders {
+                    discard_startup_registrations(part.owner.id(), [part]);
+                }
+                return Err(vec![error]);
+            }
+        };
+        registrar.parts.tooltip_appenders = order
+            .into_iter()
+            .map(|(slot, index)| {
+                let mut part = registrar.tooltip_appenders[index].1.clone();
+                part.slot = slot;
+                part
+            })
+            .collect();
+    }
     let game_rule_slots = slots.expect("every schema refusal was collected");
     let installed = Installed {
         dependencies: crate::load_state::effective_dependencies(),

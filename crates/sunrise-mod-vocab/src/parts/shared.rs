@@ -108,7 +108,7 @@ pub struct Parts {
     pub(crate) entity_capabilities: Capabilities<NativeCapabilityProvider>,
     /// The mods' own item places (`ItemPlace::Mod`), by provider name.
     pub(crate) place_providers: HashMap<&'static str, PlaceProviderPart>,
-    /// The tooltip appenders, in registration order.
+    /// The mod tooltip appenders, in resolved component order.
     pub(crate) tooltip_appenders: Vec<TooltipAppenderPart>,
     /// The crash report lines, in registration order.
     pub(crate) crash_sections: Vec<CrashSectionPart>,

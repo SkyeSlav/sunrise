@@ -82,6 +82,7 @@ impl PartRegistrar {
             attributes,
             attribute_widenings,
             spawn_placements,
+            tooltip_appenders,
             entity_part_states,
             biome_regions,
             biome_modifiers,
@@ -141,7 +142,6 @@ fn discard_rejected_parts(owner: &'static str, parts: Parts) {
             .flat_map(HashMap::into_values)
             .flatten(),
         parts.place_providers.into_values(),
-        parts.tooltip_appenders,
         parts.crash_sections,
         parts.command_arguments,
         parts.recipe_serializers.into_values(),

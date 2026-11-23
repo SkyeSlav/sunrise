@@ -1,0 +1,12 @@
+ids = [
+    "type:TooltipPlacement",
+    "trait:TooltipAppender",
+    "method:TooltipAppender::append",
+    "method:ItemsRegistrar::register_tooltip_appender",
+]
+why = "Order component tooltip callbacks using the registered appenders and their dependency graph, following NeoForge's RegisterTooltipAppendersEvent and vanilla ItemStack.addDetailsToTooltip. A panicking appender loses only its own lines and is disabled for the session. Signatures and Wire shapes are unchanged."
+migrate = """
+- `ItemsRegistrar::register_tooltip_appender`: pass the ID of a registered data component. Keep one appender per component; combine multiple callbacks into one. If vanilla already has an appender for it, extend the completed tooltip in `Hooks::item_tooltip` instead.
+- `TooltipPlacement`: `Before(id)` and `After(id)` require an existing vanilla or modded appender, possibly registered later. They constrain relative order, not adjacency. Break cycles; ready vanilla nodes take priority and ready mod nodes follow registration order. `BeforeAll` and `AfterAll` bracket the vanilla component sequence, which includes durability; use `Before(\"minecraft:damage\".into())` to stay before that line.
+- `TooltipAppender` / `TooltipAppender::append`: keep the same signature and append all the component's lines in this one callback. Do not rely on partially appended lines surviving a panic or on other callbacks sharing the same component slot.
+"""
