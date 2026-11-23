@@ -4,8 +4,9 @@
 //! differential test world answer the same questions. Random draws follow
 //! vanilla's order.
 use super::{MobType, Species, data};
-use crate::blocks::{BlockFacts, Fluid};
+use crate::blocks::{BlockFacts, Fluid, StateFacts};
 use mod_api::{BlockPos, SpawnPlacementContext, SpawnPlacementLevel};
+use std::ops::Range;
 use sunrise_core::random::{RandomSource, slime_chunk_random};
 use sunrise_world::{dimension_type::DimensionFacts, registry::BlockStateId};
 
@@ -80,28 +81,38 @@ fn raw_brightness<L: SpawnLevel>(l: &L, x: i32, y: i32, z: i32, darkening: i32) 
 fn can_see_sky<L: SpawnLevel>(l: &L, x: i32, y: i32, z: i32) -> bool {
     l.sky_light(x, y, z) >= 15
 }
-/// `LevelReader.canSeeSkyFromBelowWater`.
 fn can_see_sky_from_below_water<L: SpawnLevel>(l: &L, x: i32, y: i32, z: i32) -> bool {
-    let sea = l.sea_level();
-    if y >= sea {
-        return can_see_sky(l, x, y, z);
-    }
-    if !can_see_sky(l, x, sea, z) {
+    let height = l.dimension_type().height;
+    sky_from_below_water(
+        y,
+        l.sea_level(),
+        height.min_y..height.min_y + height.height,
+        |yy| can_see_sky(l, x, yy, z),
+        |yy| l.facts().get(l.state(x, yy, z)),
+    )
+}
+
+/// `LevelReader.canSeeSkyFromBelowWater` for a single column, shared by the guardian spawn
+/// rule and level reads. Outside build height `Level.getBlockState` reads transparent void air,
+/// so only the scan (not the sky sample) is restricted to `build_y`.
+pub fn sky_from_below_water<'a>(
+    y: i32,
+    sea: i32,
+    build_y: Range<i32>,
+    sky_at_y: impl FnOnce(i32) -> bool,
+    mut facts_at_y: impl FnMut(i32) -> &'a StateFacts,
+) -> bool {
+    if !sky_at_y(y.max(sea)) {
         return false;
     }
-    ((y + 1)..sea).all(|yy| {
-        let f = l.facts().get(l.state(x, yy, z));
-        // `BlockState.liquid()` is water, lava and the bubble column. Kelp,
-        // seagrass and waterlogged blocks hold water and still stop the scan.
-        f.dampening == 0 || liquid_block(&f.name)
+    if y >= sea {
+        return true;
+    }
+    let scan = (y + 1).max(build_y.start)..sea.min(build_y.end);
+    scan.rev().all(|yy| {
+        let facts = facts_at_y(yy);
+        facts.dampening == 0 || facts.liquid
     })
-}
-/// `BlockState.liquid()`: the three blocks whose property is set.
-fn liquid_block(name: &str) -> bool {
-    matches!(
-        name,
-        "minecraft:water" | "minecraft:lava" | "minecraft:bubble_column"
-    )
 }
 
 /// `EntityType.fireImmune`.
@@ -904,7 +915,7 @@ mod light_draw_tests {
 mod mod_spawn_rule_tests {
     use super::super::spawn_selection::Heightmap as Surface;
     use super::*;
-    use crate::blocks::{RenderShape, Sounds, StateFacts};
+    use crate::blocks::{RenderShape, Sounds};
     use data::Placement;
     use mod_api::__private::{SpawnPlacementDeclaration, parts_installation::entity_type_key};
     use mod_api::{
@@ -955,6 +966,7 @@ mod mod_spawn_rule_tests {
             emission: 0,
             dynamic_light: false,
             dampening: 0,
+            liquid: false,
             skylight_down: true,
             shape_occlusion: false,
             can_occlude: full,
@@ -995,6 +1007,101 @@ mod mod_spawn_rule_tests {
             outline_edges: Arc::from([]),
             map_color: 0,
         }
+    }
+
+    #[test]
+    fn sky_below_water_uses_light_dampening_and_the_liquid_property() {
+        let air = state("minecraft:air", false);
+        let bubble = StateFacts {
+            liquid: true,
+            fluid: Fluid::Water,
+            dampening: 1,
+            ..state("minecraft:bubble_column", false)
+        };
+        let custom_liquid = StateFacts {
+            name: "test:liquid".into(),
+            ..bubble.clone()
+        };
+        let kelp = StateFacts {
+            fluid: Fluid::Water,
+            dampening: 1,
+            ..state("minecraft:kelp", false)
+        };
+        let waterlogged = StateFacts {
+            waterlogged: true,
+            fluid: Fluid::Water,
+            dampening: 1,
+            ..state("minecraft:oak_stairs", false)
+        };
+        let sea = 63;
+        let open_sky = |sample| {
+            assert_eq!(sample, sea);
+            true
+        };
+        assert!(!sky_from_below_water(
+            60,
+            sea,
+            -64..320,
+            |sample| {
+                assert_eq!(sample, sea);
+                false
+            },
+            |_| panic!("no column scan when sea-level sky is blocked"),
+        ));
+        let mut level = Flat::new(&[]);
+        level.sky = 14;
+        assert!(!can_see_sky_from_below_water(&level, 0, 60, 0));
+        level.sky = 15;
+        assert!(can_see_sky_from_below_water(&level, 0, 60, 0));
+
+        for (y, visible) in [(63, true), (64, false), (i32::MAX, true)] {
+            assert_eq!(
+                sky_from_below_water(
+                    y,
+                    sea,
+                    -64..320,
+                    |sample| {
+                        assert_eq!(sample, y);
+                        visible
+                    },
+                    |_| panic!("no column scan at or above sea level"),
+                ),
+                visible
+            );
+        }
+        for (block, expected) in [
+            (&bubble, true),
+            (&custom_liquid, true),
+            (&kelp, false),
+            (&waterlogged, false),
+        ] {
+            assert_eq!(
+                sky_from_below_water(60, sea, -64..320, open_sky, |yy| {
+                    if yy == 62 { block } else { &air }
+                }),
+                expected,
+                "{} above the target",
+                block.name
+            );
+        }
+        assert!(sky_from_below_water(62, sea, -64..320, open_sky, |_| {
+            panic!("neither the sea level nor the target block is scanned")
+        }));
+
+        // A far-below-build query still sees in-build blockers. Sampling descends from
+        // below the sea and stops at the first obstruction.
+        let mut sampled = Vec::new();
+        assert!(!sky_from_below_water(
+            i32::MIN,
+            sea,
+            58..61,
+            open_sky,
+            |yy| {
+                sampled.push(yy);
+                if yy == 59 { &kelp } else { &air }
+            }
+        ));
+        assert_eq!(sampled, [60, 59]);
     }
 
     /// A flat world: grass at y 0, stone at x 5 up to y 1, air above. Tests

@@ -37,6 +37,14 @@ pub trait LevelLightBackend {
     /// return None. Never loads chunks. See `LevelHost::can_see_sky` for the light storage rules
     /// at its boundaries.
     fn level_can_see_sky(&self, level: LevelRef, pos: [i32; 3]) -> Option<bool>;
+    /// Side: server.
+    /// `LevelReader.canSeeSkyFromBelowWater`: at or above sea level, use ordinary sky visibility.
+    /// Below sea level, require full sky light (at least 15) at sea level in this column. Any
+    /// block strictly between that point and `pos` blocks the sky if it has positive light
+    /// dampening and is not marked liquid. A block containing fluid is not necessarily liquid.
+    /// Returns None for a stale or unavailable level, a client, or an unloaded column. Does not
+    /// load chunks.
+    fn level_can_see_sky_from_below_water(&self, level: LevelRef, pos: [i32; 3]) -> Option<bool>;
 }
 /// The handles' writes of the `level_light` area, implemented by the game and reached through [`BackendMut`].
 // hidden: a handle's backend, reached through `Backend`; mods call the handle, never this trait

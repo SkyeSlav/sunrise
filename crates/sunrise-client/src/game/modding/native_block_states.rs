@@ -84,6 +84,23 @@ impl Game<'_> {
     pub(super) fn entity_type_key_id(&self, key: EntityTypeKey) -> Option<RegistryName> {
         mod_api::__private::entity_type_key_id(key)
     }
+    /// The registered class implements `Enemy`.
+    pub(super) fn entity_type_key_is_enemy(&self, key: EntityTypeKey) -> bool {
+        self.entity_type_spawn_facts(key)
+            .is_some_and(|facts| facts.is_enemy())
+    }
+    /// The registered class extends `Animal`.
+    pub(super) fn entity_type_key_is_animal(&self, key: EntityTypeKey) -> bool {
+        self.entity_type_spawn_facts(key)
+            .is_some_and(|facts| facts.is_animal())
+    }
+    fn entity_type_spawn_facts(
+        &self,
+        key: EntityTypeKey,
+    ) -> Option<&sunrise_client::mobs::spawner::SpawnerTypeFacts> {
+        let rest = self.res.rest.get()?;
+        rest.spawner_types.get(&*self.entity_type_key_id(key)?)
+    }
     /// The canonical menu type id retained by the load-owned slot.
     pub(super) fn menu_key_id(&self, key: MenuKey) -> Option<RegistryName> {
         mod_api::__private::menu_key_id(key)

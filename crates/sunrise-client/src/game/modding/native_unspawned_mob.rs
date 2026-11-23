@@ -234,6 +234,21 @@ impl Game<'_> {
         })
     }
 
+    /// The mob's current `LivingEntity.isBaby`, not its eventual finalization result.
+    pub(super) fn unspawned_mob_baby(
+        &self,
+        mob: UnspawnedMobRef,
+    ) -> Result<bool, UnspawnedMobError> {
+        if mob.pending_parts().is_some() {
+            return self.with_lent_mob(mob, |m| Ok(m.is_baby()));
+        }
+        self.with_lent(mob, |lent| match &lent.mob {
+            Some(mob) => Ok(mob.is_baby()),
+            None if lent.kind == "minecraft:ender_dragon" => Ok(false),
+            None => Err(UnspawnedMobError::Unsupported),
+        })
+    }
+
     /// Where the mob will join the level.
     pub(super) fn unspawned_mob_position(
         &self,
@@ -636,12 +651,15 @@ impl Edits<'_, '_> {
 mod tests {
     use super::super::commands::Target;
     use super::super::creatures::SpawnSite;
-    use super::super::native_entity_refs::tests::with_game;
+    use super::super::native_entity_refs::tests::{run_fresh_cases, with_game};
+    use super::super::native_pending_children::{Children, PendingMob};
     use super::*;
-    use mod_api::{FinalizeSpawnEvent, Flow, Host};
+    use mod_api::{FinalizeSpawnEvent, Flow, Host, PendingChildrenEdits, SpawnCheck};
     use std::sync::{Arc, Mutex};
     use sunrise_client::mobs::finalize::{self, Attr};
     use sunrise_client::mobs::spawn_rules::Reason;
+    use sunrise_core::geometry::Vec3;
+    use sunrise_mod_runtime::pending_children::Decision;
 
     type Listen = dyn Fn(&dyn Host, &mut FinalizeSpawnEvent<'_>) -> Flow + Send + Sync;
     /// Answers `finalize_spawn` with the test's closure.
@@ -680,6 +698,138 @@ mod tests {
             false,
             SpawnSite::Finalizing(Reason::Natural),
         )
+    }
+
+    type BabyRead = Result<bool, UnspawnedMobError>;
+
+    struct PositionBabyReader(Arc<Mutex<Option<BabyRead>>>);
+    #[mod_api::__subscriptions]
+    impl mod_api::Hooks for PositionBabyReader {
+        fn mob_spawn_position_check(
+            &self,
+            host: &dyn Host,
+            event: &mut mod_api::MobSpawnPositionCheckEvent<'_>,
+        ) {
+            *self.0.lock().unwrap() = Some(event.mob.baby(host));
+        }
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn baby_reads_the_current_lent_mob_before_finalization() {
+        const FLAG: &str = "SUNRISE_UNSPAWNED_BABY_TEST_CASE";
+        if run_fresh_cases(
+            "game::native_unspawned_mob::tests::baby_reads_the_current_lent_mob_before_finalization",
+            FLAG,
+            &["finalize", "leases"],
+        ) {
+            return;
+        }
+
+        match std::env::var(FLAG).as_deref() {
+            Ok("finalize") => {
+                let seen = Arc::new(Mutex::new(None));
+                let listener = Arc::clone(&seen);
+                listening(
+                    move |host, event| {
+                        let before = event.mob.baby(host);
+                        let mut ageable = AgeableGroup::new(true, 1.0);
+                        ageable.size = 1;
+                        *event.group = Some(SpawnGroup::Ageable(ageable));
+                        *listener.lock().unwrap() = Some((before, event.mob.baby(host)));
+                        Flow::Continue
+                    },
+                    || {
+                        with_game(|game| {
+                            let spawned = spawn_pig(game).unwrap();
+                            let pig = game.mobs.iter().find(|m| m.id == spawned).unwrap();
+                            assert!(pig.is_baby(), "the group makes finalization choose a baby");
+                        });
+                    },
+                );
+                assert_eq!(*seen.lock().unwrap(), Some((Ok(false), Ok(false))));
+            }
+            Ok("leases") => with_game(|game| {
+                let seen = Arc::new(Mutex::new(None));
+                let reader = PositionBabyReader(Arc::clone(&seen));
+                let make_mob = |id, kind: &str| {
+                    let kind = game.res.mob_types().get(kind).unwrap().clone();
+                    Mob::new(id, kind, Vec3::new(AT[0], AT[1], AT[2]), 0.0)
+                };
+                let mut cow = make_mob(70, "minecraft:cow");
+                let mut zombie = make_mob(71, "minecraft:zombie");
+                finalize::set_baby(&mut zombie, true);
+                let mut camel_husk = make_mob(72, "minecraft:camel_husk");
+                camel_husk.extra.age = -1;
+                let mut retained: Option<UnspawnedMobRef> = None;
+                mod_platform::testing::with_mods(
+                    vec![mod_api::ModEntry::new("position_baby", Box::new(reader))].into(),
+                    || {
+                        for (kind, backing, expected) in [
+                            ("minecraft:cow", Some(&mut cow), Ok(false)),
+                            ("minecraft:zombie", Some(&mut zombie), Ok(true)),
+                            ("minecraft:camel_husk", Some(&mut camel_husk), Ok(false)),
+                            ("minecraft:ender_dragon", None, Ok(false)),
+                            ("minecraft:cow", None, Err(UnspawnedMobError::Unsupported)),
+                        ] {
+                            let level = game.level_ref(game.lend_epoch(), game.dim.key());
+                            retained = Some(game.lend_unspawned(kind, AT, backing, |mob, _| {
+                                if let Some(old) = retained {
+                                    assert_eq!(old.baby(game), Err(UnspawnedMobError::Expired));
+                                }
+                                let mut result = SpawnCheck::Default;
+                                game.native_mob_spawn_position_check(
+                                    mod_api::__private::MobSpawnPositionCheckCall {
+                                        dimension: game.dim.id(),
+                                        kind,
+                                        reason: Reason::Natural,
+                                        pos: AT,
+                                        level,
+                                        spawner: None,
+                                        mob,
+                                        result: &mut result,
+                                    },
+                                );
+                                mob
+                            }));
+                            assert_eq!(seen.lock().unwrap().take(), Some(expected), "{kind}");
+                        }
+                    },
+                );
+                assert_eq!(
+                    retained.unwrap().baby(game),
+                    Err(UnspawnedMobError::Expired)
+                );
+
+                let mut cow = make_mob(73, "minecraft:cow");
+                finalize::set_baby(&mut cow, true);
+                let pending = PendingMob {
+                    mob: cow,
+                    uuid: None,
+                    attachments: Default::default(),
+                    dimension: game.dim,
+                };
+                let arena = game.lent_mobs.borrow().pending.clone();
+                let mut child = None;
+                let _frozen = PendingChildren::run_scoped(
+                    &arena,
+                    game.lend_epoch().get(),
+                    1,
+                    vec![pending],
+                    |action| {
+                        let edits = Children::new(game, action, false);
+                        let mob = edits.child(edits.receiver().unwrap(), 0).unwrap();
+                        assert_eq!(mob.baby(game), Ok(true));
+                        child = Some(mob);
+                        Decision::Accept
+                    },
+                    |_| true,
+                )
+                .unwrap();
+                assert_eq!(child.unwrap().baby(game), Err(UnspawnedMobError::Expired));
+            }),
+            _ => unreachable!("unknown child case"),
+        }
     }
 
     /// What a listener edits through the editor is on the mob that joins the

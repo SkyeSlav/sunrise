@@ -239,10 +239,12 @@ pub struct SpawnerAdded {
     pub mob: bool,
 }
 
-/// The type facts read by spawners before constructing an entity.
+/// The registered type facts that can be read before constructing an entity.
 #[derive(Clone, Copy)]
 pub struct SpawnerTypeFacts {
     species: Option<Species>,
+    enemy: bool,
+    animal: bool,
     allowed_in_peaceful: bool,
     category: Category,
     dimensions: (f64, f64),
@@ -255,6 +257,8 @@ impl SpawnerTypeFacts {
     pub fn general_entity(width: f64, height: f64) -> Self {
         Self {
             species: None,
+            enemy: false,
+            animal: false,
             allowed_in_peaceful: true,
             category: Category::Misc,
             dimensions: (width, height),
@@ -308,6 +312,22 @@ impl SpawnerTypeFacts {
                 id.to_owned(),
                 Self {
                     species,
+                    // `Monster` implements `Enemy`; these other classes implement it directly.
+                    // The dragon is registered separately from the ordinary mob species.
+                    enemy: base == "minecraft:ender_dragon"
+                        || species.is_some_and(|s| {
+                            super::drops::is_monster(s)
+                                || matches!(
+                                    s,
+                                    Species::Ghast
+                                        | Species::Hoglin
+                                        | Species::MagmaCube
+                                        | Species::Phantom
+                                        | Species::Shulker
+                                        | Species::Slime
+                                )
+                        }),
+                    animal: species.is_some_and(super::drops::is_animal),
                     allowed_in_peaceful: row
                         .allowed_in_peaceful
                         .unwrap_or_else(|| def.is_none_or(|def| !def.flags(false).not_in_peaceful)),
@@ -327,6 +347,16 @@ impl SpawnerTypeFacts {
             species: self.species,
             allowed_in_peaceful: self.allowed_in_peaceful,
         }
+    }
+
+    /// Whether the type's class implements `Enemy`.
+    pub fn is_enemy(self) -> bool {
+        self.enemy
+    }
+
+    /// Whether the type's class extends `Animal`.
+    pub fn is_animal(self) -> bool {
+        self.animal
     }
 
     /// The type's ordinary width and height, before any pose or size changes.
@@ -868,6 +898,47 @@ mod tests {
             assert!(error.contains("minecraft:arrow"), "{error}");
             assert!(error.contains(reason), "{error}");
         }
+    }
+
+    #[test]
+    fn registered_entity_class_is_independent_of_spawn_category() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("entity-types.json"),
+            r#"{
+                "minecraft:hoglin": {"category":"monster","width":1,"height":1},
+                "minecraft:ender_dragon": {"category":"monster","width":1,"height":1},
+                "minecraft:zombie": {"category":"monster","width":1,"height":1},
+                "minecraft:zombie_horse": {"category":"monster","width":1,"height":1},
+                "minecraft:camel_husk": {"category":"monster","width":1,"height":1},
+                "minecraft:zombie_nautilus": {"category":"monster","width":1,"height":1},
+                "minecraft:sulfur_cube": {"category":"monster","width":1,"height":1},
+                "minecraft:arrow": {"category":"misc","width":1,"height":1},
+                "test:pasture_hoglin": {
+                    "category":"creature","width":1,"height":1,"template":"minecraft:hoglin"
+                }
+            }"#,
+        )
+        .unwrap();
+        let cases = [
+            ("minecraft:hoglin", (true, true)),
+            ("minecraft:ender_dragon", (true, false)),
+            ("minecraft:zombie", (true, false)),
+            ("minecraft:zombie_horse", (false, true)),
+            ("minecraft:camel_husk", (false, true)),
+            ("minecraft:zombie_nautilus", (false, true)),
+            ("minecraft:sulfur_cube", (false, false)),
+            ("minecraft:arrow", (false, false)),
+            ("test:pasture_hoglin", (true, true)),
+        ];
+        let facts =
+            SpawnerTypeFacts::load_registered(root.path(), cases.map(|(id, _)| id)).unwrap();
+        for (id, expected) in cases {
+            let kind = facts[id];
+            assert_eq!((kind.is_enemy(), kind.is_animal()), expected, "{id}");
+        }
+        let general = SpawnerTypeFacts::general_entity(1.0, 1.0);
+        assert_eq!((general.is_enemy(), general.is_animal()), (false, false));
     }
 
     #[test]

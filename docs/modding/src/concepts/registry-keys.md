@@ -51,6 +51,13 @@ Persist the name, never the scalar slot.
 For example, retain the zombie key at setup, then compare
 `entity.kind(host) == Some(zombie_key)` in a predicate.
 
+`key.is_enemy(host)` and `key.is_animal(host)` check the registered entity class without constructing an
+entity. Both reads work on either side with the registry available and return `false` for unknown or unavailable
+keys. Spawn category does not determine either answer. A hoglin matches both vanilla classes; an ender dragon
+matches only `Enemy`; a zombie horse, camel husk and zombie nautilus match only `Animal`; a sulfur cube matches
+neither. A content type uses its template's class, even if it changes the template's spawn category. Native
+general entities match neither.
+
 The key derives `Wire` through its scalar slot: host decoding checks the registered
 slot.
 

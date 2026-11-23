@@ -847,6 +847,26 @@ impl Game<'_> {
             pos,
         ))
     }
+    /// `LevelReader.canSeeSkyFromBelowWater`, restricted to an already loaded server column.
+    pub(super) fn level_can_see_sky_from_below_water(
+        &self,
+        level: LevelRef,
+        [x, y, z]: [i32; 3],
+    ) -> Option<bool> {
+        let world = self.native_level_world(level)?;
+        if !world.loaded(x, z) {
+            return None;
+        }
+        let sea = super::Dim::sea_level_of_id(level.dimension_id());
+        let facts = self.res.facts();
+        Some(sunrise_client::mobs::spawn_rules::sky_from_below_water(
+            y,
+            sea,
+            world.shape.min_y..world.shape.max_y(),
+            |yy| super::native_world_read::can_see_sky(world, [x, yy, z]),
+            |yy| facts.get(world.block(x, yy, z)),
+        ))
+    }
     /// `LevelLightEngine.checkBlock` at `pos`, queued with the level's light edits: the next
     /// update asks a `dynamic_light` block's parts again (`ask_edited_light_emission`) and
     /// relights the cell, which `LightTables::differs` lets through for such a state set to

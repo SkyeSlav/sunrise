@@ -226,6 +226,14 @@ spawner block, `Spawner::Trial { pos }` for a trial spawner, and `None` when no 
 minecart. Set `*event.result` to `SpawnCheck::Succeed` or `Fail` to override that
 check; `Default` keeps the check's own answer.
 
+Use `level.can_see_sky_from_below_water(host, [x, y, z])` for the same sky check guardians use.
+At or above sea level, it checks for full sky light at that position. Below sea level, it checks for
+full sky light at sea level in the same column, then scans downward without including the target
+block. A block that dampens light stops the scan unless it is marked liquid: a bubble column lets
+the scan continue, but kelp and waterlogged blocks can stop it. This read is server-only and does
+not load chunks. It returns `None` for a stale or unavailable level, on a client, or if the column
+is not loaded. To check the type rather than the level, use the [entity-type predicates](../../concepts/registry-keys.md#entity-type-reads).
+
 In `mob_spawn_placement_check` version 2, `event.default_result` is the effective predicate result. It can differ
 from vanilla even for a vanilla type, because registrations can add to or replace its predicate. The hook fires
 after the predicates at `SpawnPlacements.checkSpawnRules`. For a probabilistic decision, draw from `event.random`,
@@ -262,9 +270,10 @@ fn mob_spawn_position_check(&self, host: &dyn mod_api::Host, event: &mut mod_api
 }
 ```
 
-Where the game does not create the mob fresh, the handle answers only `kind` and `position` (the rest is
-`UnspawnedMobError::Unsupported`): chunk generation's packs, which the world generator creates and finalizes after the
-check, and a spawner or trial spawner whose spawn data carries entity data, which the game loads after the tick.
+Where the game does not create the mob fresh, the handle answers `kind` and `position`: chunk generation's packs,
+which the world generator creates and finalizes after the check, and a spawner or trial spawner whose spawn data
+carries entity data, which the game loads after the tick. Other reads return `UnspawnedMobError::Unsupported`,
+except `baby(host)` on the ender dragon, which returns `Ok(false)`.
 
 ## Stopping a spawn or leaving a mob plain
 
@@ -289,10 +298,16 @@ an explicit NBT compound follows the load route without finalization.
 ## Changing the mob before it is finalized
 
 `event.mob` is the mob itself, an `UnspawnedMobRef`: it is not in a level, so it is not an `EntityRef`, and only this
-hook call can use it. Read it through the host (`kind`, `position`, `equipment`, `attribute_base`, `attribute_value`,
-`tags`, `custom_name`) and change it through `event.edits`, which reaches only this mob: equipment (an API-owned `ItemStack`), an attribute's base or a permanent modifier, tags and the custom name. An edit applies at once, so the
-reads and the next listener see it. Once the hook returns, the handle answers `UnspawnedMobError::Expired`, as does a
-handle from another call passed to this call's editor.
+hook call can use it. Read it through the host (`kind`, `position`, `baby`, `equipment`, `attribute_base`,
+`attribute_value`, `tags`, `custom_name`) and change it through `event.edits`, which reaches only this mob:
+equipment (an API-owned `ItemStack`), an attribute's base or a permanent modifier, tags and the custom name.
+An edit applies at once, so the reads and the next listener see it. A stale handle or one from another call
+returns `UnspawnedMobError::Expired`.
+
+`event.mob.baby(host)` reads the current baby state on the server, not a later finalization roll. An ageable mob
+must be able to be a baby and have a negative age; a zombie uses its baby flag. Changing `event.group` does not
+change this read before finalization runs. The read also works in position checks with a backing mob and on
+valid pending-child borrows.
 
 ```rust,ignore
 fn finalize_spawn(&self, host: &dyn mod_api::Host, event: &mut mod_api::FinalizeSpawnEvent<'_>) -> mod_api::Flow {
@@ -310,9 +325,10 @@ slot replaces what a listener put there, and the attribute bonuses it adds apply
 `Flow::Cancel` to keep exactly what the listener left, since no finalization runs. Attribute edits reach the
 attributes a mob keeps itself (max health, movement speed, follow range, attack damage, knockback resistance,
 spawn reinforcements, jump strength, burning time, flying speed); the others answer `Unsupported` until the mob has
-joined, when a `LivingRef` writes them. The ender dragon's handle answers its kind and position, and `Unsupported`
-for the rest. A mob that finalization creates (a chicken jockey's chicken, a zombie horse's rider) fires the hook
-again with a handle of its own.
+joined, when a `LivingRef` writes them. The ender dragon's handle answers its kind and position and returns
+`Ok(false)` for `baby(host)` even when the lend has no backing mob. Its other reads and edits return `Unsupported`.
+A mob that finalization creates (a chicken jockey's chicken, a zombie horse's rider) fires the hook again with a
+handle of its own.
 
 The hook fires on replayed ticks with the read-only host, so the editor and `group` are the only things a
 listener changes, and it must change them the same way every time: a pure function of the event.

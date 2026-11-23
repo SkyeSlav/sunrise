@@ -47,6 +47,8 @@ pub struct StateFacts {
     /// (`IBlockExtension.hasDynamicLightEmission`); `emission` is the light of a cell without one.
     pub dynamic_light: bool,
     pub dampening: u8,
+    /// `BlockState.liquid()`, distinct from a fluid occupying this block.
+    pub liquid: bool,
     pub skylight_down: bool,
     pub shape_occlusion: bool,
     pub can_occlude: bool,
@@ -542,6 +544,7 @@ impl BlockFacts {
                 emission: entry.emission.as_f64().unwrap_or(0.0) as u8,
                 dynamic_light: entry.dynamic_light,
                 dampening: entry.dampening.as_f64().unwrap_or(0.0) as u8,
+                liquid: entry.liquid,
                 skylight_down: entry.skylight_down,
                 shape_occlusion: entry.shape_occlusion,
                 can_occlude: entry.can_occlude,
@@ -694,6 +697,7 @@ mod pane_tests {
             emission: 0,
             dynamic_light: false,
             dampening: 0,
+            liquid: false,
             skylight_down: false,
             shape_occlusion: false,
             can_occlude: false,

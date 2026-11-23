@@ -1,0 +1,1 @@
+sunrise-client game::native_unspawned_mob::tests::baby_reads_the_current_lent_mob_before_finalization lib daily child-process

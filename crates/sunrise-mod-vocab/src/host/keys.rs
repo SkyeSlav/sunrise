@@ -114,6 +114,16 @@ pub trait KeysBackend {
     /// Returns `None` if the host has no backend or no name for the slot.
     fn entity_type_key_id(&self, key: EntityTypeKey) -> Option<RegistryName>;
     /// Side: both.
+    /// Whether this type's registered class implements vanilla's `Enemy`, independent of its
+    /// spawn category and of `is_animal`. Content types use their template's class. Unknown or
+    /// unavailable types return false. Does not construct an entity.
+    fn entity_type_key_is_enemy(&self, key: EntityTypeKey) -> bool;
+    /// Side: both.
+    /// Whether this type's registered class is a vanilla `Animal`, independent of its spawn
+    /// category and of `is_enemy`. Content types use their template's class. Unknown or
+    /// unavailable types return false. Does not construct an entity.
+    fn entity_type_key_is_animal(&self, key: EntityTypeKey) -> bool;
+    /// Side: both.
     /// Pins the canonical menu type id without borrowing the host.
     /// Returns `None` if the host has no backend or no name for the slot.
     fn menu_key_id(&self, key: MenuKey) -> Option<RegistryName>;

@@ -173,6 +173,13 @@ pub trait MobsBackend {
     /// The unspawned mob's entity type (`minecraft:zombie`). `Expired` once the hook that lent it has returned.
     fn unspawned_mob_kind(&self, mob: UnspawnedMobRef) -> Result<Identifier, UnspawnedMobError>;
     /// Side: server.
+    /// The lent mob's current `LivingEntity.isBaby` state: negative age for an ageable type that
+    /// can be a baby, or the baby flag for types such as zombies. In `finalize_spawn` this is the
+    /// state before finalization, not a prediction of a later roll. Works on valid pending-child
+    /// borrows. The ender dragon returns false even on a metadata-only lend; other lends without
+    /// a backing mob return `Unsupported`. Stale or foreign lends return `Expired`.
+    fn unspawned_mob_baby(&self, mob: UnspawnedMobRef) -> Result<bool, UnspawnedMobError>;
+    /// Side: server.
     /// Where the unspawned mob will join the level. `Expired` once the hook that lent it has returned.
     fn unspawned_mob_position(&self, mob: UnspawnedMobRef) -> Result<[f64; 3], UnspawnedMobError>;
     /// Side: server.

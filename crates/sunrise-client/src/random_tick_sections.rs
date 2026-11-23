@@ -842,6 +842,7 @@ mod tick_parity {
                 emission: 0,
                 dynamic_light: false,
                 dampening: 0,
+                liquid: false,
                 skylight_down: true,
                 shape_occlusion: false,
                 can_occlude: true,
