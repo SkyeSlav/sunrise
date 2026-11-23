@@ -645,10 +645,16 @@ mod tests {
                 let cloud = game.entity(4).unwrap();
                 let me = game.entity(7).unwrap();
                 let unknown = EntityRef::new(vehicle.epoch(), 99);
-                let stale = EntityRef::new(
-                    WorldEpoch::new(vehicle.epoch().get().wrapping_add(1)),
-                    vehicle.id(),
+                let wrong_epoch = WorldEpoch::new(me.epoch().get().wrapping_add(1));
+                let stale = EntityRef::new(wrong_epoch, vehicle.id());
+                let stale_me = EntityRef::new(wrong_epoch, me.id());
+                let host: &dyn ClientHost = game;
+                assert_eq!(
+                    me.kind(host).and_then(|key| key.id(host)).as_deref(),
+                    Some("minecraft:player")
                 );
+                assert_eq!(me.vehicle(host), None);
+
                 game.handle_packet(set(9, vec![99])).unwrap();
                 let host: &dyn ClientHost = game;
                 assert_eq!(vehicle.passengers(host), Some(vec![]));
@@ -661,11 +667,24 @@ mod tests {
                 let host: &dyn ClientHost = game;
                 assert_eq!(vehicle.passengers(host), Some(vec![row, me]));
                 assert_eq!(vehicle.is_vehicle(host), Some(true));
-                assert_eq!(row.vehicle(host), Some(vehicle));
-                assert_eq!(me.vehicle(host), Some(vehicle));
+                for passenger in [row, me] {
+                    let mounted = passenger.vehicle(host);
+                    assert_eq!(mounted, Some(vehicle));
+                    assert_eq!(
+                        mounted
+                            .and_then(|vehicle| vehicle.kind(host))
+                            .and_then(|key| key.id(host))
+                            .as_deref(),
+                        Some("mymod:missile")
+                    );
+                }
                 assert_eq!(cloud.is_passenger(host), Some(true));
+                assert_eq!(cloud.vehicle(host), Some(row));
                 assert_eq!(cloud.root_vehicle(host), Some(vehicle));
-                assert_eq!(unknown.vehicle(host), None);
+                for unavailable in [unknown, stale_me] {
+                    assert_eq!(unavailable.kind(host), None);
+                    assert_eq!(unavailable.vehicle(host), None);
+                }
                 assert_eq!(unknown.passengers(host), None);
                 assert_eq!(stale.passengers(host), None);
                 assert_eq!(stale.is_vehicle(host), None);
@@ -700,7 +719,16 @@ mod tests {
                 game.position_riders();
                 assert_eq!(row.position(game), Some([2.5 - 1.7, 74.0, 0.5]));
                 game.handle_packet(set(9, vec![12])).unwrap();
-                assert_eq!(me.vehicle(game), Some(ghast));
+                let host: &dyn ClientHost = game;
+                let mounted = me.vehicle(host);
+                assert_eq!(mounted, Some(ghast));
+                assert_eq!(
+                    mounted
+                        .and_then(|vehicle| vehicle.kind(host))
+                        .and_then(|key| key.id(host))
+                        .as_deref(),
+                    Some("minecraft:happy_ghast")
+                );
                 game.handle_packet(set(7, vec![99])).unwrap();
                 assert_eq!(late.vehicle(game), Some(me));
                 // Replace the local player in the same level while it is both a rider and
@@ -731,8 +759,27 @@ mod tests {
                 assert_eq!(cloud.root_vehicle(host), Some(vehicle));
 
                 game.handle_packet(set(9, vec![])).unwrap();
-                assert_eq!(vehicle.passengers(game), Some(vec![]));
-                assert_eq!(cloud.root_vehicle(game), Some(row));
+                let host: &dyn ClientHost = game;
+                assert_eq!(vehicle.passengers(host), Some(vec![]));
+                assert_eq!(cloud.root_vehicle(host), Some(row));
+                assert_eq!(row.vehicle(host), None);
+                assert_eq!(
+                    row.kind(host).and_then(|key| key.id(host)).as_deref(),
+                    Some("mymod:missile")
+                );
+
+                game.handle_packet(C::RemoveEntities(play::RemoveEntities { ids: vec![9] }))
+                    .unwrap();
+                let host: &dyn ClientHost = game;
+                assert_eq!(vehicle.kind(host), None);
+
+                game.handle_packet(set(20, vec![7])).unwrap();
+                let host: &dyn ClientHost = game;
+                assert_eq!(me.vehicle(host), Some(ghast));
+                game.client_logging_out();
+                let host: &dyn ClientHost = game;
+                assert_eq!(me.kind(host), None);
+                assert_eq!(me.vehicle(host), None);
             })
         });
     }

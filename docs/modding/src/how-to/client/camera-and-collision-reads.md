@@ -201,6 +201,19 @@ for a tracked target they use the client's displayed body. End crystals expose t
 dragon parts expose their own box. Stale handles and entities the
 client cannot read return `None`.
 
+`kind(host)` returns the [resolved entity type key](../../concepts/registry-keys.md#entity-type-reads)
+for the local player or an available entity in the current client level. To read the type
+of the entity's immediate vehicle, use the same shared `ClientHost`:
+
+```rust,ignore
+let vehicle_kind = entity.vehicle(host).and_then(|vehicle| vehicle.kind(host));
+```
+
+`vehicle(host)` reads the riding relationship from the server's applied passenger lists,
+including for the local player. It does not read pending interactions or steering predictions.
+It returns `None` when the entity is not riding, either handle cannot resolve, or no client
+level is open. Both reads leave the world unchanged and fire no hooks.
+
 The local `PlayerRef` also supports `within_entity_reach(host, target, rule)`: it reads the
 predicted eyes, the target's displayed bounding box, the synchronized interaction-range
 attribute and the main hand's attack-range component. `EntityReach::Interact` and `Container`

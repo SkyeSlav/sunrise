@@ -7,12 +7,15 @@ use crate::*;
 #[sunrise_mod_api_macros::host_area]
 pub trait EntityRidingBackend {
     /// Side: both.
-    /// What the entity rides (`Entity.getVehicle`): `None` when it rides
-    /// nothing, its actual vehicle is retained off-level and has no resident handle,
-    /// or the supplied handle is stale. `is_passenger` still reports the relationship.
-    /// On a client, the vehicle the passenger has boarded from the server's list, if
-    /// this window has a handle for it. Lists for unknown vehicles or entities that
-    /// cannot accept passengers (markers and ominous item spawners) have no effect.
+    /// The entity's immediate vehicle (`Entity.getVehicle`), not its root vehicle.
+    /// Returns `None` when the entity is not riding or the supplied handle is stale.
+    /// On a server, a vehicle retained off-level with no resident handle also returns
+    /// `None`; `is_passenger` still reports the relationship.
+    /// On a client, including for the local player, this reads the applied passenger lists,
+    /// not a pending interaction or steering prediction. Returns `None` if either handle
+    /// cannot resolve in the current client level or the host has no world backend.
+    /// Lists for unknown vehicles or entities that cannot accept passengers
+    /// (markers and ominous item spawners) have no effect.
     fn entity_vehicle(&self, entity: EntityRef) -> Option<EntityRef>;
     /// Side: both.
     /// Whether the entity rides another (`Entity.isPassenger`), including a retained

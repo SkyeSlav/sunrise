@@ -37,11 +37,12 @@ Add the stack's damage separately when reproducing vanilla's nonempty stack scat
 ## Entity-type reads
 
 `EntityRef::kind(host)` and the handles that delegate to it return
-`Option<EntityTypeKey>`, using the existing entity-type registry. The key is a
-copyable scalar; compare it with a retained key instead of
-allocating and comparing a type-name string on every read. A stale or missing
-entity still returns `None`. A native general row returns its declared type.
-There is no separate equipment-only type read.
+`Option<EntityTypeKey>` on either side, using the existing entity-type registry.
+On the client this includes the local player and entities available in the current
+level, including vehicles. A stale handle, an unavailable entity or an unresolved
+type returns `None`. A native general row returns its declared type. The key is a
+copyable scalar; compare it with a retained key instead of allocating and comparing
+a type-name string on every read. There is no separate equipment-only type read.
 
 After the registry is available, resolve the type keys your Part needs once and
 retain them. `host.entity_type_keys()` enumerates built-in and content types in

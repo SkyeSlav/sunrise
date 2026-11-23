@@ -27,10 +27,13 @@ pub trait EntityIdentityBackend {
     /// its tracking pass. A player is not among its own trackers. Fake players track nothing.
     /// None on a client, and for a stale handle or an entity that is not in the level in place.
     fn entity_trackers(&self, entity: EntityRef) -> Option<Vec<PlayerRef>>;
-    /// Side: server.
+    /// Side: both.
     /// The entity's resolved type key (`Entity.getType`). Compare keys directly;
     /// request `key.id(host)` explicitly when its canonical name is needed.
-    /// A general row returns its declared type. This read,
+    /// On a client, this includes the local player and available entities in
+    /// the current level, including vehicles. Returns `None` for a stale handle,
+    /// an unavailable entity or an unresolved type.
+    /// A general row returns its declared type. On the server, this read,
     /// `entity_uuid` and `entity_level` also answer for a mob a kill credit
     /// names in another loaded level. API 373.
     fn entity_kind(&self, entity: EntityRef) -> Option<EntityTypeKey>;
