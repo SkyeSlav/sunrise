@@ -12,7 +12,7 @@ mod payloads;
 pub mod transaction_packets;
 use super::config_payloads::ConfigIo;
 use super::{
-    Body, HandshakeRequest, Joined, NetEvent, Out, Shared,
+    Body, Joined, NetEvent, Out, Shared,
     data::{CORE_PACK, SyncData},
     io_pool::{self, Session as _},
 };
@@ -966,52 +966,7 @@ fn serve_connection(
                 );
                 return Ok(());
             }
-            let (intention, hello_timeout) = if let Some(requests) = &shared.handshake_requests
-                && shared.handshake_listeners.any()
-            {
-                // The handoff and Hello share the existing login read budget.
-                let deadline = Instant::now() + LOGIN_TIMEOUT;
-                let (reply, decision) = channel();
-                let waiting = Arc::new(());
-                if requests
-                    .send(HandshakeRequest {
-                        intention,
-                        peer_ip: (!c.is_memory()).then_some(address.ip()),
-                        reply,
-                        deadline,
-                        waiting: Arc::downgrade(&waiting),
-                    })
-                    .is_err()
-                {
-                    return Ok(());
-                }
-                let decision =
-                    decision.recv_timeout(deadline.saturating_duration_since(Instant::now()));
-                drop(waiting);
-                let Ok(decision) = decision else {
-                    return Ok(());
-                };
-                if shared.stop.load(Ordering::Relaxed)
-                    || shared.shutting_down.load(Ordering::Relaxed)
-                {
-                    return Ok(());
-                }
-                c.reader.check_peer_open().map_err(e)?;
-                let hello_timeout = deadline.saturating_duration_since(Instant::now());
-                if hello_timeout.is_zero() {
-                    return Ok(());
-                }
-                match decision {
-                    Ok(accepted) => (accepted, Some(hello_timeout)),
-                    Err(reason) => {
-                        login_disconnect(&mut c, &reason);
-                        return Ok(());
-                    }
-                }
-            } else {
-                (intention, None)
-            };
-            serve_login(c, intention, hello_timeout, address, &shared, counted)
+            serve_login(c, address, &shared, counted)
         }
         other => Err(format!("unknown intent {other}")),
     }
@@ -1184,21 +1139,12 @@ fn authenticate(
 
 fn serve_login(
     mut c: Connection,
-    // The accepted intention is the only requested host; login does not route by host yet.
-    _intention: handshake::Intention,
-    hello_timeout: Option<Duration>,
     address: std::net::SocketAddr,
     shared: &Arc<Shared>,
     counted: Option<super::Counted>,
 ) -> Result<(), String> {
     let e = |e: sunrise_protocol::Error| e.to_string();
-    if let Some(timeout) = hello_timeout {
-        c.reader.set_read_timeout(Some(timeout)).map_err(e)?;
-    }
     let (id, payload) = c.recv().map_err(e)?;
-    if hello_timeout.is_some() {
-        c.reader.set_read_timeout(Some(LOGIN_TIMEOUT)).map_err(e)?;
-    }
     let hello = match login::Serverbound::decode(id, &payload).map_err(e)? {
         login::Serverbound::Hello(h) => h,
         _ => return Err("expected a login hello".into()),

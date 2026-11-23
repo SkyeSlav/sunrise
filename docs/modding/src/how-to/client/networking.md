@@ -113,43 +113,6 @@ Rejected channels or encoding errors fail the join. The identity is not a Wire
 record; use registered configuration payload handlers for negotiated traffic.
 Play packet hooks and holds do not intercept these packets.
 
-## Login handshakes
-
-`player_handshake` runs on the server thread after the normal protocol and
-transfer checks, but before the login hello, authentication, or admission.
-There is no player or authenticated profile yet. Status pings don't fire it.
-
-```rust,ignore
-fn player_handshake(
-    &self,
-    _host: &mut dyn ServerHost,
-    event: &mut PlayerHandshakeEvent<'_>,
-) -> Flow {
-    match event.requested_host.as_str() {
-        "old.example" => *event.requested_host = "new.example".into(),
-        "closed.example" => {
-            event.cancelled = true;
-            *event.reason = Some(Text::literal("This address is closed."));
-        }
-        _ => {}
-    }
-    Flow::Continue
-}
-```
-
-The requested host is untrusted text, including any suffix after a NUL.
-Each listener sees the last accepted rewrite, and later login code uses the
-final value as-is. The vanilla limit of 255 UTF-16 code units applies to
-decoding the packet, not to the rewrite. The requested port and protocol
-version are read-only. The peer IP is the numeric transport address without
-a port, or `None` for an integrated server's memory connection. A rewrite
-does not change the peer IP or bypass authentication or admission.
-
-Cancellation sends a login disconnect and closes the connection without
-processing a login hello. The client gets the standard localized
-"Disconnected" text if you leave `reason` unset or it fails Text serialization
-validation.
-
 ## Configuration tasks before play
 
 The server's `register_configuration_tasks` hook (version 3) runs once per

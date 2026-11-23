@@ -8,7 +8,7 @@
 //! (vanilla's `LocalChannel`, which an integrated server's player uses).
 use crate::{Error, Result, buf::Reader, crypto::Cfb8, frame};
 use std::{
-    io::{ErrorKind, Read, Write},
+    io::{Read, Write},
     net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs},
     sync::{
         Arc,
@@ -487,49 +487,6 @@ impl ConnReader {
         self.end += n;
         Ok(n)
     }
-    /// Check that the peer hasn't closed while this blocking connection waited for a login
-    /// decision. A peek alone can hide an EOF behind a pipelined Hello. Keep the bytes without
-    /// decoding them and look for EOF, unless the socket would block. One maximum TCP frame
-    /// (Varint21FrameDecoder's body plus its three-byte prefix) bounds the read-ahead.
-    pub fn check_peer_open(&mut self) -> Result<()> {
-        let mut stream = std::mem::replace(&mut self.stream, Stream::Detached);
-        let result = match &mut stream {
-            Stream::Tcp(tcp) => self.check_tcp_peer_open(tcp),
-            Stream::Memory(pipe) if !pipe.is_closed() => Ok(()),
-            Stream::Memory(_) => Err(Error::end_of_stream()),
-            Stream::Detached => Err(detached().into()),
-        };
-        self.stream = stream;
-        result
-    }
-
-    fn check_tcp_peer_open(&mut self, tcp: &mut TcpStream) -> Result<()> {
-        const ENVELOPE: usize = frame::MAX_FRAME + 3;
-        tcp.set_nonblocking(true)?;
-        let result = loop {
-            let room = ENVELOPE.saturating_sub(self.end - self.start);
-            let read = if room == 0 {
-                tcp.peek(&mut [0])
-            } else {
-                self.fill_from(&mut Read::take(&mut *tcp, room as u64), 0)
-            };
-            match read {
-                Ok(0) => break Err(Error::end_of_stream()),
-                // Bytes beyond the envelope still conceal EOF and cannot be a login Hello.
-                Ok(_) if room == 0 => {
-                    break Err(Error::new("unexpected data beyond the login frame"));
-                }
-                Ok(_) => {}
-                Err(err) if err.kind() == ErrorKind::WouldBlock => break Ok(()),
-                Err(err) if err.kind() == ErrorKind::Interrupted => {}
-                Err(err) => break Err(err.into()),
-            }
-        };
-        let blocking = tcp.set_nonblocking(false);
-        result?;
-        Ok(blocking?)
-    }
-
     /// A [`Closer`] for this connection.
     pub fn closer(&self) -> Result<Closer> {
         Ok(Closer(self.stream.try_clone()?))
@@ -996,33 +953,6 @@ mod tests {
         drop(b);
         assert!(c.recv().is_err());
         assert!(c.send(&[1]).is_err());
-    }
-
-    #[test]
-    fn a_closed_pipe_is_not_live_with_a_buffered_hello() {
-        use crate::packets::login::{ServerHello, Serverbound};
-
-        let (server, client) = Pipe::pair();
-        let mut server = Connection::local(server);
-        let mut client = Connection::local(client);
-        let hello = Serverbound::Hello(ServerHello {
-            name: "Peer".into(),
-            uuid: 1,
-        });
-        client.send(&hello.encode()).unwrap();
-        server.reader.fill(0).unwrap();
-        server.reader.check_peer_open().unwrap();
-        drop(client);
-
-        assert!(
-            server
-                .reader
-                .check_peer_open()
-                .unwrap_err()
-                .is_end_of_stream()
-        );
-        let (id, payload) = server.reader.buffered().unwrap().unwrap();
-        assert_eq!(Serverbound::decode(id, &payload).unwrap(), hello);
     }
 
     #[test]
