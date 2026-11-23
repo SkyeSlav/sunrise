@@ -8,15 +8,17 @@ use crate::{
 #[derive(Debug)]
 struct Work {
     used: usize,
-    limit: usize,
+    limit: Option<usize>,
 }
 
 impl Work {
     fn spend(&mut self) -> Result<(), TraversalError> {
-        if self.used == self.limit {
-            return Err(TraversalError::VisitLimit);
+        if let Some(limit) = self.limit {
+            if self.used == limit {
+                return Err(TraversalError::VisitLimit);
+            }
+            self.used += 1;
         }
-        self.used += 1;
         Ok(())
     }
 }
@@ -45,13 +47,14 @@ enum Phase {
 
 impl SweepCursor {
     /// `final_box` is the box at `end`. Only finite geometry and block boxes
-    /// within the positive Java-int iteration domain are supported. The work
-    /// limit counts candidate cells (even duplicates) and ray steps.
+    /// within the positive Java-int iteration domain are supported. A work
+    /// limit, when given, counts candidate cells (even duplicates) and ray
+    /// steps; vanilla's movement sweep has none, so its callers pass `None`.
     pub fn new(
         start: Vec3,
         end: Vec3,
         final_box: Aabb,
-        max_work: usize,
+        max_work: Option<usize>,
     ) -> Result<Self, TraversalError> {
         if !start.is_finite()
             || !end.is_finite()
@@ -162,7 +165,7 @@ pub fn sweep_intersected_blocks(
     max_work: usize,
     mut visitor: impl FnMut(BlockPos, i32) -> bool,
 ) -> Result<bool, TraversalError> {
-    for cell in SweepCursor::new(start, end, final_box, max_work)? {
+    for cell in SweepCursor::new(start, end, final_box, Some(max_work))? {
         let (pos, step) = cell?;
         if !visitor(pos, step) {
             return Ok(false);
@@ -318,7 +321,7 @@ mod tests {
         let start = Vec3::new(0.25, 0.25, 0.25);
         let end = Vec3::new(1.25, 0.25, 0.25);
         let bounds = Aabb::new(end, end.add_vector(Vec3::new(0.5, 0.5, 0.5)));
-        let mut cells = SweepCursor::new(start, end, bounds, 4).unwrap();
+        let mut cells = SweepCursor::new(start, end, bounds, Some(4)).unwrap();
         assert_eq!(cells.next(), Some(Ok((BlockPos::new(0, 0, 0), 0))));
         assert_eq!(cells.next(), Some(Ok((BlockPos::new(1, 0, 0), 1))));
         // The final box contains only an already-emitted cell, but it still costs work.

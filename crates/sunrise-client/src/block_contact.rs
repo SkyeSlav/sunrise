@@ -173,13 +173,7 @@ impl SweepSegment {
             deflated,
             moved_far: from.distance_squared(to) > far * far,
             // As before, a geometry error ends the segment after its valid prefix.
-            cells: SweepCursor::new(
-                from,
-                to,
-                deflated,
-                (max_iterations.max(0) as usize).max(1_000_000),
-            )
-            .ok(),
+            cells: SweepCursor::new(from, to, deflated, None).ok(),
             iteration: 0,
             max_iterations,
         }
