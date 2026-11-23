@@ -16,7 +16,7 @@ use sunrise_world::{
 /// `getEntityInsideCollisionShape` as the shared walk sees it: the whole block, boxes
 /// to sweep the move against, or nothing. This is the one point #1011 adds the Part's
 /// own shape at.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum InsideShape {
     /// `Shapes.block()`: every move through the block is inside it.
     Full,
@@ -69,9 +69,13 @@ pub trait StepCollector {
     fn advance_step(&mut self, step: i32);
 }
 
-impl<W, P: From<mod_api::__private::InsideAction<W>>> StepCollector
-    for mod_api::__private::InsideCollector<W, P>
-{
+impl StepCollector for mod_api::InsideEffects {
+    fn advance_step(&mut self, step: i32) {
+        mod_api::InsideEffects::advance_step(self, step);
+    }
+}
+
+impl<W: From<mod_api::EntityWrite>> StepCollector for mod_api::__private::InsideCollector<W> {
     fn advance_step(&mut self, step: i32) {
         mod_api::__private::InsideCollector::advance_step(self, step);
     }
