@@ -6,8 +6,9 @@ use mod_api::HotbarSlotError;
 
 impl Game<'_> {
     /// `Inventory.setSelectedSlot` for a client mod: `slot` (0 to 8) becomes the hotbar slot the
-    /// local player holds. Refused above 8, without a client world, and for a spectator (its
-    /// number keys open the spectator menu), with the selection unchanged. The packet follows the
+    /// local player holds. Refused above 8 and without a client world, with the selection
+    /// unchanged; a spectator's selection is written like any other (its number keys open the
+    /// spectator menu, which is the input's rule, not the setter's). The packet follows the
     /// game's key-press path: `MultiPlayerGameMode.ensureHasSentCarriedItem` at the next tick's
     /// start at the latest, and before an attack, a use, an interact, a release, a drop and a
     /// continued block break.
@@ -17,9 +18,6 @@ impl Game<'_> {
         }
         if self.player.is_none() {
             return Err(HotbarSlotError::NoWorld);
-        }
-        if self.spectator() {
-            return Err(HotbarSlotError::Refused);
         }
         self.selected = usize::from(slot);
         Ok(())
@@ -169,19 +167,14 @@ pub(super) mod hotbar_slot_tests {
 
     #[test]
     #[ignore = "daily"]
-    fn a_spectator_gets_no_hotbar_selection() {
+    fn a_spectator_selection_is_written_like_any_other() {
         with_client_game(|game| {
             let mut reader = logged_in(game);
-            game.select_hotbar_slot(2).unwrap();
             game.mode = GameMode::Spectator;
-            assert_eq!(game.select_hotbar_slot(4), Err(HotbarSlotError::Refused));
-            assert_eq!(game.selected, 2, "a spectator keeps its slot");
+            game.select_hotbar_slot(4).unwrap();
+            assert_eq!(game.selected, 4);
             game.tick_remote_level().unwrap();
-            assert_eq!(
-                carried(&sent(&mut reader)),
-                [2],
-                "only the earlier change goes out"
-            );
+            assert_eq!(carried(&sent(&mut reader)), [4]);
         });
     }
 

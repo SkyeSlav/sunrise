@@ -426,8 +426,8 @@ impl Game<'_> {
     /// reads, where that read keeps it — the level's portal state for the
     /// kinds its portal walk carries (mobs, items, experience orbs, boats,
     /// minecarts, primed TNT, fireworks, tridents, arrows and the thrown
-    /// items and fireballs a chunk saves). Server-only; a negative value or a
-    /// client-side write is refused. A positive value blocks portal entry on
+    /// items and fireballs a chunk saves). Server-only; a client-side write
+    /// is refused. Any `i32` is stored as vanilla stores it (a negative one never counts down). A positive value blocks portal entry on
     /// the next tick (and is refilled while the entity stands in a portal);
     /// 0 lets it enter at once. The write refuses a player, an acting guest,
     /// a falling block and an ender pearl: their cooldown lives in a store of
@@ -436,7 +436,7 @@ impl Game<'_> {
     /// needs its own owner decision before it can reach them. False for a kind
     /// the read refuses or a stale handle.
     pub(super) fn entity_set_portal_cooldown(&mut self, entity: EntityRef, ticks: i32) -> bool {
-        if ticks < 0 || !self.is_logical_server() {
+        if !self.is_logical_server() {
             return false;
         }
         match self.native_entity_target(entity) {
@@ -1333,9 +1333,9 @@ mod tests {
             game.handle_entity_portals();
             assert_eq!(mob.portal_cooldown(game), Some(held - 1));
 
-            // A negative value is refused and leaves the value alone.
-            assert!(!mob.set_portal_cooldown(game, -1));
-            assert_eq!(mob.portal_cooldown(game), Some(held - 1));
+            // A negative value is stored as given, as `Entity.setPortalCooldown` does.
+            assert!(mob.set_portal_cooldown(game, -1));
+            assert_eq!(mob.portal_cooldown(game), Some(-1));
 
             // 0 lets it enter on the next tick.
             game.mobs.iter_mut().find(|m| m.id == 40).unwrap().position = Vec3::new(0.5, 64.0, 8.5);

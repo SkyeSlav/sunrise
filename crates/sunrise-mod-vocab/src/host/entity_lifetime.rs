@@ -93,7 +93,8 @@ pub trait EntityLifetimeBackendMut {
     /// level's portal state for the kinds its portal walk carries (mobs,
     /// items, experience orbs, boats, minecarts, primed TNT, fireworks,
     /// tridents, arrows and the thrown items and fireballs a chunk saves).
-    /// Server-only; a negative value or a client-side write is refused. Takes
+    /// Server-only; a client-side write is refused. Any `i32` is stored as
+    /// `Entity.setPortalCooldown` stores it: a negative one never counts down and does not block. Takes
     /// effect on the next tick: a positive value blocks portal entry (and is
     /// refilled while the entity stands in a portal), and 0 lets it enter at
     /// once. Not synced except in the spawn information at login, respawn and

@@ -1107,7 +1107,7 @@ impl NoBackend for CollisionExclusionsError {
 /// Why a client's hotbar selection was not made (`ClientHost::select_hotbar_slot`). The
 /// selection the player had stays.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
-// exhaustive: the three refusals are the contract; a new reason is a breaking change
+// exhaustive: the two refusals are the contract; a new reason is a breaking change
 pub enum HotbarSlotError {
     /// The client shows no world, or has no player of its own.
     NoWorld,
@@ -1116,9 +1116,6 @@ pub enum HotbarSlotError {
         /// The slot the caller asked for.
         slot: u8,
     },
-    /// The number keys do nothing for the local player, as for a spectator (its keys open
-    /// the spectator menu instead).
-    Refused,
 }
 
 impl NoBackend for HotbarSlotError {

@@ -883,7 +883,7 @@ impl Game<'_> {
             if let Some(entry) = state.handle(allowed, 0, delay) {
                 leaving.push((id, entry));
             }
-            if state.cooldown == 0 && state.process.is_none() {
+            if state.cooldown <= 0 && state.process.is_none() {
                 self.portals.entities.remove(&id);
             }
         }

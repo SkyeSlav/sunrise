@@ -52,9 +52,9 @@ pub trait PlayersClientHost {
     /// `Inventory.setSelectedSlot` does for a number key. It sends nothing itself: the game
     /// sends the carried-item packet at the next tick's start at the latest, and before the
     /// packets of an attack, a use, an interact, a release, a drop and a continued block break
-    /// (not before a block break start). Refused above 8 with `OutOfRange`, without a client
-    /// world with `NoWorld`, and for a spectator with `Refused` (its number keys open the
-    /// spectator menu), leaving the selection as it was.
+    /// (not before a block break start). Refused above 8 with `OutOfRange` and without a client
+    /// world with `NoWorld`, leaving the selection as it was. A spectator's slot is written
+    /// like any other: only its number keys, an input, open the spectator menu.
     fn select_hotbar_slot(&mut self, slot: u8) -> Result<(), HotbarSlotError>;
     /// Side: client.
     /// For a client mod: the local player's collision exclusions, the client half of
