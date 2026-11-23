@@ -451,9 +451,11 @@ pub fn custom_server_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEven
                 m.position.z.floor() as i32,
             ];
             let mut destroyed = false;
-            for x in b[0] - width..=b[0] + width {
-                for y in b[1]..=b[1] + height {
-                    for z in b[2] - width..=b[2] + width {
+            // Java `int` arithmetic: a bound that passes `Integer.MAX_VALUE` wraps, as in
+            // `WitherBoss.customServerAiStep`'s loops.
+            for x in b[0].wrapping_sub(width)..=b[0].wrapping_add(width) {
+                for y in b[1]..=b[1].wrapping_add(height) {
+                    for z in b[2].wrapping_sub(width)..=b[2].wrapping_add(width) {
                         let name = w.block_name(x, y, z);
                         let immune = w
                             .block_tags

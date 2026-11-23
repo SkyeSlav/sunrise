@@ -346,6 +346,25 @@ mod tests {
     }
 
     #[test]
+    fn no_collision_covers_a_box_past_the_default_budget() {
+        // 128 x 128 x 64.5 blocks of open air: over a million cells, far from the wall.
+        let big = Aabb::new(Vec3::new(100.0, 0.0, 100.0), Vec3::new(228.0, 64.5, 228.0));
+        assert!(
+            no_world_collision(
+                &mut Wall,
+                &CollisionExclusions::default(),
+                CollisionCheckRequest {
+                    entity: EntityIdentity(0),
+                    context: CollisionContext::position(0.0),
+                    bounds: big,
+                    candidate_budget: 1_000_000,
+                },
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
     fn no_collision_reads_the_exclusions_too() {
         let inside = Aabb::new(Vec3::new(2.2, 64.0, 0.2), Vec3::new(2.8, 65.8, 0.8));
         let check = |exclusions: &CollisionExclusions| {

@@ -32,13 +32,12 @@ impl Game<'_> {
         let old = previous.map_or(vanilla, |answer| answer.effective());
         let mut size = vanilla;
         self.native_entity_size(entity, pose, old, &mut size);
-        // Bound mod answers once, before collision/pathfinding consume them. 32 blocks
-        // exceeds even the dragon's natural width (16), while capping a path node's
-        // bounding-box scan at 33^3 cells and keeping integer extents representable.
-        // Invalid answers retain vanilla size, just like non-finite answers.
-        let usable = size
-            .iter()
-            .all(|v| v.is_finite() && *v >= 0.0 && *v <= 32.0);
+        // `EntityDimensions` takes any size a listener sets; only what no box can have (a
+        // component that is not finite or is negative) keeps vanilla's, and says so.
+        let usable = size.iter().all(|v| v.is_finite() && *v >= 0.0);
+        if !usable {
+            log::warn!("entity_size answer {size:?} for entity {id} is not a size; vanilla's kept");
+        }
         Some(SizeAnswer {
             pose,
             vanilla,
@@ -282,14 +281,7 @@ mod tests {
                 let i = game.mobs.iter().position(|m| m.id == id).unwrap();
                 let vanilla = game.mobs[i].vanilla_dims();
                 let default_dims = game.mobs[i].dims();
-                for invalid in [
-                    f32::NAN,
-                    f32::INFINITY,
-                    f32::NEG_INFINITY,
-                    -1.0,
-                    32.001,
-                    1e30,
-                ] {
+                for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0] {
                     for axis in 0..3 {
                         let mut answer = vanilla;
                         answer[axis] = invalid;
@@ -301,13 +293,8 @@ mod tests {
                         assert_eq!(mob.dims(), default_dims, "{answer:?}");
                     }
                 }
-                // The reported crash input must never become a pathfinding extent.
-                *size.lock().unwrap() = [1e30; 3];
-                game.mobs[i].size_answer = None;
-                game.native_mob_sizes();
-                assert_eq!(game.mobs[i].dims(), default_dims);
-                // Both endpoints are valid: zero-size entities are vanilla too.
-                for accepted in [0.0, 32.0] {
+                // Zero-size entities are vanilla too, and no size is too large to be valid.
+                for accepted in [0.0, 32.001, 100.0] {
                     *size.lock().unwrap() = [accepted; 3];
                     game.mobs[i].size_answer = None;
                     game.native_mob_sizes();

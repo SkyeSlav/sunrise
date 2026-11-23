@@ -1,0 +1,16 @@
+ids = [
+    "hook:entity_size",
+    "method:Hooks::entity_size",
+]
+why = """
+`entity_size` answers above 32 blocks were ignored, a limit `EntityDimensions` and NeoForge's
+`EntityEvent.Size` do not have. Any finite, non-negative size is now accepted; one with a component that
+is not finite or is negative is logged and keeps vanilla's size instead of being dropped silently. The
+consumers of a large size follow vanilla: the player pose-fit `noCollision` query walks the whole candidate
+box (`CollisionGetter.noBlockCollision` has no visit counter) and the wither's destruction sweep uses Java
+`int` arithmetic.
+"""
+migrate = """
+Pin `entity_size` at `hook_version = 3` instead of `2`. Do not rely on the game dropping an answer
+above 32 blocks; validate the size you return.
+"""

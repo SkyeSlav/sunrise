@@ -158,12 +158,17 @@ pub fn no_world_collision<W, E>(
 where
     W: BlockCollisionWorld<Error = E> + EntityMovementWorld<Error = E>,
 {
+    // Vanilla's `noCollision` walks the whole box with no candidate counter: the budget only
+    // has to cover the box (as the movement sweep's does, #6124).
+    let candidate_budget = scan_cells(request.bounds).map_or(request.candidate_budget, |cells| {
+        cells.max(request.candidate_budget)
+    });
     if BlockCollisionScan::any_collision(
         world,
         request.context,
         request.bounds,
         false,
-        request.candidate_budget,
+        candidate_budget,
     )? {
         return Ok(false);
     }

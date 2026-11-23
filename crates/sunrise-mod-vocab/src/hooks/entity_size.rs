@@ -9,9 +9,9 @@ pub trait Hooks {
     /// and the entity's box and eyes take it; later mods see earlier mods' edits. The answer
     /// holds while the entity keeps that pose and vanilla size; the next change asks again,
     /// starting from vanilla's. Changing the width or height leaves the eye height as it is:
-    /// set it too. Zero-size answers are valid. An answer is ignored if any component is
-    /// non-finite, negative or greater than 32 blocks. This bounds collision and pathfinding
-    /// work while allowing sizes larger than naturally occurring vanilla entities. `host`
+    /// set it too. Zero-size and very large answers are valid (version 3 removes the 32-block
+    /// upper limit: `EntityDimensions` has none). An answer with a component that is non-finite
+    /// or negative is logged and ignored, keeping vanilla's size. `host`
     /// reads the side that asks; the entity may be new, so read only what you need of it.
     ///
     /// A mob is asked on the server before and after its tick. A player is asked in two steps:
@@ -34,7 +34,7 @@ pub trait Hooks {
         receiver = "read",
         dispatch = "flat",
         side = "both",
-        version = 2,
+        version = 3,
         contract = "collect",
         out = "size",
         host = "read",
