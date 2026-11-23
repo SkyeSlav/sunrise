@@ -108,6 +108,8 @@ pub trait Commands {
     /// without failing. During a guest's turn, live players (including the
     /// acting player) are reachable; displaced outer players are excluded
     /// from name, UUID and selector resolution on this path only.
+    /// Inside a transaction the command is not one of its operations: what it
+    /// writes happens at once, and an abort does not promise to undo it.
     fn run_command(&mut self, line: &str) -> bool {
         unimplemented!("Commands::run_command")
     }

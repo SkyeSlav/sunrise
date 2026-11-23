@@ -230,6 +230,19 @@ projectile makes its handle stale during the callback; the outermost commit noti
 `entity_leave_level` once if the entity was announced. If a listener aborts its own nested
 discard and only cancels the hit, the original projectile stays alive.
 
+## Commands run inside a transaction
+
+A command a mod runs through `host.commands()` (`run_command`, `run_command_with_output`)
+while a transaction is open is not one of the transaction's operations, and an abort does
+not promise to undo it. Vanilla has no transactions, so the command runs as it would
+outside one: its block writes (`/setblock`, `/fill`, `/clone` with the block entities and
+scheduled ticks it copies), scores, boss bars, storage, saved data, the commands a
+`/function` runs and anything it sends happen at once and stay after an abort. Some of
+what a command writes happens to go through the same journaled paths as the API (an item
+`/give` puts in an inventory), so that part rolls back with the transaction; don't rely
+on which parts do. Make writes that must roll back through the API inside the
+transaction, and run commands outside it or after it commits.
+
 ## Transaction authority
 
 `TransactionContext` is a loan for one transaction on the current thread. It
