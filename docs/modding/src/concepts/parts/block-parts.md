@@ -187,10 +187,10 @@ can still hurt dropped items.
 Use `bounds` to test overlap with a surface that is smaller than the block. `event.request(LandingWrite::…)`
 queues a write at `pos`. The `fall_on` drain applies the ordered block writes after the entity batch,
 only if the block still holds the contacted state. An invalid state or non-finite movement or damage
-refuses that Part's outputs. Other Parts' accepted writes and movement edits remain. This replaces `Hooks::block_step_on`, the former server-only notice.
+refuses that Part's outputs. Other Parts' accepted writes and movement edits remain.
 
-Boats and minecarts ([#4177](https://github.com/sunrise-org/sunrise/issues/4177)), armor stands and
-projectiles ignore `EntityWrite::Hurt` from both callbacks. Experience orbs accept it only from `step_on`.
+Boats, minecarts, armor stands and projectiles ignore `EntityWrite::Hurt` from both `step_on`
+and `fall_on`. Experience orbs accept it only from `step_on`.
 
 ## Landing writes
 
@@ -211,7 +211,7 @@ state and vanilla's movement-affecting position (which can differ from the legac
 `event.fall_distance` is the distance stored after fall handling, so a body that has just landed can report zero.
 
 `BlockPart::fall_on` runs at vanilla's landing moment on a read-only level random host.
-Hook version 2 exposes writable `event.distance` and `event.damage_multiplier`, not calculated
+The event exposes writable `event.distance` and `event.damage_multiplier`, not calculated
 damage. Vanilla blocks supply their own pair: hay uses 0.2, beds 0.5, slime 0,
 and pointed dripstone adds 2.5 to distance and uses 2.0. Other blocks start at 1.0.
 The engine applies `floor((distance + 1e-6 - safe_fall_distance) * damage_multiplier * fall_damage_multiplier_attribute)`.

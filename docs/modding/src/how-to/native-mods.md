@@ -29,13 +29,12 @@ and 0.8 for `Full`. There is no second hook dispatch. Two non-commuting listener
 in dispatch order, each completing its rewrites before the next; this does not simulate
 two separate passes over the listener list. Cancellation still leaves motion unchanged.
 
-Version 2 also supplies `kill_credit` and `kill_credit_main`: the pushed living entity's
-kill credit and that entity's current main-hand stack, read after accepted-hit memories
-are committed and before the push. A remembered player takes precedence over the last
-hurting mob, including a tame wolf's owner. An unresolved remembered player yields 0 and
-no stack, not a fallback to the mob. After the remembered player expires, the recent mob
-may receive credit. This context is distinct from `attacker` and its captured source weapon. Both fields are additions: NeoForge's
-`LivingKnockBackEvent` doesn't carry them.
+`kill_credit` and `kill_credit_main` give the pushed living entity's kill credit and that entity's
+current main-hand stack, read after accepted-hit memories are committed and before the push.
+A remembered player takes precedence over the last hurting mob, including a tame wolf's owner.
+An unresolved remembered player yields 0 and no stack, not a fallback to the mob. After the
+remembered player expires, the recent mob may receive credit. This context is distinct from
+`attacker` and its captured source weapon. NeoForge's `LivingKnockBackEvent` doesn't carry either field.
 
 ## Living death contract version 2
 
@@ -97,7 +96,8 @@ the entity's box is swept against each turned box (a separating-axis test with t
 steps up onto a top within its step height, and standing on a tilted top follows the surface. The
 collider is solid to every mover except spectators, entities with no physics and the entities in its
 own vehicle stack (the root vehicle and every passenger, at any depth, the collider's entity among them).
-**Contact effects are not applied yet:** a box is solid ground and walls and nothing more, so standing or walking on one has no block's step sound, sprint particles, friction or bounce ([#1909](https://github.com/sunrise-org/sunrise/issues/1909)).
+Collider boxes are solid but do not supply block contact effects such as step sounds, sprint particles,
+friction or bounce.
 
 The game checks a collider when it is set and refuses by name (`ColliderError`), keeping the old one:
 every value finite, the rotation a unit quaternion within 1e-3, at most `Collider::MAX_BOXES` (32,768)
@@ -130,7 +130,7 @@ follows its vehicle. The server carries the entities it simulates, and each Sunr
 
 After carrying, a collider that translated without turning shoves bodies in the path of its boxes,
 in its direction of travel. This also uses `MoveCause::Carried`. Changing a box's bounds does not
-sweep that box between the old and new shape. Turning colliders still carry, but do not shove yet.
+sweep that box between the old and new shape. Turning colliders carry bodies but do not shove them.
 A shove does not cancel velocity into the collider; the ordinary entity move handles velocity when
 the body hits an obstacle. The client predicts a shove for its own player, and ordinary server movement
 checks still apply.

@@ -108,9 +108,8 @@ not written into the entry. The dependencies are read from the package itself, s
 themselves require.
 
 Published source files never change. Removing a row published with `sunrise` requires a takedown by the
-registry's maintainers in `revoked.toml` naming the project id and file hash. Legacy rows without `sunrise`
-can be removed without a takedown, but the project entry must stay. The only update `publish` makes to an
-existing version is an [append of signed native builds](#publishing-native-binaries).
+registry's maintainers in `revoked.toml` naming the project id and file hash. The only update `publish`
+makes to an existing version is an [append of signed native builds](#publishing-native-binaries).
 
 ## Signing
 
@@ -178,11 +177,6 @@ Upload only the author-release assets listed in `PULL_REQUEST.md`: the exact `.s
 Submit `mods/<id>.toml` to the registry with `icons/<id>.png` if an icon was staged. The `file` field already
 points to your release asset. Registry CI downloads it from there, verifies it and mirrors it after merge.
 For a new version of an existing listing, use `--registry <checkout>` instead of the page flags.
-
-An entry that still lists unsigned versions from before stable releases cannot take a key through
-`--registry`. Run `publish` without it for the signed package, then edit the entry in your checkout by hand:
-add the `key`, remove the unsigned rows and add the new row. Review notes each removed row and needs no
-takedown for it.
 
 ## Publishing native binaries
 
@@ -265,8 +259,7 @@ A tag build verifies Sunrise's rolling signed [`mod-tool`](../start/install-tool
 plans against the tag's independently signed SDK. All jobs require the same authenticated tool commit. A
 standalone API mod builds an archive for each host in that SDK. Other valid native mods get a signed source
 package only, including mods with required content dependencies. If your code imports another mod's library,
-the standalone check cannot supply it and the tag workflow stops before signing. Dependency-aware tagged
-releases are tracked in [#3885](https://github.com/sunrise-org/sunrise/issues/3885). A failed check or binary
+the standalone check cannot supply it and the tag workflow stops before signing. A failed check or binary
 build stops the release; it does not publish a source-only substitute.
 
 The workflow keeps the verified signed batch as a run artifact before uploading. If an upload stops partway,

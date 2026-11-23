@@ -37,10 +37,10 @@ or not, and names it `PlayerVehicle`.
 
 ## When `entity_mount` fires
 
-`entity_mount` fires only after every other check passed: a refusal at
-those checks reaches no hook. (This is this engine's order; moving the hook earlier is tracked in #1557.) The checks run again after the hook, since a hook can fill, remove
-or remount the vehicle, and then name what the hook changed. Such a refusal means the requested
-mount did not complete; what the hook moved or removed stays as it left it.
+`entity_mount` fires only after every other check passes. The checks run again after the hook,
+since a listener can fill, remove or remount the vehicle. If a check fails on that second pass,
+the refusal names the cause. The requested mount does not complete, but the listener's changes
+remain.
 
 Some removal effects run while the entity still resolves. A nested `EntityRef::remove` or
 `EntityRef::discard` for that same entity returns `false` while those effects run.

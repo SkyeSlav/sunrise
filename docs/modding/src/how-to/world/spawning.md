@@ -93,22 +93,19 @@ If mods register predicates, the prepared resources must include vanilla's spawn
 
 ## Saved display and utility entities
 
-`entity_join_level` (hook version 3) additionally notifies for live fallback-store
-entities: block, item and text displays, markers, interactions, and summoned or
-chunk-restored eyes of ender and explicit leash knots. Gameplay-thrown eyes and
-naturally tied leash knots live in separate lists and do not notify yet. Saved data
-kept for a missing mod is not a live entity and does not notify. A fresh fallback
-entity notifies once with `loaded_from_disk = false`; restoring it from a saved chunk
-notifies once with `loaded_from_disk = true`. The normal join cancellation and
-transaction rules apply to these entities too.
+`entity_join_level` fires for block, item and text displays, markers, interactions,
+and summoned or chunk-restored eyes of ender and explicit leash knots.
+It does not fire for gameplay-thrown eyes, naturally tied leash knots, or saved data
+kept for a missing mod. A new entity fires the hook once with `loaded_from_disk = false`;
+restoring it from a saved chunk fires the hook once with `loaded_from_disk = true`.
+The normal join cancellation and transaction rules apply.
 
-`entity_leave_level` (hook version 3) reports the same additional kinds when they leave.
-On the server, `LevelRef::visit_entities_in` also visits block, item and text displays,
-markers and interactions. Eyes of ender, leash knots and other unmodeled kinds are
-not visited yet. The query uses physical boxes, not rendering bounds: displays
-and markers have zero-sized boxes at their positions; interactions use their saved
-width and height. A handle expires when its entity unloads, so find it again when
-the saved entity rejoins.
+`entity_leave_level` reports when the same entities leave. On the server,
+`LevelRef::visit_entities_in` visits block, item and text displays, markers and
+interactions. It does not visit eyes of ender, leash knots or other unmodeled kinds.
+The query uses physical boxes, not rendering bounds: displays and markers have
+zero-sized boxes at their positions; interactions use their saved width and height.
+A handle expires when its entity unloads, so find it again when the saved entity rejoins.
 
 ## Visiting entities in a box
 
@@ -226,7 +223,7 @@ spawner block, `Spawner::Trial { pos }` for a trial spawner, and `None` when no 
 minecart. Set `*event.result` to `SpawnCheck::Succeed` or `Fail` to override that
 check; `Default` keeps the check's own answer.
 
-In `mob_spawn_placement_check` version 2, `event.default_result` is the effective predicate result. It can differ
+In `mob_spawn_placement_check`, `event.default_result` is the effective predicate result. It can differ
 from vanilla even for a vanilla type, because registrations can add to or replace its predicate. The hook fires
 after the predicates at `SpawnPlacements.checkSpawnRules`. For a probabilistic decision, draw from `event.random`,
 the caller's live `&mut dyn RandomSource` lent to each listener in turn. Reassigning `event.random` only changes that
@@ -360,8 +357,6 @@ fn mob_despawn(&self, _: &dyn mod_api::Host, event: &mut mod_api::MobDespawnEven
 ```
 
 The hook's scoped read host resolves the ticking mob directly and peers through the tick snapshot. An already-ticked peer exposes its post-turn state; a not-yet-ticked peer exposes its pre-turn state. A mob spawned during the pass does not resolve through this scoped view until the next pass. Removed mobs do not resolve, but a dead mob still present in the level is not removed and can still resolve. `living_change_target` uses the same view when fired inside this tick pass; outside it, that hook reads the entities available in the game host, not this snapshot.
-
-This is the accepted read-host scoped-view first step of #795, not the completed in-place ownership design. Write-host callbacks and the remaining ownership work are outside this contract.
 
 The wither and the ender dragon override `checkDespawn` in vanilla, so the event is not fired for them.
 

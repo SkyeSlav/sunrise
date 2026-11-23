@@ -443,11 +443,9 @@ queries for mobs, players and dropped items also follow this pass's join order; 
 queried in a later pass. The ender dragon and end crystals draw at their slots without adding
 these hooks or outline queries.
 
-The order today: the model and the layers are drawn before the post hooks. The entity's name tag, its leash,
-and the flames of a burning entity and its shadow are each drawn in a later pass of the same frame, after the
-post hooks. A post hook doesn't see or replace the flames and the shadow. The reference draws the leash and
-the name tag before the post: that move is the follow-up in #1285. A type with a registered renderer has the
-same later passes, the renderer in the model's place, so it changes with that follow-up too.
+The model and layers draw before the post hooks. The entity's name tag, leash, flames and shadow draw
+in later passes of the same frame, after the post hooks. A post hook cannot see or replace the flames
+or shadow. A registered renderer draws in place of the model without changing the later passes.
 
 `draw` starts at the entity's feet, turned with its body (+z the way it faces, +x its left, +y up,
 in blocks), and keeps what each hook draws. Setting `event.cancelled` in a Pre hook skips the
