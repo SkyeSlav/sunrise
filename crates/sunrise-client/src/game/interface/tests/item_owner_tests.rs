@@ -316,12 +316,12 @@ fn item_draw_uses_the_stack_duration_even_when_its_model_is_replaced() {
                 mob.extra.using_off_hand = false;
                 let draw_held = |game: &crate::game::Game<'_>,
                                  mob: &mut sunrise_client::mobs::Mob,
-                                 item: &str| {
+                                 item: &str,
+                                 model: &str| {
                     let mut stack = ItemStack::new(item, 1);
-                    stack.data_mut().set_other(
-                        "minecraft:item_model",
-                        Some(Tag::String("test:third_person_use_probe".into())),
-                    );
+                    stack
+                        .data_mut()
+                        .set_other("minecraft:item_model", Some(Tag::String(model.into())));
                     mob.extra
                         .set_slot_stack(sunrise_items::equipment::MAINHAND, Some(stack));
                     let mut verts = Vec::new();
@@ -336,9 +336,10 @@ fn item_draw_uses_the_stack_duration_even_when_its_model_is_replaced() {
                     );
                     verts.len()
                 };
-                let bread_verts = draw_held(game, &mut mob, "minecraft:bread");
-                let spyglass_verts = draw_held(game, &mut mob, "minecraft:spyglass");
-                let bow_verts = draw_held(game, &mut mob, "minecraft:bow");
+                let probe = "test:third_person_use_probe";
+                let bread_verts = draw_held(game, &mut mob, "minecraft:bread", probe);
+                let spyglass_verts = draw_held(game, &mut mob, "minecraft:spyglass", probe);
+                let bow_verts = draw_held(game, &mut mob, "minecraft:bow", probe);
                 assert!(bread_verts > 0);
                 assert!(spyglass_verts > 0);
                 assert!(bow_verts > 0);
@@ -350,6 +351,42 @@ fn item_draw_uses_the_stack_duration_even_when_its_model_is_replaced() {
                     spyglass_verts, bow_verts,
                     "spyglass (remaining 1196) must not hit the 72000 threshold"
                 );
+
+                // A witch never uses an item: `Witch.aiStep` counts its drinking on its own
+                // `usingTime` and never calls `startUsingItem`. The drinking countdown reaches
+                // the client as the using flag, and the drawn item keeps the idle model.
+                let using_probe = ClientItem::from_json(
+                    &json!({
+                        "model": {
+                            "type": "minecraft:condition",
+                            "property": "minecraft:using_item",
+                            "on_true": leaf("minecraft:block/oak_stairs"),
+                            "on_false": leaf("minecraft:block/stone")
+                        }
+                    })
+                    .to_string(),
+                )
+                .unwrap();
+                Arc::get_mut(&mut game.pack.item_renderer)
+                    .expect("fresh test item renderer")
+                    .models
+                    .definitions
+                    .insert("test:using_probe".into(), using_probe);
+                let mut witch = sunrise_client::mobs::Mob::new(
+                    78,
+                    game.res.mob_types().get("minecraft:witch").unwrap().clone(),
+                    sunrise_core::geometry::Vec3::new(0.5, 64.0, 0.5),
+                    0.0,
+                );
+                witch.extra.using_item = 20;
+                witch.extra.flag = true;
+                let witch_verts =
+                    draw_held(game, &mut witch, "minecraft:potion", "test:using_probe");
+                let zombie_using = draw_held(game, &mut mob, "minecraft:stick", "test:using_probe");
+                mob.extra.using_item = 0;
+                let zombie_idle = draw_held(game, &mut mob, "minecraft:stick", "test:using_probe");
+                assert_ne!(zombie_using, zombie_idle);
+                assert_eq!(witch_verts, zombie_idle);
             })
         },
     );

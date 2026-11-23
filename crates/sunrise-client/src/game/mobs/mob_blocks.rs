@@ -484,19 +484,20 @@ impl Game<'_> {
                     owner.use_item_remaining_ticks = self.use_duration - ticks as i32;
                     owner.crossbow_charge_duration = crossbow_charge;
                 }
-            } else if off_hand == mob.extra.using_off_hand && mob.extra.using_item > 0 {
+            } else if mob.species() != Species::Witch
+                && off_hand == mob.extra.using_off_hand
+                && mob.extra.using_item > 0
+            {
                 owner.using_this_item = true;
                 owner.use_duration = duration;
-                owner.use_item_remaining_ticks =
-                    if mob.species() == Species::Witch && mob.extra.flag {
-                        mob.extra.using_item
-                    } else {
-                        // Remote mobs count `using_item` from 1 upward each tick; `LivingEntity.updateUsingItem`
-                        // decrements `useItemRemaining` without clamping.
-                        duration - (mob.extra.using_item - 1)
-                    };
+                // Remote mobs count `using_item` from 1 upward each tick; `LivingEntity.updateUsingItem`
+                // decrements `useItemRemaining` without clamping.
+                owner.use_item_remaining_ticks = duration - (mob.extra.using_item - 1);
                 owner.crossbow_charge_duration = crossbow_charge;
             }
+            // A witch is never using an item: `Witch.aiStep` counts its drinking on its
+            // own `usingTime` and never calls `startUsingItem`, so `isUsingItem` stays
+            // false, and the owner above reports none.
             use sunrise_assets::item_model::DisplayContext as Context;
             // PandaHoldsItemLayer, FoxHeldItemLayer and DolphinCarryingItemLayer
             // show the item as it lies on the ground.
