@@ -25,19 +25,19 @@
 //! local alias or renamed import of it), where a pattern matches it exhaustively (`let Name { a }
 //! = …`, `Name(a, b) =>`), or where a tuple or unit struct's name stands as a value (`.map(Pos)`,
 //! `Marker`); [`Built::Base`] when every literal ends in a base (and for a union, whose literal
-//! names one field); [`Built::None`] otherwise. A pattern ending in `..` is a read. Which struct a
-//! name means is decided by two rules, with no module resolution:
-//! - a name written with a path (`a::b::Name`) is every API struct of that name, except after
-//!   a type: `Shape::Pos(..)` or `TextHover::Item { .. }`, where the segment before the name is
-//!   `Self`, a type the mod defines, a name the mod binds to an API type or an API type's name, is
-//!   a variant or associated item, never the struct. That segment is read through the mod's
-//!   `use` items first, so `use mod_api as Pos; Pos::Settings { .. }` still builds `Settings`;
-//!   a qualifier the scan cannot tell from a module is not taken for a type;
-//! - an unqualified name (or `Self` in an impl for one) is the mod's own type only in a file
-//!   that defines it at its top level under no `#[cfg]`, binds it with no `use`, has no glob, no
-//!   inline module, no `use` with a metavariable, and only standard or API macros and attributes
-//!   whose names nothing in the mod rebinds, in a mod with no `include!`. Otherwise it is every
-//!   API struct of that name.
+//! names one field); [`Built::None`] otherwise. A pattern ending in `..` is a read. A candidate
+//! is attributed to the API structs of that name except when the scan can place it elsewhere:
+//! - `Shape::Pos`, `Self::Pos` in a known impl for `Shape`, and a bare `Pos` after an exact
+//!   `use self::Shape::Pos;` (optionally renamed) are local variants if the enum and variant
+//!   are unconditional and the bindings are clear at the occurrence. Only an ungrouped import
+//!   in the outer scope of the enum's own file can prove a bare variant. A glob, competing or
+//!   conditional binding, lexical shadowing, or an opaque expansion leaves the candidate in;
+//! - a path through a known API type is a member (`TextHover::Item`), not a struct of that name.
+//!   An API root or module alias is not a type: `use mod_api as Pos; Pos::Settings { … }` still
+//!   builds `Settings`;
+//! - an unqualified name (or `Self` in an impl for one) is the mod's own type if the file defines
+//!   it at its top level unconditionally, with no import binding it and no glob, inline module,
+//!   opaque expansion or `include!` that prevents the scan from placing it.
 //!
 //! The parser does not expand macros. A macro body's tokens are read as they stand: an API
 //! struct name in one followed by `{` or `(` is a build, in full unless it ends in `..`, and so
@@ -76,7 +76,7 @@
 //! entries. [`UsesTable::read`] refuses an unknown schema, malformed JSON, repeated ids and
 //! documents over [`MAX_USES_BYTES`] with a typed [`UsesError`].
 use crate::scan::{self, Token};
-use crate::syntax::{self, How, Namespace, Syntax};
+use crate::syntax::{self, Binding, Build, How, Namespace, Syntax, VariantShape, VariantUse};
 use crate::{MacroKind, Role, Surface, Type, TypeKind, leaf};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1685,17 +1685,14 @@ impl<'a, 's, 't> Resolver<'a, 's, 't> {
                     && rest.is_empty()
                     && !facts.module_imported[module].contains_key(first)
                     && declared
-                        .tuple_variants
+                        .variants
                         .get(first)
-                        .is_some_and(|v| v.contains(name))
+                        .and_then(|v| v.get(name))
+                        .is_some_and(|v| v.has_tuple)
                 {
                     return Some(true);
                 }
-                scope = match declared.children.get(first)? {
-                    Some(inline) => (file, *inline),
-                    None if crate_root => (*self.file_modules.children.get(&(scope, first))?, 0),
-                    None => return None,
-                };
+                scope = self.declared_child(scope, first, crate_root)?;
                 prefix = rest;
             }
             let (file, module) = scope;
@@ -1708,6 +1705,21 @@ impl<'a, 's, 't> Resolver<'a, 's, 't> {
             Some(names.contains(name) && !facts.module_imported[module].contains_key(name))
         };
         resolve().unwrap_or(false)
+    }
+
+    /// Follow a declared module edge, crossing source files only from a known crate root.
+    fn declared_child(
+        &self,
+        scope: ModuleScope,
+        name: &str,
+        crate_root: bool,
+    ) -> Option<ModuleScope> {
+        let (file, module) = scope;
+        match self.files[file].syntax.scopes[module].children.get(name)? {
+            Some(inline) => Some((file, *inline)),
+            None if crate_root => Some((*self.file_modules.children.get(&(scope, name))?, 0)),
+            None => None,
+        }
     }
 
     /// Prove an API variant in the value namespace through `mod_api` or a direct, unshadowed
@@ -1805,14 +1817,122 @@ impl<'a, 's, 't> Resolver<'a, 's, 't> {
         out
     }
 
-    /// Whether the name a path ends in is a member of a type (`Source::Block(..)`, a variant of
-    /// the mod's own enum or of an API one) and so no struct of that name. The segment before it
-    /// is read through the mod's own `use` items first: an API root or module it is bound to
-    /// (`use mod_api as Pos;`, `use mod_api::content as c;`) makes the path a module path, so
-    /// the name may be a struct; only `Self`, a type the mod defines, a name bound to an API
-    /// type, or an API type's name written as it stands makes it a member.
-    fn is_member(&self, path: &[&str], rooted: bool) -> bool {
-        let [.., owner, _] = path else {
+    /// A build can be set aside only if its written path resolves to a local variant here.
+    fn local_variant(&self, index: usize, build: &Build<'_>) -> bool {
+        let Some(form) = build.variant else {
+            return false;
+        };
+        if build.rooted || !self.qualified_certain[index] {
+            return false;
+        }
+        let file = &self.files[index];
+        let mut scope = file.syntax.module_at(build.byte);
+        let module = &file.syntax.scopes[scope];
+        let (prefix, owner, variant) = match build.path.as_slice() {
+            [name] => {
+                // Only an exact import directly in this file's outer scope can prove a
+                // bare binding, and its owner is resolved at that import, not at the use.
+                let space = if form == VariantUse::Braced {
+                    Namespace::Type
+                } else {
+                    Namespace::Value
+                };
+                let Some(Binding::VariantImport { owner, variant }) = module.names.get(space, name)
+                else {
+                    return false;
+                };
+                (&[][..], owner, variant)
+            }
+            ["Self", variant] => {
+                let Some((target, impl_scope)) = self.build_impl_target(index, build.byte) else {
+                    return false;
+                };
+                let Some((owner, prefix)) = target.split_last() else {
+                    return false;
+                };
+                scope = impl_scope;
+                (prefix, *owner, *variant)
+            }
+            [prefix @ .., owner, variant] => (prefix, *owner, *variant),
+            [] => return false,
+        };
+        let crate_root = self.file_modules.roots.contains(&index);
+        let mut prefix = match prefix {
+            ["crate", rest @ ..] if crate_root => {
+                scope = 0;
+                rest
+            }
+            ["crate" | "", ..] => return false,
+            ["self", rest @ ..] => rest,
+            prefix => prefix,
+        };
+        while let ["super", rest @ ..] = prefix {
+            if scope == 0 {
+                return false;
+            }
+            scope = file.syntax.scopes[scope].parent;
+            prefix = rest;
+        }
+        let mut at = (index, scope);
+        for segment in prefix {
+            let module = &self.files[at.0].syntax.scopes[at.1];
+            if module.names.glob
+                || !matches!(
+                    module.names.get(Namespace::Type, segment),
+                    Some(Binding::Module)
+                )
+            {
+                return false;
+            }
+            let Some(child) = self.declared_child(at, segment, crate_root) else {
+                return false;
+            };
+            at = child;
+        }
+        let module = &self.files[at.0].syntax.scopes[at.1];
+        if module.names.glob
+            || !matches!(
+                module.names.get(Namespace::Type, owner),
+                Some(Binding::Enum)
+            )
+        {
+            return false;
+        }
+        let shape = module
+            .variants
+            .get(owner)
+            .and_then(|v| v.get(variant))
+            .and_then(|v| v.shape);
+        match form {
+            VariantUse::Braced => shape.is_some(),
+            VariantUse::Tuple => shape == Some(VariantShape::Tuple),
+            VariantUse::Value => matches!(shape, Some(VariantShape::Tuple | VariantShape::Unit)),
+        }
+    }
+
+    /// Keep the API type/member distinction, but do not take a module, an unknown binding,
+    /// or a type merely declared elsewhere in the mod for the owner.
+    fn is_api_member(&self, index: usize, build: &Build<'_>) -> bool {
+        if !self.qualified_certain[index] || build.variant.is_none() {
+            return false;
+        }
+        let Some((_, mut owner)) = build.path.split_last() else {
+            return false;
+        };
+        let file = &self.files[index];
+        let mut scope = file.syntax.module_at(build.byte);
+        let mut rooted = build.rooted;
+        if owner == ["Self"] {
+            let Some((target, impl_scope)) = self.build_impl_target(index, build.byte) else {
+                return false;
+            };
+            (rooted, owner) = match target {
+                ["", target @ ..] => (true, target),
+                target => (false, target),
+            };
+            scope = impl_scope;
+        }
+        let [first, rest @ ..] = owner else {
             return false;
         };
         let names_type = |segments: &[&str]| {
@@ -1832,26 +1952,40 @@ impl<'a, 's, 't> Resolver<'a, 's, 't> {
                             .is_some_and(|paths| paths.contains(&joined))
                 })
         };
-        if *owner == "Self" {
-            return true;
+        if rooted {
+            return *first == "mod_api" && self.api_root_certain && names_type(rest);
         }
-        if self.module.roots.contains(owner) {
+        let module = &file.syntax.scopes[scope];
+        if module.names.glob {
             return false;
         }
-        // A path from the root (`::mod_api::world::X`) names nothing of the mod's: its `use`
-        // items and types, in whatever module, cannot change what its segments mean.
-        if rooted {
-            return names_type(&[owner]);
+        if *first == "mod_api" && self.api_root_certain {
+            return names_type(rest);
         }
-        if let Some(bound) = self.module.bound.get(owner) {
-            return bound.iter().any(|segments| names_type(segments));
+        let imported_path = |name: &str| {
+            let import = file.module_imported[scope].get(name).copied().flatten()?;
+            Some(file.imports[import].0.as_slice())
+        };
+        if self.api_root_certain
+            && let Some([root, prefix @ ..]) = imported_path(first)
+            && (*root == "mod_api" || matches!(imported_path(root), Some(["mod_api"])))
+        {
+            return names_type(&[prefix, rest].concat());
         }
-        self.module.types.contains(owner) || names_type(&[owner])
+        rest.is_empty()
+            && module.names.get(Namespace::Type, first).is_none()
+            && names_type(&[first])
     }
 
-    /// The innermost impl in file `index` whose body holds `byte`: its target, `None` inside
-    /// it when the scan cannot read the target, `None` outside any.
-    fn impl_at(&self, index: usize, byte: usize) -> Option<Option<&'a Vec<&'t str>>> {
+    /// The target of `Self` resolves at the impl header, not in the method using it.
+    fn build_impl_target(&self, index: usize, byte: usize) -> Option<(&'a [&'t str], usize)> {
+        let imp = self.impl_at(index, byte)?;
+        let target = imp.target.as_deref().filter(|_| !imp.shadowed_target)?;
+        Some((target, self.files[index].syntax.module_at(imp.body.start)))
+    }
+
+    /// The innermost impl in file `index` whose body holds `byte`.
+    fn impl_at(&self, index: usize, byte: usize) -> Option<&'a syntax::Impl<'t>> {
         let file: &'a FileFacts<'t> = &self.files[index];
         let after = file
             .impls
@@ -1860,7 +1994,7 @@ impl<'a, 's, 't> Resolver<'a, 's, 't> {
         while let Some(position) = at {
             let (i, outer) = file.impls[position];
             if byte < file.syntax.impls[i].body.end {
-                return Some(file.syntax.impls[i].target.as_ref());
+                return Some(&file.syntax.impls[i]);
             }
             at = outer;
         }
@@ -1929,8 +2063,11 @@ impl<'s, 't> Walk<'_, '_, 's, 't> {
                 // A `Self` in a macro body may belong to an impl the macro writes, which the
                 // parser does not read: the compile judges what it builds.
                 "Self" if file.in_macro[at] => continue,
-                "Self" => match resolver.impl_at(index, file.starts[at]) {
-                    Some(Some(target)) => (*target.last().unwrap_or(&"Self"), target.len() == 1),
+                "Self" => match resolver
+                    .impl_at(index, file.starts[at])
+                    .and_then(|imp| imp.target.as_ref())
+                {
+                    Some(target) => (*target.last().unwrap_or(&"Self"), target.len() == 1),
                     // Outside any impl the parser placed, or in one of a type it cannot read,
                     // the parser reads any build.
                     _ => continue,
@@ -1983,8 +2120,11 @@ impl<'s, 't> Walk<'_, '_, 's, 't> {
         for build in &file.syntax.builds {
             let place = (path, build.line);
             let (name, unqualified) = match &build.path[..] {
-                ["Self"] => match resolver.impl_at(index, build.byte) {
-                    Some(Some(target)) => (*target.last().unwrap_or(&"Self"), target.len() == 1),
+                ["Self"] => match resolver
+                    .impl_at(index, build.byte)
+                    .and_then(|imp| imp.target.as_ref())
+                {
+                    Some(target) => (*target.last().unwrap_or(&"Self"), target.len() == 1),
                     // Outside any impl the parser placed, or in one of a type it cannot read:
                     // a struct the scan cannot place, which the compile judges.
                     _ => continue,
@@ -1995,16 +2135,16 @@ impl<'s, 't> Walk<'_, '_, 's, 't> {
             resolver.lookup(name);
             let resolver: &Resolver<'_, 's, 't> = resolver;
             let resolved = &resolver.memo[name];
-            if resolved.ids.is_empty() {
+            if resolved.ids.is_empty()
+                || resolver.local_variant(index, build)
+                || (!resolved.aliased && resolver.is_api_member(index, build))
+            {
                 continue;
             }
             let own = unqualified && !resolved.aliased && resolver.own_in(index, name);
             let api = resolver.index;
             for &id in &resolved.ids {
-                if !api.struct_like(id)
-                    || own
-                    || (!resolved.aliased && resolver.is_member(&build.path, build.rooted))
-                {
+                if !api.struct_like(id) || own {
                     continue;
                 }
                 let full = match build.how {
@@ -2044,8 +2184,11 @@ impl<'s, 't> Walk<'_, '_, 's, 't> {
             // is a leading `::`.
             let namespace = field.tie.namespace;
             let (written, rooted): (&[&'t str], bool) = match &field.tie.path[..] {
-                ["Self"] => match resolver.impl_at(index, field.byte) {
-                    Some(Some(target)) => match &target[..] {
+                ["Self"] => match resolver
+                    .impl_at(index, field.byte)
+                    .and_then(|imp| imp.target.as_ref())
+                {
+                    Some(target) => match &target[..] {
                         ["", rest @ ..] => (rest, true),
                         target => (target, false),
                     },

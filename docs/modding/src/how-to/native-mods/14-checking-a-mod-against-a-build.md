@@ -48,14 +48,19 @@ member, it records every host trait in the mod's list that leads to the member's
 It exits 2 when an input cannot be read or judged.
 
 The check reads the mod's source with a Rust parser; it is not a compiler and does not expand macros. A name
-it cannot resolve with certainty counts as used. A struct literal written with a
-path (`world::DimensionSettings { … }`) counts for the API's struct of that name, unless the segment before the
-name is a type (`Self`, a type the mod defines, or an API type: `Shape::Pos(…)` and `TextHover::Item { … }` are
-variants, not the structs `Pos` and `Item`), which the scan reads through the mod's `use` items first, so
-`use mod_api as Pos; Pos::Settings { … }` is still the API's `Settings`; an unqualified one counts as
-the mod's own only in the file that defines it outside any `#[cfg]`, when nothing in that file (a `use`, a glob,
-an inline module, a macro or attribute that is not standard or the API's) could change what the name means and
-the mod has no `include!`. The parser reads a macro body's tokens as they
+it cannot resolve with certainty counts as used. A literal or exhaustive pattern such as `Shape::Pos(…)`,
+`Self::Pos(…)` in an implementation of `Shape`, or `Pos(…)` after `use self::Shape::Pos;` does not build the
+API's `Pos` when the scan can prove it names the mod's variant. The enum and variant must be unconditional.
+For a bare name, the import may rename the variant, but it must be ungrouped and at the top level of the
+same file as the enum. A block import or a glob is not proof of a bare variant. If another binding or a macro
+expansion makes the occurrence uncertain, the scan keeps the possible API build.
+
+A member of a known API type, such as `TextHover::Item`, is not a build of a same-named struct either.
+An alias that names an API crate or module is not a type, so `use mod_api as Pos; Pos::Settings { … }` still
+builds the API's `Settings`. An unqualified name of a mod-defined struct counts as the mod's own only in
+the file that defines it outside any `#[cfg]`, when nothing in the file (a `use`, a glob, an inline module,
+a macro or attribute that is not standard or the API's) could change what the name means and the mod has
+no `include!`. The parser reads a macro body's tokens as they
 stand: an API struct name followed by `{` or `(` is a build, in full unless it ends in `..`, wherever it stands
 (`a < Pos(1, 2)`, `for Pos(x, y) in v`). A tuple or unit struct's name with no bracket after it is a build too,
 except where only a type stands or as a type written after `name:` in parameters, a `let` or a struct's fields

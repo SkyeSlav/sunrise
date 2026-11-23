@@ -1672,6 +1672,221 @@ fn closed_settings() -> Pieces {
 }
 
 #[test]
+fn a_direct_local_variant_import_does_not_pin_the_api_structs_literal_contract() {
+    let mut gained = wider();
+    gained.replace_type(settings(
+        &[("height", "i32"), ("sky", "bool")],
+        &["Clone", "Default"],
+    ));
+    let gained = gained.build();
+    let closed = closed_settings().build();
+    let read = "fn read(_: &mod_api::Settings) {}";
+    for import in [
+        "enum Choice { Settings { height: i32 } } use self::Choice::Settings;",
+        "enum Choice { Height { height: i32 } } use self::Choice::Height as Settings;",
+    ] {
+        for occurrence in [
+            "fn f() -> Choice { Settings { height: 1 } }",
+            "fn f(c: Choice) -> i32 { let Settings { height } = c; height }",
+        ] {
+            let source = format!("{import}\n{read}\n{occurrence}");
+            let uses = scan_on(wider(), &source);
+            assert_eq!(
+                entry(&uses, "type:Settings").built,
+                Some(Built::None),
+                "{source}"
+            );
+            assert_eq!(fits(uses.entries(), &gained), Fit::Fits, "{source}");
+            assert_eq!(fits(uses.entries(), &closed), Fit::Fits, "{source}");
+        }
+    }
+    for api_literal in [
+        "fn api() -> mod_api::Settings { mod_api::Settings { height: 2 } }",
+        "use mod_api::Settings as Api; fn api() -> Api { Api { height: 2 } }",
+        "type Api = mod_api::Settings; fn api() -> Api { Api { height: 2 } }",
+        "fn api() -> mod_api::Settings { use mod_api::Settings; Settings { height: 2 } }",
+    ] {
+        let source = format!(
+            "enum Choice {{ Height {{ height: i32 }} }}\nuse self::Choice::Height as Settings;\nfn f() -> Choice {{ Settings {{ height: 1 }} }}\n{api_literal}"
+        );
+        let uses = scan_on(wider(), &source);
+        let entry = entry(&uses, "type:Settings");
+        assert_eq!(entry.built, Some(Built::Full), "{source}");
+        let at = "src/lib.rs:4".to_string();
+        assert_eq!(
+            fits(uses.entries(), &gained),
+            Fit::DoesNotFit(vec![misfit(
+                "type:Settings",
+                Change::Fields {
+                    gained: vec!["sky".into()],
+                    at: at.clone()
+                }
+            )]),
+            "{source}"
+        );
+        assert_eq!(
+            fits(uses.entries(), &closed),
+            Fit::DoesNotFit(vec![misfit("type:Settings", Change::NotBuildable { at })]),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn a_qualified_local_variant_is_proved_in_its_own_scope() {
+    let head = "enum Choice { Settings { height: i32 } } fn read(_: &mod_api::Settings) {}";
+    for use_site in [
+        "fn f() -> Choice { Choice::Settings { height: 1 } }",
+        "fn f(c: Choice) -> i32 { let Choice::Settings { height } = c; height }",
+        "impl Choice { fn f() -> Self { Self::Settings { height: 1 } } }",
+        "impl self::Choice { fn f(self) -> i32 { let Self::Settings { height } = self; height } }",
+        "impl Choice { fn f() -> Self { type Choice = (); Self::Settings { height: 1 } } }",
+        "mod inner { fn f() -> super::Choice { super::Choice::Settings { height: 1 } } }",
+        "mod other { pub enum Choice { Settings { height: i32 } } } fn f() -> other::Choice { other::Choice::Settings { height: 1 } }",
+    ] {
+        let source = format!("{head}\n{use_site}");
+        assert_eq!(
+            entry(&scan_on(wider(), &source), "type:Settings").built,
+            Some(Built::None),
+            "{source}"
+        );
+    }
+    for use_site in [
+        "fn f() { use mod_api as Choice; let _ = Choice::Settings { height: 1 }; }",
+        "mod other { use mod_api as Choice; fn f() { let _ = Choice::Settings { height: 1 }; } }",
+        "fn f() { use dep::Choice; impl Choice { fn new() -> Self { Self::Settings { height: 1 } } } }",
+        "impl<Choice> Trait for Choice { fn make() { let _ = Self::Settings { height: 1 }; } }",
+        "fn f<Choice>() { let _ = Choice::Settings { height: 1 }; }",
+        "expand!(); fn f() { let _ = Choice::Settings { height: 1 }; }",
+    ] {
+        let source = format!("{head}\n{use_site}");
+        assert_eq!(
+            entry(&scan_on(wider(), &source), "type:Settings").built,
+            Some(Built::Full),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn an_uncertain_import_is_not_proof_of_a_local_variant() {
+    for declarations in [
+        "enum Choice { Settings { height: i32 } } use self::Choice::{Settings};",
+        "enum Choice { Settings { height: i32 } } use self::Choice::*;",
+        "enum Choice { Settings { height: i32 } } use self::Choice::Settings; use dep::*;",
+        "enum Choice { Settings { height: i32 } } #[cfg(test)] use self::Choice::Settings;",
+        "#[cfg(test)] enum Choice { Settings { height: i32 } } use self::Choice::Settings;",
+        "enum Choice { #[cfg(test)] Settings { height: i32 } } use self::Choice::Settings;",
+        "enum Choice { Settings { height: i32 }, #[cfg(test)] Settings { height: u32 } } use self::Choice::Settings;",
+        "enum Choice { Settings { height: i32 } } use self::Choice::Settings; #[cfg(test)] use mod_api::Settings;",
+        "enum Choice { Settings { height: i32 } } #[cfg(test)] type Choice = dep::Choice; use self::Choice::Settings;",
+        "enum Choice { Settings { height: i32 } } use self::Choice::Settings; expand!();",
+    ] {
+        let source = format!(
+            "{declarations}\nfn f(_: &mod_api::Settings) {{ let _ = Settings {{ height: 1 }}; }}"
+        );
+        assert_eq!(
+            entry(&scan_on(wider(), &source), "type:Settings").built,
+            Some(Built::Full),
+            "{source}"
+        );
+    }
+    let head = "enum Choice { Settings { height: i32 } } fn read(_: &mod_api::Settings) {}";
+    for source in [
+        format!(
+            "{head} fn f() {{ use self::Choice::Settings; let _ = Settings {{ height: 1 }}; }}"
+        ),
+        format!(
+            "{head} use self::Choice::Settings; fn f() {{ let _ = Settings {{ height: 1 }}; type Settings = mod_api::Settings; }}"
+        ),
+        format!(
+            "mod inner {{ {head} use self::Choice::Settings; fn f() {{ let _ = Settings {{ height: 1 }}; }} }}"
+        ),
+    ] {
+        assert_eq!(
+            entry(&scan_on(wider(), &source), "type:Settings").built,
+            Some(Built::Full),
+            "{source}"
+        );
+    }
+    // An import in a different block does not shadow the variant here.
+    let source = format!(
+        "{head} use self::Choice::Settings; fn f() {{ {{ use mod_api::Settings; }} let _ = Settings {{ height: 1 }}; }}"
+    );
+    assert_eq!(
+        entry(&scan_on(wider(), &source), "type:Settings").built,
+        Some(Built::None)
+    );
+}
+
+#[test]
+fn variants_in_the_value_namespace_are_not_tuple_or_unit_struct_builds() {
+    for occurrence in [
+        "fn f() -> Choice { Pos(1, 2) }",
+        "fn f(c: Choice) { let Pos(_, _) = c; }",
+        "fn f() { let _ = Pos; }",
+        "impl Choice { fn f() -> Self { Self::Pos(1, 2) } }",
+    ] {
+        let source = format!(
+            "enum Choice {{ Pos(i32, i32) }} use self::Choice::Pos; fn read(_: &mod_api::Pos) {{}} {occurrence}"
+        );
+        assert_eq!(
+            entry(&scan_on(wider(), &source), "type:Pos").built,
+            Some(Built::None),
+            "{source}"
+        );
+    }
+    let local = "enum Choice { Marker } use self::Choice::Marker;";
+    for (declarations, occurrence) in [
+        (local, "fn f() -> Choice { Marker }"),
+        (local, "fn f(c: Choice) { match c { Marker => {} } }"),
+        (local, "fn f(Marker: Choice) {}"),
+        (local, "impl Choice { fn f() -> Self { Self::Marker } }"),
+        (
+            "use mod_api::ApiChoice as Choice;",
+            "fn f() -> Choice { Choice::Marker }",
+        ),
+        (
+            "use mod_api as api; use api::ApiChoice as Choice;",
+            "fn f() -> Choice { Choice::Marker }",
+        ),
+        (
+            "use mod_api as api;",
+            "fn f() -> api::ApiChoice { api::ApiChoice::Marker }",
+        ),
+        (
+            "",
+            "fn f() -> ::mod_api::ApiChoice { ::mod_api::ApiChoice::Marker }",
+        ),
+    ] {
+        let mut made_for = wider();
+        made_for.types.push(Type::new(
+            "type:Marker",
+            "",
+            None,
+            TypeContract {
+                kind: TypeKind::UnitStruct,
+                ..api_type("type:Marker", "", true, vec![]).contract
+            },
+            vec![],
+            vec![],
+        ));
+        made_for.types.push(api_enum("type:ApiChoice", &["Marker"]));
+        let source = format!("{declarations} fn read(_: &mod_api::Marker) {{}} {occurrence}");
+        assert_eq!(
+            entry(&scan_on(made_for, &source), "type:Marker").built,
+            Some(Built::None),
+            "{source}"
+        );
+    }
+    let source = "enum Choice { Pos(i32, i32) } use self::Choice::Pos; fn f(_: &mod_api::Pos, Pos: fn(i32, i32)) { Pos(1, 2); }";
+    assert_eq!(
+        entry(&scan_on(wider(), source), "type:Pos").built,
+        Some(Built::Full)
+    );
+}
+
+#[test]
 fn a_struct_the_mod_builds_that_can_no_longer_be_built_is_named() {
     let unbuildable = || closed_settings().build();
     let builds = scan_on(

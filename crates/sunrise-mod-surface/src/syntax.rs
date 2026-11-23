@@ -31,6 +31,31 @@ pub(crate) struct Build<'t> {
     pub line: usize,
     /// The byte where the path starts.
     pub byte: usize,
+    /// The form of the candidate, if no lexical binding obscures its path.
+    pub variant: Option<VariantUse>,
+}
+
+/// The syntax that a local variant must support to explain a build candidate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum VariantUse {
+    Braced,
+    Tuple,
+    Value,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum VariantShape {
+    Named,
+    Tuple,
+    Unit,
+}
+
+#[derive(Debug)]
+pub(crate) struct Variant {
+    /// Unknown if conditional or repeated.
+    pub shape: Option<VariantShape>,
+    /// The tuple-field scan only needs an unconditional tuple declaration.
+    pub has_tuple: bool,
 }
 
 /// A tuple struct's field read by its position where the parser can tie the read to the
@@ -53,6 +78,46 @@ pub(crate) struct Impl<'t> {
     /// Its names, an empty first one for a leading `::`; `None` when the type is not a plain
     /// path the scan can read (a tuple, a macro), so what `Self` means there is unknown.
     pub target: Option<Vec<&'t str>>,
+    /// A lexical type name shadows the target's qualifier at the impl header.
+    pub shadowed_target: bool,
+}
+
+/// The evidence a single item supplies about a name in a module or block.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Binding<'t> {
+    Enum,
+    Module,
+    VariantImport { owner: &'t str, variant: &'t str },
+    Other,
+}
+
+/// A scope's bindings, including conditional items, which can defeat but not prove a binding.
+#[derive(Debug, Default)]
+pub(crate) struct ScopeNames<'t> {
+    types: BTreeMap<&'t str, Binding<'t>>,
+    values: BTreeMap<&'t str, Binding<'t>>,
+    pub glob: bool,
+}
+
+impl<'t> ScopeNames<'t> {
+    pub fn get(&self, space: Namespace, name: &str) -> Option<Binding<'t>> {
+        match space {
+            Namespace::Type => self.types.get(name),
+            Namespace::Value => self.values.get(name),
+        }
+        .copied()
+    }
+
+    fn insert(&mut self, space: Namespace, name: &'t str, binding: Binding<'t>) {
+        let names = match space {
+            Namespace::Type => &mut self.types,
+            Namespace::Value => &mut self.values,
+        };
+        names
+            .entry(name)
+            .and_modify(|old| *old = Binding::Other)
+            .or_insert(binding);
+    }
 }
 
 /// One module's direct items, separate from the names visible in other modules or blocks.
@@ -66,8 +131,10 @@ pub(crate) struct Module<'t> {
     pub types: BTreeSet<&'t str>,
     /// The subset that also declare a tuple constructor in the value namespace.
     pub tuple_constructors: BTreeSet<&'t str>,
-    /// The tuple variants of each unconditional enum.
-    pub tuple_variants: BTreeMap<&'t str, BTreeSet<&'t str>>,
+    /// The variants of each unconditional enum. A duplicate or conditional variant is unknown.
+    pub variants: BTreeMap<&'t str, BTreeMap<&'t str, Variant>>,
+    /// Names directly in this module, not in its blocks or child modules.
+    pub names: ScopeNames<'t>,
     /// A block item or type parameter may shadow the first segment of a relative path.
     pub block_items: bool,
     /// A block value item may shadow an unqualified constructor.
@@ -165,13 +232,43 @@ pub(crate) struct Tie<'t> {
     pub namespace: Namespace,
 }
 
+/// Value bindings in declaration order, with each name's active ties (innermost last).
+#[derive(Default)]
+struct Locals<'t> {
+    order: Vec<&'t str>,
+    ties: BTreeMap<&'t str, Vec<Option<Tie<'t>>>>,
+}
+
+impl<'t> Locals<'t> {
+    fn len(&self) -> usize {
+        self.order.len()
+    }
+
+    fn push(&mut self, name: &'t str, tie: Option<Tie<'t>>) {
+        self.order.push(name);
+        self.ties.entry(name).or_default().push(tie);
+    }
+
+    fn truncate(&mut self, len: usize) {
+        for name in self.order.drain(len..) {
+            if let std::collections::btree_map::Entry::Occupied(mut entry) = self.ties.entry(name) {
+                entry.get_mut().pop();
+                if entry.get().is_empty() {
+                    entry.remove();
+                }
+            }
+        }
+    }
+}
+
 struct Reader<'t> {
     text: &'t str,
     out: Syntax<'t>,
     module: usize,
-    /// The names bound in the function being read, innermost last, each with the struct path
-    /// it is tied to when the binding says it.
-    bindings: Vec<(&'t str, Option<Tie<'t>>)>,
+    bindings: Locals<'t>,
+    blocks: Vec<ScopeNames<'t>>,
+    generics: Vec<(Namespace, &'t str)>,
+    in_impl: bool,
 }
 
 impl<'t> Reader<'t> {
@@ -193,7 +290,119 @@ impl<'t> Reader<'t> {
         }
     }
 
+    /// Collect item names before visiting bodies: block and module items are in scope
+    /// throughout their block or module, even before their declaration.
+    fn item_names(&self, names: &mut ScopeNames<'t>, item: &syn::Item, file_top: bool) {
+        let (ident, space, binding) = match item {
+            syn::Item::Enum(i) if !conditional(&i.attrs) => {
+                (&i.ident, Namespace::Type, Binding::Enum)
+            }
+            syn::Item::Enum(i) => (&i.ident, Namespace::Type, Binding::Other),
+            syn::Item::Struct(i) => {
+                if !matches!(i.fields, syn::Fields::Named(_)) {
+                    names.insert(Namespace::Value, self.name(&i.ident), Binding::Other);
+                }
+                (&i.ident, Namespace::Type, Binding::Other)
+            }
+            syn::Item::Union(i) => (&i.ident, Namespace::Type, Binding::Other),
+            syn::Item::Mod(i) if !conditional(&i.attrs) => {
+                (&i.ident, Namespace::Type, Binding::Module)
+            }
+            syn::Item::Mod(i) => (&i.ident, Namespace::Type, Binding::Other),
+            syn::Item::Trait(i) => (&i.ident, Namespace::Type, Binding::Other),
+            syn::Item::TraitAlias(i) => (&i.ident, Namespace::Type, Binding::Other),
+            syn::Item::Type(i) => (&i.ident, Namespace::Type, Binding::Other),
+            syn::Item::ExternCrate(i) => (
+                i.rename.as_ref().map_or(&i.ident, |(_, name)| name),
+                Namespace::Type,
+                Binding::Other,
+            ),
+            syn::Item::Const(i) => (&i.ident, Namespace::Value, Binding::Other),
+            syn::Item::Static(i) => (&i.ident, Namespace::Value, Binding::Other),
+            syn::Item::Fn(i) => (&i.sig.ident, Namespace::Value, Binding::Other),
+            syn::Item::ForeignMod(i) => {
+                for item in &i.items {
+                    let (ident, space) = match item {
+                        syn::ForeignItem::Fn(i) => (&i.sig.ident, Namespace::Value),
+                        syn::ForeignItem::Static(i) => (&i.ident, Namespace::Value),
+                        syn::ForeignItem::Type(i) => (&i.ident, Namespace::Type),
+                        _ => continue,
+                    };
+                    names.insert(space, self.name(ident), Binding::Other);
+                }
+                return;
+            }
+            syn::Item::Use(u) => {
+                // Match the original tree, not flattened paths: a group is not proof.
+                let exact = file_top && u.leading_colon.is_none() && !conditional(&u.attrs);
+                let binding = if exact
+                    && let syn::UseTree::Path(root) = &u.tree
+                    && self.name(&root.ident) == "self"
+                    && let syn::UseTree::Path(owner) = &*root.tree
+                {
+                    match &*owner.tree {
+                        syn::UseTree::Name(v) => Binding::VariantImport {
+                            owner: self.name(&owner.ident),
+                            variant: self.name(&v.ident),
+                        },
+                        syn::UseTree::Rename(v) => Binding::VariantImport {
+                            owner: self.name(&owner.ident),
+                            variant: self.name(&v.ident),
+                        },
+                        _ => Binding::Other,
+                    }
+                } else {
+                    Binding::Other
+                };
+                self.use_names(names, &u.tree, None, binding);
+                return;
+            }
+            _ => return,
+        };
+        names.insert(space, self.name(ident), binding);
+    }
+
+    fn use_names(
+        &self,
+        names: &mut ScopeNames<'t>,
+        tree: &syn::UseTree,
+        prefix: Option<&'t str>,
+        binding: Binding<'t>,
+    ) {
+        let local = match tree {
+            syn::UseTree::Path(path) => {
+                self.use_names(names, &path.tree, Some(self.name(&path.ident)), binding);
+                return;
+            }
+            syn::UseTree::Group(group) => {
+                for tree in &group.items {
+                    self.use_names(names, tree, prefix, binding);
+                }
+                return;
+            }
+            syn::UseTree::Glob(_) => {
+                names.glob = true;
+                return;
+            }
+            syn::UseTree::Name(name) => match self.name(&name.ident) {
+                "self" => prefix.unwrap_or("self"),
+                name => name,
+            },
+            syn::UseTree::Rename(rename) => self.name(&rename.rename),
+        };
+        if local != "_" {
+            // The import's namespace is not known until its target is resolved.
+            names.insert(Namespace::Type, local, binding);
+            names.insert(Namespace::Value, local, binding);
+        }
+    }
+
     fn module_items(&mut self, items: &[syn::Item]) {
+        let mut names = ScopeNames::default();
+        for item in items {
+            self.item_names(&mut names, item, self.module == 0);
+        }
+        self.out.scopes[self.module].names = names;
         for item in items {
             let concrete = match item {
                 syn::Item::Struct(i) if !conditional(&i.attrs) => {
@@ -205,17 +414,24 @@ impl<'t> Reader<'t> {
                 }
                 syn::Item::Enum(i) if !conditional(&i.attrs) => {
                     let name = self.name(&i.ident);
-                    let variants = i
-                        .variants
-                        .iter()
-                        .filter(|v| {
-                            !conditional(&v.attrs) && matches!(v.fields, syn::Fields::Unnamed(_))
-                        })
-                        .map(|v| self.name(&v.ident))
-                        .collect();
-                    self.out.scopes[self.module]
-                        .tuple_variants
-                        .insert(name, variants);
+                    let mut variants = BTreeMap::new();
+                    for v in &i.variants {
+                        let shape = (!conditional(&v.attrs)).then_some(match v.fields {
+                            syn::Fields::Named(_) => VariantShape::Named,
+                            syn::Fields::Unnamed(_) => VariantShape::Tuple,
+                            syn::Fields::Unit => VariantShape::Unit,
+                        });
+                        let name = self.name(&v.ident);
+                        let has_tuple = shape == Some(VariantShape::Tuple);
+                        variants
+                            .entry(name)
+                            .and_modify(|old: &mut Variant| {
+                                old.shape = None;
+                                old.has_tuple |= has_tuple;
+                            })
+                            .or_insert(Variant { shape, has_tuple });
+                    }
+                    self.out.scopes[self.module].variants.insert(name, variants);
                     Some(&i.ident)
                 }
                 syn::Item::Union(i) if !conditional(&i.attrs) => Some(&i.ident),
@@ -265,10 +481,16 @@ impl<'t> Reader<'t> {
                 parent,
                 ..Module::default()
             });
+            let blocks = std::mem::take(&mut self.blocks);
+            let generics = std::mem::take(&mut self.generics);
+            let bindings = std::mem::take(&mut self.bindings);
             for attr in &m.attrs {
                 self.visit_attribute(attr);
             }
             self.module_items(items);
+            self.bindings = bindings;
+            self.generics = generics;
+            self.blocks = blocks;
             self.module = parent;
         } else {
             visit::visit_item_mod(self, m);
@@ -291,7 +513,7 @@ impl<'t> Reader<'t> {
         impl<'a> Visit<'a> for Names<'_, '_> {
             fn visit_pat_ident(&mut self, p: &'a syn::PatIdent) {
                 let name = self.0.name(&p.ident);
-                self.0.bindings.push((name, None));
+                self.0.bindings.push(name, None);
                 visit::visit_pat_ident(self, p);
             }
         }
@@ -307,7 +529,7 @@ impl<'t> Reader<'t> {
             }
             (syn::Pat::Ident(p), tie) if p.subpat.is_none() => {
                 let name = self.name(&p.ident);
-                self.bindings.push((name, tie));
+                self.bindings.push(name, tie);
             }
             (pat, _) => self.bind_untied(pat),
         }
@@ -329,11 +551,7 @@ impl<'t> Reader<'t> {
             syn::Expr::Path(p) if p.qself.is_none() => {
                 let ident = p.path.get_ident()?;
                 let name = self.name(ident);
-                self.bindings
-                    .iter()
-                    .rev()
-                    .find(|(bound, _)| *bound == name)
-                    .and_then(|(_, tie)| tie.clone())
+                self.bindings.ties.get(name)?.last()?.clone()
             }
             _ => None,
         }
@@ -348,84 +566,188 @@ impl<'t> Reader<'t> {
         });
     }
 
-    /// Reads a function with only its own parameters bound.
-    fn function(&mut self, sig: &syn::Signature, read: impl FnOnce(&mut Self)) {
+    /// Reads a signature before binding its parameters, then reads the body.
+    fn function(
+        &mut self,
+        attrs: &[syn::Attribute],
+        vis: Option<&syn::Visibility>,
+        sig: &syn::Signature,
+        body: Option<&syn::Block>,
+    ) {
         let outer = std::mem::take(&mut self.bindings);
-        for input in &sig.inputs {
-            match input {
-                syn::FnArg::Receiver(r) => {
-                    let tie = match r.colon_token {
-                        None => Some(Tie {
-                            path: vec!["Self"],
-                            rooted: false,
-                            namespace: Namespace::Type,
-                        }),
-                        Some(_) => type_path(self, &r.ty),
-                    };
-                    self.bindings.push(("self", tie));
-                }
-                syn::FnArg::Typed(t) => {
-                    let tie = type_path(self, &t.ty);
-                    self.bind(&t.pat, tie);
-                }
+        self.with_generics(&sig.generics, |this| {
+            for attr in attrs {
+                this.visit_attribute(attr);
             }
-        }
-        read(self);
+            if let Some(vis) = vis {
+                this.visit_visibility(vis);
+            }
+            this.visit_signature(sig);
+            if let Some(body) = body {
+                for input in &sig.inputs {
+                    match input {
+                        syn::FnArg::Receiver(r) => {
+                            let tie = match r.colon_token {
+                                None => Some(Tie {
+                                    path: vec!["Self"],
+                                    rooted: false,
+                                    namespace: Namespace::Type,
+                                }),
+                                Some(_) => type_path(this, &r.ty),
+                            };
+                            this.bindings.push("self", tie);
+                        }
+                        syn::FnArg::Typed(t) => this.bind(&t.pat, None),
+                    }
+                }
+                this.visit_block(body);
+            }
+        });
         self.bindings = outer;
     }
 
-    fn build(&mut self, path: &syn::Path, how: How, brace: bool) {
+    fn with_generics(&mut self, generics: &syn::Generics, read: impl FnOnce(&mut Self)) {
+        let outer = self.generics.len();
+        for param in &generics.params {
+            let (space, name) = match param {
+                syn::GenericParam::Type(p) => (Namespace::Type, self.name(&p.ident)),
+                syn::GenericParam::Const(p) => (Namespace::Value, self.name(&p.ident)),
+                syn::GenericParam::Lifetime(_) => continue,
+            };
+            self.generics.push((space, name));
+        }
+        read(self);
+        self.generics.truncate(outer);
+    }
+
+    fn shadowed(&self, namespace: Namespace, name: &str) -> bool {
+        self.generics.contains(&(namespace, name))
+            || self
+                .blocks
+                .iter()
+                .rev()
+                .any(|scope| scope.glob || scope.get(namespace, name).is_some())
+            || (namespace == Namespace::Value && self.bindings.ties.contains_key(name))
+    }
+
+    fn build(
+        &mut self,
+        path: &syn::Path,
+        how: How,
+        brace: bool,
+        variant: VariantUse,
+        qself: Option<&syn::QSelf>,
+    ) {
         let span = match (&path.leading_colon, path.segments.first()) {
             (Some(colons), _) => colons.spans[0],
             (None, Some(first)) => first.ident.span(),
             (None, None) => return,
         };
+        let names = self.names(path);
+        let namespace = if names.len() > 1 || variant == VariantUse::Braced {
+            Namespace::Type
+        } else {
+            Namespace::Value
+        };
+        let clear = qself.is_none()
+            && match names.as_slice() {
+                _ if path.leading_colon.is_some() => true,
+                ["Self", ..] => self.in_impl,
+                ["self" | "super" | "crate", ..] => true,
+                [first, ..] => !self.shadowed(namespace, first),
+                [] => false,
+            };
         self.out.builds.push(Build {
-            path: self.names(path),
+            path: names,
             rooted: path.leading_colon.is_some(),
             how,
             brace,
             line: span.start().line,
             byte: span.byte_range().start,
+            variant: clear.then_some(variant),
         });
     }
 }
 
 impl<'a, 't> Visit<'a> for Reader<'t> {
+    fn visit_item(&mut self, item: &'a syn::Item) {
+        // A nested item does not inherit the containing impl's `Self`.
+        let in_impl = std::mem::replace(&mut self.in_impl, false);
+        let generics = match item {
+            syn::Item::Const(i) => Some(&i.generics),
+            syn::Item::Enum(i) => Some(&i.generics),
+            syn::Item::Struct(i) => Some(&i.generics),
+            syn::Item::Trait(i) => Some(&i.generics),
+            syn::Item::TraitAlias(i) => Some(&i.generics),
+            syn::Item::Type(i) => Some(&i.generics),
+            syn::Item::Union(i) => Some(&i.generics),
+            _ => None,
+        };
+        if let Some(generics) = generics {
+            self.with_generics(generics, |this| visit::visit_item(this, item));
+        } else {
+            visit::visit_item(self, item);
+        }
+        self.in_impl = in_impl;
+    }
     fn visit_expr_struct(&mut self, e: &'a syn::ExprStruct) {
         let how = if e.dot2_token.is_some() || e.rest.is_some() {
             How::Base
         } else {
             How::Full
         };
-        self.build(&e.path, how, true);
+        self.build(&e.path, how, true, VariantUse::Braced, e.qself.as_ref());
         visit::visit_expr_struct(self, e);
     }
 
     fn visit_expr_call(&mut self, e: &'a syn::ExprCall) {
         if let syn::Expr::Path(p) = &*e.func {
-            self.build(&p.path, How::Full, false);
+            self.build(
+                &p.path,
+                How::Full,
+                false,
+                VariantUse::Tuple,
+                p.qself.as_ref(),
+            );
         }
         visit::visit_expr_call(self, e);
     }
 
     fn visit_expr_path(&mut self, e: &'a syn::ExprPath) {
         // A value (and in a pattern, `Pat::Path`): a tuple struct's constructor, a unit struct.
-        self.build(&e.path, How::Value, false);
+        self.build(
+            &e.path,
+            How::Value,
+            false,
+            VariantUse::Value,
+            e.qself.as_ref(),
+        );
         visit::visit_expr_path(self, e);
     }
 
     fn visit_pat_struct(&mut self, p: &'a syn::PatStruct) {
         // With `..` a pattern reads the fields it names; without, it lists them all.
         if p.rest.is_none() {
-            self.build(&p.path, How::Full, false);
+            self.build(
+                &p.path,
+                How::Full,
+                false,
+                VariantUse::Braced,
+                p.qself.as_ref(),
+            );
         }
         visit::visit_pat_struct(self, p);
     }
 
     fn visit_pat_tuple_struct(&mut self, p: &'a syn::PatTupleStruct) {
         if !p.elems.iter().any(|e| matches!(e, syn::Pat::Rest(_))) {
-            self.build(&p.path, How::Full, false);
+            self.build(
+                &p.path,
+                How::Full,
+                false,
+                VariantUse::Tuple,
+                p.qself.as_ref(),
+            );
         }
         // The positions before a `..` are known; those after it count from an end the scan
         // does not know.
@@ -453,15 +775,15 @@ impl<'a, 't> Visit<'a> for Reader<'t> {
     }
 
     fn visit_item_fn(&mut self, i: &'a syn::ItemFn) {
-        self.function(&i.sig, |this| visit::visit_item_fn(this, i));
+        self.function(&i.attrs, Some(&i.vis), &i.sig, Some(&i.block));
     }
 
     fn visit_impl_item_fn(&mut self, i: &'a syn::ImplItemFn) {
-        self.function(&i.sig, |this| visit::visit_impl_item_fn(this, i));
+        self.function(&i.attrs, Some(&i.vis), &i.sig, Some(&i.block));
     }
 
     fn visit_trait_item_fn(&mut self, i: &'a syn::TraitItemFn) {
-        self.function(&i.sig, |this| visit::visit_trait_item_fn(this, i));
+        self.function(&i.attrs, None, &i.sig, i.default.as_ref());
     }
 
     fn visit_type_param(&mut self, p: &'a syn::TypeParam) {
@@ -472,9 +794,11 @@ impl<'a, 't> Visit<'a> for Reader<'t> {
 
     fn visit_block(&mut self, b: &'a syn::Block) {
         let outer = self.bindings.len();
-        let module = &mut self.out.scopes[self.module];
+        let mut names = ScopeNames::default();
         for stmt in &b.stmts {
             if let syn::Stmt::Item(item) = stmt {
+                self.item_names(&mut names, item, false);
+                let module = &mut self.out.scopes[self.module];
                 match item {
                     syn::Item::Mod(_)
                     | syn::Item::ExternCrate(_)
@@ -494,7 +818,9 @@ impl<'a, 't> Visit<'a> for Reader<'t> {
                 }
             }
         }
+        self.blocks.push(names);
         visit::visit_block(self, b);
+        self.blocks.pop();
         self.bindings.truncate(outer);
     }
 
@@ -513,17 +839,34 @@ impl<'a, 't> Visit<'a> for Reader<'t> {
 
     fn visit_expr_closure(&mut self, e: &'a syn::ExprClosure) {
         let outer = self.bindings.len();
+        for attr in &e.attrs {
+            self.visit_attribute(attr);
+        }
+        if let Some(lifetimes) = &e.lifetimes {
+            self.visit_bound_lifetimes(lifetimes);
+        }
+        for input in &e.inputs {
+            self.visit_pat(input);
+        }
+        self.visit_return_type(&e.output);
         for input in &e.inputs {
             self.bind(input, None);
         }
-        visit::visit_expr_closure(self, e);
+        self.visit_expr(&e.body);
         self.bindings.truncate(outer);
     }
 
     fn visit_arm(&mut self, a: &'a syn::Arm) {
         let outer = self.bindings.len();
+        for attr in &a.attrs {
+            self.visit_attribute(attr);
+        }
+        self.visit_pat(&a.pat);
         self.bind_untied(&a.pat);
-        visit::visit_arm(self, a);
+        if let Some((_, guard)) = &a.guard {
+            self.visit_expr(guard);
+        }
+        self.visit_expr(&a.body);
         self.bindings.truncate(outer);
     }
 
@@ -570,7 +913,13 @@ impl<'a, 't> Visit<'a> for Reader<'t> {
     fn visit_pat_ident(&mut self, p: &'a syn::PatIdent) {
         // `Marker` alone in a pattern parses as a binding; it may be a unit struct.
         if p.subpat.is_none() && p.by_ref.is_none() && p.mutability.is_none() {
-            self.build(&syn::Path::from(p.ident.clone()), How::Value, false);
+            self.build(
+                &syn::Path::from(p.ident.clone()),
+                How::Value,
+                false,
+                VariantUse::Value,
+                None,
+            );
         }
         visit::visit_pat_ident(self, p);
     }
@@ -582,18 +931,27 @@ impl<'a, 't> Visit<'a> for Reader<'t> {
     }
 
     fn visit_item_impl(&mut self, i: &'a syn::ItemImpl) {
-        let target = plain_path(&i.self_ty).map(|path| {
-            let mut target = self.names(path);
-            if path.leading_colon.is_some() {
-                target.insert(0, "");
-            }
-            target
+        self.with_generics(&i.generics, |this| {
+            let target = plain_path(&i.self_ty).map(|path| {
+                let mut target = this.names(path);
+                if path.leading_colon.is_some() {
+                    target.insert(0, "");
+                }
+                target
+            });
+            let shadowed_target = target.as_ref().is_some_and(|target| match &target[..] {
+                ["self" | "super" | "crate", ..] => false,
+                [first, ..] => this.shadowed(Namespace::Type, first),
+                [] => false,
+            });
+            this.out.impls.push(Impl {
+                body: i.brace_token.span.join().byte_range(),
+                target,
+                shadowed_target,
+            });
+            this.in_impl = true;
+            visit::visit_item_impl(this, i);
         });
-        self.out.impls.push(Impl {
-            body: i.brace_token.span.join().byte_range(),
-            target,
-        });
-        visit::visit_item_impl(self, i);
     }
 
     fn visit_item_mod(&mut self, m: &'a syn::ItemMod) {
@@ -645,7 +1003,19 @@ impl<'a, 't> Visit<'a> for Reader<'t> {
 
     fn visit_impl_item_type(&mut self, i: &'a syn::ImplItemType) {
         self.alias(&i.ident, &i.ty, false);
-        visit::visit_impl_item_type(self, i);
+        self.with_generics(&i.generics, |this| visit::visit_impl_item_type(this, i));
+    }
+
+    fn visit_impl_item_const(&mut self, i: &'a syn::ImplItemConst) {
+        self.with_generics(&i.generics, |this| visit::visit_impl_item_const(this, i));
+    }
+
+    fn visit_trait_item_const(&mut self, i: &'a syn::TraitItemConst) {
+        self.with_generics(&i.generics, |this| visit::visit_trait_item_const(this, i));
+    }
+
+    fn visit_trait_item_type(&mut self, i: &'a syn::TraitItemType) {
+        self.with_generics(&i.generics, |this| visit::visit_trait_item_type(this, i));
     }
 
     fn visit_macro(&mut self, m: &'a syn::Macro) {
@@ -906,7 +1276,10 @@ pub(crate) fn parse(text: &str) -> Result<Syntax<'_>, Unread> {
                 text,
                 out: Syntax::default(),
                 module: 0,
-                bindings: Vec::new(),
+                bindings: Locals::default(),
+                blocks: Vec::new(),
+                generics: Vec::new(),
+                in_impl: false,
             };
             reader.out.scopes.push(Module {
                 body: 0..text.len(),
