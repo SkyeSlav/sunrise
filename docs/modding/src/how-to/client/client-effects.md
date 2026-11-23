@@ -187,8 +187,11 @@ stable ID, camera, yaw, pitch, field of view and pixel size, and push it to the
 views with distinct IDs are taken, with sides limited to 4096 pixels and the
 device limit, and 4 x 4096 x 4096 pixels in all. `push` refuses any other view
 with a `WorldViewRefusal` naming it and the reason, and logs each refusal once.
-Each view culls the world with its own frustum, and the player's view keeps its
-own culling. These callbacks have no Wire form.
+Each picture clips and depth-tests from its own camera. When a view is accepted,
+terrain that hides an otherwise eligible entity, dropped item, or block entity
+from the player's camera cannot discard it from the shared geometry. The
+player's terrain culling is unchanged, and frames with no accepted views use
+their usual entity culling. These callbacks have no Wire form.
 
 For a view seen in another view, such as a portal seen through a portal, push the
 outer view first and add `with_parent(outer_id)` to the inner one. Views nest up to

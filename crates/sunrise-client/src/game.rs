@@ -8409,6 +8409,7 @@ impl Game<'_> {
                     Vec::new()
                 };
             let shadow_only_at: HashSet<[i32; 3]> = shadow_only.iter().map(|b| b.0).collect();
+            let occlusion_mode = self.entity_geometry_occlusion_mode();
             let dynamic_visible = |pos: [i32; 3], state: u32, lo: glam::DVec3, hi: glam::DVec3| {
                 if off_screen(state) || shadow_only_at.contains(&pos) {
                     return true;
@@ -8421,7 +8422,7 @@ impl Game<'_> {
                 {
                     return false;
                 }
-                if self.settings.sunrise.entity_culling == EntityCullingMode::Off
+                if occlusion_mode == EntityCullingMode::Off
                     || self.occlusion.shadow_casters.0
                     || self.block_entity_reach_entry(state).1
                     || hi.y - lo.y > 2.0
@@ -8531,7 +8532,7 @@ impl Game<'_> {
                     );
             }
             // Mod block entities: their mods draw them (`native_block_entity_submit`),
-            // culled by the eye-visible section filter (ordinary renderers) and the bounds
+            // culled by the shared section visibility filter (ordinary renderers) and the bounds
             // they give. A world without any (`has_mods`) has none to find among its other
             // unrendered block entities (furnaces, hoppers...).
             let radius = self.effective_render_distance();

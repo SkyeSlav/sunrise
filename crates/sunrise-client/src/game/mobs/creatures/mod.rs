@@ -8841,7 +8841,7 @@ impl Game<'_> {
     ) -> MobDrawFrame<'_> {
         // The coarse mob bounds pay off only in dense async scenes; otherwise,
         // keep the existing exact mesh-culling path.
-        let precheck = self.settings.sunrise.entity_culling == EntityCullingMode::Asynchronous
+        let precheck = self.entity_geometry_occlusion_mode() == EntityCullingMode::Asynchronous
             && self
                 .occlusion
                 .async_culler

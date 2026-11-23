@@ -5,8 +5,8 @@ use super::{
     occlusion_culling::{AsyncOcclusionCuller, opaque},
     particle_culling::section_scene,
 };
-use sunrise_client::graphics::EntityCullingMode;
 use sunrise_client::voxel_occlusion::Culler as OcclusionCuller;
+use sunrise_client::{gfx::JoinedFrusta, graphics::EntityCullingMode};
 pub use sunrise_client_gameplay::entity_occlusion::{EntityCullDecision, at};
 pub(super) use sunrise_client_gameplay::entity_occlusion::{
     EntityOcclusion, cull_box, default_range, entity_view_scale, orb_in_view,
@@ -14,7 +14,27 @@ pub(super) use sunrise_client_gameplay::entity_occlusion::{
 use sunrise_client_gameplay::occlusion_culling::QuerySource;
 use sunrise_core::geometry::{Aabb, Vec3};
 
+fn geometry_occlusion_mode(
+    configured: EntityCullingMode,
+    frusta: Option<&JoinedFrusta>,
+) -> EntityCullingMode {
+    if frusta.is_some_and(|frusta| !frusta.views().is_empty()) {
+        EntityCullingMode::Off
+    } else {
+        configured
+    }
+}
+
 impl Game<'_> {
+    /// A player-eye proof cannot discard geometry shared with an accepted world view.
+    /// This does not change the culling setting, the culler lifecycle, or any view's terrain.
+    pub(super) fn entity_geometry_occlusion_mode(&self) -> EntityCullingMode {
+        geometry_occlusion_mode(
+            self.settings.sunrise.entity_culling,
+            self.view_frustum.as_ref(),
+        )
+    }
+
     pub(super) fn prepare_entity_culling(&mut self) {
         // The mods' render hooks: whether any listens this frame, and no entity canceled yet.
         super::native_mob_draw::begin_entity_frame();
@@ -29,11 +49,12 @@ impl Game<'_> {
     }
 
     pub(super) fn cull_entity_vertices(&self, vertices: &mut Vec<Vertex>, start: usize) -> bool {
-        let hidden = self.occlusion_hidden(Some(vertices), start, None);
+        let mode = self.entity_geometry_occlusion_mode();
+        let hidden = self.occlusion_hidden(mode, Some(vertices), start, None);
         if hidden
             && !(self.occlusion.shadow_casters.0 && self.hide_spans_from(start, vertices.len()))
         {
-            if self.settings.sunrise.entity_culling == EntityCullingMode::Asynchronous
+            if mode == EntityCullingMode::Asynchronous
                 && let Some(culler) = &self.occlusion.async_culler
             {
                 culler.record_entity_vertices_culled(vertices.len().saturating_sub(start));
@@ -44,13 +65,12 @@ impl Game<'_> {
     }
 
     pub(super) fn cull_entity_camera_bounds(&self, lo: glam::Vec3, hi: glam::Vec3) -> bool {
-        if self.occlusion.occlusion_hidden_camera_bounds(
-            &section_scene!(self),
-            self.settings.sunrise.entity_culling,
-            lo,
-            hi,
-        ) {
-            if self.settings.sunrise.entity_culling == EntityCullingMode::Asynchronous
+        let mode = self.entity_geometry_occlusion_mode();
+        if self
+            .occlusion
+            .occlusion_hidden_camera_bounds(&section_scene!(self), mode, lo, hi)
+        {
+            if mode == EntityCullingMode::Asynchronous
                 && let Some(culler) = &self.occlusion.async_culler
             {
                 culler.record_entity_vertices_culled(2);
@@ -62,7 +82,7 @@ impl Game<'_> {
 
     /// Pre-model visibility hook for dynamic block-entity geometry.
     pub(super) fn block_entity_occluded(&self, bounds: Aabb) -> bool {
-        self.occlusion_hidden(None, 0, Some(bounds))
+        self.occlusion_hidden(self.entity_geometry_occlusion_mode(), None, 0, Some(bounds))
     }
 
     /// Cull from the shared entity AABB before generating its model vertices.
@@ -81,7 +101,8 @@ impl Game<'_> {
         entity: &T,
         render_bounds: Aabb,
     ) -> EntityCullDecision {
-        if self.settings.sunrise.entity_culling == EntityCullingMode::Off
+        let mode = self.entity_geometry_occlusion_mode();
+        if mode == EntityCullingMode::Off
             || self.occlusion.shadow_casters.0
             || entity.render_glowing(self)
         {
@@ -99,7 +120,7 @@ impl Game<'_> {
             }
             return EntityCullDecision::Hidden;
         }
-        match self.settings.sunrise.entity_culling {
+        match mode {
             EntityCullingMode::Off => EntityCullDecision::Bypass,
             EntityCullingMode::Synchronous => {
                 if self
@@ -170,17 +191,13 @@ impl Game<'_> {
 
     fn occlusion_hidden(
         &self,
+        mode: EntityCullingMode,
         vertices: Option<&[Vertex]>,
         start: usize,
         bounds: Option<Aabb>,
     ) -> bool {
-        self.occlusion.occlusion_hidden(
-            &section_scene!(self),
-            self.settings.sunrise.entity_culling,
-            vertices,
-            start,
-            bounds,
-        )
+        self.occlusion
+            .occlusion_hidden(&section_scene!(self), mode, vertices, start, bounds)
     }
 }
 
@@ -348,6 +365,85 @@ impl Game<'_> {
     pub(super) fn finish_async_occlusion_culling(&mut self) {
         if let Some(culler) = &mut self.occlusion.async_culler {
             culler.finish_frame(&self.world, self.res.facts());
+        }
+    }
+}
+
+#[cfg(test)]
+mod world_view_tests {
+    use super::*;
+    use glam::{DVec3, Mat4};
+    use sunrise_client::gfx::Frustum;
+    use sunrise_client_render::render_views::{WorldView, WorldViewRefusalReason, WorldViews};
+
+    #[test]
+    fn accepted_world_views_keep_geometry_behind_a_player_occluder() {
+        let bounds = Aabb::new(Vec3::new(8.0, -1.0, -1.0), Vec3::new(10.0, 1.0, 1.0));
+        let [lo, hi] = [bounds.min_position(), bounds.max_position()].map(|p| at(p).as_vec3());
+        let vertices = [lo, hi].map(|p| Vertex {
+            pos: p.to_array(),
+            ..bytemuck::Zeroable::zeroed()
+        });
+        let wall = |p: [i32; 3]| p[0] == 4;
+        let proofs = |culler: &OcclusionCuller| {
+            [
+                culler.hidden_bounds(bounds, wall),
+                culler.hidden(&vertices, 0, wall),
+                culler.hidden_camera_bounds(lo.to_array(), hi.to_array(), wall),
+            ]
+        };
+        let player_proofs = proofs(&OcclusionCuller::new([0.0; 3], 1_000));
+        assert_eq!(player_proofs, [true; 3]);
+
+        let projection = Mat4::perspective_rh(70.0_f32.to_radians(), 1.0, 0.05, 192.0);
+        let east = sunrise_client::camera::view_matrix(-90.0, 0.0);
+        let player = Frustum::from_view_projection(projection * east);
+        assert!(player.intersects(lo, hi));
+        let frame_frusta = |views: &WorldViews| {
+            JoinedFrusta::new(
+                player,
+                views.views().iter().map(|view| {
+                    let rotation = sunrise_client::camera::view_matrix(view.yaw, view.pitch);
+                    let translation = Mat4::from_translation(-view.camera.as_vec3());
+                    Frustum::from_view_projection(projection * rotation * translation)
+                }),
+            )
+        };
+
+        let mut views = WorldViews::new(256);
+        let empty = frame_frusta(&views);
+        let across_wall = DVec3::new(6.0, 0.0, 0.0);
+        let refused = views
+            .push(WorldView::new(1, across_wall, -90.0, 0.0, 70.0, [0, 64]))
+            .unwrap_err();
+        assert_eq!(refused.reason, WorldViewRefusalReason::Side([0, 64]));
+        let refused_only = frame_frusta(&views);
+        views
+            .push(WorldView::new(1, across_wall, -90.0, 0.0, 70.0, [64, 64]))
+            .unwrap();
+        let accepted = frame_frusta(&views);
+        assert!(accepted.views()[0].intersects(lo, hi));
+        assert!(!OcclusionCuller::new(across_wall.to_array(), 1_000).hidden_bounds(bounds, wall));
+        views.begin(256);
+        let next_empty = frame_frusta(&views);
+
+        let rejected = |mode, frame, player_proofs: [bool; 3]| {
+            let enabled = geometry_occlusion_mode(mode, Some(frame)) != EntityCullingMode::Off;
+            player_proofs.map(|proven_hidden| enabled && proven_hidden)
+        };
+        // The opaque wall provides positive synchronous proofs and stands in for the same
+        // current proofs returned by an async worker. No worker or renderer is needed.
+        let unknown = proofs(&OcclusionCuller::new([0.0; 3], 0));
+        for mode in [
+            EntityCullingMode::Synchronous,
+            EntityCullingMode::Asynchronous,
+        ] {
+            for frame in [&empty, &refused_only, &next_empty] {
+                assert_eq!(geometry_occlusion_mode(mode, Some(frame)), mode);
+                assert_eq!(rejected(mode, frame, player_proofs), [true; 3]);
+            }
+            assert_eq!(rejected(mode, &accepted, player_proofs), [false; 3]);
+            assert_eq!(rejected(mode, &empty, unknown), [false; 3]);
         }
     }
 }

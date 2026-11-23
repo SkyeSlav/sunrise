@@ -942,6 +942,7 @@ impl Game<'_> {
             super::entity_culling::default_range(glam::DVec3::splat(0.25), self.view_scale());
         let skinning = self.skinning();
         let lights = diffuse_lights(self.dim == Dim::Nether);
+        let occlusion_mode = self.entity_geometry_occlusion_mode();
         for ItemEntityDraw {
             item,
             at,
@@ -1025,7 +1026,7 @@ impl Game<'_> {
             let culling = entity.then(|| {
                 // The posed envelope walks every model point in every copy;
                 // with culling off the decision is `Bypass` whatever it holds.
-                if self.settings.sunrise.entity_culling == EntityCullingMode::Off {
+                if occlusion_mode == EntityCullingMode::Off {
                     return EntityCullDecision::Bypass;
                 }
                 state

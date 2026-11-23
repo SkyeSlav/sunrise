@@ -5,6 +5,8 @@ pub trait Hooks {
     /// Asked once as each frame is built (not on the title screen's panorama): push the world
     /// views (see [`WorldView`]) your mod wants drawn this frame, each parent before the views
     /// seen in it. The world is drawn again from each one's camera into a target of its own.
+    /// If a view is accepted, terrain hiding an otherwise eligible entity from the player alone
+    /// cannot remove it from the shared geometry. Each view still clips and depth-tests on its own.
     #[notes = r#"## World views
 
 A client mod can have the world drawn again from cameras of its own, into targets of its own: a camera monitor, a
@@ -59,11 +61,12 @@ freed. Views draw before `world_drawn`, which can put them into the frame's pict
 A view sees what lies in its own frustum within the render distance of its camera: it lists the loaded sections its
 frustum takes in itself (the clip plane is its near plane), without the caves, occlusion or faces turned away, and
 its translucent sections go back to front from its camera (within one, the quads keep the player camera's order).
-The player's camera keeps all of its culling, GPU culling too, so the frame's own picture and draws stay as they
-were; each view costs one more pass over the loaded columns and its own draws. The entities and block entities the
-frame builds are those the player's camera or a view sees. A view draws no sun, moon, stars, clouds, particles,
-weather, block outline or hand, and none of a shader pack's passes. A frame without views costs nothing more: while
-no mod listens to `world_views` it is not called.
+The player's terrain culling is unchanged, including GPU terrain culling. If a view is accepted, player-only
+terrain occlusion does not discard otherwise eligible entities, dropped items or block entities from the shared
+geometry. Each picture still clips and depth-tests from its own camera. A frame with no accepted views keeps its
+usual entity culling, and the graphics setting is unchanged. Each view costs one more pass over the loaded
+columns and its own draws. A view draws no sun, moon, stars, clouds, particles, weather, block outline or hand,
+and none of a shader pack's passes. While no mod listens to `world_views` it is not called.
 
 `python3 tools/run_world_views.py <dir>` (throwaway homes) draws views through the renderer offscreen and checks
 that the frame's picture is unchanged, with eight views too, that mirrored views cull the faces unmirrored ones do,

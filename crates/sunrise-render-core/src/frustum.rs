@@ -230,7 +230,8 @@ impl JoinedFrusta {
         Self { camera, ..self }
     }
 
-    fn views(&self) -> &[Frustum] {
+    /// The alternate views' frusta in the frame camera's coordinates, excluding its own frustum.
+    pub fn views(&self) -> &[Frustum] {
         &self.views[..self.len]
     }
 
