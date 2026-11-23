@@ -1429,6 +1429,12 @@ impl Mob {
     }
     /// `Entity.checkSupportingBlock` uses the post-move bounds and live collision context.
     fn update_ground_support(&mut self, w: &MobWorld, moved: Vec3) {
+        // Entity.checkSupportingBlock clears the support of an entity off the ground without a
+        // query, so an airborne mob needs no collision context.
+        if !self.ground.on_ground {
+            self.ground.clear_support();
+            return;
+        }
         let mut ground = self.ground;
         let (context, subject) =
             self.support_collision(w.items.map(|items| items.entity_type_tags.as_ref()));
