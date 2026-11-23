@@ -24,7 +24,6 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod motion_tests {
-    use super::*;
     use crate::game::native_entity_refs::tests::with_game;
 
     #[test]
