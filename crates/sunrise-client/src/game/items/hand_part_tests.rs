@@ -13,9 +13,10 @@ use sunrise_client::items::ItemStack;
 /// What the part answers: `None` leaves vanilla's answer.
 static REEQUIP: Mutex<Option<bool>> = Mutex::new(None);
 static RESET: Mutex<Option<bool>> = Mutex::new(None);
-/// What the part was asked: `(old count, stack count, hand, slot changed)`
-/// and, for a break, whether the break's stack had components.
-static REEQUIP_ASKED: Mutex<Vec<(Option<u32>, u32, mod_api::Hand, bool)>> = Mutex::new(Vec::new());
+/// What the part was asked: `(old count, stack count, hand, slot, slot changed, vanilla's
+/// answer)` and, for a break, whether the break's stack had components.
+type Asked = (u32, u32, mod_api::Hand, mod_api::EquipmentSlot, bool, bool);
+static REEQUIP_ASKED: Mutex<Vec<Asked>> = Mutex::new(Vec::new());
 static RESET_ASKED: Mutex<Vec<bool>> = Mutex::new(Vec::new());
 
 #[derive(Clone)]
@@ -28,10 +29,12 @@ impl ItemPart for Stick {
         event: &mut ShouldCauseReequipAnimationEvent<'_>,
     ) {
         REEQUIP_ASKED.lock().unwrap().push((
-            event.old.map(|s| s.count()),
+            event.old.count(),
             event.stack.count(),
             event.hand,
+            event.slot,
             event.slot_changed,
+            event.reequip,
         ));
         if let Some(answer) = *REEQUIP.lock().unwrap() {
             event.reequip = answer;
@@ -103,62 +106,101 @@ fn close(got: &[(f32, u32)], want: &[(f32, u32)]) {
     }
 }
 
+/// The calls the part has had since the last look.
+fn asked() -> Vec<Asked> {
+    REEQUIP_ASKED.lock().unwrap().drain(..).collect()
+}
+
 #[test]
 #[ignore = "daily"]
 fn a_part_decides_whether_the_hand_lowers_for_a_new_stack() {
-    crate::game::in_own_process(
+    use crate::game::native_entity_refs::tests::run_fresh_cases;
+    use mod_api::{EquipmentSlot, Hand};
+
+    if run_fresh_cases(
         "game::hand_part_tests::a_part_decides_whether_the_hand_lowers_for_a_new_stack",
-        || {
-            with_stick_part(|game| {
-                let stick = |count| ItemStack::new("minecraft:stick", count);
-                // From one stick in slot 0 to one in slot 1, as vanilla: shown at once.
-                settle(game, stick(1));
-                game.inventory[1] = Some(stick(1));
-                game.selected = 1;
-                close(&dip(game)[..1], &[(1.0, 1)]);
-                assert_eq!(
-                    REEQUIP_ASKED.lock().unwrap().drain(..).collect::<Vec<_>>(),
-                    [(Some(1), 1, mod_api::Hand::Main, true)]
-                );
+        "SUNRISE_REEQUIP_PART_CASE",
+        &["reequip"],
+    ) {
+        return;
+    }
+    with_stick_part(|game| {
+        let stick = |count| ItemStack::new("minecraft:stick", count);
+        // From one stick in slot 0 to an equal one in slot 1 while the off hand's stick
+        // becomes five stone. The main hand is replaced at once (equal stacks) before the part
+        // hears it, with the new slot; the off hand still shows the stick, so only the
+        // stick's part is asked, with vanilla's `true`. Its `false` shows the stone at once.
+        game.offhand = Some(stick(1));
+        settle(game, stick(1));
+        game.inventory[1] = Some(stick(1));
+        game.selected = 1;
+        game.offhand = Some(ItemStack::new("minecraft:stone", 5));
+        *REEQUIP.lock().unwrap() = Some(false);
+        game.tick_hand();
+        assert_eq!(
+            asked(),
+            [
+                (1, 1, Hand::Main, EquipmentSlot::MainHand, true, false),
+                (1, 5, Hand::Off, EquipmentSlot::OffHand, false, true),
+            ]
+        );
+        assert_eq!(game.heights.off, 1.0);
+        assert_eq!(
+            game.visible_hands[1].1.as_ref().map(|s| &*s.item),
+            Some("minecraft:stone")
+        );
+        // The next check in the same slot has no slot change.
+        game.tick_hand();
+        assert!(!asked()[0].4);
+        game.offhand = None;
 
-                // The same move with the part answering `true`: the hand drops,
-                // takes the new stick at the bottom and rises again.
-                *REEQUIP.lock().unwrap() = Some(true);
-                settle(game, stick(1));
-                game.selected = 1;
-                close(
-                    &dip(game),
-                    &[(0.6, 1), (0.2, 1), (0.0, 1), (0.4, 1), (0.8, 1), (1.0, 1)],
-                );
+        // An equal stick the hand already shows, with the part answering `true`: the
+        // hand drops.
+        *REEQUIP.lock().unwrap() = None;
+        settle(game, stick(1));
+        *REEQUIP.lock().unwrap() = Some(true);
+        game.tick_hand();
+        close(&[(game.heights.main, 1)], &[(0.6, 1)]);
+        *REEQUIP.lock().unwrap() = None;
 
-                // From one stick to two in the same slot: vanilla dips, the part's
-                // `false` shows them at once.
-                *REEQUIP.lock().unwrap() = None;
-                settle(game, stick(1));
-                game.inventory[0] = Some(stick(2));
-                game.hand_stack_replaced(0);
-                close(&dip(game)[..2], &[(0.6, 1), (0.2, 1)]);
-                assert_eq!(
-                    REEQUIP_ASKED.lock().unwrap()[0],
-                    (Some(1), 2, mod_api::Hand::Main, false)
-                );
-                *REEQUIP.lock().unwrap() = Some(false);
-                settle(game, stick(1));
-                game.inventory[0] = Some(stick(2));
-                game.hand_stack_replaced(0);
-                close(&dip(game)[..1], &[(1.0, 2)]);
+        // From one stick to two in the same slot: vanilla dips, the part's `false` shows
+        // them at once.
+        settle(game, stick(1));
+        game.inventory[0] = Some(stick(2));
+        game.hand_stack_replaced(0);
+        close(&dip(game)[..2], &[(0.6, 1), (0.2, 1)]);
+        assert_eq!(
+            asked()[0],
+            (1, 2, Hand::Main, EquipmentSlot::MainHand, false, true)
+        );
+        settle(game, stick(1));
+        *REEQUIP.lock().unwrap() = Some(false);
+        game.inventory[0] = Some(stick(2));
+        game.hand_stack_replaced(0);
+        close(&dip(game)[..1], &[(1.0, 2)]);
+        *REEQUIP.lock().unwrap() = None;
 
-                // A hand that shows what it holds, and an empty hand, ask nothing.
-                REEQUIP_ASKED.lock().unwrap().clear();
-                for _ in 0..20 {
-                    game.tick_hand();
-                }
-                game.inventory[0] = None;
-                game.tick_hand();
-                assert!(REEQUIP_ASKED.lock().unwrap().is_empty());
-            });
-        },
-    );
+        // An empty hand on either side asks nothing and leaves the slot history: a stick
+        // put back after an empty hand in another slot still counts as the slot change
+        // from the last asked check.
+        settle(game, stick(1));
+        game.inventory[0] = None;
+        for _ in 0..3 {
+            game.tick_hand();
+        }
+        assert!(game.visible_hands[0].1.is_none(), "taken at the bottom");
+        game.inventory[2] = Some(stick(1));
+        game.selected = 2;
+        game.tick_hand();
+        assert!(
+            asked().is_empty(),
+            "an empty hand on either side asks nothing"
+        );
+        for _ in 0..6 {
+            game.tick_hand();
+        }
+        assert!(asked().iter().any(|call| call.4), "slot 0 to slot 2");
+    });
 }
 
 #[test]

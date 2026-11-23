@@ -814,20 +814,33 @@ impl Game<'_> {
         }
         self.attack_item = main.as_ref().map(|s| s.item.clone());
         let next = [(self.selected, main), (OFFHAND, self.offhand.clone())];
+        // FirstPersonHandsAndItems.tick: the instant replacements of both hands come first.
         let mut changed = [false; 2];
         for h in 0..2 {
-            let replaced = self.hands_replaced[h];
-            let mut same = shows_held_stack(&self.visible_hands[h], &next[h], replaced);
-            self.reequip_part(h, &next[h], &mut same);
-            if same {
+            if self.instantly_replaces(h, &next[h]) {
                 self.visible_hands[h] = next[h].clone();
                 self.hands_replaced[h] = false;
+            } else {
+                changed[h] = true;
             }
-            changed[h] = !same;
+        }
+        let busy = self.hands_busy();
+        if !busy {
+            // NeoForge's patch: main then off hand, before the heights move.
+            for h in 0..2 {
+                let Some(reequip) = self.reequip_part(h, &next[h], changed[h]) else {
+                    continue;
+                };
+                if !reequip && changed[h] {
+                    self.visible_hands[h] = next[h].clone();
+                    self.hands_replaced[h] = false;
+                }
+                changed[h] = reequip;
+            }
         }
         let speed = self.main_hand_attack_speed();
         let replace = self.heights.tick_with(
-            self.hands_busy(),
+            busy,
             self.hand_strength.swap_scale(1.0, speed),
             changed,
             self.pvp_legacy_look(),
@@ -840,35 +853,55 @@ impl Game<'_> {
         }
     }
 
-    /// `IItemExtension.shouldCauseReequipAnimation` for hand `h` (0 main, 1
-    /// off), asked while the stack it shows differs from `held` by slot or
-    /// by value and `held` isn't empty: `same` (shown at once) is vanilla's
-    /// answer, and the parts of the held item may turn it either way.
-    fn reequip_part(&self, h: usize, held: &(usize, Option<ItemStack>), same: &mut bool) {
-        let Some(stack) = &held.1 else {
-            return;
+    /// `FirstPersonHandsAndItems.shouldInstantlyReplaceVisibleItem` for hand
+    /// `h`: the shown stack is the held one, or the held item's model turns
+    /// the swap animation off (`ItemModelResolver.shouldPlaySwapAnimation`).
+    fn instantly_replaces(&self, h: usize, held: &(usize, Option<ItemStack>)) -> bool {
+        shows_held_stack(&self.visible_hands[h], held, self.hands_replaced[h])
+            || held.1.as_ref().is_some_and(|stack| {
+                !self
+                    .pack
+                    .item_renderer
+                    .models
+                    .hand_animation_on_swap(&sunrise_client::item_render::stack_view(stack))
+            })
+    }
+
+    /// `ClientHooks.shouldCauseReequipAnimation` for hand `h` (0 main, 1 off)
+    /// on a tick the hands aren't busy, after the instant replacements:
+    /// `changed` (the hand shows another stack) is vanilla's answer. `None`
+    /// when either stack is empty, where nothing is asked and no slot history
+    /// moves. Otherwise the parts of the shown item may turn the answer either
+    /// way, and the main hand's slot history moves on.
+    fn reequip_part(
+        &mut self,
+        h: usize,
+        held: &(usize, Option<ItemStack>),
+        changed: bool,
+    ) -> Option<bool> {
+        let (Some(stack), Some(old)) = (&held.1, &self.visible_hands[h].1) else {
+            return None;
         };
-        let visible = &self.visible_hands[h];
-        if visible.0 == held.0 && visible.1.as_ref() == Some(stack) {
-            return;
+        let slot_changed =
+            h == 0 && std::mem::replace(&mut self.reequip_main_slot, held.0) != held.0;
+        let mut reequip = changed;
+        if mod_api::__private::item_listens(mod_api::HookId::ShouldCauseReequipAnimation, &old.item)
+        {
+            let (hand, slot) = if h == 0 {
+                (Hand::Main, mod_api::EquipmentSlot::MainHand)
+            } else {
+                (Hand::Off, mod_api::EquipmentSlot::OffHand)
+            };
+            self.native_should_cause_reequip_animation(
+                stack,
+                old,
+                hand,
+                slot,
+                slot_changed,
+                &mut reequip,
+            );
         }
-        if !mod_api::__private::item_listens(
-            mod_api::HookId::ShouldCauseReequipAnimation,
-            &stack.item,
-        ) {
-            return;
-        }
-        let hand = if h == 0 { Hand::Main } else { Hand::Off };
-        let slot_changed = h == 0 && visible.0 != held.0;
-        let mut reequip = !*same;
-        self.native_should_cause_reequip_animation(
-            stack,
-            visible.1.as_ref(),
-            hand,
-            slot_changed,
-            &mut reequip,
-        );
-        *same = !reequip;
+        Some(reequip)
     }
 
     /// A replay owns its held-item and equip animation state. Reset it when a

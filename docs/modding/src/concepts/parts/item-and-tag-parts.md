@@ -264,11 +264,16 @@ Three client-side methods change how the local player's client shows and handles
 arrives holding vanilla's answer, which the part may set either way, and an item with no such part costs one table
 lookup.
 
-- `ItemPart::should_cause_reequip_animation` is `IItemExtension.shouldCauseReequipAnimation`: whether the
-  first-person hand lowers and rises again to show `event.stack`, the stack the hand holds now, in place of
-  `event.old`, the stack it shows. `event.slot_changed` says the stack came from another slot (always false for the
-  off hand). `event.reequip` starts `false` for the same stack changed in place or an equal one but for its damage.
-  It is asked each client tick, for each hand, while the shown and held stacks differ; an empty hand isn't asked.
+- `ItemPart::should_cause_reequip_animation` (version 2) is `IItemExtension.shouldCauseReequipAnimation`: whether
+  the first-person hand lowers and rises again to show `event.stack`, the stack the hand holds now, in place of
+  `event.old`, the stack it shows. The part of `event.old`'s item is asked. `event.slot` is the hand's
+  `EquipmentSlot` (`MainHand` or `OffHand`); `event.slot_changed` says the selected hotbar slot differs from the
+  one at the previous main-hand check that reached the parts (always false for the off hand). Vanilla's instant
+  replacements (the same stack changed in place, an equal one but for its damage, or an item whose model turns the
+  swap animation off) happen first, so `event.reequip` starts as whether the hand still shows another stack. It is
+  asked each client tick the hands aren't busy, main hand then off hand, whenever both stacks are non-empty, equal
+  ones included; an empty hand on either side lowers the hand without asking. `true` lowers the hand; `false` shows
+  `event.stack` at once. Each part gets the original inputs and the previous part's answer.
 - `ItemPart::should_cause_block_break_reset` is `IItemExtension.shouldCauseBlockBreakReset`: whether a break
   restarts because the main hand changed. `event.stack` is the stack the break began with and `event.held` the main
   hand now. `event.reset` starts `true` when they aren't the same item with the same components (count left out, damage

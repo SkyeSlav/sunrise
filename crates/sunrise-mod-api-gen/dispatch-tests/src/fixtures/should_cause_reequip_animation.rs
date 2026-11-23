@@ -1,5 +1,8 @@
-/// A reequip part: records the stacks, hand and answer it was given, then answers its own.
-struct ReequipProbe(bool, Arc<Mutex<Vec<(u32, Option<u32>, bool, bool)>>>);
+/// What a reequip part was given: the stack counts, the slot, `slot_changed` and the answer so far.
+type Heard = (u32, u32, EquipmentSlot, bool, bool);
+
+/// A reequip part: records what it was given, edits its own copy of the slot, then answers.
+struct ReequipProbe(bool, Arc<Mutex<Vec<Heard>>>);
 
 impl ItemPart for ReequipProbe {
     fn item_subscribed(&self) -> &'static [Option<HookId>] {
@@ -13,10 +16,12 @@ impl ItemPart for ReequipProbe {
         assert!(matches!(event.hand, Hand::Main));
         self.1.lock().unwrap().push((
             event.stack.count(),
-            event.old.map(ItemStack::count),
+            event.old.count(),
+            event.slot,
             event.slot_changed,
             event.reequip,
         ));
+        event.slot = EquipmentSlot::OffHand;
         event.reequip = self.0;
     }
 }
@@ -35,20 +40,25 @@ fn reequip_parts_start_from_vanillas_answer_and_answer_in_turn() {
         item: "fixture:stick".into(),
         count,
     };
-    let mut reequip = true;
+    let mut reequip = false;
     dispatch_should_cause_reequip_animation(
         &TestHost,
         &stick(2),
-        Some(&stick(1)),
+        &stick(1),
         Hand::Main,
+        EquipmentSlot::MainHand,
         true,
         &mut reequip,
     );
-    // The second part is given the first part's answer, and its own is the last word.
+    // The second part is given the first part's answer but the original slot, and its own
+    // answer is the last word.
     assert!(!reequip);
     assert_eq!(
         *heard.lock().unwrap(),
-        [(2, Some(1), true, true), (2, Some(1), true, true)]
+        [
+            (2, 1, EquipmentSlot::MainHand, true, false),
+            (2, 1, EquipmentSlot::MainHand, true, true)
+        ]
     );
     install_parts(Parts::default());
 }

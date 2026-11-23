@@ -3757,6 +3757,9 @@ struct Game<'a> {
     /// Whether the main and off hand's slots were set to a new stack that
     /// the hand doesn't show yet (`Game::hand_stack_replaced`).
     hands_replaced: [bool; 2],
+    /// The selected hotbar slot at the last main-hand reequip check with two
+    /// non-empty stacks (`ClientHooks.slotMainHand`), for its `slot_changed`.
+    reequip_main_slot: usize,
     /// `Minecraft`'s attack handling, attack clicks since the last tick and
     /// the attack strength tickers the hand reads.
     clicks: sunrise_client::first_person::Clicks<Option<ItemStack>>,
@@ -13827,6 +13830,7 @@ impl<'a> Game<'a> {
             sway: Default::default(),
             visible_hands: [(0, None), (0, None)],
             hands_replaced: [false; 2],
+            reequip_main_slot: 0,
             clicks: Default::default(),
             hand_strength: Default::default(),
             settings,

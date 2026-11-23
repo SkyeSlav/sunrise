@@ -1,2 +1,5 @@
-#[derive(Clone, Copy)]
-pub(super) struct EquipmentSlot;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum EquipmentSlot {
+    MainHand,
+    OffHand,
+}

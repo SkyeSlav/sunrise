@@ -732,7 +732,6 @@ sunrise-client game::growth::tests::the_hand_keeps_the_mods_stack_and_a_creative
 sunrise-client game::growth::tests::the_live_features_follow_the_world_being_opened lib daily resources
 sunrise-client game::gui_layer_tests::mod_layers_draw_in_their_place_and_hide_like_vanilla_layers lib daily resources
 sunrise-client game::hand_part_tests::a_part_decides_whether_a_changed_stick_restarts_the_break lib daily resources
-sunrise-client game::hand_part_tests::a_part_decides_whether_the_hand_lowers_for_a_new_stack lib daily resources
 sunrise-client game::hand_part_tests::remote_mining_component_update_restarts_unless_the_part_refuses lib daily resources
 sunrise-client game::hand_part_tests::without_a_part_the_break_compares_item_and_components lib daily resources
 sunrise-client game::highlight_tip_tests::a_part_names_the_selected_stick_while_its_name_shows lib daily resources

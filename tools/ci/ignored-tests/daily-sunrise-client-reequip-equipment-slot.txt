@@ -1,0 +1,1 @@
+sunrise-client game::hand_part_tests::a_part_decides_whether_the_hand_lowers_for_a_new_stack lib daily child-process
