@@ -11,6 +11,9 @@ autotests = false
 
 [build-dependencies]
 sunrise-mod-api-gen = { path = "../sunrise-mod-api-gen" }
+# The parity fixtures' table (build.rs, feature `parity-fixtures`).
+sunrise-mod-source = { path = "../sunrise-mod-source" }
+syn = { version = "2", features = ["full"] }
 
 [dependencies]
 sunrise-hooks = { path = "../sunrise-hooks" }
@@ -96,6 +99,10 @@ fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
 cap-std = "3"
 cap-fs-ext = "3"
 
+# Test support for the parity fixtures' binary only (feature `parity-fixtures`), as [dev-dependencies] gives the lib test.
+mod_platform = { package = "sunrise-mod-api", path = "../sunrise-mod-api", features = ["testing"], optional = true }
+tempfile = { version = "3", optional = true }
+
 [target.'cfg(unix)'.dependencies]
 # The server thread's CPU time per tick (`SUNRISE_SPIKES`, spans.rs).
 rustix = { version = "1", default-features = false, features = ["std", "time", "process", "fs"] }
@@ -148,6 +155,32 @@ alloc-count = ["sunrise-threads/alloc-count"]
 alloc-census = ["sunrise-threads/alloc-census"]
 # Opt-in Windows heap experiment; see docs/windows-allocators.md.
 windows-segment-heap = []
+# The parity harnesses' fixtures as the `sunrise-parity-fixtures` binary (game/parity_fixtures.rs), with the test
+# support the lib test gets from [dev-dependencies], but none of the lib's other tests. CI only, never shipped.
+parity-fixtures = [
+  "dep:mod_platform",
+  "dep:tempfile",
+  "mod_api/testing",
+  "sunrise-client-core/test-language-publication",
+  "sunrise-client-lib/test-dry-side",
+  "sunrise-client-lib/test-menu-validity",
+  "sunrise-client-lib/test-payload-probe",
+  "sunrise-client-lib/test-publication-scope",
+  "sunrise-client-lib/test-residency-observer",
+  "sunrise-client-lib/test-tooltip-factories",
+  "sunrise-client-render/test-support",
+  "sunrise-hooks/test-support",
+  "sunrise-items/test-support",
+  "sunrise-mod-runtime/test-work-count",
+  "sunrise-threads/test-allocation-count",
+  "sunrise-threads/test-game-dir",
+  "sunrise-world/test-support",
+]
+
+[[bin]]
+name = "sunrise-parity-fixtures"
+path = "src/bin/sunrise_parity_fixtures.rs"
+required-features = ["parity-fixtures"]
 
 [[test]]
 name = "it"
