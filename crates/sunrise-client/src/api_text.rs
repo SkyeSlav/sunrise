@@ -1451,9 +1451,14 @@ fn owned_text_component_with(
 fn owned_text_component(text: &Text) -> Result<Value, Error> {
     owned_text_component_with(text, false, None)
 }
+/// The retained JSON form without rendering it or imposing a depth bound.
+pub(crate) fn to_component_json(text: &Text) -> Result<Value, TextFormError> {
+    owned_text_component_with(text, false, None)
+}
+
 /// Encode API text in memory without imposing serialization depth or profile caps.
 pub fn to_engine(text: &Text) -> Result<engine::Text, TextFormError> {
-    owned_text_component_with(text, false, None).map(Into::into)
+    to_component_json(text).map(Into::into)
 }
 /// Encode API text in memory for infallible in-process text reads, omitting any
 /// unrepresentable opaque metadata rather than failing.

@@ -108,6 +108,20 @@ pub(super) struct LanHost {
 }
 
 impl Game<'_> {
+    pub(in crate::game) fn poll_server_list_status(&mut self) {
+        while let Some(request) = self
+            .lan
+            .as_ref()
+            .and_then(|host| host.hub.lan.next_status_request())
+        {
+            request.respond(|call| self.native_server_list_ping(call));
+        }
+    }
+
+    fn native_server_list_ping(&mut self, call: mod_api::__private::ServerListPingCall<'_>) {
+        self.fire_server_list_ping(call);
+    }
+
     /// `PlayerList.remove`: `player.awardStat(Stats.LEAVE_GAME)` before the
     /// player is saved, heard by native mods first. Once per guest, however
     /// often they are saved.

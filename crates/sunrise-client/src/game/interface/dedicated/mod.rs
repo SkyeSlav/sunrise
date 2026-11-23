@@ -1082,7 +1082,7 @@ impl Game<'_> {
         };
         let favicon = std::fs::read("server-icon.png")
             .ok()
-            .filter(|b| png_size(b) == Some((64, 64)));
+            .filter(|bytes| sunrise_client::lan::status_response::valid_favicon(bytes));
         // Sunrise only: a leftover `forwarding.secret` says that Velocity forwarding is gone.
         refuse_forwarding_secret(std::path::Path::new("."))?;
         // `[transfer]` on: a player's only way in must be the proxy, or one who joins this server
@@ -2424,16 +2424,6 @@ pub(super) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
         .map(|s| (*s).to_owned())
         .or_else(|| payload.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "unknown panic".to_owned())
-}
-
-/// The width and height of a PNG (its IHDR chunk).
-fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
-    if bytes.len() < 24 || &bytes[..8] != b"\x89PNG\r\n\x1a\n" || &bytes[12..16] != b"IHDR" {
-        return None;
-    }
-    let w = u32::from_be_bytes(bytes[16..20].try_into().ok()?);
-    let h = u32::from_be_bytes(bytes[20..24].try_into().ok()?);
-    Some((w, h))
 }
 
 /// The level a console line runs in, when it is not `active`, the one in place: the world

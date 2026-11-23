@@ -20,3 +20,4 @@ pub(crate) mod registry_entry;
 pub(crate) mod registry_keys;
 pub(crate) mod resource;
 pub mod resource_util;
+pub(crate) mod server_list_ping;

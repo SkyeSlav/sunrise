@@ -171,28 +171,30 @@ impl Json {
     }
 }
 
-/// JsonWriter.string.
 fn quote(out: &mut String, s: &str, html_safe: bool) {
-    out.push('"');
+    write_quoted(out, s, html_safe).expect("writing to a String is infallible");
+}
+
+/// Write one JSON string using Gson's `JsonWriter.string` escapes.
+pub fn write_quoted(out: &mut impl std::fmt::Write, s: &str, html_safe: bool) -> std::fmt::Result {
+    out.write_char('"')?;
     for c in s.chars() {
         match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\t' => out.push_str("\\t"),
-            '\u{8}' => out.push_str("\\b"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\u{c}' => out.push_str("\\f"),
-            '\u{2028}' => out.push_str("\\u2028"),
-            '\u{2029}' => out.push_str("\\u2029"),
-            '<' | '>' | '&' | '=' | '\'' if html_safe => {
-                out.push_str(&format!("\\u{:04x}", c as u32));
-            }
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
+            '"' => out.write_str("\\\"")?,
+            '\\' => out.write_str("\\\\")?,
+            '\t' => out.write_str("\\t")?,
+            '\u{8}' => out.write_str("\\b")?,
+            '\n' => out.write_str("\\n")?,
+            '\r' => out.write_str("\\r")?,
+            '\u{c}' => out.write_str("\\f")?,
+            '\u{2028}' => out.write_str("\\u2028")?,
+            '\u{2029}' => out.write_str("\\u2029")?,
+            '<' | '>' | '&' | '=' | '\'' if html_safe => write!(out, "\\u{:04x}", c as u32)?,
+            c if (c as u32) < 0x20 => write!(out, "\\u{:04x}", c as u32)?,
+            c => out.write_char(c)?,
         }
     }
-    out.push('"');
+    out.write_char('"')
 }
 
 /// A strict JSON document: one value, optionally followed only by whitespace

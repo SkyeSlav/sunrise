@@ -1555,6 +1555,7 @@ impl Hub {
                 let value = true;
                 self.guests.update(i, |guest| guest.placed = value);
             }
+            self.lan.invalidate_status();
         }
         self.resend_teleport(i, None);
         let g = &self.guests[i];
@@ -1758,6 +1759,7 @@ impl Hub {
             g.level_entered = self.ticks;
             g.last_reported = (g.position, [g.yaw, g.pitch]);
         });
+        self.lan.invalidate_status();
         // The player list entry of the newcomer, to everyone placed or held (itself included).
         let newcomer = C::PlayerInfoUpdate(play::PlayerInfoUpdate {
             actions: Self::INFO_ACTIONS,
@@ -2723,6 +2725,11 @@ impl Hub {
 
     /// After every level: `PlayerList.tick`.
     pub fn end_tick(&mut self) {
+        self.lan.refresh_status(
+            self.guests
+                .iter()
+                .filter(|guest| guest.joined() && guest.participates_online()),
+        );
         let latencies: Vec<_> = self
             .guests
             .iter()
@@ -2789,6 +2796,9 @@ impl Hub {
         }
         if !g.joined() {
             return g;
+        }
+        if g.participates_online() {
+            self.lan.invalidate_status();
         }
         // `PlayerList.remove`: the entities it tracked stop (`removePairing`). The stops stay
         // with the guest: the game tells them after `player_logged_out` (`HostEvent::Left`).

@@ -80,7 +80,7 @@ MinecraftServer.autoSave	inline	crates/sunrise-client/src/game.rs::Game::tick	ga
 MinecraftServer.logTickMethodTime	skip:server		tick timing log for the profiler
 MinecraftServer.computeNextAutosaveInterval	port	crates/sunrise-client/src/game/world/autosave.rs::Game::next_autosave_interval	Math.max(100, (int)(rate * 300.0F)) ticks counted down a tick at a time, at the tick rate or the measured rate while /tick sprint runs; twenty a second is still the six thousand a world autosaved on
 MinecraftServer.onTickRateChanged	port	crates/sunrise-client/src/game/world/autosave.rs::Game::on_tick_rate_changed	/tick rate and the end of a /tick sprint recompute the wait and shorten the one already running when it asks for less; the server_tick_rate_changed hook fires first
-MinecraftServer.buildPlayerStatus	port	crates/sunrise-client/src/lan/mod.rs::Shared::status_json	up to 12 sampled player names in the status JSON
+MinecraftServer.buildPlayerStatus	port	crates/sunrise-client/src/lan/status_response.rs::Snapshot::set_players	joined-player counts and a shuffled contiguous sample; opt-outs are anonymous
 MinecraftServer.updateEffectiveRespawnData	inline	crates/sunrise-client/src/game/world/initial_spawn.rs::Game::spawn_finder	gap: minor: no cached respawn data; the radius is clamped to the border when the spawn is found
 MinecraftServer.forceGameTimeSynchronization	port	crates/sunrise-client/src/lan/hub.rs::Hub::sync_world	game time sent to guests with SetTime
 MinecraftServer.fillSystemReport	skip:debug		system report for crash and debug output

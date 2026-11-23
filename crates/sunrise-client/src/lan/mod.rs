@@ -45,6 +45,8 @@ pub mod recipes;
 mod registry_names;
 pub mod scoreboard;
 mod sound_order;
+#[doc(hidden)]
+pub mod status_response;
 pub mod tracking;
 pub mod viewed_levels;
 pub mod waypoints;
@@ -63,9 +65,9 @@ use std::{
     thread::JoinHandle,
     time::{Duration, Instant},
 };
-use sunrise_protocol::packets::play;
+use sunrise_core::random::LegacyRandom;
 use sunrise_protocol::{
-    GAME_VERSION, PROTOCOL_VERSION, crypto::uuid_string, packets::configuration::ClientInformation,
+    packets::{configuration::ClientInformation, play},
     text::translatable,
 };
 
@@ -438,6 +440,8 @@ pub struct Shared {
     sync: Mutex<Arc<data::SyncData>>,
     pub events: crate::net::ingress::Producer<NetEvent>,
     configuration_requests: Option<Sender<configuration_tasks::ConfigurationRequest>>,
+    status: Mutex<Arc<status_response::Snapshot>>,
+    status_requests: Option<Sender<status_response::Request>>,
     prepare_spawn: bool,
     lan_incarnation: u64,
     next_configuration_connection: AtomicU64,
@@ -453,7 +457,6 @@ pub struct Shared {
     online: Mutex<Vec<(u128, String)>>,
     next: AtomicU32,
     stop: AtomicBool,
-    random: Mutex<u64>,
     /// Connections accepted from the network whose thread still runs.
     connections: AtomicUsize,
     /// Those connections by address.
@@ -600,75 +603,8 @@ impl Shared {
     pub fn online(&self) -> usize {
         self.online.lock().unwrap().len()
     }
-    fn next_random(&self, bound: usize) -> usize {
-        let mut r = self.random.lock().unwrap();
-        *r = r
-            .wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(1_442_695_040_888_963_407);
-        ((*r >> 33) as usize) % bound.max(1)
-    }
-    /// The status response (MinecraftServer.buildServerStatus encoded with
-    /// ServerStatus.CODEC): description, players with up to 12 shuffled
-    /// names, version, favicon and enforcesSecureChat when true.
-    pub fn status_json(&self) -> String {
-        use crate::server::json::Json;
-        let motd = self.motd.lock().unwrap().clone();
-        let online: Vec<(u128, String)> = self.online.lock().unwrap().clone();
-        let count = self.online();
-        let mut players = vec![
-            (
-                "max".to_owned(),
-                Json::Number(self.max_players().to_string()),
-            ),
-            ("online".to_owned(), Json::Number(count.to_string())),
-        ];
-        if !self.hide_online_players() && !online.is_empty() {
-            let size = online.len().min(12);
-            let offset = self.next_random(online.len() - size + 1);
-            let mut sample: Vec<(u128, String)> = online[offset..offset + size].to_vec();
-            for i in (1..sample.len()).rev() {
-                let j = self.next_random(i + 1);
-                sample.swap(i, j);
-            }
-            players.push((
-                "sample".to_owned(),
-                Json::Array(
-                    sample
-                        .into_iter()
-                        .map(|(u, n)| {
-                            Json::Object(vec![
-                                ("id".to_owned(), Json::String(uuid_string(u))),
-                                ("name".to_owned(), Json::String(n)),
-                            ])
-                        })
-                        .collect(),
-                ),
-            ));
-        }
-        let mut status = vec![
-            ("description".to_owned(), Json::String(motd)),
-            ("players".to_owned(), Json::Object(players)),
-            (
-                "version".to_owned(),
-                Json::Object(vec![
-                    ("name".to_owned(), Json::String(GAME_VERSION.to_owned())),
-                    (
-                        "protocol".to_owned(),
-                        Json::Number(PROTOCOL_VERSION.to_string()),
-                    ),
-                ]),
-            ),
-        ];
-        if let Some(icon) = &self.config.favicon {
-            status.push((
-                "favicon".to_owned(),
-                Json::String(format!("data:image/png;base64,{}", base64(icon))),
-            ));
-        }
-        if self.config.enforces_secure_chat() {
-            status.push(("enforcesSecureChat".to_owned(), Json::Bool(true)));
-        }
-        Json::Object(status).compact()
+    fn status_snapshot(&self) -> Arc<status_response::Snapshot> {
+        self.status.lock().unwrap().clone()
     }
 }
 
@@ -705,6 +641,9 @@ pub struct Lan {
     pub configuration_tasks: configuration_tasks::Tasks,
     events: crate::net::ingress::Consumer<NetEvent>,
     configuration_requests: Option<Receiver<configuration_tasks::ConfigurationRequest>>,
+    status_requests: Option<Receiver<status_response::Request>>,
+    last_status: Option<Instant>,
+    status_random: LegacyRandom,
     pub port: u16,
     listener: Option<JoinHandle<()>>,
     /// Stops the accept loop alone: local connections stay.
@@ -736,16 +675,28 @@ impl Lan {
     fn start_listener(
         sync: Arc<data::SyncData>,
         config: NetConfig,
-        drive_configuration: bool,
+        drive_server_tick: bool,
         prepare_spawn: bool,
     ) -> io::Result<Self> {
         let (tx, events) = event_channel();
-        let (request_tx, request_rx) = if drive_configuration {
+        let (request_tx, request_rx) = if drive_server_tick {
             let (tx, rx) = channel();
             (Some(tx), Some(rx))
         } else {
             (None, None)
         };
+        let (status_tx, status_rx) = if drive_server_tick {
+            let (tx, rx) = channel();
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+        let status = status_response::Snapshot::new(
+            config.motd.clone(),
+            config.favicon.clone(),
+            config.max_players,
+            config.secure_chat.clone(),
+        );
         let (listen, port, announce) = (config.listen, config.port, config.announce);
         let hide_online_players = config.hide_online_players;
         let enable_status = config.enable_status;
@@ -759,6 +710,8 @@ impl Lan {
             sync: Mutex::new(sync),
             events: tx,
             configuration_requests: request_tx,
+            status: Mutex::new(Arc::new(status)),
+            status_requests: status_tx,
             prepare_spawn,
             lan_incarnation,
             next_configuration_connection: AtomicU64::new(1),
@@ -777,7 +730,6 @@ impl Lan {
             closing: AtomicUsize::new(0),
             turned_away: Mutex::new((0, None)),
             shutting_down: AtomicBool::new(false),
-            random: Mutex::new(sunrise_java_properties::now_millis() as u64 | 1),
             config,
         });
         let mut lan = Self {
@@ -785,6 +737,9 @@ impl Lan {
             configuration_tasks: configuration_tasks::Tasks::new(lan_incarnation),
             events,
             configuration_requests: request_rx,
+            status_requests: status_rx,
+            last_status: None,
+            status_random: LegacyRandom::new(sunrise_java_properties::now_millis()),
             port: 0,
             listener: None,
             listener_stop: Arc::new(AtomicBool::new(false)),
@@ -803,6 +758,39 @@ impl Lan {
             .iter()
             .flat_map(Receiver::try_iter)
     }
+    /// Take one modern server-list request without holding a borrow during the callback.
+    pub fn next_status_request(&self) -> Option<status_response::Request> {
+        self.status_requests.as_ref()?.try_recv().ok()
+    }
+
+    fn invalidate_status(&mut self) {
+        self.last_status = None;
+    }
+
+    fn refresh_status<'a>(&mut self, players: impl Iterator<Item = &'a guest::Guest>) {
+        // MinecraftServer.tickServer / invalidateStatus.
+        let now = Instant::now();
+        if self
+            .last_status
+            .is_some_and(|last| now - last < Duration::from_secs(5))
+        {
+            return;
+        }
+        self.last_status = Some(now);
+        let mut status = status_response::Snapshot::new(
+            self.shared.motd(),
+            self.shared.config.favicon.clone(),
+            self.shared.max_players(),
+            self.shared.config.secure_chat.clone(),
+        );
+        status.set_players(
+            players,
+            self.shared.hide_online_players(),
+            &mut self.status_random,
+        );
+        *self.shared.status.lock().unwrap() = Arc::new(status);
+    }
+
     /// Start accepting connections on `port` (0 picks a free one), and
     /// announce the world on the local network when `announce`
     /// (`IntegratedServer.publishServer`'s LanServerPinger). Returns the port.
@@ -891,6 +879,7 @@ impl Lan {
         self.events.take_turn()
     }
     pub fn stop(&mut self) {
+        self.status_requests = None;
         self.shared.stop.store(true, Ordering::Relaxed);
         self.stop_listening();
     }
@@ -1313,22 +1302,6 @@ mod tests {
         let lan = Lan::start_with(Arc::new(data::SyncData::empty()), dedicated).unwrap();
         assert!(lan.shared.try_admit(MEMORY_ADDRESS, 1, "Owner").is_none());
         assert!(lan.shared.try_admit(MEMORY_ADDRESS, 2, "oWNER").is_none());
-    }
-
-    #[test]
-    fn hide_online_players_updates_status_response() {
-        let config = NetConfig {
-            announce: false,
-            listen: false,
-            ..NetConfig::loopback(0, "Status".into(), 8)
-        };
-        let lan = Lan::start_with(Arc::new(data::SyncData::empty()), config).unwrap();
-        assert!(lan.shared.try_admit(MEMORY_ADDRESS, 1, "Player").is_none());
-        assert!(lan.shared.status_json().contains("\"sample\""));
-        lan.shared.set_hide_online_players(true);
-        let hidden = lan.shared.status_json();
-        assert!(!hidden.contains("\"sample\""));
-        assert!(!hidden.contains("Player"));
     }
 
     /// One public address takes at most [`PER_ADDRESS`] places, its own coming back as they end;

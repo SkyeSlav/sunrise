@@ -64,6 +64,36 @@ Those handlers still cannot borrow a host directly; use queued work for that. In
 them), and `client_packet_send` neither sees nor can cancel the acknowledgement.
 No packet inspection or editing beyond the existing `ClientPacket` view is provided.
 
+## Editing a server list response
+
+Subscribe to `server_list_ping` to edit the first modern status response on a
+connection. The listener runs on the server thread with a mutable `ServerHost`,
+but there is no acting player. The read-only `event.protocol()` is the client's
+handshake protocol, not the advertised server protocol. `event.virtual_host()`
+is the untrusted host string, without the separate port, as decoded by
+`ClientIntentionPacket` (at most 255 UTF-16 code units). It is not a verified
+hostname or a player identity.
+
+The event starts from the normal status snapshot captured at the handshake.
+Replace `event.motd` with a `Text` component, set `event.favicon` to PNG bytes or
+`None`, and edit the signed counts `event.online` and `event.max_players`.
+`event.sample` is an ordered list of `ListedPlayerInfo::new(name, uuid)` rows; the
+vanilla sample anonymizes players who opt out. The server's hide-online-players
+setting starts with an empty sample and leaves counts visible. Set
+`event.hide_players` to omit the entire players section instead. Replacing the
+sample does not change who is online, and replacement entries are sent in the
+order you provide without a separate sample cap.
+
+Set `event.cancelled` or return `Flow::Cancel` to close the connection without
+a status response. Edits are local to this response and cannot change the
+advertised version, the secure-chat flag or server settings. A malformed icon
+or one other than 64 × 64 is omitted, following `MinecraftServer.loadStatusIcon`. If the response
+cannot be encoded or its JSON exceeds the limit in
+`ClientboundStatusResponsePacket.STREAM_CODEC` (32,767 UTF-16 units or 98,301
+UTF-8 bytes), the server reports the error and closes only this connection.
+The hook does not run for disabled status, duplicates, legacy queries or
+latency ping/pong.
+
 ## Configuration tasks before play
 
 The server's `register_configuration_tasks` hook (version 3) runs once per

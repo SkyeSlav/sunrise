@@ -524,6 +524,19 @@ pub(super) fn emit<'a>(
         let collected = output
             .as_ref()
             .filter(|_| contract == Contract::Collect && !answered_return);
+        let mut getters = String::new();
+        for field in &hook.read_only {
+            let Some((_, ty)) = args.iter().find(|(name, _)| name == field) else {
+                return Err(format!("{name}: read_only needs an input field: {field}"));
+            };
+            if !crate::is_primitive_scalar(ty)
+                && !matches!(ty, Type::Reference(reference) if reference.mutability.is_none())
+            {
+                return Err(format!(
+                    "{name}: read_only field {field} must be a scalar or shared reference"
+                ));
+            }
+        }
         for (name, ty) in args.iter().chain(collected) {
             let mut owned_ty = (*ty).clone();
             struct OwnedLootContext;
@@ -630,6 +643,13 @@ pub(super) fn emit<'a>(
             let visibility = match append {
                 Some((RegistrationAppend::Register, _)) => "",
                 Some((RegistrationAppend::Custom, _)) => "pub(super)",
+                None if hook.read_only.contains(name) => {
+                    getters.push_str(&format!(
+                        "/// The original request's `{name}` input.\npub fn {name}(&self) -> {} {{ self.{name} }}\n",
+                        field.to_token_stream()
+                    ));
+                    ""
+                }
                 None if task_registration
                     || matches!(
                         (event_type.as_str(), name.as_str()),
@@ -721,9 +741,14 @@ pub(super) fn emit<'a>(
         } else {
             ""
         };
-        let event_struct = format!(
+        let mut event_struct = format!(
             "/// An in-process callback record built by the game and passed to the listener.\n{wire_comment}#[non_exhaustive]\n#[allow(missing_docs)]\npub struct {event_type}{generics} {{\n{fields}}}\n"
         );
+        if !getters.is_empty() {
+            event_struct.push_str(&format!(
+                "impl{generics} {event_type}{generics} {{\n{getters}}}\n"
+            ));
+        }
         if is_render {
             if hook.output_validator.is_some() {
                 return Err(format!("{name}: render hooks do not use output_validator"));

@@ -21,10 +21,8 @@ fn login_limit(hub: &mut Hub, rx: &std::sync::mpsc::Receiver<crate::lan::Out>) -
     limit.expect("a Login packet")
 }
 
-/// The `max` of the server list's players, as a ping reads it.
-fn status_limit(hub: &Hub) -> i64 {
-    let status: serde_json::Value = serde_json::from_str(&hub.lan.shared.status_json()).unwrap();
-    status["players"]["max"].as_i64().unwrap()
+fn status(hub: &Hub) -> serde_json::Value {
+    serde_json::from_str(&hub.lan.shared.status_snapshot().json().unwrap()).unwrap()
 }
 
 /// The hub starts with 2 places on the network and 20 in its own config, so a Login packet
@@ -34,13 +32,16 @@ fn the_login_packet_and_the_status_answer_state_the_live_limit() {
     let (mut hub, rx) = hub_with_a_guest();
     assert_eq!(hub.config.max_players, 20);
     assert_eq!(login_limit(&mut hub, &rx), 2);
-    assert_eq!(status_limit(&hub), 2);
+    hub.end_tick();
+    assert_eq!(status(&hub)["players"]["max"], 2);
     hub.lan.shared.set_max_players(7);
     assert_eq!(login_limit(&mut hub, &rx), 7);
-    assert_eq!(status_limit(&hub), 7);
+    hub.end_tick();
+    assert_eq!(status(&hub)["players"]["max"], 7);
     hub.lan.shared.set_max_players(0);
     assert_eq!(login_limit(&mut hub, &rx), 0);
-    assert_eq!(status_limit(&hub), 0);
+    hub.end_tick();
+    assert_eq!(status(&hub)["players"]["max"], 0);
     hub.lan.shared.set_max_players(usize::MAX);
     assert_eq!(login_limit(&mut hub, &rx), i32::MAX);
 }
@@ -49,9 +50,9 @@ fn the_login_packet_and_the_status_answer_state_the_live_limit() {
 /// on; a raised limit takes logins again.
 #[test]
 fn a_lowered_limit_refuses_logins_and_keeps_the_players_on() {
-    let (hub, _rx) = hub_with_a_guest();
+    let (mut hub, _rx) = hub_with_a_guest();
     let address = ADDRESS.parse().unwrap();
-    let shared = &hub.lan.shared;
+    let shared = hub.lan.shared.clone();
     assert!(shared.try_admit(address, 11, "First").is_none());
     assert!(shared.try_admit(address, 12, "Second").is_none());
     assert!(
@@ -60,13 +61,43 @@ fn a_lowered_limit_refuses_logins_and_keeps_the_players_on() {
     );
     shared.set_max_players(1);
     assert_eq!(shared.online(), 2, "both stay on");
-    let status: serde_json::Value = serde_json::from_str(&shared.status_json()).unwrap();
-    assert_eq!(status["players"]["max"], 1);
-    assert_eq!(status["players"]["online"], 2);
+    hub.end_tick();
+    let players = &status(&hub)["players"];
+    assert_eq!(players["max"], 1);
+    assert_eq!(players["online"], 1, "only the placed guest is listed");
+    assert_eq!(players["sample"][0]["name"], "Bob");
     assert!(shared.try_admit(address, 13, "Third").is_some(), "full");
     shared.set_max_players(3);
     assert!(shared.try_admit(address, 13, "Third").is_none());
     assert_eq!(shared.online(), 3);
+}
+
+#[test]
+fn status_anonymizes_opted_out_players_and_global_hiding_keeps_counts() {
+    let (mut hub, _rx) = hub_with_a_guest();
+    hub.guests
+        .update(0, |guest| guest.info.allows_listing = false);
+    hub.end_tick();
+    assert_eq!(
+        status(&hub)["players"],
+        serde_json::json!({
+            "max": 2,
+            "online": 1,
+            "sample": [{"name":"Anonymous Player","id":"00000000-0000-0000-0000-000000000000"}]
+        }),
+    );
+    hub.lan.shared.set_hide_online_players(true);
+    hub.end_tick();
+    assert!(
+        status(&hub)["players"].get("sample").is_some(),
+        "still cached"
+    );
+    hub.lan.last_status = Some(std::time::Instant::now() - std::time::Duration::from_secs(5));
+    hub.end_tick();
+    assert_eq!(
+        status(&hub)["players"],
+        serde_json::json!({"max":2,"online":1})
+    );
 }
 
 #[test]

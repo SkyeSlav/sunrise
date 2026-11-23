@@ -8,6 +8,9 @@
 //! keep-alive schedule on their own so a long tick never times a client out.
 mod configuration_tasks;
 mod payloads;
+#[cfg(test)]
+#[path = "status_response_tests.rs"]
+mod status_response_tests;
 #[path = "transaction_packets.rs"]
 pub mod transaction_packets;
 use super::config_payloads::ConfigIo;
@@ -15,6 +18,7 @@ use super::{
     Body, Joined, NetEvent, Out, Shared,
     data::{CORE_PACK, SyncData},
     io_pool::{self, Session as _},
+    status_response,
 };
 use crate::raw_payloads::{Side, Transport};
 use mod_api::{PayloadFrameStage, PayloadId, PayloadSendError};
@@ -919,7 +923,8 @@ fn serve_connection(
         // ServerHandshakePacketListenerImpl: a server that does not reply
         // to status requests closes the connection.
         handshake::STATUS if !shared.enable_status() => Ok(()),
-        handshake::STATUS => serve_status(&mut c, &shared),
+        // Capture the published snapshot here, not on receipt of the first StatusRequest.
+        handshake::STATUS => serve_status(&mut c, &shared, intention, shared.status_snapshot()),
         handshake::TRANSFER if !shared.accepts_transfers() => {
             login_disconnect(
                 &mut c,
@@ -950,7 +955,12 @@ fn serve_connection(
     }
 }
 
-fn serve_status(c: &mut Connection, shared: &Shared) -> Result<(), String> {
+fn serve_status(
+    c: &mut Connection,
+    shared: &Shared,
+    mut intention: handshake::Intention,
+    snapshot: Arc<status_response::Snapshot>,
+) -> Result<(), String> {
     let e = |e: sunrise_protocol::Error| e.to_string();
     let mut requested = false;
     loop {
@@ -960,11 +970,32 @@ fn serve_status(c: &mut Connection, shared: &Shared) -> Result<(), String> {
             status::Serverbound::StatusRequest(_) if requested => return Ok(()),
             status::Serverbound::StatusRequest(_) => {
                 requested = true;
-                let json = shared.status_json();
-                c.send(
-                    &status::Clientbound::StatusResponse(status::StatusResponse { json }).encode(),
-                )
-                .map_err(e)?;
+                let response = if let Some(requests) = &shared.status_requests
+                    && mod_api::__private::enabled_listened(mod_api::HookId::ServerListPing)
+                {
+                    let (reply, result) = channel();
+                    if requests
+                        .send(status_response::Request {
+                            snapshot: Arc::clone(&snapshot),
+                            protocol: intention.protocol,
+                            virtual_host: std::mem::take(&mut intention.host),
+                            reply,
+                        })
+                        .is_err()
+                    {
+                        return Ok(());
+                    }
+                    let Ok(Some(response)) = result.recv() else {
+                        return Ok(());
+                    };
+                    response
+                } else {
+                    Arc::clone(&snapshot)
+                };
+                let packet = response.encode().inspect_err(|error| {
+                    log::warn!("Could not encode server list status response: {error}");
+                })?;
+                c.send(&packet).map_err(e)?;
             }
             status::Serverbound::PingRequest(p) => {
                 c.send(&status::Clientbound::PongResponse(p).encode())

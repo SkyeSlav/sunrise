@@ -25,6 +25,7 @@
 //! | `side` | `"server"`, `"client"` or `"both"`; required |
 //! | `contract` | `"listen"`, `"cancel"`, `"collect"` or `"replace"`; required |
 //! | `out` | the event field a cancel, collect or replace hook writes; not for `"listen"` |
+//! | `read_only` | scalar or shared-reference inputs exposed through getters so no listener can change them |
 //! | `staged_surface` | Engine-only marker naming the mutable registrar or GUI draw field of a flat global listen hook. The fire adapter hands its owner one listener thunk at a time, under that listener's mod scope. Only an accepted callback publishes the batch. This is not a mod-facing parameter. |
 //! | `scope`, `key` | a Part method: the kind of Part (`"block"`, `"block_entity"`, `"item"`, `"menu"`, `"fluid"`, `"entity"`) and the hook argument naming what it is attached to |
 //! | `part` | an additional Part method on a plain global `"cancel"` hook (e.g. `"item"`): keeps `Hooks::<name>` and also emits `<Kind>Part::<name>` plus `dispatch_<name>_part(host, part_key, ...)` sharing the same `HookId`. Prefer `scope` + `key` unless one `HookId` must combine a global event with per-part overrides whose dispatch key varies by phase (such as `item_stacked_on_other` dispatching on carried and clicked stacks). Cannot be combined with `scope`, `isolate`, `answered_by`, `owner`, `collect_validator`, `output_validator`, or a phase `context` |

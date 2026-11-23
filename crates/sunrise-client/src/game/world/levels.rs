@@ -1436,8 +1436,8 @@ impl Game<'_> {
         // The parts outside every level get spans of their own, so that a slow
         // tick's line and `sunrise-report` say when a mod's tick hook took it.
         if server {
-            let _span = sunrise_client::spans::guard("mod_configs_poll");
-            self.native_configs_poll();
+            sunrise_client::spans::time("mod_configs_poll", || self.native_configs_poll());
+            sunrise_client::spans::time("server_list_status", || self.poll_server_list_status());
         }
         if let Some(running) = running
             && server

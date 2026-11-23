@@ -208,6 +208,8 @@ pub struct Hook {
     pub cancellable: Option<bool>,
     /// Dispatch parameters (name and vocabulary type in order), apart from the Host/phase context.
     pub call: Vec<(String, String)>,
+    /// Input fields exposed through getters, not writable by earlier listeners.
+    pub read_only: Vec<String>,
     pub receiver: Receiver,
     pub dispatch: DispatchStyle,
     /// The engine passes its tick queue to the level host, not to the listener.
@@ -338,6 +340,8 @@ struct HookEntry {
     context: Option<PhaseContext>,
     #[serde(default)]
     call: Vec<(String, String)>,
+    #[serde(default)]
+    read_only: Vec<String>,
     #[serde(default)]
     receiver: Receiver,
     #[serde(default)]
@@ -595,6 +599,7 @@ impl Hook {
             version: entry.version.unwrap_or(1),
             cancellable: entry.cancellable,
             call: entry.call,
+            read_only: entry.read_only,
             receiver: entry.receiver,
             dispatch: entry.dispatch,
             engine_ticks,
@@ -1047,6 +1052,7 @@ impl Hook {
             version: 1,
             cancellable: None,
             call: Vec::new(),
+            read_only: Vec::new(),
             receiver: Receiver::default(),
             dispatch: DispatchStyle::default(),
             engine_ticks: false,
