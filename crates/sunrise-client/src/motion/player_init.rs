@@ -108,6 +108,8 @@ impl PlayerMotion {
             old_position: position,
             server_copy: false,
             replaying: false,
+            section_yield: false,
+            paused: PausedTick::default(),
             wall_hit_events: None,
             client_side: false,
             entity_id: 0,

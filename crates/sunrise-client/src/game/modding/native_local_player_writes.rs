@@ -374,11 +374,7 @@ mod tests {
                         event.entity.residency(host),
                         mod_api::EntityResidency::InPlace
                     );
-                    assert_eq!(
-                        player.reset_fall_distance(host),
-                        Err(mod_api::LevelWriteError::Unavailable),
-                    );
-                    assert!(host.client_executor().is_none());
+                    assert_eq!(player.reset_fall_distance(host), Ok(true),);
                     self.0.lock().unwrap().push((
                         event.old_section,
                         event.new_section,
@@ -407,6 +403,57 @@ mod tests {
                         ([1, 4, 0], [0, 4, 0], [0.5, 64.5, 0.5], Some(false))
                     ],
                 );
+            });
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_listener_told_at_a_travel_write_changes_what_the_rest_of_the_tick_reads() {
+        struct Stop(Arc<Mutex<Vec<([i32; 3], [i32; 3], Option<bool>)>>>);
+        #[mod_api::__subscriptions]
+        impl mod_api::Hooks for Stop {
+            fn entity_entering_section(
+                &self,
+                host: HostSide<'_>,
+                event: &mut mod_api::EntityEnteringSectionEvent,
+            ) {
+                if let HostSide::Client(host) = host
+                    && host.local_player().map(|p| p.entity()) == Some(event.entity)
+                {
+                    self.0.lock().unwrap().push((
+                        event.old_section,
+                        event.new_section,
+                        Some(host.set_local_player_velocity([0.0; 3])),
+                    ));
+                }
+            }
+        }
+
+        let told = Arc::new(Mutex::new(Vec::new()));
+        let mods = vec![mod_api::ModEntry::new(
+            "stop",
+            Box::new(Stop(Arc::clone(&told))),
+        )]
+        .into();
+        mod_platform::testing::with_mods(mods, || {
+            crate::game::native_entity_refs::tests::with_client_game(|game| {
+                loaded_client(game);
+                game.streaming
+                    .insert_remote(&mut game.world, sunrise_client::chunk::Chunk::empty(1, 0));
+                let body = game.player.as_mut().unwrap();
+                body.position = sunrise_core::geometry::Vec3::new(15.9, 64.5, 0.5);
+                body.velocity = sunrise_core::geometry::Vec3::new(0.25, 0.0, 0.0);
+                game.tick_remote().unwrap();
+                assert_eq!(
+                    *told.lock().unwrap(),
+                    [([0, 4, 0], [1, 4, 0], Some(true))],
+                    "told once, with the owning Host",
+                );
+                let body = game.player.as_ref().unwrap();
+                assert!(body.position.x > 16.0, "the move happened first");
+                // The air drag after the move multiplies the velocity the listener wrote.
+                assert_eq!(body.velocity.x, 0.0);
             });
         });
     }

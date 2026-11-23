@@ -1124,6 +1124,9 @@ pub enum Pause {
     Trample(sunrise_world::block_landing::FarmlandTrample),
     /// A vehicle must propagate the selected fall before this move continues.
     FallToPassengers(super::living::PassengerFall),
+    /// The mob's move wrote its position out of `from` into `to`, and the section callback
+    /// (`EntityEvent.EnteringSection`) runs before the rest of the move.
+    SectionEntered { from: Vec3, to: Vec3 },
 }
 
 /// The remainder of the mob tick after a drink finishes on its owning level.
@@ -1224,13 +1227,17 @@ fn pause_movement(
         MovementPhase::Travel(travel) => travel,
     };
     use super::living::MovementAction;
-    let pause = match travel.action() {
-        MovementAction::Trample(trample) => Pause::Trample(trample),
-        MovementAction::SettleHit => Pause::AfterDamage(DamageResume {
-            join: m.join,
-            tail: DamageTail::Movement,
-        }),
-        MovementAction::Passengers(fall) => Pause::FallToPassengers(fall),
+    let pause = if let Some((from, to)) = travel.section_write() {
+        Pause::SectionEntered { from, to }
+    } else {
+        match travel.action() {
+            MovementAction::Trample(trample) => Pause::Trample(trample),
+            MovementAction::SettleHit => Pause::AfterDamage(DamageResume {
+                join: m.join,
+                tail: DamageTail::Movement,
+            }),
+            MovementAction::Passengers(fall) => Pause::FallToPassengers(fall),
+        }
     };
     *movement = Some(MobMovement { phase, was_on_fire });
     TickProgress::Paused(pause)
@@ -1321,7 +1328,10 @@ pub fn tick(
                 resume_after_damage(m, w, level, events, resume, None)
             }
             TickProgress::Paused(
-                Pause::Equipment { .. } | Pause::Trample(_) | Pause::FallToPassengers(_),
+                Pause::Equipment { .. }
+                | Pause::Trample(_)
+                | Pause::FallToPassengers(_)
+                | Pause::SectionEntered { .. },
             ) => unreachable!("a hostless tick cannot reach this pause"),
         };
     }

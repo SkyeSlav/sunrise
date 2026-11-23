@@ -780,7 +780,7 @@ impl Game<'_> {
         movement: Vec3,
         auto_jump: bool,
     ) -> sunrise_client::Result<Option<Vec3>> {
-        use sunrise_client::landing::PlayerLandingPause;
+        use sunrise_client::{landing::PlayerLandingPause, motion::PlayerPause};
 
         let Some(player) = self.player.as_ref() else {
             return Ok(None);
@@ -795,12 +795,10 @@ impl Game<'_> {
                     return Ok(None);
                 }
                 let entities = self.entity_collisions(Mover::Player);
-                let section_scope = self.player_section_scope();
                 let Some(player) = self.player.as_mut().filter(|p| p.entity_id == id) else {
                     return Ok(None);
                 };
                 let side = game_side!(self);
-                let _sections = section_scope.map(|scope| scope.begin(&mut self.native_lifecycle));
                 let mut $world = MotionWorld {
                     side: &side,
                     entities: &entities,
@@ -818,7 +816,9 @@ impl Game<'_> {
                 $body
             }};
         }
-        let pause = motion_phase!(
+        // `Entity.setPosRaw` tells the section callback at the write, before the move goes on.
+        let sections = self.entity_section_scope().is_some();
+        let mut pause = motion_phase!(
             world,
             world.move_ordinary(
                 &mut MoveGate::new(),
@@ -826,26 +826,38 @@ impl Game<'_> {
                 movement,
                 auto_jump,
                 conn.is_some(),
+                sections,
             )
         )?;
-        if let Some(pause) = pause {
-            let landing = match pause.landing {
-                PlayerLandingPause::Trample(trample) => {
+        while let Some(paused) = pause.take() {
+            let landing = match paused.pause {
+                PlayerPause::Section { from, to } => {
+                    if let Ok(subject) = u32::try_from(self.own_entity_id()) {
+                        self.entity_section_moved(
+                            subject,
+                            Some(from.components()),
+                            to.components(),
+                        );
+                    }
+                    pause = motion_phase!(world, paused.movement.finish(&mut world))?;
+                    continue;
+                }
+                PlayerPause::Landing(PlayerLandingPause::Trample(trample)) => {
                     self.trample_farmland(id as u32, true, trample);
                     motion_phase!(world, world.finish_trample_fall(trample))?
                 }
-                PlayerLandingPause::Damage(landing) => Some(landing),
+                PlayerPause::Landing(PlayerLandingPause::Damage(landing)) => Some(landing),
             };
             if let Some(landing) = landing {
                 if self.finish_guest_damage_before_resume().is_err() {
                     return Ok(None);
                 }
-                motion_phase!(world, {
+                pause = motion_phase!(world, {
                     world.finish_guest_landing(landing)?;
-                    pause.movement.finish(&mut world)
+                    paused.movement.finish(&mut world)
                 })?;
             } else {
-                motion_phase!(world, pause.movement.finish(&mut world))?;
+                pause = motion_phase!(world, paused.movement.finish(&mut world))?;
             }
         }
         Ok(self

@@ -942,6 +942,52 @@ impl Game<'_> {
         self.fog.tick(in_water, self.own_player_is_spectator());
     }
 
+    /// A live tick whose travel move paused at its position write (`Entity.setPosRaw`): tell the
+    /// crossing with the owning Host, then run the rest of the tick, until it ends.
+    fn tell_paused_tick(
+        &mut self,
+        body: i32,
+        entity_collisions: &[sunrise_core::geometry::Aabb],
+    ) -> Result<()> {
+        if let Some(player) = self.player.as_mut().filter(|p| p.entity_id == body) {
+            player.section_yield = false;
+        }
+        while let Some(pause) = self
+            .player
+            .as_mut()
+            .filter(|p| p.entity_id == body)
+            .and_then(|p| p.take_pause())
+        {
+            if let Ok(id) = u32::try_from(self.own_entity_id()) {
+                self.entity_section_moved(id, Some(pause.from.components()), pause.to.components());
+            }
+            let side = game_side!(self);
+            let Some(player) = self.player.as_mut().filter(|p| p.entity_id == body) else {
+                return Ok(());
+            };
+            player.section_yield = true;
+            let mut world = MotionWorld {
+                side: &side,
+                entities: entity_collisions,
+                player,
+                scene: &mut self.world,
+                assets: &self.pack.assets,
+                collision_binding: self.collision,
+                resources: self.motion,
+                health: &self.health_resources,
+                loop_context: &self.loop_context,
+                damage_hooks: &self.damage_hooks,
+                tag_items: None,
+                block_registries: None,
+            };
+            world.resume_tick(pause)?;
+            if let Some(player) = self.player.as_mut().filter(|p| p.entity_id == body) {
+                player.section_yield = false;
+            }
+        }
+        Ok(())
+    }
+
     /// `LocalPlayer.tick`'s `Player.tick` work: input, riding, motion and
     /// sleep, and the input `sendChanges` sends for it (`None`: nothing ticked).
     pub(super) fn tick_local_player(
@@ -1048,7 +1094,7 @@ impl Game<'_> {
             }
         }
         let walks = self.can_move_local_player();
-        let section_scope = self.player_section_scope();
+        let section_yield = self.entity_section_scope().is_some();
         let swim_listener = self.has_swim_eligibility_listener();
         // Release the field borrows for the read-only Game host, then resume the same body.
         macro_rules! motion_world {
@@ -1130,8 +1176,13 @@ impl Game<'_> {
                 return Ok(None);
             };
             // Only travel writes positions; the fluid and sprint decisions precede this pass.
-            let _sections = section_scope.map(|scope| scope.begin(&mut self.native_lifecycle));
+            // A listener of `entity_entering_section` is told at the write, with the owning Host.
+            player.section_yield = section_yield;
             motion_world!(side, &mut *player).finish_local_tick(keys)?;
+            self.tell_paused_tick(body, &entity_collisions)?;
+            let Some(player) = self.player.as_ref().filter(|p| p.entity_id == body) else {
+                return Ok(None);
+            };
             // LocalPlayer.aiStep's makeJump adds a key press to this tick's input.
             packet_keys.jump |= player.was_auto_jump;
         } else {
@@ -1169,10 +1220,27 @@ impl Game<'_> {
                 let Some(player) = self.player.as_mut().filter(|p| p.entity_id == body) else {
                     return Ok(None);
                 };
-                let _sections = section_scope.map(|scope| scope.begin(&mut self.native_lifecycle));
+                player.section_yield = section_yield;
                 let mut passenger = motion_world!(side, player);
                 passenger.finish_rider_tick(keys.direction())?;
+                self.tell_paused_tick(body, &entity_collisions)?;
+                let side = game_side!(self);
+                let Some(player) = self.player.as_mut().filter(|p| p.entity_id == body) else {
+                    return Ok(None);
+                };
+                let from = player.position;
+                let mut passenger = motion_world!(side, player);
                 sunrise_world::entity_move::EntityMoveWorld::set_position(&mut passenger, seat)?;
+                if from != seat
+                    && let Ok(id) = u32::try_from(self.own_entity_id())
+                {
+                    self.remote_entity_section_step(id, from, seat);
+                }
+                let side = game_side!(self);
+                let Some(player) = self.player.as_mut().filter(|p| p.entity_id == body) else {
+                    return Ok(None);
+                };
+                let mut passenger = motion_world!(side, player);
                 // LivingEntity.aiStep: a passenger freezes in powder snow too, and the
                 // frostbite overlay shows it (#8156).
                 passenger.passenger_block_effects_tick()?;
