@@ -10999,7 +10999,8 @@ impl Game<'_> {
                     .solid_render);
         // The bounded section graph runs on its worker while the frame is prepared, even when
         // smart culling is off (`SectionOcclusionGraph.runUpdates`).
-        let effective_detail_distance = (self.effective_render_distance() * 16) as f32;
+        let effective_render_distance = self.effective_render_distance();
+        let effective_detail_distance = (effective_render_distance * 16) as f32;
         if self.title.is_none()
             && let Some(renderer) = self.renderer.as_mut()
         {
@@ -11098,7 +11099,7 @@ impl Game<'_> {
             (*temperature, *downfall) = (info.temperature, info.downfall);
             (*frame_rain, *frame_thunder) = (rain, thunder);
             (*game_time, *day_time) = (self.world.game_time, self.view_day_time());
-            *render_distance = self.streaming.radius;
+            *render_distance = effective_render_distance;
             *sky_type = match self.dimension_type().skybox {
                 sunrise_world::dimension_type::Skybox::Overworld => 1,
                 sunrise_world::dimension_type::Skybox::End => 2,
@@ -11560,8 +11561,8 @@ impl Game<'_> {
             shadow_scene_revision: (self.world.revision, self.world.chunks.membership_revision()),
             shadow_cache: self.settings.sunrise.shadow_cache,
             distance,
-            detail_distance: (self.effective_render_distance() * 16) as f32,
-            shadow_distance: Some((self.streaming.radius * 16) as f32),
+            detail_distance: effective_detail_distance,
+            shadow_distance: Some(effective_detail_distance),
             depth_far,
             underwater,
             water_plane: if title

@@ -409,6 +409,8 @@ impl Game<'_> {
             overworld_clock: None,
             clock_game_time: 0,
             chunk_center: (0, 0),
+            awaiting_viewed_chunk_center: false,
+            chunk_light: RemoteLight::default(),
             backlog: VecDeque::new(),
             backlog_since: None,
             server_links: Vec::new(),
@@ -678,6 +680,8 @@ impl Game<'_> {
             overworld_clock: None,
             clock_game_time: 0,
             chunk_center: (0, 0),
+            awaiting_viewed_chunk_center: false,
+            chunk_light: RemoteLight::default(),
             backlog: VecDeque::new(),
             backlog_since: None,
             server_links: Vec::new(),
@@ -994,6 +998,7 @@ impl Game<'_> {
                 r.level_player_textures.clear();
                 // A new ClientLevel: a new chunk storage, centred on 0, 0.
                 r.chunk_center = (0, 0);
+                r.awaiting_viewed_chunk_center = false;
             }
             self.clear_lod();
             self.pending_uploads.clear();

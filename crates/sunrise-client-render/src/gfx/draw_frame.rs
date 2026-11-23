@@ -3685,8 +3685,7 @@ impl Renderer {
     }
 }
 
-/// Shadow caster walk radius in chunks: uses `shadow_distance` (the loaded streaming radius)
-/// when supplied, staying separate from the effective eye distance (`detail_distance`).
+/// Shadow caster walk radius in chunks, with an optional override of the effective eye distance.
 pub(super) fn shadow_walk_radius(shadow_distance: Option<f32>, detail_distance: f32) -> i32 {
     (shadow_distance.unwrap_or(detail_distance) / 16.0) as i32
 }

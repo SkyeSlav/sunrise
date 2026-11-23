@@ -823,7 +823,7 @@ impl World {
     #[cold]
     #[inline(never)]
     fn light_outside(&self, x: i32, y: i32, z: i32) -> u8 {
-        let light = match self.chunks.get(&(x >> 4, z >> 4)) {
+        let light = match self.chunks.resident_get(&(x >> 4, z >> 4)) {
             Some(chunk) => chunk.light(x & 15, y, z & 15),
             None => self.border_light((x >> 4, z >> 4), x, y, z),
         };

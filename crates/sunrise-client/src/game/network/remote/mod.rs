@@ -33,7 +33,7 @@ mod block_entity_data_tests;
 #[cfg(test)]
 mod claimed_item_use_tests;
 use super::raw_backlog::Received;
-use super::remote_chunks::{ChunkDecoder, ChunkFormat, Next};
+use super::remote_chunks::{ChunkDecoder, ChunkFormat, Next, RemoteLight};
 use super::remote_vehicles::PassengerSeat;
 use super::render_tick::{mob_tracking_body, player_tracking_body};
 use super::{Dim, Game, Hit, Mining, Screen, item_use::ticks_left, level_sounds::LevelSound};
@@ -657,6 +657,9 @@ pub(super) struct Remote {
     clock_game_time: i64,
     /// `ClientChunkCache.Storage`'s view centre (ClientboundSetChunkCacheCenterPacket).
     chunk_center: (i32, i32),
+    /// A viewed-level swap adopts columns before the server sends the active cache centre.
+    pub(super) awaiting_viewed_chunk_center: bool,
+    pub(super) chunk_light: RemoteLight,
     /// Received events a frame left for the next one, in order, and when
     /// the oldest of them first waited (`poll_remote`).
     backlog: VecDeque<Received>,
@@ -1391,25 +1394,8 @@ impl Game<'_> {
                     r.simulation_distance = p.distance;
                 }
             }
-            C::SetChunkCacheRadius(p) => {
-                self.streaming.radius = crate::game::entity_culling::streaming_radius_for(
-                    self.settings.render_distance,
-                    Some(p.distance),
-                );
-                if let Some(r) = self.remote.as_mut() {
-                    r.view_distance = p.distance;
-                    let center = r.chunk_center;
-                    // ClientChunkCache.updateViewRadius: a new storage of that size.
-                    self.drop_remote_chunks_out_of_range(center, p.distance);
-                }
-            }
-            C::SetChunkCacheCenter(p) => {
-                if let Some(r) = self.remote.as_mut() {
-                    r.chunk_center = (p.x, p.z);
-                    let distance = r.view_distance;
-                    self.drop_remote_chunks_out_of_range((p.x, p.z), distance);
-                }
-            }
+            C::SetChunkCacheRadius(p) => self.set_remote_chunk_cache_radius(p.distance),
+            C::SetChunkCacheCenter(p) => self.set_remote_chunk_cache_center((p.x, p.z)),
             C::BlockEntityData(p) => self.remote_block_entity_packet(p),
             C::OpenSignEditor(p) => self.remote_open_sign_editor(p),
             C::OpenBook(p) => self.remote_open_book(p.hand),
@@ -2365,15 +2351,6 @@ pub(super) fn snap_target(
 /// Login).
 fn client_has_level(logged_in: bool, reconfiguring: Option<u64>) -> bool {
     logged_in && reconfiguring.is_none()
-}
-
-/// `ClientChunkCache.Storage.inRange`: whether column `x`, `z` is within `calculateStorageRange`
-/// (the server's radius, at least two, plus three) of the view centre. The radius and the centre
-/// are the server's to send, any `i32`: the distances are taken without overflow, which panicked
-/// a debug build and, wrapping in release, dropped every loaded chunk.
-fn in_storage_range(view_distance: i32, center: (i32, i32), x: i32, z: i32) -> bool {
-    let range = view_distance.max(2).saturating_add(3).unsigned_abs();
-    x.abs_diff(center.0) <= range && z.abs_diff(center.1) <= range
 }
 
 // A packet's removals (`RemoveEntities`), apart: this file may not grow.

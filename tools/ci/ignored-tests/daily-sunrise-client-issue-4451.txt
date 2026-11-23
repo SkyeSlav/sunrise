@@ -1443,7 +1443,6 @@ sunrise-client game::native_hooks::camera_type::camera_type_tests::a_client_mod_
 sunrise-client game::native_hooks::camera_type::camera_type_tests::shared_camera_pose_requests_apply_before_frame_consumers lib daily resources
 sunrise-client game::native_hooks::can_be_connected_to_tests::the_block_beside_a_fence_answers_whether_it_connects lib daily resources
 sunrise-client game::native_hooks::client_chunk_hooks_tests::a_client_tells_a_chunk_packet_and_its_forget_once lib daily resources
-sunrise-client game::native_hooks::client_chunk_hooks_tests::every_route_that_frees_a_column_tells_its_unload lib daily resources
 sunrise-client game::native_hooks::client_information_updated::client_information_updated_tests::the_joined_client_information_is_heard_before_the_login lib daily resources
 sunrise-client game::native_hooks::client_packet_send::client_packet_send_tests::a_client_mod_hears_and_cancels_packets_the_game_sends lib daily resources
 sunrise-client game::native_hooks::client_text::tests::plain_text_reads_resolve_current_language_arguments_keys_and_siblings lib daily resources

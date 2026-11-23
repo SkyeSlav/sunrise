@@ -221,10 +221,11 @@ impl Game<'_> {
 
     /// Only enabled LOD worlds extend the renderer's range, never simulation.
     pub(super) fn terrain_distance(&self) -> i32 {
+        let distance = self.effective_render_distance();
         if self.lod.is_some() {
-            self.streaming.radius.max(self.lod_distance() as i32)
+            distance.max(self.lod_distance() as i32)
         } else {
-            self.streaming.radius
+            distance
         }
     }
 
