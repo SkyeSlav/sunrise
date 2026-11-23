@@ -523,19 +523,11 @@ impl Game<'_> {
 
     /// `C::DisguisedChat`: its arms of `apply_packet`, guard and order kept.
     pub(super) fn apply_disguised_chat_packet(&mut self, p: play::DisguisedChat) {
-        let content = sunrise_client::scoreboard::tag_to_json(&p.message);
-        let narration = self
-            .decorate_chat(&p.chat_type, &content, Decoration::Narration)
-            .plain();
-        let line = self.decorate_chat(&p.chat_type, &content, Decoration::Chat);
-        self.handle_player_chat(QueuedChat {
-            line,
+        self.enqueue_chat(QueuedChat {
             signature: None,
-            trust: ChatTrust::Secure,
-            narration,
             sender: 0,
-            chat_type: p.chat_type.chat_type,
-            player: None,
+            chat_type: p.chat_type,
+            kind: QueuedChatKind::Disguised { message: p.message },
         });
     }
 
@@ -674,7 +666,7 @@ impl Game<'_> {
                 "Received player chat packet for unknown player with ID: {:032x}",
                 p.sender
             );
-            self.handle_chat_message_error(&p.chat_type, signature.as_ref());
+            self.handle_chat_message_error(p.sender, p.chat_type, signature);
             return Ok(());
         }
         let now = std::time::SystemTime::now()
@@ -694,7 +686,7 @@ impl Game<'_> {
             filter: &p.filter,
         };
         let Some(validated) = r.validate_chat(&incoming, now) else {
-            self.handle_chat_message_error(&p.chat_type, signature.as_ref());
+            self.handle_chat_message_error(p.sender, p.chat_type, signature);
             return Ok(());
         };
         let signature = signature.filter(|_| validated == secure_chat::Validated::Signed);
@@ -706,40 +698,31 @@ impl Game<'_> {
             .unsigned_content
             .as_ref()
             .map_or_else(|| serde_json::Value::from(p.content.as_str()), tag_to_json);
-        let content = if self.settings.file.bool("onlyShowSecureChat") {
+        let only_show_secure = self.settings.file.bool("onlyShowSecureChat");
+        let content = if only_show_secure {
             serde_json::Value::from(p.content.as_str())
         } else {
             decorated.clone()
         };
-        let narration = self
-            .decorate_chat(&p.chat_type, &decorated, Decoration::Narration)
-            .plain();
+        let narration = self.decorate_chat(&p.chat_type, &decorated, Decoration::Narration);
         let line = self.decorate_chat(&p.chat_type, &content, Decoration::Chat);
-        let trust = self.chat_trust(
-            p.sender,
-            signature.is_some(),
-            p.timestamp,
-            &p.content,
-            p.unsigned_content.as_ref(),
-            &line,
-        );
-        // A hidden or fully filtered message counts as processed, not shown.
-        let Some((line, narration)) = self.shown_player_chat(&p, line, narration) else {
-            if let Some(signature) = &signature {
-                self.mark_message_processed(signature, false);
-            }
-            return Ok(());
-        };
+        let trust = self.chat_trust(&p, signature.is_some(), &line, now);
         let listened = mod_api::__private::listened(mod_api::HookId::ClientChatReceived);
-        let player = listened.then(|| chat_received::player_chat_info(&p, signature.is_some()));
-        self.handle_player_chat(QueuedChat {
-            line,
+        let info =
+            listened.then(|| Box::new(chat_received::player_chat_info(&p, signature.is_some())));
+        self.enqueue_chat(QueuedChat {
             signature,
-            trust,
-            narration,
             sender: p.sender,
-            chat_type: p.chat_type.chat_type,
-            player,
+            chat_type: p.chat_type,
+            kind: QueuedChatKind::Player {
+                line,
+                narration,
+                trust,
+                only_show_secure,
+                signed_content: p.content,
+                filter: p.filter,
+                info,
+            },
         });
         Ok(())
     }

@@ -1,22 +1,36 @@
 //! `ClientChatReceivedEvent` for the lines the server sends: the queued player
 //! message and the hook that may replace or cancel a line.
-use super::*;
+use super::{chat::ChatTrust, *};
 
-/// A player message Chat Delay holds back, its signature and trust level,
-/// what the narrator says of it once it shows, and who sent it in which
-/// chat type, for mods told when it shows (`ClientChatReceivedEvent`).
+/// Receipt-time context for `ChatListener.handleMessage`. Its presentation,
+/// including the mod hook and checks against current social/visibility options,
+/// waits until the queue accepts it.
 pub(super) struct QueuedChat {
-    pub(super) line: sunrise_client::text::Text,
+    /// The valid player signature (also the deletion key), or the invalid
+    /// signature an error only acknowledges. Disguised chat has neither.
     pub(super) signature: Option<Signature>,
-    pub(super) trust: ChatTrust,
-    pub(super) narration: String,
     /// The player's UUID, 0 for disguised chat (`Util.NIL_UUID`).
     pub(super) sender: u128,
-    /// The chat type's network ID (`ChatType.Bound.chatType`).
-    pub(super) chat_type: i32,
-    /// The message as the player signed it, read only while a mod listens;
-    /// `None` for disguised chat and validation errors.
-    pub(super) player: Option<mod_api::PlayerChatInfo>,
+    pub(super) chat_type: play::ChatTypeBound,
+    pub(super) kind: QueuedChatKind,
+}
+
+pub(super) enum QueuedChatKind {
+    Player {
+        line: Text,
+        narration: Text,
+        trust: ChatTrust,
+        only_show_secure: bool,
+        /// `FilterMask.applyWithFormatting` uses the signed text, not the server's replacement.
+        signed_content: String,
+        filter: (i32, Vec<i64>),
+        /// Saved only while a mod listens to `ClientChatReceivedEvent`.
+        info: Option<Box<mod_api::PlayerChatInfo>>,
+    },
+    Disguised {
+        message: Tag,
+    },
+    Error,
 }
 
 /// `PlayerChatMessage` of a `ClientboundPlayerChatPacket`, for

@@ -8,6 +8,7 @@ ChatComponent.addMessageToQueue	port	crates/sunrise-client-render/src/chat.rs::C
 ChatComponent.processMessageDeletionQueue	port	crates/sunrise-client-render/src/chat.rs::Chat::process_deletions
 ChatComponent.deleteMessage	port	crates/sunrise-client-render/src/chat.rs::Chat::delete_message
 ChatComponent.deleteMessageOrDelay	port	crates/sunrise-client-render/src/chat.rs::Chat::delete_or_delay
+ChatComponent.createDeletedMarker	inline	crates/sunrise-client-render/src/chat.rs::Chat::delete_or_delay	replaces the signed line with a server-system marker tagged system
 ChatComponent.refreshTrimmedMessages	port	crates/sunrise-client-render/src/chat.rs::Chat::rewrap	keeps the scroll; Chat::rescale is rescaleChat's resetChatScroll first, and the search and qol extras reset their own filters
 ChatComponent.scrollChat	port	crates/sunrise-client-render/src/chat.rs::Chat::scroll_by	clamp to the page and clear new-message marker at the bottom
 ChatComponent.getHeight	port	crates/sunrise-client-render/src/chat.rs::ChatOptions::height_px	focused or unfocused chat height in px

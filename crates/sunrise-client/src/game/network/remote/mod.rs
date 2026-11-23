@@ -97,10 +97,12 @@ use {
 
 mod abilities;
 mod chat;
+#[cfg(test)]
+mod chat_audit_tests;
 mod chat_received;
 mod commands;
-pub(in crate::game) use chat::{ChatTrust, Decoration};
-use chat_received::QueuedChat;
+pub(in crate::game) use chat::Decoration;
+use chat_received::{QueuedChat, QueuedChatKind};
 pub(in crate::game) mod client_level_tick;
 mod effect;
 mod entity_data_schema;
