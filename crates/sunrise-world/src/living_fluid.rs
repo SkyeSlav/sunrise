@@ -1,5 +1,7 @@
 //! LivingEntity water/lava travel and fluid escape/buoyancy velocity updates.
-use crate::living_air::{LivingAirWorld, TravelInput, move_relative};
+use crate::living_air::{
+    LivingAirWorld, TravelFrame, TravelInput, after_friction_move, air_after_move, move_relative,
+};
 use crate::move_gate::MoveGate;
 use sunrise_core::geometry::Vec3;
 
@@ -81,6 +83,26 @@ pub fn travel_in_water<W: LivingFluidWorld>(
     }
     let input_changed = move_relative(world, input, speed)?;
     world.move_self(gate, world.velocity())?;
+    if world.paused() {
+        world.defer(TravelFrame::Water {
+            slowdown,
+            input_changed,
+            gravity,
+            falling,
+            old_y,
+        });
+        return Ok(input_changed);
+    }
+    water_after_move(world, slowdown, input_changed, gravity, falling, old_y)
+}
+fn water_after_move<W: LivingFluidWorld>(
+    world: &mut W,
+    slowdown: f32,
+    input_changed: bool,
+    gravity: f64,
+    falling: bool,
+    old_y: f64,
+) -> Result<bool, W::Error> {
     let mut velocity = world.velocity();
     if world.horizontal_collision() && world.on_climbable()? {
         velocity.y = 0.2;
@@ -105,6 +127,24 @@ pub fn travel_in_lava<W: LivingFluidWorld>(
 ) -> Result<bool, W::Error> {
     let input_changed = move_relative(world, input, 0.02)?;
     world.move_self(gate, world.velocity())?;
+    if world.paused() {
+        world.defer(TravelFrame::Lava {
+            input_changed,
+            gravity,
+            falling,
+            old_y,
+        });
+        return Ok(input_changed);
+    }
+    lava_after_move(world, input_changed, gravity, falling, old_y)
+}
+fn lava_after_move<W: LivingFluidWorld>(
+    world: &mut W,
+    input_changed: bool,
+    gravity: f64,
+    falling: bool,
+    old_y: f64,
+) -> Result<bool, W::Error> {
     let height = world.fluid_height(TravelFluidTag::Lava)?;
     if height <= world.fluid_jump_threshold()? {
         let velocity = world.velocity();
@@ -159,6 +199,39 @@ pub fn travel_in_fluid<W: LivingFluidWorld>(
     } else {
         travel_in_lava(world, gate, input, gravity, falling, old_y)?
     };
+    if world.paused() {
+        world.defer(TravelFrame::FluidRide);
+        return Ok(input_changed);
+    }
     float_in_liquid_while_ridden(world, TravelFluidTag::EntityFloatable)?;
     Ok(input_changed)
+}
+
+/// Run what a paused travel left (`LivingAirWorld::defer`): one frame of it.
+pub fn resume_travel<W: LivingFluidWorld>(
+    world: &mut W,
+    frame: TravelFrame,
+) -> Result<(), W::Error> {
+    match frame {
+        TravelFrame::Air { support, friction } => {
+            let velocity = after_friction_move(world)?;
+            air_after_move(world, support, friction, velocity)
+        }
+        TravelFrame::Water {
+            slowdown,
+            input_changed,
+            gravity,
+            falling,
+            old_y,
+        } => water_after_move(world, slowdown, input_changed, gravity, falling, old_y).map(|_| ()),
+        TravelFrame::Lava {
+            input_changed,
+            gravity,
+            falling,
+            old_y,
+        } => lava_after_move(world, input_changed, gravity, falling, old_y).map(|_| ()),
+        TravelFrame::FluidRide => {
+            float_in_liquid_while_ridden(world, TravelFluidTag::EntityFloatable)
+        }
+    }
 }

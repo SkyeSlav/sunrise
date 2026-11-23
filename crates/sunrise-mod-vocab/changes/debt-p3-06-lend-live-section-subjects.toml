@@ -10,7 +10,7 @@ moves the entity between section lists of a level that still holds all the other
 `EntityEvent.EnteringSection` after it. The game also puts back its hold on an entity lent for its own tick
 when a listener unwinds, so the entity is writable again afterwards.
 
-A mob's own `Entity.move` and a player's ordinary `Entity.move` now pause at the position write
+A mob's own `Entity.move` and every move of the local player (its tick's travel, a rider's tick, a piston or shulker push, riptide) now pause at the position write
 (`Entity.setPosRaw`) and tell the crossing with the owning Host, so the listener reads and writes the
 real level and entity and the rest of the move sees its writes. Other mob writes inside its own tick
 keep the position-only Host.

@@ -24,7 +24,8 @@ pub trait Hooks {
     /// progress while this hook runs.
     ///
     /// Which Host a listener gets decides what it can read and write. A mob's own `Entity.move`
-    /// and a player's ordinary `Entity.move` (its tick, a piston or shulker push, riptide) pause
+    /// and every move of the local player (its tick's travel, a rider's tick, a piston or shulker push,
+    /// riptide) pause
     /// at the position write and are told with the owning Host: the listener reads and writes
     /// the real level and the entity, and the rest of that move reads what it wrote. Every
     /// other write of a mob inside its own tick (a teleport, a snap, a size-change nudge, a
@@ -73,8 +74,7 @@ The hook runs at the position write: at once for a teleport (`/tp`, `teleport_to
 an enderman's or a shulker's teleport when hurt), a piston or shulker push, a server player's sent move and, on a client,
 a packet that places an entity. Mob writes are told in write order. A write told while the mob view is borrowed
 gets a position-only Host: the crossing entity's position, `entity_residency` `Busy` for it and for any other
-entity of the world open, and nothing else of the world; a player move also answers that player's ground flag and velocity before the
-move updates them, and `local_player` on the client. A write captured without a live observer is told after the
+entity of the world open, and nothing else of the world; `local_player` answers none there. A write captured without a live observer is told after the
 owning row is restored, before the next mob ticks, with the owning Host that reads resident entities. Crossings
 queued while a listener runs are told after it returns, in filing order, with that Host; each keeps the placement of its
 own move, which a read of the entity's position answers, and no later move or removal rewrites or deletes it. Listeners must not move or remove the crossing entity while its write in progress."#]

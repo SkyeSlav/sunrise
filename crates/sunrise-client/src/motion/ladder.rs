@@ -158,6 +158,12 @@ impl LivingAirWorld for MotionWorld<'_, '_, '_> {
     fn move_self(&mut self, gate: &mut MoveGate, v: Vec3) -> Result<()> {
         MotionWorld::move_self(self, gate, v)
     }
+    fn paused(&self) -> bool {
+        self.player.paused.is_some()
+    }
+    fn defer(&mut self, frame: sunrise_world::living_air::TravelFrame) {
+        self.player.paused.defer(TickFrame::Travel(frame));
+    }
     fn horizontal_collision(&self) -> bool {
         self.player.collision.horizontal
     }

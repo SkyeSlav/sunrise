@@ -1,7 +1,7 @@
 //! The player's travel family: `Player.travel`'s branch selection and the
 //! glide branch, split out of `motion.rs` (no behaviour change). The
 //! `living_travel` hook (#2414, PR 2) fires at this family's branch selection.
-use super::{MotionEvent, MotionWorld, Result, fall_flying_movement};
+use super::{MotionEvent, MotionWorld, Result, TickFrame, fall_flying_movement};
 use sunrise_core::{geometry::Vec3, position::BlockPos};
 use sunrise_world::{
     living_air::{self, TravelInput},
@@ -88,13 +88,12 @@ impl MotionWorld<'_, '_, '_> {
         // left by the branch after the move.
         let flying_y = self.player.flying.then_some(self.player.velocity.y);
         let input_changed = self.apply_travel_branch(branch, &mut MoveGate::new(), input)?;
-        if let Some(y) = flying_y {
-            self.player.set_velocity(Vec3::new(
-                self.player.velocity.x,
-                y * 0.6,
-                self.player.velocity.z,
-            ));
+        if self.player.paused.is_some() {
+            // Only a live local tick pauses, and it takes no server verdict from its travel.
+            self.player.paused.defer(TickFrame::Flight { y: flying_y });
+            return Ok(ServerTravel::Continue);
         }
+        self.flight_after_travel(flying_y);
         Ok(if velocity_changed || input_changed {
             ServerTravel::Replace {
                 position: self.player.position,
@@ -131,6 +130,16 @@ impl MotionWorld<'_, '_, '_> {
         )
     }
 
+    pub(super) fn flight_after_travel(&mut self, flying_y: Option<f64>) {
+        if let Some(y) = flying_y {
+            self.player.set_velocity(Vec3::new(
+                self.player.velocity.x,
+                y * 0.6,
+                self.player.velocity.z,
+            ));
+        }
+    }
+
     fn apply_travel_branch(
         &mut self,
         branch: TravelBranch,
@@ -147,6 +156,12 @@ impl MotionWorld<'_, '_, '_> {
             }
             TravelBranch::EndGlide | TravelBranch::Air => {
                 let input_changed = living_air::travel_in_air(self, gate, input)?;
+                if self.player.paused.is_some() {
+                    if matches!(branch, TravelBranch::EndGlide) {
+                        self.player.paused.defer(TickFrame::EndGlide);
+                    }
+                    return Ok(input_changed);
+                }
                 if matches!(branch, TravelBranch::EndGlide) {
                     self.player.fall_flying = false;
                 }
@@ -167,6 +182,13 @@ impl MotionWorld<'_, '_, '_> {
         ));
         let movement = self.player.velocity;
         self.move_self(gate, movement)?;
+        if self.player.paused.is_some() {
+            self.player.paused.defer(TickFrame::Glide { move_h });
+            return Ok(());
+        }
+        self.fall_flying_after_move(move_h)
+    }
+    pub(super) fn fall_flying_after_move(&mut self, move_h: f64) -> Result<()> {
         // LivingEntity.handleFallFlyingCollisions: the fall-damage sound plays
         // on both sides (a glider's own travel is client-side, and the sound
         // must reach its own ears, #8906), only the server hurts, and it

@@ -87,7 +87,6 @@ fn live_section_host_reports_moved_entity_residency_in_callback() {
                 entity: player,
                 residency: EntityResidency::InPlace,
                 position: [24.0, 64.0, 8.0],
-                player: None,
             },
             false,
         );
@@ -102,7 +101,6 @@ fn live_section_host_reports_moved_entity_residency_in_callback() {
                 entity: mob,
                 residency: EntityResidency::Busy,
                 position: [24.0, 64.0, 8.0],
-                player: None,
             },
             true,
         );
