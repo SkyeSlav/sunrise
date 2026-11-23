@@ -1,0 +1,3 @@
+ids = ["method:TransactionContext::on_root_commit", "trait:RootCommitEffect"]
+why = "Server mods can enlist an owned effect in the innermost transaction that runs once after the outermost transaction commits, as NeoForge's RootCommitJournal.updateSnapshots and onRootCommit do: a committed child passes its effects to its parent in order, and an abort, unwind or refused commit discards them."
+migrate = "Nothing to migrate: the method and trait are new."

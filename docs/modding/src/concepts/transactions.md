@@ -95,17 +95,9 @@ fn enlist_transfer(
 }
 ```
 
-Enlisting is not committing. A committed child passes its effects to its parent in order,
-including across levels. An aborted, refused or unwound frame discards its effects, including
-any it took from committed children. The outermost commit publishes the game's own effects
-first, then delivers the mod's records in enlistment order. If an effect opens and commits
-another transaction, that transaction's effects go behind the ones already waiting.
-
-Each effect receives a fresh server host, not the original transaction or event. Keep typed
-handles for anything you need to address and handle stale ones when the record runs. The
-completed commit cannot be vetoed or undone by the effect. Unlike a scheduled task, the
-record depends on commit, not on a tick delay. This does not roll back direct writes to mod
-storage; keep per-object state that needs rollback in [attachments](attachments.md).
+Enlisting is not committing: the effect runs once, after the outermost transaction commits,
+and an abort discards it. The ordering, the fresh host it receives and what a panic does are on
+`TransactionContext::on_root_commit` and `RootCommitEffect`.
 
 ## Deferred level, entity, and player effects
 
