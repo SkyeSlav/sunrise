@@ -666,23 +666,38 @@ impl Game<'_> {
                 &mut arrow_events,
             );
         } else {
-            let rain = self.arrow_rain();
-            let arrow_scene = self.arrow_scene(&rain);
-            let w = self.mob_world_base(&[]);
-            let world = super::creatures::ProjWorld {
-                w: &w,
-                targets: &[],
-                border: Some(self.border.bounds()),
-            };
-            projectiles.for_each_mut(|p| {
-                if !round.canceled(p.id) {
-                    remote_projectile_step(p, &arrow_scene, &world, &mut arrow_events);
+            // Their visits, counted once the loop hands the game back: no hook runs between.
+            let mut visited = Vec::new();
+            {
+                let rain = self.arrow_rain();
+                let arrow_scene = self.arrow_scene(&rain);
+                let w = self.mob_world_base(&[]);
+                let world = super::creatures::ProjWorld {
+                    w: &w,
+                    targets: &[],
+                    border: Some(self.border.bounds()),
+                };
+                projectiles.for_each_mut(|p| {
+                    let ticks = !round.canceled(p.id);
+                    if ticks || self.client_passenger(p.id) {
+                        visited.push(p.id);
+                    }
+                    if ticks {
+                        remote_projectile_step(p, &arrow_scene, &world, &mut arrow_events);
+                    }
+                });
+                for t in &mut tridents {
+                    let ticks = !round.canceled(t.id);
+                    if ticks || self.client_passenger(t.id) {
+                        visited.push(t.id);
+                    }
+                    if ticks {
+                        super::trident::remote_tick(t, &world, self.remote_eye(t.owner));
+                    }
                 }
-            });
-            for t in &mut tridents {
-                if !round.canceled(t.id) {
-                    super::trident::remote_tick(t, &world, self.remote_eye(t.owner));
-                }
+            }
+            for id in visited {
+                self.count_client_tick(id);
             }
         }
         self.creatures.projectiles.restore(
@@ -864,6 +879,7 @@ impl Game<'_> {
         let slots: Vec<u32> = projectiles.iter().map(|p| p.id).collect();
         let mut places = None;
         let mut slot = 0;
+        let mut visited = Vec::new();
         while slot < slots.len() {
             // The projectiles up to the next one told alone, through one set of views.
             {
@@ -883,13 +899,22 @@ impl Game<'_> {
                     if round.alone_kind(projectiles[i].entity_type()) {
                         break;
                     }
-                    if !round.canceled(projectiles[i].id) {
+                    let id = projectiles[i].id;
+                    let ticks = !round.canceled(id);
+                    if ticks || self.client_passenger(id) {
+                        visited.push(id);
+                    }
+                    if ticks {
                         projectiles.update(i, |p| {
                             remote_projectile_step(p, &scene, &world, arrow_events)
                         });
                     }
                     slot += 1;
                 }
+            }
+            // Their visits, counted before the next one told alone hears its Pre.
+            for id in visited.drain(..) {
+                self.count_client_tick(id);
             }
             let Some(i) = slots
                 .get(slot)
@@ -903,7 +928,10 @@ impl Game<'_> {
             let changed;
             (projectiles, tridents, changed) =
                 self.remote_projectiles_told(projectiles, tridents, |game| {
-                    ticks = game.native_tick_pre_one(round, id, kind);
+                    told_visit(game, id, |game| {
+                        ticks = game.native_tick_pre_one(round, id, kind);
+                        ticks
+                    });
                 });
             if changed.0 {
                 places = Some(places_of(projectiles.iter().map(|p| p.id)));
@@ -947,10 +975,18 @@ impl Game<'_> {
                 targets: &[],
                 border: Some(self.border.bounds()),
             };
+            let mut visited = Vec::new();
             for t in &mut tridents {
-                if !round.canceled(t.id) {
+                let ticks = !round.canceled(t.id);
+                if ticks || self.client_passenger(t.id) {
+                    visited.push(t.id);
+                }
+                if ticks {
                     super::trident::remote_tick(t, &world, self.remote_eye(t.owner));
                 }
+            }
+            for id in visited {
+                self.count_client_tick(id);
             }
         }
         let mut places = None;
@@ -963,7 +999,10 @@ impl Game<'_> {
             let changed;
             (projectiles, tridents, changed) =
                 self.remote_projectiles_told(projectiles, tridents, |game| {
-                    ticks = game.native_tick_pre_one(round, id, TRIDENT);
+                    told_visit(game, id, |game| {
+                        ticks = game.native_tick_pre_one(round, id, TRIDENT);
+                        ticks
+                    });
                 });
             if changed.1 {
                 places = Some(places_of(tridents.iter().map(|t| t.id)));
@@ -1675,5 +1714,17 @@ mod entity_tick_tests {
                 (true, "post", arrow().0, arrow().1, vec![after])
             ]
         );
+    }
+}
+
+/// The visit of one entity told alone: a passenger counts before its Pre (`tickPassenger`), a
+/// root once `pre` let it through (`tickNonPassenger`).
+fn told_visit(game: &mut Game<'_>, id: u32, pre: impl FnOnce(&mut Game<'_>) -> bool) {
+    let passenger = game.client_passenger(id);
+    if passenger {
+        game.count_client_tick(id);
+    }
+    if pre(game) && !passenger {
+        game.count_client_tick(id);
     }
 }

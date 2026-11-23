@@ -687,8 +687,10 @@ impl Game<'_> {
     /// entity pass (`Entity.commonTick`) since the client added it.
     fn client_entity_tick_count(&self, entity: EntityRef) -> Option<i32> {
         let (remote, id) = self.native_client_entity_context(entity)?;
+        // The local player from its admission (Login, Respawn), before the server's first
+        // teleport gives it a body.
         if id == remote.entity_id {
-            return self.player.as_ref().map(|_| remote.own_tick_count);
+            return remote.has_logical_player.then_some(remote.own_tick_count);
         }
         remote
             .entities

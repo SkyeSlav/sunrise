@@ -677,6 +677,8 @@ impl Game<'_> {
         }
     }
 
+    /// A member's id, box and pick radius; a client's copy of a non-mob entity takes the box of
+    /// its `entity_size` answer.
     fn resolve_pick_member(&self, member: PickMember) -> Option<(u32, Aabb, f64)> {
         let id = member.id;
         match member.kind {
@@ -684,51 +686,80 @@ impl Game<'_> {
                 let m = &self.mobs[self.mob_index.find_ref(&self.mobs, id)?];
                 m.is_pickable().then(|| (m.id, m.bounds(), 0.0))
             }
-            PickKind::Boat => self
-                .boats
-                .iter()
-                .find(|e| e.id == id)
-                .map(|e| (e.id, e.bounds(), 0.0)),
-            PickKind::Cart => self
-                .carts
-                .iter()
-                .find(|e| e.id == id)
-                .map(|e| (e.id, e.bounds(), 0.0)),
+            PickKind::Boat => self.boats.iter().find(|e| e.id == id).map(|e| {
+                (
+                    e.id,
+                    self.client_copy_box(e.id, e.position, e.bounds()),
+                    0.0,
+                )
+            }),
+            PickKind::Cart => self.carts.iter().find(|e| e.id == id).map(|e| {
+                (
+                    e.id,
+                    self.client_copy_box(e.id, e.position, e.bounds()),
+                    0.0,
+                )
+            }),
             PickKind::ArmorStand => self
                 .armor_stands
                 .iter()
                 .find(|e| e.id == id)
                 .filter(|e| e.is_pickable())
-                .map(|e| (e.id, e.bounds(), 0.0)),
-            PickKind::Tnt => self
-                .tnts
-                .iter()
-                .find(|e| e.id == id)
-                .map(|e| (e.id, e.bounds(), 0.0)),
-            PickKind::Falling => self
-                .falling
-                .iter()
-                .find(|e| e.id == id)
-                .map(|e| (e.id, e.bounds(), 0.0)),
+                .map(|e| {
+                    (
+                        e.id,
+                        self.client_copy_box(e.id, e.position, e.bounds()),
+                        0.0,
+                    )
+                }),
+            PickKind::Tnt => self.tnts.iter().find(|e| e.id == id).map(|e| {
+                (
+                    e.id,
+                    self.client_copy_box(e.id, e.position, e.bounds()),
+                    0.0,
+                )
+            }),
+            PickKind::Falling => self.falling.iter().find(|e| e.id == id).map(|e| {
+                (
+                    e.id,
+                    self.client_copy_box(e.id, e.position, e.bounds()),
+                    0.0,
+                )
+            }),
             PickKind::Projectile => self
                 .creatures
                 .projectiles
                 .iter()
                 .find(|p| p.id == id)
                 .filter(|p| self.projectile_is_pickable(p))
-                .map(|p| (p.id, p.bounds(), self.projectile_pick_radius(p))),
+                .map(|p| {
+                    let bounds = self.client_copy_box(p.id, p.position, p.bounds());
+                    (p.id, bounds, self.projectile_pick_radius(p))
+                }),
             PickKind::Trident => self
                 .tridents
                 .iter()
                 .find(|t| t.id == id)
                 .filter(|t| self.trident_is_pickable(t))
-                .map(|t| (t.id, t.bounds(), 1.0)),
+                .map(|t| {
+                    (
+                        t.id,
+                        self.client_copy_box(t.id, t.position, t.bounds()),
+                        1.0,
+                    )
+                }),
             PickKind::Rocket => self
                 .rockets
                 .iter()
                 .find(|r| r.id == id)
                 .filter(|_| self.rocket_is_pickable())
-                .map(|r| (r.id, r.bounds(), 1.0)),
+                .map(|r| {
+                    (
+                        r.id,
+                        self.client_copy_box(r.id, r.position, r.bounds()),
+                        1.0,
+                    )
+                }),
             PickKind::General => self
                 .resident_entities
                 .general
@@ -753,7 +784,7 @@ impl Game<'_> {
             PickKind::Interaction => self
                 .interactions
                 .get(&(id as i32))
-                .map(|i| (id, i.bounds(), 0.0)),
+                .map(|i| (id, self.client_copy_box(id, i.position, i.bounds()), 0.0)),
             PickKind::RemoteGeneral => self
                 .remote
                 .as_ref()?
@@ -773,11 +804,13 @@ impl Game<'_> {
                 .iter()
                 .find(|k| k.id == id)
                 .map(|k| (k.id, knot_bounds(k.fence), 0.0)),
-            PickKind::Crystal => self
-                .crystals
-                .iter()
-                .find(|c| c.id == id)
-                .map(|c| (c.id, c.bounds(), 0.0)),
+            PickKind::Crystal => self.crystals.iter().find(|c| c.id == id).map(|c| {
+                (
+                    c.id,
+                    self.client_copy_box(c.id, c.position, c.bounds()),
+                    0.0,
+                )
+            }),
         }
     }
 

@@ -40,7 +40,7 @@ greeter/
 ```
 
 After a fresh clone, run `cargo sunrise-mod check` once before opening the project in an editor: it fetches
-`.sunrise/sdk/` again. To move the project to a newer Nightly later, use `cargo sunrise-mod update`.
+`.sunrise/sdk/` again. To move the project to a newer Nightly later, use `cargo sunrise-mod pin`.
 
 ## 3. Read the hook
 
@@ -99,9 +99,8 @@ A mod with crates.io dependencies is compiled with them, as `cargo build` would,
 When a build stops on a package the lock doesn't pin, its error ends with that command. The
 [build log](../how-to/native-mods/05-build-log.md) shows the compiler's output when a build fails.
 
-For publishing later, the native template also writes `.github/workflows/release.yml`, `.github/workflows/rebuild.yml`
-and their shared workflow and bootstrap action. They stay off until you opt in; you can keep developing against Nightly. See
-[Tagged native releases in GitHub Actions](../how-to/publish.md#tagged-native-releases-in-github-actions) for setup.
+The template also writes `.github/workflows/sunrise-release.yml`. To publish your mod, see
+[Releasing](../how-to/publish.md#releasing).
 
 ## 6. Run it
 

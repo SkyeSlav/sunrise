@@ -95,8 +95,8 @@ field by field does not. `cargo sunrise-mod check --uses` says which of the mod'
 
 A registry or a release page can tell which builds a published package fits from the package and each build's
 `surface.json` alone, or with the build's build data too for a mod that declares game code:
-`cargo sunrise-mod fits <file.smod> --build <name>`. For a current list nothing from the build
-the mod was made for is needed, so pruning that build's compiled files never strands the mod. `fits` first checks
+`cargo sunrise-mod check <file.smod> --build <name>`. For a current list nothing from the build
+the mod was made for is needed, so pruning that build's compiled files never strands the mod. The fit report first checks
 that the list was made for the build the package pins (`[native] sunrise`). If the pin is missing, is not a full
 commit SHA, or does not match `made_for`, the list cannot show which other builds the package fits. If the
 function index refuses a declared mixin target, the fit report names the target, error code and reason
@@ -113,12 +113,12 @@ fingerprints, but cannot tell a body-only change from a declaration change.
 
 Schemas 1 and 2 were written by the older scan, which could attribute a mod's own name to the API. The fit check
 accepts the older hashes for unchanged signatures. For those lists only, absent API records and lost impls that
-refer to a removed API type do not refuse fit. `fits` lists the deferred IDs in one `not checked` line;
+refer to a removed API type do not refuse fit. The fit report lists the deferred IDs in one `not checked` line;
 the native compile decides whether the mod actually needs them. Changed signatures and hook versions still refuse.
 
 A schema 1 list also differs in two ways:
 
-- **It holds no hook versions.** `cargo sunrise-mod fits` fetches the `surface.json` of the build the list was
+- **It holds no hook versions.** `cargo sunrise-mod check --build` fetches the `surface.json` of the build the list was
   made for only when a comparison with another build would otherwise be "not known" because a required hook
   version is missing. That file stays published when a build's compiled files are pruned. If it cannot be fetched,
   the answer is still "not known", with the reason. `native-check` and `sunrise-stage fits` do not fetch that file:

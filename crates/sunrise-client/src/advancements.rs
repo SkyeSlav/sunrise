@@ -511,6 +511,8 @@ pub fn date_millis(text: &str) -> Option<i64> {
 #[derive(Default, Clone)]
 pub struct Progress {
     pub criteria: BTreeMap<String, BTreeMap<String, String>>,
+    /// For packet progress, the requirements in force when the progress arrived.
+    remote_requirements: BTreeMap<String, Vec<Vec<String>>>,
 }
 impl Progress {
     pub fn has(&self, adv: &str, criterion: &str) -> bool {
@@ -527,12 +529,35 @@ impl Progress {
     }
     /// Completed requirement groups and their count (the screen's tooltip).
     pub fn counts(&self, a: &Advancement) -> (usize, usize) {
-        let done = a
-            .requirements
+        self.counts_for(&a.id, &a.requirements)
+    }
+    /// `AdvancementProgress.update`: bind the received progress to these
+    /// requirements, dropping criterion names that are not in them.
+    pub fn set_remote(&mut self, a: &Advancement, obtained: impl IntoIterator<Item = String>) {
+        let obtained = obtained
+            .into_iter()
+            .filter(|name| a.criteria.iter().any(|c| &c.name == name))
+            .map(|name| (name, String::new()))
+            .collect();
+        self.criteria.insert(a.id.clone(), obtained);
+        self.remote_requirements
+            .insert(a.id.clone(), a.requirements.clone());
+    }
+    /// `AdvancementProgress.getPercent` / `getProgressText`: a widget without
+    /// received progress, or without criteria in it, has no progress to show.
+    pub fn remote_counts(&self, id: &str) -> Option<(usize, usize)> {
+        let requirements = self.remote_requirements.get(id)?;
+        requirements
             .iter()
-            .filter(|g| g.iter().any(|c| self.has(&a.id, c)))
+            .any(|g| !g.is_empty())
+            .then(|| self.counts_for(id, requirements))
+    }
+    fn counts_for(&self, id: &str, requirements: &[Vec<String>]) -> (usize, usize) {
+        let done = requirements
+            .iter()
+            .filter(|g| g.iter().any(|c| self.has(id, c)))
             .count();
-        (done, a.requirements.len())
+        (done, requirements.len())
     }
     pub fn grant(&mut self, adv: &str, criterion: &str, date: &str) -> bool {
         let m = self.criteria.entry(adv.to_owned()).or_default();

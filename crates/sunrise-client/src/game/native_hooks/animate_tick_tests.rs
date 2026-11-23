@@ -184,6 +184,9 @@ fn the_part_runs_inside_its_pick_before_the_fluid_the_next_pick_and_the_rain() {
         game.world_biomes = Some(Arc::new(biomes));
         game.settings.particles = 0;
         game.settings.sunrise.weather = true;
+        // Run after a camera frame: tickWeatherEffects uses the camera position,
+        // which is still the origin until the camera has aligned with its entity.
+        game.camera_view(1.0).expect("camera over the rod floor");
         game.particles.requested = Some(Vec::new());
         game.tick_particles();
         let log: Vec<(ParticleType, [i32; 3])> = game

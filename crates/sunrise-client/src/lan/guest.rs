@@ -555,6 +555,8 @@ pub struct Guest {
     pub attachments: sunrise_mod_runtime::attachments::ResidentAttachments,
     /// `ServerPlayer.seenCredits`: the end poem has been shown.
     pub seen_credits: bool,
+    /// `ServerPlayer.wonGame`: the End poem is showing until PERFORM_RESPAWN.
+    pub won_game: bool,
     /// `ServerPlayer.postEffects` and `postEffectsDirty`.
     pub post_effects: Vec<String>,
     pub post_effects_dirty: bool,
@@ -964,6 +966,7 @@ impl Guest {
             saved: None,
             attachments: Default::default(),
             seen_credits: false,
+            won_game: false,
             post_effects: Vec::new(),
             post_effects_dirty: true,
             recipe_book: Default::default(),

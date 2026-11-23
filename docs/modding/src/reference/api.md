@@ -22,5 +22,8 @@ cargo doc -p sunrise-mod-api --no-deps --open
 | `Wire` | Encoding typed payloads and other API data ([Wire types](../concepts/wire-types.md)) |
 
 
-[Hook notes](hook-notes.md) holds longer explanations that go with groups of hooks, and
-[NeoForge counterparts](neoforge-counterparts.md) lists each hook's NeoForge event or method.
+[API reference](api-reference.md) indexes the catalog-backed `Hooks` and Part hooks and the
+area-declared `Host` / `ServerHost` / `ClientHost` methods; build the rustdoc above for the
+complete traits and types. [Hook notes](hook-notes.md) holds longer explanations that go with
+groups of hooks, and [NeoForge counterparts](neoforge-counterparts.md) lists each hook's NeoForge
+event or method.

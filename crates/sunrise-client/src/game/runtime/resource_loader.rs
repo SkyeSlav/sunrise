@@ -245,6 +245,8 @@ pub(super) enum PendingWorldEntry {
     Server {
         address: String,
         name: String,
+        /// The saved server list row's name, when the join came from that row.
+        list_name: Option<String>,
         lan: bool,
         realm: bool,
         /// A transfer's carried-over server cookies (`TransferState`).

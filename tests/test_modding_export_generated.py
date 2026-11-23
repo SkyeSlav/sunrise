@@ -13,6 +13,7 @@ class ExportGenerated(unittest.TestCase):
         chapters = {
             "notes": "# Hook notes\n\nNotes from the catalog.\n",
             "counterparts": "# NeoForge counterparts\n\nCounterparts from the catalog.\n",
+            "reference": "# Mod API reference\n\nHooks and Host reference.\n",
         }
         surface = {
             "schema": 2,
@@ -32,6 +33,7 @@ class ExportGenerated(unittest.TestCase):
             exporter.export(out)
             self.assertEqual((out / "reference/hook-notes.md").read_text(), chapters["notes"])
             self.assertEqual((out / "reference/neoforge-counterparts.md").read_text(), chapters["counterparts"])
+            self.assertEqual((out / "reference/api-reference.md").read_text(), chapters["reference"])
             sdk = json.loads((out / "sdk-tables.json").read_text())
             self.assertEqual(set(sdk), {"sdk-assets", "sdk-routes", "sdk-hosts", "sdk-surface"})
             self.assertIn("`SHA256SUMS.sig`", sdk["sdk-assets"])

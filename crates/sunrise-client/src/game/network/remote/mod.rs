@@ -226,6 +226,9 @@ pub(super) struct Tracked {
     /// `Entity.tickCount` of this client's copy: the ticks the client level gave it since the
     /// server added it (`Entity.commonTick`), counted in `tick_remote_entities`.
     pub(in crate::game) tick_count: i32,
+    /// What `entity_size` answered at this copy's last size refresh, with the synced pose it
+    /// was asked for, unless the copy is a mob, which keeps its own (`Mob::size_answer`).
+    pub(in crate::game) size_answer: Option<sunrise_client::pose::SizeAnswer>,
 }
 
 /// An item has joined the client level, but has no stack to draw yet.

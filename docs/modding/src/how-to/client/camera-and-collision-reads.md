@@ -127,10 +127,7 @@ arriving and leaving; `client_block_changed(dimension, pos, old, new, predicted)
 held column that changes state, after the write, so `host.level(dimension)` already reads `new` there:
 
 ```rust
-fn client_block_changed(&self, _host: &dyn ClientHost, event: &mut ClientBlockChangedEvent<'_>) {
-    // The chunk to redraw: [x, z], in chunks.
-    self.stale(event.dimension, [event.pos.x >> 4, event.pos.z >> 4]);
-}
+{{#include ../../../examples/src/client_misc.rs:client_block_changed}}
 ```
 
 Every route a client writes a block by tells it: the server's block update, each block of a batched

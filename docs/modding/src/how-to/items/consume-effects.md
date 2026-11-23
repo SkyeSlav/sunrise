@@ -31,25 +31,7 @@ stack or the other slots in the update. The client hashes the admitted effects
 for menu prediction.
 
 ```rust
-use mod_api::{Compound, ConsumeEffectType, Identifier, Registrar, Tag, Wire};
-
-#[derive(Wire)]
-struct Charge { points: u16 }
-
-fn register(r: &mut dyn Registrar) -> Result<(), String> {
-    r.register_consume_effect_type(
-        Identifier::parse("example:charge").map_err(|e| e.to_string())?,
-        ConsumeEffectType::new::<Charge>(
-            |fields| match fields.get(&"points".into()) {
-                Some(Tag::Int(n)) => u16::try_from(*n)
-                    .map(|points| Charge { points })
-                    .map_err(|e| e.to_string()),
-                _ => Err("expected integer points".into()),
-            },
-            |effect| Ok(Compound::from([("points".into(), Tag::Int(effect.points.into()))])),
-        ),
-    )
-}
+{{#include ../../../examples/src/item_behaviors.rs:register_consume_effect}}
 ```
 
 An entry then reads `{type: "example:charge", points: 10}` in SNBT, in either

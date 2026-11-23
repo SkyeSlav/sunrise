@@ -252,3 +252,110 @@ jobs:
         run: |
           echo "### Would publish $TAG (a branch or dry run: signed with a throwaway key)" >> "$GITHUB_STEP_SUMMARY"
           ls -l dist | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # Generated modding-book chapters and SDK tables for this exact SDK commit, published to the orphan branch
+  # `modding-book-generated` so playsunrise.net's Node-only docs-sync reads them straight from its blobless clone
+  # with no extra token, no path-filter misses, and no latest-only cancellation races. Runs in parallel with
+  # index/sign/publish with read-only permissions; only `book-generated-publish` writes the branch after `publish`.
+  book-generated:
+    needs: [authorize]
+    if: needs.authorize.outputs.publish == 'true'
+    runs-on: ${{ vars.DYNA_CI_SELF_HOSTED == 'true' && 'dyna-medium' || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: The pinned Rust (tools/ci/rust-version)
+        env:
+          DYNA: ${{ runner.environment != 'github-hosted' }}
+        run: |
+          if [ "$DYNA" = true ]; then
+            if [ ! -x "$CARGO_HOME/bin/rustup" ]; then
+              curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal
+            fi
+            export PATH="$CARGO_HOME/bin:$PATH"
+            echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          fi
+          bash tools/ci/rustup_install.sh --profile minimal
+      - name: Export generated chapters and SDK tables
+        run: |
+          rm -rf "$RUNNER_TEMP/modding-book-generated"
+          python3 tools/modding_export_generated.py --out "$RUNNER_TEMP/modding-book-generated"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: modding-book-generated
+          path: ${{ runner.temp }}/modding-book-generated
+          if-no-files-found: error
+          overwrite: true
+
+  book-generated-publish:
+    needs: [authorize, publish, book-generated]
+    if: needs.authorize.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: modding-book-generated
+      cancel-in-progress: false
+    permissions:
+      contents: write  # updates orphan branch modding-book-generated
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: modding-book-generated
+          path: ${{ runner.temp }}/modding-book-generated
+      - name: Publish modding-book-generated snapshot for this SDK commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          exported="$RUNNER_TEMP/modding-book-generated"
+          python3 - "$exported" <<'PY'
+          import pathlib, sys
+          root = pathlib.Path(sys.argv[1]).resolve()
+          allowed = {
+              "sdk-tables.json",
+              "reference/api-reference.md",
+              "reference/hook-notes.md",
+              "reference/neoforge-counterparts.md",
+          }
+          found = []
+          for p in sorted(root.rglob("*")):
+              if p.is_dir():
+                  assert not p.is_symlink(), f"refusing symlink dir {p}"
+                  continue
+              assert not p.is_symlink() and p.is_file(), f"refusing non-regular file {p}"
+              rel = p.relative_to(root).as_posix()
+              assert rel in allowed, f"refusing unexpected exported file {rel}"
+              found.append(rel)
+          assert found, "no generated files exported"
+          PY
+          work="$RUNNER_TEMP/book-generated-repo"
+          rm -rf "$work"
+          mkdir -p "$work"
+          git -C "$work" init -q
+          git -C "$work" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git -C "$work" fetch -q --depth=1 origin refs/heads/modding-book-generated:refs/heads/modding-book-generated 2>/dev/null; then
+            git -C "$work" checkout -q -f modding-book-generated
+            git -C "$work" rm -q -rf .
+          else
+            git -C "$work" checkout -q --orphan modding-book-generated
+            git -C "$work" rm -q -rf . 2>/dev/null || true
+          fi
+          printf '%s\n' "$COMMIT" > "$work/source-commit"
+          cp -R "$exported"/. "$work"/
+          git -C "$work" add -A
+          if git -C "$work" diff --cached --quiet; then
+            echo "### \`modding-book-generated\` already matches \`${COMMIT::10}\`" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git -C "$work" -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            -c commit.gpgsign=false commit -q -m "docs(modding): generated bundle for ${COMMIT::10}"
+          git -C "$work" push -q origin HEAD:refs/heads/modding-book-generated
+          echo "### Published \`modding-book-generated\` snapshot for \`${COMMIT::10}\`" >> "$GITHUB_STEP_SUMMARY"

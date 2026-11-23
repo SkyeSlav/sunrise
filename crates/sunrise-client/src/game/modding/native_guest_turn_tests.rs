@@ -55,6 +55,8 @@ pub(in crate::game) fn with_guests_at(
         };
         game.lan_host(settings, net, config).unwrap();
         for id in [12, 13] {
+            // These guests bypass login's entity ID allocation; reserve their IDs before spawning.
+            game.next_entity = game.next_entity.max(id);
             let (tx, _rx) = std::sync::mpsc::channel();
             let mut guest = Guest::new(
                 Joined {

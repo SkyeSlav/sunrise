@@ -463,6 +463,27 @@ impl Game<'_> {
             EntityLookup::Taken => EntityLookup::Taken,
         }
     }
+    /// `ServerLevel.getEntity(UUID)`: search this level's admitted entities, not unloaded
+    /// saves or tracking entries. A departure can overlap a replacement with the same UUID.
+    pub(super) fn level_entity_by_uuid(&self, dim: Dim, uuid: [i32; 4]) -> Option<Target> {
+        let dimension = dim.key();
+        let mut table = self.resident_entities.table.borrow_mut();
+        let mut after = None;
+        loop {
+            let id = table.level_uuid_candidate(dimension, uuid, after)?;
+            if let EntityLookup::Found {
+                value: (target, true),
+                ..
+            } = table.entity_lookup(&dimension, id.get(), |at| {
+                self.locate_server_resident_owner(at)
+            }) && self.resident_source_target_visible(dimension, target)
+            {
+                return Some(target);
+            }
+            after = Some(id);
+        }
+    }
+
     /// Find the canonical level without swapping or probing physical families.
     pub(super) fn resident_target_dimension(&self, target: Target) -> Option<Dim> {
         let id = self.resident_target_id(target)?;

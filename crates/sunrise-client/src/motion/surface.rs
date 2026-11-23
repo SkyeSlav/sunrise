@@ -26,6 +26,11 @@ pub trait SideLevel {
     fn living_target_alive(&self, _id: u32) -> bool {
         false
     }
+    /// What a hit on that player needs to name and read the living entities it lends; none
+    /// where this side has no open world.
+    fn hit_reads(&self) -> Option<crate::health::HitReads<'_>> {
+        None
+    }
     /// The damage-type registry of this side's current level.
     fn damage_types(&self) -> &sunrise_world::damage_source::Catalog;
     /// The resident block entity at `pos` of `world`, as a handle of this side's level.

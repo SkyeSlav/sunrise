@@ -12,15 +12,7 @@ Both take the portal block's position and the entity's box as `[width, height]`.
 travels. Vanilla sends a player to an End portal's destination through the respawn search, which these calls do not run.
 
 ```rust
-let size = [0.98, 0.98];
-match level.find_or_create_portal_exit(host, portal_pos, size) {
-    Ok(exit) => {
-        // `exit.level` is the destination level, `exit.pos` the bottom centre of the box there and
-        // `exit.rotation` what happens to the entity's yaw and pitch (see below).
-    }
-    Err(PortalError::ChunksNotLoaded) => { /* retry on a later tick */ }
-    Err(error) => { /* the other refusals are final for this call */ }
-}
+{{#include ../../../examples/src/world_helpers.rs:find_portal_exit}}
 ```
 
 ## What is answered

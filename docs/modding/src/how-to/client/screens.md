@@ -5,20 +5,7 @@ the sign editor is on. The two writes take the same paths as the keys the player
 sees only the packets of a normal client.
 
 ```rust
-// Escape: close whatever is open.
-if host.close_screen() {
-    // a screen was open and is now closed
-}
-
-// The inventory key, key.inventory.
-if host.open_inventory() {
-    // the inventory screen is up (or the ridden vehicle's screen was asked for)
-}
-
-// Which sign the editor is on, if any.
-if let Some(sign) = host.sign_editor() {
-    let _ = (sign.pos, sign.front);
-}
+{{#include ../../../examples/src/client_rendering.rs:screen_controls}}
 ```
 
 `ClientHost::close_screen()` follows the screen's own Escape close. A container screen closes as the
@@ -530,23 +517,7 @@ A label is text laid out in a box: measured, wrapped and placed, and nothing els
 scale the label is drawn at, and draw the lines it answers with where it says:
 
 ```rust
-// From a menu screen draw callback, gui_render_post or another drawing hook.
-let scale = 2.0;
-let lines = draw.text_lines(&label, 120.0, TextAlign::Centre, scale)?;
-let mut draws = Vec::with_capacity(lines.lines.len() + 2);
-draws.push(GuiDraw::Push(vec![PoseOp::Scale(scale, scale)]));
-for line in &lines.lines {
-    draws.push(GuiDraw::Text {
-        text: line.text.clone(),
-        x: (x + line.at[0] / scale) as i32,
-        y: (y + line.at[1] / scale) as i32,
-        color: 0xFFFF_FFFF,
-        shadow: false,
-    });
-}
-draws.push(GuiDraw::Pop);
-draw.gui_paint(&draws)?;
-// lines.width and lines.height size the box you reserved for it.
+{{#include ../../../examples/src/client_rendering.rs:scaled_text_lines}}
 ```
 
 The layout is measured unscaled and answered scaled: the text wraps at `120 / scale` GUI pixels, and

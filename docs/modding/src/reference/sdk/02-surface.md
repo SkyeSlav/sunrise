@@ -139,7 +139,7 @@ that did not change is refused. `changes/history/` holds backfilled notes in the
 scan that directory, so they neither waive the gate nor appear in the SDK diff. CI checks engine notes against the
 catalogs it compares, but SDK publishing leaves engine ids out of its API-only comparison. If a note names both
 API and engine ids, publishing still checks its API ids and carries the note for those that changed. `sdk.json`
-holds these notes since the previous SDK (`surface.notes`); `cargo sunrise-mod update` prints a changed item's
+holds these notes since the previous SDK (`surface.notes`); `cargo sunrise-mod pin` prints a changed item's
 `migrate` line beside it.
 
 ## Behaviours
@@ -169,5 +169,5 @@ diagnostics or behaviour that vanilla fixes.
 A hook's `version` changes when a listener can see a different meaning under the same signature: its answer now
 decides the action, or the order or timing it observes changed. It stays when the engine is only corrected to the
 contract the hook already documents. Every bump comes with a change note in the same change, so `sdk diff` and
-`cargo sunrise-mod update` say what a listener must now do; the version is outside the hook's hash, so the diff
+`cargo sunrise-mod pin` say what a listener must now do; the version is outside the hook's hash, so the diff
 counts a bump as a conditional change for the mods that name that version.

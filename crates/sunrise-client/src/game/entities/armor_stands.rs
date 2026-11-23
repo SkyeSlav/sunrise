@@ -576,7 +576,13 @@ impl Game<'_> {
             if a.marker {
                 continue;
             }
-            if pick.consider_box(self, a.id, from, to, a.bounds()) {
+            if pick.consider_box(
+                self,
+                a.id,
+                from,
+                to,
+                self.client_copy_box(a.id, a.position, a.bounds()),
+            ) {
                 let hit = pick.hovered.unwrap();
                 best = Some((i, hit.distance_sq.sqrt(), hit.point));
             }

@@ -2201,7 +2201,13 @@ impl Game<'_> {
         let mut pick = super::pick_accumulator::PickAccumulator::new(reach * reach);
         let mut best: Option<(usize, f64)> = None;
         for (i, c) in self.carts.iter().enumerate() {
-            if pick.consider_box(self, c.id, from, to, c.bounds()) {
+            if pick.consider_box(
+                self,
+                c.id,
+                from,
+                to,
+                self.client_copy_box(c.id, c.position, c.bounds()),
+            ) {
                 best = Some((i, pick.hovered.unwrap().distance_sq.sqrt()));
             }
         }

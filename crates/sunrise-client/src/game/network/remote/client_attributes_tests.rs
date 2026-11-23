@@ -46,6 +46,7 @@ fn update_attributes_answers_the_local_players_living_reads() {
                 silent: false,
                 vehicle: None,
                 tick_count: 0,
+                size_answer: None,
             },
         );
 

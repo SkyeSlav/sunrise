@@ -58,7 +58,7 @@ impl std::fmt::Display for Error {
                 path,
                 signature,
             } => trf(
-                "E_INTERNAL_CHANGED: {mod} uses {path}, whose signature is now {signature}; run cargo sunrise-mod update to see what changed.",
+                "E_INTERNAL_CHANGED: {mod} uses {path}, whose signature is now {signature}; run cargo sunrise-mod pin to see what changed.",
                 &[("mod", mod_id), ("path", path), ("signature", signature)],
             ),
             Self::Gated { mod_id, path } => trf(

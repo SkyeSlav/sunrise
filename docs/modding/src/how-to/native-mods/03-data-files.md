@@ -135,14 +135,7 @@ A mod that turns other packages' files into what it registers (a script host who
 package, your own included, and gives a handle you may keep and use from any thread:
 
 ```rust
-fn scripts(cx: &mod_api::RegistrationContext) -> Result<Vec<Vec<u8>>, Box<dyn std::error::Error>> {
-    let files = cx.package_files("lumen_demo")?;
-    let mut scripts = Vec::new();
-    for path in files.list("data/lumen_demo/lumen/") {
-        scripts.push(files.read(path)?);
-    }
-    Ok(scripts)
-}
+{{#include ../../../examples/src/entity_and_native.rs:read_scripts}}
 ```
 
 The file list is fixed when startup admits the package. Declaration and resource loading use that same list and reader.

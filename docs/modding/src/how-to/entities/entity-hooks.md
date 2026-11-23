@@ -227,6 +227,17 @@ The neighbouring events differ: canceling Start prevents the use beginning,
 but duration zero does begin it. Canceling Stop skips only release-using, not
 clearing the use. Finish is not cancellable; its result stack can be replaced.
 
+## Entity size on both sides
+
+`entity_size` resolves dimensions through a read-only `Host`, on each side that
+refreshes an entity's size. A client asks for its copy of a server entity when the
+copy is added, when the server sends a new pose (even one with the same size), and
+when `minecraft:scale` or another synched value from the server changes its vanilla
+size; the copy's box, picking and hitbox outline then use the answer.
+The server asks for its own entity separately, so answer from the event (the
+entity's type, the pose and the sizes) the same way on both sides, or the client's
+box and the server's disagree.
+
 ## Player size and pose fit
 
 `entity_size` resolves dimensions through a read-only `Host`.

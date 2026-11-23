@@ -1770,6 +1770,22 @@ pub trait HitHost: LevelRandomHost {
     fn entity_next_int(&mut self, _entity: EntityRef, _bound: i32) -> Option<i32> {
         unimplemented!("HitHost::entity_next_int")
     }
+    /// The entity the hit lands on, when it is living (`LivingIncomingDamageEvent.getEntity`), at
+    /// `living_incoming_damage`, `living_damage_pre` and `living_damage_post`: a mob, a player
+    /// or the dragon (an armor stand's own `hurtServer` never reaches these hooks). Its reads
+    /// answer from the live entity at the call. None at `living_shield_block` and
+    /// `living_use_totem`, which lend no view.
+    fn victim(&self) -> Option<LivingView<'_>> {
+        unimplemented!("HitHost::victim")
+    }
+    /// The hit's causing entity (`DamageSource.getEntity`), at the same three hooks, when the
+    /// hit already lends that entity (the attacking player or mob it lends for the entity's own
+    /// random) and the source names it: None where the source names another entity or none
+    /// (a wither skull whose shooter was removed), for a removed entity, at a damage site that
+    /// lends no entity, for a non-living causer and for a causer in another level.
+    fn causing(&self) -> Option<LivingView<'_>> {
+        unimplemented!("HitHost::causing")
+    }
 }
 
 /// A `LevelReader` with vanilla's `ScheduledTickAccess`. Shape updates cannot write blocks.

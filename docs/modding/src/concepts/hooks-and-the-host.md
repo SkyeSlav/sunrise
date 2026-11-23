@@ -96,8 +96,10 @@ hook can run on either side. A host can exist even when its world does not.
 A restricted level hook lends only the access its signature needs. `LevelHost` is a read view of the
 owning level. `LevelRandomHost` adds a loan of the live random stream; `LevelTicksHost` provides
 scheduling, and `LevelWriteHost` permits local writes and effects. `HitHost` lends hit-scoped
-operations, not block writes. Random draws from a live stream are not undone by an abort; see
-[Randomness](randomness.md#borrow-the-live-level-stream).
+operations, not block writes; at `living_incoming_damage`, `living_damage_pre` and
+`living_damage_post` it also lends read-only `LivingView`s of the victim and the causing entity
+(`host.victim()`, `host.causing()`), whose attachments it reads but never writes. Random draws
+from a live stream are not undone by an abort; see [Randomness](randomness.md#borrow-the-live-level-stream).
 
 Reads such as collision, light, signals and block entities use the owning side's available data.
 They do not load chunks. Light or a vanilla air result is not proof of residency; check `is_loaded`

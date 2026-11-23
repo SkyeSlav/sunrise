@@ -130,7 +130,7 @@ pub(super) struct DyingDrops<'a> {
     pub(super) kind: &'a str,
     /// The UUID of a dying player.
     pub(super) player: Option<u128>,
-    /// The killing blow; none when no mod listens.
+    /// The death's source; none when no mod listens.
     pub(super) source: Option<HurtSource<'a>>,
     /// Whether a player hurt it within 100 ticks.
     pub(super) recently_hit: bool,
@@ -1805,7 +1805,15 @@ impl Game<'_> {
                     &mut self.mobs[index],
                     paused
                         .lent_attacker
-                        .and_then(|id| HitLend::attacking_player(self.player.as_mut(), id)),
+                        .filter(|_| sunrise_client::health::hit_host_listened())
+                        .and_then(|id| {
+                            HitLend::attacking_player(
+                                self.player.as_mut(),
+                                id,
+                                &self.potions.effects,
+                                acting_equipment!(self),
+                            )
+                        }),
                 )
             };
             hurt = mob.resume_hurt(
@@ -2202,10 +2210,16 @@ impl Game<'_> {
                 }
                 None => (
                     &mut self.mobs[ti],
-                    sunrise_client::health::HitLend::attacking_player(
-                        self.player.as_mut(),
-                        attack.attacker,
-                    ),
+                    sunrise_client::health::hit_host_listened()
+                        .then(|| {
+                            sunrise_client::health::HitLend::attacking_player(
+                                self.player.as_mut(),
+                                attack.attacker,
+                                &self.potions.effects,
+                                acting_equipment!(self),
+                            )
+                        })
+                        .flatten(),
                 ),
             };
             let previous_invulnerable = t.invulnerable;

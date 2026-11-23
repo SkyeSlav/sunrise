@@ -204,7 +204,8 @@ impl Game<'_> {
         let (Some(eye), Some(p)) = (self.eye_position(), self.creatures.projectiles.get(i)) else {
             return false;
         };
-        let b = p.bounds();
+        // A client's copy takes the box of its `entity_size` answer.
+        let b = self.client_copy_box(p.id, p.position, p.bounds());
         let (lo, hi) = (b.min_position(), b.max_position());
         let (lo, hi) = ([lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z]);
         let d2: f64 = (0..3)

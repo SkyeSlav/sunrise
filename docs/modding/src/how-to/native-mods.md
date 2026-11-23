@@ -94,11 +94,7 @@ objective for this registered counter.
 A native mod gives an entity boxes that every other entity collides with:
 
 ```rust
-entity.set_collider(host, Some(Collider {
-    boxes: vec![ColliderBox { min: [-1.5, -1.0, -10.0], max: [1.5, 0.0, 10.0] }],
-    rotation: [0.0, 0.0, 0.0, 1.0],
-}))?;
-entity.set_collider_transform(host, turned)?; // the rotation alone, as the entity turns
+{{#include ../../examples/src/entity_and_native.rs:custom_collider}}
 ```
 
 The boxes are in the entity's own frame (its position is the origin), turned by `rotation`, a unit

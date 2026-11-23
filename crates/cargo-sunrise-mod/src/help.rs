@@ -14,13 +14,13 @@ const COMMANDS: &[Command] = &[
         name: "new",
         everyday: true,
         usage: "new <path> [--name \"Name\"] [--template content|native [--sunrise <build>]]",
-        summary: "Makes a mod project in <path>; a native one is pinned to the current Nightly's SDK unless --sunrise names another build.",
+        summary: "Makes a mod project in <path> with a page template and a release workflow; a native one is pinned to the current Nightly's SDK unless --sunrise names another build.",
     },
     Command {
         name: "build",
         everyday: true,
-        usage: "build [--update-lock] [--with <path>]… | build [--update-lock] --binaries <dir> --sunrise-release <tag> --releases <file> [--server] | build --describe-binaries <dir> --sunrise-release <tag> --releases <file> --sdk-data <dir>",
-        summary: "Compiles a native mod with its required libraries and any optional libraries supplied with --with, then packs only the mod into target/sunrise-mod/<id>.smod. Use --with for local folders or .smod files; the Sunrise mod registry supplies other required libraries. --update-lock resolves its Cargo.lock again. --binaries writes an independent SDK host archive for a standalone mod; --describe-binaries assembles a descriptor without compiling.",
+        usage: "build [--update-lock] [--with <path>]…",
+        summary: "Compiles a native mod with its required libraries and any optional libraries supplied with --with, then packs only the mod into target/sunrise-mod/<id>.smod, and its page.toml and screenshots, if it has them, into target/sunrise-mod/<id>.page.tar. Use --with for local folders or .smod files; the Sunrise mod registry supplies other required libraries. --update-lock resolves its Cargo.lock again.",
     },
     Command {
         name: "run",
@@ -31,14 +31,14 @@ const COMMANDS: &[Command] = &[
     Command {
         name: "check",
         everyday: true,
-        usage: "check [--uses] [--with <path>]… | check <file> [--kind <kind>] [--key <public key> --signature <file.minisig>] [--json]",
-        summary: "Checks the mod in this folder, including native Rust code with the same libraries as build, or a file as the registry would. Repeat --with for local libraries; --uses lists what the mod uses of its pinned build.",
+        usage: "check [--release <tag>] [--uses] [--with <path>]… | check <file> [--kind <kind>] [--attestation <bundle>] [--repository <id>] [--json] | check [<file.smod>] --build <name> [--build <name>]…",
+        summary: "Checks the mod in this folder, including native Rust code with the same libraries as build, or validates a release file, or reports fit for the builds named by --build. Folder checks report missing page requirements; --release requires a valid page and matching version tag, and compiles native code. A .smod must have its .sigstore.json bundle beside it unless --attestation names another path. --repository requires the attestation to name that GitHub repository ID. Repeat --with for local libraries; --uses lists what the mod uses of its pinned build. Fit mode takes no other options and exits 0 if all fit, 1 if one does not, or 2 if it cannot tell.",
     },
     Command {
-        name: "update",
+        name: "pin",
         everyday: true,
-        usage: "update [--sunrise <build>]",
-        summary: "Repins a native mod to another game build (the current Nightly unless --sunrise names one) and reports what that breaks; a content mod pins no build.",
+        usage: "pin [<build>]",
+        summary: "Repins a native mod to another game build (the current Nightly if no build is given) and reports what that breaks; a content mod pins no build.",
     },
     Command {
         name: "hooks",
@@ -47,28 +47,10 @@ const COMMANDS: &[Command] = &[
         summary: "Searches the pinned build's hooks, or with --all every item of its API, offline.",
     },
     Command {
-        name: "publish",
-        everyday: false,
-        usage: "publish [--out <dir>] [--registry <checkout>] [--summary <text>] [--owner <login>]… [--categories a,b] [--tags a,b] [--changelog <text>] [--key <public key> --signature <file.minisig>] [--package <file.smod>] [--sunrise <tag>] [--asset-base <author release URL> --releases <file>] [--binaries <dir> --sdk-data <dir>]",
-        summary: "Stages a package, its registry entry, and pull request text; it uploads nothing. --sunrise pins signed source to a stable release from --releases and uses the author’s release at --asset-base. --binaries checks signed release assets and fit; to append to an existing version, give --registry and its original signed --package.",
-    },
-    Command {
         name: "release",
-        everyday: false,
-        usage: crate::release::USAGE,
-        summary: "`release plan` selects a tagged native release or a rebuild and stages verified SDK metadata. `release prepare-rebuild` verifies the original reviewed source and writes a scratch manifest or project without running Cargo. `release scripts` writes the shipped workflow scripts.",
-    },
-    Command {
-        name: "keygen",
-        everyday: false,
-        usage: "keygen [--out <dir>] [--no-password]",
-        summary: "Makes a Minisign key pair in the mod’s per-user key folder (or --out) and prints the public key. The private key is encrypted unless --no-password is given (Unix only). Never overwrites either key.",
-    },
-    Command {
-        name: "sign",
-        everyday: false,
-        usage: "sign <file> [--key <private key path>] [--no-password] | sign <file> --key-env",
-        summary: "Writes the detached .minisig beside <file> without replacing it. Uses the current mod’s per-user signing key unless --key is given; --key-env reads SUNRISE_MOD_SIGNING_KEY and optional SUNRISE_MOD_SIGNING_PASSPHRASE without prompting.",
+        everyday: true,
+        usage: crate::author_release::USAGE,
+        summary: "Checks a registered mod, commits the version bump (patch by default), and pushes the release tag and branch to origin. --check previews without changing your checkout. release setup only refreshes the shared workflow caller and removes old release files.",
     },
     Command {
         name: "internals",
@@ -83,22 +65,16 @@ const COMMANDS: &[Command] = &[
         summary: "Lists what changed in the API surface between two builds.",
     },
     Command {
-        name: "fits",
-        everyday: false,
-        usage: "fits [<file.smod>] [--build <name>]…",
-        summary: "Says whether the mod fits each build; exits 0 when all do, 1 when one does not and 2 when that cannot be told.",
-    },
-    Command {
-        name: "registry",
-        everyday: false,
-        usage: "registry build|review|check|list|release|page | registry releases --out <releases.json>",
-        summary: "The registry repository's offline CI commands, and `releases` to fetch the stable Sunrise release list.",
-    },
-    Command {
         name: "use-jar",
         everyday: false,
         usage: "use-jar <path>",
         summary: "Lists an exact original Java jar as a passive asset and data source and caches it for runs.",
+    },
+    Command {
+        name: "self-update",
+        everyday: false,
+        usage: "self-update",
+        summary: "Updates the standalone tool to the newest signed mod-tool release. Does not change any mod's pinned SDK.",
     },
     Command {
         name: "native-build",
@@ -132,6 +108,11 @@ const COMMANDS: &[Command] = &[
     },
 ];
 
+/// Whether this command belongs to the everyday list and can show the update notice.
+pub fn is_everyday(name: &str) -> bool {
+    COMMANDS.iter().any(|c| c.name == name && c.everyday)
+}
+
 /// The short list `cargo sunrise-mod --help` prints.
 pub fn short() -> String {
     let mut out = String::from("usage: cargo sunrise-mod <command> [options]\n\n");
@@ -143,10 +124,11 @@ pub fn short() -> String {
     out
 }
 
-/// Every command's usage, one per line: `help all`.
+/// Author-facing commands' usage, one per line: `help all`.
 pub fn all() -> String {
     COMMANDS
         .iter()
+        .filter(|c| !c.name.starts_with("native-"))
         .map(|c| format!("cargo sunrise-mod {}\n", c.usage))
         .collect()
 }
@@ -175,7 +157,7 @@ pub fn unknown(name: &str) -> String {
 }
 
 /// Whether `args` (a command's, after its name) ask for its help: `--help` or `-h` right after the
-/// command. Later it may be an option's value (`--summary --help`) or meant for the game (`run -- --help`).
+/// command. Later it may be an option's value (`--with --help`) or meant for the game (`run -- --help`).
 pub fn asked(args: &[String]) -> bool {
     args.first().is_some_and(|a| a == "--help" || a == "-h")
 }

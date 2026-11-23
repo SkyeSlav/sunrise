@@ -66,6 +66,36 @@ fn a_signed_release_is_unpacked_once_and_reused() {
 }
 
 #[test]
+fn a_kept_surface_changed_under_a_matching_stamp_is_fetched_again() {
+    let (base, key) = release(None);
+    let project = tempfile::tempdir().unwrap();
+    let dir = project.path().join(DIR);
+    let base = Base::Folder(base.path().to_owned());
+    fetch(&base, &[key], BUILD, &dir, false).unwrap();
+    let signed = fs::read(dir.join(SURFACE)).unwrap();
+    fs::write(dir.join(SURFACE), b"{}").unwrap();
+    // The stamp still matches, but the surface no longer verifies: with no base to fetch from
+    // it is refused, and with one it is replaced by the signed copy.
+    let gone = Base::Folder(project.path().join("nowhere"));
+    assert!(fetch(&gone, &[key], BUILD, &dir, false).is_err());
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join(SURFACE), b"{}").unwrap();
+    fetch(&base, &[key], BUILD, &dir, false).unwrap();
+    assert_eq!(fs::read(dir.join(SURFACE)).unwrap(), signed);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_linked_project_cache_is_refused_and_its_destination_left_alone() {
+    let project = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("sentinel"), b"kept").unwrap();
+    std::os::unix::fs::symlink(outside.path(), project.path().join(".sunrise")).unwrap();
+    assert!(fetch_pinned(project.path(), BUILD).is_err());
+    assert_eq!(fs::read(outside.path().join("sentinel")).unwrap(), b"kept");
+}
+
+#[test]
 fn a_cached_local_sdk_is_refused_under_release_only_trust() {
     let (base, key) = release(None);
     let base = Base::Folder(base.path().to_owned());

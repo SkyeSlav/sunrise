@@ -2927,9 +2927,15 @@ pub(in crate::game) fn install_parts(mods: &[mod_api::ModEntry]) -> Result<(), V
 }
 #[cfg(test)]
 pub(in crate::game) fn register_game_keys(ids: impl IntoIterator<Item = String>) {
+    let mod_fluids = sunrise_world::fluid::mod_fluids();
+    let mod_fluids: Vec<&str> = mod_fluids
+        .iter()
+        .flat_map(|(_, fluid)| [fluid.id.as_str(), fluid.flowing_id.as_str()])
+        .collect();
     with_rule_schema(|schema| {
         mod_platform::__private::part_tests::register_game_keys(
             ids,
+            &mod_fluids,
             schema,
             super::native_dimensions::valid_shape,
         )

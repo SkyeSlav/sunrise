@@ -34,7 +34,9 @@ The book follows [Diátaxis](https://diataxis.fr): a page is one of four kinds, 
   that chapter, run `cargo run --quiet -p xtask -- mod-api notes`; do not commit its output.
 - **A guide page:** `docs/modding/src/`. Code in a page is `{{#include}}`d from `docs/modding/examples`, which
   compiles, so a change to the API that breaks an example fails the build.
-- **A mod API change** updates its fragment `doc` and any page it affects in the same PR.
+- **A mod API change** updates its fragment `doc` and any page it affects in the same PR. Contract details
+  for hooks, methods and edge cases belong in rustdoc (`///`) or `#[notes]`, not in concept pages under
+  `docs/modding/src/concepts/`.
 - **A new page:** add the file to the folder of its topic. A page `X.md` with a folder `X/` beside it gets the
   folder's pages as its sub-chapters, in file name order (a numeric prefix such as `07-` sets the order where it
   matters), titled by each page's `#` heading; `<!-- section-pages -->` in `X.md` becomes a list of them. A page
@@ -64,8 +66,9 @@ The book is the manual a mod author reads: it says what the game does, and how t
   instructions for people changing Sunrise itself: those go in `docs/mod-api/`.
 - **Short.** Lead with what the reader can do and one example; then rules and limits as a list or table.
 - **Names exactly as in code,** in backticks. When the code and a page disagree, the code wins: fix the page.
-- **Code samples** are `{{#include}}`d from `docs/modding/examples`, which compiles. An inline sample that is not
-  compiled is fenced `rust,ignore` and still matches the real signatures.
+- **Code samples** are `{{#include}}`d from `docs/modding/examples`, which compiles. CI refuses a plain
+  `rust` fence that does not `{{#include}}` an example; an inline fragment that is not compiled must be fenced
+  `rust,ignore` and still match the real signatures.
 
 ## What a PR needs to show
 

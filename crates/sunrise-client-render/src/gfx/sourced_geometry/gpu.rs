@@ -368,7 +368,7 @@ impl SourcedGpu {
     /// The frame's statistics copied out with the CPU's part of frame `frame`
     /// (`GpuCulling::copy_stats`).
     pub fn copy_stats(&mut self, encoder: &mut wgpu::CommandEncoder, frame: u64, cpu: [usize; 3]) {
-        self.gpu.copy_stats(encoder, frame, cpu);
+        self.gpu.copy_stats(encoder, frame, cpu, false);
     }
 
     /// The frame the submit thread submitted's readback (`GpuCulling::submitted`).
@@ -377,7 +377,7 @@ impl SourcedGpu {
     }
 
     /// The statistics that came back (`GpuCulling::collect`).
-    pub fn collect(&mut self) -> Option<(u64, [usize; 3])> {
+    pub fn collect(&mut self) -> Vec<(u64, [usize; 3], bool)> {
         self.gpu.collect()
     }
 }
@@ -497,9 +497,15 @@ impl Sourced {
         self.table.as_mut().and_then(|t| t.submitted())
     }
 
-    /// The statistics that came back (`SourcedGpu::collect`).
-    pub(crate) fn collect(&mut self) -> Option<(u64, [usize; 3])> {
-        self.table.as_mut().and_then(|t| t.collect())
+    /// The statistics that came back (`SourcedGpu::collect`), without the near
+    /// pass's sourced flag.
+    pub(crate) fn collect(&mut self) -> Vec<(u64, [usize; 3])> {
+        self.table.as_mut().map_or_else(Vec::new, |t| {
+            t.collect()
+                .into_iter()
+                .map(|(frame, counts, _)| (frame, counts))
+                .collect()
+        })
     }
 
     /// The tile at `key` came in, whole or fading at `now`: its record, its flag and its

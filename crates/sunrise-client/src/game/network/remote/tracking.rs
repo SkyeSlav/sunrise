@@ -98,6 +98,7 @@ impl Game<'_> {
                     silent: false,
                     vehicle: None,
                     tick_count: 0,
+                    size_answer: None,
                 },
             );
         }

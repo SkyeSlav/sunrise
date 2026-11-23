@@ -19,6 +19,7 @@ def export(out):
     files = {
         notes.PAGE: notes.generated(context, "notes"),
         "reference/neoforge-counterparts.md": notes.generated(context, "counterparts"),
+        "reference/api-reference.md": notes.generated(context, "reference"),
         "sdk-tables.json": json.dumps(sdk_tables, indent=2) + "\n",
     }
     for name, text in files.items():

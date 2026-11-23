@@ -271,10 +271,6 @@ impl Game<'_> {
                 self.hook.discard();
                 self.player_state.attachments.retire();
                 self.player = Some(player);
-                // A new LocalPlayer's tickCount starts at 0.
-                if let Some(r) = self.remote.as_mut() {
-                    r.own_tick_count = 0;
-                }
                 self.bind_local_player_residency();
                 self.input_player_replaced();
                 self.sway = Default::default();

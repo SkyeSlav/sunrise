@@ -1705,6 +1705,19 @@ pub struct ItemFrame {
     pub random: LegacyRandom,
 }
 impl ItemFrame {
+    /// `ItemFrame.setDirection`: wall frames use the horizontal direction's yaw;
+    /// ceiling and floor frames use the vertical direction's pitch.
+    pub fn entity_rotation(&self) -> [f32; 2] {
+        match self.facing {
+            0 => [0.0, 90.0],
+            1 => [0.0, -90.0],
+            2 => [180.0, 0.0],
+            3 => [0.0, 0.0],
+            4 => [90.0, 0.0],
+            _ => [270.0, 0.0],
+        }
+    }
+
     /// `ItemFrame.setItem`: the adopted stack holds one item. The caller owns
     /// the old map association, sounds and neighbour updates.
     pub fn set_item(&mut self, item: Option<ItemStack>) {

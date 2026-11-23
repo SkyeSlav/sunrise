@@ -1021,13 +1021,18 @@ impl Game<'_> {
     fn jumps(species: Species) -> bool {
         equine::is_equine(species) || sunrise_client::mobs::nautilus::is_nautilus(species)
     }
-    /// `LocalPlayer.jumpableVehicle`: the vehicle the player controls
-    /// (`getControlledVehicle`, its saddle's first passenger, as `drives` decides) when it
-    /// can jump now (`PlayerRideableJumping.canJump`: saddled, and a camel neither sitting nor
-    /// getting up or down; a pig or a strider never jumps), by its entity id. The HUD's jump
+    /// `LocalPlayer.jumpableVehicle`: the vehicle the player controls (`getControlledVehicle`:
+    /// the player is its first passenger and it is saddled, `AbstractHorse` and
+    /// `AbstractNautilus.getControllingPassenger`) when it can jump now
+    /// (`PlayerRideableJumping.canJump`: saddled, and a camel neither sitting nor getting up or
+    /// down; a pig or a strider never jumps), by its entity id. Unlike the ridden movement's
+    /// `drives`, it does not ask whether the mount is alive: vanilla doesn't. The HUD's jump
     /// bar and `ClientViewClientHost::jumpable_vehicle` both read this decision.
     pub(super) fn jumpable_mount(&self) -> Option<u32> {
-        let mount = self.driven_mount()?;
+        if !self.remote.as_ref().is_some_and(|r| r.first_passenger) {
+            return None;
+        }
+        let mount = &self.mobs[self.mount_index()?];
         let can_jump = Self::jumps(mount.species())
             && mount.extra.saddled()
             && !(matches!(mount.species(), Species::Camel | Species::CamelHusk)

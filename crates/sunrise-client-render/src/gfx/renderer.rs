@@ -525,6 +525,9 @@ pub struct Renderer {
     /// `draw_frame`'s frames past its early returns, and the one whose statistics are shown.
     pub(crate) frame_serial: u64,
     pub(crate) stats_frame: u64,
+    /// The readback halves a GPU frame's statistics wait for (`in_flight::collect_stats`):
+    /// a half alone undercounts the frame.
+    pub(crate) stats_halves: in_flight::StatsHalves,
     pub uploaded_bytes: u64,
     pub(crate) started: Instant,
     /// The next frame to write to a PNG path (control socket, F2, world icon).

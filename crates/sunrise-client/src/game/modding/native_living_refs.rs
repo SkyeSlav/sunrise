@@ -418,35 +418,12 @@ impl Game<'_> {
         name: &str,
         kind: sunrise_world::attribute_map::ValueKind,
     ) -> Option<f64> {
-        let catalog = &self.motion.attributes;
-        let player = match target {
-            Target::Player => self.player.as_ref()?,
-            Target::Guest(conn) => self.command_guest(conn)?.motion.as_deref()?,
-            Target::Mob(id) => {
-                let m = self.mobs.iter().find(|m| m.id == id && !m.removed)?;
-                return m.extra.live.read(catalog, &m.kind.id, name, kind, || {
-                    sunrise_client::entity_nbt::attribute_entries(m)
-                        .into_iter()
-                        .map(|(_, entry)| entry)
-                        .collect()
-                });
-            }
-            Target::Stand(id) => {
-                let a = self.armor_stands.iter().find(|a| a.id == id)?;
-                return a
-                    .live
-                    .read(catalog, "minecraft:armor_stand", name, kind, Vec::new);
-            }
-            Target::Dragon(id) => {
-                let d = self.dragon.as_ref().filter(|d| d.id == id)?;
-                return d
-                    .live
-                    .read(catalog, "minecraft:ender_dragon", name, kind, Vec::new);
-            }
-            _ => return None,
-        };
-        let key = player.attributes.key(name)?;
-        player.attributes.value(Some(key), kind).ok()
+        super::native_living_body::body_attribute(
+            self.native_living_body(target)?,
+            &self.motion.attributes,
+            name,
+            kind,
+        )
     }
 
     /// `Entity.canUsePortal`: the decision the game's own portal trip runs —
@@ -559,28 +536,8 @@ impl Game<'_> {
     /// resolves: the hub is out for their action, and other players'
     /// handles read `None` until it is back.
     pub(super) fn living_health(&self, living: LivingRef) -> Option<f32> {
-        match self.native_living_read_target(living)? {
-            Target::Player => Some(self.player.as_ref()?.health.health()),
-            Target::Guest(conn) => Some(self.command_guest(conn)?.health),
-            Target::Mob(id) => self
-                .mobs
-                .iter()
-                .find(|m| m.id == id && !m.removed)
-                .map(|m| m.health),
-            // An armor stand carries the fixed 20 the game gives it: lava
-            // does not hurt it and splash water reads the very field.
-            Target::Stand(id) => self
-                .armor_stands
-                .iter()
-                .find(|a| a.id == id)
-                .map(|a| a.health),
-            Target::Dragon(id) => self
-                .dragon
-                .as_ref()
-                .filter(|d| d.id == id)
-                .map(|d| d.health),
-            _ => None,
-        }
+        let target = self.native_living_read_target(living)?;
+        super::native_living_body::body_health(self.native_living_body(target)?)
     }
     /// The entity's maximum health (`LivingEntity.getMaxHealth`; Paper's
     /// `Damageable#getMaxHealth`). Players and guests read their attribute
@@ -589,23 +546,7 @@ impl Game<'_> {
     /// 200) until live attribute maps cover them.
     pub(super) fn living_max_health(&self, living: LivingRef) -> Option<f32> {
         let target = self.native_living_read_target(living)?;
-        match target {
-            Target::Player | Target::Guest(_) => self
-                .native_target_attribute(
-                    target,
-                    "minecraft:max_health",
-                    sunrise_world::attribute_map::ValueKind::Computed,
-                )
-                .map(|max| max as f32),
-            Target::Mob(id) => self
-                .mobs
-                .iter()
-                .find(|m| m.id == id && !m.removed)
-                .map(|m| m.attrs.max_health),
-            Target::Stand(_) => Some(20.0),
-            Target::Dragon(_) => Some(super::dragon::MAX_HEALTH),
-            _ => None,
-        }
+        super::native_living_body::body_max_health(self.native_living_body(target)?)
     }
     /// Whether the entity is alive (`LivingEntity.isAlive`; Paper's
     /// `Entity#isDead` is its inverse). A dying mob, mid death
@@ -845,45 +786,14 @@ impl Game<'_> {
         target: Target,
         slot: EquipmentSlot,
     ) -> Option<EquipmentRead<'_>> {
-        let stack = match target {
-            Target::Player => player_slot(
-                &self.inventory,
-                self.selected,
-                &self.armor,
-                &self.offhand,
-                &self.equipment,
-                slot,
-            ),
-            Target::Guest(conn) => {
-                let g = self.command_guest(conn)?;
-                player_slot(
-                    &g.inventory,
-                    g.selected,
-                    &g.armor,
-                    &g.offhand,
-                    &g.equipment,
-                    slot,
-                )
-            }
+        let body = match target {
+            // A removed mob still lends what it wears.
             Target::Mob(id) => {
-                let mob = self.mobs.iter().find(|m| m.id == id)?;
-                return finalize::equipment_slot(mob, slot);
+                sunrise_client::health::LivingBody::Mob(self.mobs.iter().find(|m| m.id == id)?)
             }
-            Target::Stand(id) => self
-                .armor_stands
-                .iter()
-                .find(|a| a.id == id)?
-                .equipment
-                .get(slot as usize),
-            Target::Dragon(id) => self
-                .dragon
-                .as_ref()
-                .filter(|d| d.id == id)?
-                .equipment
-                .get(slot as usize),
-            _ => None,
-        }?;
-        Some(EquipmentRead::resident(stack))
+            target => self.native_living_body(target)?,
+        };
+        super::native_living_body::body_equipment(body, slot)
     }
 
     /// Lend the stack in `slot` (`LivingEntity.getItemBySlot`).

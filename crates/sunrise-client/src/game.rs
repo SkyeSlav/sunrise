@@ -99,6 +99,7 @@ macro_rules! game_side {
             items: $s.res.items(),
             damage_types: &$s.health_resources.damage,
             player_equipment: acting_equipment!($s),
+            hit_reads: $crate::game::entity::hit_reads_of!($s),
             tag_items: if $s.options.execution_role.is_client() {
                 $s.remote.as_ref().and_then(|remote| remote.tags.as_ref())
             } else {
@@ -1320,6 +1321,9 @@ mod native_hit_effects;
 #[cfg(test)]
 #[path = "game/modding/native_hit_sounds_tests.rs"]
 mod native_hit_sounds_tests;
+#[cfg(test)]
+#[path = "game/modding/native_hit_view_tests.rs"]
+mod native_hit_view_tests;
 mod native_hooks;
 #[path = "game/modding/native_hotbar_slot.rs"]
 mod native_hotbar_slot;
@@ -1421,6 +1425,8 @@ mod native_live_holder_tests;
 mod native_living_absorption;
 #[path = "game/modding/native_living_blocking.rs"]
 mod native_living_blocking;
+#[path = "game/modding/native_living_body.rs"]
+mod native_living_body;
 #[path = "game/modding/native_living_effects.rs"]
 mod native_living_effects;
 #[path = "game/modding/native_living_flags.rs"]
