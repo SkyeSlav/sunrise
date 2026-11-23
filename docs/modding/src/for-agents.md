@@ -69,6 +69,8 @@ the hooks use. A build server uses the plan contract in
 
 ## Finding the API
 
+Read the book's pages directly for the task you're working on.
+
 - `cargo sunrise-mod hooks <words>` searches the pinned build's hooks offline, by id, doc and counterpart name; every
   word must match.
 - [The mod API reference](reference/api.md) is the rustdoc of `mod_api`: start at `Hooks`, `Host`, `ServerHost` and
@@ -79,4 +81,3 @@ the hooks use. A build server uses the plan contract in
 - [Hook notes](reference/hook-notes.md) and [NeoForge counterparts](reference/neoforge-counterparts.md) say what each
   hook does and which NeoForge event it matches.
 - [The manifest and the package](reference/manifest.md) lists every manifest field.
-- A plain-text index of the book for a model's context is [llms.txt](llms.txt).

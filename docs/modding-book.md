@@ -46,7 +46,6 @@ The book follows [Diátaxis](https://diataxis.fr): a page is one of four kinds, 
   build checks every link and anchor.
 - **Images:** SVG under `docs/modding/src/images/`, with alt text that says what the picture says. Text sits on its
   own filled box so a figure reads on the light and the dark themes alike.
-- `src/llms.txt` is the index for agents; keep it in step with `SUMMARY.md`.
 - **Removing or renaming a page:** add its old address (path without `.md` or a numeric prefix) and the page that replaces it to `docs/modding/redirects.json`, or CI fails.
 
 Build the book with `mdbook build docs/modding` and the reference with `cargo doc -p sunrise-mod-api --no-deps`.
