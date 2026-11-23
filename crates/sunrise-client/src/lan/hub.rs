@@ -2072,6 +2072,13 @@ impl Hub {
         self.teleport_relative(i, Some(position), relatives, [0.0; 3]);
     }
 
+    /// A teleport that gives the player `velocity` (`TeleportTransition`'s `deltaMovement`): the
+    /// position packet carries it as the absolute motion the client takes.
+    pub fn teleport_transition(&mut self, i: usize, position: [f64; 3], velocity: [f64; 3]) {
+        self.guests.update(i, |guest| guest.above_ground_ticks = 0);
+        self.send_position_correction(i, Some(position), 0, [0.0; 3], Some(velocity));
+    }
+
     /// A rider's own teleport when its vehicle is teleported (`Entity.teleportSameDimension`'s passenger transition): a `delta` axis keeps its motion, `keep_look` the look.
     pub fn teleport_rider(
         &mut self,

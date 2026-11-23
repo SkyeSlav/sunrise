@@ -1704,6 +1704,50 @@ pub enum Sentiment {
     Neutral,
 }
 
+/// The flags of vanilla's `Relative` set that a [`TeleportTransition`] carries: a `true` axis is added
+/// to the entity's own value (`PositionMoveRotation.calculateAbsolute`), a `false` one replaces it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+// exhaustive: one field per `Relative` constant; a new vanilla flag is a breaking change
+#[derive(sunrise_mod_api_macros::Wire)]
+pub struct TeleportRelatives {
+    /// `Relative.X`.
+    pub x: bool,
+    /// `Relative.Y`.
+    pub y: bool,
+    /// `Relative.Z`.
+    pub z: bool,
+    /// `Relative.Y_ROT`.
+    pub yaw: bool,
+    /// `Relative.X_ROT`.
+    pub pitch: bool,
+    /// `Relative.DELTA_X`.
+    pub delta_x: bool,
+    /// `Relative.DELTA_Y`.
+    pub delta_y: bool,
+    /// `Relative.DELTA_Z`.
+    pub delta_z: bool,
+    /// `Relative.ROTATE_DELTA`: the entity's own motion is turned by the change of its look before
+    /// the `delta` axes are added.
+    pub rotate_delta: bool,
+}
+
+/// `TeleportTransition` within one level, for `EntityRef::teleport_transition`: the position, motion
+/// and look the entity is given, each axis absolute or, where `relatives` names it, a change to its
+/// own (`Entity.teleport`, `ServerPlayer.teleport`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+// exhaustive: the fields of vanilla's `PositionMoveRotation` and its `Relative` set
+#[derive(sunrise_mod_api_macros::Wire)]
+pub struct TeleportTransition {
+    /// The position in blocks, or its change on an axis `relatives` names.
+    pub position: [f64; 3],
+    /// The motion in blocks per tick (`deltaMovement`), or its change on an axis `relatives` names.
+    pub velocity: [f64; 3],
+    /// Yaw and pitch in degrees, or their change on an axis `relatives` names.
+    pub rotation: [f32; 2],
+    /// Which values are changes to the entity's own.
+    pub relatives: TeleportRelatives,
+}
+
 /// Why an entity physically moves (`Entity.move`'s `MoverType`, the
 /// `entity_move` hook of #2308/#2414): itself, the player behind a position
 /// packet, a piston, a shulker box lid, a shulker mob's opening lid. Boats

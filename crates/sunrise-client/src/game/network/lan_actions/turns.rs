@@ -830,6 +830,7 @@ impl Game<'_> {
             Command([f64; 3], [bool; 3]),
             Position([f64; 3]),
             Rider([f64; 3], [bool; 3]),
+            Transition([f64; 3], [f64; 3]),
         }
         let released_vehicle = host.hub.guests[i]
             .vehicle
@@ -941,6 +942,7 @@ impl Game<'_> {
                 let teleported = std::mem::take(&mut m.teleported);
                 let teleported_delta = m.teleported_delta;
                 m.teleported_delta = [false; 3];
+                let teleported_velocity = m.teleported_velocity.take();
                 let moved: f64 = (0..3).map(|k| (at[k] - g.position[k]).powi(2)).sum();
                 g.motion = Some(Box::new(m));
                 // The pearl and the bed took the rider out of its vehicle at their
@@ -957,7 +959,9 @@ impl Game<'_> {
                 if g.vehicle.is_none() && (moved > 0.0001 || turned || teleported) {
                     // A command's teleport carries its relative axes as the
                     // packet's DELTA flags; any other move is absolute.
-                    if teleported {
+                    if let (true, Some(velocity)) = (teleported, teleported_velocity) {
+                        teleport = Some(TurnTeleport::Transition(at, velocity));
+                    } else if teleported {
                         teleport = Some(TurnTeleport::Command(at, teleported_delta));
                     } else {
                         teleport = Some(TurnTeleport::Position(at));
@@ -972,6 +976,9 @@ impl Game<'_> {
         });
         match teleport {
             Some(TurnTeleport::Command(at, delta)) => host.hub.teleport_command(i, at, delta),
+            Some(TurnTeleport::Transition(at, velocity)) => {
+                host.hub.teleport_transition(i, at, velocity);
+            }
             Some(TurnTeleport::Position(at)) => host.hub.teleport(i, Some(at)),
             Some(TurnTeleport::Rider(at, delta)) => host.hub.teleport_rider(i, at, delta, false),
             None => {}

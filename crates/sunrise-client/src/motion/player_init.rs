@@ -97,6 +97,7 @@ impl PlayerMotion {
             sync_position: false,
             teleported: false,
             teleported_delta: [false; 3],
+            teleported_velocity: None,
             events: Vec::new(),
             attributes,
             fluids: PlayerFluids::default(),

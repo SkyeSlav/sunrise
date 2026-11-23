@@ -160,6 +160,84 @@ impl Transition {
     }
 }
 
+/// An entity's position, motion and look: vanilla's `PositionMoveRotation`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PositionMoveRotation {
+    pub position: Vec3,
+    pub delta: Vec3,
+    pub rotation: [f32; 2],
+}
+
+/// The flags of vanilla's `Relative` set, in the order of its constants.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Relatives {
+    pub position: [bool; 3],
+    pub rotation: [bool; 2],
+    pub delta: [bool; 3],
+    pub rotate_delta: bool,
+}
+
+/// `PositionMoveRotation.calculateAbsolute(source, change, relatives)`.
+pub fn calculate_absolute(
+    source: PositionMoveRotation,
+    change: PositionMoveRotation,
+    relatives: Relatives,
+) -> PositionMoveRotation {
+    let offset = |on: bool, v: f64| if on { v } else { 0.0 };
+    let position = Vec3::new(
+        offset(relatives.position[0], source.position.x) + change.position.x,
+        offset(relatives.position[1], source.position.y) + change.position.y,
+        offset(relatives.position[2], source.position.z) + change.position.z,
+    );
+    let yaw = if relatives.rotation[0] {
+        source.rotation[0]
+    } else {
+        0.0
+    } + change.rotation[0];
+    let pitch = (if relatives.rotation[1] {
+        source.rotation[1]
+    } else {
+        0.0
+    } + change.rotation[1])
+        .clamp(-90.0, 90.0);
+    let mut current = source.delta;
+    if relatives.rotate_delta {
+        // `Vec3.xRot` then `Vec3.yRot`, by the change of look in radians.
+        let (x_angle, y_angle) = (
+            f64::from((source.rotation[1] - pitch).to_radians()),
+            f64::from((source.rotation[0] - yaw).to_radians()),
+        );
+        let (cos, sin) = (
+            f64::from(sunrise_core::geometry::trig::cos(x_angle)),
+            f64::from(sunrise_core::geometry::trig::sin(x_angle)),
+        );
+        current = Vec3::new(
+            current.x,
+            current.y * cos + current.z * sin,
+            current.z * cos - current.y * sin,
+        );
+        let (cos, sin) = (
+            f64::from(sunrise_core::geometry::trig::cos(y_angle)),
+            f64::from(sunrise_core::geometry::trig::sin(y_angle)),
+        );
+        current = Vec3::new(
+            current.x * cos + current.z * sin,
+            current.y,
+            current.z * cos - current.x * sin,
+        );
+    }
+    let axis = |on: bool, current: f64, change: f64| if on { current + change } else { change };
+    PositionMoveRotation {
+        position,
+        delta: Vec3::new(
+            axis(relatives.delta[0], current.x, change.delta.x),
+            axis(relatives.delta[1], current.y, change.delta.y),
+            axis(relatives.delta[2], current.z, change.delta.z),
+        ),
+        rotation: [yaw, pitch],
+    }
+}
+
 /// What a teleport's `TeleportTransition` does with the entity's motion.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TeleportMotion {
@@ -231,5 +309,51 @@ mod tests {
     fn an_axis_the_command_did_not_set_leaves_the_riders_own() {
         assert!(passenger_rotation([0.0, 0.0], [f32::NAN, 0.0], [30.0, 0.0])[0] == 30.0);
         assert!(passenger_rotation([0.0, 0.0], [0.0, f32::NAN], [0.0, 40.0])[1] == 40.0);
+    }
+
+    #[test]
+    fn calculate_absolute_adds_only_the_named_axes() {
+        let source = PositionMoveRotation {
+            position: Vec3::new(1.0, 2.0, 3.0),
+            delta: Vec3::new(0.5, 0.25, -1.0),
+            rotation: [90.0, 10.0],
+        };
+        let change = PositionMoveRotation {
+            position: Vec3::new(10.0, 20.0, 30.0),
+            delta: Vec3::new(1.0, 2.0, 3.0),
+            rotation: [45.0, 100.0],
+        };
+        let relatives = Relatives {
+            position: [true, false, true],
+            rotation: [false, true],
+            delta: [true, false, false],
+            rotate_delta: false,
+        };
+        let absolute = calculate_absolute(source, change, relatives);
+        assert_eq!(absolute.position, Vec3::new(11.0, 20.0, 33.0));
+        // The pitch is 10 + 100, clamped to 90.
+        assert_eq!(absolute.rotation, [45.0, 90.0]);
+        assert_eq!(absolute.delta, Vec3::new(1.5, 2.0, 3.0));
+    }
+
+    #[test]
+    fn rotate_delta_with_an_unchanged_look_keeps_the_motion() {
+        let source = PositionMoveRotation {
+            position: Vec3::ZERO,
+            delta: Vec3::new(0.5, 0.25, -1.0),
+            rotation: [30.0, 20.0],
+        };
+        let change = PositionMoveRotation {
+            position: Vec3::ZERO,
+            delta: Vec3::new(0.0, 1.0, 0.0),
+            rotation: [30.0, 20.0],
+        };
+        let relatives = Relatives {
+            delta: [true; 3],
+            rotate_delta: true,
+            ..Relatives::default()
+        };
+        let absolute = calculate_absolute(source, change, relatives);
+        assert_eq!(absolute.delta, Vec3::new(0.5, 1.25, -1.0));
     }
 }

@@ -155,3 +155,43 @@ fn move_by_stops_at_a_wall_and_refuses_what_has_no_physics() {
         );
     });
 }
+
+#[test]
+#[ignore = "daily"]
+fn a_teleport_transition_resolves_each_axis_on_its_own() {
+    use mod_api::{TeleportRelatives, TeleportTransition};
+    with_scene(|game| {
+        game.world.chunks.insert(
+            (0, 0),
+            std::sync::Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)),
+        );
+        let kind = game.res.mob_types().get("minecraft:pig").unwrap().clone();
+        game.mobs.push(sunrise_client::mobs::Mob::new(
+            PIG,
+            kind,
+            Vec3::new(0.5, 64.0, 0.5),
+            0.0,
+        ));
+        let stand = game.entity(PIG).unwrap();
+        let transition = TeleportTransition {
+            position: [10.0, 70.0, 0.0],
+            velocity: [0.0, 0.5, 0.0],
+            rotation: [90.0, 0.0],
+            relatives: TeleportRelatives {
+                x: true,
+                ..TeleportRelatives::default()
+            },
+        };
+        assert!(game.entity_teleport_transition(stand, transition));
+        // x is the stand's 0.5 plus 10; y and z are as given; the motion is the one asked.
+        assert_eq!(game.entity_position(stand), Some([10.5, 70.0, 0.0]));
+        assert_eq!(game.entity_velocity(stand), Some([0.0, 0.5, 0.0]));
+        assert_eq!(game.entity_rotation(stand).map(|r| r[0]), Some(90.0));
+        let not_a_number = TeleportTransition {
+            position: [f64::NAN, 0.0, 0.0],
+            ..transition
+        };
+        assert!(!game.entity_teleport_transition(stand, not_a_number));
+        assert_eq!(game.entity_position(stand), Some([10.5, 70.0, 0.0]));
+    });
+}

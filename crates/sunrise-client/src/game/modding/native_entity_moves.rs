@@ -47,6 +47,72 @@ impl Game<'_> {
         self.teleport_stops(t);
         true
     }
+    /// `Entity.teleport(TeleportTransition)` in the entity's level
+    /// (`PositionMoveRotation.calculateAbsolute` of its own position, known movement and look).
+    pub(super) fn entity_teleport_transition(
+        &mut self,
+        entity: EntityRef,
+        transition: mod_api::TeleportTransition,
+    ) -> bool {
+        use sunrise_gameplay::teleport_transition::{
+            PositionMoveRotation, Relatives, calculate_absolute,
+        };
+        let finite = transition
+            .position
+            .iter()
+            .chain(&transition.velocity)
+            .all(|v| v.is_finite())
+            && transition.rotation.iter().all(|v| v.is_finite());
+        let (Some(at), Some(rotation), true) = (
+            self.entity_position(entity),
+            self.entity_rotation(entity),
+            finite,
+        ) else {
+            return false;
+        };
+        let vec = |[x, y, z]: [f64; 3]| Vec3::new(x, y, z);
+        let r = transition.relatives;
+        let absolute = calculate_absolute(
+            PositionMoveRotation {
+                position: vec(at),
+                delta: self.native_entity_known_speed(entity).unwrap_or(Vec3::ZERO),
+                rotation,
+            },
+            PositionMoveRotation {
+                position: vec(transition.position),
+                delta: vec(transition.velocity),
+                rotation: transition.rotation,
+            },
+            Relatives {
+                position: [r.x, r.y, r.z],
+                rotation: [r.yaw, r.pitch],
+                delta: [r.delta_x, r.delta_y, r.delta_z],
+                rotate_delta: r.rotate_delta,
+            },
+        );
+        let pos = absolute.position.components();
+        let Some(t) = self.teleport_target(entity, pos, Some(absolute.rotation)) else {
+            return false;
+        };
+        let player = matches!(t, Target::Player | Target::Guest(_));
+        if !player && self.native_walk_entity(entity.id()).is_none() {
+            return false;
+        }
+        self.teleport_to(t, pos, Some(absolute.rotation), true);
+        let velocity = absolute.delta.components();
+        if player {
+            let _ = self.for_player(t, |game| {
+                let acting = game.lan_acting.is_some();
+                if let Some(body) = game.player.as_mut() {
+                    body.velocity = absolute.delta;
+                    body.teleported_velocity = acting.then_some(velocity);
+                }
+            });
+            true
+        } else {
+            self.entity_set_velocity(entity, velocity)
+        }
+    }
     /// Sends the entity to `pos` in the level `dimension` (`Entity.teleport`
     /// with a portal's transition, `TeleportMotion::Keep`): the level opens if
     /// it isn't, the entity keeps its motion, a player arrives after the

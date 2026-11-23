@@ -1,0 +1,3 @@
+ids = ["type:TeleportRelatives", "type:TeleportTransition"]
+why = "A checked generic teleport: `EntityRef::teleport_transition` takes vanilla's `TeleportTransition` shape (position, motion and look, each axis absolute or relative through the `Relative` flags) and resolves it with `PositionMoveRotation.calculateAbsolute` against the entity's own position, known movement and look. A player's client is sent the resolved position and motion in its position packet."
+migrate = "New method and types; nothing to migrate. A mod that matches HookId exhaustively is unaffected."

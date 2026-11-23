@@ -119,6 +119,22 @@ pub trait EntityPositionBackendMut {
         cause: MoveCause,
     ) -> Option<[f64; 3]>;
     /// Side: server.
+    /// `Entity.teleport(TeleportTransition)` within the entity's level: the position, motion and
+    /// look of `transition`, each axis absolute or, where `transition.relatives` names it, added to
+    /// the entity's own (`PositionMoveRotation.calculateAbsolute`: the entity's own values are
+    /// where it stands, its known movement and its look; pitch is clamped to -90..90; with
+    /// `rotate_delta` its motion is first turned by the change of look). The entity is placed as
+    /// `entity_teleport_to` places it (riders get off, a vehicle takes its riders along). A player
+    /// is sent the resolved values in its position packet, motion included, and its client takes
+    /// them; any other entity's motion is set to the resolved one. False for a component that is
+    /// not finite, what `entity_teleport_to` refuses, and for the kinds `entity_set_velocity`
+    /// cannot set the motion of, which would be left with a motion other than the one asked.
+    fn entity_teleport_transition(
+        &mut self,
+        entity: EntityRef,
+        transition: TeleportTransition,
+    ) -> bool;
+    /// Side: server.
     /// Sends the entity to `pos` in the level `dimension` (`minecraft:the_nether`,
     /// or a level a mod registered), as `Entity.teleport` does with a portal's
     /// transition: `pos` is in that level's own coordinates (nothing scales it

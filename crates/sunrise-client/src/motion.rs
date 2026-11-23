@@ -525,6 +525,10 @@ pub struct PlayerMotion {
     /// keeps its motion, an absolute one is a zero change. Read with
     /// `teleported` at the end of a guest's turn.
     pub teleported_delta: [bool; 3],
+    /// The motion a `TeleportTransition` gives the player (`EntityRef::teleport_transition`):
+    /// the position packet of the teleport that set `teleported` carries it as the absolute
+    /// motion, instead of the `teleported_delta` flags. Taken with `teleported`.
+    pub teleported_velocity: Option<[f64; 3]>,
     pub events: Vec<MotionEvent>,
     pub attributes: LiveAttributes<Box<dyn sunrise_world::attributes::live::Identities>>,
     pub impulse: ImpulseContext,
