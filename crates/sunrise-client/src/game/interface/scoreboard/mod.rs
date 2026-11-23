@@ -747,8 +747,22 @@ impl Game<'_> {
             .iter()
             .filter_map(|m| Some((m.id, tame_owner(m)?)))
             .collect();
+        let host = self
+            .player_identity()
+            .and_then(|(_, id)| Some((id, self.player_team()?)));
+        let guests = self.lan.iter().flat_map(|lan| &lan.hub.guests);
+        let players = host
+            .into_iter()
+            .chain(guests.filter(|g| !g.is_fake()).filter_map(|g| {
+                Some((
+                    u32::try_from(g.entity_id).ok()?,
+                    self.score.board.players_team(&g.name)?,
+                ))
+            }))
+            .collect();
         sunrise_client::mobs::Teams {
             player: self.player_team(),
+            players,
             mobs: self
                 .persist
                 .uuids

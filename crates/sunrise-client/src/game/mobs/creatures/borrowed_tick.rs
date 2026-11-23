@@ -554,7 +554,8 @@ impl Game<'_> {
                     // A listener can redirect to any real player in this level. Keep
                     // immutable views during the borrow so changing selection
                     // never invalidates a view a goal already holds. No allocation
-                    // is made when nobody listens for target changes.
+                    // is made when nobody listens for target changes and no pet
+                    // needs a player other than the one it sees.
                     let selection = if resuming {
                         let mut selection = resume_selection.take();
                         if matches!(resume, Some(Pause::AfterDamage(_)))
@@ -578,7 +579,26 @@ impl Game<'_> {
                             });
                         }
                         selection
-                    } else if mod_api::__private::listened(mod_api::HookId::LivingChangeTarget) {
+                    } else if mod_api::__private::listened(mod_api::HookId::LivingChangeTarget)
+                        || sunrise_client::mobs::tame::reads_another_player(
+                            m,
+                            active_player.as_ref(),
+                            seen_guest.and(base.player.as_ref()).into_iter().chain(
+                                guests
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(k, _)| Some(*k) != lent)
+                                    .map(|(_, (_, view))| view),
+                            ),
+                            |id| {
+                                base.player_identity.is_some_and(|(_, own)| own == id)
+                                    || guests.iter().any(|(conn, _)| {
+                                        self.guest_identity(*conn)
+                                            .is_some_and(|(_, guest)| guest == id)
+                                    })
+                            },
+                        )
+                    {
                         let mut players = Vec::new();
                         if let (Some(view), Some((_, entity_id))) =
                             (&active_player, active_identity)

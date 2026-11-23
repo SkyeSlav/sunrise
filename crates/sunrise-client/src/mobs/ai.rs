@@ -511,6 +511,10 @@ pub struct Ai {
     pub malus: [Option<f32>; PATH_TYPES],
     /// A path computed in canUse and consumed by start.
     pub pending_path: Option<Path>,
+    /// `OwnerHurtTargetGoal.timestamp`: the owner's `getLastHurtMobTimestamp` the goal
+    /// last started on. On the mob, not the goal, so the mob tick can tell that a pet
+    /// has nothing new to read without building the level's player views.
+    pub owner_hurt_timestamp: i32,
     /// Sensing: line-of-sight results cached for one tick.
     pub seen_cache: Vec<(Who, bool)>,
     /// Swing animation progress (attackAnim) and ticks.

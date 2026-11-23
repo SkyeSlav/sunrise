@@ -3576,6 +3576,8 @@ pub struct MobWorld<'a> {
     pub mob_griefing: bool,
     /// The `universal_anger` game rule (`NeutralMob.isAngryAtAllPlayers`).
     pub universal_anger: bool,
+    /// The `pvp` game rule (`ServerLevel.isPvpAllowed`).
+    pub pvp: bool,
     /// The `mob_drops` game rule (`shouldDropLoot`).
     pub mob_drops: bool,
     /// The `max_entity_cramming` game rule.
@@ -3771,6 +3773,8 @@ pub trait WhoLookup {
 pub struct Teams<'a> {
     pub player: Option<&'a crate::scoreboard::Team>,
     pub mobs: HashMap<u32, &'a crate::scoreboard::Team>,
+    /// Each real player of the level on a team, host and guests, by entity id.
+    pub players: HashMap<u32, &'a crate::scoreboard::Team>,
 }
 impl<'a> Teams<'a> {
     pub fn of(&self, who: Who) -> Option<&'a crate::scoreboard::Team> {
@@ -3778,6 +3782,10 @@ impl<'a> Teams<'a> {
             Who::Player => self.player,
             Who::Mob(id) => self.mobs.get(&id).copied(),
         }
+    }
+    /// The team of the real player with this entity id.
+    pub fn of_player(&self, id: u32) -> Option<&'a crate::scoreboard::Team> {
+        self.players.get(&id).copied()
     }
 }
 /// `InfestedMobEffect.onMobHurt`'s draws from the bearer's random
@@ -5714,6 +5722,7 @@ mod teams_tests {
     fn borrowed<'a>(board: &'a Scoreboard, uuids: &HashMap<u32, [i32; 4]>) -> Teams<'a> {
         Teams {
             player: board.players_team("Steve"),
+            players: HashMap::new(),
             mobs: uuids
                 .iter()
                 .filter_map(|(id, u)| Some((*id, board.players_team(&uuid_text(*u))?)))

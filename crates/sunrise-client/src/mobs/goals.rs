@@ -1099,15 +1099,19 @@ impl Mob {
         if !p.alive || p.spectator {
             return false;
         }
-        // LivingEntity.getVisibilityPercent
-        let visibility = if scale {
-            w.player_visibility(p, self.id, p.visibility_percent(self.species()))
-        } else {
-            1.0
-        };
-        let dist = (range * visibility).max(2.0);
-        if self.distance_sqr(p.position) > dist * dist {
-            return false;
+        // `TargetingConditions.test` measures only `if (this.range > 0.0)`: the unranged
+        // `TargetingConditions.DEFAULT` reaches any distance.
+        if range > 0.0 {
+            // LivingEntity.getVisibilityPercent
+            let visibility = if scale {
+                w.player_visibility(p, self.id, p.visibility_percent(self.species()))
+            } else {
+                1.0
+            };
+            let dist = (range * visibility).max(2.0);
+            if self.distance_sqr(p.position) > dist * dist {
+                return false;
+            }
         }
         !check_sight || self.sees(w, Who::Player)
     }

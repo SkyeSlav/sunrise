@@ -1541,11 +1541,21 @@ mod player_status_tests {
         game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 0.5)).unwrap());
     }
 
-    /// Plains under the player's column, and rain starting (`true`) or stopping.
+    /// Plains in every quart `BiomeManager.getBiome` can pick for the player's feet and head
+    /// blocks, (0, 64, 0) and (0, 65, 0): the eight corners of the quart around (block - 2),
+    /// (-1, 15, -1), which reach into the three neighbouring chunks. Then rain starts (`true`)
+    /// or stops.
     fn rain_on_the_player(game: &mut Game<'_>, raining: bool) {
         let plains = game.res.biomes().id("minecraft:plains");
-        let qy = (64 - game.world.bottom_y()) >> 2;
-        Arc::make_mut(game.world.chunks.get_mut(&(0, 0)).unwrap()).set_biome_cell(0, qy, 0, plains);
+        let bottom = game.world.bottom_y() >> 2;
+        for x in [-1, 0] {
+            for y in [15, 16] {
+                for z in [-1, 0] {
+                    let chunk = game.world.chunks.get_mut(&(x >> 2, z >> 2)).unwrap();
+                    Arc::make_mut(chunk).set_biome_cell(x, y - bottom, z, plains);
+                }
+            }
+        }
         game.world.weather.raining = raining;
         game.world.weather.settle_levels();
     }

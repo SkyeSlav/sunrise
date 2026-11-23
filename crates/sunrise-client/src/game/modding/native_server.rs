@@ -13,6 +13,9 @@ mod argument_kinds;
 #[path = "native_server/command_failure_tests.rs"]
 mod command_failure_tests;
 #[cfg(test)]
+#[path = "native_server/command_shape_tests.rs"]
+mod command_shape_tests;
+#[cfg(test)]
 #[path = "native_server/provider_tests.rs"]
 mod provider_tests;
 #[path = "native_server/registered_commands.rs"]
@@ -26,8 +29,8 @@ use super::{Dim, Game, commands::execute, respawn_anchor::RespawnConfig};
 use crate::game::level_control_hooks::LevelControl;
 pub(super) use argument_kinds::{CommandArguments, command_arguments};
 use argument_kinds::{
-    UNCENTERED, argument_type, custom_value, dimension_value, nbt_value, parsed_type, parser,
-    positional_value, resource_parser,
+    UNCENTERED, argument_type, bounded_parser, custom_parser, custom_value, dimension_value,
+    nbt_value, parsed_type, parser, positional_value, resource_parser,
 };
 use mod_api::__private::game::*;
 pub(super) use registered_commands::NativeCommandState;
@@ -109,8 +112,12 @@ fn usage_nodes(
             .strip_prefix("resource:")
             .map(|registry| resource_parser(registry).map_err(|e| format!("`{usage}`: {e}")))
             .transpose()?;
-        let builtin =
-            resource.or_else(|| parser(kind).map(|(parser, properties, _)| (parser, properties)));
+        let bounded = bounded_parser(kind)
+            .transpose()
+            .map_err(|e| format!("`{usage}`: {e}"))?;
+        let builtin = resource
+            .or(bounded)
+            .or_else(|| parser(kind).map(|(parser, properties, _)| (parser, properties)));
         let (parser, properties, greedy, custom) = match builtin {
             Some((parser, properties)) => (parser, properties, kind == "text", None),
             None => {
@@ -126,20 +133,16 @@ fn usage_nodes(
                          only a server command can offer; a client command completes without one"
                     ));
                 }
-                let (properties, greedy) = match std::panic::catch_unwind(
-                    std::panic::AssertUnwindSafe(|| argument.kind()),
-                )
-                .map_err(|_| format!("`{usage}`: argument type `{kind}` panicked"))?
-                {
-                    mod_api::CommandArgumentKind::Word => (json!({"type": "word"}), false),
-                    mod_api::CommandArgumentKind::Greedy => (json!({"type": "greedy"}), true),
-                    _ => {
-                        return Err(format!(
-                            "`{usage}`: argument type `{kind}` uses a kind this build cannot read"
-                        ));
-                    }
+                let declared =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| argument.kind()))
+                        .map_err(|_| format!("`{usage}`: argument type `{kind}` panicked"))?;
+                let Some((parser, properties)) = custom_parser(declared) else {
+                    return Err(format!(
+                        "`{usage}`: argument type `{kind}` uses a kind this build cannot read"
+                    ));
                 };
-                ("brigadier:string", properties, greedy, Some(kind))
+                let greedy = properties["type"] == "greedy";
+                (parser, properties, greedy, Some(kind))
             }
         };
         optional_seen |= optional;
@@ -151,8 +154,9 @@ fn usage_nodes(
         if kind == "vec3_uncentered" {
             node[UNCENTERED] = true.into();
         }
-        // A registered type goes out as a Brigadier string an unmodded client can read; it and
-        // the free `id`, which has no list of its own, ask the server (the mods' `tab_complete`).
+        // A registered type goes out as the Brigadier type its kind names, which an unmodded
+        // client can read; it and the free `id`, which has no list of its own, ask the server
+        // (the mods' `tab_complete`).
         if custom.is_some() || kind == "id" {
             if let Some(id) = custom {
                 node["custom_argument"] = id.into();
@@ -167,31 +171,93 @@ fn usage_nodes(
     Ok(out)
 }
 
+/// The tree a mod's usages meet at their root word.
+#[derive(Clone, Copy)]
+enum BaseTree<'a> {
+    /// The client's own chat tree: a client command whose root it has (`has` answers) is left
+    /// out, so it never hides a server command.
+    Reserved(&'a dyn Fn(&str) -> bool),
+    /// The server's vanilla tree. A usage whose root vanilla registers merges into that root, as
+    /// NeoForge's `RegisterCommandsEvent` registers into vanilla's `CommandDispatcher`, whose
+    /// `register` adds the literal with Brigadier's `CommandNode.addChild`: vanilla's usages
+    /// stay, the mod's children are added beside them, and vanilla's nodes keep their
+    /// permissions. Sunrise's own tools (`/modprofile`, `/pregen`) are not merged into.
+    Merged(&'a Dispatcher),
+}
+
 /// Native mods' commands as a root in the commands report's format
 /// (`lan::commands`, which sends each player what their level allows), and
-/// each command's traversal level: the lowest of its usages. A node is runnable where
-/// only optional arguments follow it; like Brigadier's `CommandNode.addChild`, each
-/// later accepted runnable registration overwrites the node's executor and execution level.
-/// A command vanilla has (`vanilla`
-/// answers) or a usage that doesn't parse is left out, with why.
+/// the traversal level of each command a mod owns: the lowest of its usages. A node is runnable
+/// where only optional arguments follow it; like Brigadier's `CommandNode.addChild`, each
+/// later accepted runnable registration overwrites the node's executor and execution level,
+/// a vanilla node's executor too. A root merged into vanilla's keeps vanilla's level, so it has
+/// none here. A usage that doesn't parse, meets a vanilla node it cannot share or names a root
+/// `base` keeps is left out, with why.
 #[cfg(test)]
 pub(super) fn command_tree(
     commands: &[mod_api::Command],
-    vanilla: impl Fn(&str) -> bool,
+    vanilla: &Dispatcher,
     custom: &CommandArguments,
 ) -> (Value, HashMap<String, u8>, Vec<String>) {
-    command_tree_for(commands, vanilla, custom, false, None)
+    command_tree_for(commands, BaseTree::Merged(vanilla), custom, false, None)
 }
 
 /// Build the display tree for the client's own commands. An argument type that declares a
 /// suggestion provider is refused by name because a client command has no server to answer it.
-/// Every other argument kind builds exactly as on the server.
+/// A root the chat tree already has (`vanilla` answers) is left out. Every other argument kind
+/// builds exactly as on the server.
 pub(super) fn client_command_tree(
     commands: &[mod_api::Command],
     vanilla: impl Fn(&str) -> bool,
     custom: &CommandArguments,
 ) -> (Value, HashMap<String, u8>, Vec<String>) {
-    command_tree_for(commands, vanilla, custom, true, None)
+    command_tree_for(commands, BaseTree::Reserved(&vanilla), custom, true, None)
+}
+
+/// Whether a usage merges into a vanilla root of `base`, or why it cannot go into the tree. Each
+/// word under a merged root that vanilla has at the same place must be a literal on a literal:
+/// Brigadier would keep vanilla's argument type for the mod's argument of the same name, and the
+/// mod's executor would read a value of another kind.
+fn base_root(
+    base: BaseTree<'_>,
+    usage: &str,
+    nodes: &[(String, Value, bool)],
+) -> Result<bool, String> {
+    let root = nodes[0].0.as_str();
+    let vanilla = match base {
+        BaseTree::Reserved(has) if has(root) => {
+            return Err(format!("`{usage}`: vanilla has /{root}"));
+        }
+        BaseTree::Reserved(_) => return Ok(false),
+        BaseTree::Merged(vanilla) => vanilla,
+    };
+    let Some(mut at) = vanilla.find(root) else {
+        return Ok(false);
+    };
+    if sunrise_client::command::vanilla::is_session_tool(root) {
+        return Err(format!("`{usage}`: /{root} is the game's own command"));
+    }
+    for (name, node, _) in &nodes[1..] {
+        let Some(child) = vanilla.nodes[at]
+            .children
+            .iter()
+            .copied()
+            .find(|&child| vanilla.nodes[child].name() == name)
+        else {
+            break;
+        };
+        let literal = matches!(
+            vanilla.nodes[child].kind,
+            sunrise_client::command::NodeKind::Literal(_)
+        );
+        if !literal || node["type"] != "literal" {
+            return Err(format!(
+                "`{usage}`: `{name}` is a node of vanilla's /{root} that a mod argument cannot share"
+            ));
+        }
+        at = child;
+    }
+    Ok(true)
 }
 
 /// Whether `argument` declares a suggestion provider, read once per tree. A panic is logged and
@@ -216,7 +282,7 @@ type CommandExecutorSlots = HashMap<Vec<String>, usize>;
 
 fn command_tree_for(
     commands: &[mod_api::Command],
-    vanilla: impl Fn(&str) -> bool,
+    base: BaseTree<'_>,
     custom: &CommandArguments,
     client: bool,
     mut executors: Option<&mut CommandExecutorSlots>,
@@ -232,10 +298,13 @@ fn command_tree_for(
                 continue;
             }
         };
-        if vanilla(&nodes[0].0) {
-            problems.push(format!("`{}`: vanilla has /{}", command.usage, nodes[0].0));
-            continue;
-        }
+        let merged = match base_root(base, &command.usage, &nodes) {
+            Ok(merged) => merged,
+            Err(e) => {
+                problems.push(e);
+                continue;
+            }
+        };
         // A rejected usage must not open an earlier executable prefix or lower its level.
         let mut children = &root;
         let mut conflict = None;
@@ -298,14 +367,16 @@ fn command_tree_for(
             }
             children = entry["children"].as_object_mut().expect("made above");
         }
-        let level = levels.entry(nodes[0].0.clone()).or_insert(4);
-        *level = (*level).min(command.level);
+        if !merged {
+            let level = levels.entry(nodes[0].0.clone()).or_insert(4);
+            *level = (*level).min(command.level);
+        }
     }
-    let mut root = Value::Object(root);
-    finish(&mut root);
-    let tree = if levels.is_empty() {
+    let tree = if root.is_empty() {
         Value::Null
     } else {
+        let mut root = Value::Object(root);
+        finish(&mut root);
         json!({"type": "root", "children": root})
     };
     (tree, levels, problems)
@@ -368,16 +439,21 @@ fn register_command_nodes(
     ) {
         for (name, node) in children {
             path.push(name.clone());
+            let before = dispatcher.nodes.len();
             let id = if node["type"] == "literal" {
                 dispatcher.literal(parent, name)
             } else {
                 dispatcher.argument(parent, name, argument_type(node, arguments))
             };
-            let level = node["permissions"]["permission"]["level"]
-                .as_str()
-                .and_then(|level| LEVELS.iter().position(|known| *known == level))
-                .unwrap_or(0) as u8;
-            dispatcher.requires(id, level);
+            // `CommandNode.addChild` merges into a node vanilla already has, which keeps its
+            // own requirement; a node the mod adds takes the usage's level.
+            if dispatcher.nodes.len() > before {
+                let level = node["permissions"]["permission"]["level"]
+                    .as_str()
+                    .and_then(|level| LEVELS.iter().position(|known| *known == level))
+                    .unwrap_or(0) as u8;
+                dispatcher.requires(id, level);
+            }
             if node["executable"] == true {
                 dispatcher.executes(id, handler);
                 dispatcher.requires_execution(
@@ -1915,6 +1991,19 @@ impl Game<'_> {
             |game| game.feedback_unbroadcast(line),
         );
     }
+    /// `CommandSourceStack.sendFailure` for a mod's executor: the red line to the originating
+    /// source, using vanilla's silence and block/cart track-output rules. The command's result
+    /// is whatever the executor returns.
+    pub(super) fn native_failure(&mut self, line: Text) {
+        let source = self.command_source.unwrap_or_else(|| self.player_source());
+        self.with_source(
+            super::commands::execute::Source {
+                dimension: source.origin_dimension,
+                ..source
+            },
+            |game| game.command_failure(line),
+        );
+    }
     /// The player whose action or command a hook hears, as their state is
     /// swapped in (command executors, `native_right_click_block`,
     /// `native_use_on`, `native_break_block`...): None outside such a
@@ -2376,6 +2465,7 @@ impl Game<'_> {
                 Arg::Str(text) if matches!(ty, Some(ArgType::Nbt)) => nbt_value(&text)?,
                 Arg::Str(value) => Value::String(value),
                 Arg::Int(value) => Value::Integer(value),
+                Arg::Long(value) => Value::Long(value),
                 Arg::Double(value) => Value::Number(value),
                 Arg::Bool(value) => Value::Boolean(value),
                 Arg::Entity(selector) => {
@@ -2998,7 +3088,7 @@ mod tests {
     }
 
     fn tree(commands: &[mod_api::Command]) -> (Value, HashMap<String, u8>, Vec<String>) {
-        command_tree(commands, |name| name == "give", &HashMap::new())
+        command_tree(commands, &Dispatcher::new(), &HashMap::new())
     }
 
     fn stack(item: &str, count: u32) -> Option<ItemStack> {
@@ -3320,7 +3410,7 @@ mod tests {
         )]);
         let (tree, _, problems) = super::command_tree(
             &[mod_api::Command::new("probe <value:test:hostile>")],
-            |_| false,
+            &sunrise_client::command::Dispatcher::new(),
             &arguments,
         );
         assert!(problems.is_empty());
@@ -3365,7 +3455,7 @@ mod tests {
         )]);
         let (_, _, problems) = super::command_tree(
             &[mod_api::Command::new("probe <value:test:panic>")],
-            |_| false,
+            &sunrise_client::command::Dispatcher::new(),
             &arguments,
         );
         assert_eq!(problems.len(), 1);
@@ -3393,7 +3483,7 @@ mod tests {
 
         let (tree, _, problems) = super::command_tree(
             &[mod_api::Command::new("machine use <machine:test:machine>")],
-            |_| false,
+            &sunrise_client::command::Dispatcher::new(),
             &arguments,
         );
         assert!(problems.is_empty(), "{problems:?}");
@@ -3514,7 +3604,7 @@ mod tests {
         )]);
         let (tree, _, problems) = super::command_tree(
             &[mod_api::Command::new("replace <pattern:test:pattern>")],
-            |_| false,
+            &sunrise_client::command::Dispatcher::new(),
             &arguments,
         );
         assert!(problems.is_empty(), "{problems:?}");
@@ -3576,7 +3666,7 @@ mod tests {
         )]);
         let (tree, _, problems) = super::command_tree(
             &[mod_api::Command::new("fill <blocks:test:mixed>")],
-            |_| false,
+            &sunrise_client::command::Dispatcher::new(),
             &arguments,
         );
         assert!(problems.is_empty(), "{problems:?}");
@@ -3612,7 +3702,7 @@ mod tests {
                 mod_api::Command::new("worse <kind:resource:a:b:c>"),
                 mod_api::Command::new("worst <kind:resource:a/b:c>"),
             ],
-            |_| false,
+            &sunrise_client::command::Dispatcher::new(),
             &arguments,
         );
         assert_eq!(problems.len(), 3, "{problems:?}");
@@ -4670,7 +4760,7 @@ mod tests {
             let mut executors = HashMap::new();
             let (tree, _, problems) = command_tree_for(
                 &commands,
-                |_| false,
+                BaseTree::Merged(&Dispatcher::new()),
                 &arguments,
                 false,
                 Some(&mut executors),
@@ -4758,9 +4848,8 @@ mod tests {
     }
 
     #[test]
-    fn bad_usages_and_vanilla_names_are_left_out() {
+    fn bad_usages_are_left_out() {
         let (t, levels, problems) = tree(&[
-            mod_api::Command::new("give <x:integer>"),
             mod_api::Command::new("a [x:integer] <y:integer>"),
             mod_api::Command::new("b <x:text> <y:word>"),
             mod_api::Command::new("c <x:colour>"),
@@ -4769,7 +4858,7 @@ mod tests {
             mod_api::Command::new("d <x:integer>"),
             mod_api::Command::new("d <x:word>"),
         ]);
-        assert_eq!(problems.len(), 7, "{problems:?}");
+        assert_eq!(problems.len(), 6, "{problems:?}");
         assert_eq!(levels.keys().collect::<Vec<_>>(), ["d"]);
         assert_eq!(
             t["children"]["d"]["children"]["x"]["parser"],
@@ -4777,6 +4866,222 @@ mod tests {
         );
         let (none, levels, _) = tree(&[]);
         assert!(none.is_null() && levels.is_empty());
+    }
+
+    /// `integer(min,max)` and `long(min,max)` go out as vanilla's `IntegerArgumentInfo` and
+    /// `LongArgumentInfo` write them (a bound at the type's extreme is left out), and the server
+    /// refuses a value out of range with Brigadier's message before any executor runs.
+    #[test]
+    fn bounded_numbers_keep_their_bounds_in_the_tree_and_the_dispatcher() {
+        let (t, _, problems) = tree(&[
+            mod_api::Command::new("pay <amount:integer(0,1000)>"),
+            mod_api::Command::new("bank <total:long(-5,9000000000)>"),
+            mod_api::Command::new("floor <level:integer(0,)>"),
+            mod_api::Command::new("whole <n:integer(-2147483648,2147483647)>"),
+            mod_api::Command::new("plain <n:long>"),
+            mod_api::Command::new("bad <n:integer(5,1)>"),
+            mod_api::Command::new("bad <n:integer(0,2147483648)>"),
+            mod_api::Command::new("bad <n:long(1)>"),
+            mod_api::Command::new("bad <n:integer(a,)>"),
+        ]);
+        assert_eq!(problems.len(), 4, "{problems:?}");
+        assert!(
+            problems.iter().all(|p| p.starts_with("`bad ")),
+            "{problems:?}"
+        );
+        let c = &t["children"];
+        let node = |root: &str, name: &str| c[root]["children"][name].clone();
+        assert_eq!(node("pay", "amount")["parser"], "brigadier:integer");
+        assert_eq!(
+            node("pay", "amount")["properties"],
+            json!({"min": 0, "max": 1000})
+        );
+        assert_eq!(node("bank", "total")["parser"], "brigadier:long");
+        assert_eq!(
+            node("bank", "total")["properties"],
+            json!({"min": -5, "max": 9_000_000_000_i64})
+        );
+        assert_eq!(node("floor", "level")["properties"], json!({"min": 0}));
+        assert!(node("whole", "n").get("properties").is_none());
+        assert_eq!(node("plain", "n")["parser"], "brigadier:long");
+        assert!(node("plain", "n").get("properties").is_none());
+
+        let mut dispatcher = Dispatcher::new();
+        register_dispatcher(&mut dispatcher, &t, "native_mod_command", &HashMap::new());
+        let registries = sunrise_client::command::Registries::default();
+        let value = |line: &str, name: &str| {
+            dispatcher
+                .parse(line, &registries)
+                .executable()
+                .unwrap()
+                .0
+                .get(name)
+                .cloned()
+        };
+        assert_eq!(value("pay 1000", "amount"), Some(Arg::Int(1000)));
+        assert_eq!(
+            value("bank 9000000000", "total"),
+            Some(Arg::Long(9_000_000_000))
+        );
+        assert_eq!(
+            value("plain -9223372036854775808", "n"),
+            Some(Arg::Long(i64::MIN))
+        );
+        for (line, expected) in [
+            (
+                "pay 1001",
+                Text::tr("argument.integer.big", &[&1000, &1001]),
+            ),
+            ("pay -1", Text::tr("argument.integer.low", &[&0, &-1])),
+            ("floor -1", Text::tr("argument.integer.low", &[&0, &-1])),
+            (
+                "bank 9000000001",
+                Text::tr(
+                    "argument.long.big",
+                    &[&9_000_000_000_i64, &9_000_000_001_i64],
+                ),
+            ),
+            ("bank -6", Text::tr("argument.long.low", &[&-5, &-6])),
+            ("bank 1.5", Text::tr("parsing.long.invalid", &[&"1.5"])),
+        ] {
+            let error = dispatcher
+                .parse(line, &registries)
+                .executable()
+                .unwrap_err();
+            assert_eq!(error.message, expected, "{line}");
+        }
+    }
+
+    /// A mod argument type that declares `CommandArgumentKind::Integer` goes out as vanilla's
+    /// bounded `brigadier:integer`, so a client refuses what the server refuses; the server checks
+    /// the bounds before the mod's parser.
+    #[test]
+    fn a_registered_integer_kind_goes_out_bounded() {
+        struct Stack;
+        impl mod_api::CommandArgumentType for Stack {
+            fn kind(&self) -> mod_api::CommandArgumentKind {
+                mod_api::CommandArgumentKind::Integer {
+                    min: Some(1),
+                    max: Some(64),
+                }
+            }
+            fn parse(&self, input: &str) -> Result<String, mod_api::CommandArgumentError> {
+                Ok(format!("{input} items"))
+            }
+            fn suggest(
+                &self,
+                _: Option<&mod_api::CommandSender>,
+                _: &str,
+            ) -> Vec<mod_api::CommandSuggestion> {
+                Vec::new()
+            }
+        }
+        let arguments: CommandArguments = HashMap::from([(
+            "test:stack".to_owned(),
+            Arc::new(Stack) as Arc<dyn mod_api::CommandArgumentType>,
+        )]);
+        let (t, _, problems) = command_tree(
+            &[mod_api::Command::new("stack <count:test:stack>")],
+            &Dispatcher::new(),
+            &arguments,
+        );
+        assert!(problems.is_empty(), "{problems:?}");
+        let count = &t["children"]["stack"]["children"]["count"];
+        assert_eq!(count["parser"], "brigadier:integer");
+        assert_eq!(count["properties"], json!({"min": 1, "max": 64}));
+        assert_eq!(count["custom_argument"], "test:stack");
+        let mut dispatcher = Dispatcher::new();
+        register_dispatcher(&mut dispatcher, &t, "native_mod_command", &arguments);
+        let registries = sunrise_client::command::Registries::default();
+        let parsed = dispatcher.parse("stack 64", &registries);
+        assert_eq!(
+            parsed.executable().unwrap().0.get("count"),
+            Some(&Arg::Custom {
+                kind: "test:stack".into(),
+                value: "64 items".into(),
+            })
+        );
+        let error = dispatcher
+            .parse("stack 65", &registries)
+            .executable()
+            .unwrap_err();
+        assert_eq!(error.message, Text::tr("argument.integer.big", &[&64, &65]));
+    }
+
+    /// NeoForge's `RegisterCommandsEvent` registers into vanilla's dispatcher, whose literal
+    /// merges by Brigadier's `CommandNode.addChild`: a mod usage under `/time` sits beside
+    /// vanilla's, which stay; vanilla's node keeps its permission; an executor at a vanilla node
+    /// replaces vanilla's, and a later one replaces that. A mod argument at a vanilla node's
+    /// place, a mod argument on a vanilla literal and Sunrise's own tools are refused.
+    #[test]
+    fn usages_under_a_vanilla_root_merge_beside_its_usages() {
+        let vanilla = sunrise_client::command::vanilla::session_dispatcher(
+            &sunrise_client::gamerules::RuleRegistry::vanilla(),
+            &[],
+        );
+        let commands = [
+            mod_api::Command::new("time season <name:word>"),
+            mod_api::Command::new("seed"),
+            mod_api::Command::op("seed", 3),
+            mod_api::Command::new("time set <time:integer>"),
+            mod_api::Command::new("time <set:word>"),
+            mod_api::Command::new("modprofile extra"),
+            mod_api::Command::new("raidplus go"),
+        ];
+        let arguments = HashMap::new();
+        let mut executors = HashMap::new();
+        let (t, levels, problems) = command_tree_for(
+            &commands,
+            BaseTree::Merged(&vanilla),
+            &arguments,
+            false,
+            Some(&mut executors),
+        );
+        assert_eq!(problems.len(), 3, "{problems:?}");
+        for (problem, usage) in problems.iter().zip([
+            "time set <time:integer>",
+            "time <set:word>",
+            "modprofile extra",
+        ]) {
+            assert!(problem.starts_with(&format!("`{usage}`")), "{problem}");
+        }
+        // A merged root keeps vanilla's level: only the mod's own root routes as a mod command.
+        assert_eq!(levels.keys().collect::<Vec<_>>(), ["raidplus"]);
+        let mut dispatcher = vanilla.clone();
+        register_command_nodes(
+            &mut dispatcher,
+            &t,
+            "native_mod_command",
+            &arguments,
+            Some(&executors),
+        );
+        let at = |permission| sunrise_client::command::Registries {
+            permission,
+            ..Default::default()
+        };
+        let run = |line: &str, permission| {
+            dispatcher
+                .parse(line, &at(permission))
+                .executable()
+                .map(|(context, command)| (command, context.executor.map(|key| key.slot())))
+        };
+        let vanilla_time = vanilla
+            .parse("time set day", &at(2))
+            .executable()
+            .unwrap()
+            .1;
+        assert_eq!(run("time set day", 2), Ok((vanilla_time, None)));
+        assert_eq!(
+            run("time season spring", 2),
+            Ok(("native_mod_command", Some(0)))
+        );
+        assert!(
+            run("time season spring", 0).is_err(),
+            "vanilla's /time keeps its permission"
+        );
+        assert!(run("seed", 2).is_err(), "the later usage's level runs it");
+        assert_eq!(run("seed", 3), Ok(("native_mod_command", Some(2))));
+        assert_eq!(run("raidplus go", 0), Ok(("native_mod_command", Some(6))));
     }
 
     /// WorldEdit-style `//set`: the usage `/set <x:word>` (typed `//set` with the chat slash) is a

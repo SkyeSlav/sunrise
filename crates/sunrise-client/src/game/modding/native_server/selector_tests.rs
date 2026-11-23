@@ -281,7 +281,11 @@ fn selector_kinds_publish_vanilla_flags_and_share_parser_suggestions() {
         mod_api::Command::new("person <target:player>"),
         mod_api::Command::new("people <target:players>"),
     ];
-    let (tree, _, problems) = command_tree(&commands, |_| false, &HashMap::new());
+    let (tree, _, problems) = command_tree(
+        &commands,
+        &sunrise_client::command::Dispatcher::new(),
+        &HashMap::new(),
+    );
     assert!(problems.is_empty(), "{problems:?}");
     let mut dispatcher = Dispatcher::new();
     register_dispatcher(

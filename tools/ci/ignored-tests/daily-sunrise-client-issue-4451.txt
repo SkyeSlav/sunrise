@@ -2599,7 +2599,6 @@ sunrise-client game::villager_professions::tests::villager_reserved_profession_p
 sunrise-client game::villagers::birth_tests::rejected_birth_leaves_bed_free_and_parents_resting lib daily resources
 sunrise-client game::villagers::birth_tests::untouched_birth_claims_one_bed_and_announces_one_baby lib daily resources
 sunrise-client game::villagers::birth_tests::villager_birth_is_raw_and_does_not_post_the_animal_hook lib daily resources
-sunrise-client game::villagers::nested_spawn_tests::lifted_mob_callback_keeps_nested_spawns_until_the_next_pass lib daily resources
 sunrise-client game::villagers::off_level_tests::retained_ancestor_does_not_consume_a_due_villager_sensor lib daily resources
 sunrise-client game::villagers::witness_tests::murder_uses_only_the_victims_sensor_memory lib daily resources
 sunrise-client game::waxing_tests::honeycomb_and_the_axe_read_the_block_maps_before_vanillas_tables lib daily resources

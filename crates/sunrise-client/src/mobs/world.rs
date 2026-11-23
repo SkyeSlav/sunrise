@@ -1095,6 +1095,7 @@ fn run_test_world(
         biomes,
         mob_griefing,
         universal_anger: false,
+        pvp: false,
         mob_drops,
         max_entity_cramming: 24,
         difficulty: super::spawning::LocalDifficulty::new(2, 18000, 0, 0.0),
