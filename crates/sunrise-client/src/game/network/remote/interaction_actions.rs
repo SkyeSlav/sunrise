@@ -118,26 +118,12 @@ impl Game<'_> {
             return false;
         }
         let mut instant = false;
-        // A ghast's fireball or a wind charge nearer than any mob: the
-        // server turns it (game/items/deflect.rs).
-        if let Some((i, distance)) = self.redirectable_hit()
-            && self.mob_hit().is_none_or(|(_, d, _)| distance <= d)
-            && self.before_block(distance)
-            && self.creatures.projectiles[i].id != 0
-        {
-            self.remote_attack_entity(self.creatures.projectiles[i].id as i32, distance);
-        } else if let Some(hit) = self.remote_object_hit()
-            && self.mob_hit().is_none_or(|(_, d, _)| hit.distance < d)
-            && self.before_block(hit.distance)
-        {
-            self.remote_attack_entity(hit.id, hit.distance);
-        } else if let Some((i, distance, _)) = self.mob_hit()
-            && self.before_block(distance)
-        {
-            self.remote_attack_entity(self.mobs[i].id as i32, distance);
-        } else if !self.entity_targeted()
-            && let Some(hit) = self.pick()
-        {
+        if let Some(hit) = self.crosshair_entity_hit() {
+            // A range rejection is still an entity hit: skip the attack, but swing below.
+            if let Some(distance) = self.attack_hit_distance(hit.point) {
+                self.remote_attack_entity(hit.id, distance);
+            }
+        } else if let Some(hit) = self.pick() {
             // A block hit on air falls through to MISS. `instant` below reads the
             // block again after the dig, which may have broken it.
             if mod_api::__private::listened(mod_api::HookId::LeftClickEmpty)
@@ -156,9 +142,7 @@ impl Game<'_> {
                 .facts()
                 .is_air(self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]));
         } else {
-            if mod_api::__private::listened(mod_api::HookId::LeftClickEmpty)
-                && !self.entity_targeted()
-            {
+            if mod_api::__private::listened(mod_api::HookId::LeftClickEmpty) {
                 self.native_left_click_empty();
             }
             if self.has_miss_time() {

@@ -98,7 +98,11 @@ impl Game<'_> {
                 if let Some((_, point)) = selected.filter(|(selected, _)| *selected == entity) {
                     // This is the stored pick, not an independently requested batch target.
                     // Preserve its point and occlusion policy for this stored decision.
-                    (self.crosshair_target() == committed).then(|| self.pick_distance(point))
+                    if self.crosshair_target() == committed {
+                        self.attack_hit_distance(point)
+                    } else {
+                        None
+                    }
                 } else {
                     self.targeting_entity_hit(entity)
                         .map(|(_, distance)| distance)

@@ -32,6 +32,8 @@ mod block_entity_data;
 mod block_entity_data_tests;
 #[cfg(test)]
 mod claimed_item_use_tests;
+#[cfg(test)]
+mod gamemode_actions_tests;
 use super::raw_backlog::Received;
 use super::remote_chunks::{ChunkDecoder, ChunkFormat, Next};
 use super::remote_vehicles::PassengerSeat;

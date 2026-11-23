@@ -263,9 +263,25 @@ impl Game<'_> {
     /// `Entity.getPickResult` of the entity `id`.
     pub(super) fn entity_pick_result(&self, id: i32) -> Option<ItemStack> {
         let id = u32::try_from(id).ok()?;
-        let item = if let Some(m) = self.mobs.iter().find(|m| m.id == id) {
+        // EnderDragonPart.getPickResult delegates to its owner's Mob.getPickResult.
+        let id = self
+            .resident_dragon_part(id)
+            .map_or(id, |(dragon, _)| dragon.id);
+        let mob_kind = self
+            .mobs
+            .iter()
+            .find(|m| m.id == id)
+            .map(|m| m.kind.id.as_str())
+            .or_else(|| {
+                matches!(
+                    self.level_entity(id as i32),
+                    Some(super::commands::Target::Dragon(_))
+                )
+                .then_some("minecraft:ender_dragon")
+            });
+        let item = if let Some(kind) = mob_kind {
             // Mob.getPickResult: SpawnEggItem.byId.
-            let egg = format!("{}_spawn_egg", m.kind.id);
+            let egg = format!("{kind}_spawn_egg");
             return self.items().get(&egg).map(|_| ItemStack::new(&egg, 1));
         } else if let Some(b) = self.boats.iter().find(|b| b.id == id) {
             b.entity_type()
@@ -286,10 +302,28 @@ impl Game<'_> {
             "minecraft:painting".to_owned()
         } else if self.crystals.iter().any(|c| c.id == id) {
             "minecraft:end_crystal".to_owned()
+        } else if self.pick_knot_fence(id).is_some() {
+            // LeashFenceKnotEntity.getPickResult.
+            "minecraft:lead".to_owned()
         } else {
             return None;
         };
         Some(ItemStack::new(&item, 1))
+    }
+
+    /// The fence of a natural knot or an explicitly summoned/loaded leash knot.
+    fn pick_knot_fence(&self, id: u32) -> Option<[i32; 3]> {
+        self.natural_knot(id).or_else(|| {
+            let knot = self
+                .others
+                .iter()
+                .find(|o| o.id == id && o.knot_check.is_some())?;
+            if self.level_entity(id as i32) != Some(super::commands::Target::Other(id)) {
+                return None;
+            }
+            let block = sunrise_core::position::BlockPos::containing(knot.position);
+            Some([block.x, block.y, block.z])
+        })
     }
 
     /// `Player.isWithinEntityInteractionRange(entity, 3.0)`.
@@ -297,18 +331,20 @@ impl Game<'_> {
         let Some(eye) = self.eye_position() else {
             return false;
         };
-        let mob = u32::try_from(id)
-            .ok()
-            .and_then(|id| self.mobs.iter().find(|m| m.id == id))
-            .map(|m| m.bounds());
         let Some(b) = self
             .object_target(id)
             .map(|(lo, hi, _)| (lo, hi))
             .or_else(|| {
-                mob.or_else(|| self.tracked_special_box(id)).map(|b| {
-                    let (lo, hi) = (b.min_position(), b.max_position());
-                    ([lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z])
-                })
+                let uid = u32::try_from(id).ok()?;
+                let bounds = self
+                    .mobs
+                    .iter()
+                    .find(|m| m.id == uid)
+                    .map(|m| m.bounds())
+                    .or_else(|| self.tracked_special_box(id))
+                    .or_else(|| self.pick_knot_fence(uid).map(knot_bounds))?;
+                let (lo, hi) = (bounds.min_position(), bounds.max_position());
+                Some(([lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z]))
             })
         else {
             return false;
@@ -325,6 +361,11 @@ impl Game<'_> {
 mod tests {
     use super::Game;
     use crate::game::commands::Target;
+    use crate::game::creatures::SpawnSite;
+    use crate::game::dragon::dragon_part_id;
+    use crate::game::native_entity_refs::tests::with_game;
+    use sunrise_client::{items::ItemStack, motion::PlayerMotion};
+    use sunrise_core::geometry::Vec3;
 
     #[test]
     fn tnt_and_falling_blocks_have_no_entity_pick_result() {
@@ -334,5 +375,50 @@ mod tests {
         assert!(!Game::has_pick_result(Some(Target::DragonPart(40))));
         assert!(Game::has_pick_result(Some(Target::Boat(50))));
         assert!(Game::has_pick_result(Some(Target::Mob(60))));
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn server_entity_pick_returns_lead_and_delegates_dragon_parts() {
+        crate::game::in_own_process(
+            "game::pick_entity::tests::server_entity_pick_returns_lead_and_delegates_dragon_parts",
+            || {
+                with_game(|game| {
+                    game.player =
+                        Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 65.0, 0.5)).unwrap());
+                    let knot = game.tie_knot([0, 65, 2]);
+                    let Some(Target::Other(explicit_knot)) = game
+                        .summon_with_nbt("minecraft:leash_knot", [1.5, 65.0, 2.5], "{}")
+                        .unwrap()
+                    else {
+                        panic!("expected an explicit leash knot");
+                    };
+                    for id in [knot, explicit_knot] {
+                        assert!(
+                            game.within_entity_range(id as i32),
+                            "knot {id} is reachable"
+                        );
+                        assert_eq!(
+                            game.entity_pick_result(id as i32),
+                            Some(ItemStack::new("minecraft:lead", 1))
+                        );
+                    }
+                    let dragon = game
+                        .spawn_dragon_spawned([0.5, 65.0, 3.5], SpawnSite::Plain)
+                        .unwrap();
+                    let parent_result = game.entity_pick_result(dragon as i32);
+                    assert_eq!(
+                        parent_result,
+                        Some(ItemStack::new("minecraft:ender_dragon_spawn_egg", 1))
+                    );
+                    for part in 0..8 {
+                        assert_eq!(
+                            game.entity_pick_result(dragon_part_id(dragon, part) as i32),
+                            parent_result
+                        );
+                    }
+                });
+            },
+        );
     }
 }
