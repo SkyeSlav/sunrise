@@ -1,20 +1,24 @@
 //! A crate's source tree as the tools walk it: each file with its module path and the `cfg`s it
-//! is compiled under, following `mod` declarations, `#[path]`s and inline modules.
+//! is compiled under, following `mod` declarations, `#[path]`s, inline modules and literal
+//! item-position `include!`s.
 
+use proc_macro2::{TokenStream, TokenTree};
 use quote::ToTokens;
 use std::{
     fs,
     path::{Path, PathBuf},
 };
-use syn::{Item, Meta, punctuated::Punctuated};
+use syn::{Item, Meta, Token, parse::ParseStream, punctuated::Punctuated};
 
 /// A source file of a crate, with its module path and the `cfg`s it is compiled under.
 #[derive(Clone)]
 pub struct ModuleFile {
     pub module: String,
     pub path: PathBuf,
-    /// The conditions of the `mod` declarations that lead to it, outermost first.
+    /// The conditions of the `mod` and `include!` declarations that lead to it, outermost first.
     pub cfg: Vec<String>,
+    /// Whether this file supplies items to the containing module via `include!`.
+    pub included: bool,
 }
 
 /// One contribution to a module's items, from a file or an inline declaration in that file.
@@ -39,9 +43,9 @@ pub fn cfg_conditions(attrs: &[syn::Attribute]) -> Vec<String> {
         effective_attrs(&attr.meta, &mut Vec::new(), &mut |attr, guards| {
             let predicate = if let Meta::List(list) = attr
                 && list.path.is_ident("cfg")
-                && let Ok(predicate) = list.parse_args::<Meta>()
+                && let Ok(predicate) = list.parse_args_with(cfg_head)
             {
-                predicate.to_token_stream().to_string()
+                predicate.to_string()
             } else if attr.path().is_ident("test") || attr.path().is_ident("bench") {
                 "test".to_owned()
             } else {
@@ -57,19 +61,31 @@ pub fn cfg_conditions(attrs: &[syn::Attribute]) -> Vec<String> {
     conditions
 }
 
+// Read one predicate, including literal `true`/`false`, which are not `syn::Meta`.
+fn cfg_head(input: ParseStream<'_>) -> syn::Result<TokenStream> {
+    let mut predicate = TokenStream::new();
+    while !input.is_empty() && !input.peek(Token![,]) {
+        predicate.extend([input.parse::<TokenTree>()?]);
+    }
+    input.parse::<Option<Token![,]>>()?;
+    Ok(predicate)
+}
+
 fn effective_attrs(meta: &Meta, guards: &mut Vec<String>, f: &mut impl FnMut(&Meta, &[String])) {
     if let Meta::List(list) = meta
         && list.path.is_ident("cfg_attr")
-        && let Ok(args) = list.parse_args_with(Punctuated::<Meta, syn::Token![,]>::parse_terminated)
+        && let Ok((guard, attrs)) = list.parse_args_with(|input: ParseStream<'_>| {
+            Ok((
+                cfg_head(input)?,
+                Punctuated::<Meta, Token![,]>::parse_terminated(input)?,
+            ))
+        })
     {
-        let mut args = args.iter();
-        if let Some(guard) = args.next() {
-            guards.push(guard.to_token_stream().to_string());
-            for attr in args {
-                effective_attrs(attr, guards, f);
-            }
-            guards.pop();
+        guards.push(guard.to_string());
+        for attr in &attrs {
+            effective_attrs(attr, guards, f);
         }
+        guards.pop();
     } else {
         f(meta, guards);
     }
@@ -78,18 +94,28 @@ fn effective_attrs(meta: &Meta, guards: &mut Vec<String>, f: &mut impl FnMut(&Me
 /// Evaluate a written cfg predicate when its atoms are known. An unknown atom matters only if
 /// neither `all` nor `any` can decide the result without it.
 pub fn evaluate_cfg(predicate: &str, mut atom: impl FnMut(&str) -> Option<bool>) -> Option<bool> {
-    fn eval(meta: &Meta, atom: &mut impl FnMut(&str) -> Option<bool>) -> Option<bool> {
-        if let Meta::List(list) = meta {
+    fn eval(predicate: TokenStream, atom: &mut impl FnMut(&str) -> Option<bool>) -> Option<bool> {
+        if let Ok(literal) = syn::parse2::<syn::LitBool>(predicate.clone()) {
+            return Some(literal.value);
+        }
+        let meta = syn::parse2::<Meta>(predicate).ok()?;
+        if let Meta::List(list) = &meta {
             let args = list
-                .parse_args_with(Punctuated::<Meta, syn::Token![,]>::parse_terminated)
+                .parse_args_with(|input: ParseStream<'_>| {
+                    let mut args = Vec::new();
+                    while !input.is_empty() {
+                        args.push(cfg_head(input)?);
+                    }
+                    Ok(args)
+                })
                 .ok()?;
             if list.path.is_ident("not") && args.len() == 1 {
-                return eval(args.first()?, atom).map(|value| !value);
+                return eval(args.into_iter().next()?, atom).map(|value| !value);
             }
             let all = list.path.is_ident("all");
             if all || list.path.is_ident("any") {
                 let mut unknown = false;
-                for arg in &args {
+                for arg in args {
                     match eval(arg, atom) {
                         Some(value) if value != all => return Some(value),
                         Some(_) => {}
@@ -99,15 +125,9 @@ pub fn evaluate_cfg(predicate: &str, mut atom: impl FnMut(&str) -> Option<bool>)
                 return (!unknown).then_some(all);
             }
         }
-        if meta.path().is_ident("true") {
-            Some(true)
-        } else if meta.path().is_ident("false") {
-            Some(false)
-        } else {
-            atom(&meta.to_token_stream().to_string())
-        }
+        atom(&meta.to_token_stream().to_string())
     }
-    eval(&syn::parse_str::<Meta>(predicate).ok()?, &mut atom)
+    eval(predicate.parse().ok()?, &mut atom)
 }
 
 fn disabled_without_tests(predicate: &str) -> bool {
@@ -119,6 +139,24 @@ pub fn test_only(attrs: &[syn::Attribute]) -> bool {
     cfg_conditions(attrs)
         .iter()
         .any(|cfg| disabled_without_tests(cfg))
+}
+
+/// An item-position `include!` of one literal path, with the attributes on the invocation.
+/// The caller resolves the path relative to the physical file containing the item.
+pub fn literal_include(item: &Item) -> Option<(syn::LitStr, &[syn::Attribute])> {
+    let Item::Macro(item) = item else { return None };
+    if !item.mac.path.is_ident("include") {
+        return None;
+    }
+    let path = item
+        .mac
+        .parse_body_with(|input: ParseStream<'_>| {
+            let path = input.parse::<syn::LitStr>()?;
+            input.parse::<Option<Token![,]>>()?;
+            Ok(path)
+        })
+        .ok()?;
+    Some((path, &item.attrs))
 }
 
 /// The files of `module` read from `path`, with conventional children in `dir`. With `every_build`,
@@ -158,16 +196,27 @@ pub fn walk_module_variants(
                 module,
                 path,
                 cfg: Vec::new(),
+                included: false,
             },
             dir,
+            Vec::new(),
         )],
         variants: Vec::new(),
     };
-    while let Some((mut file, dir)) = walker.pending.pop() {
-        // A target with only conditional paths need not have a conventional file.
-        if !file.path.is_file() {
+    while let Some((mut file, dir, mut ancestors)) = walker.pending.pop() {
+        // A target with only conditional paths need not have a conventional file. A literal
+        // include has no such fallback: a fragment that may be compiled must be readable.
+        if !file.included && !file.path.is_file() {
             continue;
         }
+        let physical = file
+            .path
+            .canonicalize()
+            .map_err(|e| format!("{}: {e}", file.path.display()))?;
+        if ancestors.contains(&physical) {
+            return Err(format!("{}: source inclusion cycle", file.path.display()));
+        }
+        ancestors.push(physical);
         let source =
             fs::read_to_string(&file.path).map_err(|e| format!("{}: {e}", file.path.display()))?;
         let parsed = parse(&file.path, &source)?;
@@ -176,7 +225,14 @@ pub fn walk_module_variants(
         }
         file.cfg.extend(walker.conditions(&parsed.attrs));
         let here = file.path.parent().expect("a source file has a folder");
-        walker.children(&file, &parsed.items, here, &dir, &mut Vec::new());
+        walker.children(
+            &file,
+            &parsed.items,
+            here,
+            &dir,
+            &mut Vec::new(),
+            &ancestors,
+        );
         walker.variants.push(ModuleVariant {
             file,
             inline: Vec::new(),
@@ -191,8 +247,8 @@ pub fn walk_module_variants(
 struct Walker {
     every_build: bool,
     include_tests: bool,
-    /// Each file's declaration and the directory Rust uses for conventional children.
-    pending: Vec<(ModuleFile, PathBuf)>,
+    /// Each file, the directory Rust uses for conventional children and the physical ancestors.
+    pending: Vec<(ModuleFile, PathBuf, Vec<PathBuf>)>,
     variants: Vec<ModuleVariant>,
 }
 
@@ -217,12 +273,11 @@ impl Walker {
         here: &Path,
         dir: &Path,
         inline: &mut Vec<usize>,
+        ancestors: &[PathBuf],
     ) {
         for (index, item) in items.iter().enumerate() {
-            if let Item::Macro(included) = item
-                && included.mac.path.is_ident("include")
-                && self.keep(&included.attrs)
-                && let Ok(relative) = syn::parse2::<syn::LitStr>(included.mac.tokens.clone())
+            if let Some((relative, attrs)) = literal_include(item)
+                && self.keep(attrs)
             {
                 let mut included_file = file.clone();
                 included_file.path = file
@@ -230,8 +285,10 @@ impl Walker {
                     .parent()
                     .expect("a source file has a folder")
                     .join(relative.value());
-                included_file.cfg.extend(self.conditions(&included.attrs));
-                self.pending.push((included_file, dir.to_owned()));
+                included_file.cfg.extend(self.conditions(attrs));
+                included_file.included = true;
+                self.pending
+                    .push((included_file, dir.to_owned(), ancestors.to_vec()));
             }
             let Item::Mod(declared) = item else { continue };
             if !self.keep(&declared.attrs) {
@@ -282,9 +339,10 @@ impl Walker {
                         module: module.clone(),
                         path: file.path.clone(),
                         cfg,
+                        included: file.included,
                     };
                     inline.push(index);
-                    self.children(&child, inner, &inner_dir, &inner_dir, inline);
+                    self.children(&child, inner, &inner_dir, &inner_dir, inline, ancestors);
                     self.variants.push(ModuleVariant {
                         file: child,
                         inline: inline.clone(),
@@ -308,8 +366,10 @@ impl Walker {
                             module: module.clone(),
                             path,
                             cfg,
+                            included: false,
                         },
                         child_dir,
+                        ancestors.to_vec(),
                     ));
                 }
             }
