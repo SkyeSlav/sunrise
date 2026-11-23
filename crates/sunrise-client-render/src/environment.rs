@@ -335,7 +335,7 @@ fn as_number(value: &Value) -> f64 {
         Value::Argb([r, g, b, a]) => {
             f64::from((byte(*a) << 24 | byte(*r) << 16 | byte(*g) << 8 | byte(*b)) as i32)
         }
-        Value::Other(_) => 0.0,
+        Value::MoonPhase(_) | Value::Other(_) => 0.0,
     }
 }
 
@@ -1102,16 +1102,34 @@ impl Environment {
     /// `EnvironmentAttributeSystem.getValue` of one attribute, or its dimension value without
     /// a biome.
     pub fn value(&self, id: &str, at: &Sample) -> Option<Value> {
+        self.value_with_clock(id, at, &|_| at.day_time)
+    }
+
+    /// `EnvironmentAttributes.MOON_PHASE`, on the clock named by each timeline.
+    pub fn moon_phase(&self, clock: &dyn Fn(&str) -> i64) -> i32 {
+        let Some(Value::MoonPhase(phase)) =
+            self.value_with_clock("visual/moon_phase", &Sample::default(), clock)
+        else {
+            unreachable!("visual/moon_phase has a moon phase type and default")
+        };
+        phase.index()
+    }
+
+    fn value_with_clock(
+        &self,
+        id: &str,
+        at: &Sample,
+        clock: &dyn Fn(&str) -> i64,
+    ) -> Option<Value> {
         let attribute = attribute(id)?;
         let biome = |_full_resolution: bool| at.biome;
-        let clock = |_clock: &str| at.day_time;
         let post_biome = |_full_resolution: bool| at.post_biome;
         let conditions = Conditions {
             rain: at.rain,
             thunder: at.thunder,
             blend: at.blend,
             biome: &biome,
-            clock: &clock,
+            clock,
             post_blend: at.post_blend,
             post_biome: Some(&post_biome),
         };

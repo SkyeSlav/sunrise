@@ -456,11 +456,7 @@ impl Game<'_> {
             if &**item == "minecraft:crossbow" && mob.extra.flag2 {
                 stack.data_mut().charged = vec![ItemStack::new("minecraft:arrow", 1)];
             }
-            let mut owner = super::item_draw::owner_at(
-                [mob.position.x, mob.position.y, mob.position.z],
-                mob.body_yaw,
-                &mob.kind.id,
-            );
+            let mut owner = self.mob_item_owner(mob, local_player);
             owner.fishing_cast_with_this_item = if local_player {
                 self.cast_rod().is_some() && self.main_hand_rod() != off_hand
             } else {
@@ -472,7 +468,6 @@ impl Game<'_> {
                     off_hand,
                 )
             };
-            owner.main_arm_left = mob.main_arm_left();
             if off_hand == mob.extra.using_off_hand && mob.extra.using_item > 0 {
                 owner.using_this_item = true;
                 owner.use_duration = 72_000;
@@ -670,11 +665,7 @@ impl Game<'_> {
             * glam::Mat4::from_translation(glam::Vec3::new(0.0, -0.25, 0.0))
             * glam::Mat4::from_rotation_y(std::f32::consts::PI)
             * glam::Mat4::from_scale(glam::Vec3::new(0.625, -0.625, -0.625));
-        let owner = super::item_draw::owner_at(
-            [mob.position.x, mob.position.y, mob.position.z],
-            mob.body_yaw,
-            &mob.kind.id,
-        );
+        let owner = self.mob_item_owner(mob, local_player);
         let seed = mob.id as i32 + 5;
         let state = self.resolve_item(&stack, DisplayContext::Head, Some(&owner), seed);
         if lit {

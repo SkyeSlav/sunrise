@@ -56,6 +56,11 @@ impl Remote {
         self.clock_time(self.overworld_clock)
     }
 
+    /// `ClientClockManager.getInstance(...).totalTicks()` for a timeline's clock.
+    pub(in crate::game) fn named_clock_time(&self, clock: &str) -> i64 {
+        self.clock_time(self.registries.id("minecraft:world_clock", clock))
+    }
+
     /// `Minecraft.level != null`: from `handleLogin` until the next
     /// `handleConfigurationStart` (`clearClientLevel`). Minecraft.tick sends
     /// CLIENT_TICK_END only then, so a client waiting for the server's Login

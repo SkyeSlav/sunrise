@@ -15,7 +15,34 @@ pub enum Kind {
     AngleDegrees,
     RgbColor,
     ArgbColor,
+    MoonPhase,
     Other,
+}
+
+/// `MoonPhase`: a non-interpolated phase, indexed in the order the clock uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MoonPhase(usize);
+
+impl MoonPhase {
+    pub const NAMES: &'static [&'static str] = &[
+        "full_moon",
+        "waning_gibbous",
+        "third_quarter",
+        "waning_crescent",
+        "new_moon",
+        "waxing_crescent",
+        "first_quarter",
+        "waxing_gibbous",
+    ];
+    pub const FULL_MOON: Self = Self(0);
+
+    pub fn index(self) -> i32 {
+        self.0 as i32
+    }
+
+    pub fn serialized_name(self) -> &'static str {
+        Self::NAMES[self.0]
+    }
 }
 
 /// An attribute's value.
@@ -25,6 +52,7 @@ pub enum Value {
     Float(f32),
     Rgb([f32; 3]),
     Argb([f32; 4]),
+    MoonPhase(MoonPhase),
     Other(Json),
 }
 
@@ -33,6 +61,7 @@ enum Default {
     Float(f32),
     Rgb(i32),
     Argb(i32),
+    MoonPhase(MoonPhase),
     Unported,
 }
 
@@ -124,7 +153,12 @@ pub static ATTRIBUTES: [Attribute; 51] = {
         a("visual/sun_angle", AngleDegrees, D::Float(0.0), Range::Any),
         a("visual/moon_angle", AngleDegrees, D::Float(0.0), Range::Any),
         a("visual/star_angle", AngleDegrees, D::Float(0.0), Range::Any),
-        a("visual/moon_phase", Other, D::Unported, Range::Any),
+        a(
+            "visual/moon_phase",
+            MoonPhase,
+            D::MoonPhase(self::MoonPhase::FULL_MOON),
+            Range::Any,
+        ),
         a("visual/star_brightness", Float, D::Float(0.0), UNIT),
         a(
             "visual/block_light_tint",
@@ -306,6 +340,7 @@ impl Attribute {
                 Value::Rgb([r, g, b])
             }
             Default::Argb(c) => Value::Argb(channels(c)),
+            Default::MoonPhase(phase) => Value::MoonPhase(phase),
             Default::Unported => return None,
         })
     }
@@ -328,6 +363,16 @@ impl Attribute {
             Kind::Float | Kind::AngleDegrees => Value::Float(float(json)?),
             Kind::RgbColor => Value::Rgb(rgb(json)?),
             Kind::ArgbColor => Value::Argb(argb(json)?),
+            Kind::MoonPhase => {
+                let name = json
+                    .as_str()
+                    .ok_or_else(|| format!("not a moon phase: {json}"))?;
+                let index = MoonPhase::NAMES
+                    .iter()
+                    .position(|&phase| phase == name)
+                    .ok_or_else(|| format!("unknown moon phase: {name}"))?;
+                Value::MoonPhase(MoonPhase(index))
+            }
             // These types' modifiers (`append`, `overlay`) aren't ported yet.
             Kind::Other if json.get("modifier").is_some() => {
                 return Err("modifiers on this attribute are not ported".into());
@@ -793,6 +838,7 @@ impl AttributeMap {
                 Value::Float(v) => Tag::Float(v.to_bits()),
                 Value::Rgb(v) => color(v),
                 Value::Argb(v) => color(v),
+                Value::MoonPhase(phase) => Tag::String(phase.serialized_name().into()),
                 Value::Other(v) => json_nbt::json_to_tag(&v).map_err(|e| e.to_string())?,
             })
         }

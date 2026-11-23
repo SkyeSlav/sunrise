@@ -13,6 +13,7 @@ fn format(value: &Value) -> String {
         Value::Float(f) => bits(*f),
         Value::Rgb(v) => v.map(bits).join(" "),
         Value::Argb(v) => v.map(bits).join(" "),
+        Value::MoonPhase(phase) => phase.serialized_name().to_owned(),
         Value::Other(json) => json.to_string(),
     }
 }
@@ -42,6 +43,7 @@ fn registry(output: &mut String) -> std::fmt::Result {
             Kind::AngleDegrees => "minecraft:angle_degrees",
             Kind::RgbColor => "minecraft:rgb_color",
             Kind::ArgbColor => "minecraft:argb_color",
+            Kind::MoonPhase => "minecraft:moon_phase",
             Kind::Other => "other",
         };
         let default = a.default_value();
