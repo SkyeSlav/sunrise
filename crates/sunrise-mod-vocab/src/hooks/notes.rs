@@ -1491,7 +1491,7 @@ mod mixin or use it replaces in its design or PR."#]
 - [A block's items](#a-blocks-items) are available to server mods through the item capability and
   `move_resources`, so a pipe or machine can move items transactionally.
 
-- What a server mod needs for a public server's screens: `player.set_sidebar(host, sidebar)` shows one
+- What a server mod needs for a public server's screens: `native_sidebar(uuid, sidebar)` shows one
   player a sidebar of up to 15 lines (a text, and one where the score would be) that only their client holds (the
   server's scoreboard never sees it; a mod sends it again when they rejoin), or takes it away with `None`;
   `player.tab_list(host, header, footer)` sets the lines over and under their Tab list; `native_tick_stats()` reads the

@@ -649,11 +649,6 @@ pub(super) enum After {
         silent: bool,
     },
     GuestMenu(u32, Box<super::lan_crafting::GuestMenuEffects>),
-    /// Publish both the connection-local state and its packets together, never on abort.
-    PersonalSidebar(
-        u32,
-        Option<Box<sunrise_client::lan::scoreboard::SidebarContents>>,
-    ),
     MenuClick(Box<super::lan_menus::MenuClickReply>),
     MenuPlacesNotice(u32, u128, i32),
     FurnaceMenu(Box<super::lan_crafting::FurnaceMenuEffects>),
@@ -2382,17 +2377,6 @@ impl<'g> Game<'g> {
                 }
             }
             After::GuestMenu(conn, effects) => self.publish_guest_menu_effects(conn, *effects),
-            After::PersonalSidebar(conn, contents) => {
-                if contents.is_some() {
-                    self.load_scoreboard();
-                }
-                let board = &self.score.board;
-                if let Some(host) = &mut self.lan {
-                    host.hub.update_guest(conn, |guest| {
-                        guest.set_personal_sidebar(board, contents.map(|contents| *contents));
-                    });
-                }
-            }
             After::MenuClick(reply) => self.publish_menu_click(*reply),
             After::MenuPlacesNotice(conn, uuid, window) => {
                 self.queue_menu_places_notice(conn, uuid, window);
