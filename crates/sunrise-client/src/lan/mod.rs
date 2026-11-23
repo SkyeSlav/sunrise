@@ -56,7 +56,7 @@ use std::{
     io,
     net::{IpAddr, SocketAddr, TcpListener, TcpStream},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering},
         mpsc::{Receiver, Sender, channel},
     },
@@ -65,7 +65,9 @@ use std::{
 };
 use sunrise_protocol::packets::play;
 use sunrise_protocol::{
-    GAME_VERSION, PROTOCOL_VERSION, crypto::uuid_string, packets::configuration::ClientInformation,
+    GAME_VERSION, PROTOCOL_VERSION,
+    crypto::uuid_string,
+    packets::{configuration::ClientInformation, handshake::Intention},
     text::translatable,
 };
 
@@ -449,12 +451,30 @@ impl SecureChat {
     }
 }
 
+/// One eligible intention awaiting a pre-profile decision from the server tick.
+pub struct HandshakeRequest {
+    pub intention: Intention,
+    pub peer_ip: Option<IpAddr>,
+    pub reply: Sender<Result<Intention, sunrise_core::nbt::Tag>>,
+    deadline: Instant,
+    waiting: Weak<()>,
+}
+
+impl HandshakeRequest {
+    /// The connection worker still owns the receiver and has time left to use it.
+    pub fn is_pending(&self) -> bool {
+        self.waiting.strong_count() != 0 && Instant::now() < self.deadline
+    }
+}
+
 /// State shared with the connection threads.
 pub struct Shared {
     payload_local: Arc<crate::raw_payloads::Local>,
     /// What the next login is sent; `PlayerList.reloadResources` swaps it.
     sync: Mutex<Arc<data::SyncData>>,
     pub events: crate::net::ingress::Producer<NetEvent>,
+    handshake_requests: Option<Sender<HandshakeRequest>>,
+    handshake_listeners: mod_api::__private::EnabledListeners,
     configuration_requests: Option<Sender<configuration_tasks::ConfigurationRequest>>,
     prepare_spawn: bool,
     lan_incarnation: u64,
@@ -722,6 +742,7 @@ pub struct Lan {
     pub shared: Arc<Shared>,
     pub configuration_tasks: configuration_tasks::Tasks,
     events: crate::net::ingress::Consumer<NetEvent>,
+    handshake_requests: Option<Receiver<HandshakeRequest>>,
     configuration_requests: Option<Receiver<configuration_tasks::ConfigurationRequest>>,
     pub port: u16,
     listener: Option<JoinHandle<()>>,
@@ -754,11 +775,17 @@ impl Lan {
     fn start_listener(
         sync: Arc<data::SyncData>,
         config: NetConfig,
-        drive_configuration: bool,
+        drive_game: bool,
         prepare_spawn: bool,
     ) -> io::Result<Self> {
         let (tx, events) = event_channel();
-        let (request_tx, request_rx) = if drive_configuration {
+        let (handshake_tx, handshake_rx) = if drive_game {
+            let (tx, rx) = channel();
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+        let (request_tx, request_rx) = if drive_game {
             let (tx, rx) = channel();
             (Some(tx), Some(rx))
         } else {
@@ -776,6 +803,10 @@ impl Lan {
                 .map_err(io::Error::other)?,
             sync: Mutex::new(sync),
             events: tx,
+            handshake_requests: handshake_tx,
+            handshake_listeners: mod_api::__private::EnabledListeners::capture(
+                mod_api::HookId::PlayerHandshake,
+            ),
             configuration_requests: request_tx,
             prepare_spawn,
             lan_incarnation,
@@ -802,6 +833,7 @@ impl Lan {
             shared,
             configuration_tasks: configuration_tasks::Tasks::new(lan_incarnation),
             events,
+            handshake_requests: handshake_rx,
             configuration_requests: request_rx,
             port: 0,
             listener: None,
@@ -812,6 +844,10 @@ impl Lan {
             lan.listen(port, announce)?;
         }
         Ok(lan)
+    }
+    /// Take the login handshakes waiting for this server tick.
+    pub fn handshake_requests(&self) -> impl Iterator<Item = HandshakeRequest> + '_ {
+        self.handshake_requests.iter().flat_map(Receiver::try_iter)
     }
     /// Take registration requests before this server tick admits any guests.
     pub fn configuration_requests(
@@ -910,6 +946,7 @@ impl Lan {
     }
     pub fn stop(&mut self) {
         self.shared.stop.store(true, Ordering::Relaxed);
+        self.handshake_requests = None;
         self.stop_listening();
     }
 }

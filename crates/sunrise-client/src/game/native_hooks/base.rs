@@ -1565,6 +1565,27 @@ impl Game<'_> {
     ) {
         self.fire_player_teleported(player, name, from, to, dimension);
     }
+    /// An eligible connection is waiting for the server's pre-profile login decision.
+    pub(in crate::game) fn native_player_handshake(
+        &mut self,
+        requested_host: &mut String,
+        requested_port: u16,
+        protocol_version: i32,
+        peer_ip: Option<&str>,
+        cancel: &mut bool,
+        reason: &mut Option<mod_api::Text>,
+    ) {
+        // Keep the reason typed until it crosses the login packet serialization boundary.
+        mod_api::dispatch_player_handshake(
+            self,
+            requested_host,
+            requested_port,
+            protocol_version,
+            peer_ip,
+            reason,
+            cancel,
+        );
+    }
     /// A player whose login the server has accepted (NeoForge's
     /// `PlayerNegotiationEvent` stage): the name, whitelist, ban and
     /// server-full checks have passed and the player holds a place, but their
