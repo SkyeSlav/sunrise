@@ -1,0 +1,3 @@
+# LivingEntity.startFallFlying both sides (#5031): needs prepared resources.
+sunrise-client game::native_living_flags::tests::start_gliding_sets_the_live_flag_and_refuses_other_kinds lib daily resources
+sunrise-client game::native_local_player_writes::tests::start_local_player_gliding_sets_the_local_flag lib daily resources

@@ -86,6 +86,35 @@ impl Game<'_> {
             _ => None,
         }
     }
+    /// `LivingEntity.startFallFlying`: sets the glide flag, so the next tick glides.
+    /// The raw flag write: the caller owns the canGlide checks. True for a player, a
+    /// guest or a mob; false for an armor stand or the dragon.
+    pub(super) fn living_start_gliding(&mut self, living: LivingRef) -> bool {
+        match self.native_living_target(living) {
+            Some(Target::Player) => {
+                let Some(p) = self.player.as_mut() else {
+                    return false;
+                };
+                p.fall_flying = true;
+                true
+            }
+            Some(Target::Guest(conn)) => self
+                .lan
+                .as_mut()
+                .and_then(|h| h.hub.update_guest(conn, |g| g.fall_flying = true))
+                .is_some(),
+            Some(Target::Mob(id)) => {
+                let Some(m) = self.mobs.iter_mut().find(|m| m.id == id && !m.removed) else {
+                    return false;
+                };
+                m.extra.fall_flying = true;
+                m.needs_sync = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// `LivingEntity.stopFallFlying`: clears the glide flag, so the glide's
     /// wear and sound stop and the next fall is a fall. The players around
     /// learn it with the entity's next flag sync, as they do when a glide
@@ -442,6 +471,7 @@ pub(in crate::game) mod tests {
         BlockPart, EntityRef, Hooks, LivingRef, LoopContext, MakesOpenTrapdoorAboveClimbableEvent,
         Registrar, WorldEpoch,
     };
+    use sunrise_client::entities::ArmorStand;
     use sunrise_client::mobs::{Mob, villager};
     use sunrise_client::motion::{MotionWorld, PlayerMotion};
     use sunrise_core::geometry::Vec3;
@@ -453,6 +483,23 @@ pub(in crate::game) mod tests {
         game.mobs
             .push(Mob::new(id, kind, Vec3::new(5.5, 64.0, 5.5), 0.0));
         game.living(game.entity(id).unwrap()).unwrap()
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn start_gliding_sets_the_live_flag_and_refuses_other_kinds() {
+        with_game(|game| {
+            let mob = cow(game, 12);
+            let game = &mut *game;
+            assert_eq!(game.living_is_gliding(mob), Some(false));
+            assert!(game.living_start_gliding(mob));
+            assert!(game.mobs[0].extra.fall_flying);
+            assert_eq!(game.living_is_gliding(mob), Some(true));
+            // An armor stand has no glide state, so the write changes nothing.
+            game.armor_stands.push(ArmorStand::new(13, Vec3::ZERO, 0.0));
+            let living = game.living(game.entity(13).unwrap()).unwrap();
+            assert!(!game.living_start_gliding(living));
+        })
     }
 
     #[test]

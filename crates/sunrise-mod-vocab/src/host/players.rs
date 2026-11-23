@@ -43,6 +43,13 @@ pub trait PlayersServerHost {
 #[sunrise_mod_api_macros::host_area]
 pub trait PlayersClientHost {
     /// Side: client.
+    /// For a client mod: sets the local player's fall-flying flag (`LivingEntity.startFallFlying`)
+    /// from `player_tick_pre`, so the tick's own glide detection sends `START_FALL_FLYING` as a
+    /// jump-started glide does. This is the raw flag write, not `tryToStartFallFlying`: it does
+    /// not check the glider, the ground, levitation or a liquid. `false`, and nothing changes,
+    /// with no player of its own.
+    fn start_local_player_gliding(&mut self) -> bool;
+    /// Side: client.
     /// For a client mod: a push added to the local player's velocity, in blocks a tick, as an
     /// explosion's knockback is (the window's player moves itself, as vanilla's client does). Each component is
     /// clamped to -4..4; a spectator, or a value that is not a number, is left alone.

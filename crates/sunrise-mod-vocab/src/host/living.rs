@@ -359,6 +359,13 @@ pub trait LivingBackendMut {
     /// dragon, a stale handle or a client.
     fn living_remove_all_effects(&mut self, living: LivingRef) -> bool;
     /// Side: server.
+    /// `LivingEntity.startFallFlying`: sets the glide flag, so the next tick glides,
+    /// wears the glider and the players around learn it with the entity's next flag
+    /// sync. This is the raw flag write, not `tryToStartFallFlying`: it does not check
+    /// the glider, the ground, levitation, a liquid or a vehicle. True for a player, a
+    /// guest or a mob; false for an armor stand, the dragon, a stale handle or a client.
+    fn living_start_gliding(&mut self, living: LivingRef) -> bool;
+    /// Side: server.
     /// `LivingEntity.stopFallFlying`: clears the glide flag, so the glide's
     /// wear and sound stop and the next fall is a fall. The players around
     /// learn it with the entity's next flag sync, as they do when a glide

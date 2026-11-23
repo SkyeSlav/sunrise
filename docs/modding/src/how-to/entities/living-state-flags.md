@@ -6,7 +6,7 @@ no such state for reads `None` and writes `false`, as every handle does.
 
 ## Living flags
 
-Through `LivingRef`: the glide (`is_gliding`, `gliding_ticks`, `stop_gliding`), the sleep of a server player or a
+Through `LivingRef`: the glide (`is_gliding`, `gliding_ticks`, `start_gliding`, `stop_gliding`), the sleep of a server player or a
 villager (`is_sleeping`, `sleeping_pos`, `start_sleeping`, `stop_sleeping`, `set_sleeping_pos`, `clear_sleeping_pos`),
 the jump of the player in place (`is_jumping`, `set_is_jumping`), climbing (`is_climbing`, the same `onClimbable`
 movement uses, including the gliding exclusion for vines), the baby read (`baby`) and shield blocking
@@ -14,8 +14,11 @@ movement uses, including the gliding exclusion for vines), the baby read (`baby`
 and mobs). Server player sleep writes
 work for the integrated owner, LAN guests and dedicated-server guests in the level in place, both inside and
 outside their own turn; guests in another dimension and fake players refuse all four sleep writes without
-mutation. A suspended outer actor is unavailable during a nested turn. Glide counters and stops follow the
-same authoritative body across turns. These reads do not add client tracked-entity coverage.
+mutation. A suspended outer actor is unavailable during a nested turn. Glide counters and starts and stops follow the
+same authoritative body across turns. `start_gliding` is vanilla's raw `startFallFlying` flag write, not
+`tryToStartFallFlying`: it does not check the glider, the ground, levitation or a liquid, so the caller decides. A
+client mod starts the local player's glide with `ClientHost::start_local_player_gliding` from `player_tick_pre`; the
+tick then reports `START_FALL_FLYING` as a jump-started glide does. These reads do not add client tracked-entity coverage.
 
 `start_sleeping` requires a bed with an available sleep shape before changing any state (a villager also refuses an
 occupied bed). It moves the sleeper onto that shape and occupies the bed. `stop_sleeping` stands the sleeper up

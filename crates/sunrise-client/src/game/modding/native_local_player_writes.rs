@@ -19,6 +19,18 @@ impl Game<'_> {
         }
     }
 
+    /// Sets the local player's fall-flying flag, so the next tick's glide detection sends
+    /// `START_FALL_FLYING` as a jump-started glide does. `false` with no player of its own.
+    pub(super) fn start_local_player_gliding(&mut self) -> bool {
+        match self.player.as_mut() {
+            Some(body) => {
+                body.fall_flying = true;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// The local player's on-ground flag, which this tick's jump decision reads and its move
     /// then sets again from the collision. `false` with no player of its own.
     pub(super) fn set_local_player_on_ground(&mut self, on_ground: bool) -> bool {
@@ -414,7 +426,18 @@ mod tests {
             game.player = None;
             assert!(!game.set_local_player_velocity([0.0; 3]));
             assert!(!game.set_local_player_on_ground(true));
+            assert!(!game.start_local_player_gliding());
             assert_eq!(game.move_local_player_by([1.0, 0.0, 0.0]), Ok(None));
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn start_local_player_gliding_sets_the_local_flag() {
+        with_game(|game| {
+            game.player.as_mut().unwrap().fall_flying = false;
+            assert!(game.start_local_player_gliding());
+            assert!(game.player.as_ref().unwrap().fall_flying);
         });
     }
 
