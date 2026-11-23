@@ -438,7 +438,10 @@ mod tests {
     #[ignore = "daily"]
     fn with_no_player_of_its_own_both_writes_answer_false() {
         with_game(|game| {
-            let me = game.local_player().unwrap();
+            let me = mod_api::__private::game::player_ref(
+                mod_api::EntityRef::new(mod_api::WorldEpoch::new(1), 1),
+                1,
+            );
             game.player = None;
             assert!(!game.player_set_velocity(me, [0.0; 3]));
             assert!(!game.player_set_on_ground(me, true));
@@ -606,7 +609,7 @@ mod tests {
             let me = game.local_player().unwrap();
             let body = game.player.as_mut().unwrap();
             body.spectator = true;
-            body.velocity = Vec3::new(0.1, -0.08, 0.0);
+            body.velocity = sunrise_core::geometry::Vec3::new(0.1, -0.08, 0.0);
             assert!(game.player_push(me, [9.0, -9.0, 0.5]));
             let v = game.player.as_ref().unwrap().velocity;
             assert_eq!([v.x, v.y, v.z], [9.1, -9.08, 0.5]);
