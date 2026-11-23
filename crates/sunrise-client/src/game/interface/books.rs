@@ -1196,22 +1196,6 @@ impl Game<'_> {
             *page = (value.max(0) as usize).min(pages.len().saturating_sub(1));
         }
     }
-    /// The server closed its lectern menu; false when none is open.
-    pub(super) fn remote_lectern_closed(&mut self) -> bool {
-        if !matches!(
-            self.book,
-            Some(BookScreen::View {
-                lectern: Some(_),
-                ..
-            })
-        ) {
-            return false;
-        }
-        self.remote_set_menu(None, None);
-        self.book = None;
-        self.capture(true);
-        true
-    }
     /// `LecternMenu` over the lectern at `key` (the menu engine, for the
     /// local player and LAN guests alike): its book and page.
     pub(super) fn lectern_menu(&self, key: (i32, i32, i32)) -> Option<Menu> {
