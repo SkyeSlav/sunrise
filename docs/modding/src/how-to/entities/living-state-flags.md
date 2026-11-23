@@ -141,12 +141,16 @@ in its saved compound.
 
 ## Mob flags
 
-Through `MobRef`: `no_ai`/`set_no_ai` (`Mob.isNoAi` and `setNoAi`: the mob stands, saved as `NoAI`) and
+Through `MobRef`: `no_ai`/`set_no_ai` (`Mob.isNoAi` and `setNoAi`: the mob stands, saved as `NoAI`),
+`is_in_sitting_pose`/`set_in_sitting_pose` (`TamableAnimal.isInSittingPose` and `setInSittingPose`, on the tamable
+animals: wolf, cat, parrot, nautilus and zombie nautilus) and
 `set_baby` (`Mob.setBaby` through the canonical species-specific setup). Ageable mobs start at their species'
 baby age (`-48000` for a sniffer, otherwise `-24000`) or become adults at `0`, including the age-boundary
 attribute, navigation and AI changes. Their age is saved as `Age` where the kind saves one. Non-ageable babies,
 such as zombies and piglins, keep their non-growing baby state instead. A species with no baby form refuses
-`set_baby` without changing anything. Neither `set_baby` nor `set_no_ai` changes `PersistenceRequired`.
+`set_baby` without changing anything. The sitting write changes the synced pose only, not the saved
+`isOrderedToSit` order, so the pet's own sit goal may write the pose again on its next tick, as vanilla. Neither
+`set_baby` nor `set_no_ai` changes `PersistenceRequired`.
 
 `ai_paused`/`set_ai_paused` pause a mob's AI step while its physics runs on, as vanilla's `isImmobile` does for a
 dying mob or a stunned ravager. A paused mob skips `Mob.serverAiStep` whole: its Brain or its goal and target
