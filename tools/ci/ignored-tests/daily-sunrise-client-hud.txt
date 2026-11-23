@@ -1,2 +1,3 @@
 # HUD parity cases: PACKAGE TEST TARGET daily REASON, sorted.
+sunrise-client game::render_tick::tests::equipment_camera_overlays_emit_in_vanilla_slot_order lib daily child-process
 sunrise-client game::spectator::tests::an_unlisted_player_is_a_teleport_target_only_on_their_team_page lib daily child-process

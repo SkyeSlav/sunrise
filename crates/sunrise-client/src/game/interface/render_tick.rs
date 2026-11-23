@@ -424,13 +424,14 @@ impl Game<'_> {
             first_person: self.camera_type.is_first_person(),
             scoping: self.scoping(),
             game_time_delta: 0.0,
+            // `EquipmentSlot.values()` order for the slots that a local player uses.
             equipment: [
                 (self.inventory[self.selected].as_ref(), "mainhand"),
+                (self.offhand.as_ref(), "offhand"),
                 (self.armor[3].as_ref(), "feet"),
                 (self.armor[2].as_ref(), "legs"),
                 (self.armor[1].as_ref(), "chest"),
                 (self.armor[0].as_ref(), "head"),
-                (self.offhand.as_ref(), "offhand"),
             ]
             .into_iter()
             .filter_map(|(stack, slot)| {
@@ -1218,6 +1219,92 @@ mod tests {
         // A roof within 10 blocks is where the splash lands.
         world.set(3, 8, 3, stone).unwrap();
         assert_eq!(splash_height(&world, &properties, 3, 1, 3), Some(9));
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn equipment_camera_overlays_emit_in_vanilla_slot_order() {
+        use crate::game::{in_own_process, native_entity_refs::tests::with_client_game};
+        use sunrise_client::{camera::CameraType, hud::Rect, items::ItemStack};
+        use sunrise_core::{geometry::Vec3, nbt::Tag};
+
+        in_own_process(
+            "game::render_tick::tests::equipment_camera_overlays_emit_in_vanilla_slot_order",
+            || {
+                with_client_game(|game| {
+                    game.player = Some(
+                        super::PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 0.5)).unwrap(),
+                    );
+                    game.camera_type = CameraType::FirstPerson;
+                    game.ui.hide_gui = false;
+                    game.gui.atlas.sprites.clear();
+                    let expected = [0.0, 0.125, 0.25, 0.375, 0.5, 0.625];
+                    let mut stack = |slot: &str, u0: f32| {
+                        let overlay = format!("misc/test_{slot}");
+                        game.gui.atlas.sprites.insert(
+                            overlay.clone(),
+                            Rect {
+                                u0,
+                                v0: 0.0,
+                                u1: u0 + 0.125,
+                                v1: 1.0,
+                                w: 16,
+                                h: 16,
+                            },
+                        );
+                        let mut stack = ItemStack::new("minecraft:stone", 1);
+                        stack.data_mut().set_other(
+                            "minecraft:equippable",
+                            Some(Tag::compound([
+                                ("slot", Tag::String(slot.into())),
+                                ("camera_overlay", Tag::String(overlay.as_str().into())),
+                            ])),
+                        );
+                        Some(stack)
+                    };
+                    let mainhand = stack("mainhand", expected[0]);
+                    let offhand = stack("offhand", expected[1]);
+                    let feet = stack("feet", expected[2]);
+                    let legs = stack("legs", expected[3]);
+                    let chest = stack("chest", expected[4]);
+                    let head = stack("head", expected[5]);
+                    game.selected = 4;
+                    game.inventory[4] = mainhand;
+                    game.offhand = offhand;
+                    game.armor = [head, chest, legs, feet];
+                    let quads = |game: &super::Game<'_>| {
+                        game.screen_quads(
+                            0.0,
+                            [427, 240],
+                            1.0,
+                            glam::Mat4::IDENTITY.to_cols_array(),
+                        )
+                    };
+                    let drawn = quads(game);
+                    assert_eq!(
+                        drawn
+                            .iter()
+                            .map(|q| q.vertices[0].rect[0])
+                            .collect::<Vec<_>>(),
+                        expected
+                    );
+                    for q in drawn {
+                        assert_eq!(q.vertices[0].pos[..2], [-1.0, 1.0]);
+                        assert_eq!(q.vertices[2].pos[..2], [1.0, -1.0]);
+                    }
+
+                    game.camera_type = CameraType::ThirdPersonBack;
+                    assert!(quads(game).is_empty());
+                    game.camera_type = CameraType::FirstPerson;
+                    game.inventory[4] = Some(ItemStack::new("minecraft:spyglass", 1));
+                    game.using = Some((4, 1));
+                    assert!(
+                        quads(game).is_empty(),
+                        "scoping suppresses equipment overlays"
+                    );
+                });
+            },
+        );
     }
 
     /// `extract_block_screen_effect`: a mod that cancels the overlay of stone at one position
