@@ -233,7 +233,6 @@ fn read_record(
     if len as u64 + 4 > (u64::from(offset & 255) * SECTOR as u64) {
         return Ok(None); // "Chunk stream is truncated"
     }
-    let compression = Compression::try_from(header[4] & 127)?;
     let compressed = if header[4] & 128 != 0 {
         // `createExternalChunkInputStream`: the stub's length says nothing
         // about the stream in the `.mcc`, so a stub that also claims inline
@@ -258,6 +257,29 @@ fn read_record(
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
             Err(e) => return Err(e),
         }
+    };
+    let version = header[4] & 127;
+    let Ok(compression) = Compression::try_from(version) else {
+        // `RegionFile.createChunkInputStream`: an unknown version is a chunk that is not there,
+        // and so is a custom one (127) once its ID reads as modified UTF-8.
+        if version == 127 {
+            let id = compressed
+                .split_first_chunk::<2>()
+                .and_then(|(len, rest)| rest.get(..usize::from(u16::from_be_bytes(*len))))
+                .and_then(sunrise_core::modified_utf8::decode)
+                .ok_or_else(|| invalid("unreadable custom compression ID"))?;
+            log::error!(
+                "Unrecognized custom compression {}",
+                String::from_utf16_lossy(&id)
+            );
+        } else {
+            log::error!(
+                "Chunk [{}, {}] has invalid chunk stream version {version}",
+                chunk.x,
+                chunk.z
+            );
+        }
+        return Ok(None);
     };
     Ok(Some(ChunkRecord {
         compression,
