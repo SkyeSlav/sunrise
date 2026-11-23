@@ -620,6 +620,12 @@ pub(super) enum After {
         sunrise_client::net::PreparedPacket,
         mod_api::ServerboundPlayPacket,
     ),
+    /// A server mod's checked clientbound play run for connection `conn`
+    /// (`PlayerRef::send_play_packets`), published whole.
+    ModPlayBatch {
+        conn: u32,
+        bodies: Vec<Vec<u8>>,
+    },
     Composter(super::composter::Effects),
     /// A mod's world pickup or placement of fluid, its block already set: what is left of it
     /// (`Game::commit_fluid_write`).
@@ -2346,6 +2352,7 @@ impl<'g> Game<'g> {
             After::Trade(effect) => self.commit_merchant_effect(*effect),
             After::Payload(payload) => payload.publish(),
             After::Packet(packet, body) => self.publish_mod_held(packet, body),
+            After::ModPlayBatch { conn, bodies } => self.publish_mod_play_batch(conn, bodies),
             After::Composter(effects) => self.commit_composter_effects(effects),
             After::FluidWrite(written) => self.commit_fluid_write(*written),
             After::FluidEffects(effects) => self.commit_fluid_effects(*effects),

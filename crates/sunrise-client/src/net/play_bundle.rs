@@ -4,11 +4,11 @@ use super::{Cookie, Event, PlayIo, PlayIoAction, Reason, brand_event};
 use std::sync::Arc;
 use sunrise_protocol::{
     attachment_sync,
-    packets::{custom_payload::CustomPayload, play::Clientbound as C},
+    packets::{
+        custom_payload::CustomPayload,
+        play::{BUNDLE_SIZE_LIMIT, Clientbound as C},
+    },
 };
-
-/// `BundlerInfo.BUNDLE_SIZE_LIMIT` counts decoded members, not delimiters or bytes.
-const BUNDLE_SIZE_LIMIT: usize = 4096;
 
 pub enum BundleMember {
     Packet(C),

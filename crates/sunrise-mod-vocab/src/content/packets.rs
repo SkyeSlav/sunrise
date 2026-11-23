@@ -83,6 +83,89 @@ pub enum SendPacketError {
     },
 }
 
+/// A clientbound play packet encoded in the vanilla protocol, for
+/// [`PlayerRef::send_play_packets`](crate::PlayerRef::send_play_packets).
+///
+/// The game resolves the type name and checks the body whole, as the player's client would
+/// decode it, before anything is sent. Nothing is applied on the server: what the client
+/// needs to read the packet (an entity it was sent, a registry entry) is the mod's to keep
+/// true.
+// no wire: the local submission envelope carries an already-encoded vanilla body.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct ClientboundPlayPacket {
+    /// Packet type, for example `minecraft:set_entity_data`.
+    pub id: Identifier,
+    /// Vanilla packet body, without the packet id, length prefix or compression framing.
+    pub body: Vec<u8>,
+}
+
+impl ClientboundPlayPacket {
+    /// Construct a packet envelope; the game checks the body when it is sent.
+    pub fn new(id: Identifier, body: Vec<u8>) -> Self {
+        Self { id, body }
+    }
+}
+
+/// Why a server mod's clientbound play packets were refused. A refusal sends none of them.
+/// `index` is the refused packet's position in the list, from 0.
+// no wire: returned locally by the server packet operation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SendClientboundPacketsError {
+    /// Called on a client.
+    Client,
+    /// The handle no longer names a listed player.
+    Stale,
+    /// The player has no connection: a fake player.
+    NoConnection,
+    /// No clientbound play packet has this type name; only `minecraft` names exist.
+    UnknownPacket {
+        /// Position in the list.
+        index: usize,
+        /// The submitted type name.
+        id: Identifier,
+    },
+    /// The body does not decode completely as the named packet.
+    InvalidBody {
+        /// Position in the list.
+        index: usize,
+    },
+    /// `minecraft:bundle_delimiter` (ask for a bundle instead) or
+    /// `minecraft:start_configuration` (it leaves the play state, and a client inside a
+    /// bundle throws).
+    ServerOnly {
+        /// Position in the list.
+        index: usize,
+    },
+    /// A custom payload on a reserved channel, or on one a registered payload or an engine
+    /// service owns: send those through the payload API.
+    ProtectedPayload {
+        /// Position in the list.
+        index: usize,
+        /// The protected channel.
+        channel: crate::PayloadId,
+    },
+    /// More than 4096 packets with the bundle flag: vanilla's
+    /// `BundlerInfo.createForPacket` limit, past which the client throws.
+    BundleTooLong,
+    /// A custom payload past vanilla's clientbound limit
+    /// (`ClientboundCustomPayloadPacket`'s 1,048,576 bytes).
+    PayloadTooLarge {
+        /// Position in the list.
+        index: usize,
+        /// Payload bytes, excluding the channel name.
+        size: u64,
+        /// The most payload bytes vanilla accepts.
+        limit: u64,
+    },
+}
+impl crate::NoBackend for SendClientboundPacketsError {
+    fn no_backend() -> Self {
+        Self::Stale
+    }
+}
+
 /// Opaque identity of one connection's packet hold.
 // no wire: only the issuing connection's local hold table resolves this ID.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

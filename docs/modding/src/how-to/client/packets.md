@@ -1,5 +1,7 @@
 # Sending vanilla play packets
 
+## From a client to its server
+
 `ClientHost::send_packet` submits an owned `ServerboundPlayPacket`. The game validates the
 body and reserves outgoing credit. Publication waits for the current root transaction to
 commit; rollback, disconnect or a protocol change cancels it. Submission applies no local
@@ -52,3 +54,34 @@ For chat and commands, call `send_chat`; the game owns signing. There are no typ
 for chat, signed commands, chat sessions, login/configuration, keep-alive, pong or custom
 payload packets. Registered and engine-reserved custom-payload channels use their payload
 or service API.
+
+## From a server to one player
+
+`PlayerRef::send_play_packets(host, packets, bundle)` sends a list of
+`ClientboundPlayPacket`s to one player's client, in list order, as the server sends its
+own (`ServerCommonPacketListenerImpl.send`). Each envelope holds a packet type name
+(`minecraft:set_entity_data`) and the vanilla body without the id, length prefix or
+compression framing. With `bundle` and two or more packets, the list goes between two
+bundle delimiters, so the client applies all of them in one turn.
+
+The whole list is checked before the first packet goes out, and a refusal
+(`SendClientboundPacketsError`) sends none:
+
+| Refusal | When |
+| --- | --- |
+| `Client` | Called on a client. |
+| `Stale` | The handle no longer names a listed player. |
+| `NoConnection` | A fake player. |
+| `UnknownPacket { index, id }` | No clientbound play packet has that name; only `minecraft` names exist. |
+| `InvalidBody { index }` | The body doesn't decode completely as that packet, read as the player's client reads it (with the registries it was sent). |
+| `ServerOnly { index }` | `minecraft:bundle_delimiter` (ask for a bundle instead) or `minecraft:start_configuration`. |
+| `ProtectedPayload { index, channel }` | A custom payload on a reserved channel or one a registered payload or an engine service owns; use the payload API. |
+| `PayloadTooLarge { index, size, limit }` | A custom payload past vanilla's 1,048,576 clientbound bytes. |
+| `BundleTooLong` | More than 4096 packets with the bundle flag, vanilla's bundle limit. |
+
+Outside a transaction the packets go at once; inside one they go at the root commit, and
+an abort drops them. To the acting player inside their own hook they go after the hook.
+An empty list is accepted and sends nothing. Nothing is applied on the server: what the
+client needs to read a packet (an entity it was sent, a registry entry) is the mod's to
+keep true. Where a typed call exists (`tell`, block displays, resource packs, payloads),
+prefer it.

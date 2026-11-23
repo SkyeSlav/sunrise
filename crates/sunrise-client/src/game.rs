@@ -4345,6 +4345,9 @@ struct Game<'a> {
     chat_capture: Option<Vec<sunrise_client::text::Text>>,
     /// Packets for the guest acting now, sent once its action returns.
     guest_packets: Vec<sunrise_protocol::packets::play::Clientbound>,
+    /// A mod's prepared clientbound runs (`PlayerRef::send_play_packets`) for the acting
+    /// guest, each published whole after the turn, after `guest_packets`.
+    guest_mod_play_batches: Vec<Vec<Vec<u8>>>,
     /// The acting guest's cooldowns, as (item, ticks): their packet needs the
     /// hub's item registry, which the guest's turn does not hold.
     guest_cooldowns: Vec<(Arc<str>, i32)>,
@@ -14126,6 +14129,7 @@ impl<'a> Game<'a> {
             lan_break_pos: None,
             break_collect: None,
             guest_packets: Vec::new(),
+            guest_mod_play_batches: Vec::new(),
             guest_cooldowns: Vec::new(),
             guest_entity_events: Vec::new(),
             guest_equipment_breaks: Vec::new(),

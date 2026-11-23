@@ -539,6 +539,7 @@ impl Game<'_> {
         self.hook.finish_loan();
         self.bind_current_hook_residency();
         let packets = std::mem::take(&mut self.guest_packets);
+        let mod_play_batches = std::mem::take(&mut self.guest_mod_play_batches);
         let entity_events = std::mem::take(&mut self.guest_entity_events);
         let cooldown_events = std::mem::take(&mut self.guest_cooldowns);
         let player_sounds = std::mem::take(&mut self.guest_player_sounds);
@@ -690,6 +691,13 @@ impl Game<'_> {
         if host.hub.guests[i].participates_online() {
             for packet in outgoing {
                 host.hub.send_to(conn, &packet);
+            }
+        }
+        let outgoing_batches =
+            std::mem::replace(&mut self.guest_mod_play_batches, mod_play_batches);
+        if host.hub.guests[i].participates_online() {
+            for batch in outgoing_batches {
+                host.hub.guests[i].sender.send_mod_play_batch(batch);
             }
         }
         // ServerPlayer.connection.send: the guest's own entity events.

@@ -10,6 +10,9 @@
 #[path = "native_server/argument_kinds.rs"]
 mod argument_kinds;
 #[cfg(test)]
+#[path = "native_server/clientbound_play_tests.rs"]
+mod clientbound_play_tests;
+#[cfg(test)]
 #[path = "native_server/command_failure_tests.rs"]
 mod command_failure_tests;
 #[cfg(test)]
@@ -1337,10 +1340,15 @@ impl Game<'_> {
 
     /// A connected player's record, including a body removed for respawn or displaced by a turn.
     pub(super) fn online_player_record(&self, player: PlayerRef) -> Option<&Guest> {
+        self.listed_player_record(player)
+            .filter(|guest| guest.participates_online())
+    }
+    /// The joined record `player` names, a fake player's included.
+    fn listed_player_record(&self, player: PlayerRef) -> Option<&Guest> {
         (self.native_lifecycle.epoch()? == player.entity().epoch()).then_some(())?;
         let guests = &self.lan.as_ref()?.hub.guests;
         let guest = guests.get(guests.identity_index(player.uuid(), player.entity().id())?)?;
-        (guest.joined() && guest.participates_online()).then_some(guest)
+        guest.joined().then_some(guest)
     }
 
     pub(super) fn cloning_guest(&self, uuid: u128) -> Option<&Guest> {
@@ -1470,6 +1478,46 @@ impl Game<'_> {
             overlay: true,
         });
         self.native_send(uuid, packet)
+    }
+    /// `ServerCommonPacketListenerImpl.send` for a mod's vanilla play packets: checked whole
+    /// against the player's connection, then published as one run at once, at the root
+    /// commit inside a transaction, and after the hook for the acting player.
+    pub(super) fn player_send_play_packets(
+        &mut self,
+        player: PlayerRef,
+        packets: Vec<mod_api::ClientboundPlayPacket>,
+        bundle: bool,
+    ) -> Result<(), mod_api::SendClientboundPacketsError> {
+        use mod_api::SendClientboundPacketsError as Refusal;
+        if !self.is_logical_server() {
+            return Err(Refusal::Client);
+        }
+        let guest = self.listed_player_record(player).ok_or(Refusal::Stale)?;
+        if guest.is_fake() {
+            return Err(Refusal::NoConnection);
+        }
+        let conn = guest.conn;
+        let sync = self.lan.as_ref().ok_or(Refusal::Stale)?.hub.sync_data();
+        let names = sunrise_protocol::registry::SyncedNames {
+            builtin: &sync.builtin,
+            dynamic: &sync.dynamic,
+        };
+        let bodies = guest
+            .sender
+            .prepare_mod_play_batch(&names, &packets, bundle)?;
+        if !bodies.is_empty() {
+            self.after_commit(super::transactions::After::ModPlayBatch { conn, bodies });
+        }
+        Ok(())
+    }
+    /// A committed mod play run: after the turn for the acting guest, otherwise to its
+    /// connection now. A connection that closed meanwhile gets nothing.
+    pub(super) fn publish_mod_play_batch(&mut self, conn: u32, bodies: Vec<Vec<u8>>) {
+        if self.lan_acting == Some(conn) {
+            self.guest_mod_play_batches.push(bodies);
+        } else if let Some(guest) = self.lan.as_ref().and_then(|lan| lan.hub.guest(conn)) {
+            guest.sender.send_mod_play_batch(bodies);
+        }
     }
     /// Sends `packet` to that player, also when they are the acting player
     /// (their packets then go after the hook); false when they aren't on.

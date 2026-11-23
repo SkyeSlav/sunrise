@@ -896,6 +896,9 @@ impl Codec<StopSound> for StopSound {
     }
 }
 
+/// `BundlerInfo.BUNDLE_SIZE_LIMIT`: a bundle holds at most this many packets, counting
+/// members, not delimiters or bytes.
+pub const BUNDLE_SIZE_LIMIT: usize = 4096;
 /// `PacketDecoder.decode` for a clientbound play body (after the id), as the receiving
 /// client reads it with the connection's registry `names`: the whole body must decode as
 /// packet `id`, with nothing left over. The packets the game never models

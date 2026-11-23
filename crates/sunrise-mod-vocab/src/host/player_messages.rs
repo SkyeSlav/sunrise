@@ -19,6 +19,22 @@ pub trait PlayerMessagesBackendMut {
     #[serialize_text]
     fn player_action_bar(&mut self, player: PlayerRef, line: Text) -> Result<bool, TextFormError>;
     /// Side: server.
+    /// Sends vanilla play packets to that player's client, in list order, as the server
+    /// sends its own (`ServerCommonPacketListenerImpl.send`). With `bundle` and two or more
+    /// packets, the list goes between two bundle delimiters, so the client applies them in
+    /// one turn (`ClientPacketListener.handleBundlePacket`). Every packet is checked before
+    /// the first goes out; a refusal sends none. Outside a transaction the packets go at
+    /// once; inside one, at the root commit, and not at all on an abort. To the acting
+    /// player inside their own hook they go after the hook. An empty list is accepted and
+    /// sends nothing. Prefer a typed call (`tell`, block displays, resource packs, payloads)
+    /// where one exists.
+    fn player_send_play_packets(
+        &mut self,
+        player: PlayerRef,
+        packets: Vec<ClientboundPlayPacket>,
+        bundle: bool,
+    ) -> Result<(), SendClientboundPacketsError>;
+    /// Side: server.
     /// The lines over and under that player's list of players (Tab):
     /// `ClientboundTabListPacket`, an empty text for none. False when they
     /// aren't on.

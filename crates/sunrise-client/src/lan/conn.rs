@@ -7,6 +7,7 @@
 //! thread, frame, compress and encrypt what the game queues, and keep the
 //! keep-alive schedule on their own so a long tick never times a client out.
 mod configuration_tasks;
+mod mod_play_packets;
 mod payloads;
 #[path = "transaction_packets.rs"]
 pub mod transaction_packets;
