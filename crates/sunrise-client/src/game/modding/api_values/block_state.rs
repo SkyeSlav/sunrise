@@ -331,6 +331,11 @@ pub(crate) fn current() -> Result<Arc<Index>, BlockStateError> {
     INDEX.with_borrow(|index| index.clone().ok_or(BlockStateError::Unavailable))
 }
 impl Index {
+    /// Whether this registry defines a state for the block key.
+    pub(in crate::game) fn has_block(&self, block: mod_api::BlockKey) -> bool {
+        self.reverse.contains_key(&block)
+    }
+
     /// Each state's block key, by state number.
     #[cfg(test)]
     pub(crate) fn blocks(&self) -> Arc<[mod_api::BlockKey]> {

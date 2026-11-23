@@ -165,6 +165,16 @@ directory (`Option<&InstanceDirectory>`) from the startup snapshot.
 [Chunk disk callbacks](../how-to/chunk-data-load.md) also borrow registry names, but from the
 resource generation retained by their worker.
 
+On a server worldgen worker or in a server-thread worldgen callback, call
+`worldgen.block_in_tag(key, "soil")` to ask whether a block key belongs to a merged block tag.
+The omitted namespace defaults to `minecraft`. This reads the registry, independent of block
+state properties, unlike `FeatureContext::block_in_tag`, which tests a block at a position.
+A resolved key and loaded tags give `Some(true)` for a member or `Some(false)` for a non-member,
+including missing, empty or malformed tags. `None` means the key cannot be resolved or the
+context has no loaded block tags. Each callback reads one snapshot. New callbacks see tags from
+the initial resource load or the latest successful reload, including data packs and content mods.
+A failed reload leaves the previous tags in place.
+
 ### Ordinary Host reads
 
 Both client and server hosts expose `registry_entry(registry, id)`,

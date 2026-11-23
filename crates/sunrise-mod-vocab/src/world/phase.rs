@@ -1386,6 +1386,20 @@ pub trait WorldgenHost {
         key: &str,
         value: &str,
     ) -> Option<crate::BlockState>;
+
+    /// Tests the block's registry membership, independent of its state properties or position.
+    /// This query does not fire an event. A name without a namespace (for example, `"soil"`)
+    /// uses `minecraft`.
+    ///
+    /// Server worldgen workers and server-thread worldgen callbacks read the owning server's
+    /// merged block tags, including data packs and content mods. A callback keeps the snapshot
+    /// it started with. After a successful resource load or reload, new callbacks see the
+    /// applied tags; a failed reload leaves the previous snapshot in place.
+    ///
+    /// Returns `Some(true)` for a member and `Some(false)` otherwise, including missing or
+    /// empty tags and malformed identifiers. Returns `None` if the context has no loaded block tags
+    /// or the block key is not in the published registry.
+    fn block_in_tag(&self, block: crate::BlockKey, tag: &str) -> Option<bool>;
 }
 
 // no wire: a process-local borrow of frozen worldgen metadata.
@@ -1407,6 +1421,7 @@ pub trait WorldgenReader: Sync {
 pub struct OwningWorldgen<'a> {
     source: &'a dyn WorldgenReader,
     state_with_property: &'a StateWithProperty<'a>,
+    block_in_tag: Option<&'a BlockInTag<'a>>,
     mods: LoadedMods,
 }
 
@@ -1414,15 +1429,21 @@ pub struct OwningWorldgen<'a> {
 type StateWithProperty<'a> =
     dyn Fn(crate::BlockState, &str, &str) -> Option<crate::BlockState> + 'a;
 
+/// Block tag membership in the server's captured resources.
+type BlockInTag<'a> = dyn Fn(crate::BlockKey, &str) -> Option<bool> + 'a;
+
 impl<'a> OwningWorldgen<'a> {
-    /// Borrow the owning engine's frozen metadata reader and block-state query.
+    /// Borrow the owning engine's frozen metadata and block queries, omitting the tag
+    /// query for contexts with no loaded tag table.
     pub fn new(
         source: &'a dyn WorldgenReader,
         state_with_property: &'a StateWithProperty<'a>,
+        block_in_tag: Option<&'a BlockInTag<'a>>,
     ) -> Self {
         Self {
             source,
             state_with_property,
+            block_in_tag,
             mods: LoadedMods::enabled_at_startup(),
         }
     }
@@ -1445,6 +1466,9 @@ impl WorldgenHost for OwningWorldgen<'_> {
         value: &str,
     ) -> Option<crate::BlockState> {
         (self.state_with_property)(state, key, value)
+    }
+    fn block_in_tag(&self, block: crate::BlockKey, tag: &str) -> Option<bool> {
+        (self.block_in_tag?)(block, tag)
     }
 }
 

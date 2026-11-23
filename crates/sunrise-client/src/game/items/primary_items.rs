@@ -73,11 +73,14 @@ impl Game<'_> {
                 table.primary_answers().clear();
             }
         }
-        if self.is_logical_server()
-            && let Some(loot) = self.server_loot.get()
-        {
-            loot.primary_answers().clear();
-            loot.support_answers().clear();
+        if self.is_logical_server() {
+            if let Some(loot) = self.server_loot.get() {
+                loot.primary_answers().clear();
+                loot.support_answers().clear();
+            }
+            native_worldgen_parts::retire_block_tags(
+                &native_world_read::installed_block_tag_snapshot(),
+            );
         }
         mod_api::__private::clear_game_parts();
     }

@@ -859,6 +859,7 @@ impl Game<'_> {
             cauldrons,
             block_states,
             tags,
+            block_tags_loaded: items.tags_loaded(sunrise_items::items::TagRegistry::Block),
             parts,
         })
     }
@@ -956,7 +957,7 @@ impl Game<'_> {
         self.resolve_primary_items();
     }
     /// Publish state keys and bind parts before their state-only answers are cached.
-    /// A server also publishes its parts for world generation.
+    /// A server also publishes its parts and block tags for world generation.
     pub(super) fn bind_parts(&self, prepared: PreparedParts) {
         if self.is_logical_server()
             && let Some(host) = &self.lan
@@ -975,6 +976,7 @@ impl Game<'_> {
                 prepared.parts.as_ref(),
                 &prepared.block_states,
                 self.pack.assets.registry,
+                prepared.block_tags_loaded.then(|| prepared.tags.clone()),
             );
         }
         api_values::install_block_states(&self.tick, prepared.block_states);

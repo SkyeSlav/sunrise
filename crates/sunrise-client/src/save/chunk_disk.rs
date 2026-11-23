@@ -40,10 +40,9 @@ impl DiskRuntime {
 
     fn run(&self, job: &ChunkDiskJob) -> std::io::Result<Compound> {
         let reader = WorldgenReader(&self.resources);
-        // A disk job has no block-state index (that is the game's, published for worldgen), so
-        // `state_with_property` answers None, as worldgen does before the index is published.
+        // Disk jobs borrow metadata, not the live world's block-state index or tags.
         job.run(
-            &mod_api::OwningWorldgen::new(&reader, &|_, _, _| None),
+            &mod_api::OwningWorldgen::new(&reader, &|_, _, _| None, None),
             sunrise_world::datafix::upgrade_compound,
         )
         .clone()

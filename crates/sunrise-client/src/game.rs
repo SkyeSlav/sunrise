@@ -3064,7 +3064,8 @@ struct WorldTables {
 
 struct PreparedParts {
     block_states: Arc<api_values::block_state::Index>,
-    tags: HashMap<String, HashSet<mod_api::BlockKey>>,
+    tags: Arc<native_world_read::BlockTagSets>,
+    block_tags_loaded: bool,
     parts: Option<mod_api::Parts>,
     cauldrons: Arc<cauldron_interactions::Table>,
 }

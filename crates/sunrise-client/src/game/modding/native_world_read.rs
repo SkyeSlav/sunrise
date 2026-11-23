@@ -1,10 +1,14 @@
 //! Read-only block, tag and fluid queries for native mods.
 use super::native_level_signals::ReadLevel;
 use super::{Dim, Game};
-use mod_api::BlockKey;
-use mod_api::{FluidKey, FluidState, LevelRef, LifecycleContext, UnresolvedFluid};
-use std::cell::RefCell;
+use mod_api::{BlockKey, FluidKey, FluidState, LevelRef, LifecycleContext, UnresolvedFluid};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 use sunrise_client::{items::Items, world::World};
+use sunrise_client_core::identifier::parse_identifier_parts;
 use sunrise_core::{geometry::Direction, position::BlockPos};
 use sunrise_world::{
     chunk::BlockState,
@@ -134,52 +138,65 @@ pub(super) enum NativeBlockReadError {
     InvalidState,
 }
 
+/// Merged block tags bound to API block keys, with namespace and path stored separately
+/// so even an unqualified tag can be looked up without allocating.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(super) struct BlockTagSets(HashMap<String, HashMap<String, HashSet<BlockKey>>>);
+
+impl BlockTagSets {
+    pub(super) fn contains(&self, block: BlockKey, tag: &str) -> bool {
+        let Some((namespace, path)) = parse_identifier_parts(tag) else {
+            return false;
+        };
+        self.0
+            .get(namespace)
+            .and_then(|paths| paths.get(path))
+            .is_some_and(|set| set.contains(&block))
+    }
+}
+
 thread_local! {
-    // Like the key-to-state mapping, this snapshot belongs to the thread resolving the world.
-    static BLOCK_TAGS: std::cell::RefCell<std::collections::HashMap<String, std::collections::HashSet<BlockKey>>> = Default::default();
+    // Live reads use the owning thread's snapshot; worldgen borrows the server's shared copy.
+    static BLOCK_TAGS: RefCell<Arc<BlockTagSets>> = Default::default();
 }
 
 /// Bind the world's merged tags alongside its block mappings, including the resource-only case.
 /// Never cache on Items: its string tables also serve tools and client network snapshots.
-pub(super) fn prepare_block_tags(
-    tags: &std::collections::HashMap<String, std::collections::HashSet<String>>,
-) -> std::collections::HashMap<String, std::collections::HashSet<BlockKey>> {
-    tags.iter()
-        .map(|(tag, members)| {
-            let mut set = std::collections::HashSet::<BlockKey>::default();
-            for name in members {
-                if let Some(block) = mod_api::__private::block_key(name) {
-                    set.insert(block);
-                }
-            }
-            (tag.clone(), set)
-        })
-        .collect()
+pub(super) fn prepare_block_tags(tags: &HashMap<String, HashSet<String>>) -> Arc<BlockTagSets> {
+    let mut bound = BlockTagSets::default();
+    for (tag, members) in tags {
+        let Some((namespace, path)) = parse_identifier_parts(tag) else {
+            continue;
+        };
+        if !path.is_empty() {
+            bound
+                .0
+                .entry(namespace.to_owned())
+                .or_default()
+                .entry(path.to_owned())
+                .or_default()
+                .extend(
+                    members
+                        .iter()
+                        .filter_map(|name| mod_api::__private::block_key(name)),
+                );
+        }
+    }
+    Arc::new(bound)
 }
 
-pub(super) fn install_block_tags(
-    tags: std::collections::HashMap<String, std::collections::HashSet<BlockKey>>,
-) {
-    BLOCK_TAGS.with(|snapshot| *snapshot.borrow_mut() = tags);
+pub(super) fn install_block_tags(tags: Arc<BlockTagSets>) {
+    BLOCK_TAGS.set(tags);
 }
 
-#[cfg(test)]
-pub(in crate::game) fn installed_block_tag_snapshot()
--> std::collections::HashMap<String, std::collections::HashSet<BlockKey>> {
-    BLOCK_TAGS.with(|snapshot| snapshot.borrow().clone())
+pub(super) fn installed_block_tag_snapshot() -> Arc<BlockTagSets> {
+    BLOCK_TAGS.with_borrow(Arc::clone)
 }
 
-/// One availability check, one tag-name lookup and one API key membership test.
 /// An unavailable owning-thread mapping is not a missing tag.
 pub(super) fn block_in_tag(block: BlockKey, tag: &str) -> Option<bool> {
     super::api_values::default_state(block)?;
-    let tag = sunrise_client::command::args::normalized(tag);
-    Some(BLOCK_TAGS.with(|snapshot| {
-        snapshot
-            .borrow()
-            .get(tag.as_ref())
-            .is_some_and(|set| set.contains(&block))
-    }))
+    Some(BLOCK_TAGS.with_borrow(|snapshot| snapshot.contains(block, tag)))
 }
 
 /// `BlockState.getFluidState`. None for an id no state has.
@@ -288,10 +305,7 @@ impl Game<'_> {
     }
 
     /// `items`' block tags, over this game's resolved block keys.
-    pub(super) fn block_tag_sets(
-        &self,
-        items: &Items,
-    ) -> std::collections::HashMap<String, std::collections::HashSet<BlockKey>> {
+    pub(super) fn block_tag_sets(&self, items: &Items) -> Arc<BlockTagSets> {
         prepare_block_tags(&items.block_tags)
     }
 
