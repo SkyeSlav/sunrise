@@ -36,7 +36,7 @@ sunrise-hooks = { path = "../sunrise-hooks", features = ["test-support"], option
 sunrise-mod-runtime = { path = "../sunrise-mod-runtime", features = ["test-work-count"], optional = true }
 mod_api = { package = "sunrise-mod-vocab", path = "../sunrise-mod-vocab", features = ["testing"], optional = true }
 sunrise-mod-api-macros = { path = "../sunrise-mod-api-macros", optional = true }
-sunrise-client-lib = { path = "../sunrise-client-lib", default-features = false, features = ["test-menu-validity", "test-payload-probe", "test-publication-scope", "test-residency-observer", "test-dry-side", "test-tooltip-factories"], optional = true }
+sunrise-client-lib = { path = "../sunrise-client-lib", default-features = false, features = ["test-menu-validity", "test-payload-probe", "test-publication-scope", "test-residency-observer", "test-dry-side", "test-tooltip-factories", "test-pack-feedback"], optional = true }
 sunrise-gameplay = { path = "../sunrise-gameplay", optional = true }
 sunrise-client-gameplay = { path = "../sunrise-client-gameplay", optional = true }
 sunrise-assets = { path = "../sunrise-assets", optional = true }

@@ -1452,22 +1452,51 @@ impl Streaming {
         }
         take_resent_column(world, &old, chunk, self.relight_resent);
     }
-    /// A server's light update for a resident column: the sections whose
-    /// light changed and their neighbours remesh
-    /// (`setSectionDirtyWithNeighbors`). A resent column's sections with new
-    /// biomes remesh the same way.
+    /// A changed mesh input also affects its neighbouring sections.
     pub fn light_updated(world: &mut World, x: i32, z: i32, sections: &[usize]) {
         for &sy in sections {
+            Self::dirty_light_section(world, x, sy as i32, z);
+        }
+    }
+
+    /// `ClientPacketListener.readSectionList` requests rebuilds even if a standalone
+    /// light packet repeats the same data. Its coordinates include both padding sections.
+    pub fn rebuild_packet_light(
+        world: &mut World,
+        x: i32,
+        z: i32,
+        layers: &[sunrise_protocol::chunk::SectionLight],
+    ) {
+        for (b, (sky, block)) in layers.iter().enumerate() {
+            if sky.is_some() || block.is_some() {
+                Self::dirty_light_section(world, x, b as i32 - 1, z);
+            }
+        }
+    }
+
+    fn dirty_light_section(world: &mut World, x: i32, sy: i32, z: i32) {
+        let sections = world.layout().sections() as i32;
+        for s in (sy - 1).max(0)..=(sy + 1).min(sections - 1) {
             for dz in -1..=1 {
-                for dy in -1..=1 {
-                    for dx in -1..=1 {
-                        let s = sy as i32 + dy;
-                        if (0..world.layout().sections() as i32).contains(&s) {
-                            world.dirty_sections.insert((x + dx, s, z + dz));
-                        }
-                    }
+                for dx in -1..=1 {
+                    world
+                        .dirty_sections
+                        .insert((x.wrapping_add(dx), s, z.wrapping_add(dz)));
                 }
             }
+        }
+    }
+
+    /// A cache-centre change invalidates mesh inputs but keeps the hidden columns lit.
+    pub fn remote_chunk_visibility_changed(
+        &mut self,
+        world: &mut World,
+        hidden: &[(i32, i32)],
+        shown: &[(i32, i32)],
+    ) {
+        self.forget_visibility(world, hidden.iter().copied());
+        for &(x, z) in hidden.iter().chain(shown) {
+            Self::dirty_visibility_columns(world, x, z);
         }
     }
     /// Give back meshes the renderer has copied: a worker frees them, ahead of

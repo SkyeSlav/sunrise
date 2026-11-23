@@ -669,6 +669,11 @@ pub(super) enum After {
         silent: bool,
     },
     GuestMenu(u32, Box<super::lan_crafting::GuestMenuEffects>),
+    /// Publish both the connection-local state and its packets together, never on abort.
+    PersonalSidebar(
+        u32,
+        Option<Box<sunrise_client::lan::scoreboard::SidebarContents>>,
+    ),
     /// Equipment transitions from a mount menu, with distinct sound and game event positions.
     MountEquipment {
         dim: Dim,
@@ -2440,6 +2445,17 @@ impl<'g> Game<'g> {
                 }
             }
             After::GuestMenu(conn, effects) => self.publish_guest_menu_effects(conn, *effects),
+            After::PersonalSidebar(conn, contents) => {
+                if contents.is_some() {
+                    self.load_scoreboard();
+                }
+                let board = &self.score.board;
+                if let Some(host) = &mut self.lan {
+                    host.hub.update_guest(conn, |guest| {
+                        guest.set_personal_sidebar(board, contents.map(|contents| *contents));
+                    });
+                }
+            }
             After::MountEquipment {
                 dim,
                 id,

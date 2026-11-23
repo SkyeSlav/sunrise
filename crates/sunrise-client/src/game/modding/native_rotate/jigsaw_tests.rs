@@ -328,18 +328,22 @@ fn assert_built(pieces: &[PoolPiece], resources: &StructureResources) {
         blocks: BTreeMap::new(),
         entities: BTreeMap::new(),
     };
-    let bounds = BoundingBox::new([-64, -64, -64], [128, 319, 128]);
+    struct NoSolid;
+    impl sunrise_world::worldgen::structure::legacy::SolidRender for NoSolid {
+        fn solid_render(&self, _: EngineState) -> bool {
+            false
+        }
+    }
+    let mut site = sunrise_world::worldgen::structure::jigsaw::Site {
+        world: &mut world,
+        resources,
+        blocks: &NoSolid,
+        chunk_box: BoundingBox::new([-64, -64, -64], [128, 319, 128]),
+        place_feature: &mut |_, _, _, _| panic!("the fixture contains no feature elements"),
+    };
     for piece in pieces {
         piece
-            .place(
-                &mut world,
-                resources,
-                &mut LegacyRandom::new(0),
-                bounds,
-                [10, 10, 20],
-                true,
-                &mut |_, _, _, _| panic!("the fixture contains no feature elements"),
-            )
+            .place(&mut site, &mut LegacyRandom::new(0), [10, 10, 20], true)
             .unwrap();
     }
     // These literal expected heights come from the flat surface and vanilla placement

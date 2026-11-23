@@ -322,6 +322,10 @@ impl Game<'_> {
             self.streaming.shader_pack = shader_pack;
             self.all_sections_changed();
         }
+        // The renderer keeps the meshes' sources while they carry them, and frees them after.
+        if let Some(renderer) = &mut self.renderer {
+            renderer.keep_pack_sources(shader_pack);
+        }
         let separate_ao = self.pack_ids.as_ref().is_some_and(|ids| ids.separate_ao);
         if self.streaming.separate_ao != separate_ao {
             self.streaming.separate_ao = separate_ao;

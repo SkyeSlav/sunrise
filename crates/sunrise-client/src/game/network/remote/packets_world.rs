@@ -4,7 +4,8 @@ impl Game<'_> {
     /// `C::ForgetLevelChunk`: its arms of `apply_packet`, guard and order kept.
     pub(super) fn apply_forget_level_chunk_packet(&mut self, p: play::ForgetLevelChunk) {
         // `poll_remote` forgets a run of them at once.
-        self.forget_remote_columns(&mut [(p.pos[0], p.pos[1])].into_iter().collect(), true);
+        let [x, z] = p.pos;
+        self.forget_remote_packets(&mut [(x, z)].into_iter().collect());
     }
 
     /// `C::BlockDestruction`: its arms of `apply_packet`, guard and order kept.

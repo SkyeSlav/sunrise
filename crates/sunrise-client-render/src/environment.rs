@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, OnceLock, RwLock};
 use sunrise_assets::resource_source::ResourceSource;
 use sunrise_world::environment_attributes::{
-    Attribute, AttributeMap, Entry, Kind, Value, attribute,
+    AMBIENT_PARTICLES, Attribute, AttributeMap, Entry, Kind, Value, attribute,
 };
 use sunrise_world::environment_system::{BiomeBlend, Builder, Conditions, System};
 use sunrise_world::environment_timeline::Timeline;
@@ -338,7 +338,7 @@ fn as_number(value: &Value) -> f64 {
         Value::Argb([r, g, b, a]) => {
             f64::from((byte(*a) << 24 | byte(*r) << 16 | byte(*g) << 8 | byte(*b)) as i32)
         }
-        Value::MoonPhase(_) | Value::Other(_) => 0.0,
+        Value::MoonPhase(_) | Value::AmbientParticles(_) | Value::Other(_) => 0.0,
     }
 }
 
@@ -1055,6 +1055,9 @@ impl Environment {
             biomes.insert(name.clone(), map);
         }
         builder.biome_layer(biomes.values());
+        // Ambient emission uses the active level's registry, including synchronized biomes.
+        builder
+            .biome_attribute(attribute(AMBIENT_PARTICLES).expect("registered ambient particles"));
         for id in timeline_ids(root, &json["timelines"], synced) {
             let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", &id));
             let parsed = if let Some(timelines) = &synced.timelines {
@@ -1182,7 +1185,7 @@ impl Environment {
     /// `EnvironmentAttributeSystem.getValue` of one attribute, or its dimension value without
     /// a biome.
     pub fn value(&self, id: &str, at: &Sample) -> Option<Value> {
-        self.value_with_clock(id, at, &|_| at.day_time)
+        self.value_at(attribute(id)?, at, &|_| at.day_time)
     }
 
     /// `EnvironmentAttributes.MOON_PHASE`, on the clock named by each timeline and the optional
@@ -1194,7 +1197,7 @@ impl Environment {
             ..Sample::default()
         };
         let Some(Value::MoonPhase(phase)) =
-            self.value_with_clock("visual/moon_phase", &sample, clock)
+            attribute("visual/moon_phase").and_then(|attr| self.value_at(attr, &sample, clock))
         else {
             unreachable!("visual/moon_phase has a moon phase type and default")
         };
@@ -1206,13 +1209,13 @@ impl Environment {
         self.system.is_positional("visual/moon_phase")
     }
 
-    fn value_with_clock(
+    /// Sample a known attribute with the level's clock values.
+    pub fn value_at(
         &self,
-        id: &str,
+        attribute: &Attribute,
         at: &Sample,
         clock: &dyn Fn(&str) -> i64,
     ) -> Option<Value> {
-        let attribute = attribute(id)?;
         let biome = |_full_resolution: bool| at.biome;
         let post_biome = |_full_resolution: bool| at.post_biome;
         let conditions = Conditions {

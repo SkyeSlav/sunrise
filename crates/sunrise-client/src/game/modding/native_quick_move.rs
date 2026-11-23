@@ -389,7 +389,7 @@ impl Game<'_> {
             && self.native_block_entity_write_key(subject) == Some(pos)
         {
             let player = self.native_acting_id();
-            let _ = self.mod_menu_slot_take(pos, player, menu, &take);
+            let _ = self.mod_menu_slot_take(Some(pos), player, menu, &take);
         }
         QuickMoveOutcome::Handled
     }

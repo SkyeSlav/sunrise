@@ -164,6 +164,11 @@ impl Renderer {
     pub fn packed_layout(&self) -> [bool; 2] {
         [self.packed_quads, crate::lod::packed::far_packing()]
     }
+    /// Whether the section arena keeps its quads' sources for a `shaders/` pack's flat terrain
+    /// (`keep_pack_sources`): with none, its pages have no sidecars.
+    pub fn keeps_pack_sources(&self) -> bool {
+        self.arena.sources_read()
+    }
     /// Bytes of the arena the resident chunk sections hold, and of the one far
     /// tiles hold: the same split `gpu_census` reports, for `status`, so the
     /// compact layouts can be seen working.

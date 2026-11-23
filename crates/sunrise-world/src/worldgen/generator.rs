@@ -3767,6 +3767,86 @@ mod tests {
         );
     }
 
+    /// A structure piece places a configured feature with no modifiers (as
+    /// `/place feature` does) and a placed feature, both by id from the data
+    /// pack; an id the pack lacks places nothing.
+    #[test]
+    #[ignore = "daily"]
+    fn a_structure_piece_places_configured_and_placed_features_by_id() {
+        use super::super::{
+            feature::FeatureWorld,
+            generator_decoration::Decoration,
+            placement::{PlacementContext, PlacementQueryError},
+            structure::jigsaw::FeatureKey,
+        };
+        use std::collections::BTreeMap;
+        use std::convert::Infallible;
+        use sunrise_core::random::LegacyRandom;
+
+        struct World(BTreeMap<[i32; 3], BlockStateId>);
+        impl FeatureWorld for World {
+            type Error = Infallible;
+            fn block(&mut self, p: [i32; 3]) -> Result<BlockStateId, Infallible> {
+                Ok(self.0.get(&p).copied().unwrap_or(BlockStateId(0)))
+            }
+            fn set_block(
+                &mut self,
+                p: [i32; 3],
+                state: BlockStateId,
+                _: i32,
+            ) -> Result<bool, Infallible> {
+                self.0.insert(p, state);
+                Ok(true)
+            }
+        }
+        impl PlacementContext for World {
+            fn generation(&self) -> super::super::anchor::WorldGenerationContext {
+                super::super::anchor::WorldGenerationContext::new(-64, 384, 63)
+            }
+            fn min_y(&mut self) -> Result<i32, PlacementQueryError> {
+                Ok(-64)
+            }
+            fn height(
+                &mut self,
+                _: HeightmapType,
+                _: i32,
+                _: i32,
+            ) -> Result<i32, PlacementQueryError> {
+                Err(PlacementQueryError::Unavailable)
+            }
+            fn block_survives(
+                &mut self,
+                _: BlockStateId,
+                _: [i32; 3],
+            ) -> Result<bool, PlacementQueryError> {
+                Ok(true)
+            }
+        }
+
+        let data = prepared_data().expect("prepared resources");
+        let plains = ResolvedBiomeSource::Fixed(super::super::biome_source::FixedBiomeSource {
+            biome: "minecraft:plains".into(),
+        });
+        let decoration = Decoration::new(&data, &plains)
+            .unwrap()
+            .expect("decoration");
+        let pumpkin = data.registry().default_state("minecraft:pumpkin").unwrap();
+        let mut world = World(BTreeMap::new());
+        let mut random = LegacyRandom::new(5);
+        let mut place = |feature, pos| {
+            decoration
+                .place_piece_feature(&mut world, &mut random, feature, pos)
+                .unwrap()
+        };
+        assert!(place(
+            FeatureKey::Configured("minecraft:pumpkin"),
+            [3, 70, 4]
+        ));
+        assert!(!place(FeatureKey::Configured("test:missing"), [0, 70, 0]));
+        assert!(!place(FeatureKey::Placed("test:missing"), [0, 70, 0]));
+        assert_eq!(world.0, BTreeMap::from([([3, 70, 4], pumpkin)]));
+    }
+
     /// Seed 1234's strongholds where vanilla 26.3 puts them
     /// (VanillaStructureStartOracle with SUNRISE_RINGS). Each search sampled
     /// its quarts through fresh resolvers, which broke climate ties their own

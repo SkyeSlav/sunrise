@@ -125,7 +125,8 @@ entity in water, drowning, swimming, the sculk vibrations' water test) don't rea
 
 A client map or minimap keeps its own picture of the terrain and only has to redraw what changed.
 `client_chunk_load(dimension, chunk)` and `client_chunk_unload(dimension, chunk)` tell whole columns
-arriving and leaving; `client_block_changed(dimension, pos, old, new, predicted)` tells each block of a
+arriving and leaving (a column that merely leaves the view stays loaded, out of view, and is told only
+once its data is freed); `client_block_changed(dimension, pos, old, new, predicted)` tells each block of a
 held column that changes state, after the write, so `host.level(dimension)` already reads `new` there:
 
 ```rust

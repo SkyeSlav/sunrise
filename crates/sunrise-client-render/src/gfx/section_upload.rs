@@ -132,6 +132,22 @@ fn filter_block_entities_in_range<'a>(
         })
 }
 
+/// `mesh`'s solid sources and where its solid range names their quads, for
+/// `Arena::write_sources`: by record in the compact layout (`packed`, one record per quad in
+/// mesh order), by first vertex otherwise.
+pub(super) fn solid_sources(
+    mesh: &SectionMesh,
+    packed: bool,
+) -> (arena::QuadSlots, &[crate::mesher::TerrainSource]) {
+    let quads = mesh.solid.len() as u64 / 4;
+    let names = if packed {
+        arena::QuadSlots::records(quads)
+    } else {
+        arena::QuadSlots::vertices(4 * quads)
+    };
+    (names, &mesh.solid_sources)
+}
+
 /// A block entity of a section in range of the camera (`Renderer::block_entities_in_range`).
 pub struct BlockEntityInRange<'a> {
     /// Its block and block state.
@@ -282,14 +298,14 @@ impl Renderer {
         });
         let stride = std::mem::size_of::<TerrainVertex>() as u64;
         if solid_slots > 0 {
+            let (names, sources) = solid_sources(mesh, packed);
             self.arena.write_sources(
                 &self.device,
                 encoder,
                 &mut self.section_uploads,
-                page,
-                start,
-                solid_slots,
-                if packed { &[] } else { &mesh.solid_sources },
+                (page, start, solid_slots),
+                names,
+                sources,
             );
         }
         if translucent_vertices > 0 {
@@ -300,9 +316,8 @@ impl Renderer {
                     &self.device,
                     encoder,
                     &mut self.section_uploads,
-                    translucent_at.0,
-                    translucent_at.1,
-                    translucent_vertices,
+                    (translucent_at.0, translucent_at.1, translucent_vertices),
+                    arena::QuadSlots::vertices(translucent_vertices),
                     &mesh.translucent_sources,
                 );
         }
@@ -893,6 +908,18 @@ impl Renderer {
         );
         if let (Some(flat), Some(arena)) = (&mut self.flat, &self.translucent_arena) {
             flat.set_translucent_page_vertices(arena.page_vertices());
+        }
+    }
+    /// Keeps the section arena's quad sources while meshes carry them for a `shaders/` pack
+    /// (`on`, the game's `shader_pack` meshing switch) and flat draws can read them
+    /// (`pack_atlas`'s `hz_sources`); none otherwise. Switching off frees every sidecar, and
+    /// meshes still carrying a dropped pack's sources are kept without them. The translucent
+    /// arena, which no draw binds as storage, never keeps any.
+    pub fn keep_pack_sources(&mut self, on: bool) {
+        let read = on && self.flat.is_some();
+        if read != self.arena.sources_read() {
+            let released = self.arena.read_sources(read);
+            self.graveyard.add(released);
         }
     }
     /// Uploads solid quads in the compact layout (`packed_quads`) unless a pack reads the

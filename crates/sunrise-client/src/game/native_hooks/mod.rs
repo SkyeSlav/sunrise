@@ -340,6 +340,7 @@ mod item_after_vertical_collision;
 mod item_attack;
 mod item_container;
 mod item_crafted;
+mod item_destroyed;
 mod item_fished;
 mod item_interact_mob;
 mod item_model_property;

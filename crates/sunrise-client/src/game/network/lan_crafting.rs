@@ -522,8 +522,9 @@ impl Game<'_> {
 
     /// Run a blockless owned menu through the same slot layout and click engine as its client.
     /// When the menu type has a `menu_slot_changed` listener, each click step's input changes
-    /// reach it before the next step, in one transaction with the click (opened only then), so a
-    /// failed listener undoes the click.
+    /// reach it before the next step, and a `menu_slot_take` listener hears each take
+    /// (`Slot.onTake`), in one transaction with the click (opened only then), so a failed listener
+    /// undoes the click.
     pub(super) fn lan_owned_menu_click(
         &mut self,
         conn: u32,
@@ -539,13 +540,16 @@ impl Game<'_> {
             (m.window == p.container && !guest.spectator()).then_some(layout)
         })?;
         let generation = guest.menu_generation;
+        let target_uuid = guest.uuid;
         let offhand_before = guest.offhand.clone();
         let items = guest.native_menu.clone();
+        let listens_take =
+            mod_api::__private::menu_listens(mod_api::HookId::MenuSlotTake, layout.id);
         let slot_changed =
             mod_api::__private::menu_listens(mod_api::HookId::MenuSlotChanged, layout.id)
                 .then_some(SlotChangedMenu {
                     conn,
-                    uuid: guest.uuid,
+                    uuid: target_uuid,
                     window: p.container,
                     layout,
                     backing: SlotChangedBacking::Owned { generation },
@@ -567,13 +571,27 @@ impl Game<'_> {
         let click = super::lan_pickup::click_of(p);
         let prepare = |menu: &mut Menu, env: &Env| menu.load_container(env, &items, None);
         let snapshot = menu.snapshot();
+        // A take listener edits the transient slots through the Host: the menu reads them back.
+        let refresh = |game: &Game<'_>, menu: &mut Menu| {
+            let Some(guest) = game.lan.as_ref().and_then(|host| host.hub.guest(conn)) else {
+                return false;
+            };
+            if !live(guest) {
+                return false;
+            }
+            for slot in 0..layout.slots {
+                menu.load_slot(slot, guest.native_menu.get(slot).cloned().flatten());
+            }
+            true
+        };
         // What the guest sees: a listener's writes can reach slots the click itself never touched.
         let before: Vec<_> = (0..menu.slot_count())
             .map(|s| host.hub.view_slot(gi, &self.world, s))
             .collect();
-        let scope = self.storage_scope_guard(slot_changed.is_some());
+        let listened = slot_changed.is_some() || listens_take;
+        let scope = self.storage_scope_guard(listened);
         let game = &mut *scope.game;
-        if slot_changed.is_some() {
+        if listened {
             game.transactions.last_mut().unwrap().menu_click_active = Some(conn);
             game.journal_guest_click(conn);
             game.journal_menu_click(conn);
@@ -590,6 +608,7 @@ impl Game<'_> {
                     let (mut previous, rest) =
                         game.guest_menu_edit(gi, menu, stacked, |menu, env| {
                             prepare(menu, env);
+                            menu.track_takes(listens_take);
                             let before = menu.container_items();
                             (before, menu.start_click(env, click.0, click.1, click.2))
                         })?;
@@ -609,14 +628,39 @@ impl Game<'_> {
                                 return None;
                             }
                         }
+                        // `Slot.onTake`, then the inputs the take listener changed, before the
+                        // click goes on: the next step sees the next result.
+                        let menu_live = if let Some(take) = menu.take_notice() {
+                            let before_take = menu.container_items();
+                            if game.as_guest(conn, |game| {
+                                game.mod_menu_slot_take(None, target_uuid, layout.id, &take)
+                            }) != Some(true)
+                            {
+                                return None;
+                            }
+                            let live_now = refresh(game, menu);
+                            if live_now && let Some(target) = &slot_changed {
+                                let after_take = menu.container_items();
+                                let snapshots = SlotSnapshots {
+                                    before: &before_take,
+                                    after: &after_take,
+                                };
+                                if !game.mod_menu_slot_changed(target, Some(menu), snapshots) {
+                                    return None;
+                                }
+                                refresh(game, menu)
+                            } else {
+                                live_now
+                            }
+                        } else {
+                            game.lan
+                                .as_ref()
+                                .and_then(|host| host.hub.guest(conn))
+                                .is_some_and(live)
+                        };
                         let Some(step) = rest.take() else {
                             break;
                         };
-                        let menu_live = game
-                            .lan
-                            .as_ref()
-                            .and_then(|host| host.hub.guest(conn))
-                            .is_some_and(live);
                         let step = if menu_live {
                             previous = menu.container_items();
                             step
@@ -712,8 +756,8 @@ impl Game<'_> {
             .map(|(l, links)| l.slots().skip(linked_slot_count(&self.world, links)));
         let entity = self.world.block_entities.get(&pos)?;
         let (kind, mut items) = machine_menu(entity, mod_type)?;
-        let listens_take = matches!((kind, entity), (Kind::Mod(_), BlockEntity::Mod(entity))
-            if mod_api::__private::block_entity_type_listens(mod_api::HookId::MenuSlotTake, entity.id()));
+        let listens_take = matches!((kind, entity), (Kind::Mod(_), BlockEntity::Mod(_))
+            if mod_api::__private::menu_listens(mod_api::HookId::MenuSlotTake, &menu_id));
         let click = super::lan_pickup::click_of(p);
         let native_quick_move = click.2 == Input::QuickMove
             && (0..=1).contains(&click.1)
@@ -1025,7 +1069,7 @@ impl Game<'_> {
                                 let menu_live = if let Some(take) = menu.take_notice() {
                                     let before_take = menu.container_items();
                                     if game.as_guest(conn, |game| {
-                                        game.mod_menu_slot_take(pos, uuid, &menu_id, &take)
+                                        game.mod_menu_slot_take(Some(pos), uuid, &menu_id, &take)
                                     }) != Some(true)
                                     {
                                         return None;
@@ -2206,6 +2250,12 @@ impl Game<'_> {
         // If the leaving level could not be opened for normal removal, put
         // its remaining cursors in the same fallback as the remaining inputs.
         let mut grid: Vec<_> = host.hub.take_closed_menu_cursors(g.conn).collect();
+        let (proc_ret, proc_drop) = host.hub.take_closed_processing_inputs(g.conn);
+        let mut dropped_processing = proc_ret;
+        dropped_processing.extend(proc_drop);
+        if let Some(menu) = g.menu.as_ref() {
+            dropped_processing.extend(menu.take_processing_inputs(&mut g.native_menu));
+        }
         grid.extend(g.take_menu_cursors());
         grid.extend(g.craft_grid.iter_mut().filter_map(Option::take));
         let play = host.menus.get_mut(&g.conn);
@@ -2218,6 +2268,9 @@ impl Game<'_> {
             if let Some(station) = play.station.take() {
                 grid.extend(super::lan_stations::station_inputs(&station));
             }
+        }
+        for stack in dropped_processing {
+            self.spawn_item(stack, g.position, [0.0, 0.1, 0.0], 40);
         }
         if grid.is_empty() {
             return;

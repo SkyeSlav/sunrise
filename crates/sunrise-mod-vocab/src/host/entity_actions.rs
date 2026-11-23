@@ -124,4 +124,25 @@ pub trait EntityActionsBackendMut {
         volume: f32,
         pitch: f32,
     ) -> bool;
+    /// Side: server.
+    /// `ServerLevel.playSeededSound(except, entity, sound, source, volume, pitch, seed)`: plays
+    /// sound event `sound` bound to the entity as [`EntityRef::play_bound_sound`](crate::EntityRef::play_bound_sound)
+    /// does, with the seed the caller gives (the level's sound-seed stream does not move), and
+    /// leaves out `except` as [`LevelRef::play_sound`](crate::LevelRef::play_sound) does: the
+    /// player whose own client already played it (a goat horn's player), or `None` for everyone.
+    /// Draw the seed with [`LevelRef::next_sound_seed`](crate::LevelRef::next_sound_seed) to
+    /// model `Level.playSound(except, entity, ...)`. The checks, the `play_level_sound_at_entity`
+    /// hook and the transaction rules are `play_bound_sound`'s; the seed is kept through them.
+    /// True means queued, not heard; false for an entity outside the level in place and for a
+    /// stale or client-side `except`.
+    fn entity_play_seeded_bound_sound(
+        &mut self,
+        entity: EntityRef,
+        sound: &str,
+        source: SoundSource,
+        volume: f32,
+        pitch: f32,
+        except: Option<PlayerRef>,
+        seed: i64,
+    ) -> bool;
 }

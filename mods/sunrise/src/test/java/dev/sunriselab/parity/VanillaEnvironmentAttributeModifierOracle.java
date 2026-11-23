@@ -52,7 +52,7 @@ public final class VanillaEnvironmentAttributeModifierOracle {
 
     private static final java.util.Set<String> PORTED = java.util.Set.of(
         "minecraft:boolean", "minecraft:float", "minecraft:angle_degrees", "minecraft:rgb_color", "minecraft:argb_color",
-        "minecraft:moon_phase");
+        "minecraft:moon_phase", "minecraft:ambient_particles");
 
     /** Every attribute in registration order: id, type, default, and how a float range clamps. */
     @SuppressWarnings("unchecked")

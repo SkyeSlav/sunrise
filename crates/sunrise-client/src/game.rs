@@ -1613,6 +1613,8 @@ mod native_player_visibility;
 #[cfg(test)]
 #[path = "game/modding/native_player_visibility_tests.rs"]
 mod native_player_visibility_tests;
+#[path = "game/modding/native_pool_elements.rs"]
+mod native_pool_elements;
 #[path = "game/modding/native_portal_destination.rs"]
 mod native_portal_destination;
 #[path = "game/modding/native_profiles.rs"]
@@ -1709,6 +1711,9 @@ mod native_small_reads_tests;
 mod native_smoke_source_tests;
 #[path = "game/modding/native_sound_refs.rs"]
 mod native_sound_refs;
+#[cfg(test)]
+#[path = "game/modding/native_sound_seed_tests.rs"]
+mod native_sound_seed_tests;
 #[path = "game/modding/native_special_renderers.rs"]
 mod native_special_renderers;
 #[cfg(test)]
@@ -1805,6 +1810,9 @@ mod owner_link;
 mod pack_clouds_frame_tests;
 #[path = "game/modding/pack_finders/mod.rs"]
 mod pack_finders;
+#[cfg(test)]
+#[path = "game/interface/pack_sources_tests.rs"]
+mod pack_sources_tests;
 #[path = "game/world/packs/mod.rs"]
 mod packs;
 #[path = "game/interface/pad/mod.rs"]
@@ -11115,7 +11123,8 @@ impl Game<'_> {
                     .solid_render);
         // The bounded section graph runs on its worker while the frame is prepared, even when
         // smart culling is off (`SectionOcclusionGraph.runUpdates`).
-        let effective_detail_distance = (self.effective_render_distance() * 16) as f32;
+        let effective_render_distance = self.effective_render_distance();
+        let effective_detail_distance = (effective_render_distance * 16) as f32;
         if self.title.is_none()
             && let Some(renderer) = self.renderer.as_mut()
         {
@@ -11214,7 +11223,7 @@ impl Game<'_> {
             (*temperature, *downfall) = (info.temperature, info.downfall);
             (*frame_rain, *frame_thunder) = (rain, thunder);
             (*game_time, *day_time) = (self.world.game_time, self.view_day_time());
-            *render_distance = self.streaming.radius;
+            *render_distance = effective_render_distance;
             *sky_type = match self.dimension_type().skybox {
                 sunrise_world::dimension_type::Skybox::Overworld => 1,
                 sunrise_world::dimension_type::Skybox::End => 2,
@@ -11683,8 +11692,8 @@ impl Game<'_> {
             shadow_scene_revision: (self.world.revision, self.world.chunks.membership_revision()),
             shadow_cache: self.settings.sunrise.shadow_cache,
             distance,
-            detail_distance: (self.effective_render_distance() * 16) as f32,
-            shadow_distance: Some((self.streaming.radius * 16) as f32),
+            detail_distance: effective_detail_distance,
+            shadow_distance: Some(effective_detail_distance),
             depth_far,
             underwater,
             water_plane: if title
@@ -14458,6 +14467,14 @@ pub(crate) fn run_with(
         .is_err()
         {
             log::warn!("Mod structure types already installed; keeping the first table");
+        }
+        // Their pool element types, before any world decodes its template pools.
+        if sunrise_world::worldgen::structure::mod_elements::install_mod_pool_element_types(
+            native_pool_elements::installed_pool_element_types(),
+        )
+        .is_err()
+        {
+            log::warn!("Mod pool element types already installed; keeping the first table");
         }
         // Their feature types, before any world decodes its configured features.
         if sunrise_world::worldgen::mod_features::install_mod_feature_types(

@@ -64,8 +64,14 @@ fn too_large_at(body: &str, line: usize) {
 
 #[test]
 fn an_array_too_large_is_refused_however_its_size_is_written() {
-    // 99999999999 does not fit 32 bits: naga keeps its low bits, 1215752191, still too large.
-    too_large_at("float a[99999999999];", 2);
+    // 99999999999 does not fit 32 bits: the literal is refused (GLSL 4.60 §4.1.3), and the low
+    // bits naga keeps, 1215752191, still give an array too large to lay out.
+    let errors = errors("float a[99999999999];");
+    assert!(
+        matches!(&errors[..], [(ErrorKind::SemanticError(m), 2), (ErrorKind::TypeTooLarge, 2)]
+            if m == "Integer literal does not fit in 32 bits"),
+        "{errors:?}"
+    );
     too_large_at("float a[0x7fffffff];", 2);
     too_large_at("float a[017777777777];", 2);
     too_large_at("float a[0x7fffffffu];", 2);

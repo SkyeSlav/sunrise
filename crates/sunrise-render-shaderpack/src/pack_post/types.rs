@@ -381,6 +381,9 @@ pub struct Pass {
     /// The entity program without colour writes, for the boats' water patches
     /// (`RenderTypes.waterMask`: depth only, so no water shows inside a hull).
     pub water_mask: Option<Slot<wgpu::RenderPipeline>>,
+    /// A block program with its depth biased as vanilla's `RenderPipelines.TEXT_POLYGON_OFFSET`,
+    /// for sign text in `POLYGON_OFFSET` mode (`Draw::polygon_offset`).
+    pub polygon_offset: Option<Slot<wgpu::RenderPipeline>>,
     pub layout: wgpu::BindGroupLayout,
     pub ubo: wgpu::Buffer,
     pub block: Vec<u8>,

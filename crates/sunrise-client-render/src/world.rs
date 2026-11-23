@@ -864,16 +864,18 @@ impl World {
             Some(chunk.sections[s].light(crate::chunk::index(x, y, z)))
         }) {
             Some(light) => light,
-            None => self.light_outside(x, y, z, chunk),
+            None => self.light_outside(x, y, z),
         }
     }
     /// The light of a position no section holds: past a loaded column's sections, or in a column that
     /// is not loaded ([`Self::border_light`]), without sky in a level without it. A read inside a
-    /// section of a level without skylight already has sky set to 0.
+    /// section of a level without skylight already has sky set to 0. It looks the column up again,
+    /// among the columns the client chunk cache hides too (light belongs to the level, not to the
+    /// cache's current view), so the hot read keeps nothing live for it.
     #[cold]
     #[inline(never)]
-    fn light_outside(&self, x: i32, y: i32, z: i32, chunk: Option<&Chunk>) -> u8 {
-        let light = match chunk {
+    fn light_outside(&self, x: i32, y: i32, z: i32) -> u8 {
+        let light = match self.chunks.resident_get(&(x >> 4, z >> 4)) {
             Some(chunk) => chunk.light(x & 15, y, z & 15),
             None => self.border_light((x >> 4, z >> 4), x, y, z),
         };

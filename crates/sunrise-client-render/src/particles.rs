@@ -1662,19 +1662,49 @@ impl ParticleEngine {
         override_limiter: bool,
         always_show: bool,
     ) -> bool {
-        let c = self.camera;
-        let d2 = (p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2) + (p[2] - c[2]).powi(2);
-        if let Some(requested) = &mut self.requested {
-            requested.push((options.clone(), p, v));
-            REQUESTED.set(REQUESTED.get() + 1);
+        if self.capture(options, p, v) {
             return true;
         }
-        let minimal = self.calculate_particle_level(always_show) == 2;
-        if override_limiter || (d2 <= 1024.0 && !minimal) {
+        if self.admit_particle_at(p, override_limiter, always_show) {
             self.create_with_world(world, options, p, v)
         } else {
             true
         }
+    }
+
+    /// A capture (`requested`) takes the request in place of the particle it would create.
+    fn capture(&mut self, options: &ParticleOptions, p: [f64; 3], v: [f64; 3]) -> bool {
+        let Some(requested) = &mut self.requested else {
+            return false;
+        };
+        requested.push((options.clone(), p, v));
+        REQUESTED.set(REQUESTED.get() + 1);
+        true
+    }
+
+    /// An option its caller admitted already (`ClientLevel.doAddParticle` admits before it
+    /// invokes a provider): a capture takes it as `add`'s, else it is created.
+    pub fn add_admitted_with_world(
+        &mut self,
+        world: Option<&World>,
+        options: &ParticleOptions,
+        p: [f64; 3],
+        v: [f64; 3],
+    ) -> bool {
+        self.capture(options, p, v) || self.create_with_world(world, options, p, v)
+    }
+
+    /// `ClientLevel.doAddParticle`'s admission step, before invoking a provider.
+    pub fn admit_particle_at(
+        &mut self,
+        p: [f64; 3],
+        override_limiter: bool,
+        always_show: bool,
+    ) -> bool {
+        let c = self.camera;
+        let d2 = (p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2) + (p[2] - c[2]).powi(2);
+        let minimal = self.calculate_particle_level(always_show) == 2;
+        override_limiter || (d2 <= 1024.0 && !minimal)
     }
     /// `NoxiousGasCloudParticle.spawnNoxiousGasParticle`: the gas, as an
     /// always visible particle (`ClientLevel.addAlwaysVisibleParticle`).

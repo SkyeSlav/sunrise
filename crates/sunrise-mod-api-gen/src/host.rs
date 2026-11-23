@@ -119,6 +119,7 @@ pub(super) const GOAL_VIEW_READS: &[&str] = &[
     "mob_navigation_speed",
     "mob_pathfinding_malus",
     "mob_is_aggressive",
+    "mob_is_in_sitting_pose",
     "mob_persistence_required",
     "mob_requires_custom_persistence",
     "mob_no_ai",

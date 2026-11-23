@@ -594,12 +594,14 @@ uvec2 hz_record_rest(uvec3 hz_lo, uvec3 hz_hi, uint hz_k) {\n    \
 /// GLSL: a flat-drawn vertex's inputs, and its quad's four corners' positions (`hz_cp0`..) and
 /// UV words (`hz_uv0`..), pulled from the arena page as terrain.wgsl's `vs_section_flat` pulls
 /// them (`CORNER_FN`): a record is read once for all four, and only the vertex's own light and
-/// colour are worked out. `hz_slot`: the slot its block is found by (`hz_block_slots`, 256 a
-/// block). The colour as the vertex fetch converts a Unorm8x4 (terrain.wgsl's `unorm8x4`).
+/// colour are worked out. `hz_slot`: the arena slot that names its quad, its record's or its first
+/// vertex's: its block is found by it (`hz_block_slots`, 256 a block), and its source sits at it
+/// (`hz_sources`, one per slot). The colour as the vertex fetch converts a Unorm8x4 (terrain.wgsl's
+/// `unorm8x4`).
 const PULL_FLAT: &str = "    uint hz_qv = uint(gl_VertexIndex);\n    \
     uint hz_own = hz_qv & 3u;\n    \
     uint hz_av = hz_qv & ~3u;\n    \
-    uint hz_slot = hz_qv;\n    \
+    uint hz_slot = hz_av;\n    \
     bool hz_rec = false;\n    \
     uvec3 hz_lo = uvec3(0u);\n    \
     uvec3 hz_hi = uvec3(0u);\n    \
@@ -854,9 +856,8 @@ impl PackAtlas {
             body.insert_str(0, PULL_FLAT);
             body.push_str(FACE);
             body.push_str(
-                "    uint hz_quad = uint(gl_VertexIndex) / 4u;\n    \
-                 uvec2 hz_source = uvec2(0u);\n    \
-                 if (hz_quad < uint(hz_sources.length())) hz_source = hz_sources[hz_quad];\n    \
+                "    uvec2 hz_source = uvec2(0u);\n    \
+                 if (hz_slot < uint(hz_sources.length())) hz_source = hz_sources[hz_slot];\n    \
                  bool hz_known_source = (hz_source.y & 8192u) != 0u;\n    \
                  int hz_material = -1;\n    \
                  if (hz_known_source && hz_source.x < uint(hz_tables[1])) hz_material = hz_tables[2u + uint(hz_tables[0]) + 2u * hz_source.x + ((hz_source.y >> 12u) & 1u)];\n",
