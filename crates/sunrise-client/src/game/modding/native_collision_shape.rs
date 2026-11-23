@@ -104,7 +104,7 @@ impl Game<'_> {
     pub(in crate::game) fn collision_parts(
         &self,
     ) -> Option<sunrise_world::part_collision::InParts> {
-        mod_api::__private::listened(mod_api::HookId::CollisionShape).then(|| {
+        mod_api::__private::has_scoped_hook(mod_api::HookId::CollisionShape).then(|| {
             let parts = PARTS.with_borrow_mut(|slot| {
                 let parts = slot.get_or_insert_with(|| {
                     Rc::new(sunrise_client::collision_parts::ModParts::new(
@@ -228,5 +228,103 @@ mod tests {
             // A state with no part is not asked and keeps its shape.
             assert_eq!(ask(3), None);
         });
+    }
+
+    type Asked = Arc<std::sync::Mutex<Vec<(Option<u32>, mod_api::CollisionEntityKind)>>>;
+    /// Opens stone to every entity (no boxes), and records who asked.
+    struct Open(Asked);
+    #[mod_api::sunrise_part]
+    impl mod_api::BlockPart for Open {
+        fn collision_shape(
+            &self,
+            _: &dyn mod_api::LoopContext,
+            event: &mut mod_api::CollisionShapeEvent<'_>,
+        ) {
+            let query = event.query;
+            self.0.lock().unwrap().push((query.entity(), query.kind()));
+            *event.shape = Some(Vec::new());
+        }
+    }
+    struct OpenStone(Asked);
+    #[mod_api::__subscriptions]
+    impl mod_api::Hooks for OpenStone {
+        fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+            let key = r.block_key("minecraft:stone");
+            r.block_part(key, Open(self.0.clone()));
+        }
+    }
+
+    /// A part's shape reaches the moves of the game's tick: a dropped item resting on stone whose
+    /// part answers no boxes falls into it, and the part is asked about that item.
+    #[test]
+    #[ignore = "daily"]
+    fn a_dropped_item_falls_into_stone_whose_part_answers_no_boxes() {
+        crate::game::in_own_process(
+            "game::native_collision_shape::tests::a_dropped_item_falls_into_stone_whose_part_answers_no_boxes",
+            || {
+                let asked = Asked::default();
+                let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+                    "open_stone",
+                    Box::new(OpenStone(asked.clone())),
+                )]
+                .into();
+                crate::game::api_values::install_parts(&mods).unwrap();
+                mod_platform::testing::with_mods(mods, || {
+                    crate::game::native_entity_refs::tests::with_game(|game| {
+                        game.options.dedicated = Some(Vec::new());
+                        for x in -1..=1 {
+                            for z in -1..=1 {
+                                let mut chunk = sunrise_client::chunk::Chunk::empty(x, z);
+                                chunk.lit = true;
+                                game.world.chunks.insert((x, z), Arc::new(chunk));
+                            }
+                        }
+                        let stone = game
+                            .pack
+                            .assets
+                            .registry
+                            .default_state("minecraft:stone")
+                            .unwrap();
+                        game.world.set(1, 64, 1, stone).unwrap();
+                        game.resolve_parts().unwrap();
+                        let level = game.level(game.dim.id()).unwrap();
+                        let stack = sunrise_client::items::ItemStack::new("minecraft:apple", 1);
+                        let item = game
+                            .level_spawn_item(level, 1.5, 65.0, 1.5, stack, 10)
+                            .unwrap();
+                        if let Some(i) = game.dropped.iter_mut().find(|i| i.id == item.id()) {
+                            i.velocity = sunrise_core::geometry::Vec3::ZERO;
+                        }
+                        let parts = game.collision_parts();
+                        assert!(parts.is_some(), "a block part answers collision_shape");
+                        for _ in 0..8 {
+                            game.ticked_entities_through = u32::MAX;
+                            sunrise_client::block_contact::in_level(
+                                sunrise_client::parallel::TickThread::mint(),
+                                Some(game.dim.id()),
+                                || game.tick_items(),
+                            );
+                        }
+                        drop(parts);
+                        let y = game
+                            .dropped
+                            .iter()
+                            .find(|i| i.id == item.id())
+                            .unwrap()
+                            .position
+                            .y;
+                        assert!(y < 65.0, "the item fell into the stone, at y {y}");
+                        assert!(
+                            asked
+                                .lock()
+                                .unwrap()
+                                .contains(&(Some(item.id()), mod_api::CollisionEntityKind::Item)),
+                            "asked: {:?}",
+                            asked.lock().unwrap()
+                        );
+                    });
+                });
+            },
+        );
     }
 }
