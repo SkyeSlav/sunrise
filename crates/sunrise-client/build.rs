@@ -18,7 +18,7 @@ fn main() {
 /// without `test` still compiles (its module is `any(test, feature = "parity-fixtures")`), by its libtest name.
 /// The bin `sunrise-parity-fixtures` runs them as the lib test would, without compiling the lib's other tests.
 fn parity_fixtures(manifest: &std::path::Path) -> Result<String, String> {
-    use sunrise_mod_source::modules::{test_only, walk_module_files};
+    use mod_source::modules::{test_only, walk_module_files};
     let lib = manifest.join("src/lib.rs");
     let files = walk_module_files(
         "root".into(),
