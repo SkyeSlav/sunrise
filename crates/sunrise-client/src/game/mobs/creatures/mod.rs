@@ -1896,8 +1896,86 @@ impl Game<'_> {
             self.particles.add(&options, [x, y, z], [xa, ya, za]);
         }
     }
+    /// Run the owning-level steps of a suspended hit, then let its caller see the real result.
+    pub(in crate::game) fn complete_mob_hurt(
+        &mut self,
+        index: usize,
+        hurt: bool,
+    ) -> Option<(usize, bool)> {
+        self.complete_mob_hurt_with_weapon(index, hurt, None)
+    }
+
+    pub(in crate::game) fn complete_mob_hurt_with_weapon(
+        &mut self,
+        mut index: usize,
+        mut hurt: bool,
+        weapon: Option<&ItemStack>,
+    ) -> Option<(usize, bool)> {
+        use sunrise_client::{health::HitLend, mobs::MobHurtAction};
+
+        let victim = self.mobs.get(index)?;
+        let (id, join) = (victim.id, victim.join);
+        while self
+            .paused_mob_hurt
+            .as_ref()
+            .is_some_and(|hit| hit.victim == id && hit.join == join)
+        {
+            let mut paused = *self.paused_mob_hurt.take().expect("matching paused hit");
+            // Nested hits from this callback are independent of the suspended hit.
+            self.mobs[index].release_hurt_pause();
+            match paused.action {
+                MobHurtAction::Wake => self.wake_villager(id),
+                MobHurtAction::AwardResistance { player, tenths } => {
+                    self.award_custom_stat_for(player, "damage_dealt_resisted", tenths);
+                }
+            }
+            // Owner callbacks can remove the victim or replace its id with another body.
+            index = self
+                .mob_index
+                .find(&self.mobs, id)
+                .filter(|&i| self.mobs[i].join == join && !self.mobs[i].removed)?;
+            let attack = std::mem::take(&mut paused.attack);
+            let plan = self.prepare_knockback_credit(id as i32, paused.attacker(), &attack);
+            let mut credit = plan.lend(&mut self.last_hurt_by_player);
+            let kind = self.mobs[index].kind.id.clone();
+            let mut breach = super::mace::breach_modifier(
+                weapon,
+                &kind,
+                paused.source_kind(),
+                world_items!(self),
+                &world_stations!(self).enchantments,
+            );
+            let lent_index = paused
+                .lent_attacker
+                .and_then(|id| self.mob_index.find(&self.mobs, id as u32));
+            let (mob, lend) = if let Some(other) = lent_index.filter(|&i| i != index) {
+                let [mob, attacker] = self
+                    .mobs
+                    .get_disjoint_mut([index, other])
+                    .expect("distinct hit and attacker");
+                (mob, HitLend::mob(attacker))
+            } else {
+                (
+                    &mut self.mobs[index],
+                    paused
+                        .lent_attacker
+                        .and_then(|id| HitLend::attacking_player(self.player.as_mut(), id)),
+                )
+            };
+            hurt = mob.resume_hurt(
+                crate::game::entity::damage_level_of!(self, &attack, &mut credit, lend),
+                paused,
+                weapon.map(|_| &mut breach as &mut _),
+            );
+        }
+        Some((index, hurt))
+    }
+
     /// Settle a hit while its damage owner still has the level in place.
     pub(in crate::game) fn finish_mob_damage_at(&mut self, index: usize) {
+        let Some((index, _)) = self.complete_mob_hurt(index, false) else {
+            return;
+        };
         self.settle_villager_hurt(index);
         let Some(mob) = self.mobs.get_mut(index) else {
             return;
@@ -2258,7 +2336,7 @@ impl Game<'_> {
         let attack = self.attack_of_who(source.attacker);
         let plan = self.prepare_knockback_credit(target as i32, source.attacker, &attack);
         let mut credit = plan.lend(&mut self.last_hurt_by_player);
-        let target_index = self.mobs.iter().position(|m| m.id == target);
+        let mut target_index = self.mobs.iter().position(|m| m.id == target);
         let attacker_index = match source.attacker {
             Some(Who::Mob(id)) if sunrise_client::health::hit_host_listened() => {
                 self.mobs.iter().position(|m| m.id == id)
@@ -2291,6 +2369,11 @@ impl Game<'_> {
                 source,
                 aim,
             );
+            let Some((ti, hit)) = self.complete_mob_hurt(ti, hit) else {
+                return false;
+            };
+            target_index = Some(ti);
+            let t = &mut self.mobs[ti];
             hurt = hit;
             // Squid.hurtServer can report false after its superclass accepted a lethal hit.
             settle = t.damage_completion.is_some();
@@ -4605,8 +4688,12 @@ impl Game<'_> {
         };
         attack.projectile = self.combat.attack().projectile;
         attack.projectile_kind = self.combat.attack().projectile_kind;
+        attack.projectile_type = self.combat.attack().projectile_type;
         attack.direct = self.combat.attack().direct;
         attack.direct_kind = self.combat.attack().direct_kind;
+        attack
+            .direct_type
+            .clone_from(&self.combat.attack().direct_type);
         attack.position = from;
         attack.projectile_weapon = self.combat.attack().projectile_weapon.clone();
         if let Some(a) = attacker.or(owner) {
@@ -8175,11 +8262,13 @@ impl Game<'_> {
                     f32::MAX,
                     sunrise_client::mobs::Damage::player(player_at.unwrap_or(center)),
                 );
-                // The feeder gets the kill, as for a normal player attack.
-                if hurt {
-                    self.remember_mob_player_credit(id);
+                if let Some((index, hurt)) = self.complete_mob_hurt(index, hurt) {
+                    // The feeder gets the kill, as for a normal player attack.
+                    if hurt {
+                        self.remember_mob_player_credit(id);
+                    }
+                    self.finish_mob_damage_at(index);
                 }
-                self.finish_mob_damage_at(index);
             }
             // Parrot.mobInteract: parrot food may tame a wild one (one time in
             // ten); a parrot never takes it as Animal food (isFood is false).

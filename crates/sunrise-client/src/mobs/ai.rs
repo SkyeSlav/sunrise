@@ -1,7 +1,6 @@
 //! The per-tick mob update in vanilla order (`Entity.baseTick`,
 //! `LivingEntity.baseTick/tick/aiStep`, `Mob.serverAiStep`) and the
 //! dispatch to each species family's goals and special behaviour.
-pub(crate) use freezing::in_powder_snow;
 pub use freezing::{can_freeze, wears_gaze_disguise};
 mod feeding;
 mod flower_contact;
@@ -1515,7 +1514,6 @@ fn after_base_tick(
         })
     {
         super::villager::stop_sleeping(m, w, events);
-        super::villager_brain::woken(m, w.game_time);
     }
     // Fox.aiStep consumes before its super.aiStep, so the hook and its RNG
     // precede goals, travel and block effects at the resumed position.
@@ -2469,6 +2467,22 @@ pub fn tick_swing(m: &mut Mob) {
     }
     m.anim.attack_anim = m.ai.swing_time as f32 / duration as f32;
 }
+/// Whether the mob's box, shrunk by 1e-5, touches powder snow. It lives here, beside
+/// `sun_burn_tick`, so a replacement copy of that function can name it.
+pub(crate) fn in_powder_snow(m: &Mob, w: &MobWorld) -> bool {
+    let b = m.bounds().deflate(Vec3::new(1e-5, 1e-5, 1e-5));
+    let (min, max) = (b.min_position(), b.max_position());
+    for x in min.x.floor() as i32..=max.x.floor() as i32 {
+        for y in min.y.floor() as i32..=max.y.floor() as i32 {
+            for z in min.z.floor() as i32..=max.z.floor() as i32 {
+                if &*w.facts.get(w.world.block(x, y, z)).name == "minecraft:powder_snow" {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
 /// `Entity.isInRain`: rain at the block position, or at the top of the box.
 pub(super) fn in_rain(m: &Mob, w: &MobWorld) -> bool {
     let (x, y, z) = (
@@ -3295,7 +3309,7 @@ fn ai_step(
         super::piglin::before_goals(m, w, level.random(), events);
     }
     if m.alive() && !immobile {
-        server_ai_until_pause(m, w, level, events, pause_movement)?;
+        server_ai_step(m, w, level, events, pause_movement)?;
     } else {
         m.ai.jumping = false;
         m.ai.xxa = 0.0;
@@ -3611,6 +3625,11 @@ fn burn_undead(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         }
     }
 }
+/// `Mob.isSunBurnTick`: whether the sun reaches a mob that burns in daylight this tick. On
+/// `true` the caller applies the exposure, which may wear its protective equipment instead of
+/// igniting it (`burn_undead`). A native mod answers here through `[[native.mixin]]`, where a
+/// Java mod's mixin on `isSunBurnTick` spares one mob from the sun (#4678).
+#[sunrise_mod_api_macros::replaceable]
 fn sun_burn_tick(m: &mut Mob, w: &MobWorld) -> bool {
     // Mob.isSunBurnTick: the monsters_burn attribute, not the sky darkness.
     if m.extra.client_side || !w.monsters_burn {
@@ -3772,13 +3791,25 @@ mod selector_restore_tests {
                             let mut level = crate::health::TestLevel::new(0);
                             let mut events = Vec::new();
                             // Start both live goals before testing either production branch.
-                            server_ai_step(&mut mob, world, &mut level.level(), &mut events);
+                            let _ = server_ai_step(
+                                &mut mob,
+                                world,
+                                &mut level.level(),
+                                &mut events,
+                                false,
+                            );
                             mob.age = age;
                             if let Some(i) = panic_at {
                                 panics[i].store(true, Ordering::SeqCst);
                             }
                             let result = catch_unwind(AssertUnwindSafe(|| {
-                                server_ai_step(&mut mob, world, &mut level.level(), &mut events);
+                                let _ = server_ai_step(
+                                    &mut mob,
+                                    world,
+                                    &mut level.level(),
+                                    &mut events,
+                                    false,
+                                );
                             }));
                             if panic_at.is_some() {
                                 assert_eq!(*result.unwrap_err().downcast::<u32>().unwrap(), 73);
@@ -3798,7 +3829,13 @@ mod selector_restore_tests {
                             for panic in &panics {
                                 panic.store(false, Ordering::SeqCst);
                             }
-                            server_ai_step(&mut mob, world, &mut level.level(), &mut events);
+                            let _ = server_ai_step(
+                                &mut mob,
+                                world,
+                                &mut level.level(),
+                                &mut events,
+                                false,
+                            );
                             for i in 0..2 {
                                 let expected_ticks =
                                     if panic_at == Some(0) && i == 1 { 2 } else { 3 };
@@ -3865,18 +3902,68 @@ mod selector_restore_tests {
 }
 
 #[cfg(test)]
-/// Mob.serverAiStep
-pub(super) fn server_ai_step(
-    m: &mut Mob,
-    w: &MobWorld,
-    level: &mut DamageLevel<'_>,
-    events: &mut Vec<MobEvent>,
-) {
-    let _ = server_ai_until_pause(m, w, level, events, false);
+mod server_ai_brain_tests {
+    use super::*;
+    use crate::mobs::world::{test_player, with_test_world};
+    use std::sync::Arc;
+
+    /// What `server_ai_step` alone leaves on a piglin whose target lies dead (its
+    /// celebration ticks and spot, and its `ADMIRING_DISABLED` countdown) and on a brute
+    /// (its `ANGRY_AT` countdown).
+    fn brain_after_one_step(w: &MobWorld, types: &super::super::MobTypes) -> (i32, bool, i32, i32) {
+        let mut world = w.clone();
+        let mut player = test_player(Vec3::new(3.5, 64.0, 0.5));
+        player.alive = false;
+        world.player = Some(player);
+        let mut level = crate::health::TestLevel::new(0);
+        let mut events = Vec::new();
+        let kind = |name: &str| Arc::new(types.types[name].clone());
+        let mut piglin = Mob::new(1, kind("minecraft:piglin"), Vec3::new(0.5, 64.0, 0.5), 0.0);
+        piglin.ai.target = Some(Who::Player);
+        piglin.extra.piglin.admire_disabled = 5;
+        let _ = server_ai_step(&mut piglin, &world, &mut level.level(), &mut events, false);
+        let mut brute = Mob::new(
+            2,
+            kind("minecraft:piglin_brute"),
+            Vec3::new(0.5, 64.0, 2.5),
+            0.0,
+        );
+        brute.extra.anger = 5;
+        let _ = server_ai_step(&mut brute, &world, &mut level.level(), &mut events, false);
+        (
+            piglin.extra.scratch[1],
+            piglin.extra.home.is_some(),
+            piglin.extra.piglin.admire_disabled,
+            brute.extra.anger,
+        )
+    }
+
+    /// `Piglin` and `PiglinBrute.customServerAiStep` run the brain inside `Mob.serverAiStep`:
+    /// a killed target starts the piglin's celebration, its memories run down, and the
+    /// brute's `ANGRY_AT` runs down, all within `server_ai_step`, so a mod's row that skips
+    /// the step skips them too.
+    #[test]
+    #[ignore = "daily"]
+    fn the_piglin_brain_runs_inside_server_ai_step() {
+        let mut outcome = None;
+        let ran = with_test_world(&[], |w, types| {
+            outcome = Some(brain_after_one_step(w, types))
+        });
+        assert!(ran, "vanilla data is missing");
+        let (celebration, spot, admire_disabled, anger) = outcome.unwrap();
+        assert!(celebration > 0 && spot, "the celebration starts");
+        assert_eq!((admire_disabled, anger), (4, 4));
+    }
 }
 
-/// `Mob.serverAiStep`, pausing on goal movement or a bee's own hurt.
-fn server_ai_until_pause(
+/// `Mob.serverAiStep`, which `ai_step` calls for a living mob that isn't immobile. With
+/// `pause_movement`, it pauses on goal movement or a bee's own hurt (`Break`), and the rest of
+/// the step resumes later without coming back through here. A native mod takes the step here
+/// through `[[native.mixin]]`, where a Java mod's mixin on `serverAiStep` skips it for a tick
+/// (#4678): a cancelling `HEAD` makes it return `Continue(())`, and `ai_step` goes on as after
+/// the step.
+#[sunrise_mod_api_macros::replaceable]
+fn server_ai_step(
     m: &mut Mob,
     w: &MobWorld,
     level: &mut DamageLevel<'_>,
@@ -3885,6 +3972,11 @@ fn server_ai_until_pause(
 ) -> ControlFlow<AiPause> {
     // A Java `int`: past `i32::MAX` it wraps, as there.
     m.ai.no_action_time = m.ai.no_action_time.wrapping_add(1);
+    // The piglin brain's `StartCelebratingIfTargetDead`, before the target goals
+    // drop the dead target.
+    if m.species() == Species::Piglin {
+        super::piglin::celebrate(m, w);
+    }
     // A happy ghast set up for its age (ageBoundaryReached runs at once).
     if m.species() == Species::HappyGhast {
         super::happy_ghast::ensure_setup(m, Some(w));
@@ -4053,8 +4145,12 @@ fn custom_server_ai_step(m: &mut Mob, cx: &mut Cx) {
         Species::Evoker | Species::Illusioner if m.extra.counter > 0 => m.extra.counter -= 1,
         Species::Bat => super::bat::server_ai_step(m, cx.w, cx.events),
         Species::Frog => super::frog::server_ai_step(m, cx.w),
-        // Hoglin and Piglin.customServerAiStep: the brain, then updateActivity.
-        Species::Piglin | Species::Hoglin => super::piglin::brain_step(m, cx),
+        // Hoglin, Piglin and PiglinBrute.customServerAiStep: the brain, then updateActivity.
+        Species::Piglin | Species::Hoglin => {
+            super::piglin::brain_tick(m, cx.w, cx.level.random(), cx.events);
+            super::piglin::brain_step(m, cx);
+        }
+        Species::PiglinBrute => super::piglin::brain_tick(m, cx.w, cx.level.random(), cx.events),
         Species::Zoglin => super::piglin::zoglin_step(m, cx),
         _ => {}
     }
@@ -4077,7 +4173,7 @@ fn species_ai_step(
         Species::Cat => super::tame::cat_ai_step(m, events),
         Species::IronGolem => super::golem::iron_ai_step(m, w),
         Species::Piglin | Species::PiglinBrute | Species::Hoglin => {
-            super::piglin::ai_step(m, w, level.random(), events)
+            super::piglin::ai_step(m, w, events)
         }
         Species::Zoglin if m.extra.anim_ticks > 0 => m.extra.anim_ticks -= 1,
         s if super::equine::is_equine(s) => super::equine::ai_step(m, w, events),
@@ -4093,9 +4189,9 @@ fn species_ai_step(
         Species::Breeze => super::breeze::ai_step(m),
         Species::Sniffer => super::sniffer::ai_step(m, events),
         Species::HappyGhast => super::happy_ghast::ai_step(m, w),
-        Species::Villager => super::villager::ai_step(m, w, events),
+        Species::Villager => super::villager::ai_step(m, w),
         Species::WanderingTrader => {
-            super::villager::ai_step(m, w, events);
+            super::villager::ai_step(m, w);
             super::trader::ai_step(m, w);
         }
         Species::Shulker => {
@@ -4650,7 +4746,6 @@ pub fn accepts_damage(
 }
 /// Reactions after taking damage (sounds, anger).
 pub fn after_hurt(m: &mut Mob, source: &Damage) {
-    m.ai.no_action_time = 0;
     match m.species() {
         Species::Armadillo => super::armadillo::after_hurt(m, source),
         Species::Nautilus | Species::ZombieNautilus => super::nautilus::after_hurt(m, source),
