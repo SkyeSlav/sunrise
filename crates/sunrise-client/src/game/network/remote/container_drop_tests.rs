@@ -22,8 +22,12 @@ fn creative_drop_guards_charge_only_sent_drops() {
                         )
                         .unwrap();
                 });
-                game.wait_for_test_remote_event(|event| matches!(event, Event::Features(_)));
-                game.poll_remote_events(true).unwrap();
+                // Acknowledging configuration can already drain the feature update.
+                // Wait only if the connection still has its default flags.
+                if !game.enabled_feature_ids().is_empty() {
+                    game.wait_for_test_remote_event(|event| matches!(event, Event::Features(_)));
+                    game.poll_remote_events(true).unwrap();
+                }
                 for _ in 0..64 {
                     game.drop_spam_throttler.increment();
                 }
