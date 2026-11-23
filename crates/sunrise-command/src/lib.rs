@@ -1298,6 +1298,7 @@ impl Dispatcher {
         let (parent, start, context) = parse.context.suggestion_context(cursor);
         let start = start.min(cursor);
         let truncated = &parse.input[..cursor.min(parse.input.len())];
+        let mut literal_prefix = None;
         let mut all = Vec::new();
         let mut ask = false;
         let mut owned = false;
@@ -1309,7 +1310,21 @@ impl Dispatcher {
             let mut builder = SuggestionsBuilder::new(truncated, start);
             match &self.nodes[child].kind {
                 NodeKind::Literal(l) => {
-                    if l.to_lowercase().starts_with(&builder.remaining_lower()) {
+                    let prefix = literal_prefix.get_or_insert_with(|| {
+                        // Brigadier lowercases the whole truncated input, then takes its suffix
+                        // at the original UTF-16 offset, even if lowercasing added code units.
+                        let offset = truncated[..builder.start].encode_utf16().count();
+                        truncated
+                            .to_lowercase()
+                            .encode_utf16()
+                            .skip(offset)
+                            .collect::<Vec<_>>()
+                    });
+                    if l.to_lowercase()
+                        .encode_utf16()
+                        .take(prefix.len())
+                        .eq(prefix.iter().copied())
+                    {
                         builder.suggest(l.clone());
                     }
                 }

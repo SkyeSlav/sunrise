@@ -47,10 +47,16 @@ contrast, a public `status detail` allows traversal through `status`, but does n
 make an operator-only `status` executable. Use distinct paths to keep distinct
 executors. A root vanilla already owns is not registered.
 
-Literal words use lowercase letters, digits, `_` and `-`. Only the first word may
-additionally begin with one `/`: register `/set <x:word>` and type `//set stone` in chat.
-The command's literals retain `/set`. A slash alone, repeated leading slashes and
-slashes in later literal words are refused.
+Both `register_commands` and `register_client_commands` accept literal words with mixed
+case, Unicode, punctuation and slashes. A usage starts with a literal and is split on
+whitespace; words starting with `<` or `[` are reserved for required (`<name:kind>`)
+and optional (`[name:kind]`) arguments. Like Brigadier, a literal matches only its exact
+registered spelling followed by a space or the end of input. Completion uses locale-independent
+lowercase for prefix matching and suggests the registered spelling.
+
+Chat consumes exactly one leading slash. To run the usage `//RéLoad:Now! /Écho? <x:word>`,
+type `///RéLoad:Now! /Écho? stone`. The server's `CommandInvocation.literals` contains
+`["//RéLoad:Now!", "/Écho?"]`, with both literals unchanged.
 
 The server parses and checks permissions before resolving arguments or calling the
 executor. Omitted optional arguments are absent, including an omitted optional

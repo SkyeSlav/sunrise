@@ -28,13 +28,15 @@ pub fn split_command_registration(
 /// A data-only command usage. Attach behavior with [`Command::executes`] when
 /// registering it on the server.
 ///
-/// Literal words use lowercase letters, digits, `_` and `-`. Only the first word may
-/// additionally begin with one `/`: register `/set <x:word>` and type `//set stone` in chat.
-/// The command's literals retain `/set`. A slash alone, repeated leading slashes and
-/// slashes in later literal words are refused.
+/// In both `register_commands` and `register_client_commands`, literal words can contain
+/// mixed case, Unicode, punctuation and slashes. A literal matches its registered spelling
+/// exactly and must be followed by a space or the end of input. Completion uses locale-independent
+/// lowercase for prefix matching and suggests the registered spelling. The chat prefix is separate:
+/// register `//RéLoad:Now! /Écho? <x:word>` and type `///RéLoad:Now! /Écho? stone` in chat.
 ///
-/// A usage is words followed by arguments `<name:kind>`, with optional arguments
-/// last in brackets `[name:kind]`:
+/// A usage is split into whitespace-separated words. A word starting with `<` or `[` is
+/// reserved for an argument: `<name:kind>` is required, `[name:kind]` is optional and must
+/// follow all required words. A usage starts with a literal, for example:
 /// `pay <player:player> <amount:integer>`, `balance [player:player]`,
 /// `eco give <player:player> <amount:integer>`. Kinds: `word`, `text` (the
 /// rest of the line, last), `integer`, `number`, `boolean`, `player`, `players`,
@@ -52,7 +54,7 @@ pub fn split_command_registration(
 /// Brigadier's `CommandNode.addChild`) and updates Sunrise's paired execution permission
 /// level for that node.
 ///
-/// Side: server. Selector arguments use vanilla's source position, permissions,
+/// On the server, selector arguments use vanilla's source position, permissions,
 /// cardinality and selection order; `player`/`entity` require one result and
 /// `players`/`entities` require a nonempty result. Unresolvable entity handles are
 /// omitted; lists have no extra cap beyond the wire frame limits.

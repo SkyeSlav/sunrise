@@ -723,6 +723,29 @@ fn suggestions_like_vanilla() {
     assert!(suggestions("time set ").contains(&"minecraft:day".to_owned()));
 }
 
+#[test]
+fn literal_completion_uses_the_original_utf16_offset_after_lowercasing() {
+    let mut dispatcher = Dispatcher::new();
+    for name in ["İRoot", "XRoot", "𐐀Root"] {
+        let root = dispatcher.literal(0, name);
+        let go = dispatcher.literal(root, "Go");
+        dispatcher.executes(go, "go");
+    }
+    let registries = Registries::default();
+    for (input, expected) in [
+        // Lowercase `İ` expands to `i` plus a combining dot. At the original
+        // offset the lowercased suffix is ` g`, which is not a prefix of `go`.
+        ("İRoot g", &[][..]),
+        ("XRoot g", &["Go"][..]),
+        ("𐐀Root g", &["Go"][..]),
+    ] {
+        let parse = dispatcher.parse(input, &registries);
+        let (_, suggestions) = dispatcher.suggestions(&parse, input.len(), &registries);
+        let texts: Vec<_> = suggestions.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, expected, "{input:?}");
+    }
+}
+
 /// `CommandDispatcher.getCompletionSuggestions`: a merged empty list is
 /// `Suggestions.empty()`, `StringRange.at(0)` — not the token's range the
 /// chat merge keeps for `ask_server` replies.

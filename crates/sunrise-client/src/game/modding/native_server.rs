@@ -81,7 +81,7 @@ fn usage_nodes(
     let mut out = Vec::new();
     let mut optional_seen = false;
     let mut greedy_seen = false;
-    for (index, word) in usage.split_whitespace().enumerate() {
+    for word in usage.split_whitespace() {
         if greedy_seen {
             return Err(format!("`{usage}`: a text argument must be last"));
         }
@@ -92,9 +92,6 @@ fn usage_nodes(
         } else {
             if optional_seen {
                 return Err(format!("`{usage}`: `{word}` follows an optional argument"));
-            }
-            if !argument_kinds::command_word(word, index == 0) {
-                return Err(format!("`{usage}`: `{word}` is not a command word"));
             }
             out.push((word.to_owned(), json!({"type": "literal"}), false));
             continue;
@@ -4738,12 +4735,13 @@ mod tests {
             mod_api::Command::new("b <x:text> <y:word>"),
             mod_api::Command::new("c <x:colour>"),
             mod_api::Command::new("<x:integer>"),
-            mod_api::Command::new("Bad"),
+            mod_api::Command::new("bad <x:word"),
             mod_api::Command::new("d <x:integer>"),
             mod_api::Command::new("d <x:word>"),
         ]);
         assert_eq!(problems.len(), 7, "{problems:?}");
         assert_eq!(levels.keys().collect::<Vec<_>>(), ["d"]);
+        assert!(t["children"].get("bad").is_none());
         assert_eq!(
             t["children"]["d"]["children"]["x"]["parser"],
             "brigadier:integer"
@@ -4752,37 +4750,61 @@ mod tests {
         assert!(none.is_null() && levels.is_empty());
     }
 
-    /// WorldEdit-style `//set`: the usage `/set <x:word>` (typed `//set` with the chat slash) is a
-    /// root literal `/set` with its argument, and the server dispatches it as typed.
     #[test]
-    fn a_first_word_may_start_with_one_slash() {
-        let (t, levels, problems) = tree(&[mod_api::Command::new("/set <x:word>")]);
-        assert!(problems.is_empty(), "{problems:?}");
-        assert_eq!(levels.keys().collect::<Vec<_>>(), ["/set"]);
-        assert_eq!(t["children"]["/set"]["type"], "literal");
-        assert_eq!(t["children"]["/set"]["children"]["x"]["type"], "argument");
-        for refused in ["//x", "/", "/ <x:word>", "a /b", "a /"] {
-            let (_, levels, problems) = tree(&[mod_api::Command::new(refused)]);
-            assert!(levels.is_empty(), "{refused}");
-            assert!(
-                problems.len() == 1 && problems[0].contains("is not a command word"),
-                "{refused}: {problems:?}"
-            );
-        }
-        let arguments = command_arguments();
-        let mut dispatcher = Dispatcher::new();
-        register_dispatcher(&mut dispatcher, &t, "native_mod_command", &arguments);
+    fn native_literals_keep_brigadier_spelling_on_both_sides() {
+        let commands = [
+            mod_api::Command::new("//RéLoad:Now! /Écho? <x:word>"),
+            mod_api::Command::new("/"),
+        ];
+        let arguments = CommandArguments::new();
         let registries = sunrise_client::command::Registries::default();
-        let parsed = dispatcher.parse("/set stone", &registries);
-        let (context, _) = parsed.executable().expect("`//set stone` runs");
-        assert_eq!(context.literals, ["/set"]);
-        assert_eq!(context.get("x"), Some(&Arg::Str("stone".into())));
-        assert!(
-            dispatcher
-                .parse("set stone", &registries)
-                .executable()
-                .is_err()
-        );
+        for client in [false, true] {
+            let (tree, _, problems) = if client {
+                client_command_tree(&commands, |_| false, &arguments)
+            } else {
+                command_tree(&commands, |_| false, &arguments)
+            };
+            assert!(problems.is_empty(), "client={client}: {problems:?}");
+            let mut dispatcher = Dispatcher::new();
+            register_dispatcher(&mut dispatcher, &tree, "native_mod_command", &arguments);
+
+            // Parsing starts after the chat prefix, leaving the registered slashes intact.
+            let parsed = dispatcher.parse_at("///RéLoad:Now! /Écho? stone", 1, &registries);
+            let (context, _) = parsed.executable().unwrap();
+            assert_eq!(context.literals, ["//RéLoad:Now!", "/Écho?"]);
+            assert_eq!(context.get("x"), Some(&Arg::Str("stone".into())));
+            let slash = dispatcher.parse_at("//", 1, &registries);
+            assert_eq!(slash.executable().unwrap().0.literals, ["/"]);
+
+            for input in [
+                "///réLoad:Now! /Écho? stone",
+                "///RéLoad:Now! /écho? stone",
+                "///RéLoad:Now!x /Écho? stone",
+                "///RéLoad:Now! /Écho?x stone",
+                "///RéLoad:Now!\t/Écho? stone",
+                "//RéLoad:Now! /Écho? stone",
+            ] {
+                assert!(
+                    dispatcher
+                        .parse_at(input, 1, &registries)
+                        .executable()
+                        .is_err(),
+                    "client={client}: {input:?}"
+                );
+            }
+
+            for (input, literal, completed) in [
+                ("///ré", "//RéLoad:Now!", "///RéLoad:Now!"),
+                ("///RéLoad:Now! /é", "/Écho?", "///RéLoad:Now! /Écho?"),
+            ] {
+                let parsed = dispatcher.parse_at(input, 1, &registries);
+                let (_, suggestions) =
+                    dispatcher.client_suggestions(&parsed, input.len(), &registries);
+                assert_eq!(suggestions.len(), 1, "client={client}: {input:?}");
+                assert_eq!(suggestions[0].text, literal);
+                assert_eq!(suggestions[0].apply(input), completed);
+            }
+        }
     }
 }
 

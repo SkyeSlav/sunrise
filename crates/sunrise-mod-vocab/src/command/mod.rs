@@ -149,7 +149,7 @@ impl CommandArgument {
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
 pub struct CommandInvocation {
-    /// The literal path, including the registered command name and subcommands.
+    /// The registered command name and subcommands verbatim, without the chat prefix.
     pub literals: Vec<String>,
     /// Present arguments in parse order; omitted optional arguments have no entry.
     pub arguments: Vec<CommandArgument>,
