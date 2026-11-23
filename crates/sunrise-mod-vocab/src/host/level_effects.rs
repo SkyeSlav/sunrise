@@ -107,7 +107,7 @@ pub trait LevelEffectsBackendMut {
     /// `Level.gameEvent(event, at, context)` does: sculk sensors, shriekers,
     /// wardens and allays receive the optional source and affected state. An accepted game event
     /// is posted at the call, even in a transaction; it is not a deferred presentation effect.
-    /// Returns false without emitting for an unknown event, invalid position,
+    /// Returns false without emitting for an unknown event,
     /// stale or foreign source, unregistered state, client or inactive level.
     fn level_game_event(
         &mut self,

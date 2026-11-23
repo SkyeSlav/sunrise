@@ -38,13 +38,6 @@ impl Game<'_> {
         if !self.level_in_place(level) || !finite {
             return None;
         }
-        // BlockPos.containing. `as` saturates, and a value past `i32` is out of bounds.
-        let block = pos.map(|v| v.floor() as i32);
-        if self.level_in_spawnable_bounds(level, block) != Some(true)
-            || !self.world.loaded(block[0], block[2])
-        {
-            return None;
-        }
         // The owner is resolved before anything is made: one that is stale or
         // in another level refuses the spawn.
         let owner = match spawn.owner {
@@ -116,23 +109,6 @@ impl Game<'_> {
         // As `spawn_projectile_from_rotation`: a stack the engine can't fully
         // apply is refused before anything is made or drawn.
         if !self.projectile_spawned_effects_applied(stack) {
-            return None;
-        }
-        // The owner must have a collision identity the shot's hit filter
-        // knows (`Who`, or the vehicle it leaves): a player, a mob, a boat or
-        // a minecart. Any other owner would get damage credit but no
-        // identity, so the shot could hit it before it left; it is refused.
-        if !matches!(
-            owner,
-            None | Some((
-                _,
-                Target::Player
-                    | Target::Guest(_)
-                    | Target::Mob(_)
-                    | Target::Boat(_)
-                    | Target::Cart(_)
-            ))
-        ) {
             return None;
         }
         let mut carried = stack.clone();
@@ -326,16 +302,9 @@ mod tests {
                 let mobs = game.mobs.len();
                 let stale = LevelRef::new(WorldEpoch::new(0), game.dim.key());
                 let at = [8.5, 64.0, 8.5];
-                let refused: [(LevelRef, &str, [f64; 3]); 10] = [
+                let refused: [(LevelRef, &str, [f64; 3]); 5] = [
                     (level, "minecraft:cow", [f64::NAN, 64.0, 8.5]),
                     (level, "minecraft:cow", [8.5, f64::INFINITY, 8.5]),
-                    // Past i32: `as` saturates, and the bounds refuse it.
-                    (level, "minecraft:cow", [1.0e300, 64.0, 8.5]),
-                    (level, "minecraft:cow", [8.5, 64.0, f64::from(i32::MIN)]),
-                    (level, "minecraft:cow", [f64::from(i32::MAX), 64.0, 8.5]),
-                    // Level.isInSpawnableBounds: y below 20,000,000.
-                    (level, "minecraft:cow", [8.5, 20_000_000.0, 8.5]),
-                    (level, "minecraft:cow", [1000.5, 64.0, 8.5]),
                     (level, "minecraft:stone", at),
                     (level, "minecraft:snowball", at),
                     (stale, "minecraft:cow", at),
@@ -375,6 +344,26 @@ mod tests {
                 assert_eq!(game.mobs.len(), mobs);
                 assert_eq!(heard.lock().unwrap().len(), 3, "no refusal told a mod");
             });
+        });
+    }
+
+    /// `ServerLevel.addFreshEntity` asks nothing of the position's height or chunk: a mob
+    /// spawns far out and above the `/summon` bounds' build, in a chunk that isn't loaded.
+    #[test]
+    #[ignore = "daily"]
+    fn a_level_spawn_asks_nothing_of_the_positions_height_or_chunk() {
+        with_game(|game| {
+            let level = game.level(game.dim.id()).unwrap();
+            for at in [
+                [1000.5, 64.0, 8.5],
+                [8.5, 400.0, 8.5],
+                [8.5, 64.0, 29_999_999.5],
+            ] {
+                let cow = game
+                    .level_spawn_entity(level, "minecraft:cow", at, &living())
+                    .unwrap();
+                assert_eq!(game.entity_position(cow), Some(at));
+            }
         });
     }
 
@@ -490,7 +479,8 @@ mod tests {
                 game.level_spawn_entity(level, "minecraft:snowball", [8.5, 65.5, 8.5], &spawn),
                 None
             );
-            // An owner the shot has no collision identity for refuses.
+            // Any entity of the level owns a shot (`Projectile.setOwner(Entity)`), an armor
+            // stand included.
             game.options.dedicated = Some(Vec::new());
             let stand = game
                 .level_summon(
@@ -503,12 +493,10 @@ mod tests {
                 .unwrap();
             assert_eq!(game.entity(stand.id()), Some(stand));
             spawn.owner = Some(stand);
-            let projectiles = game.creatures.projectiles.len();
-            assert_eq!(
-                game.level_spawn_entity(level, "minecraft:snowball", [8.5, 65.5, 8.5], &spawn),
-                None
-            );
-            assert_eq!(game.creatures.projectiles.len(), projectiles);
+            let shot = game
+                .level_spawn_entity(level, "minecraft:snowball", [8.5, 65.5, 8.5], &spawn)
+                .unwrap();
+            assert_eq!(game.entity_owner(shot), Some(stand));
         });
     }
 

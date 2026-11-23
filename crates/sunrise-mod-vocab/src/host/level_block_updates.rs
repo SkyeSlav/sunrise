@@ -61,9 +61,9 @@ pub trait LevelBlockUpdatesBackendMut {
     /// `triggerEvent` with them (a powered piston's 0 extends it, a note block's plays its
     /// note, a bell's 1 rings it) if `pos` still holds `block`, and a handled event reaches the
     /// players' copy of the block. The same event queued twice runs once; one in a chunk
-    /// that isn't ticking waits for it. True means queued, not handled. False for a block
-    /// key no block has, a position outside the level's build height, a parked level, a stale
-    /// handle or a client.
+    /// that isn't ticking waits for it. True means queued, not handled. The queue takes any
+    /// position, as `ServerLevel.blockEvent`'s does. False for a block key no block has, a parked
+    /// level, a stale handle or a client.
     fn level_block_event(
         &mut self,
         level: LevelRef,

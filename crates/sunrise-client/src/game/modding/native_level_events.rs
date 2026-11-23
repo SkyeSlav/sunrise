@@ -12,14 +12,6 @@ use mod_api::{
 use sunrise_world::level::{BlockEventData, LevelEvent};
 use sunrise_world::registry::BlockStateId;
 
-/// A position inside the world's horizontal and vertical bounds.
-fn in_bounds(at: [f64; 3]) -> bool {
-    at.iter().all(|v| v.is_finite())
-        && at[0].abs() < 30_000_000.0
-        && at[2].abs() < 30_000_000.0
-        && at[1].abs() < 20_000_000.0
-}
-
 /// Whether level event `id` can play with `data`: the events that carry a
 /// block state (2001, 2014, 3008) need `data` to be one of the `states`.
 pub(super) fn level_event_data_ok(id: i32, data: i32, states: usize) -> bool {
@@ -122,7 +114,7 @@ impl Game<'_> {
         let Some(event) = sunrise_client::sculk::intern(event) else {
             return false;
         };
-        if !self.level_in_place(level) || !in_bounds(at) {
+        if !self.level_in_place(level) {
             return false;
         }
         self.post_contextual_game_event(event, at, context)
@@ -130,9 +122,8 @@ impl Game<'_> {
     /// Queues block event `a`, `b` for `block` at `pos` in the level in place
     /// (`ServerLevel.blockEvent`): `run_block_events` hands it to the block's
     /// `triggerEvent` after this tick's scheduled ticks if `pos` still holds
-    /// `block`. False for an unresolved block key, a position outside the
-    /// build height (it could never reach a block), a parked level, a stale
-    /// handle or a client.
+    /// `block`; the queue takes any position, as vanilla's does. False for an unresolved block
+    /// key, a parked level, a stale handle or a client.
     pub(super) fn level_block_event(
         &mut self,
         level: LevelRef,
@@ -144,7 +135,7 @@ impl Game<'_> {
         let Some(block) = super::api_values::behavior_block(block, self.res.behaviours()) else {
             return false;
         };
-        if !self.level_in_place(level) || !self.world.shape.contains_y(pos[1]) {
+        if !self.level_in_place(level) {
             return false;
         }
         self.block_ticks.queue_block_event(BlockEventData {
@@ -192,18 +183,14 @@ impl Game<'_> {
     /// zombified piglin...) and every player hears the thunder. With
     /// `visual_only` it only flashes and sounds (`setVisualOnly`). The
     /// `lightning_strike` hook hears it first with the cause `mod` and may
-    /// cancel it. False for a chunk that isn't loaded or a canceled strike.
+    /// cancel it. False for a canceled strike.
     pub(super) fn level_strike_lightning(
         &mut self,
         level: LevelRef,
         at: [f64; 3],
         visual_only: bool,
     ) -> bool {
-        if !self.level_in_place(level) || !in_bounds(at) {
-            return false;
-        }
-        let chunk = ((at[0].floor() as i32) >> 4, (at[2].floor() as i32) >> 4);
-        if !self.world.chunks.contains_key(&chunk) {
+        if !self.level_in_place(level) {
             return false;
         }
         let block = [
@@ -280,12 +267,10 @@ mod tests {
             assert!(level.block_event(game, [0, 64, 0], note_key, 0, 0));
             assert!(level.block_event(game, [0, 64, 0], stone_key, 0, 0));
             assert_eq!(game.block_ticks.block_events.len(), 2);
+            // `ServerLevel.blockEvent` queues any position; one over no block runs as nothing.
             let (bottom, height) = level.height(game).unwrap();
-            assert!(!level.block_event(game, [0, bottom - 1, 0], note_key, 0, 0));
-            assert!(
-                !level.block_event(game, [0, bottom + height, 0], note_key, 0, 0),
-                "above the build height"
-            );
+            assert!(level.block_event(game, [0, bottom - 1, 0], note_key, 0, 0));
+            assert!(level.block_event(game, [0, bottom + height, 0], note_key, 0, 0));
             assert!(!stale.block_event(game, [0, 64, 0], note_key, 0, 0));
             assert!(
                 !nether.block_event(game, [0, 64, 0], note_key, 0, 0),
@@ -293,7 +278,7 @@ mod tests {
             );
             assert_eq!(
                 game.block_ticks.block_events.len(),
-                2,
+                4,
                 "refusals queue nothing"
             );
 
@@ -315,6 +300,29 @@ mod tests {
                 }],
                 "the note block's triggerEvent handled it once, for its players"
             );
+        });
+    }
+
+    /// `Level.gameEvent` and a lightning bolt take any position, in a chunk that isn't loaded.
+    #[test]
+    #[ignore = "daily"]
+    fn game_events_and_lightning_ask_nothing_of_the_position() {
+        super::super::native_entity_refs::tests::with_game(|game| {
+            let level = game.level(game.dim.id()).unwrap();
+            for at in [
+                [5000.5, 64.0, 5000.5],
+                [0.5, 900.0, 0.5],
+                [1.0e300, -1.0e300, 3.0e7],
+            ] {
+                assert!(game.level_game_event(
+                    level,
+                    "minecraft:block_change",
+                    at,
+                    mod_api::GameEventContext::default()
+                ));
+                assert!(game.level_strike_lightning(level, at, true), "{at:?}");
+            }
+            assert_eq!(game.bolts.len(), 3);
         });
     }
 

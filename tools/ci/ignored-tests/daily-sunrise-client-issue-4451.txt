@@ -1610,6 +1610,7 @@ sunrise-client game::native_knockback_tests::the_bridge_names_the_attacker_and_w
 sunrise-client game::native_knockback_tests::the_push_draws_the_same_stream_with_and_without_a_mod_and_a_canceled_one_draws_nothing lib daily resources
 sunrise-client game::native_knockback_tests::thorns_name_the_wearer_not_the_incoming_attacker lib daily resources
 sunrise-client game::native_level_events::tests::a_global_level_event_reaches_every_player_or_falls_back_to_a_plain_one lib daily resources
+sunrise-client game::native_level_events::tests::game_events_and_lightning_ask_nothing_of_the_position lib daily resources
 sunrise-client game::native_level_events::tests::a_level_event_in_a_write_hook_joins_the_events_in_order lib daily resources
 sunrise-client game::native_level_events::tests::a_queued_block_event_runs_the_blocks_trigger_once lib daily resources
 sunrise-client game::native_level_events::tests::with_the_rule_off_a_global_level_event_reaches_a_player_in_range_as_a_plain_one lib daily resources
@@ -1664,6 +1665,7 @@ sunrise-client game::native_level_refs::tests::water_tickets_are_not_restored_wi
 sunrise-client game::native_level_refs::tests::water_tickets_hydrate_real_farmland_and_preserve_vanilla_water_and_rain lib daily resources
 sunrise-client game::native_level_refs::tests::world_border_reads_refuse_stale_and_unopened_levels lib daily resources
 sunrise-client game::native_level_spawning::tests::a_level_spawns_a_mob_as_its_entity_type_does_and_refuses_the_rest lib daily resources
+sunrise-client game::native_level_spawning::tests::a_level_spawn_asks_nothing_of_the_positions_height_or_chunk lib daily resources
 sunrise-client game::native_level_spawning::tests::a_levels_spawn_policy_changes_what_its_next_pass_spawns lib daily resources
 sunrise-client game::native_level_ticking::tests::ticking_reads_follow_live_tickets_bounds_and_residency lib daily resources
 sunrise-client game::native_level_ticking::tests::ticking_reads_refuse_each_unavailable_handle_independently lib daily resources

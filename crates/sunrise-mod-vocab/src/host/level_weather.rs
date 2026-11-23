@@ -73,6 +73,6 @@ pub trait LevelWeatherBackendMut {
     /// zombified piglin...) and every player hears the thunder. With
     /// `visual_only` it only flashes and sounds (`setVisualOnly`). The
     /// `lightning_strike` hook hears it first with the cause `mod` and may
-    /// cancel it. False for a chunk that isn't loaded or a canceled strike.
+    /// cancel it. False for a canceled strike.
     fn level_strike_lightning(&mut self, level: LevelRef, at: [f64; 3], visual_only: bool) -> bool;
 }

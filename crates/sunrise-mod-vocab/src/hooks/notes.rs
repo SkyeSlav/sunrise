@@ -513,7 +513,7 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 
 - `LevelRef::spawn_mob(host, kind, pos, reason)` spawns a mob and returns an `EntityRef`, or `None` when refused.
   `SpawnReason` controls finalization; the new mob is not persistent, as for a natural spawn. Spawn limits and natural
-  spawn rules do not apply, as for `/summon`. A non-mob kind, invalid or out-of-bounds position, unloaded chunk,
+  spawn rules do not apply, as for `/summon`. A non-mob kind, a non-finite position,
   stale or unavailable level, or cancellation during finalization or level entry refuses the spawn. Configure the
   resulting entity through its handle rather than a spawn-options record.
 - Visit the level with `level.visit_all_entities(host, &mut visit)` and narrow the handles with `host.mob(entity)` or `host.living(entity)`.

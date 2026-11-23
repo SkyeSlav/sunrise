@@ -40,8 +40,7 @@ pub trait LevelSpawningBackendMut {
     /// level's spawn limits, flags and spawn rules don't apply, as they don't
     /// to `/summon`. The new mob as a handle. None, with nothing spawned, for a
     /// kind that isn't a mob or is disallowed in Peaceful at that difficulty,
-    /// a position that isn't finite or is outside the
-    /// spawnable bounds (`Level.isInSpawnableBounds`), an unloaded chunk, a
+    /// a position that isn't finite, a
     /// stale handle, a level not in place, a client, a `finalize_spawn` that
     /// cancelled the spawn or a mob a mod kept out.
     /// Inside a transaction its join waits for the root commit, so a mod keeping the mob out is not
@@ -66,9 +65,7 @@ pub trait LevelSpawningBackendMut {
     ///   of its owner until it leaves the owner's box); `projectile_launch`
     ///   fires. It carries `item` (`ThrowableItemProjectile.setItem`), checked
     ///   as `ServerHost::spawn_projectile_from_rotation` checks its stack. The
-    ///   owner is a player, a mob, a boat or a minecart: the shot needs its
-    ///   collision identity to keep clear of it, and any other owner refuses
-    ///   the spawn.
+    ///   owner is any entity of the level, as `Projectile.setOwner` takes any `Entity`.
     /// - [`SpawnBody::Living`]: `EntityType.spawn` with `reason`, the route
     ///   `/summon` takes: the entity type creates it (its Parts and
     ///   attachments with it, and `entity_constructing`), with a random yaw
@@ -89,16 +86,16 @@ pub trait LevelSpawningBackendMut {
     ///   its attachments: write them on the returned handle in the same
     ///   transaction, and the join and the first tracking snapshot see them.
     ///
-    /// Velocity is set before the entity joins (`Entity.setDeltaMovement`).
+    /// Velocity is set before the entity joins (`Entity.setDeltaMovement`). Like
+    /// `ServerLevel.addFreshEntity`, the spawn asks nothing of the position's height or chunk:
+    /// the spawnable-bounds check is `/summon`'s own (`SummonCommand`).
     /// The level's natural spawning limits, spawn flags and spawn rules don't
     /// apply, as they don't to `/summon`; nor does a general type's `summonable`, which is
     /// `/summon`'s alone (`EntityType.canSummon`). The new entity as a handle.
     /// None, with nothing spawned and no random drawn, for a kind that isn't
     /// of `spawn.body`'s family, a position, velocity or rotation that isn't
-    /// finite, a position outside the spawnable bounds
-    /// (`Level.isInSpawnableBounds`), an unloaded chunk, an owner that is
-    /// stale, in another level, given for a mob or without a collision identity
-    /// for a thrown spawn, an invalid thrown item, a
+    /// finite, an owner that is
+    /// stale, in another level or given for a mob, an invalid thrown item, a
     /// stale handle, a level not in place, a client, or exhausted entity ids;
     /// and, with nothing left in the level, a `finalize_spawn` that cancelled
     /// the spawn or an entity a mod kept out. Inside a transaction its join
