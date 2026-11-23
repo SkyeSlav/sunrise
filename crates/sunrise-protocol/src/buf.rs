@@ -80,6 +80,13 @@ impl<'a> Reader<'a> {
     ) -> Option<(&'a str, Option<&'a Tag>)> {
         self.names?.registry_entry(registry, id)
     }
+    /// `Registry.byIdOrThrow` over the connection's names: the name of entry `id` of
+    /// `registry`, an error for an id it lacks or a reader with no names.
+    pub(crate) fn registry_name(&self, registry: &str, id: i32) -> Result<String> {
+        self.names
+            .and_then(|names| names.name(registry, id))
+            .ok_or_else(|| Error::new(format!("no {registry} entry {id}")))
+    }
     pub(crate) fn contains_registry_entry(&self, registry: &str, name: &str) -> bool {
         self.names
             .is_some_and(|names| names.contains_entry(registry, name))

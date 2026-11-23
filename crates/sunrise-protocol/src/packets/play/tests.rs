@@ -1567,3 +1567,63 @@ fn debug_subscription_request_is_a_set_of_registered_ids_of_at_most_32() {
     body.extend([0; 33]);
     assert!(ids(&body).is_err());
 }
+
+/// A fixture registry view: `debug_subscription` ids as vanilla's `DebugSubscriptions`
+/// registers them, and one block.
+struct DebugNames;
+impl crate::item::Names for DebugNames {
+    fn name(&self, registry: &str, id: i32) -> Option<String> {
+        let name = match (registry, id) {
+            ("minecraft:debug_subscription", 0) => "minecraft:dedicated_server_tick_time",
+            ("minecraft:debug_subscription", 7) => "minecraft:bee_hives",
+            ("minecraft:debug_subscription", 9) => "minecraft:redstone_wire_orientations",
+            ("minecraft:debug_subscription", 14) => "minecraft:neighbor_updates",
+            ("minecraft:block", 0) => "minecraft:air",
+            _ => return None,
+        };
+        Some(name.to_owned())
+    }
+}
+
+#[test]
+fn unmodeled_clientbound_bodies_are_checked_whole() {
+    use crate::ids::play::clientbound as ids;
+    let check = |id, body: &[u8]| validate_clientbound_body(id, body, &DebugNames).is_ok();
+    // PlayerCombatEnter is empty; PlayerCombatEnd one VarInt (300).
+    assert!(check(ids::PLAYER_COMBAT_ENTER, &[]));
+    assert!(!check(ids::PLAYER_COMBAT_ENTER, &[0]));
+    assert!(check(ids::PLAYER_COMBAT_END, &[0xac, 0x02]));
+    assert!(!check(ids::PLAYER_COMBAT_END, &[0xac, 0x02, 0]));
+    assert!(!check(ids::PLAYER_COMBAT_END, &[0xac]));
+    // CustomReportDetails: one entry "k" -> "v"; 33 entries is past its 32.
+    assert!(check(ids::CUSTOM_REPORT_DETAILS, &[1, 1, b'k', 1, b'v']));
+    assert!(!check(ids::CUSTOM_REPORT_DETAILS, &[33]));
+    // DebugEvent: neighbor_updates (14) carries one BlockPos (8 bytes).
+    let event = [&[14][..], &[0; 8]].concat();
+    assert!(check(ids::DEBUG_EVENT, &event));
+    assert!(!check(ids::DEBUG_EVENT, &event[..8]));
+    assert!(!check(ids::DEBUG_EVENT, &[&event[..], &[0]].concat()));
+    // An unregistered subscription, and one with no value codec, can't be sent.
+    assert!(!check(ids::DEBUG_EVENT, &[15, 0, 0, 0, 0, 0, 0, 0, 0]));
+    assert!(!check(ids::DEBUG_EVENT, &[0]));
+    // DebugBlockValue: a BlockPos, then an update: wire orientation 47 is the last of 48.
+    let block = |update: &[u8]| [&[0; 8][..], update].concat();
+    assert!(check(ids::DEBUG_BLOCK_VALUE, &block(&[9, 1, 47])));
+    assert!(!check(ids::DEBUG_BLOCK_VALUE, &block(&[9, 1, 48])));
+    // An absent value is the update's empty optional.
+    assert!(check(ids::DEBUG_BLOCK_VALUE, &block(&[9, 0])));
+    // A hive names a registered block.
+    assert!(check(ids::DEBUG_BLOCK_VALUE, &block(&[7, 1, 0, 2, 5, 1])));
+    assert!(!check(ids::DEBUG_BLOCK_VALUE, &block(&[7, 1, 1, 2, 5, 1])));
+}
+
+#[test]
+fn modeled_clientbound_bodies_must_decode_whole() {
+    use crate::ids::play::clientbound as ids;
+    // SetCamera (entity 300) and SetChunkCacheRadius (8) decode; a trailing byte doesn't.
+    assert!(validate_clientbound_body(ids::SET_CAMERA, &[0xac, 0x02], &DebugNames).is_ok());
+    assert!(validate_clientbound_body(ids::SET_CAMERA, &[0xac, 0x02, 0], &DebugNames).is_err());
+    assert!(validate_clientbound_body(ids::SET_CHUNK_CACHE_RADIUS, &[8], &DebugNames).is_ok());
+    let unregistered = ids::NAMES.len() as i32;
+    assert!(validate_clientbound_body(unregistered, &[], &DebugNames).is_err());
+}

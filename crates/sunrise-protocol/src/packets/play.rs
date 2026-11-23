@@ -25,6 +25,7 @@ use sunrise_core::vanilla_bytes::Writer;
 
 mod advancements;
 mod commands;
+mod debug_values;
 mod hud;
 mod maps;
 mod merchant;
@@ -892,6 +893,50 @@ impl Codec<StopSound> for StopSound {
         if let Some(sound) = &p.sound {
             w.string(sound);
         }
+    }
+}
+
+/// `PacketDecoder.decode` for a clientbound play body (after the id), as the receiving
+/// client reads it with the connection's registry `names`: the whole body must decode as
+/// packet `id`, with nothing left over. The packets the game never models
+/// (the debug values, combat enter and end, custom report details) are checked against
+/// their vanilla codecs.
+pub fn validate_clientbound_body(
+    id: i32,
+    body: &[u8],
+    names: &dyn crate::item::Names,
+) -> Result<()> {
+    use crate::ids::play::clientbound as ids;
+    let mut r = Reader::new(body).with_names(names);
+    match id {
+        ids::DEBUG_BLOCK_VALUE => debug_values::block_value(&mut r)?,
+        ids::DEBUG_CHUNK_VALUE => debug_values::chunk_value(&mut r)?,
+        ids::DEBUG_ENTITY_VALUE => debug_values::entity_value(&mut r)?,
+        ids::DEBUG_EVENT => debug_values::event(&mut r)?,
+        // ClientboundPlayerCombatEnterPacket: `StreamCodec.unit`.
+        ids::PLAYER_COMBAT_ENTER => {}
+        // ClientboundPlayerCombatEndPacket: the duration.
+        ids::PLAYER_COMBAT_END => {
+            r.varint()?;
+        }
+        // ClientboundCustomReportDetailsPacket.DETAILS_STREAM_CODEC: at most 32 entries of
+        // a `stringUtf8(128)` key and a `stringUtf8(4096)` value.
+        ids::CUSTOM_REPORT_DETAILS => {
+            for _ in 0..r.count(32)? {
+                r.string(128)?;
+                r.string(4096)?;
+            }
+        }
+        _ => {
+            return match Clientbound::decode_reader(id, r)? {
+                Clientbound::Unknown(id, _) => Err(Error::unknown_packet_id(id)),
+                _ => Ok(()),
+            };
+        }
+    }
+    match r.remaining() {
+        0 => Ok(()),
+        extra => Err(Error::packet_extra_bytes(id, "Clientbound", extra)),
     }
 }
 
