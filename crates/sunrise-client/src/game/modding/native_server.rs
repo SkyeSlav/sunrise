@@ -13,6 +13,9 @@ mod argument_kinds;
 #[path = "native_server/command_failure_tests.rs"]
 mod command_failure_tests;
 #[cfg(test)]
+#[path = "native_server/player_dialog_tests.rs"]
+mod player_dialog_tests;
+#[cfg(test)]
 #[path = "native_server/provider_tests.rs"]
 mod provider_tests;
 #[path = "native_server/registered_commands.rs"]
@@ -1470,6 +1473,38 @@ impl Game<'_> {
             overlay: true,
         });
         self.native_send(uuid, packet)
+    }
+    /// `ServerPlayer.openDialog` with an inline dialog, whose SNBT syntax alone is checked.
+    pub(super) fn player_show_dialog(&mut self, player: PlayerRef, snbt: &str) -> bool {
+        let Ok(tag) = sunrise_client::command::snbt::parse_fully(snbt) else {
+            return false;
+        };
+        self.send_player_dialog(player, play::DialogHolder::Direct(tag))
+    }
+    /// `ServerPlayer.openDialog` with a `minecraft:dialog` registry entry, by its network id.
+    pub(super) fn player_show_dialog_by_id(&mut self, player: PlayerRef, id: &str) -> bool {
+        let Some(id) = Identifier::parse(id).ok().and_then(|id| {
+            self.lan
+                .as_ref()?
+                .hub
+                .registry_id("minecraft:dialog", &id.to_string())
+        }) else {
+            return false;
+        };
+        self.send_player_dialog(player, play::DialogHolder::Registry(id))
+    }
+    /// `DialogCommand.clearDialog` for one player.
+    pub(super) fn player_clear_dialog(&mut self, player: PlayerRef) -> bool {
+        let Some(uuid) = self.message_player_uuid(player) else {
+            return false;
+        };
+        self.native_send(uuid, C::ClearDialog(sunrise_protocol::packets::Empty))
+    }
+    fn send_player_dialog(&mut self, player: PlayerRef, dialog: play::DialogHolder) -> bool {
+        let Some(uuid) = self.message_player_uuid(player) else {
+            return false;
+        };
+        self.native_send(uuid, C::ShowDialog(play::ShowDialog { dialog }))
     }
     /// Sends `packet` to that player, also when they are the acting player
     /// (their packets then go after the hook); false when they aren't on.

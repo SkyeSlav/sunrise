@@ -19,6 +19,27 @@ pub trait PlayerMessagesBackendMut {
     #[serialize_text]
     fn player_action_bar(&mut self, player: PlayerRef, line: Text) -> Result<bool, TextFormError>;
     /// Side: server.
+    /// `ServerPlayer.openDialog` with an inline dialog: `snbt` is the dialog as a data pack
+    /// file writes it (`type`, `title`, `body`, `inputs`, `actions`), in the SNBT form
+    /// `/dialog show` takes. Only its syntax is checked, not the dialog's fields: a client
+    /// that can't read it disconnects, as with `/dialog show`. Also inside a player's hook
+    /// for the acting player, whose packet goes after the hook. False for a player who
+    /// isn't on, a fake player, on a client, or text that isn't SNBT. `true` means the
+    /// packet was accepted for sending, not that the dialog is shown.
+    fn player_show_dialog(&mut self, player: PlayerRef, snbt: &str) -> bool;
+    /// Side: server.
+    /// `ServerPlayer.openDialog` with an entry of the `minecraft:dialog` registry (vanilla's,
+    /// a data pack's or a mod's), `id` with or without the `minecraft:` namespace. False,
+    /// sending nothing, for an id the registry lacks, and as
+    /// [`Self::player_show_dialog`] is.
+    fn player_show_dialog_by_id(&mut self, player: PlayerRef, id: &str) -> bool;
+    /// Side: server.
+    /// `/dialog clear` (`ClientboundClearDialogPacket`): the player's client closes the
+    /// dialog it shows, and does nothing when none is shown. The server is never told when
+    /// a player closes a dialog, so there is no read of whether one is open. False as
+    /// [`Self::player_show_dialog`] is.
+    fn player_clear_dialog(&mut self, player: PlayerRef) -> bool;
+    /// Side: server.
     /// The lines over and under that player's list of players (Tab):
     /// `ClientboundTabListPacket`, an empty text for none. False when they
     /// aren't on.

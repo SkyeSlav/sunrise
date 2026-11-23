@@ -93,10 +93,15 @@ return `None`.
 Send a message with `player.tell(host, text)`, `player.action_bar(host, text)` or
 `player.tab_list(host, header, footer)`. Messaging reaches acting and connected
 players, including displaced online records, and refuses stale or disconnected
-identities.
+identities. The dialog methods below answer `false` the same way, and for a fake
+player or on a client; inside the player's own hook their packet goes out after
+the hook, and `true` means it was accepted for sending, not that it was shown.
 
 | Method | Behavior |
 |---|---|
+| `show_dialog(host, snbt)` | `ServerPlayer.openDialog` with an inline dialog, written as a data pack file writes it, in the SNBT form `/dialog show` takes: `player.show_dialog(host, r#"{type: "minecraft:notice", title: "Hello"}"#)`. Only the SNBT syntax is checked, not the dialog's fields; a client that can't read it disconnects, as with `/dialog show`. |
+| `show_dialog_by_id(host, id)` | The same with a `minecraft:dialog` registry entry, `id` with or without `minecraft:`: `player.show_dialog_by_id(host, "server_links")`. An id the registry lacks answers `false` and sends nothing. |
+| `clear_dialog(host)` | `/dialog clear`: the client closes the dialog it shows, and does nothing when none is shown. The server is never told when a player closes one, so there is no read of whether a dialog is open. |
 | `set_nickname(host, nickname)` | Changes the name shown in chat and the Tab list; `None` restores the account name. Commands, selectors, logs and events use the real name. Validate the nickname's length, filtering and conflicts yourself. |
 | `nickname(host)` | Borrows the nickname `set_nickname` set as `Result<Option<&str>, PlayerWorldRefusal>`: `Ok(None)` when there is none. Refuses with `Client` on a client and `Stale` for a stale or offline player. |
 | `set_sleep_ignored(host, ignored)` | Controls exclusion from the sleep count. |
