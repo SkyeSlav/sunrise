@@ -847,6 +847,7 @@ impl Game<'_> {
                             attacker_id.map_or_else(Default::default, |a| self.attack_of(a as i32));
                         attack.projectile = Some(t.id as i32);
                         attack.projectile_kind = sunrise_client::health::DirectEntity::Arrow;
+                        attack.projectile_type = Some("minecraft:trident");
                         Self::set_projectile_weapon(&mut attack, Some(&t.stack));
                         let trident_source = DamageKind::Named(
                             sunrise_client::mobs::NamedDamage::registered(
@@ -932,17 +933,21 @@ impl Game<'_> {
                                         aim,
                                         [t.velocity.x, t.velocity.z],
                                     );
-                                    self.finish_mob_damage_at(mob_idx);
-                                    if hurt {
-                                        hurt_mob = Some((id, join));
-                                    } else if self
-                                        .mobs
-                                        .iter()
-                                        .find(|m| m.id == id && m.join == join && !m.removed)
-                                        .is_some_and(|m| m.species() == Species::Enderman)
+                                    if let Some((mob_idx, hurt)) =
+                                        self.complete_mob_hurt(mob_idx, hurt)
                                     {
-                                        // Enderman.projectileReceivesSideEffectsOnHit(wasHurt) == wasHurt.
-                                        dodged = true;
+                                        self.finish_mob_damage_at(mob_idx);
+                                        if hurt {
+                                            hurt_mob = Some((id, join));
+                                        } else if self
+                                            .mobs
+                                            .iter()
+                                            .find(|m| m.id == id && m.join == join && !m.removed)
+                                            .is_some_and(|m| m.species() == Species::Enderman)
+                                        {
+                                            // Enderman.projectileReceivesSideEffectsOnHit(wasHurt) == wasHurt.
+                                            dodged = true;
+                                        }
                                     }
                                     if owner_who.is_some() {
                                         self.thrower_dealt_absorbed(t.guest);
