@@ -278,6 +278,9 @@ pub trait ItemsRegistrar {
 // hidden: per-kind lookup implementation, exposed for generated provider bindings
 #[doc(hidden)]
 pub trait ItemsCapabilityProviders {
+    /// Whether an enabled registration or a type-only default covers this resolved item.
+    fn item_capability_covers(&self, name: &str, item: crate::ItemKey) -> bool;
+
     /// The next enabled provider of item capability `name` for item `item`, advancing `index`.
     fn item_provider(
         &self,
@@ -291,6 +294,33 @@ pub trait ItemsCapabilityProviders {
 }
 
 impl ItemsCapabilityProviders for InstalledProviders {
+    fn item_capability_covers(&self, name: &str, item: crate::ItemKey) -> bool {
+        let Some(installed) = installed() else {
+            return false;
+        };
+        // Requested names alone are not evidence that the item registry resolved them.
+        let Some(id) = installed
+            .resolved_items
+            .get()
+            .and_then(|items| items.id(item.0))
+        else {
+            return false;
+        };
+        installation::builtin_item_capability_registered(name, id)
+            || installed
+                .keys
+                .item_capabilities
+                .get(name)
+                .and_then(|items| items.get(id))
+                .is_some_and(|parts| parts.iter().any(|part| crate::mod_index_on(part.mod_index)))
+            || (name == crate::ITEM_ITEMS.name
+                && installed
+                    .keys
+                    .default_item_containers
+                    .get(id)
+                    .is_some_and(|parts| default_capabilities::first_enabled(parts).is_some()))
+    }
+
     fn item_provider(
         &self,
         name: &str,
@@ -305,4 +335,112 @@ impl ItemsCapabilityProviders for InstalledProviders {
         let part = installed()?.keys.place_providers.get(name)?;
         crate::mod_index_on(part.mod_index).then(|| (part.provider.clone(), part.mod_id))
     }
+}
+
+#[cfg(test)]
+#[test]
+fn item_capability_covers_reports_enabled_type_registrations_without_calling_providers() {
+    use crate::content::registry_keys::{item_key, resolve_items};
+    use crate::{ITEM_FLUIDS, ITEM_ITEMS, ItemKey};
+    use std::sync::atomic::AtomicUsize;
+
+    struct ReadHost;
+    impl Host for ReadHost {}
+    crate::impl_host_areas!(ReadHost);
+
+    struct Quiet;
+    #[mod_api::__subscriptions]
+    impl crate::Hooks for Quiet {}
+
+    const CUSTOM: ItemCapabilityKey<str> = ItemCapabilityKey::new("probe:custom");
+    let host: &dyn Host = &ReadHost;
+    let provider_calls = Arc::new(AtomicUsize::new(0));
+    let container_calls = Arc::new(AtomicUsize::new(0));
+    let mut input = installation::InstalledInput::default();
+    let bucket = ItemKey(
+        input
+            .registry_keys
+            .items
+            .request("probe", "minecraft:water_bucket")
+            .unwrap(),
+    );
+    let erased = ItemProviderOf::of::<str>(Arc::new({
+        let calls = provider_calls.clone();
+        move |_: &mut dyn ServerHost, _: &ItemPlace| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            None
+        }
+    }));
+    let types = input.keys.item_capabilities.entry(CUSTOM.name).or_default();
+    for (order, (id, before_game)) in [("probe:direct", false), ("probe:priority", true)]
+        .into_iter()
+        .enumerate()
+    {
+        types.insert(
+            id.into(),
+            vec![installation::CapabilityPartInput {
+                mod_id: "probe",
+                mod_index: 0,
+                type_name: erased.handler(),
+                before_game,
+                order,
+                poisoned: Default::default(),
+                provider: erased.clone(),
+            }],
+        );
+    }
+    input.keys.default_item_containers.insert(
+        "probe:container".into(),
+        vec![(
+            0,
+            Arc::new({
+                let calls = container_calls.clone();
+                move |_: &dyn Host| {
+                    calls.fetch_add(1, Ordering::Relaxed);
+                    None
+                }
+            }),
+        )],
+    );
+
+    crate::testing::with_dispatch(vec![ModEntry::new("probe", Box::new(Quiet))].into(), || {
+        crate::testing::with_parts_registration_probe(
+            Default::default(),
+            |_| {
+                install_input(input);
+                assert!(!ITEM_FLUIDS.covers(host, bucket), "not published yet");
+                resolve_items([
+                    "probe:direct",
+                    "probe:priority",
+                    "probe:container",
+                    "minecraft:water_bucket",
+                    "minecraft:bundle",
+                    "minecraft:shulker_box",
+                ])
+                .unwrap();
+
+                for enabled in [true, false] {
+                    crate::runtime::installed().unwrap().disabled[0]
+                        .store(!enabled, Ordering::Relaxed);
+                    for (id, custom, items, fluids) in [
+                        ("probe:direct", enabled, false, false),
+                        ("probe:priority", enabled, false, false),
+                        ("probe:container", false, enabled, false),
+                        ("minecraft:water_bucket", false, false, true),
+                        ("minecraft:bundle", false, false, false),
+                        ("minecraft:shulker_box", false, false, false),
+                    ] {
+                        let item = item_key(id).unwrap();
+                        assert_eq!(CUSTOM.covers(host, item), custom, "custom: {id}");
+                        assert_eq!(ITEM_ITEMS.covers(host, item), items, "items: {id}");
+                        assert_eq!(ITEM_FLUIDS.covers(host, item), fluids, "fluids: {id}");
+                    }
+                    assert!(!ITEM_FLUIDS.covers(host, ItemKey(u32::MAX)));
+                }
+            },
+            |_, ()| (),
+        );
+    });
+    assert_eq!(provider_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(container_calls.load(Ordering::Relaxed), 0);
 }

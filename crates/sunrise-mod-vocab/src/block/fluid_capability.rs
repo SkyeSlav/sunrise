@@ -359,19 +359,20 @@ pub const ITEM_FLUIDS: ItemCapabilityKey<dyn ResourceHandler<FluidResource>> = I
     handler: PhantomData,
 };
 
+const BUCKET_NAMES: [&str; 3] = [
+    "minecraft:bucket",
+    "minecraft:water_bucket",
+    "minecraft:lava_bucket",
+];
+
 /// Resolve the vanilla bucket identifiers once; lookups thereafter build no strings.
 static BUCKET_IDS: std::sync::LazyLock<[crate::Identifier; 3]> = std::sync::LazyLock::new(|| {
-    [
-        "minecraft:bucket",
-        "minecraft:water_bucket",
-        "minecraft:lava_bucket",
-    ]
-    .map(|id| crate::Identifier::parse_namespaced(id).expect("vanilla identifier"))
+    BUCKET_NAMES.map(|id| crate::Identifier::parse_namespaced(id).expect("vanilla identifier"))
 });
 
-/// Type-only coverage uses the very identifiers resolved by the default bucket provider.
+/// Type-only coverage uses the same names as the default bucket provider.
 pub(crate) fn builtin_bucket(item: &str) -> bool {
-    crate::Identifier::parse_namespaced(item).is_some_and(|item| BUCKET_IDS.contains(&item))
+    BUCKET_NAMES.contains(&item)
 }
 
 /// A bucket holds this much, all or nothing.

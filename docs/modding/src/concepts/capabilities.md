@@ -30,6 +30,7 @@ through the handler's `ServerHost` and transaction. This registration correspond
 | `r.is_block_capability_registered(&KEY, &block)` | Whether any game or mod provider registered so far covers this block type. |
 | `r.is_entity_capability_registered(&KEY, &entity_type)` | The same type-coverage query for an `EntityTypeKey`, obtained with `r.entity_type_key("minecraft:pig")`. |
 | `r.is_item_capability_registered(&KEY, &item)` | The same query for an `ItemKey`, obtained with `r.item_key("minecraft:stick")`. |
+| `KEY.covers(host, item)` | After startup, test item type coverage with a read-only `Host` on either side. |
 
 A block provider can expose a trash can that voids items or forward a multiblock port to its controller.
 A block with a block entity can have both kinds of provider.
@@ -70,6 +71,14 @@ The three block-storage declarations accept mod blocks only, not `minecraft` blo
 `block_capability` to expose storage on a vanilla block. The first enabled declaration for a block
 type supplies its default storage. Item-container declarations may target vanilla items too, and
 their callbacks run in registration order until one returns `Some`.
+
+After startup, `ItemCapabilityKey::covers` checks whether an enabled mod on the calling side
+registered the capability for that item type or a game default covers it without reading a
+stack. For example, the bucket default counts for `ITEM_FLUIDS`, and an explicit
+`item_container` declaration counts for `ITEM_ITEMS`. The stack-dependent container and
+bundle defaults alone do not count. An unresolvable `ItemKey` returns `false`.
+Unlike `ItemPlace::capability`, this query does not call providers or create a handler.
+A provider that covers the type can still decline a particular stack.
 
 `LevelHost::has_item_capability` asks the same enabled providers in the same order on either side.
 `None` as the side means unsided, not a search over the faces. `Some(true)` means a provider

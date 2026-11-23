@@ -113,6 +113,23 @@ the slots of the ongoing click. Ask for an answer that includes Parts outside th
 If a part panics, its answers are discarded and that callback is disabled for the session.
 The log and error toast name the mod; other parts still answer the check.
 
+A slot can filter item types by capability coverage using the same read-only `Host` in client
+prediction and server validation:
+
+```rust,ignore
+use mod_api::{ITEM_FLUIDS, MenuContainer};
+
+fn menu_slot_rules(&self, host: &dyn mod_api::Host, event: &mut mod_api::MenuSlotRulesEvent<'_>) {
+    if event.container == MenuContainer::Main && event.slot == 0 {
+        event.may_place &= ITEM_FLUIDS.covers(host, event.stack.item());
+    }
+}
+```
+
+This keeps the slot's existing refusals and checks only the registrations and type-only defaults
+available on that side. It does not guarantee a fluid handler for the particular stack, and the
+server still decides whether the item can be placed.
+
 ## Slots that keep what they show
 
 On a mod menu type, `menu_slot_rules` also answers `Slot.mayPickup` in `event.may_pickup`. It arrives true and

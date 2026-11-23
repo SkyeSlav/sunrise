@@ -11,7 +11,7 @@
 use crate::HostTransaction;
 use crate::item::item_stack::{component_edits::edit_item_components, read_stack_view};
 use crate::{
-    BundleItems, Capability, Direction, ENTITY_ITEMS, EquipmentSlot, Hand, ITEMS,
+    BundleItems, Capability, Direction, ENTITY_ITEMS, EquipmentSlot, Hand, Host, ITEMS,
     ItemComponentEditor, ItemKey, ItemResource, ItemStack, ItemStackView, LevelRef, MenuRef,
     MenuSlotBacking, Overanswered, ResourceHandler, ServerHost, StackWriteError,
     TransactionContext, TransactionError, backend_mut_of, backend_of,
@@ -411,6 +411,22 @@ impl<T: ?Sized + 'static> ItemCapabilityKey<T> {
             default: None,
             handler: PhantomData,
         }
+    }
+
+    /// After startup, check whether this capability covers `item` using a read-only host
+    /// on either side. Like NeoForge's `RegisterCapabilitiesEvent.isItemRegistered`, this
+    /// checks registrations rather than looking up a handler.
+    ///
+    /// This counts providers registered by enabled mods on the calling side and game defaults
+    /// with type-only coverage, such as [`crate::ITEM_FLUIDS`] for buckets. An explicit
+    /// item-container declaration counts for [`ITEM_ITEMS`]; stack-dependent container and
+    /// bundle defaults do not count on their own. An unresolvable item key returns `false`.
+    ///
+    /// No provider is called and no handler is created. A covered type may still have no
+    /// handler for a particular stack; use [`ItemPlace::capability`] for that lookup.
+    pub fn covers(&self, host: &dyn Host, item: ItemKey) -> bool {
+        host.capability_providers()
+            .item_capability_covers(self.name, item)
     }
 }
 

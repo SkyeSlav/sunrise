@@ -94,7 +94,7 @@ pub(super) fn declared_block_container(block: &str) -> Option<&'static crate::Mo
     first_enabled(installed()?.keys.default_block_containers.get(block)?)
 }
 
-fn first_enabled<T>(declarations: &[(usize, T)]) -> Option<&T> {
+pub(super) fn first_enabled<T>(declarations: &[(usize, T)]) -> Option<&T> {
     declarations
         .iter()
         .find(|(index, _)| crate::mod_index_on(*index))
