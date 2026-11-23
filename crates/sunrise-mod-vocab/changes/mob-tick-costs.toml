@@ -1,3 +1,3 @@
 ids = ["method:prelude::ConfigServerHost::mob_cost_sampling", "method:prelude::ConfigServerHost::take_mob_costs", "type:MobTickCost"]
-why = "Server mods can switch on timing of every mob's own tick and take the samples gathered since the last take, one MobTickCost per mob tick."
+why = "Server mods can switch on timing of every mob's own tick and take the time gathered since the last take, one MobTickCost per level and mob type, as vanilla's per-entity-type profiler spans measure it."
 migrate = "Nothing to migrate: the methods are new."
