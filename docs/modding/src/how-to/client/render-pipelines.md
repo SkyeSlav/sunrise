@@ -171,10 +171,9 @@ event.register(
 
 `PipelineTexture::Sprite(id)` names a sprite of the block or item atlas by its texture id:
 `example:block/charge` is `assets/example/textures/block/charge.png` as the `minecraft:blocks`
-atlas holds it, `minecraft:item/diamond` an item sprite. An animated sprite animates. A pipeline
-always samples a rectangle of the atlas, never a texture of its own. A texture file of your mod's
-own, packed into the runtime atlas's slot pool (#4438) and drawn the same way, follows once that
-pool exists.
+atlas holds it, and `minecraft:item/diamond` names an item sprite. Animated sprites keep their
+animation. A textured pipeline samples a rectangle of the atlas; it does not sample a standalone
+texture file.
 
 The shader then has one more function:
 
@@ -200,7 +199,6 @@ cause and resolves to `Invalid`:
 | --- | --- |
 | `NoSuchSprite` | Neither the block nor the item atlas has the sprite (`… refused by the GPU: its texture sprite <name>: NoSuchSprite: …`) |
 | `NotASpriteKey` | The id names a file (a `textures/` path or a `.png` name), not a sprite key |
-| `NoSuchTextureFile`, `OverCap`, `Undecodable`, `NoSlot` | Texture files, once the slot pool exists: missing, over 1024 x 1024, not an image, or no slot within the mod's budget of 16 images and 4 MiB |
 
 A pipeline without `.textured(…)` has no `pipeline_texture`: its file is refused with a note
 naming `RenderPipeline::textured`.

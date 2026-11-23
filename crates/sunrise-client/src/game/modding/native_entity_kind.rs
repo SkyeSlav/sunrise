@@ -9,8 +9,10 @@ impl Game<'_> {
 
     fn native_entity_kind_name(&self, target: Target) -> Option<&str> {
         Some(match target {
-            Target::Player | Target::Guest(_) => "minecraft:player",
-            Target::Mob(id) => &self.mobs.iter().find(|mob| mob.id == id)?.kind.id,
+            Target::Player | Target::Guest(_) => super::native_living_body::PLAYER,
+            Target::Mob(id) => super::native_living_body::body_kind_name(
+                sunrise_client::health::LivingBody::Mob(self.mobs.iter().find(|mob| mob.id == id)?),
+            ),
             Target::Item(_) => "minecraft:item",
             Target::Orb(_) => "minecraft:experience_orb",
             Target::Projectile(id) => self
@@ -19,7 +21,7 @@ impl Game<'_> {
                 .iter()
                 .find(|p| p.id == id)?
                 .entity_type(),
-            Target::Stand(_) => "minecraft:armor_stand",
+            Target::Stand(_) => super::native_living_body::ARMOR_STAND,
             Target::General(id) => self.general_kind(id)?,
             Target::Frame(id) => {
                 if self
@@ -37,7 +39,7 @@ impl Game<'_> {
             Target::Cart(id) => self.carts.iter().find(|cart| cart.id == id)?.kind.id(),
             Target::Other(id) => &self.others.iter().find(|other| other.id == id)?.kind,
             Target::Crystal(_) => "minecraft:end_crystal",
-            Target::Dragon(_) | Target::DragonPart(_) => "minecraft:ender_dragon",
+            Target::Dragon(_) | Target::DragonPart(_) => super::native_living_body::ENDER_DRAGON,
             Target::Tnt(_) => "minecraft:tnt",
             Target::Cushion(_) => "minecraft:cushion",
             Target::Falling(_) => "minecraft:falling_block",

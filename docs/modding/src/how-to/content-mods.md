@@ -62,12 +62,10 @@ cargo sunrise-mod check target/sunrise-mod/my_mod.smod   # the registry's checks
   It also checks for blockstates on blocks with `render_shape` set to `MODEL` and warns about missing local loot
   tables, item definitions or English names, or registry content on a client-only package. Reference diagnostics name
   the source file, the relevant field or member index, and the ID.
-- `check <file>` runs what the registry runs: the file's size and SHA-256, its manifest and content, and a signature
+- `check <file>` checks a package file locally: its size and SHA-256, its manifest and content, and a signature
   with `--key <public key> --signature <file>.minisig`. It reads `.smod`, `.spack`, resource pack `.zip`
   and `.sshader` files.
-- `registry build|review|check|list|release|releases|page` supports the registry repository's CI
-  ([the registry index](../reference/registry-index.md)). `registry releases --out releases.json` discovers stable
-  release tags and commits. The workflow verifies the signed SDK separately.
+- To release a mod to the registry, follow [Publishing your mod](publish.md).
 - `use-jar <path>` records and caches an original Java jar as an external asset/data source, without copying it into the mod
   ([Java jars as external assets](#java-jars-as-external-assets)).
 
@@ -218,7 +216,10 @@ NeoForge's `IClientFluidTypeExtensions`; the fluid needs no block, and a recipe 
 object makes it exist in the world: `{"world": {}}` adds the block `<id>:<path>`, a copy of `minecraft:water` that flows
 with vanilla's fluid simulation, and the bucket item `<id>:<path>_bucket`, which needs its model as any item does. `world`
 takes `tick_delay` (1 or more, default 5), `drop_off` (1 to 7, default 1), `slope_find_distance` (1 to 4, default 4),
-`source_conversion` (default false) and `bucket` (default true). The fluid is in no vanilla fluid tag, so entities don't
+`source_conversion` (default false) and `bucket` (default true). Beside `world`, a fluid file may state NeoForge's
+`FluidType` numbers, which other mods read through `FluidTypeProperties`: `temperature` and `density` (any signed
+32-bit integer, defaults 300 and 1000) and `viscosity` (0 or more, default 1000). A file without `world` declares no
+fluid by itself; its numbers describe the tank-only fluid a native mod declares in code with `declare_fluid`. The fluid is in no vanilla fluid tag, so entities don't
 swim in it or get pushed by it. In the world it draws its `sprite`, a block atlas texture such as `mymod:block/oil`, times
 its `tint`; with neither it looks like water, and a `tint` alone colours water's textures. A client mod's
 `register_fluid_models` hook accepts `mod_api::FluidModel` values with separate flowing and overlay sprites via

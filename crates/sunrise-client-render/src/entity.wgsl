@@ -302,6 +302,16 @@ struct ClippedEntity {
 @fragment fn fs_entity_unmarked(in: Out, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     return frame_stored(entity_color(in, front, true));
 }
+// Sign glyphs retain their glow tier in both the NORMAL and POLYGON_OFFSET text paths.
+@fragment fn fs_entity_text(in: Out, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    let color = entity_color(in, front, true);
+    if in.tier != 0u { return entity_written_color(in, color); }
+    return frame_stored(color);
+}
+@fragment fn fs_text_hdr_mark(in: Out) -> @location(0) vec4<f32> {
+    if in.tier == 0u || textureSample(atlas, atlas_sampler, in.uv).a * in.color.a < 0.1 { discard; }
+    return vec4(0.0, 0.0, 0.0, hdr_entity_mark(in));
+}
 // core/glint.fsh (`RenderPipelines.GLINT`, e.g. `RenderTypes.patternedShieldGlint`):
 // samples the glint texture alone, fades by fog and `GlintAlpha`, and squares RGB
 // to match `BlendFunction.GLINT` (`SRC_COLOR, ONE, ZERO, ONE`) under additive colour blend.

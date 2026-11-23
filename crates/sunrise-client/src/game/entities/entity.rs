@@ -1144,7 +1144,8 @@ impl Game<'_> {
             Some(&self.pack.block_registries),
             &self.damage_hooks,
         )
-        .with_effects(crate::game::entity::hit_effects_of!(self, None));
+        .with_effects(crate::game::entity::hit_effects_of!(self, None))
+        .with_reads(crate::game::entity::hit_reads_of!(self));
         if let Some(hooks) = sunrise_client::block_contact::HOOKS.get() {
             (hooks.inside_fire)(
                 &mut level,
@@ -1779,6 +1780,26 @@ macro_rules! hit_effects_of {
         )
     };
 }
+/// What a hit's listeners need from `$game` to name and read the living entities the hit lends
+/// ([`HitReads`](sunrise_client::health::HitReads)), as field-level borrows; none before the
+/// world has an epoch, and none while no `HitHost` hook listens.
+macro_rules! hit_reads_of {
+    ($game:expr) => {
+        sunrise_client::health::hit_host_listened()
+            .then(|| $game.native_lifecycle.epoch())
+            .flatten()
+            .map(|epoch| sunrise_client::health::HitReads {
+                epoch,
+                attributes: &$game.motion.attributes,
+                player_effects: Some(&$game.potions.effects),
+                player_equipment: acting_equipment!($game),
+                player_uuid: $game.lan_acting_uuid,
+                player_attachments: Some(&$game.player_state.attachments),
+                entity_attachments: Some(&*$game.entity_attachments),
+            })
+    };
+}
+pub(super) use hit_reads_of;
 /// The level `$game` ticks, lent to a hit's damage hooks with its block registry and merged
 /// tag tables, so a mob or the player beside them can take the hit. `$attack` is the
 /// [`Attack`](sunrise_client::health::Attack) the site took first. Every site names what it
@@ -1800,6 +1821,7 @@ macro_rules! damage_level_of {
         .no_push()
         .with_mob_hurt_handoff(&mut $game.paused_mob_hurt)
         .with_effects(crate::game::entity::hit_effects_of!($game, $lend))
+        .with_reads(crate::game::entity::hit_reads_of!($game))
         $(.with_player_equipment($equipment))?
     };
     ($game:ident, $attack:expr, $credit:expr, $lend:expr) => {
@@ -1814,6 +1836,7 @@ macro_rules! damage_level_of {
         .with_knockback_credit($credit)
         .with_mob_hurt_handoff(&mut $game.paused_mob_hurt)
         .with_effects(crate::game::entity::hit_effects_of!($game, $lend))
+        .with_reads(crate::game::entity::hit_reads_of!($game))
     };
 }
 pub(super) use damage_level_of;

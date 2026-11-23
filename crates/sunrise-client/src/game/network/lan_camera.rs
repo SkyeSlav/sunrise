@@ -147,6 +147,7 @@ impl Game<'_> {
         };
         let guest = &host.hub.guests[gi];
         let (conn, own, uuid, name) = (guest.conn, guest.entity_id, guest.uuid, guest.name.clone());
+        let level = super::Dim::from_id(&guest.dimension);
         let previous = self.cmds.guest_cameras.get(&conn).map(|c| c.id);
         let camera = camera.filter(|id| *id != own);
         if self.cmds.guest_cameras.get(&conn).map(|c| c.id) == camera {
@@ -156,11 +157,18 @@ impl Game<'_> {
         // and nobody is told.
         let at = match camera {
             Some(id) => match self.camera_state(id) {
-                Some((position, _)) => Some(position),
+                Some((position, _)) => position,
                 None => return,
             },
-            None => Some(host.hub.guests[gi].position),
+            None => guest.position,
         };
+        let back = self.dim;
+        if level != back
+            && let Err(error) = self.enter_level(level)
+        {
+            log::error!("could not reopen {}: {error}", level.id());
+            return;
+        }
         match camera {
             Some(id) => {
                 self.cmds
@@ -179,27 +187,34 @@ impl Game<'_> {
             let value = camera.is_some();
             host.hub.guests.update(gi, |guest| guest.watching = value);
         }
-        // teleportTo(level, camera.x, y, z): same look.
-        host.hub.teleport(gi, at);
-        // `setCamera` moves the tickets at once: to the camera, or back to the player.
-        host.hub.guests.update(gi, |guest| guest.release_tickets());
-        host.hub.send_to(
-            conn,
-            &C::SetCamera(play::SetCamera {
-                camera_id: camera.unwrap_or(own),
-            }),
-        );
-        let teleports = host.hub.guests[gi].teleport_counter;
-        if let Some(c) = self.cmds.guest_cameras.get_mut(&conn) {
-            c.teleports = teleports;
+        // setCamera calls teleportTo before sending the camera packet: the player
+        // dismounts, keeps its look, and zeroes its velocity in the same live body.
+        self.as_guest(conn, |game| {
+            game.place_player_teleport_in_level(Vec3::new(at[0], at[1], at[2]), None, [false; 3])
+        });
+        if let Some(host) = self.lan.as_mut() {
+            // setCamera moves the tickets at once: to the camera, or back to the player.
+            host.hub.guests.update(gi, |guest| guest.release_tickets());
+            host.hub.send_to(
+                conn,
+                &C::SetCamera(play::SetCamera {
+                    camera_id: camera.unwrap_or(own),
+                }),
+            );
+            let teleports = host.hub.guests[gi].teleport_counter;
+            if let Some(c) = self.cmds.guest_cameras.get_mut(&conn) {
+                c.teleports = teleports;
+            }
+            if let Some(entity_id) = camera {
+                self.native_player_start_spectating_entity(uuid, &name, entity_id);
+            } else if let Some(entity_id) = previous {
+                self.native_player_stop_spectating_entity(uuid, &name, entity_id);
+            }
         }
-        if let Some(entity_id) = camera {
-            self.native_player_start_spectating_entity(uuid, &name, entity_id);
-        }
-        if camera.is_none()
-            && let Some(entity_id) = previous
+        if level != back
+            && let Err(error) = self.enter_level(back)
         {
-            self.native_player_stop_spectating_entity(uuid, &name, entity_id);
+            log::error!("could not reopen {}: {error}", back.id());
         }
     }
 

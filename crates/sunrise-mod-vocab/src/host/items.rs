@@ -207,6 +207,9 @@ pub trait ItemsBackend {
 
     /// Side: both. ItemResource's effective use duration, including its Part.
     fn item_resource_use_duration(&self, stack: &ItemStack) -> Option<i32>;
+    /// Side: both. `ItemStack.getUseAnimation` after the mods' `use_animation` answers; none
+    /// for an unknown item.
+    fn item_stack_use_animation(&self, stack: &ItemStack) -> Option<UseAnimation>;
     /// Side: both. The mod that made the stack, including its Part.
     fn item_resource_creator_mod_id(&self, stack: &ItemStack) -> Option<String>;
     /// Side: both. The effective vanilla bar, before client drawing hooks.

@@ -159,13 +159,14 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
     match who {
         Who::Player => cx.events.push(cx.w.route_player_event(match effect {
             Some((effect, ticks, amplifier)) => MobEvent::AttackPlayerWithEffect {
+                attacker: m.id,
                 amount,
                 from,
                 effect,
                 ticks,
                 amplifier,
             },
-            None => MobEvent::AttackPlayer(amount, from),
+            None => MobEvent::AttackPlayer(amount, from, Some(m.id)),
         })),
         Who::Mob(id) => cx.events.push(match effect {
             Some((effect, ticks, amplifier)) => MobEvent::AttackMobWithEffect {
@@ -180,6 +181,7 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
                 target: id,
                 amount,
                 source,
+                remember_target: true,
             },
         }),
     }

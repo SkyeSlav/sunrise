@@ -50,6 +50,21 @@ pub(super) fn is_render(hook: &Hook) -> bool {
     hook.target.starts_with("mod_render::render::")
 }
 
+pub(super) fn receiver_mut(hook: &Hook) -> Option<bool> {
+    if hook.target == EFFECT_TICK_TARGET {
+        Some(false)
+    } else if hook.target.starts_with("sunrise_client::game::") {
+        hook.receiver.mutability()
+    } else {
+        None
+    }
+}
+
+pub(super) fn listener_host_or_context(hook: &Hook) -> Option<host_param::HostParam> {
+    host_param::context_param(hook)
+        .or_else(|| host_param::host_param(hook, receiver_mut(hook), hook.engine_ticks))
+}
+
 /// Render records only, without game binding or listener dispatch.
 pub(super) fn render(catalog: &Catalog) -> Result<HookSources, String> {
     emit(
@@ -97,13 +112,7 @@ pub(super) fn emit<'a>(
         {
             return Err(format!("wrong target for {name}: {target}"));
         }
-        let receiver_mut = if declaration_only {
-            Some(false)
-        } else if in_game {
-            hook.receiver.mutability()
-        } else {
-            None
-        };
+        let receiver_mut = receiver_mut(hook);
         let ticks = hook.engine_ticks;
         let inert_signal = hook.engine_inert;
         // Only a quick-move Part's panic can refuse its unanswered click.

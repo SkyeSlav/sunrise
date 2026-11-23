@@ -961,7 +961,31 @@ def run_binaries(package, executables, arguments, env):
     return subprocess.CompletedProcess(list(executables.values()), status, "\n".join(output) + "\n")
 
 
+# What the current run's commands printed, by stage (build, list, test): kept privately when the run fails.
+_captured = {}
+
+
 def run(package, skip, number=None, count=None, only=None, binaries=None):
+    """Run one leg (run_leg) and, when it fails in any way, keep everything its commands printed.
+
+    The public log withholds free-form panic payloads and compiler text (they can carry vanilla data). With
+    IGNORED_TESTS_PRIVATE_LOGS set, a run that stopped (None) or has a failed test keeps each stage's whole output
+    there as `<leg>.<stage>.log`, which ignored-tests.yml copies into the CI host's private keep; the public log
+    names the files only."""
+    _captured.clear()
+    results = run_leg(package, skip, number, count, only, binaries)
+    private = os.environ.get("IGNORED_TESTS_PRIVATE_LOGS")
+    if private and (results is None or not all(results.values())):
+        leg = package if number is None else f"{package}#{number}of{count}"
+        for stage, text in _captured.items():
+            kept = Path(private) / f"{leg}.{stage}.log"
+            kept.parent.mkdir(parents=True, exist_ok=True)
+            kept.write_text(text, errors="replace")
+            print(f"{package}: kept privately on the runner: {kept.name}")
+    return results
+
+
+def run_leg(package, skip, number=None, count=None, only=None, binaries=None):
     """Each test's result in `package`'s ignored library tests but `skip` (and, with a leg, the other legs'), or None if they didn't build.
 
     `only=(targets, tests)` runs just those ignored tests of those targets (`lib`, `bin:NAME`, `test:NAME`) instead;
@@ -1008,6 +1032,7 @@ def run(package, skip, number=None, count=None, only=None, binaries=None):
         if prepare := ignored_shards.PREPARE.get(package):
             built = subprocess.run(prepare, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                    errors="replace", env=env, cwd=ROOT / workspace)
+            _captured["build"] = built.stdout
             if built.returncode:
                 print(f"{package}: building what its tests need failed (cargo exit {built.returncode})")
                 compile_diagnostics(built.stdout)
@@ -1025,6 +1050,7 @@ def run(package, skip, number=None, count=None, only=None, binaries=None):
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace", env=env,
                 cwd=ROOT / workspace,
             )
+            _captured["list"] = (listing.stdout or "") + (listing.stderr or "")
             names = {found[1] for line in listing.stdout.splitlines() if (found := LISTED.match(line))}
             if listing.returncode or not names:
                 print(f"{package}: could not list the tests to split into legs (cargo exit {listing.returncode})")
@@ -1055,6 +1081,7 @@ def run(package, skip, number=None, count=None, only=None, binaries=None):
             )
         if timing:
             print(f"data-leg phase={phase} test-command-end utc={time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} execution_seconds={time.monotonic() - execution_started:.3f}", flush=True)
+    _captured["test"] = process.stdout
     results = {}
     summaries = []
     print(f"{package}: cargo exit {process.returncode}")

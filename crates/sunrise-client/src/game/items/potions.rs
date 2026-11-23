@@ -1257,6 +1257,7 @@ impl Game<'_> {
     /// player or a guest acting (`as_guest`), then its attribute modifiers
     /// and status flags.
     pub(super) fn tick_mob_effects(&mut self) {
+        self.clear_dead_player_target();
         let Some(player) = self.player.as_ref() else {
             return;
         };

@@ -306,7 +306,8 @@ fn decorations(c: &Value, atlas: &HudAtlas) -> Vec<GuiDraw> {
         h,
         float("xpProgress", 0.0),
         level,
-        c["experienceBar"].as_bool().unwrap_or(false),
+        // Hud.nextContextualInfoState picks the experience bar only for a game mode with experience.
+        survival && c["experienceBar"].as_bool().unwrap_or(false),
         &width,
     ));
     draws

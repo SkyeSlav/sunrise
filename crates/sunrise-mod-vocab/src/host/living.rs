@@ -124,6 +124,13 @@ pub trait LivingBackend {
     /// client.
     fn living_last_attacker(&self, living: LivingRef) -> Option<EntityRef>;
     /// Side: server.
+    /// The last living target recorded by `LivingEntity.setLastHurtMob`, with
+    /// the holder's `tickCount` at that moment (the same clock as `EntityRef::tick_count`).
+    /// There is no age cutoff. None for a stale holder, no remembered target,
+    /// or a target that is dead or gone.
+    #[goal_view]
+    fn living_last_hurt_mob(&self, living: LivingRef) -> Option<(EntityRef, i32)>;
+    /// Side: server.
     /// `LivingEntity.hasLineOfSight(Entity)`: whether nothing that collides
     /// (`ClipContext.Block.COLLIDER`, fluids ignored) lies between the
     /// living entity's eyes and `target`'s eye height, within 128 blocks.

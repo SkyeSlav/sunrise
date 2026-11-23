@@ -49,6 +49,7 @@ Feature → files → harness for the most-changed areas: [docs/architecture.md]
 - **Docs say where and how, not how many.** Point to where a thing lives and the command that lists or measures it.
   Don't write counts, growing lists, timings or current status into a doc: they go stale, and the next agent
   spends a turn fixing them.
+- **Contract details go in rustdoc, not concept pages.** A PR that adds or changes a hook, method or edge case updates its `///` doc comment or `#[notes]`, not a concept page in `docs/modding/src/concepts/`; runnable Rust snippets belong in `docs/modding/examples/` via `{{#include}}`.
 
 ## Mod API: the clean break
 

@@ -29,12 +29,6 @@ impl Game<'_> {
             })
             .collect()
     }
-    /// The window's width and height in physical pixels, independent of GUI
-    /// scale; none on a server or when no window exists.
-    pub(in crate::game) fn native_physical_window_size(&self) -> Option<[u32; 2]> {
-        let size = self.window.as_ref()?.inner_size();
-        Some([size.width, size.height])
-    }
     /// The areas the game itself draws beside the open screen's window: the
     /// container build's, or the frame's own arithmetic with no build yet.
     pub(super) fn screen_own_exclusion(&self, batch: &HudBatch) -> Vec<[f32; 4]> {

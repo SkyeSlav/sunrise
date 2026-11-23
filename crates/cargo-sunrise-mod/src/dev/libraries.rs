@@ -99,6 +99,7 @@ impl Libraries {
         sdk: &super::NativeSdk,
         cache: &Path,
         root: &Path,
+        release: bool,
     ) -> Result<BTreeMap<String, PathBuf>, String> {
         let registry = Registry::default();
         let build_data = RefCell::new(None);
@@ -106,6 +107,15 @@ impl Libraries {
         let unavailable = RefCell::new(None);
         let selected = self.plan(&bundle.manifest, &bundle.native().game, |project, row| {
             if unavailable.borrow().is_some() {
+                return false;
+            }
+            // The old registry index's sources carry no attestation, so a release never
+            // compiles one.
+            if release {
+                *unavailable.borrow_mut() = Some(format!(
+                    "{} {}: a release can't take a library from the old registry index, whose sources aren't attested",
+                    project.id, row.version
+                ));
                 return false;
             }
             let candidate = (|| {
@@ -128,6 +138,7 @@ impl Libraries {
                     candidate.path(),
                     &source.manifest,
                     &mut build_data.borrow_mut(),
+                    None,
                 )
                 .err())
             })();
@@ -174,6 +185,7 @@ impl Libraries {
                         &into,
                         &source.package.manifest,
                         &mut build_data,
+                        release.then_some(root),
                     )?;
                 }
             } else {
@@ -208,12 +220,14 @@ impl Libraries {
 
 /// Published SDKs compare the library's recorded uses, just as the install path does. Keep the
 /// original pin in the source snapshot; only the SDK used for this particular build changes.
+/// `private` is a release's private build folder, where its build data is fetched.
 fn check_fit(
     project: &Path,
     sdk: &super::NativeSdk,
     root: &Path,
     manifest: &Manifest,
     build_data: &mut Option<PathBuf>,
+    private: Option<&Path>,
 ) -> Result<(), String> {
     use sunrise_native_build::{
         check::{self, Unlisted, Verdict},
@@ -240,7 +254,23 @@ fn check_fit(
     };
     let mut row = judge(&plan).map_err(refused)?;
     if row.needs == Some("build-data") {
-        *build_data = Some(crate::sdk_fetch::build_data(project, build).map_err(refused)?);
+        // A release judges with build data fetched from the signed SDK into its private build
+        // folder, never the project's own cache, which the checkout can edit.
+        *build_data = Some(match private {
+            Some(dir) => {
+                let staging = dir.join("sdk-data");
+                crate::sdk_fetch::release_data(
+                    &crate::sdk_fetch::Base::from_env(),
+                    &crate::sdk_fetch::keys(),
+                    build,
+                    &staging,
+                    true,
+                )
+                .map_err(refused)?;
+                staging.join(build).join(crate::sdk_fetch::BUILD_DATA)
+            }
+            None => crate::sdk_fetch::build_data(project, build).map_err(refused)?,
+        });
         plan.build_data = build_data.clone();
         row = judge(&plan).map_err(refused)?;
     }

@@ -26,25 +26,7 @@ holds: register it `before_game` if the block also has slots.
 To find the first entry with at least `minimum` items, stop as soon as it matches:
 
 ```rust
-use mod_api::{ItemResource, ItemStorage, ServerHost, StorageError};
-use std::ops::ControlFlow;
-
-fn first_at_least(
-    storage: &dyn ItemStorage,
-    host: &mut dyn ServerHost,
-    minimum: u64,
-) -> Result<Option<(ItemResource, u64)>, StorageError> {
-    let mut found = None;
-    storage.visit_entries(host, &mut |kind, amount| {
-        if amount >= minimum {
-            found = Some((kind.clone(), amount));
-            ControlFlow::Break(())
-        } else {
-            ControlFlow::Continue(())
-        }
-    })?;
-    Ok(found)
-}
+{{#include ../../../examples/src/item_behaviors.rs:items_by_kind}}
 ```
 
 Providers skip empty entries and report repeated kinds separately. Read only as far as the visitor asks:

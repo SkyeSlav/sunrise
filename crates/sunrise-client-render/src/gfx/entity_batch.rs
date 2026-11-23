@@ -1,5 +1,8 @@
 //! Stable entity material grouping with renderer-owned, reusable CPU scratch.
 use super::Vertex;
+pub use sunrise_render_core::entity::{
+    TEXT_NORMAL_SOLID_OVERLAY, TEXT_POLYGON_OFFSET_SOLID_OVERLAY,
+};
 
 /// Entity materials by a quad's overlay (`Vertex::layer`), in draw order:
 /// ordinary entities, world text drawn with a depth bias (35,
@@ -16,15 +19,17 @@ use super::Vertex;
 /// ignored and they stay in the first one, in their order.
 /// Sorted still-fluid geometry follows, then the two native world-canvas text materials,
 /// NORMAL and POLYGON_OFFSET, the four native terrain model materials, banner patterns,
-/// glint-only overlays, and solid `POLYGON_OFFSET` text (`SubmitNodeCollection.canRenderAsSolid`).
+/// glint-only overlays, and solid `POLYGON_OFFSET` and `NORMAL` text
+/// (`SubmitNodeCollection.canRenderAsSolid`).
 /// Material storage order is independent of their draw stages.
-const MATERIALS: usize = 20;
-/// Opaque `Font.DisplayMode.POLYGON_OFFSET` text (`SubmitNodeCollection.canRenderAsSolid`).
-pub const TEXT_POLYGON_OFFSET_SOLID_OVERLAY: u32 = 50;
+const MATERIALS: usize = 21;
 const _: () = assert!(
     TEXT_POLYGON_OFFSET_SOLID_OVERLAY != super::EXPLICIT_PARTICLE_OVERLAY
         && TEXT_POLYGON_OFFSET_SOLID_OVERLAY != GLINT_ONLY_OVERLAY
         && TEXT_POLYGON_OFFSET_SOLID_OVERLAY != BANNER_PATTERN_OVERLAY
+        && TEXT_NORMAL_SOLID_OVERLAY != super::EXPLICIT_PARTICLE_OVERLAY
+        && TEXT_NORMAL_SOLID_OVERLAY != GLINT_ONLY_OVERLAY
+        && TEXT_NORMAL_SOLID_OVERLAY != BANNER_PATTERN_OVERLAY
 );
 pub const TERRAIN_MODEL_SOLID_OVERLAY: u32 = 42;
 pub const TERRAIN_MODEL_CUTOUT_OVERLAY: u32 = 43;
@@ -148,6 +153,7 @@ fn material(layer: u32, oit: bool) -> usize {
         BANNER_PATTERN_OVERLAY => return 17,
         GLINT_ONLY_OVERLAY => return 18,
         TEXT_POLYGON_OFFSET_SOLID_OVERLAY => return 19,
+        TEXT_NORMAL_SOLID_OVERLAY => return 20,
         _ => {}
     }
     if layer & 0xffff == FLUID_OVERLAY {
@@ -365,20 +371,16 @@ impl EntityBatch {
         }
         // Native translucent models sort their quads far to near, as `sortOnUpload` does.
         append_sorted(&mut self.sort, &mut self.combined, entities, &self.runs[16]);
-        // `RenderTypes.bannerPattern` and `RenderTypes.patternedShieldGlint` keep submission order.
-        for runs in &self.runs[17..19] {
-            for &(first, count) in runs {
-                self.combined
-                    .extend_from_slice(&entities[first * 4..(first + count) * 4]);
-            }
-        }
-        // Opaque `TEXT_POLYGON_OFFSET` text writes depth in the solid pass; classic sorts on upload.
-        if !oit {
-            append_sorted(&mut self.sort, &mut self.combined, entities, &self.runs[19]);
-        } else {
-            for &(first, count) in &self.runs[19] {
-                self.combined
-                    .extend_from_slice(&entities[first * 4..(first + count) * 4]);
+        // Classic `RenderTypes.textPolygonOffset` sorts on upload. `RenderTypes.text`,
+        // banner patterns and glint keep their submission order in either mode.
+        for (kind, runs) in self.runs.iter().enumerate().skip(17) {
+            if kind == 19 && !oit {
+                append_sorted(&mut self.sort, &mut self.combined, entities, runs);
+            } else {
+                for &(first, count) in runs {
+                    self.combined
+                        .extend_from_slice(&entities[first * 4..(first + count) * 4]);
+                }
             }
         }
         if self.moved_additive == 0 {
@@ -456,6 +458,7 @@ mod tests {
             SHADOW_OVERLAY,
             TEXT_POLYGON_OFFSET_OVERLAY,
             TEXT_POLYGON_OFFSET_SOLID_OVERLAY,
+            TEXT_NORMAL_SOLID_OVERLAY,
             11,
             12,
             OIT_ENTITY,
@@ -611,7 +614,9 @@ mod tests {
         );
         assert_eq!(
             counts,
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 2, 1, 1, 0, 0, 0, 0]
+            [
+                1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 2, 1, 1, 0, 0, 0, 0, 0
+            ]
         );
         let xs: Vec<_> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
         assert_eq!(
@@ -685,7 +690,9 @@ mod tests {
         let mut batch = EntityBatch::default();
         assert_eq!(
             batch.update(&entities, &additive, &quad(0, 9.0), &quad(0, 10.0), true),
-            [1, 1, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0]
+            [
+                1, 1, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0
+            ]
         );
         let positions: Vec<_> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
         assert_eq!(
@@ -789,7 +796,7 @@ mod tests {
     }
 
     #[test]
-    fn solid_polygon_offset_text_sorts_in_classic_and_stays_outside_oit() {
+    fn solid_text_stays_outside_oit_and_only_polygon_offset_sorts_in_classic() {
         let quad = |layer: u32, z: f32, id: u32| {
             [Vertex {
                 layer,
@@ -799,17 +806,19 @@ mod tests {
             }; 4]
         };
         let entities: Vec<Vertex> = [
+            (TEXT_NORMAL_SOLID_OVERLAY, 2.0, 4),
             (TEXT_POLYGON_OFFSET_SOLID_OVERLAY, 2.0, 1),
             (TEXT_POLYGON_OFFSET_SOLID_OVERLAY | OIT_ENTITY, 9.0, 2),
+            (TEXT_NORMAL_SOLID_OVERLAY | OIT_ENTITY, 9.0, 5),
             (TEXT_POLYGON_OFFSET_SOLID_OVERLAY, 4.0, 3),
         ]
         .into_iter()
         .flat_map(|(layer, z, id)| quad(layer, z, id))
         .collect();
         let mut batch = EntityBatch::default();
-        for (oit, want) in [(false, [2, 3, 1]), (true, [1, 2, 3])] {
+        for (oit, want) in [(false, [2, 3, 1, 4, 5]), (true, [1, 2, 3, 4, 5])] {
             let counts = batch.update(&entities, &[], &[], &[], oit);
-            assert_eq!(counts[19], 3);
+            assert_eq!(counts[19..], [3, 2]);
             assert_eq!(counts[9], 0);
             let ids: Vec<u32> = batch.combined.iter().step_by(4).map(|v| v.color).collect();
             assert_eq!(ids, want);
@@ -926,7 +935,9 @@ mod tests {
         let counts = batch.update(&entities, &[], &[], &[], false);
         assert_eq!(
             counts,
-            [4, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            [
+                4, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            ]
         );
         let xs: Vec<f32> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
         assert_eq!(xs, [0.0, 1.0, 2.0, 4.0, 3.0]);
@@ -934,7 +945,9 @@ mod tests {
         let counts = batch.update(&entities, &[], &[], &[], true);
         assert_eq!(
             counts,
-            [2, 0, 0, 0, 0, 0, 1, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            [
+                2, 0, 0, 0, 0, 0, 1, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            ]
         );
         let xs: Vec<f32> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
         assert_eq!(xs, [0.0, 2.0, 3.0, 1.0, 4.0]);

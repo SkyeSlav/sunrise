@@ -279,6 +279,7 @@ impl Game<'_> {
         };
         let center = match hit {
             Hit::Entity { who, at } => {
+                self.remember_projectile_target(p, who);
                 self.wind_charge_damage(p, who);
                 [at.x, at.y, at.z]
             }

@@ -2014,7 +2014,13 @@ impl Game<'_> {
         let mut pick = super::pick_accumulator::PickAccumulator::new(reach * reach);
         let mut best: Option<(usize, f64)> = None;
         for (i, b) in self.boats.iter().enumerate() {
-            if pick.consider_box(self, b.id, from, to, b.bounds()) {
+            if pick.consider_box(
+                self,
+                b.id,
+                from,
+                to,
+                self.client_copy_box(b.id, b.position, b.bounds()),
+            ) {
                 best = Some((i, pick.hovered.unwrap().distance_sq.sqrt()));
             }
         }
@@ -2181,6 +2187,7 @@ impl Game<'_> {
                 }
                 self.special_attack_slowdown(knockback);
             }
+            self.remember_player_target(None);
             self.special_attack_exhaustion();
         }
         // Player.onAttack: the hit starts the attack strength again.

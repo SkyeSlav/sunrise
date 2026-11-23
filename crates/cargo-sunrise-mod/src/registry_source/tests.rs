@@ -41,7 +41,7 @@ impl Fixture {
     fn fetch(&self) -> Result<Bundle, String> {
         let project = &self.index.projects[0];
         Registry {
-            files: Some(self.root.path()),
+            files: Some(self.root.path().to_path_buf()),
             ..Registry::default()
         }
         .native_source(

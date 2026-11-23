@@ -118,6 +118,11 @@ Content {
                     bucket: false,
                 },
             ),
+            measures: FluidMeasures {
+                temperature: 295,
+                density: 1100,
+                viscosity: 1200,
+            },
         },
     ],
     fluid_interactions: [],

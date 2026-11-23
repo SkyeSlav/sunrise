@@ -272,3 +272,60 @@ fn body_yaw_is_the_raw_mob_yaw_and_none_for_others() {
         assert_eq!(dragon.body_yaw(game), None);
     });
 }
+
+/// A player's `getLastHurtMob` read in a goal tick of the very mob it names: the game alone
+/// cannot see the mob while it is lent to its tick, and the tick's view resolves it.
+#[test]
+#[ignore = "daily"]
+fn a_players_last_hurt_mob_resolves_the_mob_lent_to_its_tick() {
+    use crate::game::native_entity_refs::tests::{bind_local_player, run_fresh_cases};
+    use sunrise_client::{chunk::Chunk, motion::PlayerMotion};
+
+    // Loading resources replaces process-wide tables: the case runs in its own process.
+    if run_fresh_cases(
+        "game::native_goal_ticks::live_read_tests::a_players_last_hurt_mob_resolves_the_mob_lent_to_its_tick",
+        "SUNRISE_GOAL_LAST_HURT_MOB_CASE",
+        &["lent"],
+    ) {
+        return;
+    }
+    with_game(|game| {
+        game.enter_level(crate::game::Dim::Overworld).unwrap();
+        game.options.dedicated = Some(Vec::new());
+        game.world
+            .chunks
+            .insert((0, 0), std::sync::Arc::new(Chunk::empty(0, 0)));
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 80.0, 0.5)).unwrap());
+        bind_local_player(game, 20, 123);
+        let kind = game
+            .res
+            .mob_types()
+            .get("minecraft:zombie")
+            .unwrap()
+            .clone();
+        game.mobs
+            .push(Mob::new(72, kind, Vec3::new(3.0, 80.0, 0.5), 0.0));
+        game.player.as_mut().unwrap().health.last_hurt_mob = Some((72, 39));
+        let player = game.living(game.entity(20).unwrap()).unwrap();
+        let zombie = game.entity(72).unwrap();
+        assert_eq!(player.last_hurt_mob(game), Some((zombie, 39)));
+
+        let mut loan = game.mobs.lift();
+        let index = loan.iter().position(|mob| mob.id == 72).unwrap();
+        let reads = loan
+            .with_one_and_rest(index, |actor, _, _| {
+                let mut world = game.mob_world_base(&[]);
+                world.goal_host = Some(game);
+                let context = GoalCx {
+                    m: actor,
+                    w: &world,
+                    host: game,
+                };
+                (player.last_hurt_mob(game), player.last_hurt_mob(&context))
+            })
+            .unwrap();
+        game.mobs
+            .restore(loan, sunrise_client::join_seq::RestoreOrder::SurvivorsFirst);
+        assert_eq!(reads, (None, Some((zombie, 39))));
+    });
+}

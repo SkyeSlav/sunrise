@@ -234,6 +234,11 @@ fn register(r: &mut dyn Registrar) {
   The fingerprint describes the negotiated encoding, not what a field or variant means.
   If you reorder fields or variants that have the same encoding, or reuse a position for a
   different meaning, bump the registrar's application version even if the fingerprint is unchanged.
+- **Ask before sending.** On a client, `ClientHost::has_channel(&id)` (NeoForge's `hasChannel`) is
+  the test `send_payload_to_server` makes before it queues anything, for the connection's current
+  phase: true means the send won't return `UnsupportedPeer`, so a mod can tell a server that has
+  its optional channel from one that doesn't. It is false with no connection and for a channel
+  declared for the other phase or direction.
 - **Named errors.** `PayloadSendError::StaleToken` for a token the registrar did not hand out
   as it claims (forged, from another load, read as another type, or its mod off);
   `EncodeFailed` for a value the peer could not decode (a bound or the allocation budget),

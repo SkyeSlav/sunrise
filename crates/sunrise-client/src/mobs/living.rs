@@ -610,7 +610,11 @@ impl Mob {
     /// `dims` as vanilla computes them, without an `entity_size` answer: the `newSize`
     /// `EntityEvent.Size` starts from.
     pub fn vanilla_dims(&self) -> [f32; 3] {
-        dims_array(self.dims_in_pose(self.pose()))
+        self.vanilla_dims_in(self.pose())
+    }
+    /// [`Self::vanilla_dims`] in `pose` (`Entity.getDimensions(pose)`).
+    pub fn vanilla_dims_in(&self, pose: mod_api::Pose) -> [f32; 3] {
+        dims_array(self.dims_in_pose(pose))
     }
     /// The pose this mob is in (`Entity.getPose`): the stance its species
     /// keeps in its own fields — a villager's bed, a camel's sit flag, an

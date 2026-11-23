@@ -59,7 +59,7 @@ fn players_receive_another_players_initial_main_hand_and_changes() {
             g.inbox
                 .push_back(InboxItem::Packet(S::ClientInformation(info), None));
         });
-        hub.process_inbox(1, &mut ctx, &mut Vec::new(), false, &mut false);
+        hub.process_inbox(1, &mut ctx, &mut Vec::new(), false, &mut false, &mut None);
         hub.track_entities(&mut ctx, None);
         assert_eq!(received(), expected);
     }

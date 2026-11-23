@@ -263,7 +263,8 @@ impl Game<'_> {
                     self,
                     None,
                     in hit_sounds
-                ));
+                ))
+                .with_reads(crate::game::entity::hit_reads_of!(self));
                 let path_changes = sunrise_client::mobs::collision_changes(&base, &path_writes);
                 laps.lap("creature_prepare");
                 let mut cached_difficulty: Option<((i32, i32), spawning::LocalDifficulty)> = None;
