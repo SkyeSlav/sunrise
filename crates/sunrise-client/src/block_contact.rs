@@ -5,7 +5,7 @@ use std::{
     sync::OnceLock,
 };
 use sunrise_core::{
-    geometry::{Aabb, Axis, Direction, Vec3},
+    geometry::{Aabb, Axis, Direction, SweepCursor, Vec3},
     position::BlockPos,
 };
 use sunrise_world::{
@@ -145,9 +145,9 @@ pub fn sweep_inside_blocks<W: InsideWalk>(
     effects: &mut W::Effects,
     max_iterations: i32,
 ) -> Result<i32, W::Error> {
-    let (mut segment, used) = SweepSegment::collect(walk, from, to, max_iterations);
+    let mut segment = SweepSegment::new(walk, from, to, max_iterations);
     segment.run(walk, visited, effects, |_| false)?;
-    Ok(used)
+    Ok(segment.iteration + 1)
 }
 
 #[derive(Debug)]
@@ -156,42 +156,33 @@ struct SweepSegment {
     to: Vec3,
     deflated: Aabb,
     moved_far: bool,
-    hits: std::vec::IntoIter<(i32, BlockPos)>,
+    cells: Option<SweepCursor>,
+    iteration: i32,
+    max_iterations: i32,
 }
 
 impl SweepSegment {
-    fn collect<W: InsideWalk>(walk: &W, from: Vec3, to: Vec3, max_iterations: i32) -> (Self, i32) {
+    fn new<W: InsideWalk>(walk: &W, from: Vec3, to: Vec3, max_iterations: i32) -> Self {
         let epsilon = Vec3::new(W::DEFLATE, W::DEFLATE, W::DEFLATE);
         let deflated = walk.bounds_at(to).deflate(epsilon);
         // Mth.square(0.9999900000002526): a long move counts every block it crosses as precise.
         let far = 0.999_990_000_000_252_6_f64;
-        let moved_far = from.distance_squared(to) > far * far;
-        let mut iterations = 0;
-        let mut hits = Vec::new();
-        let _ = sunrise_core::geometry::sweep_intersected_blocks(
+        Self {
             from,
             to,
             deflated,
-            (max_iterations.max(0) as usize).max(1_000_000),
-            |p, iteration| {
-                if !walk.is_alive() || iteration >= max_iterations {
-                    return false;
-                }
-                iterations = iteration;
-                hits.push((iteration, p));
-                true
-            },
-        );
-        (
-            Self {
+            moved_far: from.distance_squared(to) > far * far,
+            // As before, a geometry error ends the segment after its valid prefix.
+            cells: SweepCursor::new(
                 from,
                 to,
                 deflated,
-                moved_far,
-                hits: hits.into_iter(),
-            },
-            iterations + 1,
-        )
+                (max_iterations.max(0) as usize).max(1_000_000),
+            )
+            .ok(),
+            iteration: 0,
+            max_iterations,
+        }
     }
 
     fn run<W: InsideWalk>(
@@ -201,10 +192,14 @@ impl SweepSegment {
         effects: &mut W::Effects,
         halt: impl Fn(&W) -> bool,
     ) -> Result<bool, W::Error> {
-        for (step, p) in self.hits.by_ref() {
-            if !walk.is_alive() {
+        while walk.is_alive() {
+            let Some(Ok((p, step))) = self.cells.as_mut().and_then(Iterator::next) else {
+                break;
+            };
+            if step >= self.max_iterations {
                 break;
             }
+            self.iteration = step;
             let state = walk.block(p);
             if walk.is_air(state) {
                 continue;
@@ -362,6 +357,10 @@ impl MovementSweep {
                 if !segment.run(walk, visited, effects, &halt)? {
                     return Ok(false);
                 }
+                // The target-box fallback runs after advancing the row and spends no budget.
+                if self.from.is_some() {
+                    self.budget -= segment.iteration + 1;
+                }
                 self.segment = None;
             }
             let Some(movement) = movements.get(self.row) else {
@@ -403,13 +402,11 @@ impl MovementSweep {
                 _ => None,
             };
             if let Some(to) = to {
-                let (segment, used) = SweepSegment::collect(walk, from, to, self.budget);
-                self.budget -= used;
+                self.segment = Some(SweepSegment::new(walk, from, to, self.budget));
                 self.from = Some(to);
-                self.segment = Some(segment);
             } else {
                 if self.budget <= 0 {
-                    self.segment = Some(SweepSegment::collect(walk, movement.to, movement.to, 1).0);
+                    self.segment = Some(SweepSegment::new(walk, movement.to, movement.to, 1));
                 }
                 self.row += 1;
                 self.from = None;
@@ -911,6 +908,53 @@ mod tests {
                 (1, [1, 64, 1], "precise"),
                 (2, [2, 64, 1], "precise"),
                 (3, [3, 64, 1], "precise"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_suspended_move_resumes_with_live_block_states() {
+        let mut grid = Grid {
+            alive: true,
+            ..Grid::default()
+        };
+        grid.cell([1, 64, 1], InsideShape::Full, true);
+        grid.cell([3, 64, 1], InsideShape::Full, false);
+        let movement = sunrise_world::entity_move::MovementRecord {
+            from: Vec3::new(0.5, 64.0, 1.5),
+            to: Vec3::new(3.5, 64.0, 2.5),
+            original: Some(Vec3::new(3.0, 0.0, 1.0)),
+        };
+        let mut sweep = super::MovementSweep::default();
+        let mut visited = crate::fast_hash::FxHashSet::default();
+        let mut effects = mod_api::InsideEffects::default();
+        assert!(
+            !sweep
+                .run(&mut grid, &[movement], &mut visited, &mut effects, |_| true)
+                .unwrap()
+        );
+        assert_eq!(
+            grid.visits,
+            [(1, [1, 64, 1], "precise"), (1, [1, 64, 1], "fluid")]
+        );
+
+        grid.cell([2, 64, 1], InsideShape::Full, false);
+        grid.blocks.remove(&[3, 64, 1]);
+        grid.cell([3, 64, 2], InsideShape::Full, false);
+        assert!(
+            sweep
+                .run(&mut grid, &[movement], &mut visited, &mut effects, |_| {
+                    false
+                })
+                .unwrap()
+        );
+        assert_eq!(
+            grid.visits,
+            [
+                (1, [1, 64, 1], "precise"),
+                (1, [1, 64, 1], "fluid"),
+                (2, [2, 64, 1], "precise"),
+                (1, [3, 64, 2], "precise"),
             ]
         );
     }
