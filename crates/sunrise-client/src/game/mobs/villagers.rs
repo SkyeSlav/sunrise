@@ -735,16 +735,30 @@ impl Game<'_> {
         let Some(i) = self.mobs.iter().position(|m| m.id == id) else {
             return;
         };
-        let mut mobs = self.mobs.lift();
-        #[cfg(test)]
-        super::entity::taken_pass_tests::after_take(self);
-        let mut events = Vec::new();
-        villager::stop_sleeping(&mut mobs[i], &self.mob_world_base(&[]), &mut events);
-        villager_brain::woken(&mut mobs[i], self.world.game_time);
-        self.mobs
-            .restore(mobs, sunrise_client::join_seq::RestoreOrder::SurvivorsFirst);
-        if let Err(e) = self.handle_mob_events(events) {
-            log::warn!("waking villager {id}: {e}");
+        let join = self.mobs[i].join;
+        if let Some(bed) = villager::sleeping_pos(&self.mobs[i]) {
+            self.set_bed_occupied(bed, false);
+        }
+        let Some(i) = self
+            .mob_index
+            .find(&self.mobs, id)
+            .filter(|&i| self.mobs[i].join == join && !self.mobs[i].removed)
+        else {
+            return;
+        };
+        let old = self.mobs[i].position;
+        let level = sunrise_client::stand_up::StandUpLevel {
+            world: &self.world,
+            registry: self.pack.assets.registry,
+            facts: self.res.facts(),
+            collision: self.collision,
+            block_tags: &world_items!(self).block_tags,
+            border: Some(self.border.geometry()),
+        };
+        let woke = villager::wake(&mut self.mobs[i], self.world.game_time, Some(&level), None);
+        if woke.is_some() {
+            let new = self.mobs[i].position;
+            self.entity_section_moved(id, Some([old.x, old.y, old.z]), [new.x, new.y, new.z]);
         }
     }
 }

@@ -60,6 +60,29 @@ impl Attack {
             source.direct == 0
         }
     }
+    /// `Enchantment.damageContext` gives the direct entity its own role, even when a
+    /// different entity caused the hit.
+    pub(crate) fn mob_direct_type<'a>(
+        &'a self,
+        damage: &Damage,
+        causing_type: Option<&'a str>,
+    ) -> Option<&'a str> {
+        let source = mob_source(damage, self);
+        if self.direct.is_none() && melee(damage.kind) {
+            return causing_type;
+        }
+        if source.direct == 0 {
+            None
+        } else if source.direct == source.causing {
+            self.direct_type.as_deref().or(causing_type)
+        } else {
+            self.direct_type.as_deref().or_else(|| {
+                (self.projectile == Some(source.direct))
+                    .then_some(self.projectile_type)
+                    .flatten()
+            })
+        }
+    }
     /// `DamageSource.getWeaponItem`: melee's direct living entity or a projectile's saved weapon.
     pub fn weapon_of(&self, direct: i32) -> Option<&crate::items::ItemStack> {
         if direct == 0 {

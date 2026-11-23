@@ -9,7 +9,7 @@ players.
 |---|---|
 | `host.commands()` | `run_command(line)` runs through the console command path with permission level 4. `feedback(text)` answers the command source. |
 | `host.messages()` | `broadcast(text)` fires the broadcast hook and writes to the server log. |
-| `host.players()` | `server_players()` returns `Vec<PlayerRef>` in join order. `acting_player()` returns the optional player whose state is active in the hook. `player_by_name(name)` finds a connected real player by case-insensitive account name, not nickname. |
+| `host.players()` | `server_players()` returns `Vec<PlayerRef>` in join order. `acting_player()` returns the optional player whose state is active in the hook. `player_by_name(name)` finds a connected real player by case-insensitive account name, not nickname. `singleplayer_profile()` is an integrated server's launch profile ([below](#identity-and-location)). |
 | `host.levels()` | `list_levels()` returns loaded server levels in vanilla dimension order, or an empty list before a server world opens. |
 
 The players list and name lookup include the single-player owner, even before
@@ -54,6 +54,16 @@ when the client updates its list. Read it with `.iter()` and keep the `Arc` if
 you need that exact list later; call the method again to see new announcements.
 An acting player without a known connection gets an empty snapshot; a stale or
 unavailable player returns `None`.
+
+On an integrated (single player) server, `host.players().singleplayer_profile()` is the profile the
+server was created with (`MinecraftServer.getSingleplayerProfile`): the owner's name, UUID and login
+properties, borrowed from the host. It is fixed when the server is created, so it reads the same from
+`server_about_to_start` and `server_starting` on, before the owner joins and after they leave.
+`player.is_singleplayer_owner(host)` says whether a player is that owner, compared as
+`IntegratedServer.isSingleplayerOwner` does: by name, ignoring case, not by UUID. Cheats, opening to
+LAN, join order and permission level don't change the answer. Use `player.permission_level(host)` to
+check for an operator. A dedicated server has no owner: `None` and `false`, and a stale handle is
+`false` too. Neither read grants anything or changes who may log in.
 
 `player.latency(host)` reads the ping the Tab list shows, in milliseconds: the keep-alive round
 trips averaged three parts old to one part new. It is 0 until the first keep-alive answer, for a fake

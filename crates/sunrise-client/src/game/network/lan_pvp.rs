@@ -558,16 +558,7 @@ impl Game<'_> {
                 CombatPlayer::Displaced(depth, _) => {
                     let frame = &self.lan_displaced_players[depth];
                     let killer = frame.name.as_deref().unwrap_or(PLAYER_NAME).to_owned();
-                    let uuid = frame.uuid;
-                    if !frame.fake {
-                        self.award_stat_to(
-                            "custom",
-                            "minecraft:player_kills",
-                            1,
-                            |_| uuid.map(|uuid| (uuid, killer.clone())),
-                            |game| &mut game.lan_displaced_players[depth].stats,
-                        );
-                    }
+                    self.award_displaced_stat(depth, "player_kills", 1);
                     self.score_player_kill_for(&killer, Some(&name), true);
                 }
                 CombatPlayer::Parked(guest) => {
