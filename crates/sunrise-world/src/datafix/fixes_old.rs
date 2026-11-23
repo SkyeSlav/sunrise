@@ -238,7 +238,7 @@ const CAT_TEXTURES: &[(&str, &str)] = &[
 /// `CriteriaRenameFix`: the criteria keys of one advancement.
 fn criteria_rename(cx: &mut Cx, advancement: &str, conversions: &dyn Fn(&str) -> Option<String>) {
     cx.each(Ty::Advancements, |v| {
-        let Some(criteria) = v.get_mut(advancement).and_then(|a| a.get_mut("criteria")) else {
+        let Some(criteria) = super::advancement_criteria::criteria(v, advancement) else {
             return;
         };
         super::advancement_criteria::map_keys(criteria, |k| {

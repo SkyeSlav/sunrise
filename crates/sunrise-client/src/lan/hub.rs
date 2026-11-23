@@ -3951,6 +3951,29 @@ impl Hub {
         Some(read(state.progress))
     }
 
+    /// Install a decoded snapshot in the resolved player's own storage. The
+    /// recipe book and its pending packets are not part of advancement progress.
+    pub fn replace_advancement_snapshot(
+        &mut self,
+        conn: u32,
+        snapshot: crate::advancements::Progress,
+        owners: &mut AdvancementOwners<'_>,
+    ) -> bool {
+        let Some(i) = self.guests.connection_index(conn) else {
+            return false;
+        };
+        let Some(state) = owners.state(&mut self.guests, i) else {
+            return false;
+        };
+        state.progress.replace_snapshot(snapshot);
+        state.changed.clear();
+        self.guests.update(i, |guest| {
+            guest.advancements_loaded = true;
+            guest.advancements_reset = true;
+        });
+        true
+    }
+
     /// Grant one queued criterion. The caller fires its hook before `reward_native_tick`.
     pub fn grant_native_tick(
         &mut self,
@@ -4003,6 +4026,11 @@ impl Hub {
         let Some(i) = self.advancement_task_guest(task) else {
             return;
         };
+        // A listener installed loaded progress. Only the normal flush may
+        // send its reset; never project it as this tick's freshly earned dates.
+        if self.guests[i].advancements_reset || self.guests[i].advancements_sent {
+            return;
+        }
         let Some(state) = owners.state(&mut self.guests, i) else {
             return;
         };
@@ -4038,13 +4066,11 @@ impl Hub {
 
     fn sync_progress(&mut self, i: usize) {
         let g = &self.guests[i];
-        if g.advancements_sent {
-            self.flush_advancements(i, true);
+        if g.advancements_loaned {
             return;
         }
-        if g.advancements_loaded {
-            self.flush_advancements(i, true);
-            self.guests.update(i, |g| g.advancements_sent = true);
+        if g.advancements_sent || g.advancements_loaded {
+            self.flush_advancements(i);
             return;
         }
         let now = std::time::SystemTime::now()
@@ -4084,7 +4110,7 @@ impl Hub {
         }
     }
 
-    fn flush_advancements(&mut self, i: usize, show: bool) {
+    fn flush_advancements(&mut self, i: usize) {
         let sync = self.sync.clone();
         self.guests.update(i, |g| {
             let mut unlocked = std::mem::take(&mut g.recipes_unlocked);
@@ -4094,15 +4120,18 @@ impl Hub {
                 g.send(&raw(ids::RECIPE_BOOK_ADD, add));
             }
             let changed = std::mem::take(&mut g.advancements_changed);
+            let reset = std::mem::take(&mut g.advancements_reset);
             if let Some(update) = sync.advancements.update(
                 &sync,
                 &g.advancements,
                 &mut g.advancements_visible,
                 &changed,
-                show,
+                reset,
+                true,
             ) {
                 g.send(&raw(ids::UPDATE_ADVANCEMENTS, update));
             }
+            g.advancements_sent = true;
         })
     }
 

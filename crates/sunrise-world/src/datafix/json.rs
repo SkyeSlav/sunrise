@@ -112,10 +112,11 @@ impl Reader<'_> {
         }
     }
     fn value(&mut self, depth: usize) -> R<Json> {
-        if depth > 255 {
+        let c = self.skip_ws()?.ok_or(())?;
+        // Gson 2.14 JsonReader.push limits the enclosing arrays and objects.
+        if depth == 255 && matches!(c, 0x5B | 0x7B) {
             return Err(());
         }
-        let c = self.skip_ws()?.ok_or(())?;
         match c {
             0x7B => self.object(depth),
             0x5B => self.array(depth),
@@ -379,9 +380,9 @@ fn parse_mode(s: &[u16], mode: Mode) -> Option<Json> {
 pub fn parse_lenient(s: &[u16]) -> Option<Json> {
     parse_mode(s, Mode::Lenient)
 }
-/// `StrictJsonParser.parse`.
+/// `StrictJsonParser.parse`. Gson's `JsonReader.fillBuffer` consumes an initial BOM.
 pub fn parse_strict(s: &[u16]) -> Option<Json> {
-    parse_mode(s, Mode::Strict)
+    parse_mode(s.strip_prefix(&[0xfeff]).unwrap_or(s), Mode::Strict)
 }
 
 /// `GsonHelper.fromJson`: read one value without requiring the end of the document.
@@ -500,20 +501,47 @@ fn number_to_nbt(literal: &str) -> Tag {
     }
 }
 
-/// `BigDecimal.longValueExact` of a JSON number literal.
-fn exact_long(literal: &str) -> Option<i64> {
-    let (mantissa, exponent) = match literal.find(['e', 'E']) {
-        Some(i) => (&literal[..i], literal[i + 1..].parse::<i64>().ok()?),
+/// A JSON number as the unscaled decimal digits and signed scale of `BigDecimal`.
+fn decimal_parts(literal: &str) -> Option<(bool, String, i32)> {
+    let (mantissa, exponent) = match literal.split_once(['e', 'E']) {
+        Some((m, e)) => (m, e.parse::<i32>().ok()?),
         None => (literal, 0),
     };
     let negative = mantissa.starts_with('-');
-    let mantissa = mantissa.trim_start_matches('-');
-    let (int_part, frac) = match mantissa.find('.') {
-        Some(i) => (&mantissa[..i], &mantissa[i + 1..]),
-        None => (mantissa, ""),
-    };
-    let mut digits: String = format!("{int_part}{frac}");
-    let mut scale = frac.len() as i64 - exponent;
+    let mantissa = mantissa.strip_prefix('-').unwrap_or(mantissa);
+    let (integer, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let scale = i32::try_from(fraction.len() as i64 - i64::from(exponent)).ok()?;
+    Some((negative, format!("{integer}{fraction}"), scale))
+}
+
+/// Gson `LazilyParsedNumber.intValue`: truncate the decimal and keep its low 32 bits.
+pub(super) fn number_int_value(literal: &str) -> Option<i32> {
+    if let Ok(value) = literal.parse::<i64>() {
+        return Some(value as i32);
+    }
+    let (negative, digits, scale) = decimal_parts(literal)?;
+    let mut value: i32 = 0;
+    let integers = digits.len().saturating_sub(scale.max(0) as usize);
+    // At least 32 appended zeros make a multiple of 2^32.
+    if scale > -32 {
+        for digit in digits[..integers].bytes() {
+            value = value.wrapping_mul(10).wrapping_add(i32::from(digit - b'0'));
+        }
+        for _ in 0..scale.saturating_neg() {
+            value = value.wrapping_mul(10);
+        }
+    }
+    Some(if negative {
+        value.wrapping_neg()
+    } else {
+        value
+    })
+}
+
+/// `BigDecimal.longValueExact` of a JSON number literal.
+fn exact_long(literal: &str) -> Option<i64> {
+    let (negative, mut digits, scale) = decimal_parts(literal)?;
+    let mut scale = i64::from(scale);
     // Trailing zeros of the unscaled value do not change the value.
     while scale > 0 && digits.ends_with('0') {
         digits.pop();

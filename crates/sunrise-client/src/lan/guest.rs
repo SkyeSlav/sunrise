@@ -568,6 +568,10 @@ pub struct Guest {
     /// changed since (`progressChanged`).
     pub advancements: crate::advancements::Progress,
     pub advancements_loaded: bool,
+    /// A replacement needs a complete client reset on the next ordinary flush.
+    pub advancements_reset: bool,
+    /// An active guest turn owns this record's progress and recipe book until it returns.
+    pub advancements_loaned: bool,
     /// Whether the first advancement snapshot reached this connection.
     pub advancements_sent: bool,
     pub advancements_visible: Vec<bool>,
@@ -968,6 +972,8 @@ impl Guest {
             selected_tab: None,
             advancements: Default::default(),
             advancements_loaded: false,
+            advancements_reset: false,
+            advancements_loaned: false,
             advancements_sent: false,
             advancements_visible: Vec::new(),
             advancements_changed: Default::default(),

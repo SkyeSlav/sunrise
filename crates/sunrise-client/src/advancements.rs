@@ -486,16 +486,58 @@ pub fn date_text(unix_secs: i64) -> String {
 /// A saved date back to milliseconds since the epoch (the network form of
 /// `CriterionProgress`), the zone offset applied.
 pub fn date_millis(text: &str) -> Option<i64> {
-    let (date, rest) = text.trim().split_once(' ')?;
-    let (time, zone) = rest.split_once(' ').unwrap_or((rest, "+0000"));
-    let mut d = date.split('-').map(|v| v.parse::<i64>().ok());
-    let (y, m, day) = (d.next()??, d.next()??, d.next()??);
-    let mut t = time.split(':').map(|v| v.parse::<i64>().ok());
-    let (h, min, sec) = (t.next()??, t.next()??, t.next()??);
-    let sign = if zone.starts_with('-') { -1 } else { 1 };
-    let zone = zone.trim_start_matches(['+', '-']);
-    let offset =
-        zone.get(0..2)?.parse::<i64>().ok()? * 3600 + zone.get(2..4)?.parse::<i64>().ok()? * 60;
+    date_epoch_seconds(text)?.checked_mul(1000)
+}
+
+/// `AdvancementProgress.OBTAINED_TIME_FORMAT`: Locale.ROOT, with SMART resolution
+/// (`IsoChronology.resolveYMD`, `Parsed.resolveTime` and `ZoneOffset.ofTotalSeconds`).
+fn date_epoch_seconds(text: &str) -> Option<i64> {
+    const MAX_YEAR: i64 = 999_999_999; // java.time.Year.MAX_VALUE
+
+    fn decimal(s: &str, width: usize) -> Option<i64> {
+        (s.len() == width && s.bytes().all(|b| b.is_ascii_digit())).then(|| s.parse().ok())?
+    }
+
+    let (date, rest) = text.split_once(' ')?;
+    let (time, zone) = rest.split_once(' ')?;
+    let (year, month_day) = date.split_once('-')?;
+    let (year, width) = match year.strip_prefix('+') {
+        // DateTimeFormatterBuilder's EXCEEDS_PAD year-of-era sign style.
+        Some(digits) if (5..=19).contains(&digits.len()) => (digits, digits.len()),
+        _ => (year, 4),
+    };
+    let y = decimal(year, width)?;
+    let (month, day) = month_day.split_once('-')?;
+    let (m, day) = (decimal(month, 2)?, decimal(day, 2)?);
+    let (hour, min_sec) = time.split_once(':')?;
+    let (minute, second) = min_sec.split_once(':')?;
+    let (h, min, sec) = (decimal(hour, 2)?, decimal(minute, 2)?, decimal(second, 2)?);
+    let (sign, offset) = match zone.as_bytes().first()? {
+        b'+' => (1, &zone[1..]),
+        b'-' => (-1, &zone[1..]),
+        _ => return None,
+    };
+    let (oh, om) = (decimal(offset.get(..2)?, 2)?, decimal(offset.get(2..)?, 2)?);
+    let offset = oh * 3600 + om * 60;
+    if !(1..=MAX_YEAR).contains(&y)
+        || !(1..=12).contains(&m)
+        || !(1..=31).contains(&day)
+        || min > 59
+        || sec > 59
+        || h > 24
+        || (h == 24 && (min != 0 || sec != 0 || (y == MAX_YEAR && m == 12 && day == 31)))
+        || om > 59
+        || offset > 18 * 3600
+    {
+        return None;
+    }
+    let days_in_month = match m {
+        2 if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    let day = day.min(days_in_month);
     // Days from civil (Howard Hinnant's algorithm).
     let y = if m <= 2 { y - 1 } else { y };
     let era = y.div_euclid(400);
@@ -504,15 +546,26 @@ pub fn date_millis(text: &str) -> Option<i64> {
     let doy = (153 * mp + 2) / 5 + day - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146_097 + doe - 719_468;
-    Some((days * 86400 + h * 3600 + min * 60 + sec - sign * offset) * 1000)
+    Some(days * 86400 + h * 3600 + min * 60 + sec - sign * offset)
 }
 
 /// The player's progress: advancement -> criterion -> obtained date.
 #[derive(Default, Clone)]
 pub struct Progress {
     pub criteria: BTreeMap<String, BTreeMap<String, String>>,
+    replacement_revision: u64,
 }
 impl Progress {
+    /// Distinguish a gameplay grant from a snapshot installed by its listener.
+    pub fn replacement_revision(&self) -> u64 {
+        self.replacement_revision
+    }
+
+    pub(crate) fn replace_snapshot(&mut self, mut snapshot: Self) {
+        snapshot.replacement_revision = self.replacement_revision.wrapping_add(1);
+        *self = snapshot;
+    }
+
     pub fn has(&self, adv: &str, criterion: &str) -> bool {
         self.criteria
             .get(adv)
@@ -564,16 +617,89 @@ impl Progress {
         }
         p
     }
-    pub fn to_json(&self, tree: &Tree, data_version: i32) -> Value {
-        let mut o = serde_json::Map::new();
-        for (adv, m) in &self.criteria {
-            if m.is_empty() {
-                continue;
+    /// `PlayerAdvancements.load` / `AdvancementProgress.CODEC`: decode the full
+    /// save object, then keep only progress recognized by the loaded tree.
+    pub(crate) fn parse_snapshot(text: &str, tree: &Tree) -> Option<Self> {
+        use sunrise_world::datafix::{
+            files::migrate_advancement_snapshot,
+            identifier,
+            json::{Json, parse_strict},
+        };
+
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let Json::Obj(entries) = migrate_advancement_snapshot(parse_strict(&units)?)? else {
+            return None;
+        };
+        let mut progress = Self::default();
+        let mut ids = BTreeSet::new();
+        for (id, entry) in entries {
+            let (namespace, path) = identifier(&String::from_utf16(&id).ok()?)?;
+            let id = format!("{namespace}:{path}");
+            if !ids.insert(id.clone()) || !matches!(entry, Json::Obj(_)) {
+                return None;
             }
-            let done = tree.get(adv).is_some_and(|a| self.done(a));
+            // JsonOps' map lookup treats JSON null like an absent optional field.
+            if !matches!(entry.get("done"), None | Some(Json::Null | Json::Bool(_))) {
+                return None;
+            }
+            let criteria = match entry.get("criteria") {
+                None | Some(Json::Null) => continue,
+                Some(Json::Obj(criteria)) => criteria,
+                _ => return None,
+            };
+            let definition = tree.get(&id);
+            let mut obtained = BTreeMap::new();
+            for (name, date) in criteria {
+                let Json::Str(date) = date else { return None };
+                let date = String::from_utf16(date).ok()?;
+                let seconds = date_epoch_seconds(&date)?;
+                if let Some(a) = definition
+                    && let Ok(name) = String::from_utf16(name)
+                    && a.requirements.iter().flatten().any(|c| c == &name)
+                {
+                    // CriterionProgress's stream codec carries a signed epoch-millisecond value.
+                    seconds.checked_mul(1000)?;
+                    obtained.insert(name, date);
+                }
+            }
+            if !obtained.is_empty() {
+                progress.criteria.insert(id, obtained);
+            }
+        }
+        Some(progress)
+    }
+
+    /// `PlayerAdvancements.asData`: only known obtained criteria, in the current save format.
+    pub fn snapshot_json(&self, tree: &Tree) -> String {
+        let entries = self.criteria.iter().filter_map(|(id, criteria)| {
+            let a = tree.get(id)?;
+            let retained: BTreeMap<_, _> = criteria
+                .iter()
+                .filter(|(name, _)| a.requirements.iter().flatten().any(|c| c == *name))
+                .collect();
+            (!retained.is_empty()).then(|| (id, retained, self.done(a)))
+        });
+        Self::save_json(entries, sunrise_world::DATA_VERSION).to_string()
+    }
+
+    pub fn to_json(&self, tree: &Tree, data_version: i32) -> Value {
+        let entries = self
+            .criteria
+            .iter()
+            .filter(|(_, m)| !m.is_empty())
+            .map(|(id, m)| (id, m, tree.get(id).is_some_and(|a| self.done(a))));
+        Self::save_json(entries, data_version)
+    }
+
+    fn save_json<'a, T: serde::Serialize>(
+        entries: impl Iterator<Item = (&'a String, T, bool)>,
+        data_version: i32,
+    ) -> Value {
+        let mut o = serde_json::Map::new();
+        for (id, criteria, done) in entries {
             o.insert(
-                adv.clone(),
-                serde_json::json!({ "criteria": m, "done": done }),
+                id.clone(),
+                serde_json::json!({ "criteria": criteria, "done": done }),
             );
         }
         o.insert("DataVersion".into(), data_version.into());
@@ -3512,8 +3638,117 @@ mod tests {
             date_millis("2026-10-17 07:30:00 +0200"),
             date_millis("2026-10-17 05:30:00 +0000")
         );
-        assert_eq!(date_millis("not a date"), None);
+        // DateTimeFormatter SMART resolves Feb 30 to Feb 28 and 24:00 to the next day.
+        assert_eq!(
+            date_millis("1970-02-30 24:00:00 +0000"),
+            Some(5_097_600_000)
+        );
+        assert_eq!(date_millis("1969-12-31 23:59:59 +0000"), Some(-1000));
+        for invalid in [
+            "not a date",
+            "1970-01-01 00:00:00",
+            "1970-01-01 00:00:00 +1860",
+            "1970-01-01 00:00:00 +1801",
+            "1970-01-01 00:00:00 +00:00",
+            "1970-01-01 24:00:01 +0000",
+            "0000-01-01 00:00:00 +0000",
+            "1970-01-32 00:00:00 +0000",
+            "10000-01-01 00:00:00 +0000",
+        ] {
+            assert_eq!(date_millis(invalid), None, "{invalid}");
+        }
     }
+
+    #[test]
+    fn advancement_snapshots_migrate_validate_and_recompute_progress() {
+        let id = "minecraft:adventure/adventuring_time";
+        let tree = Tree {
+            list: vec![Advancement {
+                id: id.into(),
+                parent: None,
+                display: None,
+                criteria: vec![],
+                requirements: vec![vec!["minecraft:forest".into()]],
+                rewards: Rewards::default(),
+            }],
+            by_id: HashMap::from([(id.into(), 0)]),
+            ..Tree::default()
+        };
+        let input = r#"{
+            "DataVersion": 4294970133.9,
+            "minecraft:adventure/adventuring_time": {
+                "criteria": {
+                    "minecraft:wooded_hills": "1970-01-01 01:00:01 +0100",
+                    "removed": "+300000000-01-01 00:00:00 +0000"
+                },
+                "done": false,
+                "extra": 1e-9223372036854775808
+            },
+            "test:old": {"criteria": {"old": "1970-01-01 01:00:01 +0100"}},
+            "test:empty": {},
+            "test:null_fields": {"criteria": null, "done": null}
+        }"#;
+        let progress = Progress::parse_snapshot(input, &tree).unwrap();
+        assert_eq!(
+            date_millis(&progress.criteria[id]["minecraft:forest"]),
+            Some(1000)
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&progress.snapshot_json(&tree)).unwrap(),
+            json!({ "DataVersion": 5023,
+                    id: { "criteria": {"minecraft:forest": "1970-01-01 01:00:01 +0100"}, "done": true } })
+        );
+        for (invalid, reason) in [
+            (r#"[]"#, "not a map"),
+            (r#"{} {}"#, "trailing input"),
+            (
+                r#"{"unknown": {"criteria": {"x": "bad date"}}}"#,
+                "validate unknown entries",
+            ),
+            (
+                r#"{"unknown": {"criteria": {"x": null}}}"#,
+                "validate null dates",
+            ),
+            (
+                r#"{"unknown": {"done": 1}}"#,
+                "validate the ignored done field",
+            ),
+            (
+                r#"{"unknown": {"done": {"\u0000bool": 1}}}"#,
+                "objects cannot stand in for booleans during migration",
+            ),
+            (r#"{"Uppercase": {}}"#, "invalid identifier"),
+            (
+                r#"{"\u0000last_read": {}}"#,
+                "invalid identifier survives the migration boundary",
+            ),
+            (
+                r#"{"same": {}, "minecraft:same": {}}"#,
+                "duplicate decoded identifier",
+            ),
+            (
+                r#"{"adventure/adventuring_time": {"criteria": {"minecraft:forest": "+300000000-01-01 00:00:00 +0000"}}}"#,
+                "retained date outside signed epoch milliseconds",
+            ),
+        ] {
+            assert!(
+                Progress::parse_snapshot(invalid, &tree).is_none(),
+                "{reason}"
+            );
+        }
+        let future = Progress::parse_snapshot(
+            r#"{"DataVersion": 6000, "adventure/adventuring_time": {"criteria": {"minecraft:forest": "1970-01-01 01:00:01 +0100"}}}"#,
+            &tree,
+        ).unwrap();
+        assert!(future.done(&tree.list[0]));
+        assert!(
+            Progress::parse_snapshot("\u{feff}{}", &tree)
+                .unwrap()
+                .criteria
+                .is_empty()
+        );
+    }
+
     #[test]
     fn simulate_progression_advancements() {
         let mut tree = Tree::default();

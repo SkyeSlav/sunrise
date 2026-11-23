@@ -1,4 +1,4 @@
-//! The `player_progress` area: statistics and criteria triggers. Host method declarations; access defaults and game forwarders are generated.
+//! The `player_progress` area: statistics, advancements and criteria triggers. Host method declarations; access defaults and game forwarders are generated.
 #![allow(unused_variables)]
 use crate::*;
 /// The handles' reads of the `player_progress` area, implemented by the game and reached through [`Backend`].
@@ -12,12 +12,31 @@ pub trait PlayerProgressBackend {
     /// counted. Reads the player's own counter even during a nested turn that
     /// displaces them. In `player_stat_award` the award has not been applied yet.
     fn player_stat(&self, player: PlayerRef, stat_type: StatType, key: &str) -> Option<i32>;
+    /// Side: server.
+    /// Owned JSON in the `PlayerAdvancements.save` format: obtained criteria
+    /// with their grant dates, computed completion, and the current data version.
+    /// Returns `None` when the player's server progress is unavailable. Does not
+    /// load a save file or consult the client's copy.
+    fn player_advancements(&self, player: PlayerRef) -> Option<String>;
 }
 /// The handles' writes of the `player_progress` area, implemented by the game and reached through [`BackendMut`].
 // hidden: a handle's backend, reached through `Backend`; mods call the handle, never this trait
 #[doc(hidden)]
 #[sunrise_mod_api_macros::host_area]
 pub trait PlayerProgressBackendMut {
+    /// Side: server.
+    /// Replaces a connected player's progress from `PlayerAdvancements.save`
+    /// JSON. Validates the whole input, migrates its data version, drops obsolete
+    /// progress, and computes completion with the current requirements. Omitted
+    /// progress is cleared; `{}` clears it all. Returns `false` without changes
+    /// for invalid input or an unavailable or connectionless player.
+    ///
+    /// Dates use `yyyy-MM-dd HH:mm:ss Z`; retained dates must fit signed 64-bit
+    /// epoch milliseconds. Does not access save files, fire advancement events,
+    /// or give rewards, announcements or toasts. The next normal advancement
+    /// update sends a reset only to this player's connection.
+    fn player_set_advancements(&mut self, player: PlayerRef, snapshot: &str) -> bool;
+
     /// Side: server.
     /// Fires the mod's criteria trigger `trigger` (`mymod:pipe_connected`)
     /// for `player`: vanilla's

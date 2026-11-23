@@ -989,10 +989,11 @@ impl AdvancementJson {
 
 pub(super) fn json_to_tag(j: &Json, context: AdvancementJson) -> Tag {
     if matches!(context, AdvancementJson::Criteria) {
-        return super::advancement_criteria::read(j);
+        return super::advancement_criteria::read(j, AdvancementJson::Other);
     }
     match j {
-        Json::Bool(b) => Tag::compound([("\u{0}bool", Tag::Byte(i8::from(*b)))]),
+        // JSON arrays use Tag::List, so a user object or array cannot masquerade as a boolean.
+        Json::Bool(b) => Tag::ByteArray(vec![u8::from(*b)]),
         Json::Arr(items) => Tag::List(
             items
                 .iter()
@@ -1010,12 +1011,10 @@ pub(super) fn json_to_tag(j: &Json, context: AdvancementJson) -> Tag {
 }
 pub(super) fn tag_to_json(t: &Tag, context: AdvancementJson) -> Json {
     if matches!(context, AdvancementJson::Criteria) {
-        return super::advancement_criteria::write(t);
+        return super::advancement_criteria::write(t, AdvancementJson::Other);
     }
     match t {
-        Tag::Compound(c) if c.len() == 1 && c.contains_key(&JavaString::from("\u{0}bool")) => {
-            Json::Bool(as_int(t.get("\u{0}bool"), 0) != 0)
-        }
+        Tag::ByteArray(bytes) if matches!(bytes.as_slice(), [0 | 1]) => Json::Bool(bytes[0] != 0),
         Tag::List(items) => Json::Arr(
             items
                 .iter()
@@ -1029,6 +1028,33 @@ pub(super) fn tag_to_json(t: &Tag, context: AdvancementJson) -> Json {
         ),
         other => json::from_nbt(other),
     }
+}
+
+/// `DataFixTypes.ADVANCEMENTS.wrapCodec`: take the version out of an advancement
+/// save object and migrate its contents in memory before decoding its progress.
+pub fn migrate_advancement_snapshot(mut parsed: Json) -> Option<Json> {
+    let Json::Obj(entries) = &mut parsed else {
+        return None;
+    };
+    let from = match entries
+        .iter()
+        .position(|(key, _)| key.iter().copied().eq("DataVersion".encode_utf16()))
+    {
+        Some(i) => match entries.remove(i).1 {
+            Json::Num(n) => json::number_int_value(&n)?,
+            _ => 1343,
+        },
+        None => 1343,
+    };
+    if from >= CURRENT {
+        return Some(parsed);
+    }
+    let mut tag = super::advancement_criteria::read(&parsed, AdvancementJson::Entry);
+    update(Ty::Advancements, &mut tag, from, CURRENT);
+    Some(super::advancement_criteria::write(
+        &tag,
+        AdvancementJson::Entry,
+    ))
 }
 
 fn upgrade_json(path: &Path, ty: Ty) -> io::Result<()> {
@@ -1264,6 +1290,31 @@ mod upgrade_tests {
                         Json::object(vec![("minecraft:forest", Json::string("last"))])
                     )]),
                 )])
+            );
+        }
+    }
+
+    #[test]
+    fn advancement_snapshot_rename_keeps_the_last_json_entry() {
+        // AdvancementsRenameFix in DataFixers v4311 moves the lodestone advancement.
+        let old = "minecraft:nether/use_lodestone";
+        let new = "minecraft:adventure/use_lodestone";
+        for (first, second) in [(old, new), (new, old)] {
+            let entry = |date| {
+                Json::object(vec![(
+                    "criteria",
+                    Json::object(vec![("use_lodestone", Json::string(date))]),
+                )])
+            };
+            let last = entry("1970-01-01 00:00:01 +0000");
+            let input = Json::object(vec![
+                ("DataVersion", Json::Num("4310".into())),
+                (first, entry("1970-01-01 00:00:00 +0000")),
+                (second, last.clone()),
+            ]);
+            assert_eq!(
+                migrate_advancement_snapshot(input),
+                Some(Json::object(vec![(new, last)]))
             );
         }
     }

@@ -1342,14 +1342,9 @@ fn chunk_ticket_unpack_pos(cx: &mut Cx) {
 /// `AdvancementsRenameFix`: the advancement ids of an advancements file.
 pub(super) fn advancements_rename(cx: &mut Cx, rename_fn: &dyn Fn(&str) -> Option<String>) {
     cx.each(Ty::Advancements, |v| {
-        if let Tag::Compound(c) = v {
-            let old = std::mem::take(c);
-            for (k, value) in old {
-                let id = k.to_string_lossy();
-                let k = rename_fn(&id).map_or(k, |n| n.as_str().into());
-                c.insert(k, value);
-            }
-        }
+        super::advancement_criteria::rename_advancements(v, |k| {
+            rename_fn(&k.to_string_lossy()).map_or(k, |n| n.as_str().into())
+        });
     });
 }
 

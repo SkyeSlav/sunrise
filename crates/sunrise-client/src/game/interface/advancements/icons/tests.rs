@@ -118,7 +118,14 @@ fn advancement_icons_reach_local_and_remote_ui_surfaces() {
             }
             let bytes = sync
                 .advancements
-                .update(&sync, &progress, &mut visible, &BTreeSet::new(), true)
+                .update(
+                    &sync,
+                    &progress,
+                    &mut visible,
+                    &BTreeSet::new(),
+                    false,
+                    true,
+                )
                 .unwrap();
             let mut packet = UpdateAdvancements::read(&mut Reader::new(&bytes)).unwrap();
             assert!(packet.reset);
@@ -147,7 +154,7 @@ fn advancement_icons_reach_local_and_remote_ui_surfaces() {
             let changed: BTreeSet<_> = (0..tree.list.len()).collect();
             let bytes = sync
                 .advancements
-                .update(&sync, &progress, &mut visible, &changed, true)
+                .update(&sync, &progress, &mut visible, &changed, false, true)
                 .unwrap();
             let packet = UpdateAdvancements::read(&mut Reader::new(&bytes)).unwrap();
             assert!(!packet.reset);

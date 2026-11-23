@@ -7,7 +7,7 @@ mod icons;
 #[cfg(test)]
 #[path = "inventory_changed_tests.rs"]
 mod inventory_changed_tests;
-use mod_api::{GameMode, ProgressType};
+use mod_api::{GameMode, PlayerRef, ProgressType};
 use serde_json::Value;
 #[cfg(test)]
 use std::time::Instant;
@@ -392,6 +392,52 @@ pub(super) fn item_view(s: &ItemStack) -> ItemView {
     }
 }
 impl Game<'_> {
+    /// Resolve the actual owner without starting a turn or loading progress.
+    /// The ordinary handle resolver refuses displaced outer players.
+    fn player_advancement_owner(&self, player: PlayerRef) -> Option<(Option<u32>, &Progress)> {
+        use super::native_server::PlayerRead;
+        if !self.is_logical_server() {
+            return None;
+        }
+        match self.player_handle_read(player)? {
+            PlayerRead::Acting { .. } if !self.lan_acting_fake => match self.lan_acting {
+                Some(conn) => Some((Some(conn), &self.adv.progress)),
+                None => self.adv.loaded.then_some((None, &self.adv.progress)),
+            },
+            PlayerRead::Guest(guest) if guest.participates_online() => {
+                Some((Some(guest.conn), &guest.advancements))
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn player_advancements(&self, player: PlayerRef) -> Option<String> {
+        let (conn, progress) = self.player_advancement_owner(player)?;
+        if conn.is_some() {
+            let hub = &self.lan.as_ref()?.hub;
+            Some(hub.sync_data().advancements.snapshot_json(progress))
+        } else {
+            Some(progress.snapshot_json(&self.adv.tree))
+        }
+    }
+
+    pub(super) fn player_set_advancements(&mut self, player: PlayerRef, snapshot: &str) -> bool {
+        let Some((Some(conn), _)) = self.player_advancement_owner(player) else {
+            return false;
+        };
+        let Some(host) = &self.lan else { return false };
+        if !host.hub.guest(conn).is_some_and(|guest| guest.joined()) {
+            return false;
+        }
+        let Some(snapshot) = host.hub.sync_data().advancements.parse_snapshot(snapshot) else {
+            return false;
+        };
+        self.with_advancement_hub(|hub, owners| {
+            hub.replace_advancement_snapshot(conn, snapshot, owners)
+        })
+        .unwrap_or(false)
+    }
+
     fn adv_path(&self) -> Option<std::path::PathBuf> {
         Some(super::stats::player_json(
             &self.world_root,
@@ -999,8 +1045,10 @@ impl Game<'_> {
             let a = &tree.list[ai];
             let was = self.adv.progress.done(a);
             let criterion = &a.criteria[ci].name;
-            if self.adv.progress.grant(&a.id, criterion, &date) {
-                self.advancement_progress(a, criterion, ProgressType::Grant);
+            if self.adv.progress.grant(&a.id, criterion, &date)
+                && !self.notify_advancement_grant(a, criterion)
+            {
+                continue;
             }
             self.progress_changed(ai);
             if !was && self.adv.progress.done(a) {
@@ -1008,6 +1056,17 @@ impl Game<'_> {
             }
         }
     }
+    /// Notify listeners of a grant and report whether its snapshot survived the call.
+    fn notify_advancement_grant(
+        &mut self,
+        advancement: &adv::Advancement,
+        criterion: &str,
+    ) -> bool {
+        let revision = self.adv.progress.replacement_revision();
+        self.advancement_progress(advancement, criterion, ProgressType::Grant);
+        self.adv.progress.replacement_revision() == revision
+    }
+
     /// `PlayerAdvancements.award` / `revoke` after a criterion's progress changed.
     fn advancement_progress(
         &mut self,
@@ -1076,21 +1135,25 @@ impl Game<'_> {
                 else {
                     continue;
                 };
-                fresh.push(grant.clone());
+                let definition = task
+                    .sync
+                    .advancements
+                    .definition(&grant.advancement)
+                    .expect("granted advancement");
+                let mut revision = None;
                 if mod_api::__private::listened(mod_api::HookId::PlayerAdvancementProgress) {
-                    let definition = task
-                        .sync
-                        .advancements
-                        .definition(&grant.advancement)
-                        .expect("granted advancement");
-                    let progress = self
+                    let (progress, before) = self
                         .with_advancement_hub(|hub, owners| {
                             hub.advancement_task_progress(&task, owners, |progress| {
-                                progress_snapshot(definition, progress)
+                                (
+                                    progress_snapshot(definition, progress),
+                                    progress.replacement_revision(),
+                                )
                             })
                         })
                         .flatten()
                         .expect("granted task's progress");
+                    revision = Some(before);
                     self.native_player_advancement_progress(
                         mod_api::__private::PlayerAdvancementProgressCall {
                             player: task.player,
@@ -1103,19 +1166,20 @@ impl Game<'_> {
                         },
                     );
                 }
-                let definition = task
-                    .sync
-                    .advancements
-                    .definition(&grant.advancement)
-                    .expect("granted advancement");
-                let done = self
+                let Some((after, done)) = self
                     .with_advancement_hub(|hub, owners| {
                         hub.advancement_task_progress(&task, owners, |progress| {
-                            progress.done(definition)
+                            (progress.replacement_revision(), progress.done(definition))
                         })
                     })
                     .flatten()
-                    .unwrap_or(false);
+                else {
+                    continue;
+                };
+                if revision.is_some_and(|before| before != after) {
+                    continue;
+                }
+                fresh.push(grant.clone());
                 if self.lan_acting == Some(task.conn) {
                     if !was_done && done {
                         self.award_definition(definition);
@@ -2707,7 +2771,9 @@ impl Game<'_> {
             let was = self.adv.progress.done(a);
             if self.adv.progress.grant(&a.id, c, &date) {
                 changed = true;
-                self.advancement_progress(a, c, ProgressType::Grant);
+                if !self.notify_advancement_grant(a, c) {
+                    continue;
+                }
                 self.progress_changed(index);
                 if !was && self.adv.progress.done(a) {
                     self.award(index);

@@ -491,6 +491,7 @@ impl Game<'_> {
             unreachable!("LanHost dropped inside a guest turn; closes are deferred");
         };
         host.hub.guests.update(i, |g| {
+            g.advancements_loaned = true;
             std::mem::swap(&mut self.adv.progress, &mut g.advancements);
             std::mem::swap(&mut self.adv.changed, &mut g.advancements_changed);
             std::mem::swap(&mut self.adv.unlocked, &mut g.recipes_unlocked);
@@ -827,6 +828,7 @@ impl Game<'_> {
                 }));
             }
             std::mem::swap(&mut self.ender_items, &mut g.ender_items);
+            g.advancements_loaned = false;
             std::mem::swap(&mut self.adv.progress, &mut g.advancements);
             std::mem::swap(&mut self.adv.changed, &mut g.advancements_changed);
             std::mem::swap(&mut self.adv.unlocked, &mut g.recipes_unlocked);

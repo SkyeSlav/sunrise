@@ -1038,17 +1038,7 @@ fn enchantment_names(cx: &mut Cx) {
 // ------------------------------------------------------------------ 1501
 
 fn advancements_rename(cx: &mut Cx) {
-    cx.each(Ty::Advancements, |adv| {
-        let Tag::Compound(c) = adv else {
-            return;
-        };
-        let entries: Vec<_> = std::mem::take(c).into_iter().collect();
-        for (k, v) in entries {
-            let name = k.to_string_lossy();
-            let renamed = lookup(t::advancements(), &name).map_or(k, super::dynamic::key);
-            c.insert(renamed, v);
-        }
-    });
+    super::fixes_b::advancements_rename(cx, &|id| lookup(t::advancements(), id).map(str::to_owned));
 }
 
 // ------------------------------------------------------------------ 1506

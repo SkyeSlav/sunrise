@@ -272,7 +272,7 @@ impl Walker<'_> {
                     ("minecraft:husbandry/bred_all_animals", Ty::EntityName),
                 ] {
                     if kind == self.target
-                        && let Some(criteria) = v.get_mut(adv).and_then(|a| a.get_mut("criteria"))
+                        && let Some(criteria) = super::advancement_criteria::criteria(v, adv)
                     {
                         super::advancement_criteria::map_keys(criteria, |key| {
                             let mut value = Tag::String(key.clone());

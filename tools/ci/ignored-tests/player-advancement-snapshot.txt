@@ -1,0 +1,1 @@
+sunrise-client game::advancements::progress_tests::snapshot_replacement_is_silent_and_resets_one_player lib daily child-process

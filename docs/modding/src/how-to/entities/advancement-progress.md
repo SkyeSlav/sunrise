@@ -11,6 +11,41 @@ Keep `event.progress.clone()` if it is needed later: the owned `AdvancementProgr
 cannot change the player's progress and is not updated by subsequent events. No-op grants and
 revokes do not fire.
 
+## Read or replace a player's saved progress
+
+Use `PlayerRef::advancements(self, host: &dyn Host) -> Option<String>` to get an owned
+JSON snapshot from the logical server. It returns `None` when the player's progress is
+unavailable, for example on a client or for a stale, displaced or fake player.
+`PlayerRef::set_advancements(self, host: &mut dyn ServerHost, snapshot: &str) -> bool`
+replaces the whole snapshot for a live connected player, including the integrated
+server's player. Neither call opens a save file.
+
+The snapshot uses `PlayerAdvancements.save` JSON. For example:
+
+```json
+{
+  "example:build_a_bridge": {
+    "criteria": { "place_deck": "1970-01-01 01:00:01 +0100" },
+    "done": true
+  }
+}
+```
+
+Readback includes the current `DataVersion` and only advancements with obtained
+criteria. On import, progress is migrated from the supplied version (or vanilla's
+unversioned-save default), and unknown advancements and obsolete criteria are dropped.
+`criteria` and `done` are optional, and completion is calculated from the loaded
+requirements, not from the input `done`. A grant date uses `yyyy-MM-dd HH:mm:ss Z`;
+the numeric offset sets its instant, and each retained instant must fit signed
+64-bit epoch milliseconds.
+
+A successful import clears any progress that was omitted; `{}` clears everything.
+If the input is invalid or the player has no usable connection, the method returns
+`false` and changes nothing. Import is not a grant or revoke: it does not fire
+advancement hooks, give rewards, announce a completion, or show a toast. The next
+normal advancement update resets only this player's client with its full visible
+tree and progress.
+
 ## Display icons
 
 An advancement's `display.icon` is an item stack, including its count, damage and

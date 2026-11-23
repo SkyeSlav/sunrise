@@ -74,6 +74,15 @@ impl ServerAdvancements {
         self.tree.get(id)
     }
 
+    /// Read and decode whole-player saves against the tree this connection uses.
+    pub fn snapshot_json(&self, progress: &Progress) -> String {
+        progress.snapshot_json(&self.tree)
+    }
+
+    pub fn parse_snapshot(&self, snapshot: &str) -> Option<Progress> {
+        Progress::parse_snapshot(snapshot, &self.tree)
+    }
+
     /// The unconditional tick criteria in tree order. A caller grants these one
     /// at a time so it can notify mods before applying each completion's rewards.
     pub fn tick_candidates(&self, progress: &Progress) -> Vec<CriterionGrant> {
@@ -291,18 +300,19 @@ impl ServerAdvancements {
     /// `PlayerAdvancements.flushDirty`: the advancements that became visible
     /// or hidden since `visible` (which it updates; empty before the first
     /// packet, which resets the client's and carries everything visible) and
-    /// the progress of the `changed` ones still visible. None when there is
-    /// nothing to send.
+    /// the progress of the `changed` ones still visible. A replacement forces
+    /// a reset even when the visible tree is empty.
     pub fn update(
         &self,
         sync: &SyncData,
         progress: &Progress,
         visible: &mut Vec<bool>,
         changed: &BTreeSet<usize>,
+        reset: bool,
         show: bool,
     ) -> Option<Vec<u8>> {
         let n = self.tree.list.len();
-        let first = visible.len() != n;
+        let first = reset || visible.len() != n;
         // flushDirty does nothing unless it is the first packet or progress
         // changed: visibility follows progress alone, and every grant and
         // revoke is in `changed`. This skips walking the whole tree for
