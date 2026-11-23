@@ -1283,7 +1283,6 @@ impl Game<'_> {
         let mut hub = Hub::new(lan, sync, encoder, config, self.loop_context.clone());
         hub.dispatch_move_effects = true;
         self.bind_guest_residency(&mut hub);
-        self.passages.record_on(&mut hub);
         hub.rule_registry = self.level.rule_registry.clone();
         hub.sync_attachments = !mod_api::__private::mods().is_empty();
         hub.flat_world = self.world_flat;
@@ -3101,7 +3100,6 @@ impl Game<'_> {
             self.run_native_menu_events();
         }
         self.run_chunk_watches();
-        self.flush_passages();
         if let Some(host) = self.lan.as_mut() {
             host.hub.collect_tracking();
         }

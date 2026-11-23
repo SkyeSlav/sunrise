@@ -20,8 +20,6 @@ pub const RESERVED_ENGINE_CHANNELS: &[&str] = &[
     "sunrise:menu_data",
     "sunrise:menu_extra",
     "sunrise:mod_list",
-    "sunrise:passage_cross",
-    "sunrise:passage_sync",
     "sunrise:payloads",
     "sunrise:perf",
     "sunrise:quiet_commands",

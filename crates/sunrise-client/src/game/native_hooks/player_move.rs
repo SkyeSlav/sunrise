@@ -2,9 +2,10 @@ use super::*;
 
 /// The hook points. Each does nothing in Sunrise.
 impl Game<'_> {
-    /// Server player `player` (their UUID) would move from `from` to `to` (or turn from
-    /// `from_rotation` to `to_rotation`); set `cancel` to veto the report. Before it is
-    /// committed. Server-side.
+    /// Player `player` (their UUID) would move from `from` to `to` (or turn from
+    /// `from_rotation` to `to_rotation`); on the server, set `cancel` to veto the report before it
+    /// is committed. On a client, the segment its own player is about to report: the server's
+    /// ruling stands and `cancel` changes nothing.
     pub(in crate::game) fn native_player_move(
         &mut self,
         player: u128,

@@ -52,7 +52,6 @@ mod item_particles;
 mod joined;
 mod move_collision;
 mod moves;
-pub mod passage_cross;
 mod pending_move;
 mod raw_inbox;
 mod selector_sync;
@@ -2202,7 +2201,7 @@ impl Hub {
             g.pending_travel_velocity = travel_velocity;
             let turn = relatives & (play::relative::Y_ROT | play::relative::X_ROT) != 0;
             // A relative axis (X, Y, Z: bits 0 to 2) goes as its shift: none for a rotation or
-            // motion alone (`follow_passage`), the displacement for a move.
+            // motion alone, the displacement for a move.
             let at =
                 std::array::from_fn(|k| [g.position[k], shift[k]][(relatives >> k & 1) as usize]);
             g.send(&C::PlayerPosition(play::PlayerPosition {
@@ -4316,11 +4315,6 @@ impl Hub {
                         self.guests
                             .update(i, |g| g.carry_hint = Some((hint.collider, hint.ticks)));
                     }
-                }
-                S::CustomPayload(p)
-                    if p.channel == sunrise_protocol::passage_sync::CROSS_CHANNEL =>
-                {
-                    *held = self.passage_leg(i, p, ctx, events);
                 }
                 // handleDebugSubscriptionRequest.
                 S::DebugSubscriptionRequest(p) => {
@@ -8216,30 +8210,6 @@ mod tests {
                 })
             })
             .collect()
-    }
-
-    /// With no mod listening, a registered passage (`record_for_passages`) makes the hub
-    /// record the chunks it sends from then on, for the passages the game sends with them.
-    #[test]
-    fn a_passage_makes_the_hub_record_the_chunks_it_sends() {
-        use super::super::chunk_watch::ChunkWatchKind::{Sent, Watch};
-        let (mut hub, _rx) = hub_with_a_guest();
-        let mut world = floor_at(1);
-        {
-            let value = 2;
-            hub.guests.update(0, |g| g.view_distance = value);
-        }
-        hub.chunk_watches.record_for_passages();
-        send_chunks(&mut hub, &mut world);
-        let mut got = watches(&mut hub);
-        got.sort_by_key(|(k, _, c)| (*k as u8, *c));
-        let overworld = "minecraft:overworld".to_string();
-        let four = [[-1, -1], [-1, 0], [0, -1], [0, 0]];
-        let expected: Vec<_> = [Watch, Sent]
-            .into_iter()
-            .flat_map(|kind| four.map(|c| (kind, overworld.clone(), c)))
-            .collect();
-        assert_eq!(got, expected);
     }
 
     /// `ChunkWatchEvent`: each near chunk sent is watched then sent, once;

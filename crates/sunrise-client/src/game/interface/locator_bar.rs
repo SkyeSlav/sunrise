@@ -68,7 +68,7 @@ impl Game<'_> {
         )
     }
     /// The local player's UUID, as servers know it.
-    pub(super) fn own_uuid(&self) -> u128 {
+    pub(in crate::game) fn own_uuid(&self) -> u128 {
         match &self.remote {
             Some(r) => r.profile(),
             None => self.level.player_uuid.map_or(0, uuid),

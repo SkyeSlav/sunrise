@@ -14,6 +14,11 @@ pub struct PositionSender {
 }
 
 impl PositionSender {
+    /// What was last reported: the position and `(yaw, pitch)` the next report is measured from.
+    pub fn last(&self) -> ([f64; 3], (f32, f32)) {
+        (self.position, self.rotation)
+    }
+
     #[sunrise_mod_api_macros::replaceable]
     pub fn update(
         &mut self,

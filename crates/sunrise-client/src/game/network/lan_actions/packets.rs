@@ -178,12 +178,6 @@ impl Game<'_> {
     }
 
     fn lan_guest_packet_inner(&mut self, conn: u32, packet: S) {
-        // A crossing the hub's move check passed; a dead player's is refused, not dropped.
-        if let S::CustomPayload(p) = &packet
-            && p.channel == sunrise_protocol::passage_sync::CROSS_CHANNEL
-        {
-            return self.guest_passage_cross(conn, &p.data);
-        }
         use super::super::cauldron_prediction::{USE_CHANNEL, UseOnOutcome, use_result};
         let Some(host) = self.lan.as_ref() else {
             return;

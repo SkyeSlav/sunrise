@@ -1183,10 +1183,6 @@ impl Game<'_> {
             C::CustomPayload(p) if p.channel == sunrise_client::lan::recipes::CONTENT_CHANNEL => {
                 self.remote_recipe_content(&p.data);
             }
-            // The passages of the chunks the server shows the window.
-            C::CustomPayload(p) if p.channel == sunrise_protocol::passage_sync::CHANNEL => {
-                self.remote_passage_sync(&p.data);
-            }
             // PingDebugMonitor.onPongReceived.
             C::PongResponse(p) => {
                 let delay = sunrise_client::net::ping_millis().wrapping_sub(p.time);
@@ -2392,8 +2388,6 @@ mod level_sound_tests;
 
 #[cfg(test)]
 mod attachment_query_tests;
-#[cfg(test)]
-mod passage_cross_tests;
 #[cfg(test)]
 mod respawn_motion_tests;
 impl Remote {

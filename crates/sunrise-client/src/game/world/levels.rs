@@ -2105,7 +2105,6 @@ impl Game<'_> {
         }
         self.creatures.custom_spawners.remove(&dim);
         self.attachment_indexes.remove(&dim);
-        self.passages.retire_level(dim.key());
     }
 
     /// Every level still open closes with the server, however it ends

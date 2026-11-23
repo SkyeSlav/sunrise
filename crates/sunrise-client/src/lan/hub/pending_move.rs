@@ -11,7 +11,7 @@
 //! accepted move before the inbox resumes.
 //!
 //! Not heard, and committed in place: a player's first tick in a level (the tick after a join or a
-//! level change), the confirmation of a teleport, and a passage crossing. A report that arrives
+//! level change), and the confirmation of a teleport. A report that arrives
 //! while a teleport is unconfirmed never gets here (the hub only applies its rotation), so the
 //! correction a veto sends is not heard either.
 
@@ -31,8 +31,6 @@ pub enum Hearing {
     /// The confirmation of a teleport: validated and committed in place. The last reported
     /// location stays the teleport's destination.
     Confirmation,
-    /// A passage crossing, whose caller reads the position at once: committed in place.
-    Crossing,
 }
 
 /// A movement report that passed the server's own checks (`handlePlayerPositionChange`).

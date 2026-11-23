@@ -131,9 +131,6 @@ sunrise-client game::native_menus::tests::each_menu_items_refusal_has_its_own_na
 sunrise-client game::native_net::packet_hold::tests::generation_change_after_a_drops_b_and_invalidates_the_hold lib daily network
 sunrise-client game::native_net::packet_hold::tests::physical_hold_orders_engine_and_mod_packets_and_bypasses_network_keepalive lib daily resources
 sunrise-client game::native_packet_builders::tests::client_host_hashes_plain_stacks_with_added_and_removed_components lib daily child-process
-sunrise-client game::native_passage_cross::tests::a_crossing_into_another_level_is_refused_far_level lib daily resources
-sunrise-client game::native_passages::tests::a_destination_level_must_be_open_and_another_level lib daily resources
-sunrise-client game::native_passages::tests::a_passage_into_another_level_is_not_sent_to_the_clients lib daily resources
 sunrise-client game::native_player_ender_chest_tests::a_write_while_the_local_ender_chest_is_open_survives_closing_it lib daily resources
 sunrise-client game::native_player_ender_chest_tests::a_written_slot_is_what_the_open_ender_chest_menu_shows_and_clicks lib daily resources
 sunrise-client game::native_player_ender_chest_tests::an_item_use_opens_the_players_own_ender_chest_and_its_clicks_keep_every_stack lib daily resources

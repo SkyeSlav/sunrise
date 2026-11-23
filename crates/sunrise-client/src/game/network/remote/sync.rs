@@ -230,8 +230,6 @@ impl Game<'_> {
         if let Some(r) = self.remote.as_mut() {
             r.last_teleport_sequence = r.sequence;
         }
-        // The server's answer to a passage crossed (`cross_passage`), or any other.
-        self.passages.crossing = None;
         // handleMovePlayer: a passenger keeps its own position and look (its vehicle
         // carries it), so a vehicle a datapack teleports every tick doesn't snap the
         // rider's view; the teleport is still accepted, with where the player is.
@@ -363,6 +361,7 @@ impl Game<'_> {
             }
         };
         let mut moved_or_rotated = false;
+        let mut reported = None;
         if riding {
             // LocalPlayer.sendChanges: a passenger sends its look, then the
             // vehicle it controls and, only then, its sprint.
@@ -380,11 +379,15 @@ impl Game<'_> {
             sprint(r, &mut out);
             // LocalPlayer.sendPosition: no move while the view is another
             // entity's (the server keeps the player on it).
+            let last = r.position_sender.last();
             if controls_camera
                 && let Some(packet) =
                     r.position_sender
                         .update(pos, (yaw, pitch), on_ground, collision)
             {
+                if last != (pos, (yaw, pitch)) {
+                    reported = Some(last);
+                }
                 // A server that sent colliders reads how old the copy carrying the player is.
                 if !r.colliders.is_empty()
                     && let Some(hint) = r.carry_age.hint()
@@ -471,6 +474,19 @@ impl Game<'_> {
                     }
                 }
             }
+        }
+        // `player_move` on the client: the segment this report covers, as the server will hear it.
+        // The server's ruling stands, so a veto here changes nothing.
+        if let Some((from, (from_yaw, from_pitch))) = reported {
+            let mut cancel = false;
+            self.native_player_move(
+                self.own_uuid(),
+                from,
+                [from_yaw, from_pitch],
+                pos,
+                [yaw, pitch],
+                &mut cancel,
+            );
         }
         for packet in out {
             self.send(packet);

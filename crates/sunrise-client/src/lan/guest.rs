@@ -24,7 +24,6 @@ use sunrise_protocol::{
         configuration::{ClientInformation, CustomPayload},
         play,
     },
-    passage_sync,
 };
 use sunrise_world::component_value::consume_effects::Admitted;
 
@@ -1080,21 +1079,6 @@ impl Guest {
     /// offers it).
     pub fn negotiated_attachment_sync(&self) -> bool {
         crate::raw_payloads::negotiated(self.sender.payload_transport(), attachment_sync::CHANNEL)
-    }
-    /// Passages to hold or forget (#3775), if the guest is on a Sunrise client, the only
-    /// one that reads them, and placed or held (a hand-over's arrival is sent its chunks,
-    /// so their passages too); a message that cannot be written is not sent.
-    pub fn send_passage_sync(&self, message: &passage_sync::Message) {
-        if !(self.placed || self.held) || self.brand != "sunrise" {
-            return;
-        }
-        match passage_sync::encode(message) {
-            Ok(data) => self.send(&play::Clientbound::CustomPayload(CustomPayload {
-                channel: passage_sync::CHANNEL.into(),
-                data,
-            })),
-            Err(e) => log::debug!("Sunrise: passage sync not sent: {e}"),
-        }
     }
     /// [`Self::send`] of a `ChunksBiomes` whose body is `packet.encode()`, the same
     /// bytes for each guest with those columns.

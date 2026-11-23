@@ -36,12 +36,6 @@ fn every_registered_engine_codec_refuses_a_hostile_oversized_body() {
         ("sunrise:anvil_cost", |body| {
             protocol::anvil_cost::decode(body).is_err()
         }),
-        ("sunrise:passage_sync", |body| {
-            protocol::passage_sync::decode(body).is_err()
-        }),
-        ("sunrise:passage_cross", |body| {
-            protocol::passage_sync::decode_cross(body).is_err()
-        }),
         ("sunrise:carry_age", |body| {
             protocol::carry_age::decode(body).is_err()
         }),

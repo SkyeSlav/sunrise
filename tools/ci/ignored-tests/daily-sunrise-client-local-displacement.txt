@@ -1,3 +1,4 @@
+sunrise-client game::native_local_player_writes::tests::a_client_hears_player_move_for_the_report_its_own_player_sends lib daily resources
 sunrise-client game::native_local_player_writes::tests::a_listener_told_at_a_travel_write_changes_what_the_rest_of_the_tick_reads lib daily resources
 sunrise-client game::native_local_player_writes::tests::a_local_displacement_respects_collider_exemptions_when_moving_and_sneaking lib daily resources
 sunrise-client game::native_local_player_writes::tests::a_local_displacement_stops_at_a_wall_and_reports_how_far_it_moved lib daily resources

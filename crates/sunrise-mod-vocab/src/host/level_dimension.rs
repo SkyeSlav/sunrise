@@ -1,4 +1,4 @@
-//! The `level_dimension` area: the dimension a level is: its key, type, height, bounds and passages. Host method declarations; access defaults and game forwarders are generated.
+//! The `level_dimension` area: the dimension a level is: its key, type, height, bounds. Host method declarations; access defaults and game forwarders are generated.
 #![allow(unused_variables)]
 use crate::*;
 /// The handles' reads of the `level_dimension` area, implemented by the game and reached through [`Backend`].
@@ -66,29 +66,6 @@ pub trait LevelDimensionBackend {
 #[doc(hidden)]
 #[sunrise_mod_api_macros::host_area]
 pub trait LevelDimensionBackendMut {
-    /// Side: server.
-    /// Registers `passage` in the level ([`Passage`], #3775) and numbers it. The engine
-    /// tells it to every Sunrise client holding its chunk ([`Passage::chunk`]) at the end of
-    /// the server's tick, and to a client that gets the chunk later as the chunk is sent
-    /// (`chunk_sent`); a client forgets it with the chunk. Passages are not saved and a
-    /// datapack reload does not bring them back: they hold until `remove_passage`, the
-    /// level's close or the world's, so a mod registers its own again in `level_load`. An
-    /// id is never given again while the game runs. A level holds 256 at most and a chunk 8.
-    /// A passage removed before the tick's end is never told. Refused with nothing
-    /// registered for a stale handle, a client, a passage that isn't a finite rectangle
-    /// with unit axes at a right angle and sides above 0 and at most 32 blocks, one with a
-    /// corner past vanilla's position limits, a full level or chunk, and once every id was
-    /// given.
-    fn level_register_passage(
-        &mut self,
-        level: LevelRef,
-        passage: Passage,
-    ) -> Result<PassageId, PassageRegistrationError>;
-    /// Side: server.
-    /// Removes the level's passage `id`: the clients that were told of it are told it is
-    /// gone at the end of the server's tick. True when it was registered in this level.
-    /// False for another level's or an unknown id, a stale handle and a client.
-    fn level_remove_passage(&mut self, level: LevelRef, id: PassageId) -> bool;
     /// Side: server.
     /// `LevelRef::portal_destination`, then the exit portal built by `PortalForcer.createPortal`
     /// (the spiral search, obsidian frame and the entry's axis) when none was found, with the

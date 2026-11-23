@@ -1191,13 +1191,6 @@ fn spawn_policy_writes_take_a_server_host(
     let _: Option<EntityRef> = shot.and_then(|shot| shot.owner(read));
 }
 
-/// Compile-only: a passage is registered and removed through its level on a server host.
-#[allow(dead_code)]
-fn passages_take_a_server_host(server: &mut dyn ServerHost, level: LevelRef, passage: Passage) {
-    let id: Result<PassageId, PassageRegistrationError> = level.register_passage(server, passage);
-    let _: bool = level.remove_passage(server, id.unwrap());
-}
-
 #[test]
 fn panicking_listener_is_disabled_for_that_hook_and_reported_once() {
     use std::sync::atomic::{AtomicUsize, Ordering};

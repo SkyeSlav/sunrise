@@ -1,7 +1,7 @@
 //! `player_move`: the hook hears a held report with the player's state swapped in, and its
 //! veto decides what the hub does with it. The ordered cases run the real game tick.
 use super::native_guest_turn_tests::with_guests;
-use mod_api::{Flow, Hooks, PlayerMoveEvent, ServerHost};
+use mod_api::{Flow, Hooks, HostSide, PlayerMoveEvent};
 use std::sync::{Arc, Mutex};
 use sunrise_client::lan::hub::{Accepted, PendingMove};
 
@@ -12,7 +12,7 @@ struct Wall(Heard);
 
 #[mod_api::__subscriptions]
 impl Hooks for Wall {
-    fn player_move(&self, _: &mut dyn ServerHost, event: &mut PlayerMoveEvent) -> Flow {
+    fn player_move(&self, _: HostSide<'_>, event: &mut PlayerMoveEvent) -> Flow {
         self.0.lock().unwrap().push((
             event.player,
             event.from,
@@ -104,7 +104,7 @@ struct Ruling(Heard, Flow);
 
 #[mod_api::__subscriptions]
 impl Hooks for Ruling {
-    fn player_move(&self, _: &mut dyn ServerHost, event: &mut PlayerMoveEvent) -> Flow {
+    fn player_move(&self, _: HostSide<'_>, event: &mut PlayerMoveEvent) -> Flow {
         self.0.lock().unwrap().push((
             event.player,
             event.from,

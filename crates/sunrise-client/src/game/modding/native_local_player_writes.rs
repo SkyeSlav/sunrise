@@ -442,12 +442,13 @@ mod tests {
                 event: &mut mod_api::EntityEnteringSectionEvent,
             ) {
                 if let HostSide::Client(host) = host
-                    && host.local_player().map(|p| p.entity()) == Some(event.entity)
+                    && let Some(me) = host.local_player()
+                    && me.entity() == event.entity
                 {
                     self.0.lock().unwrap().push((
                         event.old_section,
                         event.new_section,
-                        Some(host.set_local_player_velocity([0.0; 3])),
+                        Some(me.set_velocity(host, [0.0; 3])),
                     ));
                 }
             }
@@ -477,6 +478,51 @@ mod tests {
                 assert!(body.position.x > 16.0, "the move happened first");
                 // The air drag after the move multiplies the velocity the listener wrote.
                 assert_eq!(body.velocity.x, 0.0);
+            });
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_client_hears_player_move_for_the_report_its_own_player_sends() {
+        type Heard = Arc<Mutex<Vec<(bool, u128, [f64; 3], [f64; 3])>>>;
+        struct Hear(Heard);
+        #[mod_api::__subscriptions]
+        impl mod_api::Hooks for Hear {
+            fn player_move(
+                &self,
+                host: HostSide<'_>,
+                event: &mut mod_api::PlayerMoveEvent,
+            ) -> mod_api::Flow {
+                self.0.lock().unwrap().push((
+                    matches!(host, HostSide::Client(_)),
+                    event.player,
+                    event.from,
+                    event.to,
+                ));
+                // The server rules; a client's veto changes nothing.
+                mod_api::Flow::Cancel
+            }
+        }
+
+        let heard = Heard::default();
+        let mods = vec![mod_api::ModEntry::new(
+            "hear",
+            Box::new(Hear(heard.clone())),
+        )]
+        .into();
+        mod_platform::testing::with_mods(mods, || {
+            crate::game::native_entity_refs::tests::with_client_game(|game| {
+                loaded_client(game);
+                let last = game.remote.as_ref().unwrap().position_sender.last().0;
+                game.tick_remote().unwrap();
+                let to = game.player.as_ref().unwrap().position;
+                let own = game.own_uuid();
+                assert_eq!(
+                    *heard.lock().unwrap(),
+                    [(true, own, last, [to.x, to.y, to.z])],
+                    "heard once, on the client, from the last report to the new one"
+                );
             });
         });
     }

@@ -1497,10 +1497,6 @@ mod native_part_tables;
 #[cfg(test)]
 #[path = "game/modding/native_part_tables_tests.rs"]
 mod native_part_tables_tests;
-#[path = "game/modding/native_passage_cross.rs"]
-mod native_passage_cross;
-#[path = "game/modding/native_passages.rs"]
-mod native_passages;
 #[cfg(test)]
 #[path = "game/modding/native_path_types_tests.rs"]
 mod native_path_types_tests;
@@ -4215,8 +4211,6 @@ struct Game<'a> {
     /// The natural spawning policy mods set on each level (`LevelRef::set_spawn_limits`,
     /// `set_spawn_flags`); a level with none spawns as vanilla. Kept while the world is open.
     spawn_policies: HashMap<mod_api::DimensionKey, natural_spawning::SpawnPolicy>,
-    /// The passages mods registered in each level, and a client's copy (`native_passages.rs`).
-    passages: native_passages::Passages,
     /// PauseScreen.showPauseMenu (false after F3+Escape).
     pause_menu: bool,
     pause_focus: Option<u8>,
@@ -14254,7 +14248,6 @@ impl<'a> Game<'a> {
             screen_blur_requested: Default::default(),
             spawn_counts: HashMap::new(),
             spawn_policies: HashMap::new(),
-            passages: Default::default(),
             pause_menu: true,
             pause_focus: None,
             death_focus: None,

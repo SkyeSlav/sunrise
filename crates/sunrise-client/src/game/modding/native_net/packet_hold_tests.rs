@@ -335,11 +335,11 @@ fn generation_change_after_a_drops_b_and_invalidates_the_hold() {
 
 #[test]
 #[ignore = "daily"]
-fn held_pressure_refuses_send_play_and_cross_passage_without_moving() {
+fn held_pressure_refuses_send_play() {
     if run_fresh_cases(
-        "game::native_net::packet_hold::tests::held_pressure_refuses_send_play_and_cross_passage_without_moving",
-        "SUNRISE_PACKET_HOLD_CROSS_CHILD",
-        &["cross"],
+        "game::native_net::packet_hold::tests::held_pressure_refuses_send_play",
+        "SUNRISE_PACKET_HOLD_SEND_CHILD",
+        &["send"],
     ) {
         return;
     }
@@ -352,28 +352,6 @@ fn held_pressure_refuses_send_play_and_cross_passage_without_moving() {
         let remote = game.remote.as_mut().unwrap();
         remote.session = session;
         remote.joined = true;
-
-        let start = sunrise_core::geometry::Vec3::new(0.5, 65.0, 8.25);
-        let velocity = sunrise_core::geometry::Vec3::new(0.0, -0.0784, 0.25);
-        let prev = sunrise_core::geometry::Vec3::new(0.5, 65.0, 8.0);
-        let mut player = sunrise_client::motion::PlayerMotion::new(game.motion, start).unwrap();
-        player.velocity = velocity;
-        game.player = Some(player);
-        game.previous_position = prev;
-        game.yaw = 0.0;
-        game.passages.held.insert(
-            mod_api::PassageId::from_raw(1),
-            mod_api::Passage {
-                origin: mod_api::Vec3::new(0.5, 65.5, 8.5),
-                axis_w: mod_api::Vec3::new(1.0, 0.0, 0.0),
-                axis_h: mod_api::Vec3::new(0.0, 1.0, 0.0),
-                width: 2.0,
-                height: 3.0,
-                destination: mod_api::Vec3::new(24.5, 65.5, 8.5),
-                turn: mod_api::PassageTurn::Clockwise90,
-                destination_level: None,
-            },
-        );
 
         let _mod = enter_native_mod(ModCall {
             id: "holder",
@@ -416,23 +394,11 @@ fn held_pressure_refuses_send_play_and_cross_passage_without_moving() {
             )
         );
 
-        // Held backpressure refuses the crossing payload, leaves the writer and the hold
-        // alone, and leaves the player unmoved with no pending crossing.
-        assert_eq!(
-            game.cross_passage(mod_api::PassageId::from_raw(1)),
-            Err(mod_api::PassageCrossError::Unavailable)
-        );
-        let player = game.player.as_ref().unwrap();
-        assert_eq!(player.position, start);
-        assert_eq!(player.velocity, velocity);
-        assert_eq!(game.previous_position, prev);
-        assert_eq!(game.yaw, 0.0);
-        assert_eq!(game.passages.crossing, None);
         assert_eq!(
             game.send_play(S::Pong(Ping { id: 99 })),
             PlaySend::Unavailable
         );
-        // The hold survived the refusals: dropping it frees the credit and sends flow again.
+        // Held backpressure refuses the send. The hold survived the refusal: dropping it frees the credit and sends flow again.
         assert_eq!(game.drop_held(hold), Ok(()));
         assert_eq!(
             game.send_play(S::Pong(Ping { id: 100 })),

@@ -38,7 +38,6 @@ pub(crate) mod map_decoration_types;
 pub mod mod_chunk_tickets;
 pub(crate) mod package_details;
 pub(crate) mod package_files;
-pub(crate) mod passage;
 pub(crate) mod phase;
 pub(crate) mod portal;
 pub(crate) mod random;

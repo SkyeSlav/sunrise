@@ -80,10 +80,10 @@ GROUPS = {
     "level_world_border": ("The level's world border.", """
         level_world_border level_set_world_border_center level_set_world_border_size
         level_set_world_border_damage level_set_world_border_warning"""),
-    "level_dimension": ("The dimension a level is: its key, type, height, bounds and passages.", """
+    "level_dimension": ("The dimension a level is: its key, type, height, bounds.", """
         dimension_key_id level_dimension_type level_dimension_shape level_logical_height level_height
-        level_sea_level level_in_world_bounds level_in_spawnable_bounds level_register_passage
-        level_remove_passage level_portal_destination level_find_or_create_portal_exit"""),
+        level_sea_level level_in_world_bounds level_in_spawnable_bounds
+        level_portal_destination level_find_or_create_portal_exit"""),
 
     "entity_identity": ("What an entity is: its name, type, level and UUID, and the players it is sent to.", """
         entity_name entity_custom_name_visible entity_classification entity_kind entity_level

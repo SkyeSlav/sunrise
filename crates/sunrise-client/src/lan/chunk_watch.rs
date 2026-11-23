@@ -1,7 +1,6 @@
 //! The chunks each player watches, for the mods' `chunk_watch`, `chunk_sent`
-//! and `chunk_unwatch` (NeoForge's `ChunkWatchEvent`) and for the passages the
-//! server sends with a chunk (#3775). The hub records them only while a mod
-//! listens or a passage was registered; the game reads them after the hub's step.
+//! and `chunk_unwatch` (NeoForge's `ChunkWatchEvent`). The hub records them only while a mod
+//! listens; the game reads them after the hub's step.
 
 use mod_api::HookId;
 
@@ -40,18 +39,12 @@ pub struct LevelWatches {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChunkWatchLog {
     runs: Vec<LevelWatches>,
-    /// A mod registered a passage since the world opened: the chunks sent from
-    /// then on are recorded whether or not a mod listens.
-    passages: bool,
 }
 
 impl ChunkWatchLog {
     /// A log of `runs`, as the hub would have made it.
     pub fn new(runs: Vec<LevelWatches>) -> Self {
-        Self {
-            runs,
-            passages: false,
-        }
+        Self { runs }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -63,16 +56,9 @@ impl ChunkWatchLog {
         std::mem::take(&mut self.runs)
     }
 
-    /// Whether the hub records the chunks players watch: while a mod listens
-    /// ([`listened`]), and from the first live passage on while this hub lasts.
+    /// Whether the hub records the chunks players watch: while a mod listens ([`listened`]).
     pub fn recording(&self) -> bool {
-        self.passages || listened()
-    }
-
-    /// The server has a live passage: record from now on, for the passages the
-    /// game sends with each chunk sent.
-    pub fn record_for_passages(&mut self) {
-        self.passages = true;
+        listened()
     }
 
     /// One event for `g`'s chunk `(x, z)` in its level, which a new run
