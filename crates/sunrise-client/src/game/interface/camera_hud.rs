@@ -84,23 +84,33 @@ impl Game<'_> {
                     .or(self.mobs[i].extra.mount)?
             }
         };
-        if let Some(m) = self.mob_index.get(&self.mobs, id) {
-            let max_health = self
-                .motion
-                .attributes
-                .id("minecraft:max_health")
-                .and_then(|attr| self.remote_attribute(id as i32, attr))
-                .map_or(m.attrs.max_health, |v| v as f32);
-            return Some((max_health, m.health));
+        // Another player can ride the local player, whose attributes and health
+        // are kept on PlayerMotion rather than in the tracked entity table.
+        if self
+            .remote
+            .as_ref()
+            .is_some_and(|r| r.entity_id as u32 == id)
+        {
+            let p = self.player.as_mut()?;
+            let max_health = p.attribute("minecraft:max_health").ok()? as f32;
+            return Some((max_health, p.health.health()));
         }
-        let stand = self.armor_stands.iter().find(|s| s.id == id)?;
+        let (default_max, health) =
+            if let Some(dragon) = self.dragon.as_ref().filter(|d| d.id == id) {
+                (super::dragon::MAX_HEALTH, dragon.health)
+            } else if let Some(m) = self.mob_index.get(&self.mobs, id) {
+                (m.attrs.max_health, m.health)
+            } else {
+                let stand = self.armor_stands.iter().find(|s| s.id == id)?;
+                (20.0, stand.health)
+            };
         let max_health = self
             .motion
             .attributes
             .id("minecraft:max_health")
             .and_then(|attr| self.remote_attribute(id as i32, attr))
-            .map_or(20.0, |v| v as f32);
-        Some((max_health, stand.health))
+            .map_or(default_max, |v| v as f32);
+        Some((max_health, health))
     }
 
     /// `Hud.extractVehicleHealth`: `(max_hearts, health)` of `camera_vehicle`, when positive.

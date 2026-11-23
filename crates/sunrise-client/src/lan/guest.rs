@@ -753,6 +753,13 @@ impl Guest {
     pub fn joined(&self) -> bool {
         self.placed || self.respawning
     }
+    /// Whether this guest's sender still accepts play packets. Does not require a placed body.
+    pub fn play_connection_open(&self) -> bool {
+        !self.disconnect_pending
+            && self.left_reason.is_empty()
+            && !self.sender.payload_transport().closed()
+            && self.sender.is_live()
+    }
     /// Whether the guest is online and placed in level `dimension`: one of the
     /// level's players (`ServerLevel.players`).
     pub fn placed_in(&self, dimension: &str) -> bool {

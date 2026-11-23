@@ -24,11 +24,16 @@ use super::{
 use crate::blocks::Fluid;
 use crate::breathing::{AirStep, Breath};
 use crate::health::DamageLevel;
+use mod_api::{
+    __private::{InsideAction, InsideCollector},
+    InsideEffect,
+};
 use sunrise_core::{
     geometry::{Aabb, Axis, ShapeOp, Vec3, VoxelShape},
+    position::BlockPos,
     random::RandomSource,
 };
-use sunrise_world::native_load_context::LoopContext;
+use sunrise_world::{native_load_context::LoopContext, registry::BlockStateId};
 
 #[cfg(test)]
 mod inside_walk_tests {
@@ -2049,8 +2054,24 @@ struct MobBlockWalk {
     stationary_done: bool,
     travel: crate::block_contact::MovementSweep,
     visited: crate::fast_hash::FxHashSet<i64>,
-    effects: mod_api::InsideEffects,
-    writes: Option<std::vec::IntoIter<mod_api::PlannedInside>>,
+    effects: InsideCollector<MobInsideWrite>,
+    writes: Option<std::vec::IntoIter<InsideAction<MobInsideWrite>>>,
+}
+
+/// A write the mob's own blocks queue on its collector, beside a Part's.
+#[derive(Debug)]
+enum MobInsideWrite {
+    /// `Entity::lavaHurt`, after a lava cauldron's LAVA_IGNITE.
+    LavaHurt,
+    /// Powder snow's check before EXTINGUISH: a burning mob that may grief melts it.
+    MeltPowderSnow([i32; 3]),
+    Part(mod_api::EntityWrite),
+}
+
+impl From<mod_api::EntityWrite> for MobInsideWrite {
+    fn from(write: mod_api::EntityWrite) -> Self {
+        Self::Part(write)
+    }
 }
 
 impl MobBlockWalk {
@@ -2107,11 +2128,33 @@ impl MobBlockWalk {
             if !m.alive() {
                 break;
             }
-            if let mod_api::PlannedInside::Write(write) = planned {
-                apply_entity_write(m, w, level, events, write);
-                if pause_damage && m.hurt_needs_owner() {
-                    return false;
+            match planned {
+                InsideAction::Effect(InsideEffect::ClearFreeze) => m.ticks_frozen = 0,
+                InsideAction::Effect(InsideEffect::LavaIgnite) if !m.fire_immune() => {
+                    m.ignite_for_ticks(300);
                 }
+                InsideAction::Effect(InsideEffect::Extinguish) => m.extinguish_fire(),
+                InsideAction::Write(MobInsideWrite::LavaHurt) if !m.fire_immune() => {
+                    m.damage(level, 4.0, Damage::of(DamageKind::Lava));
+                    hurt_teleports(m, w, events);
+                }
+                InsideAction::Write(MobInsideWrite::MeltPowderSnow(pos)) => {
+                    if m.is_on_fire() && w.can_grief(m.id) {
+                        events.push(MobEvent::BreakBlock {
+                            pos,
+                            drop: false,
+                            by: None,
+                            breaker: None,
+                        });
+                    }
+                }
+                InsideAction::Write(MobInsideWrite::Part(write)) => {
+                    apply_entity_write(m, w, level, events, write);
+                }
+                _ => {}
+            }
+            if pause_damage && m.hurt_needs_owner() {
+                return false;
             }
         }
         true
@@ -2178,7 +2221,7 @@ struct MobInside<'a, 'w, 'l> {
 }
 
 impl crate::block_contact::InsideWalk for MobInside<'_, '_, '_> {
-    type Effects = mod_api::InsideEffects;
+    type Effects = InsideCollector<MobInsideWrite>;
     type Error = ();
     fn bounds_at(&self, at: Vec3) -> sunrise_core::geometry::Aabb {
         self.m.bounds_at(at)
@@ -2199,23 +2242,33 @@ impl crate::block_contact::InsideWalk for MobInside<'_, '_, '_> {
     }
     fn inside_shape(
         &mut self,
-        _state: sunrise_world::registry::BlockStateId,
-        _at: sunrise_core::position::BlockPos,
+        state: BlockStateId,
+        _at: BlockPos,
     ) -> crate::block_contact::InsideShape {
-        // `getEntityInsideCollisionShape` is the whole block for every block a
-        // mob meets, as the mob's own walk always treated it.
-        crate::block_contact::InsideShape::Full
+        use crate::block_contact::InsideShape;
+        if &*self.w.facts.get(state).name != "minecraft:lava_cauldron" {
+            return InsideShape::Full;
+        }
+        // LavaCauldronBlock.getEntityInsideCollisionShape: its fixed FILLED_SHAPE.
+        InsideShape::Fixed(crate::block_contact::lava_cauldron_filled_shape())
     }
     fn entity_inside(
         &mut self,
-        at: sunrise_core::position::BlockPos,
-        state: sunrise_world::registry::BlockStateId,
+        at: BlockPos,
+        state: BlockStateId,
         _step: i32,
         precise: bool,
-        effects: &mut mod_api::InsideEffects,
+        effects: &mut Self::Effects,
     ) -> std::result::Result<(), ()> {
         let (x, y, z) = (at.x, at.y, at.z);
         let p = [x, y, z];
+        let name = &*self.w.facts.get(state).name;
+        // LavaCauldronBlock.entityInside queues a hurt after this step's ignition.
+        if name == "minecraft:lava_cauldron" {
+            effects.apply(InsideEffect::ClearFreeze);
+            effects.apply(InsideEffect::LavaIgnite);
+            effects.run_after(InsideEffect::LavaIgnite, MobInsideWrite::LavaHurt);
+        }
         // The part's contact, mid-walk, staged: its writes join this step only
         // when it answered, and a panic is contained.
         if let Some(hooks) = crate::block_contact::HOOKS.get()
@@ -2240,22 +2293,16 @@ impl crate::block_contact::InsideWalk for MobInside<'_, '_, '_> {
             effects.absorb_step(staged);
             crate::block_contact::inside_written(state, at, writes);
         }
-        // PowderSnowBlock.entityInside: a burning mob destroys the
-        // block (`canEntityGrief` for the mob), then EXTINGUISH puts it out.
-        if self.w.block_name(x, y, z) == "minecraft:powder_snow" {
+        // PowderSnowBlock.entityInside: before this step's EXTINGUISH, a burning
+        // mob destroys the block (`canEntityGrief` for the mob), so a lava
+        // cauldron's ignition earlier in the same step melts it first.
+        if name == "minecraft:powder_snow" {
             // InsideBlockEffectType.FREEZE: `setIsInPowderSnow(true)`.
             self.m.in_powder_snow = true;
-            if self.m.is_on_fire() && self.w.can_grief(self.m.id) {
-                self.events.push(MobEvent::BreakBlock {
-                    pos: p,
-                    drop: false,
-                    by: None,
-                    breaker: None,
-                });
-            }
-            self.m.extinguish_fire();
+            effects.run_before(InsideEffect::Extinguish, MobInsideWrite::MeltPowderSnow(p));
+            effects.apply(InsideEffect::Extinguish);
         }
-        match self.w.block_name(x, y, z) {
+        match name {
             "minecraft:cactus" => {
                 self.m
                     .damage(self.level, 1.0, Damage::of(DamageKind::Cactus));
@@ -2691,7 +2738,7 @@ fn base_tick(
         super::undead::drowned_update_swimming(m, w);
     }
     let fire = crate::motion::environment::fire_contact(w.world, w.registry, m.bounds());
-    let lava = m.fluids.in_lava || touches_lava_cauldron(m, w);
+    let lava = m.fluids.in_lava;
     let contact = Contact {
         fire,
         lava,
@@ -2931,7 +2978,7 @@ fn continue_base_tick(
                 } else {
                     (
                         crate::motion::environment::fire_contact(w.world, w.registry, m.bounds()),
-                        touches_lava(m, w) || touches_lava_cauldron(m, w),
+                        touches_lava(m, w),
                     )
                 };
                 let next = BaseStage::ContactLava { lava, was_on_fire };
@@ -3021,35 +3068,6 @@ fn touches_lava(m: &Mob, w: &MobWorld) -> bool {
         for y in min.y.floor() as i32..=max.y.floor() as i32 {
             for z in min.z.floor() as i32..=max.z.floor() as i32 {
                 if &*w.facts.get(w.world.block(x, y, z)).name == "minecraft:lava" {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-/// `LavaCauldronBlock.entityInside` (LAVA_IGNITE, then `lavaHurt`, as lava's own) for a mob
-/// whose box meets `getEntityInsideCollisionShape`'s `FILLED_SHAPE`: the cauldron's own shape
-/// and its lava, `Block.column(12, 4, 15)`. A mob standing on the rim is not inside.
-fn touches_lava_cauldron(m: &Mob, w: &MobWorld) -> bool {
-    let b = m.bounds().deflate(Vec3::new(1e-5, 1e-5, 1e-5));
-    let (min, max) = (b.min_position(), b.max_position());
-    for x in min.x.floor() as i32..=max.x.floor() as i32 {
-        for y in min.y.floor() as i32..=max.y.floor() as i32 {
-            for z in min.z.floor() as i32..=max.z.floor() as i32 {
-                let state = w.world.block(x, y, z);
-                if &*w.facts.get(state).name != "minecraft:lava_cauldron" {
-                    continue;
-                }
-                let at = Vec3::new(f64::from(x), f64::from(y), f64::from(z));
-                let lava = Aabb::new(
-                    Vec3::new(2.0 / 16.0, 4.0 / 16.0, 2.0 / 16.0),
-                    Vec3::new(14.0 / 16.0, 15.0 / 16.0, 14.0 / 16.0),
-                );
-                let shell = w.collision.static_shape(state).ok().flatten();
-                if lava.move_by(at).intersects(b)
-                    || shell.is_some_and(|s| s.boxes().iter().any(|c| c.move_by(at).intersects(b)))
-                {
                     return true;
                 }
             }
@@ -4146,6 +4164,76 @@ mod server_ai_brain_tests {
         assert!(ran, "vanilla data is missing");
     }
 
+    /// A stone floor wide enough to walk 16 blocks away on, and `block` at (0, 64, 0).
+    fn repellent_floor(
+        block: &'static str,
+    ) -> impl FnOnce(&mut crate::world::World, &sunrise_world::registry::BlockRegistry) {
+        move |world, registry| {
+            let stone = registry.default_state("minecraft:stone").unwrap();
+            for cx in -3..3 {
+                for cz in -3..3 {
+                    world
+                        .chunks
+                        .insert((cx, cz), Arc::new(crate::chunk::Chunk::empty(cx, cz)));
+                }
+            }
+            for x in -48..48 {
+                for z in -48..48 {
+                    world.set(x, 63, z, stone).unwrap();
+                }
+            }
+            world
+                .set(0, 64, 0, registry.default_state(block).unwrap())
+                .unwrap();
+        }
+    }
+
+    /// As [`a_repellent_scanned_this_tick_is_avoided_this_tick`], on a tick where
+    /// `Mob.serverAiStep`'s goal selectors only tick the goals already running (an odd `tickCount + id` past the first ticks): the avoid behaviour is the
+    /// brain's, which `Brain.startEachNonRunningBehavior` tries on every tick, so it still
+    /// starts on the scan's tick.
+    #[test]
+    #[ignore = "daily"]
+    fn a_repellent_scanned_on_a_running_goals_only_tick_is_avoided_that_tick() {
+        for (name, block, goal) in [
+            (
+                "minecraft:piglin",
+                "minecraft:soul_lantern",
+                "PiglinAvoidRepellent",
+            ),
+            (
+                "minecraft:hoglin",
+                "minecraft:warped_fungus",
+                "HoglinAvoidRepellent",
+            ),
+        ] {
+            let ran = with_built_test_world(&[], repellent_floor(block), |w, types| {
+                let mut world = w.clone();
+                world.player = None;
+                let mut level = crate::health::TestLevel::new(0);
+                let mut events = Vec::new();
+                let mut m = Mob::new(
+                    2,
+                    Arc::new(types.types[name].clone()),
+                    Vec3::new(3.5, 64.0, 0.5),
+                    0.0,
+                );
+                // `tickCount` 5, id 2: 7 is odd, so only the running goals tick.
+                m.age = 5;
+                m.extra.piglin.sensor_wait = 1;
+                m.ground.on_ground = true;
+                let _ = server_ai_step(&mut m, &world, &mut level.level(), &mut events, false);
+                assert_eq!(m.extra.repellent, Some([0, 64, 0]), "{name} scans");
+                assert!(
+                    m.ai.goals.is_running(goal),
+                    "{name}: {:?}",
+                    m.ai.goals.running_names()
+                );
+            });
+            assert!(ran, "vanilla data is missing");
+        }
+    }
+
     /// `Brain.tick` runs the sensors before the behaviours: on the tick `PiglinSpecificSensor`
     /// finds a soul lantern 3 blocks away, `PiglinAi.avoidRepellent` (the idle activity's
     /// `SetWalkTargetAwayFrom.pos(NEAREST_REPELLENT, ..)`) already walks away from it, as
@@ -4347,14 +4435,8 @@ mod server_ai_brain_tests {
                     .any(|e| matches!(e, MobEvent::DropItem { .. })),
                 "the ingot is not dropped: {events:?}"
             );
-            let MobEvent::Convert { from, .. } = &events[convert] else {
-                unreachable!()
-            };
-            assert_eq!(
-                from.extra.off_hand_id(),
-                None,
-                "the zombified piglin carries nothing"
-            );
+            // What the zombified piglin carries is the game's to settle, once it has handled
+            // the `FinishAdmiring` (`game::piglin_conversion_tests`).
         });
         assert!(ran, "vanilla data is missing");
     }
@@ -7845,7 +7927,14 @@ mod burn_and_rose_tests {
     fn a_mob_in_a_lava_cauldron_burns() {
         let ran = crate::mobs::world::with_built_test_world(
             &[],
-            build_with("minecraft:lava_cauldron"),
+            |world, registry| {
+                build_with("minecraft:lava_cauldron")(world, registry);
+                // A second cauldron with powder snow on top of it.
+                let cauldron = registry.default_state("minecraft:lava_cauldron").unwrap();
+                let snow = registry.default_state("minecraft:powder_snow").unwrap();
+                world.set(-3, 64, -3, cauldron).unwrap();
+                world.set(-3, 65, -3, snow).unwrap();
+            },
             |w, types| {
                 for (y, hurt) in [(64.25, true), (65.0, false)] {
                     let kind = Arc::new(types.types["minecraft:pig"].clone());
@@ -7860,6 +7949,71 @@ mod burn_and_rose_tests {
                     assert_eq!(m.health, expected, "at y {y}");
                     assert_eq!(m.fire_ticks > 0, hurt, "at y {y}");
                 }
+
+                let kind = Arc::new(types.types["minecraft:pig"].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.96875, 0.5), 0.0);
+                register(&mut m);
+                crate::mobs::finalize::set_baby(&mut m, true);
+                m.previous = m.position;
+                let start = m.health;
+                let (mut lr, mut events) = (crate::health::TestLevel::new(0), Vec::new());
+                // A baby fits between the walls: above the fill but within
+                // the block bounds is still outside the inside shape.
+                effects_from_blocks(&mut m, w, &mut lr.level(), &mut events);
+                assert_eq!(m.fire_ticks, 0);
+                assert_eq!(m.health, start);
+
+                // Neither box overlaps the cauldron at the ends of the move,
+                // but the sweep crosses it and ignites, thaws and hurts once.
+                m.previous = Vec3::new(-0.5, 64.5, 0.5);
+                m.position = Vec3::new(1.5, 64.5, 0.5);
+                m.ticks_frozen = 100;
+                effects_from_blocks(&mut m, w, &mut lr.level(), &mut events);
+                assert_eq!(m.fire_ticks, 300);
+                assert_eq!(m.health, start - 4.0);
+                assert_eq!(m.ticks_frozen, 0);
+
+                // The hurt runs after the ignition: a pig the lava kills is
+                // already burning when it dies.
+                let kind = Arc::new(types.types["minecraft:pig"].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.25, 0.5), 0.0);
+                register(&mut m);
+                m.previous = m.position;
+                m.health = 1.0;
+                effects_from_blocks(&mut m, w, &mut lr.level(), &mut events);
+                assert!(!m.alive());
+                assert_eq!(m.fire_ticks, 300);
+
+                // CLEAR_FREEZE thaws a fire-immune mob, which the lava neither
+                // lights nor hurts.
+                let kind = Arc::new(types.types["minecraft:blaze"].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.25, 0.5), 0.0);
+                register(&mut m);
+                m.previous = m.position;
+                m.ticks_frozen = 100;
+                let (start, fire) = (m.health, m.fire_ticks);
+                effects_from_blocks(&mut m, w, &mut lr.level(), &mut events);
+                assert_eq!((m.ticks_frozen, m.fire_ticks, m.health), (0, fire, start));
+
+                // Feet in the lava and back in the powder snow above, in one
+                // step: the ignition comes first, so the burning pig melts the
+                // snow before EXTINGUISH puts it out.
+                let kind = Arc::new(types.types["minecraft:pig"].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(-2.5, 64.25, -2.5), 0.0);
+                register(&mut m);
+                m.previous = m.position;
+                let start = m.health;
+                events.clear();
+                effects_from_blocks(&mut m, w, &mut lr.level(), &mut events);
+                assert_eq!(m.health, start - 4.0);
+                assert!(!m.is_on_fire());
+                assert!(events.iter().any(|event| matches!(
+                    event,
+                    MobEvent::BreakBlock {
+                        pos: [-3, 65, -3],
+                        ..
+                    }
+                )));
             },
         );
         assert!(ran, "vanilla data is missing");

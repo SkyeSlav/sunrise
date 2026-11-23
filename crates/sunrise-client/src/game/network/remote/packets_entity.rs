@@ -426,7 +426,8 @@ impl Game<'_> {
         }
     }
 
-    /// `C::RemoveMobEffect`: its arms of `apply_packet`, guard and order kept.
+    /// `C::RemoveMobEffect` (`LivingEntity.removeEffectNoUpdate`): from the player itself or
+    /// from another living entity whose effects this client keeps.
     pub(super) fn apply_remove_mob_effect_packet(&mut self, p: play::RemoveMobEffect) {
         let Some(id) = self.remote_effect_id(p.effect) else {
             return;
@@ -435,6 +436,8 @@ impl Game<'_> {
             self.potions.effects.list.retain(|e| e.id != id);
         } else if let Some(m) = self.mob_index.get_mut(&mut self.mobs, p.id as u32) {
             m.extra.client_effects.list.retain(|e| e.id != id);
+        } else if let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == p.id as u32) {
+            a.client_effects.list.retain(|e| e.id != id);
         }
     }
 

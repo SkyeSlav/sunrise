@@ -699,8 +699,6 @@ fn lava_cauldron_contacts(
     registry: &sunrise_world::registry::BlockRegistry,
     bounds: Aabb,
 ) -> usize {
-    use sunrise_core::geometry::ShapeOp;
-    static SHAPE: std::sync::OnceLock<VoxelShape> = std::sync::OnceLock::new();
     let epsilon = f64::from(1e-5_f32);
     let mut contacts = 0;
     let candidates = bounds.deflate(Vec3::new(epsilon, epsilon, epsilon));
@@ -712,31 +710,7 @@ fn lava_cauldron_contacts(
         {
             return true;
         }
-        let shape = SHAPE.get_or_init(|| {
-            let cuboid = |x0, y0, z0, x1, y1, z1| {
-                VoxelShape::from_box(Aabb::new(
-                    Vec3::new(x0 / 16.0, y0 / 16.0, z0 / 16.0),
-                    Vec3::new(x1 / 16.0, y1 / 16.0, z1 / 16.0),
-                ))
-                .expect("valid cauldron box")
-            };
-            let mut solid = VoxelShape::block();
-            // AbstractCauldronBlock.SHAPE: the openings under its feet
-            // and its hollow centre are cut out of the unit block.
-            for hole in [
-                cuboid(0.0, 0.0, 4.0, 16.0, 3.0, 12.0),
-                cuboid(4.0, 0.0, 0.0, 12.0, 3.0, 16.0),
-                cuboid(2.0, 0.0, 2.0, 14.0, 3.0, 14.0),
-                cuboid(2.0, 4.0, 2.0, 14.0, 16.0, 14.0),
-            ] {
-                solid = solid
-                    .join(&hole, ShapeOp::ONLY_FIRST)
-                    .expect("valid cauldron cutout");
-            }
-            solid
-                .join(&cuboid(2.0, 4.0, 2.0, 14.0, 15.0, 14.0), ShapeOp::OR)
-                .expect("valid filled cauldron")
-        });
+        let shape = crate::block_contact::lava_cauldron_filled_shape();
         let local = bounds.move_by(Vec3::new(-f64::from(x), -f64::from(y), -f64::from(z)));
         // Only block enumeration uses the deflated box. The actual
         // shape contact follows Entity.collidedWithShapeMovingFrom.
@@ -1843,6 +1817,10 @@ pub struct ArmorStand {
     pub speed_instance: bool,
     /// `NAME_TAG_DISTANCE` and `BELOW_NAME_DISTANCE` from server attribute updates.
     pub nameplate: crate::entities::nameplate::NameplateDistances,
+    /// Synced client-side effects from `UpdateMobEffect` / `RemoveMobEffect`, as a mob's.
+    pub client_effects: crate::effects::PlayerEffects,
+    /// `MobEffectInstance.BlendState` (previous, current) for its client-side darkness.
+    pub darkness_blend: (f32, f32),
 }
 /// The fluid a stand travels in (`LivingEntity.travelInFluid`: water first,
 /// then lava), from the heights `Entity::push_by_fluid` measured.
@@ -2108,6 +2086,8 @@ impl ArmorStand {
             ground: Default::default(),
             speed_instance: false,
             nameplate: Default::default(),
+            client_effects: Default::default(),
+            darkness_blend: (0.0, 0.0),
         }
     }
     /// `Entity.getOnPos(0.2)` (`getOnPosLegacy`): the supporting block's

@@ -5,6 +5,12 @@ This page documents the old registry's schema-1 `index.json` and the `.spack` mo
 its pinned tool for versions of Sunrise that still use it. To release a content or native mod, follow
 [Publishing your mod](../how-to/publish.md) instead.
 
+Releases made that way are listed in the registry's schema-2 index,
+`https://sunrise-org.github.io/sunrise-mods/v2/index.json`, signed with minisign in `v2/index.json.minisig` by the
+key in the registry's [`registry/index-key.pub`](https://github.com/sunrise-org/sunrise-mods/blob/main/registry/index-key.pub).
+Its source files and fields are specified in the registry's
+[`docs/registry-v2.md`](https://github.com/sunrise-org/sunrise-mods/blob/main/docs/registry-v2.md).
+
 The old index lists content and native mods (`.smod`), modpacks (`.spack`), resource packs, data packs,
 shaders-folder packs and Sunrise shader packs (`.sshader`). Reviewed versions are pinned by SHA-256;
 the format also supports unreviewed Nightly source listings. The formats are defined by

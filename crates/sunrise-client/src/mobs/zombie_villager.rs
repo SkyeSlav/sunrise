@@ -159,6 +159,8 @@ pub fn constructor_draws(m: &mut Mob) {
             super::villager::ProfessionState::from_index(constructor_profession(m));
     }
     let _yaw = m.random.next_float();
+    // `LivingEntity.<init>` makes the brain right after the yaw.
+    super::piglin::brain_sensor_draws(m);
 }
 /// The subclass fields after `Zombie.addAdditionalSaveData` and `VillagerData`.
 pub fn write_nbt(

@@ -1157,13 +1157,15 @@ pub(super) fn emit<'a>(
             let reply_outside_event =
                 matches!(contract, Contract::Listen | Contract::Replace) || answered_return;
             let shared_collect_output = collected.is_some() && !answered && !collect_cancel;
-            if (!reply_outside_event && !shared_collect_output)
+            // A global cancel hook chains its cancellation through the dispatch's own flag.
+            let chained_cancel = mod_cancel && hook.output_validator.is_none();
+            if (!reply_outside_event && !shared_collect_output && !chained_cancel)
                 || !stack_outputs.is_empty()
                 || hook.owner.is_some()
                 || hook.context == Some(PhaseContext::ChunkDisk)
             {
                 return Err(format!(
-                    "{name}: event_per_listener requires a listen or replace hook, or a collect hook with a shared borrowed output, without scalar or stack writeback or other shared event state"
+                    "{name}: event_per_listener requires a listen, replace or unvalidated cancel hook, or a collect hook with a shared borrowed output, without scalar or stack writeback or other shared event state"
                 ));
             }
             (String::new(), build)
@@ -1226,7 +1228,9 @@ pub(super) fn emit<'a>(
             ));
         }
         let previous_cancel = snaps.len();
-        if mod_cancel {
+        // A per-listener event's cancellation reaches the dispatch only once its listener
+        // returns, so an aborted listener has nothing to undo there.
+        if mod_cancel && !hook.event_per_listener {
             restores.push(format!("{event}.cancelled = {saved}.{previous_cancel};"));
             snaps.push(format!("{event}.cancelled"));
         }
@@ -1453,6 +1457,17 @@ pub(super) fn emit<'a>(
                      }}
                      {event}.cancelled |= {saved}.{previous_cancel} || matches!({flow}, Flow::Cancel);"
                 )
+            } else if hook.event_per_listener {
+                // Each listener's event starts from the cancellation so far and hands it on.
+                let cancel = format!(
+                    "{local_event} {snapshot_statement}if matches!({invocation}, Flow::Cancel) {{ {event}.cancelled = true; }} *{o} = {event}.cancelled; {local_write_back}",
+                    o = cancel_out.unwrap()
+                );
+                if stack_after.is_empty() {
+                    cancel
+                } else {
+                    format!("{cancel}; {stack_after}")
+                }
             } else {
                 let cancel = format!(
                     "{snapshot_statement}if matches!({invocation}, Flow::Cancel) {{ {event}.cancelled = true; }}"
@@ -1546,6 +1561,13 @@ pub(super) fn emit<'a>(
                     ),
                 )
             }
+            None if mod_cancel && hook.event_per_listener => (
+                String::new(),
+                format!(
+                    "let mut {entered} = super::runtime::ListenerScope::new(); for ({receives}, {mod_entry}) in super::listening(HookId::{hook_id}) {{ if *{o} && !{receives} {{ continue; }} let {mod_item} = {entered}.enter({mod_entry}, \"{name}\"); {cancel_step} }}",
+                    o = cancel_out.unwrap()
+                ),
+            ),
             None if mod_cancel => (
                 String::new(),
                 format!(

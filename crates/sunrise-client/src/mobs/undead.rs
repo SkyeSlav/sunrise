@@ -591,7 +591,7 @@ fn skeleton_freezing(m: &mut Mob, cx: &mut Cx) {
         if m.extra.counter2 == 0 {
             // ConversionTracker.doConversion: convertTo(STRAY,
             // ConversionParams.single(this, true, true)).
-            convert(m, "minecraft:stray", cx);
+            convert(m, "minecraft:stray", cx, true);
             // levelEvent 1048: the conversion sound at the stray, unless it
             // is silent.
             if !m.silent {
@@ -613,13 +613,17 @@ fn skeleton_freezing(m: &mut Mob, cx: &mut Cx) {
 }
 /// `Mob.convertTo(kind, ConversionParams.single(this, true, true))`: the
 /// mob is discarded and a new one of `kind` takes its place with its
-/// equipment, name, effects and flags (`MobEvent::Convert`).
-fn convert(m: &mut Mob, kind: &'static str, cx: &mut Cx) {
+/// equipment, name, effects and flags (`MobEvent::Convert`). `before_travel`:
+/// vanilla's `ConversionTracker.tick` comes before the tick's travel
+/// (`Skeleton.tick` runs it before `super.tick()`), not after (`Zombie.tick`
+/// runs it after).
+fn convert(m: &mut Mob, kind: &'static str, cx: &mut Cx, before_travel: bool) {
     cx.events.push(MobEvent::Convert {
         from: Box::new(m.clone()),
         kind,
         params: super::conversion::Params::KEEP_ALL,
         after: super::conversion::After::None,
+        before_travel,
     });
     m.removed = true;
 }
@@ -647,7 +651,7 @@ pub fn custom_server_ai_step(m: &mut Mob, cx: &mut Cx) {
                 // ConversionTracker.doConversion: convertTo(type,
                 // ConversionParams.single(this, true, true)); levelEvent
                 // 1040 or 1041 unless the new mob is silent.
-                convert(m, kind, cx);
+                convert(m, kind, cx, false);
                 if !m.silent {
                     cx.events.push(MobEvent::Sound(sound, m.center(), 1.0, 1.0));
                 }

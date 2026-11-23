@@ -174,6 +174,11 @@ pub enum HostEvent {
     /// Release input reservations only after this segment has finished in Game.
     InputCredits(Vec<crate::net::ingress::ReceiveLease<NetEvent>>),
     RawPayload(Box<crate::raw_payloads::Delivery>),
+    /// A joined player's play pong; dispatch before resuming their inbox.
+    PlayerPong {
+        conn: u32,
+        id: i32,
+    },
     /// A guest entered the world; load their saved state.
     Joined(u32, Option<super::configuration_tasks::Configured>),
     /// A guest left (state to save, entities to drop).
@@ -2545,25 +2550,38 @@ impl Hub {
         events
     }
 
+    fn observes_play_pongs(guest: &Guest) -> bool {
+        guest.joined()
+            && guest.participates_online()
+            && mod_api::__private::listened(mod_api::HookId::PlayerPong)
+    }
+
     /// Keeps server-answer packets in a frozen player's inbox (teleport, chunk batch,
     /// loaded, keep-alive, ping request, tick end, client information), plus debug
-    /// subscription updates. Drops the rest, including play `Pong`, which answers nothing.
+    /// subscription updates. Do not filter beyond a raw payload or subscribed play pong.
     /// Chat messages and signed commands are dropped, but their last-seen messages
     /// are taken first (`unpackAndApplyLastSeen`). Chat acknowledgements are handled
     /// here in arrival order: the client counts them as acknowledged, and its next
     /// message after the freeze would not validate otherwise.
     pub(crate) fn keep_acknowledgements(&mut self, i: usize, events: &mut Vec<HostEvent>) {
-        let inbox = self.guests.update(i, |g| std::mem::take(&mut g.inbox));
+        // Only the entries before the next callback boundary are filtered; the rest stay
+        // in the inbox untouched until the boundary's turn has finished in Game.
+        let mut kept = Vec::new();
         let mut credits = Vec::new();
-        let mut inbox = inbox.into_iter();
-        while let Some(entry) = inbox.next() {
-            let InboxItem::Packet(packet, credit) = entry else {
-                // Never filter or acknowledge past a raw callback boundary.
-                self.guests.update(i, |g| {
-                    g.inbox.push_back(entry);
-                    g.inbox.extend(inbox);
-                });
-                break;
+        while let Some(entry) = self.guests.inbox_mut(i).and_then(|inbox| inbox.pop_front()) {
+            let (packet, credit) = match entry {
+                InboxItem::Packet(packet, credit)
+                    if !matches!(&packet, S::Pong(_))
+                        || !Self::observes_play_pongs(&self.guests[i]) =>
+                {
+                    (packet, credit)
+                }
+                boundary => {
+                    if let Some(inbox) = self.guests.inbox_mut(i) {
+                        inbox.push_front(boundary);
+                    }
+                    break;
+                }
             };
             match &packet {
                 S::Chat(c) => {
@@ -2581,8 +2599,7 @@ impl Hub {
                 | S::KeepAlive(_)
                 | S::DebugSubscriptionRequest(_)
                 | S::PingRequest(_) => {
-                    self.guests
-                        .update(i, |g| g.inbox.push_back(InboxItem::Packet(packet, credit)));
+                    kept.push(InboxItem::Packet(packet, credit));
                     continue;
                 }
                 // handleMovePlayer validates packets even while the End credits are showing.
@@ -2592,19 +2609,22 @@ impl Hub {
                 | S::MovePlayerStatus(_)
                     if self.guests[i].won_game =>
                 {
-                    self.guests
-                        .update(i, |g| g.inbox.push_back(InboxItem::Packet(packet, credit)));
+                    kept.push(InboxItem::Packet(packet, credit));
                     continue;
                 }
                 // A player whose body was removed still controls the respawn button.
                 S::ClientCommand(c) if c.action == 0 && self.guests[i].respawning => {
-                    self.guests
-                        .update(i, |g| g.inbox.push_back(InboxItem::Packet(packet, credit)));
+                    kept.push(InboxItem::Packet(packet, credit));
                     continue;
                 }
                 _ => {}
             }
             credits.extend(credit);
+        }
+        if let Some(inbox) = self.guests.inbox_mut(i) {
+            for entry in kept.into_iter().rev() {
+                inbox.push_front(entry);
+            }
         }
         events.push(HostEvent::InputCredits(credits));
     }
@@ -4368,8 +4388,14 @@ impl Hub {
                         g.max_unacknowledged = 10;
                     });
                 }
-                // The server sends no pings during play: nothing answers one.
-                S::Pong(_) => {}
+                // ServerCommonPacketListenerImpl.handlePong has no vanilla side effects.
+                S::Pong(p) => {
+                    if Self::observes_play_pongs(&self.guests[i]) {
+                        events.push(HostEvent::PlayerPong { conn, id: p.id });
+                        events.push(HostEvent::InputCredits(credits));
+                        return true;
+                    }
+                }
                 // ServerGamePacketListenerImpl.handlePingRequest: echo on this connection.
                 S::PingRequest(p) => self.send_to(conn, &C::PongResponse(p)),
                 // handleAttack is the game's too: a move queued behind an attack would move

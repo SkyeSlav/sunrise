@@ -11,7 +11,7 @@
 //! - `internals add <path>… [--kind <kind>]`: declare internals from the prebuilt catalog.
 //! - `build [--update-lock]`: the `.smod` in `target/sunrise-mod/`, with the mod's `assets/`
 //!   and `data/`; a native mod is compiled first (`dev.rs`).
-//! - `release [<version>|patch|minor|major] [--check]`, `release setup`: prepare or publish a tagged
+//! - `release [<version>|patch|minor|major] [--check] [--pull-request]`, `release setup`: prepare or publish a tagged
 //!   release using the registry's shared workflow (`author_release.rs`).
 //! - `run [--game <sunrise-client>] [--resources <folder>] [--jars <dir>] [-- <game args>]`: build, then play with
 //!   the mod.

@@ -364,6 +364,9 @@ mod container_layout;
 mod container_loot;
 #[path = "game/runtime/control.rs"]
 mod control;
+#[cfg(test)]
+#[path = "game/mobs/conversion_place_tests.rs"]
+mod conversion_place_tests;
 #[path = "game/mobs/copper_golems.rs"]
 mod copper_golems;
 #[cfg(test)]
@@ -1848,6 +1851,9 @@ mod pickups;
 #[cfg(test)]
 #[path = "game/mobs/piglin_admire_tests.rs"]
 mod piglin_admire_tests;
+#[cfg(test)]
+#[path = "game/mobs/piglin_conversion_tests.rs"]
+mod piglin_conversion_tests;
 #[path = "game/mobs/piglins.rs"]
 mod piglins;
 #[path = "game/blocks/piston_carry.rs"]
@@ -11456,7 +11462,7 @@ impl Game<'_> {
         let mut pack_inputs = if title {
             Default::default()
         } else {
-            self.shader_pack_inputs(camera, alpha as f32, &sky)
+            self.shader_pack_inputs(camera, eye.map_or(camera, |e| e.0), alpha as f32, &sky)
         };
         // Retain the existing additive particle stream; the ordered dragon emitter appends
         // the eyes and rays to it without changing their material routing.

@@ -4,16 +4,28 @@ Use [the Sunrise mod registry](https://playsunrise.net/mods) to distribute a con
 `.smod` packages. A native release carries its source and its `Cargo.lock`, never compiled libraries: each player's
 computer builds a native mod for the exact game it runs.
 
+## Registering your repository
+
+Register a repository once, before its first release. Its default branch must already hold, for each package:
+
+- `sunrise-mod.toml`, which `cargo sunrise-mod check` accepts;
+- a complete [`page.toml` and screenshots](#your-mods-page);
+- the release workflow caller. `cargo sunrise-mod new` writes it for a new project. For an existing repository or
+  a package in a subfolder, run `cargo sunrise-mod release setup` from the mod's folder on a clean tree, then
+  commit and push the result.
+
+The repository must be public. Sign in at [Submit a mod](https://playsunrise.net/mods/submit) with a GitHub account
+that administers it, and enter its URL. A repository with packages in subfolders lists one package folder per line,
+with `.` for a package at the root. The form checks those files on the default branch, then opens a registration
+pull request on [sunrise-org/sunrise-mods](https://github.com/sunrise-org/sunrise-mods) that gives each package a
+permanent project ID. A reviewer approves it after checking that you administer the repository and that the
+project is not claiming someone else's. This approves no code: each release is reviewed on its own. Two separate
+projects may use the same mod ID, so a port can sit beside the mod it replaces.
+
 ## Releasing
 
-Commit your mod's source, [`page.toml` and screenshots](#your-mods-page), and `Cargo.lock` for a native mod.
-`cargo sunrise-mod new` includes a release workflow for a new repository. For an existing repository or a
-package in a subfolder, the first release writes the workflow and removes the old copied Sunrise release files
-in its commit. To review those changes first, run `cargo sunrise-mod release setup` from the mod's folder on a
-clean tree, then commit and push them. Register the repository at
-[Submit a mod](https://playsunrise.net/mods/submit).
-
-From the mod's folder on a clean branch that is up to date with its upstream:
+Commit your mod's source, its page, and `Cargo.lock` for a native mod. From the mod's folder on a clean branch
+that is up to date with its upstream:
 
 ```sh
 cargo sunrise-mod release patch --check
@@ -24,23 +36,48 @@ Use `minor`, `major`, or a higher SemVer instead of `patch` to choose another ve
 release checks for the proposed version without changing the checkout. Without it, `release` refreshes the
 workflow, commits the version bump signed off (`Signed-off-by`, from your Git `user.name` and `user.email`), and pushes the branch and tag together to `origin`. The tag is `v<version>`
 at the repository root or `<id>/v<version>` for a subfolder package. GitHub Actions builds and attests both the
-`.smod` and its page bundle, with no signing key for you to manage. The registry bot submits them for review.
+`.smod` and its page bundle, with no signing key for you to manage.
 
-## How releasing works
+If your default branch accepts changes only through pull requests, add `--pull-request`:
 
-1. You register your mod's repository once at [Submit a mod](https://playsunrise.net/mods/submit).
-2. `cargo sunrise-mod release patch` (or `minor`, `major`, or a version) checks the mod, bumps its version, and
-   pushes a release tag.
-3. The tag runs [the shared release workflow](https://github.com/sunrise-org/sunrise-mods/blob/main/.github/workflows/release.yml),
-   which builds the `.smod`, signs it with a GitHub artifact attestation that names your repository, and attaches
-   it to a GitHub release. You keep no signing keys.
-4. The registry checks the release and opens a registry pull request, which a reviewer approves before the version
-   is listed.
+```sh
+cargo sunrise-mod release patch --pull-request
+```
+
+The release commit then goes on a new branch, `release/<tag>`, which is pushed together with the tag, and your
+checkout is left on that branch. The tag starts the release as usual. Open the pull request it prints, from
+`release/<tag>` into the branch you released from, and merge it before your next release, so that branch carries
+the new version.
+
+For each later release, run `release` again. Each run reads the registry's current shared workflow version and
+updates your caller in the release commit when it has moved, so you never edit the workflow by hand.
+
+## After the tag
+
+1. The tag runs [the shared release workflow](https://github.com/sunrise-org/sunrise-mods/blob/main/.github/workflows/release.yml)
+   in your repository. It checks the mod with `cargo sunrise-mod check --release` and builds the `.smod` and the
+   page bundle. A separate job, which never unpacks or runs what the build produced, signs both files with a GitHub
+   artifact attestation that names your repository and the shared workflow, then publishes them on a GitHub
+   release with their attestation bundles. A native `.smod` holds source and `Cargo.lock`, never a compiled library.
+2. The registry bot watches registered repositories. For a new release it opens a pull request on
+   sunrise-org/sunrise-mods that adds the release and updates the project's page.
+3. The bot's checks run on that pull request. They are static checks plus a compile, and never load the mod in the
+   game:
+   - the files' format, sizes and SHA-256 hashes, and both attestations against the registered repository, the
+     shared workflow and the release tag;
+   - a scan of the source that never builds or runs it. A dependency from outside crates.io (a path outside the
+     package included), a stale `Cargo.lock`, or a crate listed as malicious fails the release. Other findings,
+     such as network or process use, `unsafe`, build scripts and changed dependencies, are flagged for the reviewer;
+   - a build of a native mod against its pinned SDK on Linux, and a compile check on Windows and macOS.
+4. A reviewer reads the release's code with the scan's flags and its diff from your last approved release. The
+   review looks only for malware, dangerous patterns and suspicious or obfuscated code. Bugs and suggestions
+   arrive as issues on your repository, never as a reason to hold the release.
+5. Once the pull request merges, the registry works out which game builds the release fits and publishes it in its
+   signed index. A release is offered only for the builds it fits. Players' computers build a native mod from its
+   source for the exact game they run.
 
 To check a released package and its attestation yourself, use
 [`check <file.smod>`](../reference/sdk/05-commands.md#check-a-released-package).
-
-The earlier route (`publish`, `keygen`, `sign`, `release plan` and prebuilt binaries) has been removed.
 
 ## Your mod's page
 

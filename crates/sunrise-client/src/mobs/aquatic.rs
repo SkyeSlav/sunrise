@@ -308,6 +308,8 @@ fn grow_up(m: &mut Mob, events: &mut Vec<MobEvent>) {
                     preserve_can_pick_up_loot: false,
                 },
                 after: super::conversion::After::Finalize,
+                // `Tadpole.aiStep` ages it after `super.aiStep()`, so after travel.
+                before_travel: false,
             });
         }
     }

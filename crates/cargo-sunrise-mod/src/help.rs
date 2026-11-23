@@ -50,7 +50,7 @@ const COMMANDS: &[Command] = &[
         name: "release",
         everyday: true,
         usage: crate::author_release::USAGE,
-        summary: "Checks a registered mod, commits the version bump (patch by default), and pushes the release tag and branch to origin. --check previews without changing your checkout. release setup only refreshes the shared workflow caller and removes old release files.",
+        summary: "Checks a registered mod, commits the version bump (patch by default), and pushes the release tag and branch to origin. --check previews without changing your checkout; --pull-request commits on a new release/<tag> branch for a default branch that takes only pull requests. release setup only refreshes the shared workflow caller and removes old release files.",
     },
     Command {
         name: "internals",

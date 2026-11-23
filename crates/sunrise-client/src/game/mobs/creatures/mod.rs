@@ -981,6 +981,21 @@ impl Game<'_> {
         pre_checked: bool,
         after: impl FnOnce(&mut Self, &mut Mob),
     ) -> Option<u32> {
+        self.convert_to_moved(from, kind, params, pre_checked, None, after)
+    }
+    /// [`Self::convert_to`] for a conversion its mob made during its own tick, before the rest
+    /// of that tick moved it: `at_conversion` is the mob as it was then, and the new mob takes
+    /// its place and motion from it (`conversion::motion_at`), the rest from the original as
+    /// the events before this one left it.
+    pub(super) fn convert_to_moved(
+        &mut self,
+        from: &Mob,
+        kind: &str,
+        params: sunrise_client::mobs::conversion::Params,
+        pre_checked: bool,
+        at_conversion: Option<&Mob>,
+        after: impl FnOnce(&mut Self, &mut Mob),
+    ) -> Option<u32> {
         // Tick conversions can have been removed from the tick list before
         // their queued event is handled. Restore them until Post has returned.
         match self.mobs.iter_mut().find(|m| m.id == from.id) {
@@ -1002,7 +1017,10 @@ impl Game<'_> {
         if cancel {
             return None;
         }
-        let from = self.mobs.iter().find(|m| m.id == from.id)?.clone();
+        let mut from = self.mobs.iter().find(|m| m.id == from.id)?.clone();
+        if let Some(at) = at_conversion {
+            sunrise_client::mobs::conversion::motion_at(&mut from, at);
+        }
         self.next_entity += 1;
         let mut mob = Mob::new(self.next_entity, t, from.position, from.yaw);
         sunrise_client::mobs::conversion::single(&from, &mut mob, params);
@@ -3368,7 +3386,8 @@ impl Game<'_> {
                     kind,
                     params,
                     after,
-                } => self.convert_event(&from, kind, params, after),
+                    before_travel,
+                } => self.convert_event(&from, kind, params, after, before_travel),
                 MobEvent::ThrowItem {
                     mob,
                     stack,
@@ -3386,6 +3405,18 @@ impl Game<'_> {
                 MobEvent::DropStack { mob, stack, at } => {
                     self.native_entity_drop_item(mob, &stack.item, stack.count as i32, at);
                     self.spawn_item_own(stack, at, 10);
+                }
+                MobEvent::DropInventory { mob, at } => {
+                    let stacks = self
+                        .mobs
+                        .iter_mut()
+                        .find(|m| m.id == mob)
+                        .map(|m| std::mem::take(&mut m.extra.inventory))
+                        .unwrap_or_default();
+                    for stack in stacks.into_iter().filter(|stack| stack.count > 0) {
+                        self.native_entity_drop_item(mob, &stack.item, stack.count as i32, at);
+                        self.spawn_item_own(stack, at, 10);
+                    }
                 }
                 MobEvent::DropItem {
                     mob,

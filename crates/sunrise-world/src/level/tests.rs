@@ -542,7 +542,7 @@ fn block_observation_follows_successful_commits_only() {
                 .push(Observation::Block(pos, old, new, flags));
         }
         fn observe_neighbor_changed(
-            &self,
+            &mut self,
             _: &mut Ticks,
             _: BlockPos,
             _: BlockStateId,
@@ -639,7 +639,7 @@ fn neighbor_observation_follows_dispatch_order() {
             self.inner.game_time()
         }
         fn observe_neighbor_changed(
-            &self,
+            &mut self,
             _: &mut Ticks,
             pos: BlockPos,
             state: BlockStateId,
@@ -705,7 +705,7 @@ impl LevelAccess for Asker {
         self.inner.game_time()
     }
     fn observe_neighbor_changed(
-        &self,
+        &mut self,
         _: &mut Ticks,
         pos: BlockPos,
         _: BlockStateId,
@@ -910,7 +910,7 @@ fn random_tick_hook_can_change_the_block_and_skip_its_own_tick() {
             self.inner.game_time()
         }
         fn observe_neighbor_changed(
-            &self,
+            &mut self,
             _: &mut Ticks,
             _pos: BlockPos,
             _state: BlockStateId,
@@ -1668,7 +1668,7 @@ fn a_dropped_wire_notifies_its_neighbours_from_its_removed_state() {
             self.inner.game_time()
         }
         fn observe_neighbor_changed(
-            &self,
+            &mut self,
             _: &mut Ticks,
             pos: BlockPos,
             _: BlockStateId,
@@ -5391,7 +5391,7 @@ fn a_shulker_lid_updates_the_shapes_and_redstone_of_its_neighbours() {
             self.inner.game_time()
         }
         fn observe_neighbor_changed(
-            &self,
+            &mut self,
             _ticks: &mut Ticks,
             pos: BlockPos,
             state: BlockStateId,

@@ -95,7 +95,7 @@ pub(super) struct EntitySections {
     pub(super) ticked: Vec<PositionWrite>,
     /// Mobs that crossed into another section during their family's tick, in the order of the
     /// writes; told to the residency table once the pass has its rows back. Kept for its capacity.
-    pub(super) entered: Vec<u32>,
+    pub(super) entered: Vec<(u32, [f64; 3])>,
     /// A projectile row is lent during its individual tick. Position reads during its write
     /// boundary use this value until the row is restored.
     pub(super) write_position: Option<(u32, [f64; 3])>,
@@ -349,7 +349,10 @@ impl Game<'_> {
     /// crossing.
     pub(super) fn entity_section_entered(&mut self, id: u32, from: [f64; 3], to: [f64; 3]) {
         if crossed(from, to) && self.is_logical_server() {
-            self.resident_entities.table.get_mut().entered_section(id);
+            self.resident_entities
+                .table
+                .get_mut()
+                .entered_section(id, to);
         }
     }
 

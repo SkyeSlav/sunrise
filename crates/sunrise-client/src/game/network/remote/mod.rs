@@ -32,6 +32,8 @@ mod block_entity_data;
 mod block_entity_data_tests;
 #[cfg(test)]
 mod claimed_item_use_tests;
+#[cfg(test)]
+mod gamemode_actions_tests;
 use super::raw_backlog::Received;
 use super::remote_chunks::{ChunkDecoder, ChunkFormat, Next};
 use super::remote_vehicles::PassengerSeat;
@@ -233,8 +235,8 @@ pub(super) struct Tracked {
 
 /// An item has joined the client level, but has no stack to draw yet.
 pub(super) struct PendingItem {
-    join: JoinSeq,
-    position: [f64; 3],
+    pub(in crate::game) join: JoinSeq,
+    pub(in crate::game) position: [f64; 3],
     velocity: Vec3,
 }
 
@@ -2383,6 +2385,8 @@ mod interaction_event_tests;
 #[cfg(test)]
 mod native_entity_tests;
 
+#[cfg(test)]
+mod camera_view_tests;
 #[cfg(test)]
 mod effect_blend_tests;
 #[cfg(test)]

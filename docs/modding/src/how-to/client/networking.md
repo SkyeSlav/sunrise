@@ -64,6 +64,45 @@ Those handlers still cannot borrow a host directly; use queued work for that. In
 them), and `client_packet_send` neither sees nor can cancel the acknowledgement.
 No packet inspection or editing beyond the existing `ClientPacket` view is provided.
 
+## Login handshakes
+
+`player_handshake` runs on the server thread after the normal protocol and
+transfer checks, but before the login hello, authentication, or admission.
+There is no player or authenticated profile yet. Status pings don't fire it.
+
+```rust,ignore
+fn player_handshake(
+    &self,
+    _host: &mut dyn ServerHost,
+    event: &mut PlayerHandshakeEvent<'_>,
+) -> Flow {
+    match event.requested_host.as_str() {
+        "old.example" => *event.requested_host = "new.example".into(),
+        "closed.example" => {
+            event.cancelled = true;
+            *event.reason = Some(Text::literal("This address is closed."));
+        }
+        _ => {}
+    }
+    Flow::Continue
+}
+```
+
+The requested host is untrusted text, including any suffix after a NUL. Each
+listener sees the last accepted rewrite. Login doesn't route by host, so the
+final value only reaches later listeners. The vanilla limit of 255 UTF-16
+code units applies to decoding the packet, not to the rewrite. Each listener
+gets its own copy of the requested port, protocol version and peer IP, so no
+listener changes what the next one reads. The peer IP is the numeric
+transport address without a port, or `None` for an integrated server's
+memory connection. A rewrite does not change the peer IP or bypass
+authentication or admission.
+
+Cancellation sends a login disconnect and closes the connection without
+processing a login hello. The client gets the standard localized
+"Disconnected" text if you leave `reason` unset or it fails Text serialization
+validation.
+
 ## Configuration tasks before play
 
 The server's `register_configuration_tasks` hook (version 3) runs once per

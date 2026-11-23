@@ -134,9 +134,6 @@ pub struct Memories {
     /// until they scan again. Only a brain tick counts it down, so a skipped
     /// `Mob.serverAiStep` leaves it alone.
     pub sensor_wait: i32,
-    /// The held item's `ADMIRING_ITEM` ran out in this tick's brain, and the
-    /// `FinishAdmiring` it raised has not taken the item from the off hand yet.
-    pub admire_finished: bool,
     /// A hit stopped the admiring (`wasHurtBy`): the `FinishAdmiring` it raised
     /// doesn't barter.
     pub hit_stop: bool,
@@ -244,11 +241,22 @@ fn holds_loved(w: &MobWorld, p: &super::PlayerView) -> bool {
         .flatten()
         .any(|item| tag.contains(&**item))
 }
-/// `Sensor.<init>`: `timeToTick` starts at `RANDOM.nextInt(scanRate)`, from a random
-/// every sensor shares. The mob's id stands in for that draw, so mobs spawned
-/// together don't all scan on one tick.
-fn start_sensors(m: &mut Mob) {
-    m.extra.piglin.sensor_wait = (m.id % SENSOR_RATE as u32) as i32;
+/// `Brain.<init>` for a piglin, brute or hoglin, which `LivingEntity.<init>` makes right after
+/// its yaw draw: each sensor of the brain provider's list, in order, draws its first wait from
+/// the entity's own random (`Sensor.randomlyDelayStart`, `nextInt(scanRate)`). The piglin's
+/// last one (`NEAREST_LIVING_ENTITIES`, `NEAREST_PLAYERS`, `NEAREST_ITEMS`, `HURT_BY`,
+/// `PIGLIN_SPECIFIC_SENSOR`) and the hoglin's (`NEAREST_LIVING_ENTITIES`, `NEAREST_PLAYERS`,
+/// `NEAREST_ADULT`, `HOGLIN_SPECIFIC_SENSOR`) are the repellent sensors Sunrise runs; the
+/// brute's five draw too, though none of its sensors is modelled.
+pub fn brain_sensor_draws(m: &mut Mob) {
+    let sensors = match m.species() {
+        Species::Piglin | Species::PiglinBrute => 5,
+        Species::Hoglin => 4,
+        _ => return,
+    };
+    for _ in 0..sensors {
+        m.extra.piglin.sensor_wait = m.random.next_int_bound(SENSOR_RATE).unwrap_or(0);
+    }
 }
 /// `HoglinSpecificSensor.doTick`: the adult piglins and hoglins in sight,
 /// counted, with the nearest piglin and the hoglins themselves. (The sensor
@@ -1202,6 +1210,9 @@ impl<G: Goal + Clone + 'static> Goal for NotRetreating<G> {
     fn every_tick(&self) -> bool {
         self.0.every_tick()
     }
+    fn starts_every_tick(&self) -> bool {
+        self.0.starts_every_tick()
+    }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx)
     }
@@ -1240,6 +1251,9 @@ impl<G: Goal + Clone + 'static> Goal for InFight<G> {
     fn every_tick(&self) -> bool {
         self.0.every_tick()
     }
+    fn starts_every_tick(&self) -> bool {
+        self.0.starts_every_tick()
+    }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx)
     }
@@ -1277,6 +1291,9 @@ impl<G: Goal + Clone + 'static> Goal for NotRiding<G> {
     }
     fn every_tick(&self) -> bool {
         self.0.every_tick()
+    }
+    fn starts_every_tick(&self) -> bool {
+        self.0.starts_every_tick()
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx)
@@ -1344,7 +1361,6 @@ impl Goal for BackUpIfTooClose {
     }
 }
 pub fn register_piglin(m: &mut Mob) {
-    start_sensors(m);
     // `AbstractPiglin.<init>`: a piglin's navigation opens doors.
     m.ai.nav.can_open_doors = true;
     let g = &mut m.ai.goals;
@@ -1559,7 +1575,6 @@ impl Goal for BruteStrollHome {
     }
 }
 pub fn register_hoglin(m: &mut Mob) {
-    start_sensors(m);
     let g = &mut m.ai.goals;
     g.add(0, Float);
     // `HoglinAi.initRetreatActivity`: `SetWalkTargetAwayFrom.entity(AVOID_TARGET, 1.3, 15, false)`.
@@ -1615,6 +1630,9 @@ impl Goal for HoglinAvoidRepellent {
     fn flags(&self) -> u8 {
         MOVE
     }
+    fn starts_every_tick(&self) -> bool {
+        true
+    }
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let Some(r) = m.extra.repellent else {
             return false;
@@ -1662,6 +1680,9 @@ impl Goal for PiglinAvoidRepellent {
     goal_clone!();
     fn flags(&self) -> u8 {
         MOVE
+    }
+    fn starts_every_tick(&self) -> bool {
+        true
     }
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let Some(r) = m.extra.repellent else {
@@ -1918,7 +1939,6 @@ fn forget_outdated_memories(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent
     b.walk_off.tick();
     b.seen_admire.tick();
     b.ate_recently.tick();
-    b.admire_finished = false;
     // `ANGRY_AT` (`set_angry_at`).
     if m.extra.anger > 0 {
         m.extra.anger -= 1;
@@ -1935,7 +1955,6 @@ fn forget_outdated_memories(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent
     if m.extra.using_item > 0 && m.extra.off_hand_id().is_some() {
         m.extra.using_item -= 1;
         if m.extra.using_item == 0 {
-            m.extra.piglin.admire_finished = true;
             events.push(MobEvent::FinishAdmiring { mob: m.id });
         }
     }
@@ -2075,33 +2094,29 @@ pub fn zombification_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>)
                 ),
             };
             events.push(MobEvent::Sound(sound, m.center(), 1.0, 1.0));
-            // Conversion also drops the piglin's internal inventory.
+            // `Piglin.finishConversion` drops the whole inventory
+            // (`inventory.removeAllItems()`, `spawnAtLocation`) where the piglin
+            // stands. The game drains it as it handles this event, after the
+            // `FinishAdmiring` the brain raised earlier in this tick has put away
+            // what it kept.
             if m.species() == Species::Piglin {
-                for stack in m.extra.inventory.drain(..).filter(|stack| stack.count > 0) {
-                    events.push(MobEvent::DropStack {
-                        mob: m.id,
-                        stack,
-                        at: [m.position.x, m.position.y, m.position.z],
-                    });
-                }
+                events.push(MobEvent::DropInventory {
+                    mob: m.id,
+                    at: [m.position.x, m.position.y, m.position.z],
+                });
             }
             // `Hoglin.finishConversion` is `ConversionParams.single(this, true,
             // false)`, `AbstractPiglin.finishConversion` `(this, true, true)`;
-            // both leave the new mob nauseous.
-            // An admiring that ran out in this tick's brain was finished there
-            // (`StopHoldingItemIfNoLongerAdmiring`), before the conversion: the
-            // game's `FinishAdmiring` barters the item from this piglin, and the
-            // zombified piglin does not carry it.
-            let mut from = Box::new(m.clone());
-            if m.extra.piglin.admire_finished {
-                from.extra
-                    .set_slot_stack(sunrise_items::equipment::OFFHAND, None);
-            }
+            // both leave the new mob nauseous. The snapshot is the piglin where
+            // it converted, before travel; the game takes its equipment from the
+            // original once the brain's `FinishAdmiring` is handled.
             events.push(MobEvent::Convert {
-                from,
+                from: Box::new(m.clone()),
                 kind,
                 params,
                 after: super::conversion::After::Nausea,
+                // `AbstractPiglin` and `Hoglin.customServerAiStep`, inside `Mob.serverAiStep`.
+                before_travel: true,
             });
             m.removed = true;
         }
@@ -2793,6 +2808,43 @@ mod crossbow_tests {
 }
 
 #[cfg(test)]
+mod sensor_start_tests {
+    use super::*;
+    use crate::mobs::sensor_scan_tests::kind;
+    use std::sync::Arc;
+
+    /// `Brain.<init>`, right after `LivingEntity.<init>`'s yaw draw: each sensor draws its first
+    /// wait from the entity's own random, in the brain provider's order, and the repellent
+    /// sensor is the piglin's fifth and the hoglin's fourth. The id plays no part.
+    #[test]
+    fn the_repellent_sensors_first_wait_comes_from_the_mobs_own_random() {
+        for (species, sensors) in [(Species::Piglin, 5), (Species::Hoglin, 4)] {
+            let mut kind = kind();
+            Arc::make_mut(&mut kind).species = species;
+            for (id, seed) in [(7, 1_i64), (7, 2), (8, 1), (3, 12_345)] {
+                let m = Mob::with_random(
+                    id,
+                    kind.clone(),
+                    Vec3::new(0.5, 0.0, 0.5),
+                    0.0,
+                    LegacyRandom::new(seed),
+                );
+                let mut own = LegacyRandom::new(seed);
+                let _yaw = own.next_float();
+                let mut wait = 0;
+                for _ in 0..sensors {
+                    wait = own.next_int_bound(20).unwrap();
+                }
+                assert_eq!(
+                    m.extra.piglin.sensor_wait, wait,
+                    "{species:?}, id {id}, seed {seed}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod conversion_tests {
     use super::*;
     use crate::mobs::world::with_test_world;
@@ -2837,13 +2889,13 @@ mod conversion_tests {
                     matches!(
                         e,
                         MobEvent::DropItem { .. }
-                            | MobEvent::DropStack { .. }
+                            | MobEvent::DropInventory { .. }
                             | MobEvent::Convert { .. }
                     )
                 })
                 .collect();
             assert!(
-                matches!(relevant.as_slice(), [MobEvent::DropItem { .. }, MobEvent::DropStack { stack: a, at: p, .. }, MobEvent::DropStack { stack: b, .. }, MobEvent::Convert { from, .. }] if *a == stacks[0] && *b == stacks[1] && *p == at && from.extra.inventory.is_empty())
+                matches!(relevant.as_slice(), [MobEvent::DropItem { .. }, MobEvent::DropInventory { mob: 1, at: p }, MobEvent::Convert { .. }] if *p == at)
             );
             // `AbstractPiglin.finishConversion` leaves the new mob nauseous:
             // the step rides on the event, not on the new mob's type.
@@ -2855,7 +2907,9 @@ mod conversion_tests {
                 })
                 .expect("the piglin converts");
             assert_eq!(after, super::super::conversion::After::Nausea);
-            assert!(m.extra.inventory.is_empty());
+            // The game drains the inventory as it handles `DropInventory`, after the brain's
+            // `FinishAdmiring` (`game::piglin_conversion_tests`).
+            assert_eq!(m.extra.inventory, stacks);
         });
         // Without the vanilla data there is nothing to check.
         assert!(ran, "vanilla data is missing");

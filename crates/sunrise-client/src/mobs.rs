@@ -2306,11 +2306,22 @@ pub enum MobEvent {
         kind: &'static str,
         params: conversion::Params,
         after: conversion::After,
+        /// Vanilla converts at a point of the mob's tick that comes before `travel`, which
+        /// Sunrise runs before raising this: the new mob takes `from`'s place and motion
+        /// (`conversion::motion_at`), not the place travel moved the original to.
+        before_travel: bool,
     },
     DropItem {
         mob: u32,
         item: Arc<str>,
         count: u32,
+        at: [f64; 3],
+    },
+    /// `Piglin.finishConversion`'s `inventory.removeAllItems().forEach(spawnAtLocation)`:
+    /// every stack of `mob`'s inventory, as the game finds it when it handles the event, dropped
+    /// at `at` (where the piglin converted).
+    DropInventory {
+        mob: u32,
         at: [f64; 3],
     },
     /// `Entity.spawnAtLocation` with the complete stack and its components.

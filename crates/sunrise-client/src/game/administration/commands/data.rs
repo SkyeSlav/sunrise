@@ -489,6 +489,8 @@ impl Game<'_> {
         // `TypedEntityData.loadInto`). `sunrise:finalize` is worldgen's, and
         // `Game::load_mob` would run the finalize it asks for on the next load.
         strip_finalize_tree(&mut tag);
+        // `Entity.load`'s `setPos` moves the entity in its section storage like any other write.
+        let before = self.target_position(t);
         // Entity.load does not read Passengers: the riders stay, and so do the
         // passengers the load kept raw (none, when it kept none).
         let kept_passengers = match t {
@@ -952,6 +954,9 @@ impl Game<'_> {
                 }
             }
             self.persist.raw.insert(id, tag);
+            if let (Some(from), Some(to)) = (before, self.target_position(t)) {
+                self.entity_section_moved(id, Some(from), to);
+            }
         }
         Ok(())
     }

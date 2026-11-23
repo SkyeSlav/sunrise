@@ -62,7 +62,10 @@ pub(in crate::game) struct CameraFogEffects {
 }
 
 impl CameraFogEffects {
-    pub(super) fn from_effects(effects: &PlayerEffects, darkness_blend: (f32, f32)) -> Self {
+    pub(in crate::game) fn from_effects(
+        effects: &PlayerEffects,
+        darkness_blend: (f32, f32),
+    ) -> Self {
         Self {
             blindness: effects
                 .get("blindness")
@@ -1107,6 +1110,7 @@ impl Game<'_> {
         if let Some(a) = self.armor_stands.iter().find(|a| a.id == uid) {
             let mut camera = stand_camera_entity_with(a, self.stand_camera_values(a));
             camera.mount = mount;
+            let fog_effects = CameraFogEffects::from_effects(&a.client_effects, a.darkness_blend);
             return Some(ResolvedCameraEntity {
                 entity_id: uid,
                 uuid,
@@ -1116,8 +1120,8 @@ impl Game<'_> {
                 may_build: false,
                 is_spectator: false,
                 is_sleeping: false,
-                blocks_sky: false,
-                fog_effects: CameraFogEffects::default(),
+                blocks_sky: fog_effects.blindness.is_some() || fog_effects.darkness_blend.is_some(),
+                fog_effects,
                 hurt: Some(CameraHurt::default()),
                 avatar_bob: None,
                 fov_player: None,

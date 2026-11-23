@@ -70,6 +70,20 @@ trips averaged three parts old to one part new. It is 0 until the first keep-ali
 player and for an acting player without a known connection. It refuses with `PlayerWorldRefusal::Client`
 on a client and `PlayerWorldRefusal::Stale` for a stale handle.
 
+`player.send_ping(host, id)` queues a play-phase ping to that player's current
+connection from a mutable `ServerHost`. The ID is a signed `i32`, and a vanilla
+client echoes it without a mod. Success means the packet was queued (or staged
+in the current transaction), not delivered or answered. `PlayerPingRefusal`
+distinguishes a stale handle, no open play connection, and a send failure.
+
+Listen to `player_pong` to observe `event.player`, `event.name` (the profile
+name) and `event.id`. This non-cancellable notice runs on the server thread at
+the packet's turn, before later input from that connection is applied. Match
+pongs by player and ID if you need to correlate them, but the ID is client
+supplied and unauthenticated: unsolicited and duplicate pongs are still
+reported. Configuration, login, status, and the separate play latency request
+do not fire this hook. Neither API changes keep-alive latency.
+
 The online list includes connected players during nested player turns. Name,
 permission and address reads work for connected players whose bodies are displaced
 by another player's turn; stale handles are refused. Entity and living handles
@@ -80,6 +94,22 @@ In `player_stat_award`, find the recipient with
 `player.stat(host, stat_type, key)` reads that player's count before the award,
 even if a nested turn has displaced them. This does not make displaced players
 available for statistic writes.
+
+On the server, `player.statistics(host)` takes `&dyn Host` and returns owned save
+JSON (`Option<String>`): namespaced statistic types and entries under `stats`,
+with the current `DataVersion`. An online player without counters has an empty
+map; a stale or unavailable player gives `None`, as does a client host.
+
+`player.set_statistics(host, snapshot)` takes `&mut dyn ServerHost` and borrowed
+JSON. It upgrades older saves, reports decode errors and keeps recoverable
+registered counters. An absent or empty `stats` map clears the counters. It
+returns `false` without changing the player for malformed JSON, a snapshot that
+cannot be decoded as a map, or a player unavailable for writes. A successful
+restore replaces rather than merges counters: omitted counters read as zero,
+and only changed statistic-criterion scores are updated. The next regular
+statistics request sends the changed counts, including zero for removals, and
+the normal player save persists the new map. Restoring does not fire
+`player_stat_award`.
 
 `player.level(host)` returns the authoritative `LevelRef`;
 `player.dimension(host)` returns its dimension `Identifier`, including registered

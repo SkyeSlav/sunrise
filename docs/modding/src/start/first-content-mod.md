@@ -149,4 +149,4 @@ information. The content template includes the shared release workflow caller. F
 
 - [Content mods](../how-to/content-mods.md): every kind of content file, from blocks to world generation.
 - [The manifest and the package](../reference/manifest.md): every manifest field and package rule.
-- [Publishing your mod](../how-to/publish.md): how releasing to the registry will work.
+- [Publishing your mod](../how-to/publish.md): registering your repository and releasing to the registry.

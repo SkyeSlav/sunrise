@@ -144,6 +144,27 @@ fn caller_matches_root_and_subfolder_workflow_contract() {
 }
 
 #[test]
+fn pull_request_page_is_githubs_compare_view_for_a_github_origin() {
+    assert_eq!(
+        pull_request_url(
+            "git@github.com:author/example.git",
+            "main",
+            "release/example/v1.5.0"
+        )
+        .as_deref(),
+        Some("https://github.com/author/example/compare/main...release/example/v1.5.0?expand=1")
+    );
+    assert_eq!(
+        pull_request_url(
+            "https://gitlab.com/author/example.git",
+            "main",
+            "release/v1.5.0"
+        ),
+        None
+    );
+}
+
+#[test]
 fn bumps_use_semver_precedence() {
     let old = Version::parse("1.4.2+build").unwrap();
     for (request, want) in [
@@ -602,6 +623,10 @@ mod git_fixtures {
 
         let error = repo.release(".", &["patch"], |_, _| Ok(())).unwrap_err();
         assert!(error.contains("remain local"), "{error}");
+        assert!(
+            error.contains("then run release 1.4.3 --pull-request"),
+            "{error}"
+        );
         assert_eq!(
             repo.git
                 .text(&repo.bare, ["rev-parse", "refs/heads/main"])
@@ -617,5 +642,60 @@ mod git_fixtures {
             repo.git(["rev-parse", "refs/tags/v1.4.3"]),
             repo.git(["rev-parse", "HEAD"])
         );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn pull_request_release_pushes_a_release_branch_and_leaves_a_protected_default_branch() {
+        let repo = Repo::new();
+        repo.put(MANIFEST, MOD);
+        repo.commit();
+        repo.git(["push", "-u", "origin", "main"]);
+        let old = repo.git(["rev-parse", "HEAD"]);
+        let hook = repo.bare.join("hooks/update");
+        fs::write(&hook, "#!/bin/sh\ntest \"$1\" != refs/heads/main\n").unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+
+        repo.release(".", &["minor", "--pull-request"], |_, tag| {
+            assert_eq!(tag, "v1.5.0");
+            Ok(())
+        })
+        .unwrap();
+        let commit = repo.git(["rev-parse", "HEAD"]);
+        assert_eq!(
+            repo.git(["symbolic-ref", "--short", "HEAD"]),
+            "release/v1.5.0"
+        );
+        assert_eq!(repo.git(["rev-parse", "HEAD~1"]), old);
+        assert_eq!(repo.git(["rev-parse", "refs/heads/main"]), old);
+        assert_eq!(
+            repo.git(["log", "-1", "--format=%B"]),
+            "Release 1.5.0\n\nSigned-off-by: Author <author@example.invalid>\n"
+        );
+        for (reference, want) in [
+            ("refs/heads/main", &old),
+            ("refs/heads/release/v1.5.0", &commit),
+            ("refs/tags/v1.5.0", &commit),
+        ] {
+            assert_eq!(
+                &repo.git.text(&repo.bare, ["rev-parse", reference]).unwrap(),
+                want
+            );
+        }
+        assert!(repo.git(["status", "--porcelain"]).is_empty());
+
+        // The next release branch already on origin: refused before the check, with nothing made.
+        repo.git(["switch", "--quiet", "main"]);
+        repo.git([
+            "push",
+            "origin",
+            &format!("{old}:refs/heads/release/v1.4.3"),
+        ]);
+        assert!(
+            repo.release(".", &["patch", "--pull-request"], refused_check)
+                .unwrap_err()
+                .contains("branch refs/heads/release/v1.4.3 already exists on origin")
+        );
+        assert!(repo.git(["tag", "--list", "v1.4.3"]).is_empty());
     }
 }

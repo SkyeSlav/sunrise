@@ -8,7 +8,7 @@ folder.
 |---|---|
 | `new <path> --template native [--sunrise <build>]` | Makes a code mod pinned to the current Nightly's build, or the one named, and fetches its SDK. Without `--template` it makes a content mod, which has no SDK. Both templates scaffold [`page.toml` and `page/`](../../how-to/publish.md#your-mods-page) and the [release workflow caller](#release). |
 | `build [--with <path>]…` | Compiles a native mod and its [declared libraries](../../concepts/dependencies.md) against the pinned SDK, then packs only the project into a `.smod` with its [`uses.json`](04-fit.md#usesjson). For content-only mods it just packs the project. If the project has `page.toml`, writes the page and its named images separately to `target/sunrise-mod/<id>.page.tar`. See [`build` for a native mod](#build-for-a-native-mod). |
-| [`release [<version>\|patch\|minor\|major] [--check]`](#release) | Checks a registered mod, commits the version bump, and pushes the branch and tag. `--check` previews without changing the checkout. |
+| [`release [<version>\|patch\|minor\|major] [--check] [--pull-request]`](#release) | Checks a registered mod, commits the version bump, and pushes the branch and tag. `--check` previews without changing the checkout; `--pull-request` commits on a new `release/<tag>` branch instead. |
 | [`release setup`](#release) | Updates only the shared workflow caller and removes old release files. No registration or commit required. |
 | `run [--resources <folder>] [--jars <dir>] [--with <path>]… [-- <game args>]` | For a native mod, builds, stages the game with the mod and its libraries in `target/sunrise-mod/run/` and starts it. |
 | `check [--uses] [--with <path>]…` | Checks the package rules and each [render pipeline shader](../../how-to/client/render-pipelines.md). For a native mod it then type-checks through the same SDK route and with the same libraries as `build`, without packaging or linking mod binaries, and reports what the project uses of its pinned build. `--uses` lists each item with the line that brought it in, and how the mod builds each struct it builds with a literal. [Page problems](../../how-to/publish.md#your-mods-page) are reported without failing the check. Only pages that select categories fetch the registry's list; if the list is unavailable, category IDs and their kinds cannot be checked. |
@@ -18,6 +18,7 @@ folder.
 | `hooks <text> [--all]` | Searches the pinned build's hooks offline, by id, doc and their NeoForge, Fabric and Paper names; every word must match. `--all` searches every record. Matches in the id come first, then in a counterpart, then in the doc. |
 | `sdk diff <build> <build>` | What changed in the surface from the first build to the second, [classified](02-surface.md#what-a-change-is), with the second build's change notes (why, and what a mod does now) under the changes they name: the notes of the changes since the SDK published before it. It reads only the builds' small files, so it works for builds whose compiled files are pruned. |
 | `pin [<build>]` | Moves the pin to the current Nightly (or the build named). Reports API uses that would break before moving the pin. |
+| [`self-update`](../../start/install-tool.md#updating-the-tool) | Replaces a standalone copy of the tool with the newest signed `mod-tool` build. Never changes a mod's pin. |
 
 ## Check a released package
 
@@ -76,7 +77,10 @@ subfolder package gets `<id>/v<version>` and `.github/workflows/sunrise-release-
 updates the mod manifest, Cargo manifest, and the mod's own entry in its committed `Cargo.lock` without
 changing its pinned dependencies.
 
-`release --check` checks the proposed version and tag in a separate checkout. `release setup` reads the
+`release --check` checks the proposed version and tag in a separate checkout. `release --pull-request` is for a
+branch that takes only pull requests: it commits on a new branch `release/<tag>` (which must not exist locally or
+on `origin`), pushes that branch and the tag atomically, and prints GitHub's page for a pull request back into the
+branch you released from. `release setup` reads the
 registry's current shared workflow reference and refreshes the caller without requiring registration. It
 removes old copied Sunrise release files, but leaves the manifest, commit history and tags alone; it needs a
 clean tree, so each file it replaces or removes can be restored from Git. Without `setup`, a release makes the

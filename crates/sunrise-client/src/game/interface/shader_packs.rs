@@ -4,8 +4,9 @@
 //! `game/modding/native_shaders.rs`. The programs of the current dimension's folder are loaded when the
 //! dimension changes (spec 1.2).
 
+use super::remote_camera::CameraFogEffects;
 use sunrise_client::camera::CameraFluid;
-use sunrise_client::gfx::pack_uniforms::{PackInputs, PlayerStatus};
+use sunrise_client::gfx::pack_uniforms::{PackInputs, PlayerStatus, ViewEntity};
 use sunrise_client::mod_list::ModList;
 use sunrise_client::shader_options::ShaderOptions;
 use sunrise_client::text::Text;
@@ -304,6 +305,7 @@ impl Game<'_> {
     pub(super) fn shader_pack_inputs(
         &mut self,
         camera: glam::DVec3,
+        eye: glam::DVec3,
         partial: f32,
         sky: &sunrise_client::environment::Sky,
     ) -> PackInputs {
@@ -584,9 +586,49 @@ impl Game<'_> {
             end_flash,
             end_flash_direction,
             ambient_light: dimension.map_or(0.0, |d| d.ambient_light),
-            mood: self.ambience.moodiness,
+            view: self.pack_view_entity(eye, partial),
             still_ticks: self.clock.still().then(|| self.visual_ticks()),
             frame_timing: None,
+        }
+    }
+
+    /// The camera entity's (`Minecraft.getCameraEntity`, [`Self::camera_subject`]) values for
+    /// the uniforms tied to the view (#3948), at `eye`, the entity's eye
+    /// `Camera.alignWithEntity` placed (the frame's `eyePosition`). The local player's are the
+    /// ones the lightmap, the HUD and the cave ambience have; another living entity's are the
+    /// effects the server sent for it (its `CameraFogEffects`, the same the fog reads); an
+    /// entity that isn't living has none and looks nowhere.
+    pub(super) fn pack_view_entity(&self, eye: glam::DVec3, partial: f32) -> ViewEntity {
+        let at = eye.floor().as_ivec3();
+        let light = self.world.light(at.x, at.y, at.z);
+        let eye_light = [i32::from(light & 15), i32::from(light >> 4)];
+        let other = self.camera_subject().filter(|c| !c.is_local_player);
+        let (living, effects, night_vision, mood) = match &other {
+            Some(c) => {
+                let fx = c.fog_effects;
+                let night_vision = fx.night_vision.map_or(0.0, |duration| {
+                    super::sculk::night_vision_scale(duration, partial)
+                });
+                (c.camera.living.is_some(), fx, night_vision, 0.0)
+            }
+            None => (
+                true,
+                CameraFogEffects::from_effects(&self.potions.effects, self.sculk.darkness),
+                self.night_vision_intensity(partial),
+                self.ambience.moodiness,
+            ),
+        };
+        // LivingEntity.getEffectBlendFactor: the fade only while the instance is there.
+        let darkness = effects
+            .darkness_blend
+            .map_or(0.0, |blend| super::sculk::darkness_blend_at(blend, partial));
+        ViewEntity {
+            living,
+            blindness: f32::from(u8::from(effects.blindness.is_some())),
+            night_vision,
+            darkness: darkness * self.darkness_effect_scale(),
+            mood,
+            eye_light,
         }
     }
 
