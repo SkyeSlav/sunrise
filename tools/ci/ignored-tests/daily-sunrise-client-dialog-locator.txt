@@ -1,0 +1,1 @@
+sunrise-client game::dialogs::warning_tests::warning_disconnect_label_follows_server_ownership lib daily child-process
