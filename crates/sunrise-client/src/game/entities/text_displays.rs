@@ -25,15 +25,6 @@ pub(super) enum Shows {
 }
 
 impl Shows {
-    pub(super) fn from_kind(kind: &str) -> Option<Self> {
-        match kind {
-            "minecraft:text_display" => Some(Self::Text),
-            "minecraft:block_display" => Some(Self::Block),
-            "minecraft:item_display" => Some(Self::Item),
-            _ => None,
-        }
-    }
-
     /// The display's entity type, as the tick hooks name it.
     fn kind(self) -> &'static str {
         match self {
@@ -46,7 +37,6 @@ impl Shows {
 
 pub(super) struct RemoteTextDisplay {
     pub data: TextDisplayData,
-    pub(super) join: sunrise_client::join_seq::JoinSeq,
     shows: Shows,
     /// Pending synced sub-state fields (`BlockDisplay` id 23, `ItemDisplay` ids 23-24).
     pending_block: Option<BlockStateId>,
@@ -264,7 +254,6 @@ impl RemoteTextDisplay {
         let pos = glam::DVec3::from(position);
         let mut display = Self {
             data: Default::default(),
-            join: sunrise_client::join_seq::JoinSeq::next(),
             shows,
             pending_block: None,
             pending_item: None,
@@ -929,17 +918,6 @@ impl Game<'_> {
     /// The displays' tick on a client (`ClientLevel.tickEntities` + `tickPassenger`).
     /// EntityTickEvent: once for the family, or each alone of a type a mod named, right before
     /// and right after its own tick; a canceled one keeps its state.
-    fn tick_and_file_display(&mut self, id: i32) {
-        if let Some(display) = self.text_displays.get_mut(&id) {
-            let from = display.position();
-            display.tick();
-            let at = display.position();
-            if at != from {
-                self.pick_section_move(id as u32, at.to_array());
-            }
-        }
-    }
-
     pub(super) fn tick_text_displays(&mut self, running: bool) {
         let mut eligible = Vec::with_capacity(self.text_displays.len());
         for (&id, display) in &self.text_displays {
@@ -953,7 +931,9 @@ impl Game<'_> {
         let mut round = self.native_tick_round();
         if !round.listening() {
             for id in eligible {
-                self.tick_and_file_display(id);
+                if let Some(display) = self.text_displays.get_mut(&id) {
+                    display.tick();
+                }
             }
             return;
         }
@@ -975,13 +955,17 @@ impl Game<'_> {
         }
         self.native_tick_pre_batch(&mut round);
         for id in batch {
-            if !round.canceled(id as u32) {
-                self.tick_and_file_display(id);
+            if !round.canceled(id as u32)
+                && let Some(display) = self.text_displays.get_mut(&id)
+            {
+                display.tick();
             }
         }
         for (id, kind) in alone {
             if self.native_tick_pre_one(&mut round, id as u32, kind) {
-                self.tick_and_file_display(id);
+                if let Some(display) = self.text_displays.get_mut(&id) {
+                    display.tick();
+                }
                 self.native_tick_post_one(&round, id as u32, kind);
             }
         }

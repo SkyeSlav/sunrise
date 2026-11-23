@@ -103,25 +103,23 @@ notifies once with `loaded_from_disk = true`. The normal join cancellation and
 transaction rules apply to these entities too.
 
 `entity_leave_level` (hook version 3) reports the same additional kinds when they leave.
-The server's `LevelRef::visit_entities_in` also visits markers and interactions.
-Markers have zero-sized physical boxes; interactions use their saved width and
-height. Eyes of ender, leash knots and other unmodeled kinds are not visited.
-A handle expires when its entity unloads, so find it again when the saved entity rejoins.
+On the server, `LevelRef::visit_entities_in` also visits block, item and text displays,
+markers and interactions. Eyes of ender, leash knots and other unmodeled kinds are
+not visited yet. The query uses physical boxes, not rendering bounds: displays
+and markers have zero-sized boxes at their positions; interactions use their saved
+width and height. A handle expires when its entity unloads, so find it again when
+the saved entity rejoins.
 
 ## Visiting entities in a box
 
 `level.visit_entities_in(host, min, max, &mut visit)` visits readable `EntityRef`s
 whose boxes intersect the given box. Face-only contact does not intersect, and
-inverted bounds are swapped on each axis. Ordinary entities are visited in level
-section order, then in entry order within each section. The client sees tracked
-entities and its own player if not spectating; the server includes fishing hooks
-and placed non-spectator guests. Intersecting dragon parts come last on both sides.
-
-Block, item and text displays have zero-sized physical boxes on both sides: a display
-only matches when its position is strictly inside the query on every axis. On the client,
-this is its current tick position after movement interpolation, not the packet's destination
-or the pose drawn between ticks. Overlap with just the render culling box does not count,
-and ordinary crosshair picking still ignores displays.
+inverted bounds are swapped on each axis. Ordinary entities come first, then item
+frames and paintings in join order (frames first on ties), then the dragon's body. The server then visits
+displays, markers, interactions, fishing hooks and placed non-spectator guests.
+On a client the walk sees the server-tracked entities, including tracked players,
+and visits the window's own player after the dragon's body unless spectating.
+Intersecting dragon parts come last on both sides.
 
 The visitor can read the entity or run another shared query through the same host:
 no residency guard is held during the callback. Return `ControlFlow::Continue(())`

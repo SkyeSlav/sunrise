@@ -20,13 +20,8 @@ mod save_lending;
 use super::{
     Game,
     commands::Target,
-    entity::Entity,
-    pick_entity::{
-        aabb_extents,
-        pick_sections::{PickKind, PickMember},
-    },
+    entity::{Entity as _, entity_lists_of, for_each_entity},
     remote::Remote,
-    text_displays::{RemoteTextDisplay, Shows},
     transactions::After,
 };
 use core::ops::ControlFlow;
@@ -34,10 +29,7 @@ use mod_api::{
     BlockFace, BlockShapeKind, BlockUpdateFlags, ClipBlock, ClipFluid, ClipHit, DimensionKey,
     EntityRayHit, EntityRef, LevelReadError, LevelRef, NeighbourUpdate,
 };
-use sunrise_client::join_seq::{
-    JoinList, JoinSeq, Joined,
-    residency::table::{EntityLookup, Location, SectionSearch},
-};
+use sunrise_client::join_seq::residency::table::{EntityLookup, Location};
 use sunrise_core::geometry::{Aabb, Vec3};
 use sunrise_items::items::ItemStack;
 use sunrise_world::registry::BlockStateId;
@@ -83,14 +75,6 @@ fn clip_entity_ray(
     ))
 }
 
-fn list_query_body<T: Entity + Joined, const DIRECT: bool>(
-    list: &JoinList<T, DIRECT>,
-    join: JoinSeq,
-) -> Option<Aabb> {
-    let entity = list.get(list.locate(join)?)?;
-    (!entity.is_removed()).then(|| entity.bounds())
-}
-
 impl Game<'_> {
     /// The logged-in window and network id for an entity handle in its current world.
     pub(super) fn native_client_entity_context(&self, entity: EntityRef) -> Option<(&Remote, i32)> {
@@ -102,25 +86,7 @@ impl Game<'_> {
     /// An entity tracked by the remote client but absent from local entity lists.
     pub(super) fn native_client_tracked(&self, entity: EntityRef) -> Option<(&str, [f64; 3])> {
         let (remote, id) = self.native_client_entity_context(entity)?;
-        let (kind, position) = remote.tracked_entity(id)?;
-        if Shows::from_kind(kind).is_some() {
-            let display = self.live_client_display(remote, id)?;
-            return Some((kind, display.position().to_array()));
-        }
-        Some((kind, position))
-    }
-
-    pub(super) fn native_client_display(&self, entity: EntityRef) -> Option<&RemoteTextDisplay> {
-        let (remote, id) = self.native_client_entity_context(entity)?;
-        Shows::from_kind(remote.tracked(id)?.0)?;
-        self.live_client_display(remote, id)
-    }
-
-    fn live_client_display(&self, remote: &Remote, id: i32) -> Option<&RemoteTextDisplay> {
-        if !remote.has_level() {
-            return None;
-        }
-        self.text_displays.get(&id)
+        remote.tracked_entity(id)
     }
 
     /// What a handle names now, or None for a stale or foreign one.
@@ -176,11 +142,7 @@ impl Game<'_> {
         if self.resident_dragon_part(entity.id()).is_some() {
             return Some(Target::DragonPart(entity.id()));
         }
-        let (kind, _) = remote.tracked(id)?;
-        if Shows::from_kind(kind).is_some() {
-            // Displays have their own client bodies; never resolve one through another store.
-            return None;
-        }
+        remote.tracked(id)?;
         self.level_entity(id)
     }
     /// What a handle names for a read that works on both sides: the server's
@@ -373,160 +335,130 @@ impl Game<'_> {
         if !min.iter().chain(&max).all(|v| v.is_finite()) {
             return Err(LevelReadError::Unavailable);
         }
-        let server = self.is_logical_server();
-        if (server && level.dimension() != self.dim.key())
-            || (!server && self.native_client_level() != Some(level))
-        {
-            return Err(LevelReadError::Unavailable);
-        }
+        let client = if self.is_logical_server() {
+            if level.dimension() != self.dim.key() {
+                return Err(LevelReadError::Unavailable);
+            }
+            None
+        } else {
+            Some(
+                self.remote
+                    .as_ref()
+                    .filter(|remote| remote.logged_in && remote.level_key == level.dimension())
+                    .ok_or(LevelReadError::Unavailable)?,
+            )
+        };
         let bounds = Aabb::new(
             Vec3::new(min[0], min[1], min[2]),
             Vec3::new(max[0], max[1], max[2]),
         );
-        let search = SectionSearch::new(bounds);
-        if server {
-            self.file_server_section_members(level);
-            let mut after = None;
-            loop {
-                let candidate = self
-                    .resident_entities
-                    .table
-                    .borrow()
-                    .level_section_candidate_after(level.dimension(), search, after);
-                let Some(key) = candidate else { break };
-                after = Some(key);
-                let (_, (_, id)) = key;
-                let entity = EntityRef::new(level.epoch(), id.get());
-                if let Some((target, Some(at))) = self.native_entity_target_with_location(entity)
-                    && self
-                        .query_body(target, at.join, true)
-                        .is_some_and(|body| bounds.intersects(body))
-                    && visit(entity).is_break()
-                {
-                    return Ok(ControlFlow::Break(()));
-                }
-            }
-        } else {
-            for member in self.client_section_candidates(search) {
-                let entity = EntityRef::new(level.epoch(), member.id);
-                if self
-                    .client_query_body(entity, member)
-                    .is_some_and(|body| bounds.intersects(body))
-                    && visit(entity).is_break()
-                {
-                    return Ok(ControlFlow::Break(()));
-                }
-            }
-        }
-        Ok(self.visit_dragon_query_parts(bounds, &mut |id| {
+        let mut visit_id = |id| {
             let entity = EntityRef::new(level.epoch(), id);
+            // Resolution ends before mod code runs: the visitor can make its own handle reads.
             if self.native_entity_read_target(entity).is_some() {
                 visit(entity)
             } else {
                 ControlFlow::Continue(())
             }
-        }))
-    }
-
-    fn file_server_section_members(&self, level: LevelRef) {
-        let table = &self.resident_entities.table;
-        let mut after = None;
-        loop {
-            let next = table
-                .borrow_mut()
-                .unfiled_section_candidate_after(level.dimension(), after);
-            let Some(id) = next else { break };
-            after = Some(id);
-            let entity = EntityRef::new(level.epoch(), id.get());
-            if let Some(target) = self.native_entity_target(entity)
-                && let Some(position) = self.target_position(target)
+        };
+        let stopped = Ok(ControlFlow::Break(()));
+        for_each_entity!(entity_lists_of!(self), entity => {
+            // The join flush assigns zero IDs later; a handle could alias another entity.
+            let id = entity.id();
+            if id != 0
+                && !entity.is_removed()
+                && bounds.intersects(entity.bounds())
+                && visit_id(id).is_break()
             {
-                table.borrow_mut().file_section_member(id, position);
+                return stopped;
+            }
+        });
+
+        // Each hanging list appends entities at admission. Merge the two in join order,
+        // taking frames first on ties as the old frame-then-painting stable sort did.
+        let mut frames = self.item_frames.iter().filter(|f| f.id != 0).peekable();
+        let mut paintings = self.paintings.iter().filter(|p| p.id != 0).peekable();
+        loop {
+            let next = if frames
+                .peek()
+                .is_some_and(|f| paintings.peek().is_none_or(|p| f.join <= p.join))
+            {
+                frames.next().map(|f| (f.id, f.bounds()))
+            } else {
+                paintings.next().map(|p| (p.id, p.bounds()))
+            };
+            let Some((id, (lo, hi))) = next else {
+                break;
+            };
+            let body = Aabb::new(
+                Vec3::new(lo[0], lo[1], lo[2]),
+                Vec3::new(hi[0], hi[1], hi[2]),
+            );
+            if bounds.intersects(body) && visit_id(id).is_break() {
+                return stopped;
             }
         }
-    }
+        if self
+            .visit_dragon_query_ids(bounds, false, &mut visit_id)
+            .is_break()
+        {
+            return stopped;
+        }
 
-    fn client_query_body(&self, entity: EntityRef, member: PickMember) -> Option<Aabb> {
-        match member.kind {
-            PickKind::RemoteDisplay => {
-                let p = self.native_client_display(entity)?.position();
-                let p = Vec3::new(p.x, p.y, p.z);
-                Some(Aabb::new(p, p))
+        if let Some(remote) = client {
+            if self.mode_id() != 3
+                && let Some(player) = &self.player
+                && bounds.intersects(player.bounds())
+                && let Ok(id) = u32::try_from(remote.entity_id)
+                && visit_id(id).is_break()
+            {
+                return stopped;
             }
-            // These are indexed only for picking; they were not readable box-query bodies.
-            PickKind::Cushion
-            | PickKind::Interaction
-            | PickKind::RemoteGeneral
-            | PickKind::RemoteKnot
-            | PickKind::LocalKnot
-            | PickKind::Crystal => None,
-            PickKind::LocalPlayer if self.mode_id() != 3 => {
-                self.player.as_ref().map(|p| p.bounds())
+        } else {
+            for entity in &self.others {
+                if entity
+                    .display_marker_or_interaction_bounds()
+                    .is_some_and(|body| bounds.intersects(body))
+                    && visit_id(entity.id).is_break()
+                {
+                    return stopped;
+                }
             }
-            PickKind::LocalPlayer => None,
-            _ => {
-                let remote = self.remote.as_ref()?;
-                remote.tracked(member.id as i32)?;
-                let EntityLookup::Found { location, value } =
-                    self.server_resident_entity(member.id)
-                else {
-                    return None;
+            for (hook, _) in self.fishing_hooks_here() {
+                if bounds.intersects(hook.bounds()) && visit_id(hook.id()).is_break() {
+                    return stopped;
+                }
+            }
+            let dimension = self.dim.id();
+            for guest in self.lan.iter().flat_map(|h| &h.hub.guests) {
+                if !guest.participates_in_player_simulation()
+                    || !guest.placed
+                    || guest.dimension != dimension
+                {
+                    continue;
+                }
+                let body = if self.lan_acting == Some(guest.conn)
+                    && let Some(player) = &self.player
+                {
+                    if self.mode_id() == 3 {
+                        continue;
+                    }
+                    player.bounds()
+                } else {
+                    if guest.game_mode == 3 {
+                        continue;
+                    }
+                    guest.bounds()
                 };
-                if location.owner.dimension != self.dim.key() {
-                    return None;
+                if bounds.intersects(body)
+                    && let Ok(id) = u32::try_from(guest.entity_id)
+                    && visit_id(id).is_break()
+                {
+                    return stopped;
                 }
-                self.query_body(value, location.join, false)
             }
         }
-    }
-
-    fn query_body(&self, target: Target, join: JoinSeq, server: bool) -> Option<Aabb> {
-        match target {
-            Target::Player if self.mode_id() != 3 => {
-                let guest = self.native_target_guest(target)?;
-                if !guest.participates_in_player_simulation() || !guest.placed {
-                    return None;
-                }
-                self.player.as_ref().map(|p| p.bounds())
-            }
-            Target::Guest(conn) => self
-                .command_guest(conn)
-                .filter(|guest| {
-                    guest.participates_in_player_simulation()
-                        && guest.placed
-                        && guest.game_mode != 3
-                })
-                .map(|guest| guest.bounds()),
-            Target::Other(_) if server => self
-                .others
-                .get(self.others.locate(join)?)?
-                .display_marker_or_interaction_bounds(),
-            Target::Hook(id) if server => self
-                .fishing_hooks_here()
-                .find_map(|(hook, _)| (hook.id() == id).then(|| hook.bounds())),
-            Target::Dragon(_) => self.dragon.as_ref().map(|d| d.body_bounds()),
-            Target::Frame(_) => self
-                .item_frames
-                .get(self.item_frames.locate(join)?)
-                .map(|f| aabb_extents(f.bounds())),
-            Target::Painting(_) => self
-                .paintings
-                .get(self.paintings.locate(join)?)
-                .map(|p| aabb_extents(p.bounds())),
-            Target::Mob(_) => list_query_body(&self.mobs, join),
-            Target::Item(_) => list_query_body(&self.dropped, join),
-            Target::Orb(_) => list_query_body(&self.orbs, join),
-            Target::Boat(_) => list_query_body(&self.boats, join),
-            Target::Cart(_) => list_query_body(&self.carts, join),
-            Target::Stand(_) => list_query_body(&self.armor_stands, join),
-            Target::Tnt(_) => list_query_body(&self.tnts, join),
-            Target::Falling(_) => list_query_body(&self.falling, join),
-            Target::Projectile(_) => list_query_body(&self.creatures.projectiles, join),
-            Target::Rocket(_) => list_query_body(&self.rockets, join),
-            Target::Trident(_) => list_query_body(&self.tridents, join),
-            Target::General(_) => list_query_body(&self.resident_entities.general.rows, join),
-            _ => None,
-        }
+        Ok(self.visit_dragon_query_ids(bounds, true, &mut visit_id))
     }
     /// Every geometric hit, stably sorted nearest first. None for a refused walk.
     pub(super) fn level_ray_trace_entities(
@@ -1048,7 +980,7 @@ impl Game<'_> {
     }
 
     /// The entity's position (`Entity.position`): its feet, the middle of
-    /// its box for a painting or an item frame. Client displays use their committed tick pose.
+    /// its box for a painting or an item frame.
     pub(super) fn entity_position(&self, entity: EntityRef) -> Option<[f64; 3]> {
         if self.native_lifecycle.epoch() == Some(entity.epoch())
             && let Some((id, position)) = self.native_lifecycle.entity_sections.write_position
@@ -5101,204 +5033,7 @@ pub(super) mod tests {
 
     #[test]
     #[ignore = "daily"]
-    fn client_box_queries_use_live_display_positions_and_section_order() {
-        use super::Game;
-        use mod_api::Host;
-        use std::sync::Arc;
-        use sunrise_client::chunk::Chunk;
-        use sunrise_core::nbt::Compound;
-        use sunrise_protocol::{
-            connection::Pipe,
-            entity_data::Value,
-            packets::play::{self, Clientbound as C},
-        };
-
-        const CASE: &str = "SUNRISE_DISPLAY_BOX_QUERY_CHILD";
-        if run_fresh_cases(
-            "game::native_entity_refs::tests::client_box_queries_use_live_display_positions_and_section_order",
-            CASE,
-            &["client", "server"],
-        ) {
-            return;
-        }
-
-        const LO: [f64; 3] = [13.0, 65.0, 2.0];
-        const HI: [f64; 3] = [19.0, 66.0, 4.0];
-        const ADMISSIONS: [(i32, &str, [f64; 3]); 4] = [
-            (31, "minecraft:item_display", [17.0, 65.5, 3.0]),
-            (92, "minecraft:block_display", [15.5, 65.5, 3.0]),
-            (55, "minecraft:pig", [14.5, 65.5, 3.0]),
-            (11, "minecraft:text_display", [13.5, 65.5, 3.0]),
-        ];
-        let chunks = |game: &mut Game<'_>| {
-            for x in 0..=1 {
-                game.world
-                    .chunks
-                    .insert((x, 0), Arc::new(Chunk::empty(x, 0)));
-            }
-        };
-        let ids = |host: &dyn Host, level, min, max| {
-            collect_entities_in(host, level, min, max)
-                .unwrap()
-                .into_iter()
-                .map(|e| e.id())
-                .collect::<Vec<_>>()
-        };
-        match std::env::var(CASE).unwrap().as_str() {
-            "client" => with_client_game(|game| {
-                let (client, _server) = Pipe::pair();
-                game.connect_local(client, "DisplayBoxTest").unwrap();
-                let remote = game.remote.as_mut().unwrap();
-                remote.logged_in = true;
-                remote.entity_id = 7;
-                chunks(game);
-                for (id, name, position) in ADMISSIONS {
-                    let kind = game
-                        .remote
-                        .as_ref()
-                        .unwrap()
-                        .builtin
-                        .get("minecraft:entity_type")
-                        .unwrap()
-                        .id(name)
-                        .unwrap();
-                    game.handle_packet(C::AddEntity(play::AddEntity {
-                        id,
-                        uuid: id as u128,
-                        kind,
-                        position,
-                        velocity: [0.0; 3],
-                        yaw: 0,
-                        pitch: 0,
-                        head_yaw: 0,
-                        data: 0,
-                    }))
-                    .unwrap();
-                }
-                let level = game.level("minecraft:overworld").unwrap();
-                assert_eq!(ids(game, level, HI, LO), [92, 55, 11, 31]);
-                let mut seen = Vec::new();
-                assert_eq!(
-                    level.visit_entities_in(game, LO, HI, &mut |entity| {
-                        seen.push(entity.id());
-                        let (_, kind, at) = ADMISSIONS
-                            .into_iter()
-                            .find(|(id, _, _)| *id as u32 == entity.id())
-                            .unwrap();
-                        assert_eq!(
-                            entity.kind(game).and_then(|k| k.id(game)).as_deref(),
-                            Some(kind)
-                        );
-                        assert_eq!(entity.position(game), Some(at));
-                        if entity.id() != 55 {
-                            assert_eq!(entity.bounding_box(game), Some([at; 2]));
-                        }
-                        ControlFlow::Continue(())
-                    }),
-                    Ok(ControlFlow::Continue(()))
-                );
-                assert_eq!(seen, [92, 55, 11, 31]);
-
-                let block = game.entity(92).unwrap();
-                game.text_displays.get_mut(&92).unwrap().metadata(&[
-                    (10, 1, Value::Int(3)),
-                    (20, 2, Value::Float(4.0)),
-                    (21, 2, Value::Float(4.0)),
-                ]);
-                game.handle_packet(C::EntityPositionSync(play::EntityPositionSync {
-                    id: 92,
-                    path: play::PositionPath::Linear([18.5, 65.5, 3.0]),
-                    yaw: 0.0,
-                    pitch: 0.0,
-                    on_ground: false,
-                }))
-                .unwrap();
-                assert_eq!(block.position(game), Some([15.5, 65.5, 3.0]));
-                assert_eq!(block.bounding_box(game), Some([[15.5, 65.5, 3.0]; 2]));
-                assert_eq!(ids(game, level, LO, HI), [92, 55, 11, 31]);
-
-                game.tick_text_displays(true);
-                assert_eq!(ids(game, level, LO, HI), [55, 11, 31, 92]);
-                let tight_lo = [16.25, 65.0, 2.5];
-                let tight_hi = [16.75, 66.0, 3.5];
-                let mut seen = Vec::new();
-                let stopped = level.visit_entities_in(game, LO, HI, &mut |entity| {
-                    seen.push(entity.id());
-                    assert_eq!(ids(game, level, tight_lo, tight_hi), [92]);
-                    ControlFlow::Break(())
-                });
-                assert_eq!(stopped, Ok(ControlFlow::Break(())));
-                assert_eq!(seen, [55]);
-                assert_eq!(block.position(game), Some([16.5, 65.5, 3.0]));
-                assert_eq!(block.bounding_box(game), Some([[16.5, 65.5, 3.0]; 2]));
-                assert!(ids(game, level, [16.5, 65.0, 2.5], tight_hi).is_empty());
-                let culling_only_lo = [16.5, 67.0, 2.5];
-                let culling_only_hi = [16.75, 68.0, 3.5];
-                assert!(ids(game, level, culling_only_lo, culling_only_hi).is_empty());
-                let (lo, hi) = game.text_displays[&92].interpolated_bounding_box(1.0);
-                let culling = super::aabb_extents((lo.to_array(), hi.to_array()));
-                let culling_only = super::aabb_extents((culling_only_lo, culling_only_hi));
-                assert!(culling.intersects(culling_only));
-                let mut picked = Vec::new();
-                game.for_each_pickable_in_bounds(super::aabb_extents((LO, HI)), |id, _, _| {
-                    picked.push(id)
-                });
-                assert_eq!(picked, [55]);
-
-                game.handle_packet(C::RemoveEntities(play::RemoveEntities { ids: vec![92] }))
-                    .unwrap();
-                assert!(game.entity(92).is_none());
-                assert_eq!(block.position(game), None);
-                assert_eq!(block.bounding_box(game), None);
-                assert_eq!(ids(game, level, LO, HI), [55, 11, 31]);
-            }),
-            "server" => with_game(|game| {
-                game.options.dedicated = Some(Vec::new());
-                chunks(game);
-                let level = game.level("minecraft:overworld").unwrap();
-                let [item, block, pig, text] = ADMISSIONS.map(|(_, kind, at)| {
-                    game.summon("minecraft:overworld", kind, at, Compound::new())
-                        .unwrap()
-                });
-                assert_eq!(ids(game, level, LO, HI), [block, pig, text, item]);
-                for (id, (_, _, at)) in [item, block, pig, text].into_iter().zip(ADMISSIONS) {
-                    if id != pig {
-                        let display = game.entity(id).unwrap();
-                        assert_eq!(display.position(game), Some(at));
-                        assert_eq!(display.bounding_box(game), Some([at; 2]));
-                    }
-                }
-                let at = [16.5, 65.5, 3.0];
-                assert_eq!(
-                    game.place_teleport_filed(
-                        super::Target::Other(block),
-                        at,
-                        None,
-                        [false; 3],
-                        false
-                    ),
-                    Some(ADMISSIONS[1].2)
-                );
-                assert_eq!(ids(game, level, LO, HI), [pig, text, item, block]);
-                assert_eq!(
-                    game.entity(block).unwrap().bounding_box(game),
-                    Some([at; 2])
-                );
-            }),
-            _ => unreachable!("unexpected display query case"),
-        }
-    }
-
-    #[test]
-    #[ignore = "daily"]
     fn a_client_finds_the_entities_it_tracks_and_its_own_player_in_a_box() {
-        if run_fresh_cases(
-            "game::native_entity_refs::tests::a_client_finds_the_entities_it_tracks_and_its_own_player_in_a_box",
-            "SUNRISE_CLIENT_ENTITY_BOX_QUERY_CHILD",
-            &["client"],
-        ) {
-            return;
-        }
         use super::super::execution_role::ExecutionRole;
         use mod_api::{Host, LevelRef, WorldEpoch};
         use sunrise_core::geometry::Vec3;
@@ -5312,15 +5047,10 @@ pub(super) mod tests {
             remote.logged_in = true;
             remote.entity_id = 7;
             remote.profile = 42;
-            let mut local =
-                sunrise_client::motion::PlayerMotion::new(game.motion, Vec3::ZERO).unwrap();
-            local.entity_id = 7;
-            game.player = Some(local);
+            game.player =
+                Some(sunrise_client::motion::PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
             game.spawn_entity(15, "minecraft:pig", [2.0, 0.0, 0.0], [0.0; 3]);
-            game.pick_section_sync_id(15);
             game.spawn_entity(16, "minecraft:pig", [40.0, 0.0, 0.0], [0.0; 3]);
-            game.pick_section_sync_id(16);
-            game.bind_local_player_residency();
             let level = game.level("minecraft:overworld").unwrap();
             let ids = |host: &dyn Host, level: LevelRef, min, max| {
                 collect_entities_in(host, level, min, max)
@@ -5369,13 +5099,6 @@ pub(super) mod tests {
     #[test]
     #[ignore = "daily"]
     fn a_client_lists_another_player_in_the_box_after_the_tracked_entities() {
-        if run_fresh_cases(
-            "game::native_entity_refs::tests::a_client_lists_another_player_in_the_box_after_the_tracked_entities",
-            "SUNRISE_CLIENT_ENTITY_BOX_QUERY_CHILD",
-            &["client"],
-        ) {
-            return;
-        }
         use super::super::execution_role::ExecutionRole;
         use mod_api::{Host, LevelRef};
         use sunrise_core::geometry::Vec3;
@@ -5398,12 +5121,9 @@ pub(super) mod tests {
                 .unwrap()
                 .id("minecraft:player")
                 .unwrap();
-            let mut local =
-                sunrise_client::motion::PlayerMotion::new(game.motion, Vec3::ZERO).unwrap();
-            local.entity_id = 7;
-            game.player = Some(local);
+            game.player =
+                Some(sunrise_client::motion::PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
             game.spawn_entity(15, "minecraft:pig", [2.0, 0.0, 0.0], [0.0; 3]);
-            game.pick_section_sync_id(15);
             let add_player = |game: &mut crate::game::Game<'_>, id, uuid, x| {
                 game.handle_packet(C::AddEntity(AddEntity {
                     id,
@@ -5422,7 +5142,6 @@ pub(super) mod tests {
             add_player(game, 18, 9, 1.0);
             add_player(game, 19, 10, 40.0);
             add_player(game, 20, 11, 0.5);
-            game.bind_local_player_residency();
             assert!(
                 [18, 19, 20]
                     .iter()
@@ -5433,7 +5152,7 @@ pub(super) mod tests {
                 collect_entities_in(host, level, min, max)
                     .map(|found| found.into_iter().map(|e| e.id()).collect::<Vec<_>>())
             };
-            // Section entry order: the pig, then the other players, then the window's own.
+            // Entity-list order: the pig, then the other players, then the window's own.
             assert_eq!(
                 ids(game, level, [-1.0, -1.0, -1.0], [3.0, 2.0, 1.0]),
                 Ok(vec![15, 18, 20, 7])
@@ -5455,13 +5174,6 @@ pub(super) mod tests {
     #[test]
     #[ignore = "daily"]
     fn a_client_refuses_a_box_with_a_bound_that_is_not_finite_and_swaps_an_inverted_one() {
-        if run_fresh_cases(
-            "game::native_entity_refs::tests::a_client_refuses_a_box_with_a_bound_that_is_not_finite_and_swaps_an_inverted_one",
-            "SUNRISE_CLIENT_ENTITY_BOX_QUERY_CHILD",
-            &["client"],
-        ) {
-            return;
-        }
         use super::super::execution_role::ExecutionRole;
         use mod_api::{Host, LevelRef};
         use sunrise_core::geometry::Vec3;
@@ -5475,13 +5187,9 @@ pub(super) mod tests {
             remote.logged_in = true;
             remote.entity_id = 7;
             remote.profile = 42;
-            let mut local =
-                sunrise_client::motion::PlayerMotion::new(game.motion, Vec3::ZERO).unwrap();
-            local.entity_id = 7;
-            game.player = Some(local);
+            game.player =
+                Some(sunrise_client::motion::PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
             game.spawn_entity(15, "minecraft:pig", [2.0, 0.0, 0.0], [0.0; 3]);
-            game.pick_section_sync_id(15);
-            game.bind_local_player_residency();
             let level = game.level("minecraft:overworld").unwrap();
             let ids = |host: &dyn Host, level: LevelRef, min, max| {
                 collect_entities_in(host, level, min, max)

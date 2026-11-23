@@ -65,7 +65,12 @@ impl Game<'_> {
                     b.leash = Some(Holder::Knot(block));
                 }
             });
-        } else if let Some(shows) = super::text_displays::Shows::from_kind(kind) {
+        } else if let Some(shows) = match kind {
+            "minecraft:text_display" => Some(super::text_displays::Shows::Text),
+            "minecraft:block_display" => Some(super::text_displays::Shows::Block),
+            "minecraft:item_display" => Some(super::text_displays::Shows::Item),
+            _ => None,
+        } {
             self.text_displays.insert(
                 id as i32,
                 super::text_displays::RemoteTextDisplay::new(shows, position, yaw)

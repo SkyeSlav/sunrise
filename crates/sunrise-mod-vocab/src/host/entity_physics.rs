@@ -31,13 +31,9 @@ pub trait EntityPhysicsBackend {
     fn entity_is_hanging(&self, entity: EntityRef) -> Result<Option<bool>, LevelReadError>;
     /// Side: both.
     /// The entity's box (`Entity.getBoundingBox`): its lowest and highest
-    /// corner. A display's physical box on either side is two coincident corners at its
-    /// position. On the client this is the current tick position after movement
-    /// interpolation, not the packet destination or the render culling box.
-    /// Markers also have zero-sized boxes; interactions use their saved dimensions.
-    /// End crystals have a 2 x 2 box and dragon parts have their own boxes. Returns
-    /// `None` for the dragon itself or an unresolved handle. The local client player
-    /// uses its predicted box.
+    /// corner. Displays and markers have zero-sized physical boxes; interactions use
+    /// their saved dimensions. End crystals have their 2 x 2 box. None for the dragon; a dragon part's is its own. On a client, reads
+    /// its own copy of a tracked entity, or the local player's predicted box.
     fn entity_bounding_box(&self, entity: EntityRef) -> Option<[[f64; 3]; 2]>;
     /// Side: server.
     /// The entity's width and height (`Entity.getBbWidth`, `getBbHeight`):
