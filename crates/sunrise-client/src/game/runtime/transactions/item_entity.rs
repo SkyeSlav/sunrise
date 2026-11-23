@@ -54,7 +54,7 @@ impl Game<'_> {
             .stack
             .get_or_insert_with(|| item.stack.clone());
         if stack.count == 0 {
-            level.after.push(After::Emptied(item.id));
+            level.after.get_mut().push(After::Emptied(item.id));
         }
         item.stack = stack;
         true

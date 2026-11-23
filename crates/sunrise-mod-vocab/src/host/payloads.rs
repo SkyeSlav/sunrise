@@ -40,12 +40,19 @@ pub trait PayloadsServerHost {
 #[sunrise_mod_api_macros::host_area]
 pub trait PayloadsClientHost {
     /// Side: client.
-    /// Queue exact application bytes to the connected server, using the frozen
-    /// declaration for its current protocol. Optional absent channels return
-    /// UnsupportedPeer. Frame refusal and Backpressure write no application bytes.
-    /// The root transaction owns publication and cancellation.
+    /// Queue exact application bytes on a registered serverbound mod channel. The
+    /// active connection must have negotiated the channel for its current phase
+    /// (configuration or play). `Disconnected` means there is no live connection;
+    /// `NotNegotiated` means it has no current peer table. Direction, channel,
+    /// framing and backpressure refusals write no application bytes.
+    ///
+    /// Outside a transaction, accepted sends are submitted in call order without
+    /// waiting for a client tick. Inside one, sends join its ordered journal: a
+    /// child commit passes them to its parent, the root commit submits them, and
+    /// an abort discards them. Pending sends never cross a connection or phase change.
+    /// [`PayloadAccepted::Queued`] means accepted locally, not delivered.
     fn send_payload_to_server(
-        &mut self,
+        &self,
         id: &PayloadId,
         bytes: PayloadBytes,
     ) -> Result<PayloadAccepted, PayloadSendError>;

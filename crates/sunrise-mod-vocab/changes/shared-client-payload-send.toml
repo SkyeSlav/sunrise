@@ -1,0 +1,2 @@
+ids = ["method:prelude::PayloadsClientHost::send_payload_to_server", "handle:ToServer::send"]
+why = "Registered client payloads can be sent from a shared ClientHost, including one lent by a screen hook. A mutable host can still be passed by shared reborrow. Sends outside transactions submit immediately; staged sends publish in order at root commit and do not outlive their connection or protocol phase."

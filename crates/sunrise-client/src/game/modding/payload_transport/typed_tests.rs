@@ -4,8 +4,9 @@
 use mod_api::wire::{Reader, Wire, WireError, WireSchema, Writer};
 use mod_api::{
     __private::{HookPanicReport, take_hook_panics},
-    Hooks, IPayloadContext, ModEntry, PayloadAccepted, PayloadId, PayloadSendError, PlayerRef,
-    Registrar, ToClient, ToServer, Wire,
+    ClientHost, Hooks, IPayloadContext, ModEntry, PayloadAccepted, PayloadBytes, PayloadId,
+    PayloadSendError, PlayerRef, Registrar, ScreenInitPostEvent, ScreenView, ToClient, ToServer,
+    Wire,
 };
 use std::sync::{
     Mutex,
@@ -18,6 +19,7 @@ const NAME: &str = "game::payload_transport::typed_tests::typed_payloads_follow_
 const UP: &str = "typed_probe:up";
 const OTHER: &str = "typed_probe:other";
 const DOWN: &str = "typed_probe:down";
+const SHARED_HOST_SCREEN: &str = "typed_probe:shared_host";
 const STAGED: f32 = 3.0;
 
 static ENCODES: AtomicUsize = AtomicUsize::new(0);
@@ -181,6 +183,21 @@ impl Hooks for Registration {
         };
         *TOKENS.lock().unwrap() = Some(tokens);
     }
+
+    fn screen_init_post(&self, host: &dyn ClientHost, event: &mut ScreenInitPostEvent<'_>) {
+        if event.screen.id != SHARED_HOST_SCREEN {
+            return;
+        }
+        let up = TOKENS.lock().unwrap().as_ref().unwrap().up.clone();
+        assert_eq!(up.send(host, &probe(1)), Ok(PayloadAccepted::Queued));
+        assert_eq!(
+            host.send_payload_to_server(
+                &PayloadId(OTHER.into()),
+                PayloadBytes(vec![2, 0, 0, 0, 0, 0, 0, 0, 0]),
+            ),
+            Ok(PayloadAccepted::Queued)
+        );
+    }
 }
 
 #[test]
@@ -190,7 +207,7 @@ fn typed_payloads_follow_the_raw_routes() {
     if super::super::native_entity_refs::tests::run_fresh_cases(
         NAME,
         "SUNRISE_TYPED_TRANSPORT_CHILD",
-        &["integrated", "singleplayer_list", "lan"],
+        &["integrated", "singleplayer_list", "shared_host", "lan"],
     ) {
         return;
     }
@@ -219,6 +236,7 @@ fn typed_payloads_follow_the_raw_routes() {
             match case.as_str() {
                 "integrated" => integrated(game),
                 "singleplayer_list" => singleplayer_list(game),
+                "shared_host" => shared_host(game),
                 "lan" => lan(game),
                 other => panic!("unknown case {other}"),
             }
@@ -316,6 +334,148 @@ fn integrated(game: &mut super::Game<'_>) {
         .collect();
     assert_eq!(seen, [(UP, 1), (OTHER, 2), (UP, 3), (UP, 7)]);
     assert_eq!(*CLIENT.lock().unwrap(), [2, 8]);
+}
+
+fn shared_host(game: &mut super::Game<'_>) {
+    // Observe sends at the serving peer without polling or ticking the client.
+    let assert_received = |expected: &[(&str, i32)]| {
+        let marker = *expected.last().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let seen = loop {
+            {
+                let mut received = SERVER.lock().unwrap();
+                if received.iter().any(|&(id, count, _)| (id, count) == marker) {
+                    break std::mem::take(&mut *received);
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "server did not receive {marker:?}"
+            );
+            std::thread::yield_now();
+        };
+        let seen: Vec<_> = seen.into_iter().map(|(id, count, _)| (id, count)).collect();
+        assert_eq!(seen, expected);
+    };
+
+    game.init_screen_widgets(&ScreenView::from(mod_api::__private::built::ScreenView {
+        id: SHARED_HOST_SCREEN,
+        mod_screen: None,
+        menu: None,
+        title: None,
+        rect: [0.0, 0.0, 100.0, 100.0],
+        slots: 0,
+        mouse: [0.0; 2],
+        partial_tick: 0.0,
+        regions: &[],
+    }));
+    assert!(take_hook_panics().is_empty());
+    assert_received(&[(UP, 1), (OTHER, 2)]);
+
+    let endpoint = game.remote.as_ref().unwrap().session.payload_endpoint();
+    let transport = endpoint.transport();
+    let epoch = transport.epoch().unwrap();
+    let up = TOKENS.lock().unwrap().as_ref().unwrap().up.clone();
+    let up_id = PayloadId(UP.into());
+    let other_id = PayloadId(OTHER.into());
+    // i32 counter, empty labels, no optional child. The raw sends do not use the codec under test.
+    let body = |count| PayloadBytes(vec![count, 0, 0, 0, 0, 0, 0, 0, 0]);
+    let mark = |count| {
+        // Bypass only the journal: this reliable marker goes through the same connection writer.
+        endpoint
+            .prepare(&transport.epoch().unwrap(), &up_id, body(count))
+            .unwrap()
+            .publish()
+            .unwrap();
+    };
+    let host: &dyn ClientHost = game;
+    let down_id = PayloadId(DOWN.into());
+    assert_eq!(
+        host.send_payload_to_server(&down_id, body(0)),
+        Err(PayloadSendError::WrongDirection(down_id))
+    );
+    let missing = PayloadId("typed_probe:absent".into());
+    assert_eq!(
+        host.send_payload_to_server(&missing, body(0)),
+        Err(PayloadSendError::UnknownPayload(missing))
+    );
+    let reserved =
+        PayloadId(sunrise_protocol::packets::custom_payload::CAULDRON_USE_CHANNEL.into());
+    assert_eq!(epoch.peer.can_send(epoch.phase, &reserved), Ok(()));
+    assert_eq!(
+        host.send_payload_to_server(&reserved, body(0)),
+        Err(PayloadSendError::UnknownPayload(reserved))
+    );
+
+    game.storage_scope(|game, _| {
+        assert_eq!(up.send(game, &probe(3)), Ok(PayloadAccepted::Queued));
+        game.storage_scope(|game, _| {
+            // The same queue entry used by replies must not overtake a shared-host send.
+            assert_eq!(
+                game.queue_payload(endpoint.clone(), epoch.clone(), &other_id, body(4)),
+                Ok(PayloadAccepted::Queued)
+            );
+            ((), true)
+        });
+        game.storage_scope(|game, _| {
+            assert_eq!(up.send(game, &probe(99)), Ok(PayloadAccepted::Queued));
+            ((), false)
+        });
+        let host: &dyn ClientHost = game;
+        assert_eq!(
+            host.send_payload_to_server(&up_id, body(5)),
+            Ok(PayloadAccepted::Queued)
+        );
+        mark(6);
+        assert_received(&[(UP, 6)]);
+        ((), true)
+    });
+    assert_received(&[(UP, 3), (OTHER, 4), (UP, 5)]);
+
+    // Drain the peer's existing replies before changing the client's epoch in isolation.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while CLIENT.lock().unwrap().len() < 2 {
+        game.poll_remote().unwrap();
+        assert!(
+            Instant::now() < deadline,
+            "typed replies before reconfiguration"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(*CLIENT.lock().unwrap(), [2, 4]);
+
+    game.storage_scope(|game, _| {
+        assert_eq!(up.send(game, &probe(100)), Ok(PayloadAccepted::Queued));
+        ((), false)
+    });
+    game.storage_scope(|game, _| {
+        assert_eq!(up.send(game, &probe(101)), Ok(PayloadAccepted::Queued));
+        transport.begin_configuration();
+        let host: &dyn ClientHost = game;
+        assert_eq!(
+            host.send_payload_to_server(&up_id, body(0)),
+            Err(PayloadSendError::NotNegotiated)
+        );
+        // Replace only the client's local epoch. The test peer stays in play throughout.
+        transport
+            .accept(transport.local.manifest.entries())
+            .unwrap();
+        assert_eq!(
+            host.send_payload_to_server(&up_id, body(0)),
+            Err(PayloadSendError::WrongProtocol(up_id.clone()))
+        );
+        transport.finish_configuration().unwrap();
+        ((), true)
+    });
+    mark(9);
+    assert_received(&[(UP, 9)]);
+
+    transport.close();
+    let host: &dyn ClientHost = game;
+    assert_eq!(
+        host.send_payload_to_server(&up_id, body(0)),
+        Err(PayloadSendError::Disconnected)
+    );
 }
 
 fn lan(game: &mut super::Game<'_>) {

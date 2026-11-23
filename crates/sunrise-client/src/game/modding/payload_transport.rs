@@ -8,7 +8,7 @@ use mod_api::{
 };
 use std::sync::Arc;
 use sunrise_client::raw_payloads::{Body, Endpoint, Incoming, Prepared, Side, connection::Epoch};
-use sunrise_protocol::payload_negotiation::Phase;
+use sunrise_protocol::{packets::custom_payload::is_reserved_channel, payload_negotiation::Phase};
 
 /// Fits the journal-growth allowance already charged by each prepared operation.
 pub(super) struct Deferred {
@@ -17,8 +17,11 @@ pub(super) struct Deferred {
 }
 const _: () = assert!(std::mem::size_of::<Deferred>() <= 256);
 impl Deferred {
-    pub(super) fn publish(self) {
-        let _ = self.epoch.with_active(|| self.prepared.publish());
+    pub(super) fn publish(self) -> Result<PayloadAccepted, PayloadSendError> {
+        self.epoch
+            .with_active(|| self.prepared.publish())
+            .ok_or(PayloadSendError::StaleEpoch)??;
+        Ok(PayloadAccepted::Queued)
     }
 }
 impl Game<'_> {
@@ -52,43 +55,46 @@ impl Game<'_> {
             .count() as u32
     }
     pub(super) fn send_payload_to_server(
-        &mut self,
+        &self,
         id: &PayloadId,
         bytes: PayloadBytes,
     ) -> Result<PayloadAccepted, PayloadSendError> {
-        let endpoint = self
+        let session = &self
             .remote
             .as_ref()
+            .filter(|remote| remote.session.accepts_packets())
             .ok_or(PayloadSendError::Disconnected)?
-            .session
-            .payload_endpoint();
-        self.queue_current_payload(endpoint, id, bytes)
+            .session;
+        if is_reserved_channel(&id.0) {
+            return Err(PayloadSendError::UnknownPayload(id.clone()));
+        }
+        self.queue_current_payload(session.payload_endpoint(), id, bytes)
     }
     pub(super) fn queue_current_payload(
-        &mut self,
+        &self,
         endpoint: Endpoint,
         id: &PayloadId,
         bytes: PayloadBytes,
     ) -> Result<PayloadAccepted, PayloadSendError> {
-        let epoch = endpoint
-            .transport()
-            .epoch()
-            .ok_or(PayloadSendError::NotNegotiated)?;
+        let transport = endpoint.transport();
+        let epoch = transport.epoch().ok_or_else(|| {
+            if transport.closed() {
+                PayloadSendError::Disconnected
+            } else {
+                PayloadSendError::NotNegotiated
+            }
+        })?;
         self.queue_payload(endpoint, epoch, id, bytes)
     }
     pub(super) fn queue_payload(
-        &mut self,
+        &self,
         endpoint: Endpoint,
         epoch: Arc<Epoch>,
         id: &PayloadId,
         bytes: PayloadBytes,
     ) -> Result<PayloadAccepted, PayloadSendError> {
         let prepared = endpoint.prepare(&epoch, id, bytes)?;
-        self.after_commit(super::transactions::After::Payload(Deferred {
-            epoch,
-            prepared,
-        }));
-        Ok(PayloadAccepted::Queued)
+        self.after_payload(Deferred { epoch, prepared })
     }
     /// Use the receiving endpoint, not a sender resolved from a later guest incarnation.
     pub(super) fn run_payload(&mut self, endpoint: Endpoint, incoming: Incoming) {

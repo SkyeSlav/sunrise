@@ -33,10 +33,13 @@
 //! commit, and mods hear of joins and leaves at the root commit (`transactions/entities.rs`).
 use super::{BlockEntity, BlockStateId, Dim, Game, machines::HopperState, maps::MapData};
 use mod_api::{
-    __private::TransactionFrame, LevelRef, TransactionContext, TransactionLifecycle,
-    TransactionScopeError,
+    __private::TransactionFrame, LevelRef, PayloadAccepted, PayloadSendError, TransactionContext,
+    TransactionLifecycle, TransactionScopeError,
 };
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, HashMap},
+};
 use sunrise_client::{
     block_entities::BlockEntityIdentity,
     effects::EffectInstance,
@@ -443,8 +446,8 @@ pub(super) struct Level {
     save_chunks: indexmap::IndexSet<(super::Dim, (i32, i32))>,
     /// New map data and its reserved IDs. Neither enters the saved map table until root commit.
     pub(super) new_maps: BTreeMap<i32, MapData>,
-    /// What the root commit does, in order.
-    after: Vec<After>,
+    /// What the root commit does, in order. A shared client host may stage a payload here.
+    after: RefCell<Vec<After>>,
     /// Internal decide/fire/apply state for menu actions.
     actions: decision::Journal,
     /// Merchant takes keep their session, mob, statistics and criterion progress together.
@@ -958,6 +961,7 @@ impl<'g> Game<'g> {
             .last()
             .unwrap()
             .after
+            .borrow()
             .iter()
             .filter(|after| matches!(after, After::Payload(_)))
             .count()
@@ -969,6 +973,7 @@ impl<'g> Game<'g> {
             .last()
             .unwrap()
             .after
+            .borrow()
             .iter()
             .filter(|after| matches!(after, After::Effect(DeferredEffect::ItemStat { .. })))
             .count()
@@ -1259,7 +1264,7 @@ impl<'g> Game<'g> {
         level.level_random = None;
         level.chunk_marks.clear();
         level.biomes.clear();
-        level.after.clear();
+        level.after.get_mut().clear();
         let _ = std::mem::take(&mut level.lifetimes);
         guard.game.roll_back(level);
         guard.game.close_departures(departed);
@@ -1323,10 +1328,13 @@ impl<'g> Game<'g> {
                     general_entities: std::mem::take(&mut level.general_entities),
                     chunk_marks: std::mem::take(&mut level.chunk_marks),
                     biomes: std::mem::take(&mut level.biomes),
-                    after: level
-                        .after
-                        .extract_if(.., |after| after.level_owned())
-                        .collect(),
+                    after: RefCell::new(
+                        level
+                            .after
+                            .get_mut()
+                            .extract_if(.., |after| after.level_owned())
+                            .collect(),
+                    ),
                     ..Level::default()
                 };
                 level.save_chunks.retain(|&(dim, chunk)| {
@@ -1339,7 +1347,7 @@ impl<'g> Game<'g> {
                 if let Some(owner) = entities::open_in(&mut self.transactions, self.dim) {
                     owner.merge_level_writes(&mut local);
                     owner.save_chunks.extend(local.save_chunks);
-                    owner.after.extend(local.after);
+                    owner.after.get_mut().extend(local.after.into_inner());
                 } else {
                     independent = Some(local);
                 }
@@ -1436,7 +1444,7 @@ impl<'g> Game<'g> {
                 outer.save_gate = outer.save_gate.take().or(level.save_gate);
                 outer.save_chunks.extend(level.save_chunks);
                 outer.new_maps.append(&mut level.new_maps);
-                outer.after.extend(level.after);
+                outer.after.get_mut().extend(level.after.into_inner());
                 // The nearest enclosing transaction of this level takes its entities back; a
                 // parent in another level can't, and with none in this level they are told now.
                 match (level.dimension)
@@ -1607,7 +1615,7 @@ impl<'g> Game<'g> {
             return;
         };
         let removed = take_replay_row(&mut self.world, pos);
-        if let Some(After::Block(step)) = level.after.last_mut()
+        if let Some(After::Block(step)) = level.after.get_mut().last_mut()
             && step.pos == pos
         {
             step.removed = Some(removed);
@@ -2066,7 +2074,7 @@ impl<'g> Game<'g> {
     /// commit inside a transaction.
     pub(super) fn drop_after_commit(&mut self, uuid: u128, stack: ItemStack) {
         match self.transactions.last_mut() {
-            Some(level) => level.after.push(After::PlayerDrop(uuid, stack)),
+            Some(level) => level.after.get_mut().push(After::PlayerDrop(uuid, stack)),
             None => {
                 self.drop_plain(stack);
             }
@@ -2094,7 +2102,10 @@ impl<'g> Game<'g> {
             .set_connection_group_stored(pos[0], pos[1], pos[2], group);
         if changed {
             level.keep_connection_group(key, old);
-            level.after.push(After::ConnectionGroup(key, group));
+            level
+                .after
+                .get_mut()
+                .push(After::ConnectionGroup(key, group));
         }
         changed
     }
@@ -2151,7 +2162,7 @@ impl<'g> Game<'g> {
         if old_group.is_some() {
             level.keep_connection_group(key, old_group);
         }
-        level.after.push(After::Block(BlockStep {
+        level.after.get_mut().push(After::Block(BlockStep {
             pos: key,
             to: state,
             replay: step,
@@ -2167,7 +2178,7 @@ impl<'g> Game<'g> {
         let Some(level) = entities::open_in(&mut self.transactions, self.dim) else {
             return;
         };
-        if let Some(After::Block(step)) = level.after.last_mut() {
+        if let Some(After::Block(step)) = level.after.get_mut().last_mut() {
             step.replay.replay_removal = true;
         }
         if let Some(replay) = level
@@ -2336,15 +2347,32 @@ impl<'g> Game<'g> {
             self.transactions.last_mut()
         };
         match frame {
-            Some(level) => level.after.push(after),
+            Some(level) => level.after.get_mut().push(after),
             None => self.run_after(after),
         }
     }
+
+    /// Stage a prepared send with the other effects, or submit it now and report its result.
+    pub(super) fn after_payload(
+        &self,
+        payload: super::payload_transport::Deferred,
+    ) -> Result<PayloadAccepted, PayloadSendError> {
+        if let Some(level) = self.transactions.last() {
+            level.after.borrow_mut().push(After::Payload(payload));
+            Ok(PayloadAccepted::Queued)
+        } else {
+            payload.publish()
+        }
+    }
+
     fn run_after(&mut self, after: After) {
         match after {
             After::PlayerRespawn(conn) => self.commit_player_respawn(conn),
             After::Trade(effect) => self.commit_merchant_effect(*effect),
-            After::Payload(payload) => payload.publish(),
+            After::Payload(payload) => {
+                // A settled transaction has no caller to report a later transport refusal to.
+                let _ = payload.publish();
+            }
             After::Packet(packet, body) => self.publish_mod_held(packet, body),
             After::Composter(effects) => self.commit_composter_effects(effects),
             After::FluidWrite(written) => self.commit_fluid_write(*written),
@@ -2581,8 +2609,8 @@ impl<'g> Game<'g> {
         // from the next retirement, or from storage if it survived. Ordinary removal then
         // observes its own row, never a row from a later strict edit. Other cells stay in final
         // staged storage.
-        let rewound: indexmap::IndexSet<_> = level
-            .after
+        let mut after_commit = level.after.into_inner();
+        let rewound: indexmap::IndexSet<_> = after_commit
             .iter()
             .filter_map(|after| match after {
                 After::Block(step) if level.blocks[&step.pos].strict => Some(step.pos),
@@ -2611,7 +2639,7 @@ impl<'g> Game<'g> {
             }
         }
         let mut rows = HashMap::new();
-        for after in level.after.iter_mut().rev() {
+        for after in after_commit.iter_mut().rev() {
             match after {
                 After::Block(step) if rewound.contains(&step.pos) => {
                     if let Some(removed) = &mut step.removed {
@@ -2643,7 +2671,7 @@ impl<'g> Game<'g> {
                 self.restore_removed_block_entity(pos, *row, generation);
             }
         }
-        for after in &mut level.after {
+        for after in &mut after_commit {
             if let After::Block(step) = after
                 && !rewound.contains(&step.pos)
                 && let Some(Some(row)) = step.removed.take()
@@ -2659,7 +2687,7 @@ impl<'g> Game<'g> {
         let mut told_holders = FxHashSet::default();
         let mut explicit_group_since_block = std::collections::HashSet::new();
         let mut biome_columns = std::collections::HashSet::new();
-        for after in level.after {
+        for after in after_commit {
             match after {
                 // Each storage tells the world once, after every write.
                 After::Changed(pos) if !told.insert(Ok(pos)) => {}
@@ -2805,7 +2833,7 @@ impl<'g> Game<'g> {
         self.roll_back_in_flight(&mut level);
         self.scratch_roll_back(std::mem::take(&mut level.scratch_kept));
         // Discard deferred effects before undoing tentative action storage.
-        level.after.clear();
+        level.after.get_mut().clear();
         // Restore slots and undo only their recorded modifier edits. Explicit
         // attribute writes survive an abort, and no item query runs here.
         let equipment = std::mem::take(&mut level.equipment);

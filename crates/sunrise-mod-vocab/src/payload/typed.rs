@@ -160,12 +160,13 @@ token!(
 );
 
 impl<T: Wire> ToServer<T> {
-    /// Queue `value` to the connected server through
-    /// [`ClientHost::send_payload_to_server`], with its results, after checking the token:
-    /// `StaleToken` for one the registrar did not hand out for this type.
+    /// Send `value` to the connected server from a shared client host, including a
+    /// screen hook. The token is checked before encoding: `StaleToken` means the
+    /// registrar did not hand it out for this type. The bytes then follow
+    /// [`ClientHost::send_payload_to_server`]'s phase, ordering and transaction rules.
     pub fn send(
         &self,
-        host: &mut dyn ClientHost,
+        host: &dyn ClientHost,
         value: &T,
     ) -> Result<PayloadAccepted, PayloadSendError> {
         self.token

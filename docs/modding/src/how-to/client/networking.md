@@ -169,13 +169,14 @@ struct Counter {
     counter: i32,
 }
 
+static REQUEST: OnceLock<ToServer<Counter>> = OnceLock::new();
 static REPLY: OnceLock<ToClient<Counter>> = OnceLock::new();
 
 fn register(r: &mut dyn Registrar) {
     let mut payloads = r.payload_handlers();
     let mut view = payloads.registrar("1");
     // The server answers each counter with the next one.
-    view.play_to_server_typed::<Counter>(PayloadId("example:count".into()), |value, cx| {
+    let request = view.play_to_server_typed::<Counter>(PayloadId("example:count".into()), |value, cx| {
         let counter = value.counter.checked_add(1).ok_or("counter is too large")?;
         let next = Counter { counter };
         REPLY.get().unwrap().reply(cx, &next).map(drop).map_err(|e| format!("{e:?}"))
@@ -184,6 +185,7 @@ fn register(r: &mut dyn Registrar) {
         PayloadId("example:count_reply".into()),
         |value, _| Ok(log::info!("server counted {}", value.counter)),
     );
+    let _ = REQUEST.set(request);
     let _ = REPLY.set(reply);
 }
 ```
@@ -195,12 +197,33 @@ fn register(r: &mut dyn Registrar) {
   id in another protocol refuses load.
 - **Tokens.** Registration returns a `ToServer<T>` (client to server) or `ToClient<T>` (server to
   client), both for a bidirectional one. Keep it and send with it. A token grants nothing on its own: each send checks it.
-- **Sending and replying.** `ToServer::send(host, &value)` sends from the client
-  (`ClientHost::send_payload_to_server`), `ToClient::send(host, player, &value)` from the server
-  (`PlayerRef::send_payload`), and `reply(cx, &value)` on either answers on the connection a
-  handler received on. They return the raw sends' results: `Queued` means accepted locally.
-  Sending the wrong direction does not compile. To address the single-player owner,
-  use the ordinary player ref from the [players service](../entities/server-services-and-players.md).
+- **Sending and replying.** `ToServer::send(host, &value)` and the raw
+  `ClientHost::send_payload_to_server(id, bytes)` both accept a shared `&dyn ClientHost`.
+  The active connection must have negotiated the registered serverbound channel for the
+  current phase: play, configuration, or both for a `common_*` registration. An absent
+  optional channel returns `UnsupportedPeer`. Outside a transaction, the client submits
+  accepted sends in call order without waiting for a client tick. Inside one, sends stay
+  in order in the journal until root commit. A child commit passes its sends to the parent;
+  abort drops the sends owned by that frame. A pending send cannot cross a change of
+  connection or protocol phase. `Queued` means accepted locally, not delivered.
+  `ToClient::send(host, player, &value)` uses `PlayerRef::send_payload` on the server, and
+  `reply(cx, &value)` on either side answers on the connection the handler received on.
+  Typed tokens enforce the sending direction. To address the single-player owner, use the
+  ordinary player ref from the [players service](../entities/server-services-and-players.md).
+
+  For example, a `Hooks::screen_init_post` listener (`ScreenEvent.Init.Post`) can use
+  the play token above with the shared host it receives:
+
+  ```rust,ignore
+  fn screen_init_post(&self, host: &dyn ClientHost, event: &mut ScreenInitPostEvent<'_>) {
+      if event.screen.id == "stats" && let Some(request) = REQUEST.get() {
+          if let Err(error) = request.send(host, &Counter { counter: 0 }) {
+              log::debug!("counter request not queued: {error:?}");
+          }
+      }
+  }
+  ```
+
 - **Sending to a group.** A `ToClient<T>` also sends to a set of players without you building
   the set, each checking the token and encoding once, then sending the same bytes to each
   player and returning how many sends were accepted: `send_to_all(host, &value)` (every
