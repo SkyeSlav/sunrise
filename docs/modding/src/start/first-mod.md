@@ -1,11 +1,13 @@
 # Your first native mod
 
-A native mod is a Rust crate that implements hooks from the mod API. `cargo sunrise-mod` compiles it on your
-machine against the exact Sunrise build it is pinned to and starts the game with it: the tool is all you install. In
-this page you make a mod that greets every player who joins, compile it, run it, and test it.
+Make a mod that says hello in chat when a player joins. Unlike a [content mod](first-content-mod.md), which adds
+things from data files, this mod reacts to something that happens in the game. You'll use a **hook**: a Rust
+method Sunrise calls at a particular moment. There is still [one project folder and one `.smod` file to
+share](../concepts/how-mods-work.md).
 
-You need [rustup](https://rustup.rs) (the tool installs the Rust the SDK was built with, and says so when it does),
-and, to run the game, resources prepared from your own Minecraft: Java Edition 26.3 (step 6).
+You'll start with a working greeting, then check, build and run it with `cargo sunrise-mod`. Have
+[rustup](https://rustup.rs) ready so the mod tool can install the Rust version the SDK needs. You can check and
+build before you have the [prepared resources](#prepared-resources) needed to play.
 
 ## 1. Install the mod tool
 
@@ -15,19 +17,18 @@ instead is older, and the [newest tool from main](install-tool.md#newest-tool-fr
 
 ## 2. Make the project
 
+In your terminal, start in the folder where you keep your projects. Choose the native template to get a mod
+with a Rust source file:
+
 ```sh
 cargo sunrise-mod new greeter --template native
 cd greeter
 ```
 
-```text
-Created greeter (native mod id greeter). Your editor resolves sunrise-mod-api once the SDK is in .sunrise/sdk/: `cargo sunrise-mod check` fetches it in a fresh clone. Next: cd greeter && cargo sunrise-mod build
-SDK 2d81263 (build 2d8126336e579777eabf9b2fd8b3d476236a04f2) in greeter/.sunrise/sdk
-```
-
-The tool pins the project to the build of the current Nightly (or to [`--sunrise <build>`](../reference/sdk/03-in-a-project.md#build-names)) and fetches that build's
-[SDK](../reference/sdk.md), checking its signature. It writes both pins in `sunrise-mod.toml`, the Sunrise build and
-the `horizon-mixins` tool that build names, so you never write a commit by hand:
+The tool records the current Nightly's exact Sunrise build in `sunrise-mod.toml` and fetches that build's
+signed [SDK](../reference/sdk.md), which gives your code the API it can call. To start from a different build,
+pass [`--sunrise <build>`](../reference/sdk/03-in-a-project.md#build-names) when you make the project. Open
+`greeter` in your editor:
 
 ```text
 greeter/
@@ -40,7 +41,7 @@ greeter/
 ```
 
 After a fresh clone, run `cargo sunrise-mod check` once before opening the project in an editor: it fetches
-`.sunrise/sdk/` again. `cargo sunrise-mod update` moves both pins to the newer Nightly later.
+`.sunrise/sdk/` again. To move the project to a newer Nightly later, use `cargo sunrise-mod update`.
 
 ## 3. Read the hook
 
@@ -66,16 +67,9 @@ After a fresh clone, run `cargo sunrise-mod check` once before opening the proje
 cargo sunrise-mod check
 ```
 
-`check` applies the package rules, runs `cargo check` against the pinned SDK's API source, and lists what the mod
-uses of that build. The code check targets this computer. The expected end of the output:
-
-```text
-    Checking mod-greeter v0.1.0 (…/greeter)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in …
-greeter uses 34 items of the API (1 capability, 5 fields or variants, 1 hook, 2 hook arguments, 1 macro, 5 methods, 4 traits, 15 types). Made for 2d81263.
-```
-
-Run it after every edit. It is the quick loop; it does not link against the game.
+`check` validates the package and runs `cargo check` against the pinned SDK's API source for this computer.
+Look for the summary naming your mod, what it uses from the API, and the build it was made for. Run `check`
+after an edit to catch mistakes without linking against the game.
 
 ## 5. Build against the prebuilt game
 
@@ -129,13 +123,14 @@ the greeting appears in chat, and the mod is listed on the game's **Mods** scree
 The game needs resources prepared from your own Minecraft: Java Edition 26.3. The tool never downloads or bundles
 Mojang's files. Make them once and name the folder with `--resources`:
 
-1. Play 26.3 once from the Minecraft Launcher, so its files are on your computer.
-2. Download the 26.3 server jar yourself: from `minecraft.net/download/server` while 26.3 is the current release,
-   otherwise from the address `downloads.server.url` in the Minecraft Launcher's `versions/26.3/26.3.json`.
+1. Have your own copy of Minecraft: Java Edition 26.3 installed. Play it once so the client files are on
+   your computer.
+2. Download the 26.3 server jar from `minecraft.net/download/server` while 26.3 is the current release,
+   otherwise use the address in `downloads.server.url` in your installation's `versions/26.3/26.3.json`.
 3. Run `sunrise-prepare --prepare --server-jar <server.jar> --output <folder>`. `sunrise-prepare` is in the game
-   download for your computer in the [Nightly release](https://github.com/sunrise-org/sunrise/releases/tag/nightly); `sunrise-prepare --help`
-   lists where it reads your copy. A Prism Launcher or MultiMC install is read with `--prism-dir` and needs no
-   server jar.
+   download for your computer in the [Nightly release](https://github.com/sunrise-org/sunrise/releases/tag/nightly).
+   If your client files are in a non-default location, `sunrise-prepare --help` explains how to point the tool
+   at them. For a Prism or MultiMC installation, pass `--prism-dir <path>` instead of `--server-jar`.
 
 ## 7. Test it
 

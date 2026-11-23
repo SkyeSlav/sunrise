@@ -19,6 +19,7 @@
 <!-- A page X.md with a folder X/ beside it gets the folder's pages as its sub-chapters, in file name order.
      A page directly in concepts/ or how-to/ that this file doesn't list joins the end of its part, by title. -->
 
+- [How a mod works](concepts/how-mods-work.md)
 - [Hooks and the Host](concepts/hooks-and-the-host.md)
 - [Load phases and access](concepts/load-phases.md)
 - [Registration and diagnostics](concepts/registration-and-diagnostics.md)
