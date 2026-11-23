@@ -194,3 +194,101 @@ fn registered_loot_function_reads_only_tags_bound_by_the_pack_loader() {
         },
     );
 }
+
+/// A loot function reading damage type tags through its context, recording what it read:
+/// a pack type in and out of a pack tag, an absent tag and an unknown type.
+struct DamageTagReader(std::sync::Arc<std::sync::Mutex<Vec<[Option<bool>; 4]>>>);
+#[mod_api::__subscriptions]
+impl Hooks for DamageTagReader {
+    fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+        r.register_loot_function_type(
+            &mod_api::Identifier::parse("damage_tag_reader:probe").unwrap(),
+            DamageTagReader(self.0.clone()),
+        );
+    }
+}
+impl ModLootFunction for DamageTagReader {
+    fn validate(&self, _: &LootEntryData) -> Result<(), String> {
+        Ok(())
+    }
+    fn apply(
+        &self,
+        _: &LootEntryData,
+        stack: LootStack,
+        context: &mut dyn LootTypeContext,
+    ) -> Result<LootStack, String> {
+        let tags = context.tags();
+        let key = |id| tags.key(&mod_api::Identifier::parse(id).unwrap()).unwrap();
+        let (heat, absent) = (key("dmg:heat"), key("dmg:absent"));
+        self.0.lock().unwrap().push([
+            tags.damage_type_in_tag("dmg:hot", heat),
+            tags.damage_type_in_tag("dmg:cold", heat),
+            tags.damage_type_in_tag("dmg:hot", absent),
+            tags.damage_type_in_tag("dmg:unknown", heat),
+        ]);
+        Ok(stack)
+    }
+}
+
+#[test]
+#[ignore = "daily"]
+fn a_loot_function_reads_the_bound_damage_type_tags() {
+    use crate::game::native_entity_refs::tests::run_fresh_cases;
+    use sunrise_core::random::LegacyRandom;
+    use sunrise_world::loot::{LootData, PackOverlay};
+    if run_fresh_cases(
+        "game::api_values::loot_values::tests::a_loot_function_reads_the_bound_damage_type_tags",
+        "SUNRISE_TEST_LOOT_DAMAGE_TYPE_TAGS",
+        &["loot"],
+    ) {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("items.json"), r#"{"minecraft:stick":{}}"#).unwrap();
+    let defaults = sunrise_world::item_defaults::read(root.path()).unwrap();
+    let damage_type = |message: &str| {
+        serde_json::json!({"message_id": message, "scaling": "never", "exhaustion": 0.1})
+            .to_string()
+            .into_bytes()
+    };
+    let table = serde_json::json!({"pools":[{"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:stick"}]}],
+        "modifier":{"type":"damage_tag_reader:probe"}});
+    let files = vec![
+        ("damage_type/dmg:hot".to_owned(), vec![damage_type("hot")]),
+        ("damage_type/dmg:cold".to_owned(), vec![damage_type("cold")]),
+        (
+            "tags/dmg:damage_type/heat".to_owned(),
+            vec![br#"{"values":["dmg:hot"]}"#.to_vec()],
+        ),
+        (
+            "loot_table/dmg:probe".to_owned(),
+            vec![serde_json::to_vec(&table).unwrap()],
+        ),
+    ];
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    with_mods(
+        vec![ModEntry::new(
+            "damage_tag_reader",
+            Box::new(DamageTagReader(seen.clone())),
+        )]
+        .into(),
+        || {
+            mod_platform::__private::part_tests::install_parts_fixture(mod_api::__private::mods())
+                .unwrap();
+            mod_api::__private::resolve_items(["minecraft:stick"]).unwrap();
+            let loot = LootData::load_with_types(
+                root.path(),
+                &PackOverlay::new(&files),
+                &defaults,
+                crate::game::loot_types::capture(),
+            )
+            .unwrap();
+            let drops = loot.roll("dmg:probe", &mut LegacyRandom::new(0), 0.0, None, None);
+            assert_eq!(drops.len(), 1, "the function ran and kept the stick");
+        },
+    );
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [[Some(true), Some(false), Some(false), None]]
+    );
+}

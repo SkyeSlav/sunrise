@@ -302,6 +302,8 @@ pub struct LootData {
     /// Bound tags by registry and tag ID.
     tags: loot_tags::BoundTags,
     item_tag_names: Option<ItemTagNames>,
+    /// The bound damage type registry's names, sorted, for `LootTags::damage_type_in_tag`.
+    damage_types: Vec<String>,
     /// Smelting recipes in recipe id order: (ingredient, result, result count).
     smelting: Vec<(Value, String, i32)>,
 }
@@ -894,6 +896,11 @@ impl LootData {
                 &standalone_damage
             }
         };
+        let mut damage_types: Vec<_> = damage
+            .entries()
+            .map(|(_, definition)| definition.name.clone())
+            .collect();
+        damage_types.sort();
         let mut tags = HashMap::from([(
             "damage_type".to_owned(),
             damage
@@ -965,6 +972,7 @@ impl LootData {
             support_answers: Default::default(),
             item_tag_names: tags.get("item").map(ItemTagNames::bind),
             tags,
+            damage_types,
             smelting: Vec::new(),
         };
         binding.snapshot(&mut loaded)?;
