@@ -1,0 +1,3 @@
+ids = ["hook:hanging_break", "hook:attack_entity", "hook:entity_interact"]
+why = "hanging_break version 2, attack_entity version 2 and entity_interact version 3 take a leading `dimension: LevelDimension`, the level (not its dimension type) of the hanging entity, or the level the player and target share. Their events gain a `dimension` field. Timing, cancellation and results are unchanged."
+migrate = "Rebuild against this SDK. Listeners that take the event need no change; read `event.dimension` for per-level rules. Direct calls to the generated dispatchers pass the level first."

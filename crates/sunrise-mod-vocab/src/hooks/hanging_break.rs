@@ -14,15 +14,24 @@ pub trait Hooks {
     /// is `/kill`. The listener may change the world: straight after it returns
     /// without cancelling, the game finds the frame or painting again by its entity
     /// id; if it is gone, or an empty frame being broken now holds an item, nothing
-    /// breaks and nothing is removed.
+    /// breaks and nothing is removed. `dimension` is the level the frame or
+    /// painting hangs in (`Entity.level().dimension()`: the level, not its
+    /// dimension type).
     #[hook(
         target = "sunrise_client::game::native_hooks::base::Game<'_>::native_hanging_break",
         dispatch = "flat",
         side = "server",
+        version = 2,
         contract = "cancel",
         out = "cancel",
         cancellable = true,
         neoforge = "none (vanilla hanging entity breaking; NeoForge adds no event or extension for it); AttackEntityEvent fires for players only"
     )]
-    fn hanging_break(player: Option<u128>, kind: &str, pos: [i32; 3], cancel: &mut bool);
+    fn hanging_break(
+        dimension: LevelDimension,
+        player: Option<u128>,
+        kind: &str,
+        pos: [i32; 3],
+        cancel: &mut bool,
+    );
 }

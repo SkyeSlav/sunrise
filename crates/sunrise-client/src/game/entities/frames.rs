@@ -1254,6 +1254,52 @@ mod game_event_tests {
         assert!(game.item_frames.is_empty(), "nothing holds the frame");
         assert_eq!(posted(), [("minecraft:block_change", center, None)]);
     }
+
+    /// `BlockAttachedEntity.hurtServer` breaks a frame within its own level:
+    /// `hanging_break` names that level, not the overworld.
+    #[test]
+    #[ignore = "daily"]
+    fn a_nether_frame_break_reports_its_level() {
+        use crate::game::native_entity_refs::tests::run_fresh_cases;
+        use std::sync::{Arc, Mutex};
+
+        if run_fresh_cases(
+            "game::frames::game_event_tests::a_nether_frame_break_reports_its_level",
+            "SUNRISE_HANGING_BREAK_LEVEL_CASE",
+            &["nether"],
+        ) {
+            return;
+        }
+
+        struct Levels(Arc<Mutex<Vec<mod_api::LevelDimension>>>);
+        #[mod_api::__subscriptions]
+        impl mod_api::Hooks for Levels {
+            fn hanging_break(
+                &self,
+                _: &mut dyn mod_api::ServerHost,
+                event: &mut mod_api::HangingBreakEvent<'_>,
+            ) {
+                self.0.lock().unwrap().push(event.dimension);
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+            "levels",
+            Box::new(Levels(seen.clone())),
+        )]
+        .into();
+        mod_platform::testing::with_mods(mods, || {
+            let mut resources = None;
+            let mut game = server_game(&mut resources);
+            game.enter_level(Dim::Nether).expect("the nether opens");
+            game.item_frames.clear();
+            game.item_frames.extend(vec![frame(1, [0, 64, 1], None)]);
+            assert!(game.break_frame_by(0, None), "no listener kept it");
+            assert!(game.item_frames.is_empty());
+        });
+        assert_eq!(*seen.lock().unwrap(), [mod_api::LevelDimension::Nether]);
+    }
 }
 
 #[cfg(test)]

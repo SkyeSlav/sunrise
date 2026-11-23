@@ -401,7 +401,7 @@ In `declare_general_entity`, pass `pickable` after `summonable`. Pass `false` fo
 vanilla's plain `Entity.isPickable` default. With `true`, the crosshair can hit
 the declared box as soon as the row spawns on the client. The ordinary use and
 attack packets name that row, and the existing `entity_interact` and
-`attack_entity` hooks receive its id and declared kind. Without a listener's
+`attack_entity` hooks receive its id, declared kind and level. Without a listener's
 response, use on the row passes and the row declines damage. This does not make
 the box solid or give it a middle-click item. The next argument declares how the
 row reacts to pistons: pass `None` for `PushReaction::PushPull`, or

@@ -666,7 +666,8 @@ impl Game<'_> {
         stack: Option<&ItemStack>,
         result: &mut Option<mod_api::InteractionResult>,
     ) {
-        self.fire_entity_interact(hand, entity, kind, stack, result);
+        let dimension = self.dim.level();
+        self.fire_entity_interact(dimension, hand, entity, kind, stack, result);
     }
     /// A player left-clicks the block `state` at `pos`, `face` the face hit
     /// (`[0, 1, 0]` is the top): where `ServerPlayerGameMode.handleBlockBreakAction`
@@ -1681,7 +1682,8 @@ impl Game<'_> {
         pos: [i32; 3],
         cancel: &mut bool,
     ) {
-        self.fire_hanging_break(player, kind, pos, cancel);
+        let dimension = self.dim.level();
+        self.fire_hanging_break(dimension, player, kind, pos, cancel);
     }
     /// A server player empties a bucket at `pos` (`fluid`: `minecraft:water`,
     /// `minecraft:lava`, `minecraft:powder_snow`; a fish or axolotl bucket
@@ -3385,7 +3387,8 @@ impl Game<'_> {
         pos: [f64; 3],
         canceled: &mut bool,
     ) {
-        self.fire_attack_entity(entity, kind, pos, canceled);
+        let dimension = self.dim.level();
+        self.fire_attack_entity(dimension, entity, kind, pos, canceled);
     }
     /// `dimension`'s level opened on the server (NeoForge's `LevelEvent.Load`,
     /// posted in `MinecraftServer.createLevels`): before any of its chunks

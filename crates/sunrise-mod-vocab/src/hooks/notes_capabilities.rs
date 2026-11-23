@@ -213,8 +213,9 @@ pub trait Notes {
   asked while the chat is hidden (F1 with the chat closed). Only the drawing moves; the input box and clicks on
   messages stay in vanilla's place, as with NeoForge.
 
-- `entity_interact` and `ItemPart::item_interact_mob` run on both sides with native `HostSide`,
-  version 2, answering `Option<InteractionResult>`; the latter includes the interaction hand.
+- `entity_interact` (version 3, with the shared level as `dimension`) and `ItemPart::item_interact_mob`
+  (version 2) run on both sides with native `HostSide`, answering `Option<InteractionResult>`; the latter
+  includes the interaction hand.
   `None` defers; consuming results end the hand loop with the swing rules above; nonconsuming entity answers fall through.
 
 - Left-clicking a block, on the server for every player: `left_click_block` hears the start of a dig

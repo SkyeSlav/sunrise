@@ -164,8 +164,10 @@ Canceling `ItemBeforeBlock` skips the item's `on_item_use_first` Part. `Pass`
 continues to the block phase; any non-`Pass` result ends the block interaction. Cancellation alone does not suppress the later phases when its answer is `Pass`. A block-phase `TryWithEmptyHand`
 can run the block's empty-hand behaviour on the main hand.
 
-`ItemPart::use_on`, `Hooks::entity_interact` and `ItemPart::item_interact_mob`
-use version 2, run on both logical sides, and expose native `HostSide`.
+`ItemPart::use_on` and `ItemPart::item_interact_mob` use version 2, and
+`Hooks::entity_interact` version 3, whose event also names the `dimension` (the
+level the player and entity share). All three run on both logical sides and
+expose native `HostSide`.
 Their mutable `result` is `Option<InteractionResult>`: `None` defers to later
 listeners and the ordinary behaviour; `Some(result)` supplies the replacement
 answer. `item_interact_mob` also carries the interaction `hand`.

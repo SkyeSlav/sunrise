@@ -21,6 +21,7 @@ fn entity_interact_reports_each_typed_hand() {
         let mut result = None;
         dispatch_entity_interact(
             HostSide::Server(&mut TestHost),
+            LevelDimension,
             hand,
             42,
             "minecraft:zombie",

@@ -4,7 +4,8 @@
 pub trait Hooks {
     /// A player right-clicks the entity `entity` (`Entity.getId`) of type
     /// `kind` (`minecraft:cow`) with `hand` (`Hand::Main` or `Hand::Off`), holding `stack` (none in an
-    /// empty hand): where `Player.interactOn` starts, before the entity's own
+    /// empty hand), in the level `dimension` (the level the player and entity share,
+    /// `PlayerInteractEvent.getLevel`): where `Player.interactOn` starts, before the entity's own
     /// `interact` and the item's `interactLivingEntity`. Both logical sides
     /// answer independently, once per hand, main hand before off hand.
     /// A consuming client result ends the loop; only Success swings there.
@@ -17,12 +18,13 @@ pub trait Hooks {
         target = "sunrise_client::game::native_hooks::base::Game<'_>::native_entity_interact",
         dispatch = "flat",
         side = "both",
-        version = 2,
+        version = 3,
         contract = "replace",
         out = "result",
         neoforge = "PlayerInteractEvent.EntityInteract"
     )]
     fn entity_interact(
+        dimension: LevelDimension,
         hand: Hand,
         entity: i32,
         kind: &str,
