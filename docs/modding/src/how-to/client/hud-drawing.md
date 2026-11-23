@@ -75,6 +75,22 @@ installed body nor Post runs. For work that must happen even when the HUD is hid
 paints separately in its screen. The original subtitle layer can defer paint to a screen
 background without running its hooks again. Cancel that layer to suppress scheduled paint.
 
+### Editing the hotbar attack indicator
+
+Use `hotbar_attack_indicator_progress` to edit `event.progress` without replacing
+`minecraft:hotbar`. The hook receives a read-only `ClientHost`. It runs inside the original
+hotbar body after the items, and starts from the local player's attack charge at partial tick
+zero, even when the camera follows a different player. It runs even at full charge, so setting
+progress below `1.0` can make the indicator visible. Setting it to `1.0` hides the indicator.
+
+Listeners see the last accepted progress. A non-finite value or one outside `0.0..=1.0` is
+refused without erasing earlier accepted edits or disabling the listener. The change applies
+only to this draw: it does not change the crosshair indicator, attack charge, or combat.
+
+The hook runs only in Hotbar indicator mode with the HUD visible and a player camera outside
+spectator mode. It does not run if Pre cancels the hotbar, a replacement takes over, or a
+wrapper skips the original body. A wrapper that delegates to the original body reaches it.
+
 ## Status rows and fixed text positions
 
 `minecraft:player_health` draws the hearts. The neighbouring `minecraft:armor_level`,
