@@ -1,0 +1,3 @@
+ids = ["handle:Registrar::register_density_function_type", "trait:DensityFunctionType", "trait:DensityFunction"]
+why = "Mods can register density function types: a type decodes its JSON form into a DensityFunction, which world generation samples like vanilla's own types wherever a noise router or density file names it."
+migrate = "Nothing to migrate: the registration is new."
