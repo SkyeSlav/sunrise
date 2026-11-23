@@ -34,6 +34,7 @@ impl Game<'_> {
     pub(in crate::game) fn set_projectile_attack(attack: &mut Attack, shot: &Projectile) {
         attack.projectile = Some(shot.id as i32);
         attack.projectile_kind = Self::projectile_direct_entity(&shot.kind);
+        attack.projectile_type = Some(shot.entity_type());
         let weapon = shot.arrow.as_ref().and_then(|arrow| {
             if matches!(shot.kind, ProjectileKind::Trident) {
                 Some(&arrow.pickup_item)
@@ -98,6 +99,9 @@ impl Game<'_> {
             aim,
             [projectile.velocity.x, projectile.velocity.z],
         );
+        let Some((index, hurt)) = self.complete_mob_hurt(index, hurt) else {
+            return false;
+        };
         self.finish_mob_damage_at(index);
         self.settle_creaking_hurt(id);
         hurt

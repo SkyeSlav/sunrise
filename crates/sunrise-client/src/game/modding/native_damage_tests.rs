@@ -15,6 +15,120 @@ use sunrise_client::mobs::{Damage, DamageKind, Mob};
 use sunrise_client::motion::PlayerMotion;
 use sunrise_core::{geometry::Vec3, random::RandomSource};
 
+const SLEEPING_BED: [i32; 3] = [4, 100, 4];
+
+struct ObserveBedDuringDamage(Arc<Mutex<Vec<&'static str>>>);
+
+impl ObserveBedDuringDamage {
+    fn observe(&self, level: &dyn HitHost, phase: &'static str) {
+        let state = level.block_state(SLEEPING_BED).unwrap();
+        assert_eq!(level.state_block(state), Some("minecraft:red_bed"));
+        assert_eq!(
+            level.state_with_property(state, "occupied", "false"),
+            Some(state)
+        );
+        self.0.lock().unwrap().push(phase);
+    }
+}
+
+#[mod_api::__subscriptions]
+impl Hooks for ObserveBedDuringDamage {
+    fn living_damage_pre(&self, level: &mut dyn HitHost, _: &mut LivingDamagePreEvent<'_>) {
+        self.observe(level, "pre");
+    }
+
+    fn living_damage_post(&self, level: &mut dyn HitHost, _: &mut LivingDamagePostEvent<'_>) {
+        self.observe(level, "post");
+    }
+}
+
+#[test]
+#[ignore = "daily"]
+fn brainless_villager_wakes_before_damage_listeners() {
+    use super::native_entity_refs::tests::{prepare_entity_ticking_neighborhood, run_fresh_cases};
+    use sunrise_client::mobs::{villager, villager_brain};
+    use sunrise_core::{nbt::Tag, position::ChunkPos};
+
+    if run_fresh_cases(
+        "game::native_damage_tests::brainless_villager_wakes_before_damage_listeners",
+        "SUNRISE_TEST_BRAINLESS_VILLAGER_DAMAGE",
+        &["brainless"],
+    ) {
+        return;
+    }
+
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let mods = vec![mod_api::ModEntry::new(
+        "observe_bed",
+        Box::new(ObserveBedDuringDamage(Arc::clone(&heard))),
+    )]
+    .into();
+    mod_platform::testing::with_mods(mods, || {
+        with_game(|game| {
+            game.build_registries();
+            game.set_allow_commands(true);
+            prepare_entity_ticking_neighborhood(game, ChunkPos::new(0, 0));
+            assert!(game.run_command("fill 0 99 0 7 99 7 stone"));
+            assert!(game.run_command(
+                "setblock 4 100 4 red_bed[part=head,facing=north,occupied=false] strict"
+            ));
+            assert!(game.run_command(
+                "setblock 4 100 5 red_bed[part=foot,facing=north,occupied=false] strict"
+            ));
+            let id = game.take_entity_id();
+            let kind = game
+                .res
+                .mob_types()
+                .get("minecraft:villager")
+                .unwrap()
+                .clone();
+            game.mobs
+                .push(Mob::new(id, kind, Vec3::new(3.5, 100.0, 4.5), 0.0));
+            let mob = game.mobs.last_mut().unwrap();
+            let job = [2, 100, 4];
+            let meeting = [3, 100, 4];
+            mob.extra.bed = Some(SLEEPING_BED);
+            mob.extra.home = Some(job);
+            mob.extra.meeting = Some(meeting);
+            let epoch = game.native_lifecycle.epoch().unwrap();
+            let living = mod_api::LivingRef::new(mod_api::EntityRef::new(epoch, id));
+            game.world.game_time = 37;
+            assert!(game.living_start_sleeping(living, SLEEPING_BED));
+            let ext = villager::ext(game.mob_object(id).unwrap()).unwrap();
+            assert!(ext.brain.is_none() && ext.saved_memories.is_none());
+            assert_eq!(ext.last_slept, Some(37));
+
+            game.world.game_time = 89;
+            assert!(game.run_command(
+                "damage @e[type=villager,limit=1] 2 minecraft:generic at 2.5 100 4.5"
+            ));
+            assert_eq!(&*heard.lock().unwrap(), &["pre", "post"]);
+            let mob = game.mobs.last_mut().unwrap();
+            assert_eq!(mob.health, 18.0);
+            assert!(!villager::sleeping(mob));
+            assert!(villager::ext(mob).unwrap().brain.is_none());
+
+            villager_brain::init(mob, 89, 14000, i64::from(id));
+            let mut written = Vec::new();
+            villager::write_memories(mob, &mut written);
+            let memories = Tag::compound(written);
+            let memory = |key| memories.get(key).and_then(|tag| tag.get("value"));
+            assert_eq!(memory("minecraft:last_slept"), Some(&Tag::Long(37)));
+            assert_eq!(memory("minecraft:last_woken"), Some(&Tag::Long(89)));
+            for (key, pos) in [
+                ("minecraft:home", SLEEPING_BED),
+                ("minecraft:job_site", job),
+                ("minecraft:meeting_point", meeting),
+            ] {
+                assert_eq!(
+                    memory(key).and_then(|tag| tag.get("pos")),
+                    Some(&Tag::IntArray(pos.to_vec()))
+                );
+            }
+        });
+    });
+}
+
 /// What the probe heard: Pre's entity, original damage, new damage and armor's reduction, and
 /// Post's health damage, then its entity, health damage, absorption reduction and blocked damage.
 #[derive(Debug, Default, PartialEq)]
