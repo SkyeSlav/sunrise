@@ -1,8 +1,9 @@
 //! `host.transaction` (#41 §7): NeoForge 26.3's `Transaction`. Changes made through the
 //! capability helpers inside one are kept by the game and made final only when the outermost
 //! transaction commits; an abort puts back everything its closure changed.
+use crate::callback_owner::{CallbackOwner, contain_unwind};
 use crate::{ItemPlace, ItemStack, ServerHost, StackWriteError};
-use std::{fmt, marker::PhantomData, rc::Rc};
+use std::{convert::Infallible, fmt, marker::PhantomData, rc::Rc};
 
 // no wire: only the host can lend this thread-bound authority over a live journal.
 /// A loan of write authority in one open transaction, as NeoForge's `TransactionContext`.
@@ -21,6 +22,80 @@ impl TransactionContext {
     /// enclosing transaction. Depth alone cannot identify a frame or journal.
     pub fn depth(&self) -> usize {
         self.frame.depth
+    }
+
+    /// Enlists an owned effect for successful outermost settlement, following NeoForge's
+    /// `RootCommitJournal.updateSnapshots` and `onRootCommit`. An accepted effect does not mean
+    /// the transaction has committed. A child commit passes its effects to its parent in order;
+    /// abort, unwind and commit refusal discard the affected frame's effects.
+    ///
+    /// Pass the host and context for the exact innermost frame. A different or enclosing context
+    /// is `InvalidContext`; a host without this service returns `Unavailable`. Neither runs the
+    /// effect. The record is consumed even on refusal.
+    pub fn on_root_commit(
+        &self,
+        host: &mut dyn ServerHost,
+        effect: Box<dyn RootCommitEffect>,
+    ) -> Result<(), TransactionError<Infallible>> {
+        host.stage_root_commit_effect(
+            self,
+            PendingRootCommitEffect {
+                owner: crate::content::crash::current_native_mod().map(CallbackOwner::for_mod),
+                effect: Some(effect),
+            },
+        )
+    }
+}
+
+/// An owned, server-side mod action delivered once after its outermost transaction commits.
+/// Store the data needed to do the work, not a borrowed host, transaction, or event. The effect
+/// runs on the enlisting thread under the enlisting mod's identity. This is process-local work,
+/// not saved data or a Wire payload. For rollback of per-object mod state, use attachments instead.
+pub trait RootCommitEffect: 'static {
+    /// Runs with a fresh server host, after built-in publication and without the old context.
+    /// Keep typed handles for explicit targets and check that they still resolve at delivery.
+    /// Effects run in enlistment order. A transaction committed from an effect queues its own
+    /// effects behind those already waiting. Disabled owners' effects are discarded; a mod panic
+    /// cannot undo the completed commit or stop the remaining enabled effects.
+    fn on_root_commit(self: Box<Self>, host: &mut dyn ServerHost);
+}
+
+// no wire: the effect and its attribution belong to this process.
+// exhaustive: opaque engine-only ownership boundary.
+/// An enlisted effect with the mod identity captured at the call site.
+#[doc(hidden)]
+pub struct PendingRootCommitEffect {
+    owner: Option<CallbackOwner>,
+    effect: Option<Box<dyn RootCommitEffect>>,
+}
+
+impl PendingRootCommitEffect {
+    /// Invoke once under the captured owner, leaving a rejected effect for the disposal path.
+    pub fn run(mut self, host: &mut dyn ServerHost) {
+        let effect = &mut self.effect;
+        let invoke = || {
+            effect
+                .take()
+                .expect("pending root commit effect")
+                .on_root_commit(host);
+        };
+        if let Some(owner) = &self.owner {
+            let _ = owner.call("root commit effect", "root_commit_effect", invoke);
+        } else if let Err(panic) = contain_unwind(invoke) {
+            log::error!("root commit effect panicked: {panic}");
+        }
+    }
+}
+
+impl Drop for PendingRootCommitEffect {
+    fn drop(&mut self) {
+        if let Some(effect) = self.effect.take() {
+            if let Some(owner) = &self.owner {
+                owner.dispose("root commit effect", "root_commit_effect_drop", effect);
+            } else if let Err(panic) = contain_unwind(|| drop(effect)) {
+                log::error!("dropping a root commit effect panicked: {panic}");
+            }
+        }
     }
 }
 
@@ -87,8 +162,8 @@ pub enum TransactionLifecycle {
     Open,
     /// A nested transaction is closing: committing into the one around it, or aborting.
     Closing,
-    /// The outermost transaction is closing. On commit, effects such as `contents_changed`
-    /// and block updates run after its frame has been removed.
+    /// The outermost transaction is closing or reporting its commit. Built-in publication and
+    /// enlisted root-commit effects run after its frame has been removed.
     RootClosing,
 }
 

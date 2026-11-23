@@ -152,6 +152,50 @@ even inside a transaction. Equipment sounds, equip/unequip events from
 on the same side of the rollback boundary. An abort does not undo these writes or effects.
 Use journaled capability handlers when you need rollback.
 
+### Enlisting a mod effect
+
+When a successful transfer should publish something the mod owns, put the data in an owned
+`RootCommitEffect` and enlist it with `tx.on_root_commit(host, effect)`. Pass the host and context
+from the same innermost scope. For example, a provider can add a transferred stack to its own
+outbound queue only once the transfer is final:
+
+```rust,ignore
+use std::{cell::RefCell, convert::Infallible, rc::Rc};
+use mod_api::{ItemStack, RootCommitEffect, ServerHost, TransactionContext, TransactionError};
+
+struct PublishTransfer {
+    outbound: Rc<RefCell<Vec<ItemStack>>>,
+    stack: ItemStack,
+}
+
+impl RootCommitEffect for PublishTransfer {
+    fn on_root_commit(self: Box<Self>, _host: &mut dyn ServerHost) {
+        self.outbound.borrow_mut().push(self.stack);
+    }
+}
+
+fn enlist_transfer(
+    host: &mut dyn ServerHost,
+    tx: &TransactionContext,
+    outbound: Rc<RefCell<Vec<ItemStack>>>,
+    stack: ItemStack,
+) -> Result<(), TransactionError<Infallible>> {
+    tx.on_root_commit(host, Box::new(PublishTransfer { outbound, stack }))
+}
+```
+
+Enlisting is not committing. A committed child passes its effects to its parent in order,
+including across levels. An aborted, refused or unwound frame discards its effects, including
+any it took from committed children. The outermost commit publishes the game's own effects
+first, then delivers the mod's records in enlistment order. If an effect opens and commits
+another transaction, that transaction's effects go behind the ones already waiting.
+
+Each effect receives a fresh server host, not the original transaction or event. Keep typed
+handles for anything you need to address and handle stale ones when the record runs. The
+completed commit cannot be vetoed or undone by the effect. Unlike a scheduled task, the
+record depends on commit, not on a tick delay. This does not roll back direct writes to mod
+storage; keep per-object state that needs rollback in [attachments](attachments.md).
+
 ## Deferred level, entity, and player effects
 
 An explicit server-side presentation effect joins the innermost open transaction in the level

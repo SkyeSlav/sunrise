@@ -34,6 +34,14 @@ impl ServerHost for Game<'_> {
         Ok(())
     }
 
+    fn stage_root_commit_effect(
+        &mut self,
+        tx: &TransactionContext,
+        effect: mod_api::__private::PendingRootCommitEffect,
+    ) -> Result<(), TransactionError<core::convert::Infallible>> {
+        Game::stage_root_commit_effect(self, tx, effect)
+    }
+
     fn with_transaction_scope(
         &mut self,
         callback: &mut dyn for<'loan> FnMut(

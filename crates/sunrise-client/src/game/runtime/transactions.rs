@@ -33,10 +33,13 @@
 //! commit, and mods hear of joins and leaves at the root commit (`transactions/entities.rs`).
 use super::{BlockEntity, BlockStateId, Dim, Game, machines::HopperState, maps::MapData};
 use mod_api::{
-    __private::TransactionFrame, LevelRef, TransactionContext, TransactionLifecycle,
-    TransactionScopeError,
+    __private::{PendingRootCommitEffect, TransactionFrame},
+    LevelRef, TransactionContext, TransactionError, TransactionLifecycle, TransactionScopeError,
 };
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    collections::{BTreeMap, HashMap, VecDeque},
+    convert::Infallible,
+};
 use sunrise_client::{
     block_entities::BlockEntityIdentity,
     effects::EffectInstance,
@@ -94,6 +97,8 @@ pub(super) struct OpenTransactions {
     /// Live scratch rows; the frame opening a loan owns its ID.
     scratch: HashMap<u64, scratch::Scratch>,
     closing: Option<TransactionLifecycle>,
+    /// Present during a root close and its effect drain. Reentrant root commits append here.
+    root_commit_queue: Option<VecDeque<PendingRootCommitEffect>>,
     /// Implicit container notices waiting for this quick move's source settlement.
     quick_move_notices: Option<Vec<QuickMoveNotice>>,
     /// How many writes the journals have been asked to keep, ever: a whole-state epoch that no
@@ -277,6 +282,20 @@ impl Drop for ClosingPhase<'_, '_> {
     }
 }
 
+/// Only the outermost closer owns the drain and detaches it on exit or unwind.
+struct RootCommitQueueScope<'a, 'g> {
+    game: &'a mut Game<'g>,
+    owns_queue: bool,
+}
+
+impl Drop for RootCommitQueueScope<'_, '_> {
+    fn drop(&mut self) {
+        if self.owns_queue {
+            drop(self.game.transactions.root_commit_queue.take());
+        }
+    }
+}
+
 struct KeptBlock {
     state: BlockStateId,
     replay: Option<BlockReplay>,
@@ -356,6 +375,8 @@ pub(super) struct Level {
     frame: Option<TransactionFrame>,
     parent_attachment_query_scope: u64,
     dimension: Option<super::Dim>,
+    /// Mod-owned work follows the transaction stack, not level-local publication.
+    root_commit_effects: VecDeque<PendingRootCommitEffect>,
     /// Each block entity as it was before this transaction first wrote it.
     block_entities: HashMap<Pos, Kept>,
     /// Rows moved out of storage when their block was tentatively replaced. Commit replays
@@ -1121,12 +1142,29 @@ impl<'g> Game<'g> {
         self.current_storage_frame()
             .is_some_and(|frame| frame.matches(tx))
     }
-    /// `transaction_lifecycle`: the close running, else whether one is open.
+    /// Journal an effect only under the loan for the exact current frame.
+    pub(super) fn stage_root_commit_effect(
+        &mut self,
+        tx: &TransactionContext,
+        effect: PendingRootCommitEffect,
+    ) -> Result<(), TransactionError<Infallible>> {
+        let level = self
+            .transactions
+            .last_mut()
+            .filter(|level| level.frame.is_some_and(|frame| frame.matches(tx)))
+            .ok_or(TransactionError::InvalidContext)?;
+        level.root_commit_effects.push_back(effect);
+        Ok(())
+    }
+    /// `transaction_lifecycle`: the close running, else whether one is open or delivering effects.
     pub(in crate::game) fn transaction_lifecycle(&self) -> TransactionLifecycle {
         match self.transactions.closing {
             Some(closing) => closing,
-            None if self.transactions.is_empty() => TransactionLifecycle::None,
-            None => TransactionLifecycle::Open,
+            None if self.has_open_transaction() => TransactionLifecycle::Open,
+            None if self.transactions.root_commit_queue.is_some() => {
+                TransactionLifecycle::RootClosing
+            }
+            None => TransactionLifecycle::None,
         }
     }
     pub(super) fn current_transaction_is_here(&self) -> bool {
@@ -1156,7 +1194,16 @@ impl<'g> Game<'g> {
     /// or cross-level frame never commits or restores its level-local snapshots into another level.
     fn close_storage_transaction(&mut self, commit: bool) -> Option<StorageSettlement> {
         let owner = self.transactions.last()?.dimension.unwrap_or(self.dim);
-        if let Some(settlement) = self.with_effect_level(owner, |game| {
+        let owns_queue =
+            self.transactions.len() == 1 && self.transactions.root_commit_queue.is_none();
+        if owns_queue {
+            self.transactions.root_commit_queue = Some(VecDeque::new());
+        }
+        let scope = RootCommitQueueScope {
+            game: self,
+            owns_queue,
+        };
+        let settlement = if let Some(settlement) = scope.game.with_effect_level(owner, |game| {
             game.close_storage_transaction_in_place(commit)
         }) {
             settlement
@@ -1165,13 +1212,27 @@ impl<'g> Game<'g> {
                 "Sunrise: could not switch to {} to close transaction; dropping level-local writes",
                 owner.id()
             );
-            self.drop_unreachable_transaction_frame();
+            scope.game.drop_unreachable_transaction_frame();
             Some(if commit {
                 StorageSettlement::Refused
             } else {
                 StorageSettlement::Aborted
             })
+        };
+        if owns_queue {
+            // Finish the close (and restore the active level) before lending a fresh host.
+            // Detach each entry before invocation: a reentrant root appends at the tail.
+            while let Some(effect) = scope
+                .game
+                .transactions
+                .root_commit_queue
+                .as_mut()
+                .and_then(VecDeque::pop_front)
+            {
+                effect.run(&mut *scope.game);
+            }
         }
+        settlement
     }
     /// Closes the innermost transaction with its owning level already in place.
     fn close_storage_transaction_in_place(&mut self, commit: bool) -> Option<StorageSettlement> {
@@ -1180,6 +1241,11 @@ impl<'g> Game<'g> {
             && level.packets.is_some()
             && sunrise_client::lan::conn::transaction_packets::Scope::refused();
         let commit = commit && !refused;
+        let mut effects = if commit && self.transactions.is_empty() {
+            std::mem::take(&mut level.root_commit_effects)
+        } else {
+            VecDeque::new()
+        };
         // Expire the loan before replay can reenter mods. Its closed row must never join
         // another journal, even if the current frame's commit is nested.
         let owned = level.owned_scratch.take().and_then(|id| {
@@ -1210,6 +1276,19 @@ impl<'g> Game<'g> {
         guard.game.close_level(level, commit);
         if retire {
             guard.game.world.block_entities.publish_retirement();
+        }
+        if !effects.is_empty() {
+            let queue = guard
+                .game
+                .transactions
+                .root_commit_queue
+                .as_mut()
+                .expect("root transaction close owns an effect queue");
+            if queue.is_empty() {
+                *queue = effects;
+            } else {
+                queue.append(&mut effects);
+            }
         }
         Some(if commit {
             StorageSettlement::Committed(owned)
@@ -1437,6 +1516,9 @@ impl<'g> Game<'g> {
                 outer.save_chunks.extend(level.save_chunks);
                 outer.new_maps.append(&mut level.new_maps);
                 outer.after.extend(level.after);
+                outer
+                    .root_commit_effects
+                    .append(&mut level.root_commit_effects);
                 // The nearest enclosing transaction of this level takes its entities back; a
                 // parent in another level can't, and with none in this level they are told now.
                 match (level.dimension)
@@ -3301,6 +3383,92 @@ mod tests {
     };
     use std::{sync::Arc, time::Instant};
     use sunrise_client::{chunk::Chunk, items::ItemStack};
+
+    #[test]
+    #[ignore = "daily"]
+    fn root_commit_effects_run_once_in_commit_order() {
+        use crate::game::native_entity_refs::tests::{run_fresh_cases, with_game};
+        use mod_api::{RootCommitEffect, TransactionLifecycle};
+        use std::{cell::RefCell, rc::Rc};
+
+        if run_fresh_cases(
+            "game::transactions::tests::root_commit_effects_run_once_in_commit_order",
+            "SUNRISE_ROOT_COMMIT_EFFECTS_CHILD",
+            &["run"],
+        ) {
+            return;
+        }
+
+        struct Record {
+            seen: Rc<RefCell<Vec<i32>>>,
+            value: i32,
+        }
+
+        impl RootCommitEffect for Record {
+            fn on_root_commit(self: Box<Self>, host: &mut dyn ServerHost) {
+                assert_eq!(
+                    host.transaction_lifecycle(),
+                    TransactionLifecycle::RootClosing
+                );
+                assert!(host.current_transaction(|_, _| ()).is_none());
+                self.seen.borrow_mut().push(self.value);
+                if self.value == 1 {
+                    host.transaction(|host, tx| {
+                        tx.on_root_commit(
+                            host,
+                            Box::new(Record {
+                                seen: Rc::clone(&self.seen),
+                                value: 4,
+                            }),
+                        )
+                    })
+                    .unwrap();
+                }
+            }
+        }
+
+        with_game(|game| {
+            let host: &mut dyn ServerHost = game;
+            let seen = Rc::new(RefCell::new(Vec::new()));
+            let record = |value| {
+                Box::new(Record {
+                    seen: Rc::clone(&seen),
+                    value,
+                })
+            };
+            host.transaction(|host, root| {
+                root.on_root_commit(host, record(1)).unwrap();
+                let aborted = host.transaction(|host, child| {
+                    child.on_root_commit(host, record(99)).unwrap();
+                    Err::<(), _>("abort child")
+                });
+                assert_eq!(aborted, Err(TransactionError::Aborted("abort child")));
+                assert!(seen.borrow().is_empty());
+                host.transaction(|host, child| {
+                    assert_eq!(
+                        root.on_root_commit(host, record(100)),
+                        Err(TransactionError::InvalidContext),
+                    );
+                    child.on_root_commit(host, record(2))
+                })
+                .unwrap();
+                assert!(seen.borrow().is_empty());
+                root.on_root_commit(host, record(3))
+            })
+            .unwrap();
+            assert_eq!(*seen.borrow(), [1, 2, 3, 4]);
+            assert_eq!(host.transaction_lifecycle(), TransactionLifecycle::None);
+
+            let aborted = host.transaction(|host, root| {
+                root.on_root_commit(host, record(101)).unwrap();
+                host.transaction(|host, child| child.on_root_commit(host, record(102)))
+                    .unwrap();
+                Err::<(), _>("abort root")
+            });
+            assert_eq!(aborted, Err(TransactionError::Aborted("abort root")));
+            assert_eq!(*seen.borrow(), [1, 2, 3, 4]);
+        });
+    }
 
     #[test]
     #[ignore = "daily"]
