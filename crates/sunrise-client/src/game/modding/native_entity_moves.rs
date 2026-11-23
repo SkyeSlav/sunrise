@@ -426,8 +426,9 @@ impl Game<'_> {
     }
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "parity-fixtures"))]
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+pub(in crate::game) mod tests {
     #[test]
     #[ignore = "daily"]
     fn moves_and_pushes_a_live_mob() {
@@ -550,6 +551,10 @@ mod tests {
     /// Independent vanilla outcomes for spawn bounds and the yaw-to-direction conversion.
     #[test]
     fn move_boundaries_match_vanilla() {
+        run_move_boundaries_match_vanilla();
+    }
+
+    pub(in crate::game) fn run_move_boundaries_match_vanilla() {
         use serde_json::Value;
         let cases = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

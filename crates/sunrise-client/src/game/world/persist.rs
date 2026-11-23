@@ -19,9 +19,10 @@ mod unload_sweep;
 mod anger_tests;
 #[path = "persist/hurt_by_refs.rs"]
 mod hurt_by_refs;
-#[cfg(test)]
+#[cfg(any(test, feature = "parity-fixtures"))]
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 #[path = "persist/lookup_order_tests.rs"]
-mod lookup_order_tests;
+pub(in crate::game) mod lookup_order_tests;
 
 use super::{FallingBlock, Game};
 
@@ -2752,9 +2753,10 @@ fn join_saved_team(board: &mut Scoreboard, name: &str, tag: &Tag) -> bool {
     true
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "parity-fixtures"))]
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 #[path = "persist/tests.rs"]
-mod tests;
+pub(in crate::game) mod tests;
 #[cfg(test)]
 mod interaction_saved_defaults_tests {
     use super::*;

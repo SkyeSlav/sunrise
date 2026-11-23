@@ -2133,6 +2133,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "parity-fixtures"))]
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 #[path = "end/gateway_cooldown_tests.rs"]
-mod cooldown_tests;
+pub(in crate::game) mod cooldown_tests;

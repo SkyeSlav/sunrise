@@ -967,8 +967,9 @@ pub(super) fn generic_player_seat(
     )
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "parity-fixtures"))]
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+pub(in crate::game) mod tests {
     #[test]
     fn local_player_on_block_display_and_interaction() {
         for kind in ["minecraft:block_display", "minecraft:interaction"] {
@@ -1059,6 +1060,10 @@ mod tests {
     #[test]
     #[ignore = "requires prepared resources and the vanilla mount-control reference"]
     fn steering_mount_control_matches_vanilla() {
+        run_steering_mount_control_matches_vanilla();
+    }
+
+    pub(in crate::game) fn run_steering_mount_control_matches_vanilla() {
         use super::super::{
             Audio, Options, Progress, Settings, execution_role::ExecutionRole, load_resources,
         };

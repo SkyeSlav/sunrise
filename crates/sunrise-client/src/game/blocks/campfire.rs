@@ -246,6 +246,7 @@ impl Game<'_> {
 #[path = "tests/campfire_tests.rs"]
 mod campfire_tests;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "parity-fixtures"))]
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 #[path = "tests/block_entity_items_tests.rs"]
-mod block_entity_items_tests;
+pub(in crate::game) mod block_entity_items_tests;

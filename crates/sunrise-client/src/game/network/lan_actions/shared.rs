@@ -3415,9 +3415,10 @@ mod boat_holder_movement_tests;
 #[path = "tests/bundle_slot_tests.rs"]
 mod bundle_slot_tests;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "parity-fixtures"))]
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 #[path = "tests/crack_feedback_tests.rs"]
-mod crack_feedback_tests;
+pub(in crate::game) mod crack_feedback_tests;
 
 #[cfg(test)]
 #[path = "tests/menu_still_valid_tests.rs"]

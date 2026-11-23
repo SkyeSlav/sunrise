@@ -2243,9 +2243,10 @@ pub(in crate::game) mod sneak_dismount_tests;
 #[path = "tests/strider_lava_boarding_tests.rs"]
 mod strider_lava_boarding_tests;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "parity-fixtures"))]
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 #[path = "tests/steerable_boarding_tests.rs"]
-mod steerable_boarding_tests;
+pub(in crate::game) mod steerable_boarding_tests;
 
 #[cfg(test)]
 #[path = "tests/ride_dismount_tests.rs"]

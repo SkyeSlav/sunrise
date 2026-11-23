@@ -470,6 +470,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "parity-fixtures"))]
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 #[path = "falling_damage/helmet_tests.rs"]
-mod helmet_tests;
+pub(in crate::game) mod helmet_tests;

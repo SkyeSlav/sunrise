@@ -2004,8 +2004,9 @@ impl Game<'_> {
 
 impl Game<'_> {}
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "parity-fixtures"))]
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+pub(in crate::game) mod tests {
     use super::super::server_travel::TravelCause;
     use super::*;
     use std::sync::{
@@ -2573,6 +2574,11 @@ mod tests {
 
     #[test]
     fn portal_transfer_pending_arrival_does_not_save_transient_tnt_immunity() {
+        run_portal_transfer_pending_arrival_does_not_save_transient_tnt_immunity();
+    }
+
+    pub(in crate::game) fn run_portal_transfer_pending_arrival_does_not_save_transient_tnt_immunity()
+     {
         let arrival = Arrival {
             plan: Plan::end_portal(
                 Dim::End,
@@ -2735,9 +2741,10 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "parity-fixtures"))]
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 #[path = "tests/portal_cooldown_tests.rs"]
-mod cooldown_tests;
+pub(in crate::game) mod cooldown_tests;
 
 #[cfg(test)]
 #[path = "nether_portal/arrival_effects_tests.rs"]

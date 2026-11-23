@@ -5218,8 +5218,9 @@ impl Game<'_> {
 #[path = "dragon/crystal.rs"]
 mod crystal;
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "parity-fixtures"))]
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+pub(in crate::game) mod tests {
     use super::*;
 
     #[test]
@@ -5741,6 +5742,10 @@ mod tests {
     #[test]
     #[ignore]
     fn dragon_render_parity_fixture() {
+        run_dragon_render_parity_fixture();
+    }
+
+    pub(in crate::game) fn run_dragon_render_parity_fixture() {
         let path = std::env::var("SUNRISE_DRAGON_RENDER_OUTPUT").expect("harness output path");
         let mut cases = Vec::new();
         for t in [0.0, 0.05, 0.25, 0.5, 0.8, 0.9, 0.95, 1.0] {

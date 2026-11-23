@@ -196,9 +196,10 @@ mod block_entity_anims;
 #[cfg(test)]
 #[path = "game/modding/block_entity_part_state_tests.rs"]
 mod block_entity_part_state_tests;
-#[cfg(test)]
+#[cfg(any(test, feature = "parity-fixtures"))]
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 #[path = "game/blocks/block_entity_reach_draw_tests.rs"]
-mod block_entity_reach_draw_tests;
+pub(in crate::game) mod block_entity_reach_draw_tests;
 #[path = "game/blocks/block_entity_ticks.rs"]
 mod block_entity_ticks;
 #[path = "game/blocks/block_items.rs"]
@@ -1653,9 +1654,10 @@ mod native_registry_ids_tests;
 #[cfg(test)]
 #[path = "game/modding/native_registry_processor_tests.rs"]
 mod native_registry_processor_tests;
-#[cfg(test)]
+#[cfg(any(test, feature = "parity-fixtures"))]
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 #[path = "game/modding/native_render_pair_tests.rs"]
-mod native_render_pair_tests;
+pub(in crate::game) mod native_render_pair_tests;
 #[path = "game/modding/native_render_visibility.rs"]
 mod native_render_visibility;
 #[cfg(test)]
@@ -2143,9 +2145,10 @@ mod spawn_save_tests;
 mod spawn_yaw_tests;
 #[path = "game/mobs/spawner.rs"]
 mod spawner;
-#[cfg(test)]
+#[cfg(any(test, feature = "parity-fixtures"))]
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 #[path = "game/mobs/spawner_client_tick_tests.rs"]
-mod spawner_client_tick_tests;
+pub(in crate::game) mod spawner_client_tick_tests;
 #[path = "game/items/spear.rs"]
 mod spear;
 #[path = "game/items/spear_players.rs"]
@@ -2311,9 +2314,10 @@ mod use_stop_tests;
 mod using_item;
 #[path = "game/blocks/vault.rs"]
 mod vault;
-#[cfg(test)]
+#[cfg(any(test, feature = "parity-fixtures"))]
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 #[path = "game/entities/vehicle_removal_tests.rs"]
-mod vehicle_removal_tests;
+pub(in crate::game) mod vehicle_removal_tests;
 #[path = "game/entities/vehicle_teleport.rs"]
 mod vehicle_teleport;
 #[cfg(test)]

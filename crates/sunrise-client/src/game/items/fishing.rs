@@ -2547,8 +2547,9 @@ fn cast_direction(yaw: f32, pitch: f32) -> (f32, f32, f32) {
     (y_sin, y_cos, (-(x_sin / x_cos)).clamp(-5.0, 5.0))
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "parity-fixtures"))]
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+pub(in crate::game) mod tests {
     use super::{Hook, cast_direction, entity_hit_margin, first_entity_hit, pull_item, rebound};
 
     /// `FishingHookRenderer.getPlayerHandPos` in first person on HotSpot 25.0.4.1: the camera at
@@ -2630,6 +2631,10 @@ mod tests {
     #[test]
     #[ignore = "requires prepared resources and the vanilla fishing reference"]
     fn fishing_retrieve_reference() {
+        run_fishing_retrieve_reference();
+    }
+
+    pub(in crate::game) fn run_fishing_retrieve_reference() {
         use sunrise_core::random::{LegacyRandom, RandomSource};
         use sunrise_world::loot::{LootData, PackOverlay};
         let resources = std::env::var_os("SUNRISE_FISHING_RESOURCES").unwrap();
@@ -2756,6 +2761,10 @@ mod tests {
     #[test]
     #[ignore = "run by tools/test_breeze_hook_parity.py"]
     fn breeze_hook_parity_fixture() {
+        run_breeze_hook_parity_fixture();
+    }
+
+    pub(in crate::game) fn run_breeze_hook_parity_fixture() {
         use super::{EntityCollision, Hook};
         use std::io::Write;
         let input =
@@ -2996,6 +3005,7 @@ mod fishing_catch_tests;
 #[path = "fishing_tests/fishing_medium_tests.rs"]
 mod fishing_medium_tests;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "parity-fixtures"))]
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 #[path = "fishing_tests/fishing_targets_tests.rs"]
-mod fishing_targets_tests;
+pub(in crate::game) mod fishing_targets_tests;

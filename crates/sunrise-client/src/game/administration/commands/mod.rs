@@ -30,7 +30,7 @@ pub(in crate::game) mod terrain_cmds;
 mod test_locate;
 mod test_runs;
 mod text_commands;
-mod world_cmds;
+pub(in crate::game) mod world_cmds;
 
 use super::{Dim, Game, Screen, chat::PLAYER_NAME, vehicle_teleport::TeleportMotion};
 use sunrise_client::{
