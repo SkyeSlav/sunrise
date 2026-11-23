@@ -294,12 +294,20 @@ A block gets a block item of its own id by default. `"item": false` gives it non
 `Block.asItem` is air (what a block drops comes from its loot table). `"block_item": "<item id>"` (with `"item": false`) makes the block
 that other item instead, an item of the mod or a vanilla one, such as `"minecraft:diamond"`: pick-block and
 `Block.asItem` both read it, and the load fails naming the block when no such item exists. `"none"` is not an item id;
-write `"item": false`. A sign's wall form takes its sign's item through `wall_block`, not `block_item`.
+write `"item": false`. A wall form takes its standing block's item through `wall_block`, not `block_item`.
+
+A block whose item places it can name a `"wall_block"`, as vanilla's torches and heads do
+(`StandingAndWallBlockItem`): the item then places the wall block on a wall and the block itself on a floor, taking
+the first of the two that survives there in the order the player looks (`getNearestLookingDirections`), and places
+nothing where neither survives. The wall block is another of the mod's blocks, with `"item": false`; its own
+placement rule gives its facing (a `minecraft:wall_torch` template faces away from the wall), its item is the
+standing block's, and picking it gives that item. A template whose item is another kind than a block item (a
+door's, a bed's) takes no `wall_block`, and a wall form pairs with one block only.
 
 Pick-block takes the block's item by default. `"pick_item": "<item id>"` names a different one, with any `item` and
 `block_item`: vanilla's `getCloneItemStack`, which lets a mature crop pick its seed while `Block.asItem` stays what it
 is (air for `"item": false`). It is an item of the mod or a vanilla one, and the load fails naming the block when no
-such item exists. A sign's wall form picks its sign's item through `wall_block`, so it declares no `pick_item`.
+such item exists. A wall form picks its standing block's item through `wall_block`, so it declares no `pick_item`.
 
 `"suspicious_stew_effects": [{"id": "minecraft:night_vision", "duration": 100}]` makes the block a suspicious stew
 source. Entries are applied in order; duration is in ticks and defaults to 160 when omitted. An unknown mob effect is

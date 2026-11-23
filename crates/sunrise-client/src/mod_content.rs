@@ -2227,9 +2227,37 @@ impl<'a> Plan<'a> {
                 fields.set("block", J::Str(i.rename.to.clone()));
             }
             if let Some(wall) = &i.wall_block
-                && let Some(fields) = v.get_mut("fields")
+                && !components
             {
-                fields.set("wallBlock", J::Str(wall.clone()));
+                // `StandingAndWallBlockItem`: a sign's or torch's item already is one; a plain
+                // `BlockItem` becomes one, its standing form attached below (`Direction.DOWN`).
+                let classes: Vec<&str> = match v.get("class") {
+                    Some(J::Arr(classes)) => classes.iter().filter_map(J::as_str).collect(),
+                    _ => Vec::new(),
+                };
+                if !classes.contains(&"StandingAndWallBlockItem") {
+                    if classes.iter().any(|c| !matches!(*c, "BlockItem" | "Item")) {
+                        return Err(format!(
+                            "{}: wall_block needs a template whose item is a BlockItem, not {}",
+                            i.rename.to, classes[0]
+                        )
+                        .into());
+                    }
+                    v.set(
+                        "class",
+                        J::Arr(
+                            ["StandingAndWallBlockItem", "BlockItem", "Item"]
+                                .map(|c| J::Str(c.into()))
+                                .into(),
+                        ),
+                    );
+                }
+                if let Some(fields) = v.get_mut("fields") {
+                    fields.set("wallBlock", J::Str(wall.clone()));
+                    if fields.get("attachmentDirection").is_none() {
+                        fields.set("attachmentDirection", J::Str("DOWN".into()));
+                    }
+                }
             }
             if components {
                 if let Some(n) = i.max_stack_size {

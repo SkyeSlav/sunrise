@@ -326,10 +326,9 @@ pub struct Block {
     /// background: `<namespace>:<path>` a mod's texture, a bare name vanilla's.
     /// The template's when unset.
     pub wood_type: Option<String>,
-    /// The block a standing or ceiling sign's item places on a wall
-    /// (`StandingAndWallBlockItem.wallBlock`): one of this mod's blocks (a bare
-    /// name is this mod's), whose template is the matching wall sign and which
-    /// has no item. The template's when unset.
+    /// The block this block's item places on a wall (`StandingAndWallBlockItem.wallBlock`), as
+    /// a torch, a head or a sign does: one of this mod's blocks (a bare name is this mod's), with
+    /// no item of its own. A sign's is the matching wall sign. The template's when unset.
     pub wall_block: Option<String>,
     /// A sign's new text colour (`SignBlockEntity.createDefaultSignText`): a `DyeColor` name,
     /// black when unset. Applies to a sign when it is placed, front and back.

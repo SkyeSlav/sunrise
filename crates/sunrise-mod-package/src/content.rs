@@ -741,10 +741,9 @@ pub struct Block {
     /// background: `<namespace>:<path>` a mod's texture, a bare name vanilla's.
     /// The template's when unset.
     pub wood_type: Option<String>,
-    /// The block a standing or ceiling sign's item places on a wall
-    /// (`StandingAndWallBlockItem.wallBlock`): one of this mod's blocks, whose
-    /// template is the matching wall sign and which has no item. The
-    /// template's when unset.
+    /// The block this block's item places on a wall (`StandingAndWallBlockItem.wallBlock`),
+    /// as a torch, a head or a sign does: one of this mod's blocks, with no item of its own.
+    /// A sign's is the matching wall sign. The template's when unset.
     pub wall_block: Option<String>,
     /// A sign's new text colour (`SignBlockEntity.createDefaultSignText`): a `DyeColor` name,
     /// black when unset. Applies to a sign when it is placed, front and back.
@@ -1653,7 +1652,7 @@ impl Content {
                 Err(reason) => refuse(DeclarationKind::Block, id, reason),
             }
         }
-        sign_wall_refusals(&all_blocks)
+        wall_block_refusals(&all_blocks)
             .for_each(|(id, reason)| refuse(DeclarationKind::Block, id, reason));
         let mut valid_items = Vec::new();
         for (item, fields) in items {
@@ -1853,7 +1852,7 @@ impl Content {
         }
         // After every block, so a wall form may be declared in a later file.
         if let Some((id, reason)) =
-            sign_wall_refusals(&self.blocks.iter().collect::<Vec<_>>()).next()
+            wall_block_refusals(&self.blocks.iter().collect::<Vec<_>>()).next()
         {
             return Err(format!("{id}: {reason}"));
         }
@@ -2462,7 +2461,7 @@ fn check_block(file: &Block) -> Result<(), String> {
         return Err("pick_item is an item id, namespace:path".into());
     }
     if let Some(wall) = &file.wall_block {
-        if !sign || file.template.contains("_wall_") {
+        if sign && file.template.contains("_wall_") {
             return Err("wall_block needs a standing or ceiling sign template".into());
         }
         if !file.item {
@@ -2475,26 +2474,27 @@ fn check_block(file: &Block) -> Result<(), String> {
     Ok(())
 }
 
-/// A sign's `wall_block` is one of the mod's own blocks: the wall form of its
-/// kind, with no item of its own and no other sign. Checked here, a pair that
-/// doesn't fit leaves out its mod alone.
-fn sign_wall_refusals<'a>(blocks: &'a [&'a Block]) -> impl Iterator<Item = (&'a str, String)> + 'a {
+/// A block's `wall_block` is one of the mod's own blocks, with no item of its own and paired with
+/// no other block; a sign's is the wall form of its kind, with the same text. Checked here, a
+/// pair that doesn't fit leaves out its mod alone.
+fn wall_block_refusals<'a>(blocks: &'a [&'a Block]) -> impl Iterator<Item = (&'a str, String)> + 'a {
     let mut paired = BTreeMap::new();
-    blocks.iter().filter_map(move |sign| {
-        let wall = sign.wall_block.as_ref()?;
-        let id = sign.id.as_str();
-        let form = if sign.template.ends_with("_hanging_sign") {
-            "_wall_hanging_sign"
-        } else {
-            "_wall_sign"
-        };
+    blocks.iter().filter_map(move |standing| {
+        let wall = standing.wall_block.as_ref()?;
+        let id = standing.id.as_str();
         let Some(block) = blocks.iter().find(|b| b.id == *wall) else {
             return Some((
                 id,
                 format!("wall_block {wall} is not one of this mod's blocks"),
             ));
         };
-        if !block.template.ends_with(form) {
+        let sign = standing.template.ends_with("_sign");
+        let form = if standing.template.ends_with("_hanging_sign") {
+            "_wall_hanging_sign"
+        } else {
+            "_wall_sign"
+        };
+        if sign && !block.template.ends_with(form) {
             return Some((
                 id,
                 format!("wall_block {wall} needs a template ending in {form}"),
@@ -2503,19 +2503,19 @@ fn sign_wall_refusals<'a>(blocks: &'a [&'a Block]) -> impl Iterator<Item = (&'a 
         if block.block_item.is_some() {
             return Some((
                 id,
-                format!("wall_block {wall} has this sign's item, so it declares no block_item"),
+                format!("wall_block {wall} has this block's item, so it declares no block_item"),
             ));
         }
         if block.pick_item.is_some() {
             return Some((
                 id,
-                format!("wall_block {wall} picks this sign's item, so it declares no pick_item"),
+                format!("wall_block {wall} picks this block's item, so it declares no pick_item"),
             ));
         }
         if block.item {
             return Some((
                 id,
-                format!("wall_block {wall} has this sign's item, so its own \"item\" is false"),
+                format!("wall_block {wall} has this block's item, so its own \"item\" is false"),
             ));
         }
         fn text(b: &Block) -> (&str, bool) {
@@ -2524,7 +2524,7 @@ fn sign_wall_refusals<'a>(blocks: &'a [&'a Block]) -> impl Iterator<Item = (&'a 
                 b.sign_text_glow.unwrap_or(false),
             )
         }
-        if text(sign) != text(block) {
+        if sign && text(standing) != text(block) {
             return Some((
                 id,
                 format!("wall_block {wall} declares a different sign_text_color or sign_text_glow"),
@@ -4319,6 +4319,32 @@ capabilities = ["registries"]
     /// A sign's wall form is one of the mod's blocks, of the matching wall
     /// template, with no item and no other sign. Anything else refuses this
     /// mod when it is read, and leaves the other mods alone.
+    #[test]
+    fn any_block_names_a_wall_form_of_its_own_mod() {
+        let pair = |standing: &str, wall: &str| {
+            let files: &[(&str, &[u8])] = &[
+                ("data/ruby/sunrise/block/lamp.json", standing.as_bytes()),
+                ("data/ruby/sunrise/block/wall_lamp.json", wall.as_bytes()),
+            ];
+            smod("walls", MANIFEST_TEXT, files)
+        };
+        let lamp = r#"{"template": "minecraft:stone", "wall_block": "ruby:wall_lamp"}"#;
+        let parsed = pair(lamp, r#"{"template": "minecraft:stone", "item": false}"#).unwrap();
+        assert_eq!(parsed.blocks[0].wall_block.as_deref(), Some("ruby:wall_lamp"));
+        for (wall, wanted) in [
+            (r#"{"template": "minecraft:stone"}"#, "\"item\" is false"),
+            (
+                r#"{"template": "minecraft:stone", "item": false, "pick_item": "minecraft:stick"}"#,
+                "no pick_item",
+            ),
+        ] {
+            let e = pair(lamp, wall).unwrap_err();
+            assert!(e.contains(wanted), "{wanted}: {e}");
+        }
+        let unplaced = r#"{"template": "minecraft:stone", "item": false, "wall_block": "ruby:wall_lamp"}"#;
+        assert!(pair(unplaced, r#"{"template": "minecraft:stone", "item": false}"#).is_err());
+    }
+
     #[test]
     fn a_signs_wall_block_is_its_own_mods_wall_form() {
         let refused = |template: &str, wall_block: &str, wall: &str, wanted: &str| {

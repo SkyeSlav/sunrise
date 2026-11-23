@@ -6753,6 +6753,89 @@ fn signs_take_their_form_wood_and_wall_block_from_their_declaration() {
     let _ = fs::remove_dir_all(&scratch);
 }
 
+/// A block of any template whose item is a plain `BlockItem` names its wall form as a torch
+/// does: its item becomes a `StandingAndWallBlockItem` placing the block on a floor and the
+/// wall form on a wall (`Direction.DOWN` its attachment), and is the wall form's item too. A
+/// torch template keeps its item's kind; a door's item can't take a wall form.
+#[test]
+#[ignore = "daily"]
+fn any_content_block_pair_shares_a_standing_and_wall_item() {
+    use sunrise_world::level::{Behaviours, ItemKind};
+    use sunrise_core::geometry::Direction;
+
+    let Some(base) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("sunrise-mod-walls-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let pair = |files: &[(&str, &str)], name: &str| {
+        let mut all = vec![("sunrise-mod.toml", manifest("walls", ""))];
+        all.extend(files.iter().map(|(p, j)| (*p, j.to_string())));
+        let all: Vec<(&str, &str)> = all.iter().map(|(p, j)| (*p, j.as_str())).collect();
+        let m = folder_mod(&scratch.join(name), &all);
+        resource_root_fixture(
+            &base,
+            Path::new(""),
+            std::slice::from_ref(&m),
+            &scratch.join(format!("{name}-cache")),
+        )
+    };
+    let root = pair(
+        &[
+            (
+                "data/walls/sunrise/block/lamp.json",
+                r#"{"template": "minecraft:stone", "wall_block": "walls:wall_lamp"}"#,
+            ),
+            (
+                "data/walls/sunrise/block/wall_lamp.json",
+                r#"{"template": "minecraft:stone", "item": false}"#,
+            ),
+            (
+                "data/walls/sunrise/block/brand.json",
+                r#"{"template": "minecraft:torch", "wall_block": "walls:wall_brand"}"#,
+            ),
+            (
+                "data/walls/sunrise/block/wall_brand.json",
+                r#"{"template": "minecraft:wall_torch", "item": false}"#,
+            ),
+        ],
+        "pairs",
+    )
+    .unwrap();
+    let registry = Assets::load(&root).unwrap().registry;
+    let facts = BlockFacts::load(&root, registry).unwrap();
+    let behaviours = Behaviours::load(registry, &root).unwrap();
+    let id = |name: &str| behaviours.table.block_by_name(name);
+    for (item, wall) in [("walls:lamp", "walls:wall_lamp"), ("walls:brand", "walls:wall_brand")] {
+        let binding = behaviours.item_binding(item).unwrap();
+        assert_eq!(binding.kind, ItemKind::StandingAndWall, "{item}");
+        assert_eq!(
+            (Some(binding.block), binding.wall_block, binding.attachment),
+            (id(item), id(wall), Some(Direction::Down)),
+            "{item}"
+        );
+        let wall_state = registry.default_state(wall).unwrap();
+        assert_eq!(&*facts.get(wall_state).item, item);
+    }
+    let door = pair(
+        &[
+            (
+                "data/walls/sunrise/block/gate.json",
+                r#"{"template": "minecraft:oak_door", "wall_block": "walls:wall_gate"}"#,
+            ),
+            (
+                "data/walls/sunrise/block/wall_gate.json",
+                r#"{"template": "minecraft:stone", "item": false}"#,
+            ),
+        ],
+        "door",
+    );
+    assert!(
+        door.unwrap_err().to_string().contains("wall_block needs a template whose item is a BlockItem"),
+    );
+    let _ = fs::remove_dir_all(&scratch);
+}
+
 /// A content block's own `SoundType` (`BlockBehaviour.Properties.sound`) reaches both the
 /// client's block facts and the server's behaviours, events of the mod's own and vanilla's
 /// alike, beside a block that names a vanilla block's sounds and one that inherits its
