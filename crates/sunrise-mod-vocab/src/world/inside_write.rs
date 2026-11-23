@@ -123,6 +123,8 @@ impl From<InsideAction<EntityWrite>> for PlannedInside {
 }
 
 /// A planned effect or a write with an engine-owned payload.
+// hidden: only the engine handles the unspecialized plan.
+// exhaustive: the internal sequencer distinguishes effects from their surrounding writes.
 #[doc(hidden)]
 #[derive(Debug)]
 pub enum InsideAction<W> {
@@ -142,6 +144,7 @@ pub type InsideEffects = InsideCollector<EntityWrite, PlannedInside>;
 
 /// The shared sequencer, specialized to the link contract for Parts and to
 /// typed native writes in the engine. Only the Part specialization is sent over Wire.
+// hidden: mods use only the concrete InsideEffects collector.
 // exhaustive: the collector's state is private to the crate; a part only calls its methods.
 #[doc(hidden)]
 #[derive(Clone, Debug, PartialEq, sunrise_mod_api_macros::Wire)]
