@@ -73,3 +73,16 @@ the exit are read too.
 
 `find_or_create_portal_exit` never opens a level either, and building needs the chunks around the exit to be
 loaded too. The `portal_create` hook fires for a portal it builds, as it does for travel; it cannot veto the build.
+
+## Refusing dimension travel
+
+Return `Flow::Cancel` from `entity_travel_to_dimension` to stop a server entity moving
+to the target level. Discarding the entity through its handle in the callback also stops
+the move. A falling block ticks outside the level's entity list, so its handle is not
+accessible during the callback.
+
+Passengers are asked recursively. A refused passenger and its own passengers stay in the
+source level without stopping the original vehicle. The refused passenger dismounts.
+A callback can change riding relationships: the original passenger edge is restored only
+if the checked mount operation permits it. Otherwise the passenger stays behind, and a new
+vehicle chosen by the callback is not overwritten.

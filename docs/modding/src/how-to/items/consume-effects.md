@@ -1,5 +1,8 @@
 # Custom consume effects
 
+To run an existing effect without consuming an item, see
+[Applying a consume effect](#applying-a-consume-effect).
+
 In `Hooks::register`, call `register_consume_effect_type` on the engine's
 `Registrar`. If you implement `Registrar` yourself, also implement
 `ConsumeEffectsRegistrar`. Use your package ID as the type's namespace;
@@ -76,8 +79,21 @@ built-in effects; stack patches can change or remove the list.
   materialized. The refused effect does not run, and the other effects remain
   usable. Reopening a save likewise retains refused data without running it.
 
-To apply an effect without consuming an item, use
-[`LivingRef::apply_consume_effect`](consumable-effects.md).
+## Applying a consume effect
+
+On the server, call `living.apply_consume_effect(host, &stack, index)` to apply one effect
+without eating, shrinking the stack or running consume triggers. The zero-based index is
+into the effective consumable list, including overrides or removals from the stack patch.
+
+The return type is `Result<Option<bool>, StackWriteError>`. `Err` reports a stack-validation
+error. `Ok(Some(result))` gives the effect's result; `Ok(None)` means the item, index or target
+is unavailable, or the effect is unsupported. Armor stands and dragons are unsupported.
+Random teleport uses the level random for a player and is unsupported for mobs in this call.
+
+Custom effects use the `consume_effect` hook described above. `Ok(Some(true))` means dispatch
+was entered, not that a listener changed game state; an unclaimed kind does nothing.
+Applying the same kind again within its handler returns `Ok(Some(false))` without recursion.
+Other kinds can dispatch normally, and a later independent call can apply the original kind.
 
 ## Food eligibility
 

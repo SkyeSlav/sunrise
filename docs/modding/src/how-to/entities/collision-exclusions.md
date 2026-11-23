@@ -1,7 +1,7 @@
 <!-- chapter: Collision exclusions -->
 <!-- separator: 1 -->
 
-### Collision exclusions
+# Collision exclusions
 
 A portal in a wall is a hole only in the picture: the wall behind it still stops the player who walks in. A mod opens it
 with collision exclusions, boxes of the player's own level (`[min_x, min_y, min_z, max_x, max_y, max_z]`) in which that

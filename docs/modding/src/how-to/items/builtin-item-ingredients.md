@@ -52,10 +52,7 @@ All preparation happens at load; candidate comparisons borrow values without
 allocating or converting them to JSON. Removal keys require registration only.
 Native registrations retain their persistent NBT validation contract.
 
-The shared decoder currently covers 66 registered built-ins:
-`cat/sound_variant`, `cat/variant`, `wolf/sound_variant`, `wolf/variant`, `container_loot`, `tooltip_display`, `tropical_fish/pattern_color`, `tropical_fish/base_color`, `cushion/color`, `recipes`, `mob_visibility`, `custom_model_data`, `wolf/collar`, `cat/collar`, `shulker/color`, `sheep/color`, `dye`, `block_state`, `use_cooldown`, `cooking_fuel`, `brewing_fuel`, `compostable`, `fox/variant`, `weapon`, `food`, `damage`, `repair_cost`, `max_damage`, `max_stack_size`, `map_id`, `rarity`, `enchantments`, `stored_enchantments`, `enchantment_glint_override`, `custom_name`, `item_name`, `item_model`, `custom_data`, `lodestone_tracker`, `damage_resistant`, `use_effects`, `block_entity_data`, `enchantable`, `ominous_bottle_amplifier`, `potion_duration_scale`, `minimum_attack_charge`, `dyed_color`, `attack_animation`, `attack_range`, `rabbit/variant`, `horse/variant`, `llama/variant`, `mooshroom/variant`, `axolotl/variant`, `salmon/size`, `parrot/variant`, `tropical_fish/pattern`, `villager_food`, `unbreakable`, `base_color`, `note_block_sound`, `tooltip_style`, `waxed`, `intangible_projectile`, `glider`,
-in the `minecraft` namespace.
-`chicken/variant` also decodes a fixed holder from the active chicken-variant
+The `chicken/variant` codec decodes a fixed holder from the active chicken-variant
 registry. Bare or empty namespaces become `minecraft`; mod-registered keys are
 accepted, but unknown keys, missing registries, tags and inline objects are refused.
 Matching borrows the identifier, including inherited item defaults and removals.
@@ -80,8 +77,6 @@ zero (including negative zero) is false; nonzero values, fractions and NaN are
 true. Displays retain canonical byte 0 or 1.
 `dyed_color` accepts packed integer colors or three numeric RGB channels,
 matching the decoded values without copying candidate payloads.
-The other 53 persistent registered built-ins use stored-value matching while their shared
-decoders are added incrementally in **#3875**. Their absence is not a load refusal.
 The transient types `creative_slot_lock`, `additional_trade_cost` and
 `map_post_processing` are refused as stored component values, not matched as opaque NBT.
 They may still be named by `tooltip_display.hidden_components`.
@@ -120,8 +115,7 @@ visibility holder sets against active entity data, and ordered recipe keys.
 Custom model data lists default to empty, including JSON null optional fields.
 Recipe keys need no registry lookup; order and duplicates are retained.
 
-The pinned 26.3 registry has 122 component types: 119 persistent and 3 transient.
-mod-registered cat/wolf variants are not matched yet.
+Mod-registered cat and wolf variants do not match.
 
 `attack_animation` accepts a record with optional `type` (`none`, `whack`,
 `stab`; default `whack`) and nonnegative integer `duration` (default 6).
@@ -190,16 +184,6 @@ An empty compound is a present value, not a removal. SNBT supports the pinned
 escapes; Java UTF-16 units are retained even for unpaired surrogates. Live stack
 loads and `StackData::set_other`/`set_loot_component` normalize flattened payloads
 once; `preserved_components()` exposes only borrowed, read-only storage.
-
-Component ingredient displays contain the patch, including removals. Difference
-lists retain the base list and remove only items whose default stack passes the
-subtracted predicate. Non-simple cooking ingredients are tested outside the
-simple item index, in original recipe priority order.
-
-A non-simple ingredient may have an empty default-stack display list and still
-load. It retains its full candidate set for concrete matching and cooking.
-For example, a diamond sword minus swords with damage 0 has no default display,
-but a damage-5 sword satisfies it. Empty display lists do not erase candidates.
 
 `tooltip_style` accepts identifier strings without looking up a resource; omitted
 or empty namespaces become `minecraft`, and empty paths are valid.

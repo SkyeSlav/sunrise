@@ -138,6 +138,21 @@ correction carries the live server position and velocity. The server compares
 the vectors bit for bit, except that inputs within vanilla's movement dead zone
 are equivalent. The client never calls this hook.
 
+## Turning hanging entities
+
+On the server, use these `EntityRef` methods with `&mut dyn ServerHost`:
+
+- `set_hanging_direction(host, direction)` changes a painting or frame's facing as
+  `HangingEntity.setDirection` does, updating yaw, pitch and bounds. Frames accept all six
+  directions; paintings accept only the four horizontal directions and return `false`
+  without changing for up or down. The next survival check decides whether it can hang there.
+- `set_item_frame_rotation(host, rotation)` turns the item in an item frame or glow item
+  frame as `ItemFrame.setRotation` does: eighths of a turn, wrapping modulo 8.
+  Comparators update afterwards.
+
+Both methods return `false` for a stale handle or the wrong entity type. Entity
+synchronization shows the change to players, including a painting or frame turned south.
+
 ## Swimming eligibility
 
 `Hooks::can_start_swimming` asks for a Boolean from the local player and the

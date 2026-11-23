@@ -9,6 +9,7 @@ Use biome content, region declarations and level handles to control biome genera
 | Give my dimension its own biomes | `DimensionSettings::biome_source`: `Fixed`, `Checkerboard`, `MultiNoise` by preset, `End`, or `Points` for an explicit climate-point layout ([dimension shape](dimension-shape.md)) | Both |
 | Put my biomes among the Overworld's or the Nether's | `Registrar::declare_biome_region` with a weighted `BiomeRegion` ([biome regions](../content-mods/biome-regions.md)) | Both |
 | Know the biome at a position | `LevelRef::biome_at` on a server level, `LevelRef::client_biome` on a client | Server, client |
+| Check a biome's tag membership | [`Host::level_biome_in_tag`](#check-biome-tags) | Both |
 | Find the nearest biome or tag | `LevelRef::find_closest_biome` with a `BiomeSearch` | Server |
 | Change a biome | `LevelRef::set_biome`, one 4x4x4 cell, as `/fillbiome` does | Server |
 | Run bone meal at a position | `LevelRef::bone_meal` | Server |
@@ -27,6 +28,16 @@ a failed callback does not consume a slot.
 
 From the client's world list, open Edit World and confirm adoption to save the installed mods' biome regions for that world. Completed chunks keep their biomes and blocks. New chunks use the adopted layout,
 and chunks still being generated may finish with it. See [biome regions](../content-mods/biome-regions.md).
+
+## Check biome tags
+
+Call `host.level_biome_in_tag(level, biome, "minecraft:is_forest")` to check a biome
+by ID without loading chunks. The live tables include vanilla, data-pack and mod tags.
+Pass the namespaced tag with or without a leading `#`.
+
+- `Some(true)`: the biome belongs to the tag.
+- `Some(false)`: the biome is known but is not in the tag, or the tag is undefined.
+- `None`: the biome, level or live biome-tag tables are unavailable.
 
 ## Read and write limits
 

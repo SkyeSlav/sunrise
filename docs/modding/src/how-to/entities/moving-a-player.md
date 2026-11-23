@@ -1,7 +1,7 @@
 <!-- chapter: Moving a player -->
 <!-- separator: 1 -->
 
-### Moving a player
+# Moving a player
 
 `player.entity().move_by(host, delta, cause)` (`EntityRef::move_by`, the call that moves any other entity, on a
 `&mut dyn ServerHost`) moves a player by `delta` through the level as `Entity.move` would: blocks, other entities' colliders and the player's
@@ -23,7 +23,7 @@ A player on a moving collider stays on it when the target is still over it, and 
 (`None`, nothing moves) for a value that is not finite, a target outside the world, a player that is riding something,
 a sleeper, a player without a connection, or a move the collision query cannot answer.
 
-#### Checking what blocks a move
+## Checking what blocks a move
 
 On either side, `entity.piston_push_reaction(host)` reads vanilla's piston reaction, including
 `PushReaction::IgnoreEntity` for marker armor stands. `entity.is_hanging(host)` reads the class:
@@ -32,7 +32,7 @@ a stale handle or `Err(LevelReadError::Unavailable)` if the host does not suppor
 A general type can supply a reaction to `declare_general_entity`; pass `None` to use
 `PushReaction::PushPull`.
 
-#### The client half
+## The client half
 
 The client moves its own player. Write a prediction (a conveyor moving a player, boots that hover) from
 `player_tick_pre` on `HostSide::Client`, when `host.local_player() == Some(event.player)`, before the player's own

@@ -1,6 +1,19 @@
 # Client effects and tooltips
 
-Use client services to edit tooltips, draw extra camera views and change local sound output. See the [API reference](../../reference/api.md) for the generated signatures.
+Use client services to edit tooltips, read effect blends, draw extra camera views and change
+local sound output. See the [API reference](../../reference/api.md) for the generated signatures.
+
+## Client effect interpolation
+
+Pass the render partial tick unchanged to `LivingRef::effect_blend_factor(host, effect, partial)`
+for the local player's client effect blend. The read does not clamp it. An unknown effect,
+stale handle or non-local entity returns `None`; a known but absent effect returns `Some(0.0)`.
+
+An ordinary blended addition starts at 0 before its first effect tick, then interpolates each
+tick to the post-countdown target (1 while active, 0 once expired). An effect that expires on
+its first tick never rises; an infinite effect also interpolates on addition. An unblended
+addition starts at its target, and replacing an effect keeps its blend. Darkness and nausea
+have longer fades.
 
 ## Reading the tooltip preference
 
