@@ -280,6 +280,9 @@ impl Game<'_> {
                             amount,
                             source,
                         );
+                        let Some((index, hit)) = self.complete_mob_hurt(index, hit) else {
+                            return Ok(());
+                        };
                         self.finish_mob_damage_at(index);
                         let alive = self
                             .mobs

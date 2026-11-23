@@ -1,6 +1,8 @@
 //! Per-tick client visuals: the particle engine, `ClientLevel.animateTick`,
 //! campfire smoke and rain splashes (`ClientLevel.tickWeatherEffects`).
-use super::{Dim, Game, api_values::TryIntoApi, host::draw::GameCameraDrawContext};
+use super::{
+    Dim, Game, api_values::TryIntoApi, host::draw::GameCameraDrawContext, weather::precipitation_at,
+};
 use mod_api::{
     __private::{SelectedBlockScreenEffectRenderer, block_screen_effect_render},
     BlockScreenEffect,
@@ -10,7 +12,6 @@ use sunrise_client::camera::NearPlane;
 use sunrise_client::fog::{FogData, FogInputs, FogType, settle_rain_fog, update_rain_fog};
 use sunrise_client::{
     animate_tick::{AnimateContext, AnimateSampling, campfire_particles, marker_particle_target},
-    biome::Biomes,
     blocks::{BlockFacts, Fluid},
     containers::BlockEntity,
     mobs::Mob,
@@ -134,14 +135,6 @@ fn motion_blocking_leaves(
     }
     world.bottom_y()
 }
-/// `Biome.getPrecipitationAt` is rain (not snow) at this position.
-fn rains_at(world: &World, biomes: &Biomes, x: i32, y: i32, z: i32) -> bool {
-    let Some(chunk) = world.chunks.get(&(x >> 4, z >> 4)) else {
-        return false;
-    };
-    biomes.get(chunk.biome(x, y, z)).snows_at(x, y, z) == Some(false)
-}
-
 impl Game<'_> {
     /// Polytone GPU particles, before the frame's quads are built: any pending clear, the
     /// renderer's verdict on each shader and on the quads drawn here, then the heightmap for the readers that draw (a custom shader's `Sampler1`,
@@ -176,13 +169,25 @@ impl Game<'_> {
     pub(super) fn nether_lighting(&self) -> bool {
         self.dimension_type().cardinal_light == CardinalLight::Nether
     }
-    /// `SkyRenderer`'s overworld skybox: sun, moon, stars and clouds.
+    /// `SkyRenderer`'s overworld skybox: sun, moon and stars.
     pub(super) fn overworld_skybox(&self) -> bool {
         self.dimension_type().skybox == Skybox::Overworld
     }
     /// `SkyRenderer`'s End skybox and its flashes.
     pub(super) fn end_skybox(&self) -> bool {
         self.dimension_type().skybox == Skybox::End
+    }
+    /// `LevelRenderer.prepareTranslucents`: prepare the clouds the frame draws.
+    pub(super) fn frame_cloud_uv(
+        &self,
+        title: bool,
+        sky: &sunrise_client::environment::Sky,
+    ) -> Option<[f32; 2]> {
+        if title || !sunrise_client::clouds::visible(&self.settings.clouds, sky.cloud_color[3]) {
+            return None;
+        }
+        let white = self.gui.atlas.sprites.get("sunrise/white")?;
+        Some([(white.u0 + white.u1) / 2.0, (white.v0 + white.v1) / 2.0])
     }
     pub(super) fn forward(&self) -> [f64; 3] {
         let (yaw, pitch) = (
@@ -264,7 +269,7 @@ impl Game<'_> {
             water_fog_color,
             biome,
             render_distance_chunks: self.terrain_distance(),
-            distant_terrain: self.lod.is_some(),
+            distant_terrain: self.lod.is_some() && self.overworld_skybox(),
             cloud_range_chunks: self.settings.cloud_range,
             camera_y: camera.y,
             min_y: self.level_min_y(),
@@ -272,7 +277,6 @@ impl Game<'_> {
             forward,
             rain,
             thunder,
-            skybox: self.overworld_skybox(),
             blindness,
             darkness,
             darken_world: self.boss_overlay.darken_amount(partial),
@@ -809,6 +813,8 @@ impl Game<'_> {
         let parts = self.mod_animate_parts();
         let block = eye.map(|e| e.map(|v| v.floor() as i32));
         let mut sampling = block.map(AnimateSampling::new);
+        let sea_level = self.weather_sea_level();
+        let biome_zoom = self.streaming.biome_zoom;
         // `ClientLevel.animateTick`, then the rain and the campfires. The sampling stops in each
         // pick whose block has a part, for the game to call it there (`mod_animate_tick`); the
         // context borrows the game, so it is made again for the rest of the tick.
@@ -830,7 +836,13 @@ impl Game<'_> {
             let raining_at = |p: [i32; 3]| {
                 raining
                     && motion_blocking_height(world, properties, p[0], p[2]) <= p[1]
-                    && rains_at(world, biomes, p[0], p[1], p[2])
+                    && precipitation_at(
+                        world,
+                        biomes,
+                        biome_zoom,
+                        BlockPos::new(p[0], p[1], p[2]),
+                        sea_level,
+                    ) == Some(false)
             };
             let height_no_leaves =
                 |p: [i32; 3]| motion_blocking_leaves(world, facts, p[0], p[2], i32::MAX, false);
@@ -902,7 +914,14 @@ impl Game<'_> {
                         else {
                             continue;
                         };
-                        if !rains_at(world, biomes, x, top, z) {
+                        if precipitation_at(
+                            world,
+                            biomes,
+                            biome_zoom,
+                            BlockPos::new(x, top, z),
+                            sea_level,
+                        ) != Some(false)
+                        {
                             continue;
                         }
                         let below = top.wrapping_sub(1);

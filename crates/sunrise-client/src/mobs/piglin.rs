@@ -1005,8 +1005,8 @@ fn piglin_hurt(
     }
 }
 /// What a piglin or hoglin handles before its goals run: the retreats other
-/// mobs broadcast to it, the hit `wasHurtBy` reacts to and, for a piglin,
-/// its celebration.
+/// mobs broadcast to it and the hit `wasHurtBy` reacts to. A piglin's
+/// celebration is part of its brain, in `Mob.serverAiStep` (`ai::server_ai_step`).
 pub fn before_goals(m: &mut Mob, w: &MobWorld, lr: &mut LegacyRandom, events: &mut Vec<MobEvent>) {
     for (from, at) in std::mem::take(&mut m.extra.piglin.retreats) {
         retreat_from_nearest(m, w, lr, from, at);
@@ -1020,9 +1020,6 @@ pub fn before_goals(m: &mut Mob, w: &MobWorld, lr: &mut LegacyRandom, events: &m
         } else {
             piglin_hurt(m, w, lr, events, by);
         }
-    }
-    if m.species() == Species::Piglin {
-        celebrate(m, w);
     }
 }
 /// What kind of mob `who` is: none for the player.
@@ -1897,18 +1894,17 @@ pub fn celebrate(m: &mut Mob, w: &MobWorld) {
 pub fn client_converting(m: &mut Mob, nether: bool) {
     m.extra.counter2 = i32::from(!nether && !m.extra.flag2 && !m.no_ai);
 }
-/// Per-tick piglin, piglin brute and hoglin state: the brute's activity and
-/// growl, a piglin's admiring, anger and zombification, and the hoglin attack
-/// animation.
-pub fn ai_step(
+/// The piglin's, brute's and hoglin's brain in `customServerAiStep`, before
+/// [`brain_step`]: the hoglin's repellent sensor, the hunt cooldown, a piglin
+/// dropping a dead or unseen hoglin, the brute's `updateActivity` and growl,
+/// and the memories that run out (`ANGRY_AT`, admiring). It runs inside
+/// `Mob.serverAiStep` (`ai::server_ai_step`), so a step a mod skips skips it.
+pub fn brain_tick(
     m: &mut Mob,
     w: &MobWorld,
     level_random: &mut LegacyRandom,
     events: &mut Vec<MobEvent>,
 ) {
-    if m.extra.anim_ticks > 0 {
-        m.extra.anim_ticks -= 1;
-    }
     if m.species() == Species::Hoglin && m.alive() {
         hoglin_repellent(m, w);
     }
@@ -1949,6 +1945,14 @@ pub fn ai_step(
     b.walk_off = (b.walk_off - 1).max(0);
     b.seen_admire = (b.seen_admire - 1).max(0);
     b.ate_recently = (b.ate_recently - 1).max(0);
+}
+/// Per-tick piglin, piglin brute and hoglin state outside the brain: a
+/// piglin's admiring item in use and the sensor for repellents, zombification,
+/// and the hoglin attack animation.
+pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+    if m.extra.anim_ticks > 0 {
+        m.extra.anim_ticks -= 1;
+    }
     // The admired item is in the off hand; a spear in use counts up instead.
     if m.extra.using_item > 0 && m.extra.off_hand_id().is_some() {
         m.extra.using_item -= 1;
@@ -2744,7 +2748,7 @@ mod conversion_tests {
             m.extra.using_item = 60;
             m.extra.counter2 = CONVERSION + 1;
             let mut events = Vec::new();
-            ai_step(&mut m, w, &mut LegacyRandom::new(0), &mut events);
+            ai_step(&mut m, w, &mut events);
             let relevant: Vec<_> = events
                 .iter()
                 .filter(|e| {
@@ -2794,9 +2798,8 @@ mod conversion_tests {
             );
             m.extra.using_item = 60;
             m.extra.counter2 = CONVERSION + 1;
-            let mut lr = LegacyRandom::new(0);
             let mut events = Vec::new();
-            ai_step(&mut m, w, &mut lr, &mut events);
+            ai_step(&mut m, w, &mut events);
             assert!(
                 events.iter().any(|e| matches!(
                     e,
