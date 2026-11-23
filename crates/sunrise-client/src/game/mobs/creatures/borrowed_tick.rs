@@ -224,6 +224,7 @@ impl Game<'_> {
             let mut removing_vehicle = None;
             let mut stand_cut = None;
             let mut lid_push = None;
+            let mut paused_hurt = None;
             // A mob told alone hears its Pre right before its tick and its Post right after:
             // stop there, restore the list, tell it while the live rows are readable, and resume.
             let mut tell_pre: Option<(u32, std::sync::Arc<sunrise_client::mobs::MobType>, usize)> =
@@ -252,6 +253,7 @@ impl Game<'_> {
                     Some(&self.pack.block_registries),
                     &self.damage_hooks,
                 )
+                .with_mob_hurt_handoff(&mut paused_hurt)
                 .with_mob_uuids(&self.persist.uuids)
                 .with_player_resolver(
                     crate::game::entity::player_resolver!(self),
@@ -1012,13 +1014,23 @@ impl Game<'_> {
                     );
                     swapped_sections = Some(sections);
                 }
-                if let Some(sting) = sting {
+                if let Some(mut sting) = sting {
                     let before_hurt = events.drain(brain_from..sting.at).collect();
                     let _ = self.handle_mob_events(before_hurt);
                     if let Some(i) = self.mob_index.find(&self.mobs, sting.target)
                         && sting.same_target(&self.mobs[i])
                     {
-                        self.finish_mob_damage_at(i);
+                        if let Some(hit) = paused_hurt.take() {
+                            self.paused_mob_hurt = Some(hit);
+                            if let Some((i, hurt)) = self.complete_mob_hurt(i, false) {
+                                sting.resolved_hit(hurt);
+                                self.finish_mob_damage_at(i);
+                            } else {
+                                sting.resolved_hit(false);
+                            }
+                        } else {
+                            self.finish_mob_damage_at(i);
+                        }
                         self.settle_creaking_hurt(sting.target);
                     }
                     if self
@@ -1065,6 +1077,7 @@ impl Game<'_> {
                                 && self.mobs[i].join == join
                                 && !self.mobs[i].removed
                             {
+                                self.paused_mob_hurt = paused_hurt.take();
                                 self.finish_mob_damage_at(i);
                                 self.settle_creaking_hurt(id);
                             }

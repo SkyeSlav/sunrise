@@ -794,6 +794,60 @@ fn a_client_is_told_each_teleport_and_where_its_entities_really_are() {
     });
 }
 
+#[test]
+#[ignore = "daily"]
+fn a_refused_player_add_does_not_hide_the_resident_entities_crossing() {
+    use crate::game::native_hotbar_slot::hotbar_slot_tests::logged_in;
+    use sunrise_core::geometry::Vec3;
+    use sunrise_protocol::packets::play::{self, Clientbound as C};
+
+    crate::game::in_own_process(
+        "game::entity_sections::tests::a_refused_player_add_does_not_hide_the_resident_entities_crossing",
+        || {
+            observe(|calls| {
+                with_client_game(|game| {
+                    let _reader = logged_in(game);
+                    let add = |game: &Game<'_>, uuid, kind| {
+                        C::AddEntity(play::AddEntity {
+                            id: 20,
+                            uuid,
+                            kind: game
+                                .remote
+                                .as_ref()
+                                .unwrap()
+                                .builtin
+                                .get("minecraft:entity_type")
+                                .unwrap()
+                                .id(kind)
+                                .unwrap(),
+                            position: [1.0, 70.0, 3.0],
+                            velocity: [0.0; 3],
+                            pitch: 0,
+                            yaw: 0,
+                            head_yaw: 0,
+                            data: 0,
+                        })
+                    };
+                    game.handle_packet(add(game, 20, "minecraft:pig")).unwrap();
+                    let i = game.mobs.iter().position(|mob| mob.id == 20).unwrap();
+                    game.mobs
+                        .update(i, |mob| mob.position = Vec3::new(17.0, 70.0, 3.0));
+                    // The unfiled move is still pending when an unknown player tries the same id.
+                    calls.lock().unwrap().clear();
+                    game.handle_packet(add(game, 21, "minecraft:player"))
+                        .unwrap();
+                    assert!(calls.lock().unwrap().is_empty());
+                    game.client_entity_sections_stepped();
+                    assert_eq!(
+                        calls.lock().unwrap().as_slice(),
+                        &[(true, 20, [0, 4, 0], [1, 4, 0], true)]
+                    );
+                });
+            })
+        },
+    );
+}
+
 /// A mod's `teleport_to_level` into another level is a change of level, not a crossing: the
 /// recreated entity is filed in the new level untold (its join), this call tells nothing of its
 /// own, and its next move there over a section edge is told once.
