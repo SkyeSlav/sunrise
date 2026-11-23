@@ -59,6 +59,9 @@ impl Players for Game<'_> {
     fn acting_player(&self) -> Option<PlayerRef> {
         self.native_acting_player()
     }
+    fn singleplayer_profile(&self) -> Option<GameProfile<'_>> {
+        self.native_singleplayer_profile()
+    }
 }
 impl RuntimeLevels for Game<'_> {
     fn open(&mut self, id: &str, level: RuntimeLevel) -> Result<LevelRef, RuntimeLevelError> {
