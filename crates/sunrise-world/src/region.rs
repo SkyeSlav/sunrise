@@ -22,6 +22,20 @@ impl std::fmt::Display for CompressedChunkLimit {
 }
 
 impl std::error::Error for CompressedChunkLimit {}
+
+/// `ReportedNbtException`: a chunk read that failed inside the root's payload. A failure at
+/// its type byte or its name's length is a plain error, vanilla's `IOException`. Shows as
+/// its cause, which vanilla's chunk-load report unwraps to.
+#[derive(Debug)]
+pub struct ReportedNbt(pub io::Error);
+
+impl std::fmt::Display for ReportedNbt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for ReportedNbt {}
 use {
     crate::compression::{Compression, invalid},
     sunrise_core::{
@@ -89,7 +103,16 @@ impl ChunkRecord {
                     root.name = Default::default();
                     Ok(root)
                 }
-                Err(e) => Err(decoded.err().unwrap_or_else(|| invalid(e.to_string()))),
+                Err(e) => {
+                    let cause = decoded.err().unwrap_or_else(|| invalid(e.to_string()));
+                    // `NbtIo.readTagSafe` wraps only the payload's read, which starts after the
+                    // type byte and the name's 2-byte length (the name bytes are skipped).
+                    Err(if e.offset < 3 {
+                        cause
+                    } else {
+                        io::Error::new(cause.kind(), ReportedNbt(cause))
+                    })
+                }
             }
         })
     }

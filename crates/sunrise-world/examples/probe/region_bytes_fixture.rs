@@ -15,7 +15,7 @@ use sunrise_core::{
 };
 use sunrise_world::{
     compression::Compression,
-    region::{ChunkRecord, RegionFile},
+    region::{ChunkRecord, RegionFile, ReportedNbt},
 };
 
 pub fn main() -> io::Result<()> {
@@ -54,7 +54,13 @@ pub fn main() -> io::Result<()> {
                 }
                 Err(e) => {
                     eprintln!("{case} slot {slot}: {e}");
-                    writeln!(out, "slot {slot} error io")?;
+                    let class = match e.get_ref() {
+                        Some(e) if e.is::<ReportedNbt>() => {
+                            "net.minecraft.nbt.ReportedNbtException"
+                        }
+                        _ => "io",
+                    };
+                    writeln!(out, "slot {slot} error {class}")?;
                 }
             }
         }
