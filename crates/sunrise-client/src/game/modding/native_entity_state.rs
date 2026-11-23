@@ -1897,6 +1897,15 @@ mod tests {
                         .id(name)
                         .unwrap()
                 };
+                game.handle_packet(C::PlayerInfoUpdate(play::PlayerInfoUpdate {
+                    actions: 1,
+                    entries: vec![play::PlayerInfo {
+                        uuid: 132,
+                        name: Some("Remote".into()),
+                        ..Default::default()
+                    }],
+                }))
+                .unwrap();
                 for (id, name) in [
                     (31, "minecraft:zombie"),
                     (32, "minecraft:player"),
