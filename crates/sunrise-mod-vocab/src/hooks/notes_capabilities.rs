@@ -365,11 +365,11 @@ pub trait Notes {
 - `affect_neighbors_after_removal` is a mod block's `Block.affectNeighborsAfterRemoval`: the block was
   removed from `pos` (`moved`: a piston pushed it) with `UPDATE_NEIGHBORS` or the piston flag. There is no bus
   event for it, so it is a `BlockPart` method only. The block's own class has already run its updates, as an
-  override's `super` call; the part then pushes onto `updates` what it wants, in order: `NeighbourUpdate::OutputSignal`
-  (`updateNeighbourForOutputSignal`), `Neighbours` (`updateNeighborsAt`) and `NeighboursExcept(direction)`
-  (`updateNeighborsAtExceptFromFacing`), and the level runs each at once with vanilla's own functions. It runs
-  inside the level's write with the level host, so it reads but cannot write blocks or spawn entities; a mod that
-  needs either reports the gap on #44. The cost with no part on the block is one `has_part_hook` read.
+  override's `super` call; the part then tells the neighbours itself with `LevelWriteHost::update_neighbors`:
+  `NeighbourUpdate::OutputSignal` (`updateNeighbourForOutputSignal`), `Neighbours` (`updateNeighborsAt`) and
+  `NeighboursExcept(direction)` (`updateNeighborsAtExceptFromFacing`), each applied at once through the level's
+  normal update path, in call order. It runs at the removal site with the level's write host. The cost with no
+  part on the block is one `has_part_hook` read.
 
 - `visuals`: a world-frame hook that appends block-rim and
   colored-light requests (`BlockRim::new(pos, argb, width)`,

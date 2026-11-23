@@ -6,10 +6,14 @@ pub fn removal_game_thread() {
     impl BlockPart for Leaver {
         fn affect_neighbors_after_removal(
             &self,
-            _: &dyn LevelHost,
-            event: &mut AffectNeighborsAfterRemovalEvent<'_>,
+            level: &mut dyn LevelWriteHost,
+            event: &mut AffectNeighborsAfterRemovalEvent,
         ) {
-            event.updates.push(NeighbourUpdate::Neighbours);
+            level.update_neighbors(
+                [event.pos.x, event.pos.y, event.pos.z],
+                event.state,
+                NeighbourUpdate::Neighbours,
+            );
         }
     }
     struct LeaverMod;

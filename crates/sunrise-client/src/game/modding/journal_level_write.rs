@@ -194,6 +194,14 @@ impl LevelWriteHost for JournalLevelWrite<'_, '_> {
         let (replacement, flags) = self.game.level_removal_write(pos, moved);
         self.write_block(pos, replacement, flags)
     }
+    fn update_neighbors(
+        &mut self,
+        _: [i32; 3],
+        _: BlockState,
+        _: mod_api::NeighbourUpdate,
+    ) -> bool {
+        false
+    }
     fn set_block_property(&mut self, pos: [i32; 3], key: &str, value: &str, flags: i32) -> bool {
         let [x, y, z] = pos;
         super::native_hooks::with_property(

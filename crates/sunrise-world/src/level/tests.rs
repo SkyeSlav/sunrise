@@ -682,13 +682,14 @@ fn neighbor_observation_follows_dispatch_order() {
 }
 /// A level that hears every `neighborChanged`, and answers `affectNeighborsAfterRemoval` for a
 /// mod's part with three requests when `asks`.
-struct Asker {
+struct Asker<'b> {
+    b: &'b Behaviours,
     inner: TestLevel,
     seen: std::cell::RefCell<Vec<BlockPos>>,
     asks: bool,
 }
-impl crate::level::BlockEntityNeighbors for Asker {}
-impl LevelAccess for Asker {
+impl crate::level::BlockEntityNeighbors for Asker<'_> {}
+impl LevelAccess for Asker<'_> {
     fn block_state(&self, pos: BlockPos) -> BlockStateId {
         self.inner.block_state(pos)
     }
@@ -715,18 +716,22 @@ impl LevelAccess for Asker {
         self.seen.borrow_mut().push(pos);
     }
     fn affect_neighbors_after_removal(
-        &self,
-        _: BlockPos,
-        _: BlockStateId,
+        &mut self,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+        state: BlockStateId,
         _: bool,
-        updates: &mut Vec<sunrise_core::neighbour_update::NeighbourUpdate>,
     ) {
         if self.asks {
-            updates.extend([
-                sunrise_core::neighbour_update::NeighbourUpdate::NeighboursExcept(Direction::Up),
-                sunrise_core::neighbour_update::NeighbourUpdate::OutputSignal,
-                sunrise_core::neighbour_update::NeighbourUpdate::Neighbours,
-            ]);
+            use sunrise_core::neighbour_update::NeighbourUpdate;
+            let b = self.b;
+            for update in [
+                NeighbourUpdate::NeighboursExcept(Direction::Up),
+                NeighbourUpdate::OutputSignal,
+                NeighbourUpdate::Neighbours,
+            ] {
+                b.neighbour_update(self, ticks, pos, b.block(state), update);
+            }
         }
     }
 }
@@ -734,6 +739,7 @@ impl LevelAccess for Asker {
 fn removal_notices(f: &Fixture, state: BlockStateId, asks: bool) -> Vec<BlockPos> {
     let b = &f.behaviours;
     let mut level = Asker {
+        b,
         inner: TestLevel::new(b),
         seen: Default::default(),
         asks,

@@ -121,14 +121,15 @@ impl LevelAccess for GameLevel<'_> {
         }
     }
     fn affect_neighbors_after_removal(
-        &self,
+        &mut self,
+        ticks: &mut Ticks,
         pos: BlockPos,
         state: BlockStateId,
         moved: bool,
-        updates: &mut Vec<sunrise_core::neighbour_update::NeighbourUpdate>,
     ) {
         if self.native_authoritative {
-            self.native_affect_neighbors_after_removal(self.dimension, pos, state, moved, updates);
+            let dimension = self.dimension;
+            self.native_affect_neighbors_after_removal(ticks, dimension, pos, state, moved);
         }
     }
     fn allow_spread(

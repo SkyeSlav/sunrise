@@ -795,15 +795,15 @@ pub trait LevelAccess: BlockEntityNeighbors {
     /// does nothing.
     fn perform_bonemeal(&mut self, _ticks: &mut Ticks, _pos: BlockPos, _state: BlockStateId) {}
     /// `Block.affectNeighborsAfterRemoval` of a mod's part for the block `state` that stood
-    /// at `pos` (`moved`: pushed by a piston), after the block's own class ran: the updates it
-    /// asks for go in `updates` in order, and the level runs them. It is inside the level's
-    /// write, so it cannot write. The default asks for nothing.
+    /// at `pos` (`moved`: pushed by a piston), after the block's own class ran. The part updates
+    /// the neighbours itself through the level, with `ticks` the removal's. The default does
+    /// nothing.
     fn affect_neighbors_after_removal(
-        &self,
+        &mut self,
+        _ticks: &mut Ticks,
         _pos: BlockPos,
         _state: BlockStateId,
         _moved: bool,
-        _updates: &mut Vec<NeighbourUpdate>,
     ) {
     }
     /// `BlockState.updateShape` for `state` at `pos` after its neighbour in

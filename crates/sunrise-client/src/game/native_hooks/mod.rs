@@ -49,8 +49,7 @@ use mod_api::{
 };
 use mod_api::{
     ActiveEffect, AttachmentStore, BlockClick, BlockUpdateFlags, BonemealSource, ChunkRef,
-    FluidStack, ItemClick, LevelRef, LogicalSide, NeighbourUpdate, TooltipElement, TriState,
-    UsePhase,
+    FluidStack, ItemClick, LevelRef, LogicalSide, TooltipElement, TriState, UsePhase,
 };
 use mod_api::{
     BlockKey, DebugEntry, DebugRenderer, EffectKey, FrameModel, FrameModelEdit, MapDecorationType,

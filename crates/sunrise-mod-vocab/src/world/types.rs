@@ -1926,6 +1926,20 @@ pub trait LevelWriteHost: LevelTicksHost + LevelRandomHost {
     fn remove_block(&mut self, _pos: [i32; 3], _moved: bool) -> bool {
         unimplemented!("LevelWriteHost::remove_block")
     }
+    /// Tell the neighbours of `pos` that a block changed there, as `LevelRef::update_neighbors`
+    /// does (`Level.updateNeighborsAt`, `updateNeighborsAtExceptFromFacing` or
+    /// `updateNeighbourForOutputSignal`), with `source` the state whose block vanilla passes as the
+    /// one that changed. False, with nothing done, off an authoritative server, for a position that
+    /// is not loaded or a `source` that is no block state; also false from a transaction's journal,
+    /// which does not journal neighbour updates.
+    fn update_neighbors(
+        &mut self,
+        _pos: [i32; 3],
+        _source: BlockState,
+        _update: NeighbourUpdate,
+    ) -> bool {
+        unimplemented!("LevelWriteHost::update_neighbors")
+    }
     /// Change a block property through `Level.setBlock` with vanilla update flags, preserving its block entity.
     fn set_block_property(
         &mut self,

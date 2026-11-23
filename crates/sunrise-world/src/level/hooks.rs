@@ -306,13 +306,8 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         moved: bool,
     ) {
         self.class_affect_neighbors_after_removal(state, pos, moved);
-        let mut updates = Vec::new();
         self.level
-            .affect_neighbors_after_removal(pos, state, moved, &mut updates);
-        let block = self.b.block(state);
-        for update in updates {
-            self.neighbour_update(pos, block, update);
-        }
+            .affect_neighbors_after_removal(self.ticks, pos, state, moved);
     }
 
     /// One `NeighbourUpdate` from `pos`, `block` being the block vanilla passes as the one that

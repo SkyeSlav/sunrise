@@ -3,19 +3,19 @@
 pub trait Hooks {
     /// `Block.affectNeighborsAfterRemoval` for a mod's block: an authoritative server removed the
     /// block `state` from `pos` (`moved`: a piston pushed it) and has run its template class's own
-    /// updates. Push onto `updates` the neighbour updates it wants, in order: `OutputSignal`
-    /// (`updateNeighbourForOutputSignal`), `Neighbours` (`updateNeighborsAt`) and
-    /// `NeighboursExcept(direction)` (`updateNeighborsAtExceptFromFacing`); the level runs each
-    /// at once, as the block's own override would. Answered from inside the level's write: it
-    /// reads, and cannot write blocks or spawn entities.
+    /// updates. The listener has the level's write host at the removal site and tells the neighbours
+    /// itself, as the block's own override would: `update_neighbors` with
+    /// `NeighbourUpdate::OutputSignal` (`updateNeighbourForOutputSignal`), `Neighbours`
+    /// (`updateNeighborsAt`) or `NeighboursExcept(direction)` (`updateNeighborsAtExceptFromFacing`).
+    /// Each call runs at once, in call order, through the level's normal update application, and
+    /// updates it causes recurse as they do in vanilla. `ticks` is the removal's.
     #[hook(
-        receiver = "read",
         dispatch = "flat",
         side = "server",
-        contract = "collect",
-        out = "updates",
+        contract = "listen",
         scope = "block",
         key = "state",
+        version = 2,
         target = "sunrise_client::game::native_hooks::affect_neighbors_after_removal::GameLevel<'_>::native_affect_neighbors_after_removal",
         neoforge = "none (vanilla Block.affectNeighborsAfterRemoval; NeoForge adds no event or extension for it)"
     )]
@@ -24,6 +24,6 @@ pub trait Hooks {
         pos: BlockPos,
         state: BlockState,
         moved: bool,
-        updates: &mut Vec<NeighbourUpdate>,
+        #[engine] ticks: &mut Ticks,
     );
 }

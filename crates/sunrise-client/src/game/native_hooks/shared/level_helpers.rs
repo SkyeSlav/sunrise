@@ -140,6 +140,28 @@ impl GameLevel<'_> {
         changed
     }
 
+    /// `Level.updateNeighborsAt` and its siblings from `pos` through the level in place, `source`
+    /// the state whose block vanilla passes as the one that changed. False, with nothing done,
+    /// off an authoritative server, for a position that isn't loaded or a `source` no state.
+    pub(in crate::game) fn native_update_neighbors(
+        &mut self,
+        ticks: &mut Ticks,
+        pos: [i32; 3],
+        source: BlockStateId,
+        update: sunrise_core::neighbour_update::NeighbourUpdate,
+    ) -> bool {
+        if !self.native_authoritative
+            || !self.world.is_loaded_at(pos[0], pos[1], pos[2])
+            || self.registry.state(source).is_none()
+        {
+            return false;
+        }
+        let at = BlockPos::new(pos[0], pos[1], pos[2]);
+        let b = self.behaviours;
+        b.neighbour_update(self, ticks, at, b.block(source), update);
+        true
+    }
+
     pub(in crate::game) fn finish_native_block(
         &mut self,
         pos: [i32; 3],
