@@ -1835,8 +1835,7 @@ fn a_server_client_keeps_a_bundle_use_until_the_server_completes_it() {
     mod_platform::testing::with_mods(mods, || {
         with_interaction_game(true, |game| {
             game.inventory[game.selected] = Some(ItemStack::new("minecraft:bundle", 1));
-            // The use starts at tick 0, which records the item in use.
-            game.using = Some((game.selected, 0));
+            assert!(game.start_using_item());
             // 200 client ticks: the use is still on, waiting for the server.
             for _ in 0..200 {
                 game.remote_tick_using();

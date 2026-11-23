@@ -422,13 +422,7 @@ impl Game<'_> {
     /// moved too quickly or wrongly; then it stays, and the client is told
     /// where it is.
     pub(super) fn guest_move_vehicle(&mut self, conn: u32, p: &play::MoveVehicleRequest) {
-        let controls_vehicle = self
-            .lan
-            .as_ref()
-            .and_then(|host| host.hub.guest(conn))
-            .and_then(|g| g.vehicle)
-            .is_none_or(|v| self.guest_controls_vehicle(conn, v));
-        let Some(host) = self.lan.as_ref() else {
+        let Some(host) = self.lan.as_mut() else {
             return;
         };
         let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
@@ -441,24 +435,26 @@ impl Game<'_> {
             || !p.yaw.is_finite()
             || !p.pitch.is_finite()
         {
-            self.lan.as_mut().unwrap().hub.kick(
+            host.hub.kick(
                 conn,
                 translatable("multiplayer.disconnect.invalid_vehicle_movement", &[]),
             );
             return;
         }
+        // Unlike MovePlayer, this checks for a resend even before the client has loaded,
+        // and does not apply the packet's rotation while awaiting the teleport.
+        if host.hub.update_awaiting_teleport(gi) || !host.hub.guests[gi].client_loaded() {
+            return;
+        }
         let g = &host.hub.guests[gi];
-        if g.awaiting_teleport.is_some() || !g.client_loaded() {
-            return;
-        }
-        // Only the vehicle's controlling passenger moves it: the move of a
-        // player in a boat's second seat is ignored (#11541).
-        if !controls_vehicle {
-            return;
-        }
         let owner = host.hub.singleplayer_owner == Some(g.uuid);
         let allow_flight = host.hub.config.allow_flight;
         let (vehicle, good) = (g.vehicle, g.vehicle_good);
+        // Only the vehicle's controlling passenger moves it: the move of a
+        // player in a boat's second seat is ignored (#11541).
+        if vehicle.is_some_and(|v| !self.guest_controls_vehicle(conn, v)) {
+            return;
+        }
         let back = |host: &mut LanHost, position: Vec3, yaw: f32| {
             let packet = play::MoveVehicle {
                 position: [position.x, position.y, position.z],
@@ -645,6 +641,7 @@ impl Game<'_> {
                         Some(&self.pack.block_registries),
                         &self.damage_hooks,
                     )
+                    .with_reads(crate::game::entity::hit_reads_of!(self))
                     .with_mob_hurt_handoff(&mut paused_hurt);
                     if let Some(pause) = resume.take() {
                         m.resume_client_moved_fall(&w, &mut level, &mut events, pause)

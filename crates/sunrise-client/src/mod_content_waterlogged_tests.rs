@@ -203,9 +203,11 @@ fn declared_waterlogged_blocks_keep_their_class_and_gain_liquid_defaults() {
         face: Direction::Up,
         hit: Vec3::new(4.5, 64.0, 4.5),
         inside: false,
-        yaw: 0.0,
-        pitch: 0.0,
-        sneaking: false,
+        source: sunrise_world::level::PlacementSource::Player {
+            yaw: 0.0,
+            pitch: 0.0,
+            sneaking: false,
+        },
         item: item.into(),
         can_use_game_master_blocks: false,
     };
@@ -229,6 +231,7 @@ fn declared_waterlogged_blocks_keep_their_class_and_gain_liquid_defaults() {
                 b.block(stone),
                 &context("wet:stone"),
             )
+            .unwrap()
             .unwrap();
         assert!(is_waterlogged(wet));
         assert_eq!(b.fluid(wet), FluidState::WATER);
@@ -242,6 +245,7 @@ fn declared_waterlogged_blocks_keep_their_class_and_gain_liquid_defaults() {
                 b.block(stone),
                 &context("wet:stone"),
             )
+            .unwrap()
             .unwrap();
         assert!(
             !is_waterlogged(flowing),
@@ -255,6 +259,7 @@ fn declared_waterlogged_blocks_keep_their_class_and_gain_liquid_defaults() {
                 b.block(stone),
                 &context("wet:stone"),
             )
+            .unwrap()
             .unwrap();
         assert!(!is_waterlogged(dry));
         assert_eq!(b.fluid(dry).kind(), FluidKind::Empty);
@@ -267,7 +272,7 @@ fn declared_waterlogged_blocks_keep_their_class_and_gain_liquid_defaults() {
                 b.block(stone),
                 &context("wet:stone")
             ),
-            Some(dry),
+            Ok(Some(dry)),
             "Part answer overrides the water default"
         );
         level.placement_answer = None;

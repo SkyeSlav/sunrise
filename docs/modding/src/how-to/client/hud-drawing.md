@@ -127,15 +127,7 @@ way round. Nothing is added to chat, narrated or sent. Text the boundary refuses
 `player_action_bar` instead.
 
 ```rust
-use mod_api::prelude::*;
-use mod_api::Text;
-
-fn tool_mode_changed(host: &mut dyn ClientHost, mode: &str) {
-    let line = Text::translate("message.example.tool_mode", vec![Text::literal(mode)]);
-    if let Err(error) = host.set_overlay_message(line, false) {
-        log::debug!("action bar refused: {error:?}");
-    }
-}
+{{#include ../../../examples/src/client_rendering.rs:tool_mode_changed}}
 ```
 
 ## Registering F3 text

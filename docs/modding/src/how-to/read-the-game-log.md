@@ -22,9 +22,8 @@ For example:
 Look in the file rather than the terminal: the game logger echoes only targets that
 start with `sunrise` to stderr, without the target prefix. It drops `DEBUG` and
 `TRACE`; no setting or environment variable (including `RUST_LOG`) enables them.
-
-On builds affected by [#3677](https://github.com/sunrise-org/sunrise/issues/3677),
-`log` macros in native mods built against the prebuilt SDK do not reach the game logger.
+Native `log` records reach the game logger only when the pinned SDK declares native
+log forwarding (`native_log`).
 
 For a loading problem players should see, call
 `r.warn("mymod.warn.optional_integration", &["other_mod"])` on the

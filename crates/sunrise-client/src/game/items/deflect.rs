@@ -169,7 +169,7 @@ impl Game<'_> {
     /// particles (`sendParticles`, spread 0.2) and `destroy`. The blow is
     /// `Player.attack` on a target that is not a mob: its sounds, then the swing.
     pub(super) fn hit_shulker_bullet(&mut self, i: usize) {
-        let (_, _, _, magic) = self.melee_damage(
+        let ((_, _, _, magic), admitted) = self.melee_damage_with_admission(
             "minecraft:shulker_bullet",
             false,
             Some(self.creatures.projectiles[i].id),
@@ -178,6 +178,9 @@ impl Game<'_> {
         let p = self.remove_projectile_at(i);
         self.shulker_bullet_hurt([p.position.x, p.position.y, p.position.z]);
         self.vehicle_attack_sounds(p.aabb(), sweep, magic.then_some(p.id as i32));
+        if admitted {
+            self.remember_player_target(None);
+        }
         self.reset_attack_strength();
         self.swing_arm();
     }
@@ -201,7 +204,8 @@ impl Game<'_> {
         let (Some(eye), Some(p)) = (self.eye_position(), self.creatures.projectiles.get(i)) else {
             return false;
         };
-        let b = p.bounds();
+        // A client's copy takes the box of its `entity_size` answer.
+        let b = self.client_copy_box(p.id, p.position, p.bounds());
         let (lo, hi) = (b.min_position(), b.max_position());
         let (lo, hi) = ([lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z]);
         let d2: f64 = (0..3)

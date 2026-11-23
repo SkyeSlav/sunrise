@@ -70,6 +70,8 @@ impl Game<'_> {
         } else {
             Holder::Entity(p.id as u32)
         };
+        // The constructor's `EntityEvent.Size` comes before `EntityConstructing`.
+        let constructed = self.native_constructing_size(p.id as u32, &kind);
         self.initialize_entity(holder, &kind);
         let replace = self.tracks_remote_entity(p.id);
         self.spawn_entity(p.id, &kind, p.position, rotation);
@@ -92,6 +94,7 @@ impl Game<'_> {
         self.move_remote_interaction(p.id, p.position);
         self.pick_section_sync_id(p.id as u32);
         self.entity_section_joined(p.id as u32, p.position);
+        self.native_constructed_size(p.id as u32, constructed);
     }
 
     /// `C::RemoveEntities`: its arms of `apply_packet`, guard and order kept.

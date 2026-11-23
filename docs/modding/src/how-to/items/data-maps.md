@@ -125,8 +125,8 @@ loot tables are resource identifiers. Compostability is boolean.
 
 Builtin reads return canonical NBT compounds with the field above, rather than the
 input's shorthand: distances are `Float`, frequencies `Int`, compostability `Byte`, and
-identifiers `String`. Infinity remains an NBT Float, never JSON null. Biome values
-are queryable through `BiomeKey`; typed game-event coverage remains in #4199.
+identifiers `String`. Infinity remains an NBT Float, never JSON null. Use `BiomeKey`
+to query biome values and `GameEventKey` to query game-event values.
 Registering these stores and firing `data_maps_updated` does not sync them to clients.
 
 The gameplay readers and structure generation use immutable world-owned snapshots.

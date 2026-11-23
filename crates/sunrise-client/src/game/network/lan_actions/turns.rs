@@ -62,6 +62,46 @@ impl Game<'_> {
             .map(CombatPlayer::Parked)
     }
 
+    /// The host can be parked below a projectile victim's guest turn.
+    pub(in crate::game) fn projectile_player_owner_id(&self, conn: Option<u32>) -> Option<u32> {
+        self.player_entity_id_by_connection(conn)
+            .map(|id| id as u32)
+            .or_else(|| {
+                conn.is_none().then_some(())?;
+                Some(self.lan_displaced_players.first()?.body.as_ref()?.entity_id as u32)
+            })
+    }
+
+    /// Record the shot on its shooter, not on the victim whose damage turn is in place.
+    pub(in crate::game) fn remember_player_projectile_target(
+        &mut self,
+        shooter: u32,
+        target: Option<u32>,
+    ) {
+        match self.combat_player(shooter) {
+            Some(CombatPlayer::InPlace) => self.remember_player_target(target),
+            Some(CombatPlayer::Displaced(depth, _)) => {
+                if let Some(body) = self.lan_displaced_players[depth].body.as_mut() {
+                    body.health.last_hurt_mob = target.map(|id| (id, body.health.tick_count));
+                }
+            }
+            Some(CombatPlayer::Parked(guest)) => {
+                let conn = guest.conn;
+                if let Some(host) = self.lan.as_mut() {
+                    host.hub.update_guest(conn, |guest| {
+                        if let Some(body) = guest.motion.as_mut() {
+                            body.health.last_hurt_mob =
+                                target.map(|id| (id, body.health.tick_count));
+                        } else if let Some(tick) = guest.carried_tick_count {
+                            guest.carried_last_hurt_mob = target.map(|id| (id, tick));
+                        }
+                    });
+                }
+            }
+            None => {}
+        }
+    }
+
     /// Run `f` as the guest `conn`: the host's player state is swapped for theirs.
     /// Returns `None` if the guest is missing or already active in a nested turn.
     pub(in crate::game) fn as_guest<R>(

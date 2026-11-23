@@ -138,6 +138,21 @@ correction carries the live server position and velocity. The server compares
 the vectors bit for bit, except that inputs within vanilla's movement dead zone
 are equivalent. The client never calls this hook.
 
+## Turning hanging entities
+
+On the server, use these `EntityRef` methods with `&mut dyn ServerHost`:
+
+- `set_hanging_direction(host, direction)` changes a painting or frame's facing as
+  `HangingEntity.setDirection` does, updating yaw, pitch and bounds. Frames accept all six
+  directions; paintings accept only the four horizontal directions and return `false`
+  without changing for up or down. The next survival check decides whether it can hang there.
+- `set_item_frame_rotation(host, rotation)` turns the item in an item frame or glow item
+  frame as `ItemFrame.setRotation` does: eighths of a turn, wrapping modulo 8.
+  Comparators update afterwards.
+
+Both methods return `false` for a stale handle or the wrong entity type. Entity
+synchronization shows the change to players, including a painting or frame turned south.
+
 ## Swimming eligibility
 
 `Hooks::can_start_swimming` asks for a Boolean from the local player and the
@@ -211,6 +226,17 @@ notifies the server.
 The neighbouring events differ: canceling Start prevents the use beginning,
 but duration zero does begin it. Canceling Stop skips only release-using, not
 clearing the use. Finish is not cancellable; its result stack can be replaced.
+
+## Entity size on both sides
+
+`entity_size` resolves dimensions through a read-only `Host`, on each side that
+refreshes an entity's size. A client asks for its copy of a server entity when the
+copy is added, when the server sends a new pose (even one with the same size), and
+when `minecraft:scale` or another synched value from the server changes its vanilla
+size; the copy's box, picking and hitbox outline then use the answer.
+The server asks for its own entity separately, so answer from the event (the
+entity's type, the pose and the sizes) the same way on both sides, or the client's
+box and the server's disagree.
 
 ## Player size and pose fit
 

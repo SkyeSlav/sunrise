@@ -634,9 +634,11 @@ impl Game<'_> {
             face,
             hit: Vec3::new(hit.point[0], hit.point[1], hit.point[2]),
             inside: hit.inside,
-            yaw: self.yaw,
-            pitch: self.pitch,
-            sneaking: self.held_mapping(Mapping::Sneak),
+            source: sunrise_world::level::PlacementSource::Player {
+                yaw: self.yaw,
+                pitch: self.pitch,
+                sneaking: self.held_mapping(Mapping::Sneak),
+            },
             item: stack.item.to_string(),
             can_use_game_master_blocks: self.can_use_game_master_blocks(),
         };

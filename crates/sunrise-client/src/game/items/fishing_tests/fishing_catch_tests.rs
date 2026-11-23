@@ -101,6 +101,7 @@ fn run(mode: Option<u8>) -> (Vec<(String, u32)>, usize, i32, u32, i64, bool) {
                 hooked_in: None,
                 left_owner: false,
                 yaw: 0.0,
+                pitch: 0.0,
                 last_deflected_by: None,
                 needs_sync: false,
                 tick_count: 0,

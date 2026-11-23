@@ -9,10 +9,31 @@
 //! as that pose and vanilla size hold. The server's mobs are asked before and after their ticks;
 //! a guest's body once per server tick, with its candidates, before its motion; the client's own
 //! body for its candidates before its tick and for its current pose after it.
+//! A client's copy of any server entity (a mob, a minecart, an armor stand, a display...) asks
+//! where a client's `refreshDimensions` runs: from its constructor, before `entity_constructing`;
+//! after a synched value that refreshes it (`Entity.onSyncedDataUpdated(DATA_POSE)`, and a
+//! kind's own: a baby flag, a cube's size, an armor stand's flags, an interaction's width);
+//! and from its tick, where a mob applies a new `minecraft:scale`
+//! (`LivingEntity.refreshDirtyAttributes`) and a shulker moves its lid
+//! (`Shulker.onPeekAmountChange`). A mob keeps its answer, and other copies keep theirs on
+//! their tracking row (`remote::Tracked`); the copy's box follows it.
 
 use super::Game;
 use mod_api::{EntityRef, Pose};
+use sunrise_client::mobs::Mob;
 use sunrise_client::pose::{Dimensions, SizeAnswer};
+use sunrise_core::geometry::{Aabb, Vec3};
+
+/// The pose a client sizes its copy of a server mob by: `Entity.getPose`, the synched
+/// `DATA_POSE` (a player's as the server sent it, not the one its client tick derives), never a
+/// villager's bed position, which moves it without sizing it.
+fn synced_pose(m: &Mob) -> Pose {
+    match &*m.kind.id {
+        "minecraft:player" => Pose::from_id(i32::from(m.extra.synced_pose)),
+        "minecraft:mannequin" => m.extra.avatar_pose.into(),
+        _ => Pose::from_id(i32::from(m.extra.pose)),
+    }
+}
 
 impl Game<'_> {
     /// Ask `entity_size` for an entity whose vanilla size in `pose` is `vanilla`, unless
@@ -61,6 +82,164 @@ impl Game<'_> {
                 m.size_answer = Some(answer);
             }
         }
+    }
+
+    /// The vanilla size of a client's copy `id` of a non-mob entity of type `kind`
+    /// (`Entity.getDimensions(pose)`): its type's, or what its synched values make it.
+    fn client_object_dimensions(&self, id: u32, kind: &str) -> Option<[f32; 3]> {
+        if let Some(a) = self.armor_stands.iter().find(|a| a.id == id) {
+            // ArmorStand.getDefaultDimensions: MARKER_DIMENSIONS, or BABY_DIMENSIONS (the
+            // type's at half scale, its eyes at 0.9875) for a small one.
+            return Some(match (a.marker, a.small) {
+                (true, _) => [0.0; 3],
+                (_, true) => [0.25, 0.9875, 0.9875],
+                _ => [0.5, 1.975, 1.7775],
+            });
+        }
+        if let Some(i) = self.interactions.get(&(id as i32)) {
+            // Interaction.getDimensions: EntityDimensions.scalable(width, height).
+            return Some([i.width, i.height, i.height * 0.85]);
+        }
+        if let Some(c) = self.potions.clouds.iter().find(|c| c.id == id) {
+            // AreaEffectCloud.getDimensions: scalable(radius * 2, 0.5).
+            return Some([c.radius * 2.0, 0.5, 0.5 * 0.85]);
+        }
+        super::entity_type_rows::entity_type_rows(&self.options.resources).dimensions(kind)
+    }
+
+    /// What the client copy `id`'s size refresh computes now: its pose and vanilla size, with
+    /// the answer it holds. `pose` is a synched pose just received, for a copy that keeps no pose
+    /// of its own (anything but a mob).
+    fn client_copy_size(
+        &mut self,
+        id: u32,
+        pose: Option<Pose>,
+    ) -> Option<(Pose, [f32; 3], Option<SizeAnswer>)> {
+        if let Some(i) = self.mob_index.find(&self.mobs, id) {
+            let m = &self.mobs[i];
+            let pose = synced_pose(m);
+            return Some((pose, m.vanilla_dims_in(pose), m.size_answer));
+        }
+        let remote = self.remote.as_ref()?;
+        let previous = remote.entities.get(&(id as i32))?.size_answer;
+        let (kind, _) = remote.tracked_entity(id as i32)?;
+        let pose = pose
+            .or(previous.map(|answer| answer.pose))
+            .unwrap_or(Pose::Standing);
+        Some((pose, self.client_object_dimensions(id, kind)?, previous))
+    }
+
+    fn set_client_copy_size(&mut self, id: u32, answer: SizeAnswer) {
+        if let Some(m) = self.mob_index.get_mut(&mut self.mobs, id) {
+            m.size_answer = Some(answer);
+        } else if let Some(row) = self
+            .remote
+            .as_mut()
+            .and_then(|remote| remote.entities.get_mut(&(id as i32)))
+        {
+            row.size_answer = Some(answer);
+        }
+    }
+
+    /// `refreshDimensions` on a client's copy `id` of a server entity: ask `entity_size` when its
+    /// pose or vanilla size changed since it was last asked. A mob's client tick calls it, as
+    /// `LivingEntity.refreshDirtyAttributes` applies a new `minecraft:scale` there and a shulker
+    /// moves its lid there; `pose` as for [`Self::client_copy_size`].
+    pub(super) fn native_client_copy_size(&mut self, id: u32, pose: Option<Pose>) {
+        if !mod_api::__private::listened(mod_api::HookId::EntitySize) {
+            return;
+        }
+        if let Some((pose, vanilla, previous)) = self.client_copy_size(id, pose)
+            && let Some(answer) = self.ask_entity_size(id, pose, vanilla, previous)
+        {
+            self.set_client_copy_size(id, answer);
+        }
+    }
+
+    /// `EntityEvent.Size` from the constructor of a client's copy `id` of type `kind`, before
+    /// `entity_constructing` and before the copy joins the level: its type's size
+    /// (`EntityType.getDimensions`) standing. Keep it with [`Self::native_constructed_size`]
+    /// once the copy exists.
+    pub(super) fn native_constructing_size(&self, id: u32, kind: &str) -> Option<SizeAnswer> {
+        if !mod_api::__private::listened(mod_api::HookId::EntitySize) {
+            return None;
+        }
+        let vanilla =
+            super::entity_type_rows::entity_type_rows(&self.options.resources).dimensions(kind)?;
+        self.ask_entity_size(id, Pose::Standing, vanilla, None)
+    }
+
+    /// Keep the constructor's answer on the copy it was asked for, now that it exists.
+    pub(super) fn native_constructed_size(&mut self, id: u32, answer: Option<SizeAnswer>) {
+        if let Some(answer) = answer {
+            self.set_client_copy_size(id, answer);
+        }
+    }
+
+    /// The pose and vanilla size of the client copy `id` before a synched value lands, to tell
+    /// after it whether the value refreshed its dimensions; none without a listener.
+    pub(super) fn synched_size_key(&mut self, id: u32) -> Option<(Pose, [f32; 3])> {
+        if !mod_api::__private::listened(mod_api::HookId::EntitySize) {
+            return None;
+        }
+        self.client_copy_size(id, None)
+            .map(|(pose, vanilla, _)| (pose, vanilla))
+    }
+
+    /// After a synched value `(index, value)` landed on the client copy `id`:
+    /// `Entity.onSyncedDataUpdated` refreshes the dimensions for `DATA_POSE` (index 6) and for
+    /// the values a kind's size follows, so ask when the pose or the vanilla size moved from
+    /// `before` ([`Self::synched_size_key`]). A new `minecraft:scale` waits for the copy's tick.
+    pub(super) fn native_synched_size(
+        &mut self,
+        id: u32,
+        before: Option<(Pose, [f32; 3])>,
+        index: u8,
+        value: &sunrise_protocol::entity_data::Value,
+    ) {
+        let Some(before) = before else {
+            return;
+        };
+        let pose = match (index, value) {
+            // `Pose.STREAM_CODEC`: an unknown id is standing, as `from_id` reads it.
+            (6, sunrise_protocol::entity_data::Value::Id(pose)) => Some(Pose::from_id(*pose)),
+            _ => None,
+        };
+        if self
+            .client_copy_size(id, pose)
+            .is_some_and(|(pose, vanilla, _)| (pose, vanilla) != before)
+        {
+            self.native_client_copy_size(id, pose);
+        }
+    }
+
+    /// The size a client's copy `id` of a non-mob entity takes from its `entity_size` answer,
+    /// while that answer holds for its vanilla size.
+    pub(in crate::game) fn client_copy_answer(&self, id: u32) -> Option<[f32; 3]> {
+        let remote = self.remote.as_ref()?;
+        let answer = remote.entities.get(&(id as i32))?.size_answer?;
+        let size = answer.size?;
+        let (kind, _) = remote.tracked_entity(id as i32)?;
+        (self.client_object_dimensions(id, kind)? == answer.vanilla).then_some(size)
+    }
+
+    /// The box of a client's copy `id` of a non-mob entity at `position` (`Entity.getBoundingBox`,
+    /// which `refreshDimensions` remakes): `vanilla`, its kind's own box, or the answer's
+    /// (`EntityDimensions.makeBoundingBox`) on the same bottom.
+    pub(in crate::game) fn client_copy_box(&self, id: u32, position: Vec3, vanilla: Aabb) -> Aabb {
+        let Some([width, height, _]) = self.client_copy_answer(id) else {
+            return vanilla;
+        };
+        let half = f64::from(width / 2.0);
+        let bottom = vanilla.min_position().y;
+        Aabb::new(
+            Vec3::new(position.x - half, bottom, position.z - half),
+            Vec3::new(
+                position.x + half,
+                bottom + f64::from(height),
+                position.z + half,
+            ),
+        )
     }
 
     /// A body's pose or size changed since it was last asked: ask, and size it by the answer.
@@ -539,5 +718,406 @@ mod tests {
 
     fn m_pose(game: &crate::game::Game<'_>, i: usize) -> Pose {
         game.mobs[i].pose()
+    }
+
+    /// Each client-copy test boots the normal resource loader, which replaces process-wide
+    /// tables (block namespaces, points of interest): run it in a fresh child process.
+    fn in_fresh_process(test: &str) -> bool {
+        crate::game::native_entity_refs::tests::run_fresh_cases(
+            &format!("game::entity_sizes::tests::{test}"),
+            "SUNRISE_TEST_CLIENT_COPY_SIZE",
+            &[test],
+        )
+    }
+
+    /// What a client's listeners saw: each `entity_size` call as (entity, pose, old size, new
+    /// size), and the order of the size and constructing calls.
+    #[derive(Default)]
+    struct Seen {
+        sizes: Vec<(u32, Pose, [f32; 3], [f32; 3])>,
+        order: Vec<String>,
+    }
+
+    /// Records every call, and doubles the width and height.
+    struct Log(Arc<Mutex<Seen>>);
+
+    #[mod_api::__subscriptions]
+    impl Hooks for Log {
+        fn entity_size(&self, _: &dyn Host, event: &mut EntitySizeEvent<'_>) {
+            let mut seen = self.0.lock().unwrap();
+            let id = event.entity.id();
+            seen.sizes
+                .push((id, event.pose, event.old_size, *event.size));
+            seen.order.push(format!("size {id}"));
+            event.size[0] *= 2.0;
+            event.size[1] *= 2.0;
+        }
+        fn entity_constructing(
+            &self,
+            _: mod_api::HostSide<'_>,
+            event: &mut mod_api::EntityConstructingEvent,
+        ) {
+            let kind = event.kind.to_string();
+            self.0
+                .lock()
+                .unwrap()
+                .order
+                .push(format!("constructing {kind}"));
+        }
+    }
+
+    /// A client logged in to a memory server, receiving that server's packets by their wire
+    /// form, with `Log` listening; its chunk at the origin is loaded and empty.
+    fn with_loopback_client(test: impl FnOnce(&mut crate::game::Game<'_>, &Mutex<Seen>)) {
+        use crate::game::{
+            native_client_session::tests::{finish_login, logged_client},
+            native_entity_refs::tests::with_client_game,
+        };
+        let seen = Arc::new(Mutex::new(Seen::default()));
+        let mods = vec![mod_api::ModEntry::new("log", Box::new(Log(seen.clone())))].into();
+        mod_platform::testing::with_mods(mods, || {
+            with_client_game(|game| {
+                let mut server =
+                    sunrise_protocol::connection::Connection::local(logged_client(game));
+                server
+                    .reader
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                finish_login(game, &mut server);
+                game.native_lifecycle
+                    .begin_open(mod_api::Authority::RemoteClient);
+                game.world
+                    .chunks
+                    .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
+                test(game, &seen);
+            });
+        });
+    }
+
+    fn deliver(
+        game: &mut crate::game::Game<'_>,
+        packet: sunrise_protocol::packets::play::Clientbound,
+    ) {
+        use sunrise_protocol::{buf::Reader, packets::play::Clientbound};
+        let body = packet.encode();
+        let mut reader = Reader::new(&body);
+        let id = reader.varint().unwrap();
+        game.handle_packet(Clientbound::decode(id, reader.rest()).unwrap())
+            .unwrap();
+    }
+
+    fn add_entity(game: &mut crate::game::Game<'_>, id: i32, kind: &str, position: [f64; 3]) {
+        use sunrise_protocol::packets::play::{AddEntity, Clientbound};
+        let kind = game
+            .remote
+            .as_ref()
+            .unwrap()
+            .builtin
+            .get("minecraft:entity_type")
+            .unwrap()
+            .id(kind)
+            .unwrap();
+        deliver(
+            game,
+            Clientbound::AddEntity(AddEntity {
+                id,
+                uuid: id as u128,
+                kind,
+                position,
+                velocity: [0.0; 3],
+                pitch: 0,
+                yaw: 0,
+                head_yaw: 0,
+                data: 0,
+            }),
+        );
+    }
+
+    fn entity_data(
+        game: &mut crate::game::Game<'_>,
+        id: i32,
+        values: Vec<(u8, i32, sunrise_protocol::entity_data::Value)>,
+    ) {
+        use sunrise_protocol::packets::play::{Clientbound, SetEntityData};
+        deliver(
+            game,
+            Clientbound::SetEntityData(SetEntityData { id, values }),
+        );
+    }
+
+    fn scale(game: &mut crate::game::Game<'_>, id: i32, base: f64) {
+        use sunrise_protocol::packets::play::{AttributeSnapshot, Clientbound, UpdateAttributes};
+        let attribute = game
+            .motion
+            .attributes
+            .id("minecraft:scale")
+            .unwrap()
+            .registry_id();
+        deliver(
+            game,
+            Clientbound::UpdateAttributes(UpdateAttributes {
+                id,
+                values: vec![AttributeSnapshot {
+                    attribute,
+                    base,
+                    modifiers: Vec::new(),
+                }],
+            }),
+        );
+    }
+
+    /// The listener's answer for `size`: width and height doubled.
+    fn doubled([width, height, eye]: [f32; 3]) -> [f32; 3] {
+        [width * 2.0, height * 2.0, eye]
+    }
+
+    /// NeoForge fires `EntityEvent.Size` from the constructor before `EntityConstructing`: a
+    /// client's new copy is sized by its type, standing, before the constructing listeners run.
+    #[test]
+    #[ignore = "daily"]
+    fn a_client_copy_is_sized_before_entity_constructing() {
+        if in_fresh_process("a_client_copy_is_sized_before_entity_constructing") {
+            return;
+        }
+        with_loopback_client(|game, seen| {
+            add_entity(game, 31, "minecraft:cow", [8.5, 70.0, 8.5]);
+            add_entity(game, 32, "minecraft:minecart", [4.5, 70.0, 4.5]);
+            let seen = seen.lock().unwrap();
+            assert_eq!(
+                seen.order,
+                [
+                    "size 31",
+                    "constructing minecraft:cow",
+                    "size 32",
+                    "constructing minecraft:minecart",
+                ]
+            );
+            // EntityType.COW: 0.9 by 1.4, its eyes at 1.3; MINECART: 0.98 by 0.7, eyes 0.595.
+            let (cow, cart) = ([0.9, 1.4, 1.3], [0.98, 0.7, 0.595]);
+            assert_eq!(
+                seen.sizes,
+                [
+                    (31, Pose::Standing, cow, cow),
+                    (32, Pose::Standing, cart, cart),
+                ]
+            );
+        });
+    }
+
+    /// `Entity.onSyncedDataUpdated(DATA_POSE)` → `refreshDimensions` on a client: a copy of a
+    /// server villager is sized by its synched pose, whichever of the pose and the bed position
+    /// arrives first, asleep and waking, and the same pose sent again asks nothing.
+    #[test]
+    #[ignore = "daily"]
+    fn a_client_copy_is_sized_by_its_synched_pose_not_its_bed() {
+        use sunrise_protocol::entity_data::{Value, serializer};
+        if in_fresh_process("a_client_copy_is_sized_by_its_synched_pose_not_its_bed") {
+            return;
+        }
+        // EntityType.VILLAGER: 0.6 by 1.95, its eyes at 1.62; LivingEntity.SLEEPING_DIMENSIONS:
+        // 0.2 by 0.2, eyes 0.2.
+        let (standing, sleeping) = ([0.6, 1.95, 1.62], [0.2_f32; 3]);
+        let pose = |id| (6, serializer::POSE, Value::Id(id));
+        let bed = |at: Option<[i32; 3]>| (14, serializer::OPTIONAL_BLOCK_POS, Value::OptPos(at));
+        with_loopback_client(|game, seen| {
+            for (id, bed_first) in [(66, true), (67, false)] {
+                add_entity(game, id, "minecraft:villager", [8.5, 70.0, 8.5]);
+                let calls = |seen: &Mutex<Seen>| {
+                    let seen = seen.lock().unwrap();
+                    let calls = seen.sizes.iter().filter(|call| call.0 == id as u32);
+                    calls.copied().collect::<Vec<_>>()
+                };
+                let mut expected = vec![(id as u32, Pose::Standing, standing, standing)];
+                if bed_first {
+                    entity_data(game, id, vec![bed(Some([8, 70, 8]))]);
+                    // The bed moves it but doesn't size it.
+                    assert_eq!(calls(seen), expected, "bed first");
+                    entity_data(game, id, vec![pose(2)]);
+                } else {
+                    entity_data(game, id, vec![pose(2)]);
+                    entity_data(game, id, vec![bed(Some([8, 70, 8]))]);
+                }
+                expected.push((id as u32, Pose::Sleeping, doubled(standing), sleeping));
+                assert_eq!(calls(seen), expected, "asleep, bed first {bed_first}");
+                // The same pose again: no new size, no new call.
+                entity_data(game, id, vec![pose(2)]);
+                assert_eq!(calls(seen), expected, "asleep, same pose again");
+                let m = game.mobs.iter().find(|m| m.id == id as u32).unwrap();
+                assert_eq!((m.width(), m.height()), (0.4, 0.4));
+                // Waking: the pose stands it up, before or after the bed is cleared.
+                if bed_first {
+                    entity_data(game, id, vec![bed(None)]);
+                    assert_eq!(calls(seen), expected, "bed cleared first");
+                    entity_data(game, id, vec![pose(0)]);
+                } else {
+                    entity_data(game, id, vec![pose(0)]);
+                    entity_data(game, id, vec![bed(None)]);
+                }
+                expected.push((id as u32, Pose::Standing, doubled(sleeping), standing));
+                assert_eq!(calls(seen), expected, "awake, bed first {bed_first}");
+            }
+        });
+    }
+
+    /// `LivingEntity.refreshDirtyAttributes` applies a new `minecraft:scale` at the entity's
+    /// tick, so two scale updates before a client tick ask once, with the last scale and the
+    /// size the copy had. Its box and F3+B outline then take the answer.
+    #[test]
+    #[ignore = "daily"]
+    fn a_client_copy_takes_a_new_scale_at_its_tick() {
+        if in_fresh_process("a_client_copy_takes_a_new_scale_at_its_tick") {
+            return;
+        }
+        with_loopback_client(|game, seen| {
+            let at = [8.5, 70.0, 8.5];
+            add_entity(game, 31, "minecraft:cow", at);
+            let cow = [0.9, 1.4, 1.3];
+            scale(game, 31, 1.5);
+            scale(game, 31, 2.0);
+            assert_eq!(
+                seen.lock().unwrap().sizes.len(),
+                1,
+                "no call before the tick"
+            );
+            game.tick_remote_entities(true);
+            let scaled = [0.9_f32 * 2.0, 1.4_f32 * 2.0, 1.3_f32 * 2.0];
+            assert_eq!(
+                seen.lock().unwrap().sizes,
+                [
+                    (31, Pose::Standing, cow, cow),
+                    (31, Pose::Standing, doubled(cow), scaled),
+                ]
+            );
+            game.tick_remote_entities(true);
+            assert_eq!(seen.lock().unwrap().sizes.len(), 2, "the answer holds");
+            let [width, height, _] = doubled(scaled);
+            let m = game.mobs.iter().find(|m| m.id == 31).unwrap();
+            let p = m.position;
+            let half = f64::from(width) / 2.0;
+            let min = [p.x - half, p.y, p.z - half];
+            let max = [p.x + half, p.y + f64::from(height), p.z + half];
+            let b = m.bounds();
+            let (lo, hi) = (b.min_position(), b.max_position());
+            assert_eq!(([lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z]), (min, max));
+            assert_eq!(white_outline(game), (min, max));
+        });
+    }
+
+    /// `Shulker.onPeekAmountChange` → `refreshDimensions` as a floor shulker's lid opens on a
+    /// client: each lid move asks again, and the copy's box keeps the answer as the lid moves.
+    #[test]
+    #[ignore = "daily"]
+    fn a_floor_shulkers_client_copy_asks_as_its_lid_moves() {
+        use sunrise_protocol::entity_data::{Value, serializer};
+        if in_fresh_process("a_floor_shulkers_client_copy_asks_as_its_lid_moves") {
+            return;
+        }
+        with_loopback_client(|game, seen| {
+            add_entity(game, 51, "minecraft:shulker", [8.5, 70.0, 8.5]);
+            // Shulker.DATA_ATTACH_FACE_ID down, then DATA_PEEK_ID wide open.
+            entity_data(
+                game,
+                51,
+                vec![
+                    (16, serializer::DIRECTION, Value::Id(0)),
+                    (17, serializer::BYTE, Value::Byte(100)),
+                ],
+            );
+            let mut heights = Vec::new();
+            for _ in 0..4 {
+                let before = seen.lock().unwrap().sizes.len();
+                game.tick_remote_entities(true);
+                let seen = seen.lock().unwrap();
+                assert_eq!(seen.sizes.len(), before + 1, "one call per lid move");
+                let (_, pose, _, vanilla) = *seen.sizes.last().unwrap();
+                assert_eq!(pose, Pose::Standing);
+                let m = game.mobs.iter().find(|m| m.id == 51).unwrap();
+                assert_eq!(m.vanilla_dims(), vanilla);
+                assert_eq!(m.height(), vanilla[1] * 2.0, "the lid's answer is applied");
+                heights.push(vanilla[1]);
+            }
+            // Shulker.getDefaultDimensions: 1 + the lid's opening, rising.
+            assert!(heights.windows(2).all(|h| h[0] < h[1]), "{heights:?}");
+        });
+    }
+
+    /// A client's copies of entities that aren't mobs ask too: a minecart's box, the
+    /// crosshair's pick, its F3+B outline and the box mods read take the answer; an armor stand
+    /// asks again when it turns small; a display asks from its constructor.
+    #[test]
+    #[ignore = "daily"]
+    fn client_copies_of_other_kinds_ask_and_take_the_answer() {
+        use sunrise_protocol::entity_data::{Value, serializer};
+        if in_fresh_process("client_copies_of_other_kinds_ask_and_take_the_answer") {
+            return;
+        }
+        with_loopback_client(|game, seen| {
+            let at = [8.5, 70.0, 8.5];
+            add_entity(game, 32, "minecraft:minecart", at);
+            add_entity(game, 41, "minecraft:armor_stand", [2.5, 70.0, 2.5]);
+            add_entity(game, 61, "minecraft:block_display", [4.5, 70.0, 4.5]);
+            // EntityType.MINECART: 0.98 by 0.7, eyes 0.595; ARMOR_STAND: 0.5 by 1.975, eyes
+            // 1.7775; BLOCK_DISPLAY: none.
+            let (cart, stand) = ([0.98, 0.7, 0.595], [0.5, 1.975, 1.7775]);
+            // ArmorStand.DATA_CLIENT_FLAGS small: BABY_DIMENSIONS, the type's at half scale
+            // with its eyes at 0.9875.
+            entity_data(game, 41, vec![(15, serializer::BYTE, Value::Byte(1))]);
+            assert_eq!(
+                seen.lock().unwrap().sizes,
+                [
+                    (32, Pose::Standing, cart, cart),
+                    (41, Pose::Standing, stand, stand),
+                    (61, Pose::Standing, [0.0; 3], [0.0; 3]),
+                    (41, Pose::Standing, doubled(stand), [0.25, 0.9875, 0.9875]),
+                ]
+            );
+            let [width, height, _] = doubled(cart);
+            let half = f64::from(width / 2.0);
+            let min = [at[0] - half, at[1], at[2] - half];
+            let max = [at[0] + half, at[1] + f64::from(height), at[2] + half];
+            let entity = game.entity(32).unwrap();
+            assert_eq!(game.entity_bounding_box(entity), Some([min, max]));
+            // Only the cart and the armor stand show an outline: keep the cart's.
+            game.armor_stands.clear();
+            assert_eq!(white_outline(game), (min, max));
+            // Aimed over a vanilla cart (y 70.7) but into the answered box: the crosshair
+            // picks the cart.
+            game.title = None;
+            game.player = Some(
+                sunrise_client::motion::PlayerMotion::new(
+                    game.motion,
+                    sunrise_core::geometry::Vec3::new(5.5, 69.5, 8.5),
+                )
+                .unwrap(),
+            );
+            (game.yaw, game.pitch, game.entity_reach) = (-90.0, 0.0, 3.0);
+            game.refresh_client_pick(1.0);
+            assert!(matches!(
+                game.crosshair_target(),
+                Some(mod_api::CrosshairTarget::Entity { entity: hit, .. }) if hit == entity
+            ));
+        });
+    }
+
+    /// The F3+B outline's white edges: their lowest and highest corner.
+    fn white_outline(game: &mut crate::game::Game<'_>) -> ([f64; 3], [f64; 3]) {
+        // F3+B, on entries with no file behind them: nothing is saved.
+        game.debug_entries = sunrise_client::debug_entries::DebugEntries::default();
+        game.debug_entries.toggle_status("entity_hitboxes", false);
+        let gizmos = game.debug_gizmos(1.0, [0.0; 3]);
+        let ends: Vec<[f64; 3]> = gizmos
+            .lines
+            .iter()
+            .filter(|line| line.color == sunrise_client::gizmos::WHITE)
+            .flat_map(|line| [line.start, line.end])
+            .collect();
+        assert_eq!(ends.len(), 24, "one white cuboid");
+        let extent = |pick: fn(f64, f64) -> f64, from: f64| {
+            std::array::from_fn(|axis| ends.iter().map(|end| end[axis]).fold(from, pick))
+        };
+        (
+            extent(f64::min, f64::INFINITY),
+            extent(f64::max, f64::NEG_INFINITY),
+        )
     }
 }

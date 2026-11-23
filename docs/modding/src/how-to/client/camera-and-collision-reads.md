@@ -9,13 +9,24 @@ It advances once per unpaused client tick, including on the title screen, and wr
 Java's `int`. Pausing holds it; a server tick freeze does not. This is not world game time
 or the frame's animation clock.
 
+Two reads give the facts the HUD picks its contextual bar from (the jump bar, the locator bar or the
+experience bar): `ClientHost::jumpable_vehicle()` is the vehicle the local player controls that can jump now
+(`LocalPlayer.jumpableVehicle`: the player is its first passenger, on a saddled horse, donkey, mule, nautilus or
+camel, and the camel is not sitting; never a pig or a strider, and not for a second passenger),
+and `ClientHost::has_waypoints()` is whether the server tracks any waypoint for this client
+(`ClientWaypointManager.hasWaypoints`). The HUD reads the same state. The bar it chose is not exposed, as
+vanilla's `Hud.nextContextualInfoState` is private.
+
 `ClientHost::gui_scale()` reads the GUI scale in effect (`Window.getGuiScale`), at least 1,
 or `None` without a window (a server, a headless run). Vanilla's `Window.calculateScale` resolves
 it from the GUI Scale option and the window size: the option is a maximum, where 0 means automatic,
 so a large window still resolves below it, and with the Unicode font forced an odd result is raised
-by one. `ClientHost::gui_options().gui_scale` is only that option. The framebuffer size stays
-`native_physical_window_size()`; divide it by this scale, rounding up, for the GUI-scaled width and
-height (`Window.getGuiScaledWidth/Height`).
+by one. `ClientHost::gui_options().gui_scale` is only that option. Divide `ClientHost::window_size()`
+by this scale, rounding up, for the GUI-scaled width and height (`Window.getGuiScaledWidth/Height`).
+
+`ClientHost::window_size()` reads the window's width and height in framebuffer pixels
+(`Window.getWidth`, `Window.getHeight`), whatever the GUI scale, or `None` without a window. Read it
+at any time, not only in `window_resize`: that hook reports this same size, so the two always agree.
 
 `LevelRef::brightness(host, layer, pos)` (`getBrightness`, the stored light 0 to 15) reads on a client too: the
 light of the level the client shows, as the server sent it for a chunk the client holds. It is `None` for a
@@ -116,10 +127,7 @@ arriving and leaving; `client_block_changed(dimension, pos, old, new, predicted)
 held column that changes state, after the write, so `host.level(dimension)` already reads `new` there:
 
 ```rust
-fn client_block_changed(&self, _host: &dyn ClientHost, event: &mut ClientBlockChangedEvent<'_>) {
-    // The chunk to redraw: [x, z], in chunks.
-    self.stale(event.dimension, [event.pos.x >> 4, event.pos.z >> 4]);
-}
+{{#include ../../../examples/src/client_misc.rs:client_block_changed}}
 ```
 
 Every route a client writes a block by tells it: the server's block update, each block of a batched

@@ -33,6 +33,8 @@ pub(crate) struct GameSide<'a> {
     pub(in crate::game) items: &'a Items,
     pub(in crate::game) damage_types: &'a sunrise_world::damage_source::Catalog,
     pub(in crate::game) player_equipment: sunrise_client::health::PlayerEquipment<'a>,
+    /// What a hit on the player in place needs to name and read the living entities it lends.
+    pub(in crate::game) hit_reads: Option<sunrise_client::health::HitReads<'a>>,
     pub(in crate::game) tag_items: Option<&'a Items>,
 }
 
@@ -59,6 +61,10 @@ impl sunrise_client::motion::SideLevel for GameSide<'_> {
 
     fn player_equipment(&self) -> sunrise_client::health::PlayerEquipment<'_> {
         self.player_equipment
+    }
+
+    fn hit_reads(&self) -> Option<sunrise_client::health::HitReads<'_>> {
+        self.hit_reads
     }
 
     fn damage_types(&self) -> &sunrise_world::damage_source::Catalog {
@@ -104,6 +110,10 @@ impl sunrise_client::motion::SideLevel for Game<'_> {
 
     fn player_equipment(&self) -> sunrise_client::health::PlayerEquipment<'_> {
         acting_equipment!(self)
+    }
+
+    fn living_target_alive(&self, id: u32) -> bool {
+        self.last_hurt_target_alive(id)
     }
 
     fn damage_types(&self) -> &sunrise_world::damage_source::Catalog {

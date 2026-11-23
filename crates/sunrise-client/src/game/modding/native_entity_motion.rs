@@ -342,7 +342,10 @@ impl Game<'_> {
             return Some(corners(g.bounds()));
         }
         if let Some(h) = self.native_walk_entity(entity.id()) {
-            return Some(corners(with_entity!(self, h, e => e.bounds())));
+            // A client's copy of a non-mob entity takes its `entity_size` answer's box.
+            return Some(corners(with_entity!(self, h, e => {
+                self.client_copy_box(e.id(), e.position(), e.bounds())
+            })));
         }
         let (lo, hi) = match t {
             Target::Other(id) => {
@@ -358,7 +361,8 @@ impl Game<'_> {
                 return Some(corners(dragon.part_geometry(part).1));
             }
             Target::Crystal(id) => {
-                return Some(corners(self.crystals.iter().find(|c| c.id == id)?.bounds()));
+                let c = self.crystals.iter().find(|c| c.id == id)?;
+                return Some(corners(self.client_copy_box(id, c.position, c.bounds())));
             }
             Target::Cushion(id) => self.cushions.iter().find(|c| c.id == id)?.bounds(),
             Target::Frame(id) => self.item_frames.iter().find(|f| f.id == id)?.bounds(),

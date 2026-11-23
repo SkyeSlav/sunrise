@@ -77,55 +77,7 @@ second registration for the same item refuses startup; there is no last-writer-w
 This example traces the input for an existing `mymod:tool` without doing anything in the world:
 
 ```rust
-use std::sync::Arc;
-
-use mod_api::{
-    ClientHost, ClientItemUseBehavior, Hooks, ItemStack, JavaString, Registrar, RegistrationContext,
-};
-
-struct ToolMod;
-struct Behavior;
-
-#[mod_api::sunrise_mod]
-impl Hooks for ToolMod {
-    fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
-        let key = r.item_key("mymod:tool");
-        r.register_client_item_use(key, Arc::new(Behavior));
-    }
-}
-
-impl ClientItemUseBehavior for Behavior {
-    fn use_item(&self, _host: &mut dyn ClientHost, stack: &ItemStack, slot: u32) {
-        let data = stack
-            .components()
-            .and_then(|c| c.as_nbt().get(&JavaString::from("minecraft:custom_data")));
-        eprintln!(
-            "Tool input started in slot {slot}: {} item(s), custom data present: {}",
-            stack.count(),
-            data.is_some(),
-        );
-    }
-
-    fn release_using(
-        &self,
-        _host: &mut dyn ClientHost,
-        _stack: &ItemStack,
-        slot: u32,
-        ticks_held: u32,
-    ) {
-        eprintln!("Tool input released in slot {slot} after {ticks_held} ticks");
-    }
-
-    fn on_stop_using(
-        &self,
-        _host: &mut dyn ClientHost,
-        _stack: &ItemStack,
-        slot: u32,
-        _ticks_held: u32,
-    ) {
-        eprintln!("Tool input ended in slot {slot}");
-    }
-}
+{{#include ../../../examples/src/item_behaviors.rs:client_item_use}}
 ```
 
 An enabled owner consumes the input before crosshair handling. This applies to main-hand

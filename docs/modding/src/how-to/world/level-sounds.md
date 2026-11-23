@@ -32,6 +32,15 @@ plays at the requested position; only a genuinely entity-bound sound
 | Block-breaking/level-event effects, explosions, pickup packets | None | Client-level `playLocalSound` or direct sound manager playback |
 | Dragon/fang/sniffer local effects, ticking ambience, UI | None | Entity-local effects, sound instances or widgets, not `playSeededSound` |
 
+## Block hit sounds
+
+Use a block part's `play_hit_sound` for client mining sounds. The event supplies the
+block state, position and face. Play your sound through the supplied `ClientHost` and
+return `Flow::Cancel` to suppress the vanilla sound for that hit.
+
+The default plays the state's hit sound at volume `(volume + 1) / 8` and pitch
+`pitch * 0.5`. Sculk growth sounds do not use this hook.
+
 ## Playing a level sound from a server mod
 
 `LevelRef::play_sound(host, sound, at, source, volume, pitch, except)` is `ServerLevel.playSound(except, ...)`:
