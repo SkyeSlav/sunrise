@@ -128,26 +128,9 @@ const PLACE_MACROS: &[&str] = &[
     "option_env",
 ];
 
-/// One source module: items from its file or inline block, and any indexed fragments.
+/// One source module: its items, from its file or its inline `mod` block.
 pub(crate) struct Module {
     pub(crate) items: Vec<Item>,
-}
-
-/// A module's contribution from a physical source file.
-#[derive(Clone)]
-pub(crate) struct SourceFile {
-    pub(crate) path: PathBuf,
-    /// Present for a literal include, even if unconditional. The other files are `mod` bodies.
-    pub(crate) include_cfg: Option<Vec<String>>,
-}
-
-impl From<mod_source::modules::ModuleFile> for SourceFile {
-    fn from(file: mod_source::modules::ModuleFile) -> Self {
-        Self {
-            path: file.path,
-            include_cfg: file.included.then_some(file.cfg),
-        }
-    }
 }
 
 /// The game crate's modules by path, parsed lazily from the pinned source.
@@ -155,7 +138,7 @@ pub(crate) struct Source {
     root: PathBuf,
     /// The crates whose modules are in `files`.
     loaded: BTreeSet<String>,
-    pub(crate) files: BTreeMap<String, Vec<SourceFile>>,
+    pub(crate) files: BTreeMap<String, Vec<PathBuf>>,
     parsed: BTreeMap<String, Module>,
     /// `macro_rules!` names the crate defines without `#[macro_export]`: a body using one can't
     /// leave the crate.
@@ -168,8 +151,8 @@ pub(crate) struct Source {
     cache: Cache,
     /// Each file's SHA-256 in the function index: a file that differs is refused as it is read.
     hashes: BTreeMap<PathBuf, String>,
-    /// The first unreadable, invalid or mismatched indexed source file. Refuse the build even
-    /// when a speculative module lookup treated the failure as "no such module".
+    /// Why a file read did not match the index, when one did not: the build is refused, even where
+    /// the read's failure was taken as "no such module".
     stale: Option<String>,
 }
 
@@ -197,10 +180,7 @@ impl Source {
                 for file in listed {
                     let path = crate::functions::source_path(root, &file.path)?;
                     hashes.insert(path.clone(), file.sha256.clone());
-                    joined.push(SourceFile {
-                        path,
-                        include_cfg: file.include_cfg.clone(),
-                    });
+                    joined.push(path);
                 }
                 files.insert(module.clone(), joined);
             }
@@ -227,13 +207,7 @@ impl Source {
 
     /// The text of `path`, refused when the function index has another hash for it.
     pub(crate) fn read(&mut self, path: &Path) -> Result<String, String> {
-        let text = std::fs::read_to_string(path).map_err(|e| {
-            let why = format!("{}: {e}", path.display());
-            if self.hashes.contains_key(path) {
-                self.stale.get_or_insert_with(|| why.clone());
-            }
-            why
-        })?;
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         if let Some(expected) = self.hashes.get(path)
             && crate::functions::sha256(text.as_bytes()) != *expected
         {
@@ -251,18 +225,12 @@ impl Source {
     pub(crate) fn new(root: &Path) -> Result<Self, String> {
         let src = root.join("crates/sunrise-client/src");
         let mut files = BTreeMap::new();
-        files.insert(
-            "sunrise_client".to_owned(),
-            vec![SourceFile {
-                path: src.join("lib.rs"),
-                include_cfg: None,
-            }],
-        );
+        files.insert("sunrise_client".to_owned(), vec![src.join("lib.rs")]);
         for file in crate::source::game_files(&src, false)? {
             files
-                .entry(file.module.clone())
+                .entry(file.module)
                 .or_insert_with(Vec::new)
-                .push(file.into());
+                .push(file.path);
         }
         let mut local_macros = BTreeSet::new();
         let mut exported = BTreeSet::new();
@@ -286,32 +254,34 @@ impl Source {
         })
     }
 
-    /// Adds a lower crate's modules, once: `Ok(false)` when the source has no such crate.
-    pub(crate) fn load(&mut self, krate: &str) -> Result<bool, String> {
+    /// Adds a lower crate's modules, once: `false` when the source has no such crate.
+    pub(crate) fn load(&mut self, krate: &str) -> bool {
         if self.loaded.contains(krate) {
-            return Ok(true);
+            return true;
         }
         let Ok((package, lib)) = crate::source::crate_root(&self.root, krate) else {
-            return Ok(false);
+            return false;
         };
-        let library = crate::replace::library_name(&package)?;
+        let Ok(library) = crate::replace::library_name(&package) else {
+            return false;
+        };
         let dir = lib.parent().expect("a source file has a folder").to_owned();
-        let files = crate::source::module_files(krate.to_owned(), lib, dir, false)?;
+        let Ok(files) = crate::source::module_files(krate.to_owned(), lib.clone(), dir, false)
+        else {
+            return false;
+        };
         let mut exported = BTreeSet::new();
         let mut local = BTreeSet::new();
         for file in files {
-            let text = self.read(&file.path)?;
+            let text = std::fs::read_to_string(&file.path).unwrap_or_default();
             macro_names(&text, &mut local, &mut exported);
-            self.files
-                .entry(file.module.clone())
-                .or_default()
-                .push(file.into());
+            self.files.entry(file.module).or_default().push(file.path);
         }
         self.local_macros
             .extend(local.into_iter().filter(|name| !exported.contains(name)));
         self.libraries.insert(krate.to_owned(), library);
         self.loaded.insert(krate.to_owned());
-        Ok(true)
+        true
     }
 
     /// The types `krate` declares, from the files the staging pass reads: the installer a
@@ -336,14 +306,21 @@ impl Source {
         Ok(&self.owners[krate])
     }
 
-    /// Module `path`'s items with the gates on each included fragment. When reading an SDK, only
-    /// files named by its index are read, never paths taken from the `include!` invocations.
+    /// Module `path`'s items: its file's, or an inline module's inside its parent's.
     pub(crate) fn module(&mut self, path: &str) -> Result<&Module, String> {
         if !self.parsed.contains_key(path) {
-            let files = self.files.get(path).cloned().unwrap_or_default();
-            // An inline module can contribute its own items even when the index also lists
-            // separate fragments for it. These files are not alternative `mod` declarations.
-            let mut items = if files.iter().all(|file| file.include_cfg.is_some()) {
+            let items = if let Some(files) = self.files.get(path).cloned() {
+                let mut items = Vec::new();
+                for file in &files {
+                    let text = self.read(file)?;
+                    items.extend(
+                        syn::parse_file(&text)
+                            .map_err(|e| format!("{}: {e}", file.display()))?
+                            .items,
+                    );
+                }
+                items
+            } else {
                 let (parent, name) = path
                     .rsplit_once("::")
                     .ok_or_else(|| format!("no module {path}"))?;
@@ -356,43 +333,7 @@ impl Source {
                     return Err(format!("multiple inline declarations for module {path}"));
                 }
                 items.to_vec()
-            } else {
-                Vec::new()
             };
-            for file in files {
-                let text = self.read(&file.path)?;
-                let mut parsed = syn::parse_file(&text).map_err(|e| {
-                    let why = format!("{}: {e}", file.path.display());
-                    if self.hashes.contains_key(&file.path) {
-                        self.stale.get_or_insert_with(|| why.clone());
-                    }
-                    why
-                })?;
-                if let Some(cfg) = file.include_cfg {
-                    let attrs = cfg
-                        .into_iter()
-                        .map(|condition| {
-                            let predicate: proc_macro2::TokenStream =
-                                condition.parse().map_err(|e| {
-                                    format!(
-                                        "{}: invalid source fragment cfg `{condition}`: {e}",
-                                        file.path.display()
-                                    )
-                                })?;
-                            Ok(syn::parse_quote!(#[cfg(#predicate)]))
-                        })
-                        .collect::<Result<Vec<syn::Attribute>, String>>()?;
-                    if !attrs.is_empty() {
-                        for item in &mut parsed.items {
-                            gate_fragment_item(item, &attrs);
-                        }
-                    }
-                }
-                items.extend(parsed.items);
-            }
-            // Their declarations are already in `items`. Leaving the invocations here would
-            // make both name resolution and the mirror treat them as opaque macros.
-            items.retain(|item| mod_source::modules::literal_include(item).is_none());
             self.parsed.insert(path.to_owned(), Module { items });
         }
         Ok(&self.parsed[path])
@@ -431,37 +372,6 @@ impl Source {
     fn is_module(&mut self, path: &str) -> bool {
         self.files.contains_key(path) || self.module(path).is_ok()
     }
-}
-
-/// Attach the enclosing include gates where the mirror reads item attributes. Inline
-/// children can also be mirrored directly, without emitting the surrounding `mod` declaration.
-fn gate_fragment_item(item: &mut Item, gates: &[syn::Attribute]) {
-    let attrs = match item {
-        Item::Const(item) => &mut item.attrs,
-        Item::Enum(item) => &mut item.attrs,
-        Item::ExternCrate(item) => &mut item.attrs,
-        Item::Fn(item) => &mut item.attrs,
-        Item::ForeignMod(item) => &mut item.attrs,
-        Item::Impl(item) => &mut item.attrs,
-        Item::Macro(item) => &mut item.attrs,
-        Item::Mod(item) => {
-            if let Some((_, inner)) = &mut item.content {
-                for item in inner {
-                    gate_fragment_item(item, gates);
-                }
-            }
-            &mut item.attrs
-        }
-        Item::Static(item) => &mut item.attrs,
-        Item::Struct(item) => &mut item.attrs,
-        Item::Trait(item) => &mut item.attrs,
-        Item::TraitAlias(item) => &mut item.attrs,
-        Item::Type(item) => &mut item.attrs,
-        Item::Union(item) => &mut item.attrs,
-        Item::Use(item) => &mut item.attrs,
-        _ => return,
-    };
-    attrs.extend_from_slice(gates);
 }
 
 /// The names `text` defines with `macro_rules!`, into `local` or (with `#[macro_export]`)
@@ -606,7 +516,7 @@ pub(crate) fn find(source: &mut Source, target: &str) -> Result<Found, (&'static
         qualified,
     } = target_path(target).ok_or(("E_MIXIN_TARGET_MISSING", "not a function path".to_owned()))?;
     let krate = front.split("::").next().unwrap_or_default();
-    if !source.load(krate).map_err(|why| ("E_MIXIN_SOURCE", why))? {
+    if !source.load(krate) {
         return Err((
             "E_MIXIN_TARGET_MISSING",
             format!("no crate `{krate}` in the game's source"),
@@ -1643,8 +1553,8 @@ fn mirror(
     let only_public =
         root || (path.split("::").next() != Some("sunrise_client") && tree.copies.is_empty());
     // A `thread_local!` names the statics it declares. Only a public one can be re-exported:
-    // nothing widens a private one, which a glob would not have brought either. Other
-    // macro invocations may define items syn can't see, which only a glob re-exports.
+    // nothing widens a private one, which a glob would not have brought either. Any other
+    // macro invocation may define items syn can't see, which only a glob re-exports.
     // Which `thread_local!` is std's: a bare one unless another macro of that name may be in
     // scope, and `std::thread_local!` unless the module may bind `std` to something else.
     // `::std::thread_local!` always is. Unresolved, the module keeps the glob.
@@ -1785,7 +1695,7 @@ fn support_module(
     let path = source
         .files
         .iter()
-        .find(|(_, files)| files.iter().any(|file| file.path.ends_with(&module.file)))
+        .find(|(_, paths)| paths.iter().any(|path| path.ends_with(&module.file)))
         .map(|(name, _)| name.clone())
         .ok_or((
             "E_MIXIN_MODULE_DESTINATION",
@@ -2067,7 +1977,7 @@ mod tests {
             hashes: BTreeMap::new(),
             stale: None,
         };
-        assert!(source.load("sunrise_mod_render").unwrap());
+        assert!(source.load("sunrise_mod_render"));
         assert_eq!(
             original_path(&source.libraries, "sunrise_mod_render::render"),
             "::mod_render::render"

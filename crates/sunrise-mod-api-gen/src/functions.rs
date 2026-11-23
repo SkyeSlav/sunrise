@@ -47,10 +47,6 @@ pub struct ModuleFile {
     pub path: String,
     /// The SHA-256 of the file's bytes, hex.
     pub sha256: String,
-    /// The enclosing gates on a literal include, outermost first. An empty list means an
-    /// unconditional include; a missing field is a regular module file (or an older index).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub include_cfg: Option<Vec<String>>,
 }
 
 /// A function that can take a replacement.
@@ -308,7 +304,7 @@ pub(crate) fn index_of(
         .filter(|krate| *krate != "sunrise_client")
         .collect();
     for krate in lower {
-        if !source.load(krate)? {
+        if !source.load(krate) {
             return Err(format!(
                 "{krate}: it has #[sunrise_mod_api_macros::replaceable] functions, but its sources can't be read"
             ));
@@ -329,9 +325,8 @@ pub(crate) fn index_of(
                 modules: BTreeMap::new(),
             });
         let mut listed = Vec::new();
-        for file in paths {
-            let path = &file.path;
-            // A `#[path]` or include can lead through `..`: use the archive's file spelling.
+        for path in paths {
+            // A `#[path]` leads through `..`: the index names the file as the archive holds it.
             let inside = path.strip_prefix(root).ok().and_then(|inside| {
                 let mut parts: Vec<String> = Vec::new();
                 for component in inside.components() {
@@ -354,7 +349,6 @@ pub(crate) fn index_of(
             listed.push(ModuleFile {
                 path: relative,
                 sha256: sha256(&bytes),
-                include_cfg: file.include_cfg.clone(),
             });
         }
         facts.modules.insert(module.clone(), listed);
