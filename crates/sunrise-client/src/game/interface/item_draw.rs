@@ -1127,7 +1127,6 @@ mod owner_tests;
 mod tests {
     use super::*;
     use mod_api::ClientHost;
-    use serde_json::json;
 
     /// `ClientLevel.setRespawnData`: the client keeps the packet's level beside its position,
     /// so the spawn compass's target names the level the world spawn is in.
@@ -1547,7 +1546,7 @@ mod tests {
     #[ignore = "daily"]
     fn a_mods_item_model_type_answers_with_the_draws_context() {
         use mod_api::__private::game::*;
-        use sunrise_assets::item_model::{Context, DisplayContext, LevelState, OwnerState};
+        use sunrise_assets::item_model::{Context, DisplayContext, LevelState};
         let fields = serde_json::json!({"type": "cellmod:cell"})
             .as_object()
             .cloned()
