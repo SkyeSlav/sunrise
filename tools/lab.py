@@ -55,6 +55,28 @@ def cargo_target():
     return ROOT / os.environ.get("CARGO_TARGET_DIR", "target")
 
 
+_PARITY_FIXTURES = {}
+
+
+def parity_fixtures(default_features=True):
+    """The `sunrise-parity-fixtures` program: sunrise-client's parity fixtures (game/parity_fixtures.rs), run with
+    libtest's command line and report, built without the lib's other tests, whose one rustc a parity runner cannot
+    hold (#4896). Built in the test profile, as the lib test was, once per variant and process; the parity
+    workflow's warm-up runs the same command, so a harness finds it fresh."""
+    if default_features not in _PARITY_FIXTURES:
+        command = ['cargo', 'build', '--locked', '--profile', 'test', '-p', 'sunrise-client',
+                   *([] if default_features else ['--no-default-features']), '--features', 'parity-fixtures',
+                   '--bin', 'sunrise-parity-fixtures', '--message-format=json-render-diagnostics']
+        built = subprocess.run(command, cwd=ROOT, stdout=subprocess.PIPE, text=True, check=True)
+        executables = [row['executable'] for row in map(json.loads, filter(None, built.stdout.splitlines()))
+                       if row.get('reason') == 'compiler-artifact' and row.get('executable')
+                       and row['target']['name'] == 'sunrise-parity-fixtures']
+        if len(executables) != 1:
+            raise RuntimeError(f'cargo reported {len(executables)} sunrise-parity-fixtures executables')
+        _PARITY_FIXTURES[default_features] = Path(executables[0])
+    return _PARITY_FIXTURES[default_features]
+
+
 def binary(folder, name):
     """A built program in folder: name.exe on Windows (Cargo's name there), name elsewhere."""
     path = Path(folder) / name

@@ -26,7 +26,7 @@ def snapshot_tests(build):
     # Written out whole: CI's named-harness step finds the lib tests to build first by these literal arguments.
     for command in (
         ["cargo", "test", "--locked", "-p", "sunrise-client-lib", "--lib", "datapack_damage_", "--", "--include-ignored"],
-        ["cargo", "test", "--locked", "-p", "sunrise-client", "--lib", "datapack_damage_", "--", "--include-ignored"],
+        [lab.parity_fixtures(), "datapack_damage_", "--include-ignored"],
     ):
         run = subprocess.run(command, cwd=lab.ROOT, env=env, text=True, capture_output=True)
         stdout += run.stdout
