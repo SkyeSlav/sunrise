@@ -360,16 +360,20 @@ and `None` for a stale, foreign or unavailable handle. The server retains its su
 
 ## Local player reads on a client
 
-These entity reads also accept a client host. They return `None` for a stale handle or
-an entity whose body the client doesn't keep; another player the client tracks is such a
-kept body:
+These entity reads also accept a client host. They return `None` for a stale or foreign
+handle or when the client doesn't keep the state for that entity. For boolean reads,
+`Some(false)` means the client has the state and the flag is off:
 
 | Read | Client value |
 | --- | --- |
 | `air_supply` | Last server-synced air; the client never predicts air loss or refill. |
 | `max_air_supply` | Maximum for the kept entity's kind (300 for the local player). |
 | `on_ground` | The local player's own predicted flag; for another kept entity, its client copy's flag. |
-| `is_in_water` | The local player's own fluid state, or a kept entity's last client update. |
+| `is_sprinting` | The local player's predicted sprint flag or another tracked entity's synchronized flag, not the sprint key. |
+| `is_in_water` | Body contact, not eye submersion: the local player's predicted contact or a tracked entity's last client fluid update. |
+| `is_in_lava` | The same source as water contact; false until the client copy clears its first-tick flag. |
+| `pose` | The local player's predicted pose or another tracked entity's synchronized pose, named by `Pose.getSerializedName`. |
+| `is_crouching` | The local player's predicted flag from before input sampling, independent of sneak input and pose. For another tracked entity, whether its synchronized pose is crouching. |
 | `is_swimming` | The local player's swimming flag, not the pose (crawling can share that pose). `None` for other players and other entity kinds. |
 | `main_arm` | `LivingEntity.getMainArm` for every living entity the client tracks, as the server last sent it: another player's or a mannequin's main hand, a mob's left-handed flag; the local player's own Main Hand option. `None` for an entity that isn't living. |
 

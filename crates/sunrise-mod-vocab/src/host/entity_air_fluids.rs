@@ -22,14 +22,17 @@ pub trait EntityAirFluidsBackend {
     /// client, reads its own copy as `entity_fluid_heights` does.
     fn entity_eye_fluid(&self, entity: EntityRef) -> Option<Option<String>>;
     /// Side: both.
-    /// Whether the entity touched water at its last fluid update
-    /// (`Entity.isInWater`): players and mobs.
-    /// On a client, the local player's own fluid state, or a kept entity's (a tracked player
-    /// or mob) last client update. None for a stale handle or an entity whose body the client
-    /// doesn't keep.
+    /// Whether the entity's body touched water at its last fluid update
+    /// (`Entity.isInWater`), not whether its eyes were submerged. On a client,
+    /// reads the local player's prediction or a tracked entity's last client fluid
+    /// update. None for a stale or foreign handle or unavailable fluid state.
     fn entity_is_in_water(&self, entity: EntityRef) -> Option<bool>;
-    /// Side: server.
-    /// Whether the entity is in lava (`Entity.isInLava`): players and mobs.
+    /// Side: both.
+    /// Whether the entity's body touched lava at its last fluid update
+    /// (`Entity.isInLava`), not whether its eyes were submerged. On a client,
+    /// uses the same body state as `is_in_water` and reads false until
+    /// `Entity.baseTick` clears the first-tick flag. None for a stale or foreign
+    /// handle or unavailable fluid state.
     fn entity_is_in_lava(&self, entity: EntityRef) -> Option<bool>;
     /// Side: both.
     /// `Entity.isUnderWater`: the previous eye-in-water sample AND current water contact,

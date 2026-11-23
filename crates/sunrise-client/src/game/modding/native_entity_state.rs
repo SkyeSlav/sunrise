@@ -1,11 +1,6 @@
-//! An entity's state flags for native server mods, through an `EntityRef`
-//! (docs/modding/src/how-to/native-mods.md, "Entity and level handles", #7387): sneaking and
-//! sprinting, water and lava, fire and air, silence, invisibility and pose.
-//! Players and mobs have them all; the other kinds have the ones Sunrise
-//! keeps for them (an armor stand's fire and invisibility, an item's fire),
-//! and `None` for the rest, as for a stale handle. Secondary use also reads
-//! the local client's live semantic sneak state; fire and underwater reads also
-//! use the client's own cached state.
+//! Entity state through `EntityRef`: sprinting, fluid contact, fire, air, pose and other flags.
+//! Reads that work on a client use the local prediction or a tracked copy, not the server's body.
+//! A client handle without the relevant state, or a stale handle, reads `None`.
 //! Ticks lived (`Entity.tickCount`) are read for players, mobs, items, orbs and minecarts.
 use super::{Game, commands::Target};
 use mod_api::EntityRef;
@@ -62,6 +57,22 @@ enum Body<'a> {
     Player(&'a PlayerMotion),
     Mob(&'a Mob),
     Other(Target),
+}
+
+impl Body<'_> {
+    fn pose(self, server: bool) -> Option<&'static str> {
+        let id = match self {
+            Self::Player(p) => return Some(player_pose(p.pose)),
+            Self::Mob(m) if server => sync::pose_id(m),
+            Self::Mob(m) if matches!(&*m.kind.id, "minecraft:player" | "minecraft:mannequin") => {
+                m.extra.synced_pose
+            }
+            Self::Mob(m) => m.extra.pose,
+            Self::Other(_) if server => sync::STANDING,
+            Self::Other(_) => return None,
+        };
+        POSES.get(usize::from(id)).copied()
+    }
 }
 
 impl Game<'_> {
@@ -129,20 +140,23 @@ impl Game<'_> {
             self.command_guest(conn)?.info.main_hand,
         ))
     }
-    /// Whether the entity crouches (`Entity.isCrouching`: the crouching
-    /// pose).
+    /// `LocalPlayer.isCrouching` reads the pre-input flag; `Entity.isCrouching` reads the pose.
     pub(super) fn entity_is_crouching(&self, entity: EntityRef) -> Option<bool> {
-        Some(self.entity_pose(entity)? == "crouching")
+        let body = self.native_target_body(self.native_entity_read_target(entity)?)?;
+        let server = self.is_logical_server();
+        match body {
+            Body::Player(p) if !server => Some(p.local_crouching),
+            body => Some(body.pose(server)? == "crouching"),
+        }
     }
-    /// Whether the entity sprints (`Entity.isSprinting`): a player, or a
-    /// cat or ocelot dashing after its target (their shared sprinting flag);
-    /// false for the other kinds.
+    /// `Entity.isSprinting`: the body's sprint flag, not input.
     pub(super) fn entity_is_sprinting(&self, entity: EntityRef) -> Option<bool> {
-        Some(match self.native_entity_body(entity)? {
-            Body::Player(p) => p.sprinting,
-            Body::Mob(m) => m.extra.sprinting,
-            _ => false,
-        })
+        match self.native_target_body(self.native_entity_read_target(entity)?)? {
+            Body::Player(p) => Some(p.sprinting),
+            Body::Mob(m) => Some(m.extra.sprinting),
+            Body::Other(_) if self.is_logical_server() => Some(false),
+            Body::Other(_) => None,
+        }
     }
     /// `Entity.setSprinting` for a player (the flag and the speed modifier) or a mob (the
     /// flag, sent to the clients). False for other kinds, a stale handle and a client.
@@ -204,11 +218,11 @@ impl Game<'_> {
             _ => None,
         }
     }
-    /// Whether the entity is in lava (`Entity.isInLava`): players and mobs.
+    /// `Entity.isInLava`: the body's cached contact, with the client's first-tick guard.
     pub(super) fn entity_is_in_lava(&self, entity: EntityRef) -> Option<bool> {
-        match self.native_entity_body(entity)? {
+        match self.native_target_body(self.native_entity_read_target(entity)?)? {
             Body::Player(p) => Some(p.is_in_lava()),
-            Body::Mob(m) => Some(m.fluids.in_lava),
+            Body::Mob(m) => Some(m.fluids.in_lava && (self.is_logical_server() || !m.first_tick)),
             Body::Other(_) => None,
         }
     }
@@ -717,15 +731,10 @@ impl Game<'_> {
             _ => false,
         }
     }
-    /// The entity's pose (`Entity.getPose`) as `Pose` names it: `standing`,
-    /// `crouching`, `swimming`, `sleeping`, a warden's `roaring`... Kinds
-    /// with no pose stand.
+    /// `Entity.getPose`, named by `Pose.getSerializedName`.
     pub(super) fn entity_pose(&self, entity: EntityRef) -> Option<&'static str> {
-        Some(match self.native_entity_body(entity)? {
-            Body::Player(p) => player_pose(p.pose),
-            Body::Mob(m) => POSES.get(usize::from(sync::pose_id(m))).copied()?,
-            Body::Other(_) => POSES[0],
-        })
+        self.native_target_body(self.native_entity_read_target(entity)?)?
+            .pose(self.is_logical_server())
     }
 }
 

@@ -1228,7 +1228,8 @@ pub struct Extra {
     /// `Entity.deltaMovementOnPreviousTick`: the velocity before this tick's
     /// move, which the elytra lean interpolates from (`getDeltaMovementLerped`).
     pub previous_velocity: Vec3,
-    /// `Entity.DATA_POSE` of another player, as the server sent it.
+    /// The synchronized `Entity.DATA_POSE` of another player or a mannequin, before
+    /// narrowing it to the movement stances in `avatar_pose`.
     pub synced_pose: u8,
     /// `LivingEntity.isAutoSpinAttack` (Riptide).
     pub auto_spin_attack: bool,

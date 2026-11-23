@@ -26,11 +26,23 @@ Villagers use `start_sleeping`/`stop_sleeping`, not the raw player position sett
 
 ## Sprinting
 
-`EntityRef::is_sprinting` reads `Entity.isSprinting` and `EntityRef::set_sprinting(host, sprinting)` sets it
-(`Entity.setSprinting`, server only): a player's flag with the movement speed modifier that goes with it, or a mob's flag, which the
-mob's movement speed already reads as that modifier (a cat's or ocelot's own AI may set it again on its next step). It returns `false` for a stale
-handle, on a client and for a kind with no sprinting flag. It is the flag `Entity.isSprinting` reads, not
-the player's sprint key: a player's own client sets its flag again from its input.
+Use `EntityRef::is_sprinting(host)` on either side to read the sprint flag (`Entity.isSprinting`),
+not the sprint key. A client reads the local player's prediction or another tracked entity's
+synchronized flag. `Some(false)` is a negative result, while `None` means the handle or that
+state is unavailable.
+
+`EntityRef::set_sprinting(host, sprinting)` stays server-only. It sets a player's flag and
+movement speed modifier, or a mob's flag, which its movement speed already reads. A player's
+client can set its own flag again from its input; a mob's AI can do the same on its next step.
+The write returns `false` for a stale handle or a kind with no sprinting flag.
+
+## Pose and crouching
+
+`EntityRef::pose(host)` reports the current pose using `Pose.getSerializedName`. On a client
+it reads the local player's prediction or another tracked entity's synchronized pose.
+`EntityRef::is_crouching(host)` normally means that pose is crouching. The local client player
+instead reads the flag `LocalPlayer.aiStep` sets before input sampling; it can disagree with both
+the sneak key and the current pose. These reads do not change the pose or ask the server for it.
 
 ## Fire, water and consumption
 
@@ -52,6 +64,12 @@ There is no grant packet: fire itself still uses vanilla's synced flag. The clie
 affects local prediction and drawing, without replacing remote entities' synced fire state.
 It ends when that entity copy is discarded.
 
+Use `EntityRef::is_in_water(host)` and `EntityRef::is_in_lava(host)` for body contact from
+the last fluid update, not eye submersion. On a client, that is the local player's predicted
+contact or another tracked entity's last client fluid update. Lava reads `Some(false)` before
+the client copy clears its first-tick flag. If the state or handle is unavailable, the reads
+return `None` rather than `Some(false)`.
+
 `EntityRef::is_under_water(host)` reads `Entity.isUnderWater` for players and mobs on either side:
 the previous eye-in-water sample AND current water contact. The local client player follows the
 `LocalPlayer.isUnderWater` override instead: its saved eye sample alone, even when current water
@@ -64,7 +82,7 @@ breathing overrides and invulnerability.
 
 `EntityRef::is_swimming` reads the swimming flag, not the player's current pose.
 [Swimming eligibility](entity-hooks.md#swimming-eligibility) can change entry on
-both sides without changing either of the fluid reads above or the conditions
+both sides without changing the fluid-contact reads above or the conditions
 for continuing a swim.
 
 `PlayerRef::trigger_consume_item(host, &stack)` is server-only and fires just

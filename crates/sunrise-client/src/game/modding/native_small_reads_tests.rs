@@ -352,28 +352,56 @@ fn client_merchant_offers_follow_the_open_menu() {
 #[ignore = "daily"]
 fn client_player_state_reads_its_own_copy_only() {
     use super::native_client_session::tests::logged_client;
-    use super::native_entity_refs::tests::with_client_game;
-    use sunrise_client::{items::ItemStack, motion::PlayerMotion};
+    use super::native_entity_refs::tests::{run_fresh_cases, with_client_game};
+    use sunrise_client::{actions::Action, items::ItemStack, motion::PlayerMotion, pose::Pose};
     use sunrise_core::geometry::Vec3;
+    use winit::keyboard::KeyCode;
+
+    if run_fresh_cases(
+        "game::native_small_reads_tests::client_player_state_reads_its_own_copy_only",
+        "SUNRISE_TEST_CLIENT_ENTITY_STATE_READS_CASE",
+        &["client"],
+    ) {
+        return;
+    }
     mod_platform::testing::with_mods(Default::default(), || {
         with_client_game(|game| {
             let _server = logged_client(game);
-            game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
+            let mut body = PlayerMotion::new(game.motion, Vec3::ZERO).unwrap();
+            body.client_side = true;
+            game.player = Some(body);
             let local = game.local_player().unwrap();
             let entity = local.entity();
             let other = mod_api::EntityRef::new(entity.epoch(), 99);
             let other_player = mod_api::__private::game::player_ref(other, 99);
             game.inventory[5] = Some(ItemStack::new("minecraft:stone", 3));
-            for flag in [true, false] {
+            assert!(!game.held_mapping(Action::Sprint));
+            for (flag, pose, pose_name) in [
+                (true, Pose::Standing, "standing"),
+                (false, Pose::Crouching, "crouching"),
+            ] {
+                // Both the sneak input and the pose disagree with the pre-input flag.
+                if !flag {
+                    game.insert_device_key(KeyCode::ShiftLeft);
+                }
                 let body = game.player.as_mut().unwrap();
                 body.ground.on_ground = flag;
                 body.fluids.was_touching_water = flag;
+                body.fluids.was_eye_in_water = !flag;
                 body.swimming = flag;
                 body.air = if flag { 87 } else { 12 };
+                body.sprinting = flag;
+                body.shift_key_down = !flag;
+                body.local_crouching = flag;
+                body.pose = pose;
                 let host = &*game as &dyn mod_api::ClientHost;
                 assert_eq!(entity.on_ground(host), Some(flag));
                 assert_eq!(entity.is_in_water(host), Some(flag));
                 assert_eq!(entity.is_swimming(host), Some(flag));
+                assert_eq!(entity.is_sprinting(host), Some(flag));
+                assert_eq!(entity.is_shift_key_down(host), Some(!flag));
+                assert_eq!(entity.is_crouching(host), Some(flag));
+                assert_eq!(entity.pose(host), Some(pose_name));
                 assert_eq!(entity.air_supply(host), Some(if flag { 87 } else { 12 }));
                 assert_eq!(entity.max_air_supply(host), Some(300));
                 assert_eq!(other.on_ground(host), None);
@@ -392,8 +420,157 @@ fn client_player_state_reads_its_own_copy_only() {
                 assert_eq!(other_player.with_inventory(host, |_| ()), None);
                 assert_eq!(local.with_ender_chest(host, |_| ()), None);
             }
+            check_local_lava_contact(game, entity);
+            check_tracked_client_state(game, other);
         });
     });
+}
+
+fn check_local_lava_contact(game: &mut Game<'_>, entity: mod_api::EntityRef) {
+    use std::sync::Arc;
+    use sunrise_client::{chunk::Chunk, motion::MotionWorld};
+    use sunrise_core::geometry::Vec3;
+
+    // The fluid sampler needs the chunks around the body's AABB loaded.
+    for (x, z) in [(-1, -1), (-1, 0), (0, -1), (0, 0)] {
+        game.world
+            .chunks
+            .insert((x, z), Arc::new(Chunk::empty(x, z)));
+    }
+    let lava = game
+        .pack
+        .assets
+        .registry
+        .default_state("minecraft:lava")
+        .unwrap();
+    assert!(game.world.set_stored(0, 64, 0, lava));
+    game.player.as_mut().unwrap().position = Vec3::new(0.5, 64.0, 0.5);
+    for contact in [false, true] {
+        let side = game_side!(game);
+        let mut world = MotionWorld {
+            side: &side,
+            entities: &[],
+            player: game.player.as_mut().unwrap(),
+            scene: &mut game.world,
+            assets: &game.pack.assets,
+            collision_binding: game.collision,
+            resources: game.motion,
+            health: &game.health_resources,
+            tag_items: None,
+            loop_context: &game.loop_context,
+            damage_hooks: &game.damage_hooks,
+            block_registries: None,
+        };
+        // Sample once. Finishing the base tick clears first_tick without sampling again.
+        if contact {
+            world.finish_fluid_base_tick();
+        } else {
+            world.begin_fluid_tick().unwrap();
+        }
+        assert_eq!(
+            entity.is_in_lava(&*game as &dyn mod_api::ClientHost),
+            Some(contact)
+        );
+    }
+}
+
+fn check_tracked_client_state(game: &mut Game<'_>, unknown: mod_api::EntityRef) {
+    use mod_api::{ClientHost, EntityRef, WorldEpoch};
+    use sunrise_protocol::{
+        entity_data::{Value, serializer},
+        packets::play::{self, Clientbound as C},
+    };
+
+    for (id, name) in [
+        (31, "minecraft:zombie"),
+        (32, "minecraft:mannequin"),
+        (33, "minecraft:experience_orb"),
+    ] {
+        let kind = game
+            .remote
+            .as_ref()
+            .unwrap()
+            .builtin
+            .get("minecraft:entity_type")
+            .unwrap()
+            .id(name)
+            .unwrap();
+        game.handle_packet(C::AddEntity(play::AddEntity {
+            id,
+            uuid: 100 + id as u128,
+            kind,
+            position: [2.0, 64.0, 3.0],
+            velocity: [0.0; 3],
+            pitch: 0,
+            yaw: 0,
+            head_yaw: 0,
+            data: 0,
+        }))
+        .unwrap();
+    }
+    let zombie = game.entity(31).unwrap();
+    let mannequin = game.entity(32).unwrap();
+    let orb = game.entity(33).unwrap();
+
+    for (flags, pose, sprinting, pose_name, crouching) in [
+        (0x08, 5, true, "crouching", true), // Sprint without the shared shift flag.
+        (0x02, 0, false, "standing", false), // Shared shift flag without crouching.
+    ] {
+        for entity in [zombie, mannequin] {
+            game.handle_packet(C::SetEntityData(play::SetEntityData {
+                id: entity.id() as i32,
+                values: vec![
+                    (0, serializer::BYTE, Value::Byte(flags)),
+                    (6, serializer::POSE, Value::Id(pose)),
+                ],
+            }))
+            .unwrap();
+            let host = &*game as &dyn ClientHost;
+            assert_eq!(entity.is_sprinting(host), Some(sprinting));
+            assert_eq!(entity.pose(host), Some(pose_name));
+            assert_eq!(entity.is_crouching(host), Some(crouching));
+        }
+    }
+
+    // The full synchronized pose is not the avatar's narrowed movement stance.
+    for (pose, name) in [(7, "dying"), (i32::MAX, "standing")] {
+        game.handle_packet(C::SetEntityData(play::SetEntityData {
+            id: 32,
+            values: vec![(6, serializer::POSE, Value::Id(pose))],
+        }))
+        .unwrap();
+        assert_eq!(mannequin.pose(&*game as &dyn ClientHost), Some(name));
+    }
+
+    // The zombie stands in air; these reads report the cached fluid update, not a new sample.
+    for (water, lava, first_tick, expected_lava) in [
+        (true, false, false, false),
+        (false, true, true, false),
+        (false, true, false, true),
+    ] {
+        let mob = game.mob_index.get_mut(&mut game.mobs, zombie.id()).unwrap();
+        mob.fluids.in_water = water;
+        mob.fluids.in_lava = lava;
+        mob.first_tick = first_tick;
+        let host = &*game as &dyn ClientHost;
+        assert_eq!(zombie.is_in_water(host), Some(water));
+        assert_eq!(zombie.is_in_lava(host), Some(expected_lava));
+    }
+
+    let wrong_epoch = EntityRef::new(WorldEpoch::new(zombie.epoch().get() ^ 1), zombie.id());
+    let check_unavailable = |host: &dyn ClientHost, entity: EntityRef| {
+        assert_eq!(entity.is_sprinting(host), None);
+        assert_eq!(entity.is_in_water(host), None);
+        assert_eq!(entity.is_in_lava(host), None);
+        assert_eq!(entity.is_crouching(host), None);
+        assert_eq!(entity.pose(host), None);
+    };
+    for entity in [unknown, wrong_epoch, orb] {
+        check_unavailable(game, entity);
+    }
+    game.handle_packet(C::RemoveEntities(play::RemoveEntities { ids: vec![31] }))
+        .unwrap();
+    check_unavailable(game, zombie);
 }
 
 /// The HUD clock is a client clock: pause stops it, server freeze does not.

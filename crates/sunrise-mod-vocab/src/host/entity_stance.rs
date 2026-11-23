@@ -15,14 +15,17 @@ pub trait EntityStanceBackend {
     /// physical key binding or last tick's crouching pose); the server's shift-key flag.
     /// False for non-player entities, None for a stale or unreachable handle.
     fn entity_is_shift_key_down(&self, entity: EntityRef) -> Option<bool>;
-    /// Side: server.
-    /// Whether the entity crouches (`Entity.isCrouching`: the crouching
-    /// pose).
+    /// Side: both.
+    /// Whether the entity has the crouching pose (`Entity.isCrouching`), except that
+    /// `LocalPlayer.isCrouching` reads the local client's predicted flag set before
+    /// input sampling, not its sneak input or pose. For other client entities, uses
+    /// their synchronized pose. None for a stale or foreign handle or missing state.
     fn entity_is_crouching(&self, entity: EntityRef) -> Option<bool>;
-    /// Side: server.
-    /// Whether the entity sprints (`Entity.isSprinting`): a player, or a
-    /// cat or ocelot dashing after its target (their shared sprinting flag);
-    /// false for the other kinds.
+    /// Side: both.
+    /// The sprint flag (`Entity.isSprinting`), not the sprint key. On a client,
+    /// reads the local player's prediction or a tracked entity's synchronized flag.
+    /// On the server, reads false for kinds with no sprint flag. None for a stale
+    /// or foreign handle or missing client state.
     fn entity_is_sprinting(&self, entity: EntityRef) -> Option<bool>;
     /// Side: both.
     /// The player's swimming flag (`Entity.isSwimming`), not the swimming pose
@@ -30,10 +33,11 @@ pub trait EntityStanceBackend {
     /// not an authoritative server answer. None for other players (a client keeps them as
     /// tracked bodies without the flag), other kinds and stale handles.
     fn entity_is_swimming(&self, entity: EntityRef) -> Option<bool>;
-    /// Side: server.
-    /// The entity's pose (`Entity.getPose`) as `Pose` names it: `standing`,
-    /// `crouching`, `swimming`, `sleeping`, a warden's `roaring`... Kinds
-    /// with no pose stand.
+    /// Side: both.
+    /// The entity's pose (`Entity.getPose`), as named by `Pose.getSerializedName`.
+    /// On a client, reads the local player's predicted pose or a tracked entity's
+    /// synchronized pose. On the server, kinds with no pose read `standing`.
+    /// None for a stale or foreign handle or missing client state.
     fn entity_pose(&self, entity: EntityRef) -> Option<&'static str>;
     /// Side: both.
     /// The arm the entity's main hand is on (`LivingEntity.getMainArm`): a player's or a

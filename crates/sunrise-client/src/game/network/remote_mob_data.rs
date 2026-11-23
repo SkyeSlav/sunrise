@@ -38,12 +38,6 @@ pub(super) fn apply(
             (17, Value::Float(absorption)) if &*m.kind.id == "minecraft:player" => {
                 m.absorption = *absorption;
             }
-            // Entity.DATA_POSE: a player's or mannequin's box follows it.
-            (6, Value::Id(pose))
-                if matches!(&*m.kind.id, "minecraft:player" | "minecraft:mannequin") =>
-            {
-                m.extra.avatar_pose = sunrise_client::pose::Pose::from_id(*pose);
-            }
             // Entity.DATA_SHARED_FLAGS_ID's FLAG_ONFIRE: Entity.isOnFire on a
             // client, which draws the flames. A client doesn't count the
             // fire down: the flag goes off when the server's fire is out.
@@ -68,8 +62,21 @@ pub(super) fn apply(
             // Entity.DATA_SILENT: Entity.isSilent, which keeps the sounds
             // a client plays itself quiet (LivingEntity.breakItem's).
             (4, Value::Bool(silent)) => m.silent = *silent,
-            // Entity.DATA_POSE: the pose the species animates by.
-            (6, Value::Id(pose)) => sync::set_pose(m, (*pose).clamp(0, 17) as u8),
+            // Entity.DATA_POSE: Pose.BY_ID maps unknown ids to standing.
+            (6, Value::Id(pose)) => {
+                let pose = if (i32::from(sync::STANDING)..=i32::from(sync::INHALING)).contains(pose)
+                {
+                    *pose as u8
+                } else {
+                    sync::STANDING
+                };
+                if matches!(&*m.kind.id, "minecraft:player" | "minecraft:mannequin") {
+                    m.extra.synced_pose = pose;
+                    m.extra.avatar_pose = sunrise_client::pose::Pose::from_id(i32::from(pose));
+                } else {
+                    sync::set_pose(m, pose);
+                }
+            }
             // LivingEntity.DATA_LIVING_ENTITY_FLAGS: using an item 1, in the
             // off hand 2. Bit 0 starts and stops the use; the client ticks the
             // count itself (a bow's pull follows it). stopUsingItem clears
@@ -438,15 +445,12 @@ fn apply_registry_data(
     }
 }
 
-/// What another player's pose draws from: gliding (Entity.isFallFlying, flag
-/// 0x80 of the shared flags), the pose (swimming), Riptide's spin
-/// (LivingEntity.isAutoSpinAttack, flag 4) and a loaded crossbow in the
-/// hand (the held stack comes with SetEquipment).
+/// Another player's avatar flags: gliding (`Entity.isFallFlying`), Riptide's spin
+/// (`LivingEntity.isAutoSpinAttack`), and the shoulder parrots.
 fn player_poses(m: &mut Mob, values: &[(u8, i32, Value)]) {
     for (index, _, value) in values {
         match (*index, value) {
             (0, Value::Byte(flags)) => m.extra.fall_flying = flags & -128 != 0,
-            (6, Value::Id(pose)) => m.extra.synced_pose = (*pose).clamp(0, 17) as u8,
             (8, Value::Byte(flags)) => m.extra.auto_spin_attack = flags & 4 != 0,
             // Player.DATA_SHOULDER_PARROT_LEFT and _RIGHT.
             (19, Value::Id(v)) => {
