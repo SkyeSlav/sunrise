@@ -191,13 +191,19 @@ jobs:
           # its tests moved to sunrise-gameplay in 7127d19eae).
           packages=$({ grep -ohE "[\"']test[\"'], ([\"']--locked[\"'], )?[\"']-p[\"'], [\"'][a-z0-9_-]+[\"'], [\"']--lib[\"']" "${scripts[@]}" || true; } |
             sed -E "s/.*[\"']-p[\"'], [\"']([a-z0-9_-]+)[\"'].*/\1/" | sort -u)
+          # Each lib test rustc runs alone: Cargo's pipelining starts it on its dependencies' metadata, beside their
+          # code generation (sunrise-client's beside sunrise-client-render, -lib, sunrise-gameplay and
+          # sunrise-client-gameplay: signal 9 in every share, 2026-11-22). `cargo rustc --profile test` builds those
+          # dependencies exactly as the lib test does, and `--print=cfg` returns before compiling the test itself.
           for package in $packages; do
+            cargo rustc --locked --profile test -p "$package" --lib -- --print=cfg > /dev/null
             cargo test --locked --no-run -p "$package" --lib
           done
           # Some client harnesses request the vanilla binary. The flags may span lines in Python.
           client_test="[\"']test[\"'],[[:space:]]+([\"']--locked[\"'],[[:space:]]+)?[\"']-p[\"'],[[:space:]]+[\"']sunrise-client[\"'],[[:space:]]+"
           vanilla_lib="([\"']--no-default-features[\"'],[[:space:]]+[\"']--lib[\"']|[\"']--lib[\"'],[[:space:]]+[\"']--no-default-features[\"'])"
           if grep -zqE "$client_test$vanilla_lib" "${scripts[@]}"; then
+            cargo rustc --locked --profile test -p sunrise-client --lib --no-default-features -- --print=cfg > /dev/null
             cargo test --locked --no-run -p sunrise-client --lib --no-default-features
           fi
       - name: Build parity probes

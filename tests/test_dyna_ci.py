@@ -644,15 +644,18 @@ class DynaRoutingTests(unittest.TestCase):
             env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                    "PARITY_LOG_DIR": temporary, "RUNNER_TEMP": temporary, "BUCKET": "1"}
             subprocess.run(["bash", "-e", "-c", script], cwd=tree, env=env, check=True)
-            self.assertEqual(calls.read_text().splitlines(), ["test --locked --no-run -p sunrise-client --lib",
-                                                             "test --locked --no-run -p sunrise-client-lib --lib",
-                                                             "test --locked --no-run -p sunrise-gameplay --lib"])
+            # Each package's dependencies first, so its lib test's rustc runs alone, not beside their code generation.
+            def warmed(package):
+                return [f"rustc --locked --profile test -p {package} --lib -- --print=cfg",
+                        f"test --locked --no-run -p {package} --lib"]
+            self.assertEqual(calls.read_text().splitlines(),
+                             warmed("sunrise-client") + warmed("sunrise-client-lib") + warmed("sunrise-gameplay"))
             # A share builds only for the harnesses its plan gives it (a shard named NAME#N), and nothing for none.
             calls.unlink()
             (Path(temporary, "plan")).mkdir()
             Path(temporary, "plan", "bucket-1.json").write_text('["gameplay#2", "fast"]\n')
             subprocess.run(["bash", "-e", "-c", script], cwd=tree, env=env, check=True)
-            self.assertEqual(calls.read_text().splitlines(), ["test --locked --no-run -p sunrise-gameplay --lib"])
+            self.assertEqual(calls.read_text().splitlines(), warmed("sunrise-gameplay"))
             calls.unlink()
             Path(temporary, "plan", "bucket-1.json").write_text("[]\n")
             subprocess.run(["bash", "-e", "-c", script], cwd=tree, env=env, check=True)
