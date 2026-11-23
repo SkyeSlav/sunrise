@@ -788,16 +788,6 @@ impl Loading {
                 | Event::ListMusicTracks
                 | Event::PlayMusicTrack(..)
                 | Event::Volume(..) => {}
-                Event::OpenStudioFolder => {
-                    let dir = std::path::PathBuf::from("recordings");
-                    let _ = std::fs::create_dir_all(&dir);
-                    packs::open_folder(&dir);
-                }
-                Event::OpenStudioReplay(path) => {
-                    self.menu.options_open = false;
-                    self.menu.dragging = false;
-                    self.menu.pending = Some(PendingWorldEntry::StudioReplay(path));
-                }
             }
         }
     }

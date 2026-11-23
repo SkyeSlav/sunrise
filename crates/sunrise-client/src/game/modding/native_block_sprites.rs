@@ -593,7 +593,7 @@ mod biome_tint_tests {
         mod_platform::testing::with_mods(mods, || {
             with_client_game(|game| {
                 // The replay fixture opens a client level without connecting to a server.
-                game.init_remote_for_replay().unwrap();
+                game.init_offline_remote().unwrap();
                 game.native_lifecycle.begin_open(Authority::RemoteClient);
 
                 let plains_id = game.res.biomes().id("minecraft:plains");

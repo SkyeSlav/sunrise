@@ -175,20 +175,15 @@ impl Game<'_> {
     pub(super) fn hand_geometry(&mut self, alpha: f64) -> (Vec<Vertex>, Vec<(u32, i32)>) {
         let mut out = Vec::new();
         let mut runs = Vec::new();
-        // F1 hides both; a native HUD mode may keep the hands visible. The
-        // replay player's hands remain visible in first person; freecam has
-        // no player-view hand.
-        if !fov::studio_draws_hand(
-            self.studio.flying(),
-            self.ui.hands_drawn(
-                self.spectator(),
-                self.camera_subject().is_some_and(|c| c.is_sleeping),
-                self.camera_type.is_first_person(),
-                self.player
-                    .as_ref()
-                    .is_some_and(|p| !p.health.dead_or_dying()),
-                self.screen == Screen::Dead,
-            ),
+        // F1 hides both; a native HUD mode may keep the hands visible.
+        if !self.ui.hands_drawn(
+            self.spectator(),
+            self.camera_subject().is_some_and(|c| c.is_sleeping),
+            self.camera_type.is_first_person(),
+            self.player
+                .as_ref()
+                .is_some_and(|p| !p.health.dead_or_dying()),
+            self.screen == Screen::Dead,
         ) {
             return (out, runs);
         }

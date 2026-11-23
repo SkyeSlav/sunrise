@@ -41,7 +41,7 @@ fn remote_tree_rejects_unresolved_nodes_and_retains_removed_progress() {
         "game::advancements_screen::remote_tests::remote_tree_rejects_unresolved_nodes_and_retains_removed_progress",
         || {
             with_client_game(|game| {
-                game.init_remote_for_replay().unwrap();
+                game.init_offline_remote().unwrap();
                 let root = displayed("test:root", None, 0.0, 0.0);
                 let child = displayed("test:child", Some(&root.id), 1.0, 1.5);
                 let grand = displayed("test:grand", Some(&child.id), 2.0, 3.0);
@@ -135,7 +135,7 @@ fn opening_reports_the_first_tab_twice_and_preserves_offscreen_selection() {
         "game::advancements_screen::remote_tests::opening_reports_the_first_tab_twice_and_preserves_offscreen_selection",
         || {
             with_client_game(|game| {
-                game.init_remote_for_replay().unwrap();
+                game.init_offline_remote().unwrap();
                 let (session, mut peer, _keepalive) =
                     sunrise_client::net::Session::packet_hold_probe();
                 game.remote.as_mut().unwrap().session = session;
@@ -214,7 +214,7 @@ fn remote_tab_updates_restore_pan_and_clear_hover_on_progress_only() {
         "game::advancements_screen::remote_tests::remote_tab_updates_restore_pan_and_clear_hover_on_progress_only",
         || {
             with_client_game(|game| {
-                game.init_remote_for_replay().unwrap();
+                game.init_offline_remote().unwrap();
                 let first = displayed("test:first", None, 0.0, 0.0);
                 let other = displayed("test:other", None, 0.0, 0.0);
                 let far = displayed("test:far", Some(&first.id), 20.0, 10.0);
@@ -289,7 +289,7 @@ fn repeated_remote_ids_keep_insertion_edges_and_take_packet_order_positions() {
         "game::advancements_screen::remote_tests::repeated_remote_ids_keep_insertion_edges_and_take_packet_order_positions",
         || {
             with_client_game(|game| {
-                game.init_remote_for_replay().unwrap();
+                game.init_offline_remote().unwrap();
                 let a = displayed("test:a", None, 0.0, 0.0);
                 let b = displayed("test:b", None, 0.0, 0.0);
                 let child = displayed("test:child", Some(&a.id), 1.0, 0.5);
@@ -349,7 +349,7 @@ fn remote_widget_keeps_progress_requirements_until_new_progress() {
         "game::advancements_screen::remote_tests::remote_widget_keeps_progress_requirements_until_new_progress",
         || {
             with_client_game(|game| {
-                game.init_remote_for_replay().unwrap();
+                game.init_offline_remote().unwrap();
                 let root = displayed("test:root", None, 0.0, 0.0);
                 let mut task = displayed("test:task", Some(&root.id), 1.0, 1.0);
                 task.requirements =
@@ -414,7 +414,7 @@ fn extreme_remote_positions_use_java_widget_coordinates_and_bounds() {
         "game::advancements_screen::remote_tests::extreme_remote_positions_use_java_widget_coordinates_and_bounds",
         || {
             with_client_game(|game| {
-                game.init_remote_for_replay().unwrap();
+                game.init_offline_remote().unwrap();
                 game.open_advancements(true);
                 let apply = |game: &mut Game<'_>, added| {
                     let mut body = Writer::new();

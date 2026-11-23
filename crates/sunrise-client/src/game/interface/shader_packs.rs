@@ -141,8 +141,7 @@ pub(super) fn plan_shader_toggle(
 }
 
 /// The Extras page's shader pack key, by identity: the translated key's vanilla name against
-/// the bound one, so a rebind never becomes another mapping's default (Replay Studio's
-/// camera-keyframe shortcut stays physical K's).
+/// the bound one, so a rebind never becomes another mapping's default.
 impl Game<'_> {
     pub(super) fn shader_pack_key_press(&mut self, name: &str) -> bool {
         if self.screen != Screen::Playing

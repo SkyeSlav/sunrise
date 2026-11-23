@@ -146,9 +146,8 @@ impl Game<'_> {
 
     /// `ToastManager.extractRenderState`: F1 hides the draw, not the update.
     pub(super) fn draw_every_toast(&mut self, batch: &mut HudBatch) {
-        let replay = self.replay.playing();
-        let hidden = self.ui.player_hides_gui || replay;
-        let diagnostic_hidden = replay || self.overlay_holds_view();
+        let hidden = self.ui.player_hides_gui;
+        let diagnostic_hidden = self.overlay_holds_view();
         self.admit_mod_toasts();
         self.add_server_report_toasts();
         self.add_hook_panic_toasts();

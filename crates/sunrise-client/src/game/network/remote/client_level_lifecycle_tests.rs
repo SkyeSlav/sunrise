@@ -54,7 +54,7 @@ fn a_reconfiguring_client_plays_menu_music_and_never_indexes_past_the_biomes() {
         None,
     )
     .unwrap();
-    game.init_remote_for_replay().unwrap();
+    game.init_offline_remote().unwrap();
     // The last server's column at the origin: its extra biome came after
     // the built-in ones, one past the table the next server leaves.
     let stale = world_biomes!(game).list.len() as u16;

@@ -204,7 +204,7 @@ fn the_server_judges_by_brand_then_level_then_what_runs() {
 #[test]
 fn only_a_sunrise_brand_may_ask() {
     let now = Instant::now();
-    for brand in ["vanilla", "", "sunrise-studio", "Sunrise"] {
+    for brand in ["vanilla", "", "sunrise-offline", "Sunrise"] {
         let mut link = Link::default();
         assert_eq!(link.ask(brand, now), Err(Unsent::NotSunrise), "{brand:?}");
         assert!(link.is_idle());

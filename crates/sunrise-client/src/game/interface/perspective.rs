@@ -317,13 +317,6 @@ impl Game<'_> {
     /// front of) it, pulled in where visual shapes are in the way. Returns the
     /// position, yaw and pitch to render from.
     pub(super) fn camera_view(&mut self, partial: f32) -> Option<(glam::DVec3, f32, f32)> {
-        if self.studio.flying() {
-            return Some((
-                self.studio.freecam.position,
-                self.studio.freecam.yaw,
-                self.studio.freecam.pitch,
-            ));
-        }
         let subject = self.camera_subject()?;
         let mut entity = subject.camera;
         if let Some(position) = self.remote_minecart_camera_position(&subject, partial) {
@@ -391,9 +384,6 @@ impl Game<'_> {
     /// `Camera.rotation()` as the quads of particles take it: the frame's camera (a
     /// bed's, a front view's, a mod's), not the player's own yaw and pitch.
     pub(super) fn particle_rotation(&self) -> glam::Quat {
-        if self.studio.flying() {
-            return self.camera_orientation();
-        }
         let (yaw, pitch) = self
             .posed_rotation
             .unwrap_or((self.view.y_rot, self.view.x_rot));
@@ -682,12 +672,6 @@ impl Game<'_> {
     /// The model's old pitch is the player's `xRotO`, which the turn moves
     /// with `xRot` (`turn_rotation`).
     pub(super) fn turn_player(&mut self, xo: f64, yo: f64) {
-        if self.studio.flying() {
-            self.studio
-                .freecam
-                .turn((xo * 0.15) as f32, (yo * 0.15) as f32);
-            return;
-        }
         let pitch_o = self.player_model.as_ref().map(|m| m.previous_head_pitch);
         let rotation = turn_rotation(self.yaw, self.pitch, pitch_o, xo, yo);
         // The held lead's old look (`LocalPlayer.getRopeHoldPosition`'s
@@ -734,11 +718,9 @@ impl Game<'_> {
         }
     }
     /// `LevelExtractor` submits the local player only when it holds the camera, and
-    /// skips the first-person body unless it is sleeping. Studio freecam draws it too.
+    /// skips the first-person body unless it is sleeping.
     pub(super) fn own_body_in_view(&self) -> bool {
-        self.studio.flying()
-            || (self.controls_camera()
-                && (!self.camera_type.is_first_person() || self.sleeping.is_some()))
+        self.controls_camera() && (!self.camera_type.is_first_person() || self.sleeping.is_some())
     }
     /// Whether the player's own model shows in the world view (its body or,
     /// while invisible, only its armour and held items).
@@ -783,7 +765,7 @@ impl Game<'_> {
         let start = out.len();
         self.mark_player(start, !body_in_view);
         self.mark_motion(start, Self::MOTION_OWN_PLAYER);
-        self.player_model_geometry(camera, self.own_player_alpha(), out);
+        self.player_model_geometry(camera, self.clock.camera_fraction(), out);
         // A native pack's shadow pass alone gets the first-person model (no per-entity draws).
         if self.pack_ids.is_none() && !body_in_view {
             self.shadow_only_vertices

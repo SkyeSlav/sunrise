@@ -300,9 +300,6 @@ impl Game<'_> {
             last_input: 0,
             was_sprinting: false,
             carried: std::cell::Cell::new(None),
-            was_shared_flags: 0,
-            was_living_flags: 0,
-            last_recorded_pose: None,
             abilities: sunrise_client::lan::abilities::PlayerAbilities::default(),
             respawn_velocity: None,
             loaded_sent: false,
@@ -422,13 +419,13 @@ impl Game<'_> {
         self.stats = Default::default();
         Ok(())
     }
-    /// Prepare a client session and remote state to receive packets from a studio replay.
-    /// A replayed or viewed world checks its players' signed properties as a joined
+    /// A remote with no network thread, for tests that hand the game its packets
+    /// (`Session::offline`). Its world checks its players' signed properties as a joined
     /// client does.
-    pub(in crate::game) fn init_remote_for_replay(&mut self) -> Result<()> {
-        // Minecraft builds its `Services` once per client: a replay that opens a new
-        // session on every seek keeps the keys the session it replaces is fetching or
-        // has fetched.
+    #[cfg(test)]
+    pub(in crate::game) fn init_offline_remote(&mut self) -> Result<()> {
+        // Minecraft builds its `Services` once per client: a new session keeps the keys
+        // the session it replaces is fetching or has fetched.
         let services_keys = match &self.remote {
             Some(remote) => remote.services_keys.clone(),
             None => ServicesKeys::fetching(),
@@ -447,7 +444,7 @@ impl Game<'_> {
             .settings
             .client_information(client_view_distance(self.settings.render_distance));
         let auth = self.auth();
-        let name = auth.as_ref().map_or("ReplayPlayer", |a| a.name.as_str());
+        let name = auth.as_ref().map_or("Player", |a| a.name.as_str());
         let user = auth.as_ref().map_or_else(
             || {
                 (
@@ -458,7 +455,7 @@ impl Game<'_> {
             |a| (a.name.clone(), a.uuid),
         );
         self.server_packs_connect(None, None, user);
-        let session = Session::replay(name);
+        let session = Session::offline(name);
         let player_type = super::super::perspective::player_type(&root);
         let mut streaming = Streaming::new(
             Arc::new(NoTerrain),
@@ -474,7 +471,7 @@ impl Game<'_> {
             .chunks
             .track_connection_groups(group_count.clone());
         self.save = Arc::new(SaveDir::new(
-            std::env::temp_dir().join("sunrise-replay-unused"),
+            std::env::temp_dir().join("sunrise-offline-unused"),
             sunrise_client::save::LevelShape::OVERWORLD,
             None,
         ));
@@ -530,7 +527,7 @@ impl Game<'_> {
             professions: self.client_professions()?,
             display_address: Remote::display_address_for(&session.address),
             session,
-            brand: "sunrise-studio".into(),
+            brand: "offline".into(),
             particle_packet_random: sunrise_client::random_source::create(),
             recipe_viewer: Default::default(),
             features: ["minecraft:vanilla".to_string()].into(),
@@ -542,7 +539,7 @@ impl Game<'_> {
             carry_age: Default::default(),
             far_terrain: None,
             builtin,
-            status: "Playing Studio Replay".into(),
+            status: "Offline".into(),
             lang,
             registries: Arc::new(Dynamic::default()),
             tags: None,
@@ -582,9 +579,6 @@ impl Game<'_> {
             position_sender: Default::default(),
             last_input: 0,
             was_sprinting: false,
-            was_shared_flags: 0,
-            was_living_flags: 0,
-            last_recorded_pose: None,
             carried: std::cell::Cell::new(None),
             abilities: sunrise_client::lan::abilities::PlayerAbilities::default(),
             respawn_velocity: None,

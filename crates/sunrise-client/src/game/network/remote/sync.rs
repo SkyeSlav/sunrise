@@ -304,9 +304,7 @@ impl Game<'_> {
             }
         }
         entity_section_steps::player_teleport(self, had_player, current, position);
-        if !self.replay.playing() {
-            self.previous_position = position;
-        }
+        self.previous_position = position;
         self.yaw = yaw;
         self.pitch = pitch;
         // setValuesFromPositionPacket: setOldPosAndRot gives xRotO the same
@@ -387,7 +385,6 @@ impl Game<'_> {
                 }));
             }
         };
-        let mut moved_or_rotated = false;
         if riding {
             // LocalPlayer.sendChanges: a passenger sends its look, then the
             // vehicle it controls and, only then, its sprint.
@@ -400,7 +397,6 @@ impl Game<'_> {
                 out.extend(vehicle);
                 sprint(r, &mut out);
             }
-            moved_or_rotated = true;
         } else {
             sprint(r, &mut out);
             // LocalPlayer.sendPosition: no move while the view is another
@@ -422,62 +418,6 @@ impl Game<'_> {
                     ));
                 }
                 out.push(packet);
-                moved_or_rotated = true;
-            }
-        }
-        if moved_or_rotated && r.session.is_recording() {
-            let pkt = sunrise_protocol::packets::play::Clientbound::PlayerPosition(
-                sunrise_protocol::packets::play::PlayerPosition {
-                    teleport: 0,
-                    position: pos,
-                    delta: [0.0, 0.0, 0.0],
-                    yaw,
-                    pitch,
-                    relatives: 0,
-                },
-            );
-            r.session.record_clientbound(&pkt);
-        }
-        if r.session.is_recording() {
-            let is_using = self.using.is_some();
-            let living_flags: u8 = if is_using {
-                1 | if self.hand == Hand::Off { 2 } else { 0 }
-            } else {
-                0
-            };
-            let crouching = p.local_crouching || matches!(p.pose, crate::pose::Pose::Crouching);
-            let mut shared: u8 = 0;
-            if crouching {
-                shared |= 0x02;
-            }
-            if sprinting {
-                shared |= 0x08;
-            }
-            if p.swimming {
-                shared |= 0x10;
-            }
-            if p.fall_flying {
-                shared |= 0x80;
-            }
-            if shared != r.was_shared_flags
-                || living_flags != r.was_living_flags
-                || r.last_recorded_pose != Some(p.pose)
-            {
-                r.was_shared_flags = shared;
-                r.was_living_flags = living_flags;
-                r.last_recorded_pose = Some(p.pose);
-                use sunrise_protocol::entity_data::{Value, serializer};
-                let pkt = sunrise_protocol::packets::play::Clientbound::SetEntityData(
-                    sunrise_protocol::packets::play::SetEntityData {
-                        id: r.entity_id,
-                        values: vec![
-                            (0, serializer::BYTE, Value::Byte(shared as i8)),
-                            (6, serializer::POSE, Value::Id(p.pose.id())),
-                            (8, serializer::BYTE, Value::Byte(living_flags as i8)),
-                        ],
-                    },
-                );
-                r.session.record_clientbound(&pkt);
             }
         }
         // Creative inventory edits are sent slot by slot (SetCreativeModeSlot).

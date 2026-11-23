@@ -67,7 +67,7 @@ fn social_toast_is_dismissed_only_by_the_multiplayer_key() {
                     Some("multiplayer.socialInteractions.not_available")
                 );
 
-                game.init_remote_for_replay().unwrap();
+                game.init_offline_remote().unwrap();
                 game.set_screen(Screen::Paused);
                 enqueue(game);
                 game.execute_pause_action(15).unwrap();

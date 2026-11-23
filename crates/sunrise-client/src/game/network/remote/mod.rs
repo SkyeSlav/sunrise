@@ -514,9 +514,6 @@ pub(super) struct Remote {
     /// The slot the server last heard (`MultiPlayerGameMode.carriedIndex`): a cell, so `send` can
     /// send a new one first (`ensureHasSentCarriedItem`).
     carried: std::cell::Cell<Option<usize>>,
-    was_shared_flags: u8,
-    was_living_flags: u8,
-    last_recorded_pose: Option<crate::pose::Pose>,
     /// Live `LocalPlayer.abilities`, mutated in arrival order by `CHANGE_GAME_MODE` and `PlayerAbilities`.
     abilities: sunrise_client::lan::abilities::PlayerAbilities,
     /// The old player's motion, from a Respawn with KEEP_ENTITY_DATA
@@ -820,8 +817,6 @@ impl Game<'_> {
         }
     }
     // connect_remote_session: remote/session.rs
-
-    // init_remote_for_replay: remote/session.rs
 
     // leave_server: remote/session.rs
 
@@ -1798,11 +1793,9 @@ impl Game<'_> {
     /// A connection's screen is over the world: connecting, reconfiguring, or
     /// the level loading screen, a portal's included (`remote_overlay`).
     pub(super) fn remote_screen_up(&self) -> bool {
-        !self.replay.playing()
-            && self
-                .remote
-                .as_ref()
-                .is_some_and(|r| self.player.is_none() || r.level_load.is_active())
+        self.remote
+            .as_ref()
+            .is_some_and(|r| self.player.is_none() || r.level_load.is_active())
     }
 
     // remote_overlay: remote/ui.rs
@@ -1810,9 +1803,6 @@ impl Game<'_> {
     /// Connected or connecting with no player yet: `ConnectScreen`, then
     /// `LevelLoadingScreen`, over the panorama with its blur.
     pub(super) fn remote_loading(&self) -> bool {
-        if self.replay.playing() {
-            return false;
-        }
         use sunrise_client::level_loading::Reason;
         self.remote.as_ref().is_some_and(|r| {
             if r.level_load.is_active() {
@@ -3233,7 +3223,7 @@ pub(in crate::game) mod tests {
             None,
         )
         .unwrap();
-        game.init_remote_for_replay().unwrap();
+        game.init_offline_remote().unwrap();
         game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 0.5)).unwrap());
         let me = game.remote.as_ref().unwrap().entity_id;
         let speed = game.remote_effect_network_id("speed").unwrap();

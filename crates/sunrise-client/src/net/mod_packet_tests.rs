@@ -16,7 +16,7 @@ fn connected() -> (Session, Connection) {
         .transition_protocol(sunrise_protocol::payload_negotiation::Phase::Play, &[3])
         .unwrap();
     assert_eq!(peer.recv().unwrap(), (3, vec![]));
-    let session = Session::replay("packet boundary");
+    let session = Session::offline("packet boundary");
     *session.writer.lock().unwrap() = Some(writer);
     (session, peer)
 }
@@ -31,7 +31,7 @@ fn plugin(channel: &str, bytes: &[u8]) -> ServerboundPlayPacket {
 }
 #[test]
 fn generic_submission_requires_a_physical_writer_and_known_packet_type() {
-    let session = Session::replay("no physical writer");
+    let session = Session::offline("no physical writer");
     assert!(matches!(
         session.prepare_mod_packet(plugin("example:unregistered", &[7])),
         Err(SendPacketError::NotConnected)

@@ -16,7 +16,6 @@ pub mod block_contact;
 pub mod block_sounds;
 pub mod item_damage;
 pub mod mod_packet_builders;
-pub mod packet_source;
 pub mod parallel;
 pub mod powder_snow;
 #[cfg(test)]
@@ -180,7 +179,6 @@ pub mod stand_up;
 pub mod stations;
 pub mod stopwatches;
 pub mod structure_blocks;
-pub mod studio;
 pub mod telemetry;
 #[cfg(test)]
 pub(crate) mod test_fixtures;

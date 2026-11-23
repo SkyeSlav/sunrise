@@ -1152,7 +1152,7 @@ impl Game<'_> {
         };
         player.fluids.boat = boat;
         player.is_passenger = riding;
-        if !riding && !self.replay.playing() {
+        if !riding {
             self.previous_position = player.position;
         }
         let before = (
@@ -1444,9 +1444,7 @@ impl Game<'_> {
             self.snap_player_model_pitch();
         }
         // The player's own model (third person, the inventory's preview).
-        if !self.replay.playing() {
-            self.tick_player_model();
-        }
+        self.tick_player_model();
         if !dead {
             self.remote_tick_using();
         }

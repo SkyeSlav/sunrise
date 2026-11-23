@@ -10,13 +10,66 @@
 //! (`sunrise_protocol::quiet`, `tools/quiet_commands_e2e.py`) and waits two
 //! seconds for any chat they bring. `SUNRISE_NET_ENTITY_TAG` also records one
 //! entity type tag at join and waits for its membership to change in play.
+//! `SUNRISE_NET_PACKETS` names a file that gets every play packet the client
+//! receives from the first line it sends until it leaves, one JSON row each
+//! (`sequence`, `timestamp_ms` since the first line, `payload`: the packet id's
+//! varint and its payload, in hex).
 use super::Game;
 use serde_json::json;
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
+    sync::Mutex,
     time::{Duration, Instant},
 };
-use sunrise_client::Result;
+use sunrise_client::{Result, net::PacketRecorder};
+use sunrise_protocol::packets::play::Clientbound;
+
+/// `SUNRISE_NET_PACKETS`'s rows, kept until the harness leaves.
+struct PacketLog {
+    path: PathBuf,
+    start: Instant,
+    rows: Mutex<Vec<String>>,
+}
+
+impl PacketRecorder for PacketLog {
+    fn is_active(&self) -> bool {
+        true
+    }
+    fn received(&self, _: &Clientbound, id: i32, payload: &[u8]) {
+        const DIGITS: &[u8; 16] = b"0123456789abcdef";
+        let mut hex = String::with_capacity(2 * (payload.len() + 5));
+        let mut push = |byte: u8| {
+            hex.push(DIGITS[usize::from(byte >> 4)] as char);
+            hex.push(DIGITS[usize::from(byte & 0xf)] as char);
+        };
+        let mut id = id as u32;
+        loop {
+            let low = (id & 0x7f) as u8;
+            id >>= 7;
+            if id == 0 {
+                push(low);
+                break;
+            }
+            push(low | 0x80);
+        }
+        payload.iter().copied().for_each(push);
+        let mut rows = self.rows.lock().unwrap();
+        let row = json!({
+            "sequence": rows.len(),
+            "timestamp_ms": self.start.elapsed().as_millis() as u64,
+            "payload": hex,
+        });
+        rows.push(row.to_string());
+    }
+    fn stop(self: Box<Self>) -> std::io::Result<PathBuf> {
+        let rows = self.rows.into_inner().unwrap();
+        std::fs::write(
+            &self.path,
+            rows.into_iter().map(|row| row + "\n").collect::<String>(),
+        )?;
+        Ok(self.path)
+    }
+}
 
 impl Game<'_> {
     pub(super) fn run_net_harness(&mut self, report: &Path) -> Result<()> {
@@ -42,6 +95,7 @@ impl Game<'_> {
         let mut chunks = 0;
         let mut error = None;
         let entity_tag = std::env::var("SUNRISE_NET_ENTITY_TAG").ok();
+        let packets = std::env::var_os("SUNRISE_NET_PACKETS").map(PathBuf::from);
         let mut entity_tag_snapshots = Vec::new();
         while Instant::now() < deadline {
             self.update_world();
@@ -91,6 +145,13 @@ impl Game<'_> {
                 {
                     chunks = count;
                     signed = self.remote.as_ref().is_some_and(|r| r.secure_chat.signed());
+                    if let (Some(path), Some(r)) = (&packets, &self.remote) {
+                        r.session.start_recording(PacketLog {
+                            path: path.clone(),
+                            start: now,
+                            rows: Mutex::default(),
+                        });
+                    }
                     self.send_signed_chat_input(&lines[0]);
                     sent = 1;
                     step = 2;
@@ -146,6 +207,13 @@ impl Game<'_> {
             .as_ref()
             .map(|r| r.chat.iter().map(|(t, _)| t.clone()).collect())
             .unwrap_or_default();
+        if let Some(Err(e)) = self
+            .remote
+            .as_ref()
+            .and_then(|r| r.session.stop_recording())
+        {
+            error.get_or_insert(format!("SUNRISE_NET_PACKETS: {e}"));
+        }
         if self.remote.is_some() {
             self.leave_server(None)?;
         }

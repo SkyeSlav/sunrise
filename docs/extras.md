@@ -54,7 +54,7 @@ in Controls, and adding one would put a non-vanilla mapping into `options.txt`.
   time of day and effects. The brightness slider keeps its normal range.
 - Held off on another's server (#3823): a multiplayer server or another player's LAN world draws the normal
   lightmap and the graphics screen hides the row, while the saved choice stays for the next world. Single
-  player, a LAN host and Replay Studio keep it (`fullbright_held`,
+  player and a LAN host keep it (`fullbright_held`,
   `game/options.rs`).
 
 ### Dynamic lights (`dynamicLights`, default off)
@@ -184,7 +184,7 @@ and the container screen tests are unchanged).
 
 - The Extras page's key for the Shader Packs pick: press it and the running pack turns off, press it again and
   the same pack runs again. Click the row, then press a key to rebind it (Escape unbinds); it is not a vanilla
-  key binding, so it never collides with one (Replay Studio keeps physical `K` for its camera keyframe).
+  key binding, so it never collides with one.
 - Turning off writes the pick to `lastShaderPack`, so the pack stays off across restarts until the key is
   pressed again. The menu's second click on the picked pack does the same through the same pick.
 - A pack whose owning mod is off can't run: the key reports that instead of claiming it turned on.

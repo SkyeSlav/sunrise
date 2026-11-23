@@ -56,8 +56,8 @@ where and the last good version keeps drawing. All three stages run.
 
 The Extras page has a Shader pack key for the same pick: press it and the picked pack turns off, press it again
 and the same pack runs again. It is bound on the Extras page (click the row, then press a key; Escape unbinds it),
-`K` out of the box, and it is not a vanilla key binding, so rebinding it never turns into another mapping's key
-(Replay Studio keeps physical `K` for its camera keyframe). Turning off remembers the pick in the Extras settings,
+`K` out of the box, and it is not a vanilla key binding, so rebinding it never turns into another mapping's key.
+Turning off remembers the pick in the Extras settings,
 so the pack stays off across restarts until the key is pressed again; the menu's second click on the picked pack
 does the same. A pack whose owning mod is off can't run: the key says so instead of claiming it turned on.
 

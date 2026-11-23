@@ -40,7 +40,7 @@ and an area. There are two kinds:
 | `StatusRows` | the survival rows above the hotbar (health with its absorption rows, armour, food or the mount's hearts, air), from the highest row's top to the view's bottom, as `hud_layout::draws_top` reports them; `room.bottom()` is the lowest y an overlay may reach |
 
 `Game::hud_room` (`crates/sunrise-client/src/game/hud_room.rs`) gathers what is showing.
-Nothing shows while F1 or Replay Studio hides the HUD, or off a world. `hud` empties `ui.room` at
+Nothing shows while F1 hides the HUD, or off a world. `hud` empties `ui.room` at
 the start of every frame, and `hud_layers` fills it in before the world's HUD draws, so every
 overlay in the frame reads the same room and never a stale one.
 

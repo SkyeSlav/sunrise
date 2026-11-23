@@ -32,7 +32,7 @@ impl Game<'_> {
     pub(super) fn key_pressed(&mut self, key: KeyCode, raw: KeyCode) -> Result<()> {
         // Scripted presses and controller presses are delivered to the same mappings
         // as window input; direct screen keys remain immediate.
-        if !self.mod_mappings_screen_open() && !self.replay.playing() {
+        if !self.mod_mappings_screen_open() {
             let key = if key == KeyCode::Enter {
                 KeyCode::KeyT
             } else {
@@ -64,10 +64,6 @@ impl Game<'_> {
 
     pub(super) fn immediate_key_pressed(&mut self, key: KeyCode, raw: KeyCode) -> Result<()> {
         self.direct_craft_stop();
-        if self.screen == Screen::Playing && self.replay.playing() {
-            self.studio_key(key);
-            return Ok(());
-        }
         // `CreativeModeInventoryScreen.keyPressed` clears `ignoreTextInput` on
         // every key, before it decides anything.
         self.creative_ignore_text = false;
@@ -102,10 +98,6 @@ impl Game<'_> {
                     self.options_key(KeyCode::Escape, None)?;
                 }
                 Screen::Playing => {
-                    if self.replay.playing() && self.captured {
-                        self.capture(false);
-                        return Ok(());
-                    }
                     self.pause_focus = None;
                     self.set_screen(Screen::Paused);
                     self.pause_menu = true;

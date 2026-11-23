@@ -63,32 +63,16 @@ use sunrise_hooks::tunnel;
 /// connection (`TransferState`), so a proxy's backend switch keeps them.
 pub type Cookies = Arc<Mutex<HashMap<String, Vec<u8>>>>;
 
-/// A recording of the session's packets: the tap a replay recorder plugs into. Replay recording is a
-/// platform feature (docs/layers.md, "Controllers, replays and UI pages"); the engine only
-/// hands it the packets: the network thread what it receives, the game thread what the client makes for
-/// the recording itself (its own movement, pose and swings).
+/// A tap on the session's play packets: the network thread hands it each one it receives,
+/// bundle members included. The net harness's `SUNRISE_NET_PACKETS` writes them to a file.
 pub trait PacketRecorder: Send {
     /// Whether it still takes packets (false once stopped or failed).
     fn is_active(&self) -> bool;
     /// A play packet the network thread received, decoded, with its id and payload as they came.
     /// The recorder decides what it keeps.
     fn received(&self, packet: &play::Clientbound, id: i32, payload: &[u8]);
-    /// A packet the client made for the recording, encoded, stamped now.
-    fn record_packet(&self, id: i32, payload: &[u8]);
-    fn status(&self) -> RecorderStatus;
     /// Finishes the recording; the file it wrote.
     fn stop(self: Box<Self>) -> std::io::Result<PathBuf>;
-}
-
-/// Where a recording stands.
-#[derive(Clone, Debug, PartialEq)]
-pub struct RecorderStatus {
-    pub active: bool,
-    pub path: PathBuf,
-    pub elapsed: Duration,
-    pub packet_count: u64,
-    pub bytes_written: u64,
-    pub error: Option<String>,
 }
 
 /// The session's recorder, shared with its network thread.
@@ -397,8 +381,8 @@ impl Session {
             false,
         )
     }
-    /// A lightweight session for studio replay playback without background network IO.
-    pub fn replay(name: &str) -> Self {
+    /// A session with no network thread, for tests that hand the game its packets.
+    pub fn offline(name: &str) -> Self {
         let (_send, events) = event_channel();
         Self {
             payload_events: _send,
@@ -407,7 +391,7 @@ impl Session {
             configuring: Arc::new(AtomicBool::new(false)),
             thread: None,
             payloads: crate::raw_payloads::Transport::empty(),
-            address: "studio-replay".to_owned(),
+            address: "offline".to_owned(),
             name: name.to_owned(),
             counters: Arc::new(Mutex::new(None)),
             cookies: Default::default(),
@@ -591,18 +575,11 @@ impl Session {
         self.events.wait_for_parked_reader();
         self.thread.take().expect("test Session has a reader")
     }
-    /// Starts recording into `recorder`. `initialize` runs first, while the network thread
-    /// can't record, so what it writes (a snapshot of the world) comes before any live packet.
-    pub fn start_recording<R: PacketRecorder + 'static>(
-        &self,
-        recorder: R,
-        initialize: impl FnOnce(&R),
-    ) {
-        let mut slot = self.recorder.lock().unwrap();
-        initialize(&recorder);
-        *slot = Some(Box::new(recorder));
+    /// Starts handing the received play packets to `recorder`.
+    pub fn start_recording(&self, recorder: impl PacketRecorder + 'static) {
+        *self.recorder.lock().unwrap() = Some(Box::new(recorder));
     }
-    /// Stop recording and finalize the `.mcpr` archive.
+    /// Stops the recording; the file it wrote.
     pub fn stop_recording(&self) -> Option<std::io::Result<PathBuf>> {
         let rec = self.recorder.lock().unwrap().take()?;
         Some(rec.stop())
@@ -640,30 +617,6 @@ impl Session {
         let writer = self.writer.lock().unwrap().take();
         if let Some(writer) = writer {
             writer.close_and_wait();
-        }
-    }
-    /// Whether recording is currently active.
-    pub fn is_recording(&self) -> bool {
-        self.recorder
-            .lock()
-            .unwrap()
-            .as_ref()
-            .is_some_and(|r| r.is_active())
-    }
-    /// Status of the active recording, if any.
-    pub fn recorder_status(&self) -> Option<RecorderStatus> {
-        self.recorder.lock().unwrap().as_ref().map(|r| r.status())
-    }
-    /// Record an encoded Clientbound packet into the active recording session at current elapsed time.
-    pub fn record_clientbound(&self, packet: &sunrise_protocol::packets::play::Clientbound) {
-        if self.is_recording() {
-            let encoded = packet.encode();
-            let mut reader = sunrise_protocol::buf::Reader::new(&encoded);
-            if let Ok(id) = reader.varint()
-                && let Some(rec) = self.recorder.lock().unwrap().as_ref()
-            {
-                rec.record_packet(id, reader.rest());
-            }
         }
     }
     /// Physical reply target, preserving this session's ordered event stream.
@@ -5271,21 +5224,8 @@ mod tests {
         fn received(&self, _packet: &play::Clientbound, id: i32, payload: &[u8]) {
             self.0.lock().unwrap().push((id, payload.to_vec()));
         }
-        fn record_packet(&self, id: i32, payload: &[u8]) {
-            self.0.lock().unwrap().push((id, payload.to_vec()));
-        }
-        fn status(&self) -> RecorderStatus {
-            RecorderStatus {
-                active: true,
-                path: PathBuf::from("test.mcpr"),
-                elapsed: Duration::ZERO,
-                packet_count: self.0.lock().unwrap().len() as u64,
-                bytes_written: 0,
-                error: None,
-            }
-        }
         fn stop(self: Box<Self>) -> std::io::Result<PathBuf> {
-            Ok(PathBuf::from("test.mcpr"))
+            Ok(PathBuf::from("test-packets.jsonl"))
         }
     }
     impl TestRecorder {
@@ -5300,7 +5240,7 @@ mod tests {
 
     #[test]
     fn session_recorder_gets_the_play_packets_the_network_thread_receives() {
-        let (root, data) = empty_item_data("studio_recording");
+        let (root, data) = empty_item_data("packet_tap");
         let (client, server) = sunrise_protocol::connection::Pipe::pair();
         let (mut reader, writer) = Connection::local(client).split();
         let (send, events) = event_channel();
@@ -5312,7 +5252,7 @@ mod tests {
             configuring: Arc::new(AtomicBool::new(false)),
             thread: None,
             address: "local".into(),
-            name: "StudioTester".into(),
+            name: "TapTester".into(),
             counters: Arc::new(Mutex::new(None)),
             cookies: Cookies::default(),
             debug: false,
@@ -5322,8 +5262,7 @@ mod tests {
             serial: next_serial(),
         };
         let recorder = TestRecorder::default();
-        session.start_recording(recorder.clone(), |_| {});
-        assert!(session.is_recording());
+        session.start_recording(recorder.clone());
 
         let (thread_writer, thread_configuring, thread_recorder) = (
             session.writer.clone(),
@@ -5360,69 +5299,18 @@ mod tests {
         server.send(&pos_pkt.encode()).unwrap();
         // Disconnect ends receive_play's loop.
         let disc_pkt = play::Clientbound::Disconnect(cfg::Disconnect {
-            reason: Tag::String("Replay tap test completed".into()),
+            reason: Tag::String("Tap test completed".into()),
         });
         server.send(&disc_pkt.encode()).unwrap();
         let _ = thread.join().unwrap();
 
         assert_eq!(
             session.stop_recording().unwrap().unwrap(),
-            PathBuf::from("test.mcpr")
+            PathBuf::from("test-packets.jsonl")
         );
-        assert!(!session.is_recording());
         // The recorder is handed both; what a recording keeps is the recorder's choice.
         assert_eq!(recorder.decoded(), [pos_pkt, disc_pkt]);
         std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn session_recorder_gets_the_packets_the_client_makes() {
-        use sunrise_protocol::entity_data::{Value, serializer};
-
-        let session = Session::replay("StudioTester");
-        session.record_clientbound(&play::Clientbound::SwingAnimation(play::SwingAnimation {
-            id: 1,
-            hand: 0,
-            kind: 0,
-            duration: 6,
-        }));
-        let recorder = TestRecorder::default();
-        // What `initialize` writes comes first.
-        let snapshot = play::Clientbound::PlayerPosition(play::PlayerPosition {
-            teleport: 0,
-            position: [12.5, 64.0, -88.5],
-            delta: [0.0; 3],
-            yaw: 90.0,
-            pitch: 15.0,
-            relatives: 0,
-        });
-        session.start_recording(recorder.clone(), |rec| {
-            let encoded = snapshot.encode();
-            let mut reader = sunrise_protocol::buf::Reader::new(&encoded);
-            let id = reader.varint().unwrap();
-            rec.record_packet(id, reader.rest());
-        });
-        let swing_pkt = play::Clientbound::SwingAnimation(play::SwingAnimation {
-            id: 42,
-            hand: 0,
-            kind: 1,
-            duration: 6,
-        });
-        session.record_clientbound(&swing_pkt);
-        let data_pkt = play::Clientbound::SetEntityData(play::SetEntityData {
-            id: 42,
-            values: vec![
-                (0, serializer::BYTE, Value::Byte(0x02)),
-                (6, serializer::POSE, Value::Id(5)),
-            ],
-        });
-        session.record_clientbound(&data_pkt);
-        assert_eq!(session.recorder_status().unwrap().packet_count, 3);
-        session.stop_recording().unwrap().unwrap();
-        // Nothing reaches a stopped recording.
-        session.record_clientbound(&swing_pkt);
-
-        assert_eq!(recorder.decoded(), [snapshot, swing_pkt, data_pkt]);
     }
 
     #[test]

@@ -152,7 +152,7 @@ fn a_downward_shulker_box_lid_bounces_only_the_locally_driven_boat() {
                 crate::game::api_values::install_parts(&mods).unwrap();
                 crate::game::native_hooks::install_block_contact_hooks();
                 with_client_game(|game| {
-                    game.init_remote_for_replay().unwrap();
+                    game.init_offline_remote().unwrap();
                     game.remote.as_mut().unwrap().first_passenger = true;
                     game.riding = Some(71);
                     boats_over_glass(game, &[(71, 4), (72, 7)]);
@@ -191,7 +191,7 @@ fn a_shulker_box_lid_stops_a_driven_boat_at_another_boat() {
         "game::piston_push::restitution_tests::a_shulker_box_lid_stops_a_driven_boat_at_another_boat",
         || {
             with_client_game(|game| {
-                game.init_remote_for_replay().unwrap();
+                game.init_offline_remote().unwrap();
                 game.remote.as_mut().unwrap().first_passenger = true;
                 game.riding = Some(71);
                 boats_over_glass(game, &[(71, 4), (72, 6)]);
@@ -245,7 +245,7 @@ fn an_observing_boat_keeps_the_lid_push_through_its_last_lerp_step() {
         "game::piston_push::restitution_tests::an_observing_boat_keeps_the_lid_push_through_its_last_lerp_step",
         || {
             with_client_game(|game| {
-                game.init_remote_for_replay().unwrap();
+                game.init_offline_remote().unwrap();
                 boats_over_glass(game, &[(71, 4)]);
                 game.boats.update(0, |boat| boat.position.y = 64.0);
                 game.handle_packet(Clientbound::EntityPositionSync(play::EntityPositionSync {

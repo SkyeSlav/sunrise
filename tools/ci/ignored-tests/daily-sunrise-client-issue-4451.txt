@@ -196,7 +196,6 @@ sunrise-client game::chat::enchantment_snapshot_tests::synchronized_definitions_
 sunrise-client game::chat::end_clock_tests::time_moves_the_clock_the_end_runs_on lib daily resources
 sunrise-client game::chat::suggestion_completion_tests::chat_completion_reaches_mods_from_keyboard_and_mouse lib daily resources
 sunrise-client game::chat::tests::native_persistent_components_are_available_to_give lib daily resources
-sunrise-client game::chat::tests::studio_is_in_the_client_chat_tree_without_a_mod_registering_it lib daily resources
 sunrise-client game::chiseled_bookshelf::tests::a_book_written_over_a_book_makes_its_slot_the_last_touched lib daily resources
 sunrise-client game::chiseled_bookshelf::tests::an_empty_slot_clicked_as_occupied_still_plays_the_pickup lib daily resources
 sunrise-client game::client_ambient::effect_particle_tests::an_oozing_player_swirls_slime_ball_crumbs lib daily resources

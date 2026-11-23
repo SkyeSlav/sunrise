@@ -197,7 +197,7 @@ mod tests {
 
         mod_platform::testing::with_mods(Default::default(), || {
             with_client_game(|game| {
-                game.init_remote_for_replay().unwrap();
+                game.init_offline_remote().unwrap();
                 game.remote.as_mut().unwrap().logged_in = true;
                 game.spawn_entity(20, "minecraft:pig", [2.0, 64.0, 0.0], [0.0; 3]);
                 let entity = game.entity(20).unwrap();
@@ -310,7 +310,7 @@ mod tests {
         .into();
         mod_platform::testing::with_mods(mods, || {
             with_client_game(|game| {
-                game.init_remote_for_replay().unwrap();
+                game.init_offline_remote().unwrap();
                 game.remote.as_ref().unwrap().session.received_event_probe()(Event::Disconnected {
                     reason: "fixture disconnected".into(),
                     key: None,

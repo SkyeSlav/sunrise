@@ -2027,8 +2027,6 @@ mod render_control;
 mod render_settings;
 #[path = "game/interface/render_tick.rs"]
 mod render_tick;
-#[path = "game/runtime/replay.rs"]
-mod replay;
 #[path = "game/runtime/repro.rs"]
 mod repro;
 #[path = "game/entities/residency_tick.rs"]
@@ -2235,8 +2233,6 @@ mod structure_blocks;
 mod structure_edit;
 #[path = "game/administration/structures.rs"]
 mod structures;
-#[path = "game/interface/studio.rs"]
-mod studio;
 #[path = "game/interface/subtitle_hud.rs"]
 mod subtitle_hud;
 #[path = "game/interface/subtitles.rs"]
@@ -4194,9 +4190,6 @@ struct Game<'a> {
     lan_session: bool,
     /// What the window's title last showed: its session part and the language (window_title.rs).
     window_title: Option<(Option<&'static str>, u64)>,
-    /// Replay playback (game/replay.rs), and Sunrise Studio's editor on it (game/studio.rs).
-    pub(super) replay: replay::Replay,
-    pub(super) studio: studio::Studio,
     /// This world is open to the network (game/lan.rs).
     lan: Option<lan::LanHost>,
     /// Single player's server thread, which `remote` is connected to.
@@ -7552,12 +7545,9 @@ impl Game<'_> {
         let camera = self.camera_player();
         let (wi, hi) = (w as i32, h as i32);
         let mut gui_canceled = false;
-        let replaying = self.replay.playing();
-        if !replaying {
-            self.native_render_gui_pre(&mut gui_canceled);
-        }
+        self.native_render_gui_pre(&mut gui_canceled);
         // F1 hides vanilla drawing; RenderGuiEvent.Pre instead cancels the layer walk.
-        let hide_hud = self.ui.hide_gui || replaying;
+        let hide_hud = self.ui.hide_gui;
         let show_hud = !hide_hud && !gui_canceled;
         // A screen that keeps the in-game UI defers subtitles to its background,
         // even under F1. With no screen, Gui draws them after the debug overlay.
@@ -7572,7 +7562,7 @@ impl Game<'_> {
                 None
             },
         );
-        let dispatch_hud = !gui_canceled && !replaying;
+        let dispatch_hud = !gui_canceled;
         self.hud_layer_next = dispatch_hud.then_some(0);
         self.ui.room = self.hud_room(w, h, show_hud);
         let mut guide_from = 0;
@@ -7990,7 +7980,6 @@ impl Game<'_> {
             self.draw_sign_editor(&mut batch);
             self.draw_book(&mut batch);
         }
-        self.draw_studio_bars(&mut batch);
         if show_hud {
             self.draw_pad_guide(&mut batch, guide_from);
         }
@@ -8047,13 +8036,6 @@ impl Game<'_> {
     /// `Camera.setRotation`: the camera's orientation, turned round in
     /// third-person front view.
     pub(super) fn camera_orientation(&self) -> glam::Quat {
-        if self.studio.flying() {
-            return camera_rotation(
-                sunrise_client::camera::CameraType::FirstPerson,
-                self.studio.freecam.yaw,
-                self.studio.freecam.pitch,
-            ) * glam::Quat::from_rotation_z(self.studio.freecam.roll.to_radians());
-        }
         match self.posed_rotation {
             // The frame's camera, already turned round in front view.
             Some((yaw, pitch)) => {
@@ -11078,7 +11060,7 @@ impl Game<'_> {
         self.apply_requested_camera_type();
         let vanilla = self.camera_view(camera_alpha as f32);
         let view = vanilla.map(|view| {
-            if self.shows_panorama() || self.studio.flying() {
+            if self.shows_panorama() {
                 view
             } else {
                 self.native_camera_pose_now(camera_alpha as f32, view)
@@ -11278,8 +11260,7 @@ impl Game<'_> {
         // FishingHookRenderer's line, then DebugRenderer: chunk borders and
         // hitboxes (F3+G, F3+B).
         let mut lines = self.fishing_line(alpha, size);
-        let mut g = self.debug_gizmos(alpha as f32, camera.to_array());
-        self.studio_camera_path(&mut g);
+        let g = self.debug_gizmos(alpha as f32, camera.to_array());
         lines.extend(g.lines);
         let on_top = g.on_top;
         pr.lap("pr_debug");
@@ -11302,11 +11283,7 @@ impl Game<'_> {
             Vec::new()
         };
         pr.lap("pr_native_visuals");
-        let view = if self.studio.flying() {
-            glam::Mat4::from_quat(self.camera_orientation().conjugate())
-        } else {
-            sunrise_client::camera::view_matrix(view_yaw, view_pitch)
-        };
+        let view = sunrise_client::camera::view_matrix(view_yaw, view_pitch);
         let at = camera.to_array();
         // GameRenderer.render3dHud: the debug crosshair, first person with the HUD shown.
         let mut crosshair = sunrise_client::gizmos::Gizmos::default();
@@ -11378,7 +11355,7 @@ impl Game<'_> {
         } else {
             sunrise_client::gfx::cull_fov(fov_degrees, (self.settings.fov as i32) as f32)
         };
-        let camera_effects = fov::camera_effects_enabled(title, self.studio.flying());
+        let camera_effects = !title;
         let bob = if !camera_effects {
             glam::Mat4::IDENTITY
         } else {
@@ -12357,9 +12334,6 @@ impl Game<'_> {
                 self.sign_edit_click(size)
             });
         }
-        if self.studio_mouse_input(pressed, button) {
-            return Ok(true);
-        }
         if matches!(self.screen, Screen::Inventory | Screen::Creative)
             && let Some(key) = self
                 .settings
@@ -12561,9 +12535,6 @@ impl Game<'_> {
                         self.set_window_cursor(sample, projection);
                         let [w, h] = projection.gui.size.map(|v| v as f32);
                         let overlay = self.observed_overlay_now();
-                        if self.observed_screen_view().is_none() && self.studio_mouse_dragged(w) {
-                            return Ok(());
-                        }
                         let button = if self.pad_synthetic_input() {
                             if self.pad.menu.held[0] {
                                 Some(MouseButton::Left)
@@ -12605,8 +12576,6 @@ impl Game<'_> {
                         }
                     }
                 }
-                WindowEvent::MouseWheel { .. }
-                    if self.screen == Screen::Playing && self.replay.driver.is_some() => {}
                 WindowEvent::MouseWheel { delta, .. } => {
                     let (raw_x, raw_y) = match delta {
                         MouseScrollDelta::LineDelta(x, y) => (f64::from(x), f64::from(y)),
@@ -12983,7 +12952,6 @@ impl Game<'_> {
                     self.frame_ticks = elapsed.as_secs_f32() * 20.0;
                     self.previous = now;
                     self.upload_pace.frame(elapsed);
-                    self.studio_fly(elapsed);
                     // Arrow-key camera controls belong to gameplay; chat and
                     // other screens use the same keys for their own navigation.
                     if self.screen == Screen::Playing
@@ -14200,8 +14168,6 @@ impl<'a> Game<'a> {
             retry_due: None,
             lan_session: false,
             window_title: None,
-            replay: Default::default(),
-            studio: Default::default(),
             lan: None,
             integrated: None,
             level_shapes: Default::default(),

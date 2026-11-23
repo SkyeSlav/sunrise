@@ -1410,7 +1410,7 @@ mod tests {
                     );
 
                     // SetPlayerInventory slots 41 and 42 sync body armor and saddle.
-                    game.init_remote_for_replay().unwrap();
+                    game.init_offline_remote().unwrap();
                     let item_id = |name: &str| {
                         game.remote
                             .as_ref()

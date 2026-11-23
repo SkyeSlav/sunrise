@@ -258,13 +258,6 @@ impl Game<'_> {
     pub(super) fn close_world(&mut self) -> Result<()> {
         self.destroying.clear();
         self.mining = None;
-        // Pause-menu and death-screen exits use the normal world-close action.
-        // A standalone replay owns a synthetic remote session, so it must go
-        // through replay cleanup instead of being treated like a server.
-        if self.replay.playing() {
-            self.close_studio_replay();
-            return Ok(());
-        }
         // A recording cannot cross into another world, and a replay feeding the
         // title screen is nonsense.
         self.repro_world_closed();

@@ -75,7 +75,6 @@ pub(super) fn tooltip(page: usize, r: usize) -> Option<Text> {
 pub(super) fn sunrise_page_tooltip(page: Page) -> Option<&'static str> {
     Some(match page {
         Page::Sunrise => "sunrise.pages.settings.tooltip",
-        Page::Studio => "sunrise.pages.studio.tooltip",
         Page::Graphics => "sunrise.pages.graphics.tooltip",
         Page::GraphicsAdvanced => "sunrise.pages.graphics_advanced.tooltip",
         Page::Controller => "sunrise.pages.controller.tooltip",
@@ -111,7 +110,6 @@ impl OptionsUi {
                 open("sunrise.pages.open.extras", Page::Extras),
                 Some(open("sunrise.pages.open.pvp", Page::Pvp)),
             ),
-            Row::Buttons(open("sunrise.pages.open.studio", Page::Studio), None),
             // No AI hides the AI Agent page and everything AI.
             if s.extras.no_ai {
                 Row::Buttons(self.extra_button(s, crate::extras::Item::NoAi), None)

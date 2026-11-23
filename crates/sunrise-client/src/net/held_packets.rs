@@ -88,7 +88,7 @@ impl Session {
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
         assert_eq!(peer.recv().unwrap(), (3, vec![]));
-        let session = Self::replay("hold probe");
+        let session = Self::offline("hold probe");
         *session.writer.lock().unwrap() = Some(writer.clone());
         (session, peer, move |id| {
             writer
@@ -121,7 +121,7 @@ impl Session {
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
         assert_eq!(peer.recv().unwrap(), (3, vec![]));
-        let mut session = Self::replay("play loop probe");
+        let mut session = Self::offline("play loop probe");
         *session.writer.lock().unwrap() = Some(writer);
         let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let root =
