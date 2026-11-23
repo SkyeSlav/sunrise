@@ -374,11 +374,7 @@ mod tests {
                         event.entity.residency(host),
                         mod_api::EntityResidency::InPlace
                     );
-                    assert_eq!(
-                        player.reset_fall_distance(host),
-                        Err(mod_api::LevelWriteError::Unavailable),
-                    );
-                    assert!(host.client_executor().is_none());
+                    assert_eq!(player.reset_fall_distance(host), Ok(true),);
                     self.0.lock().unwrap().push((
                         event.old_section,
                         event.new_section,

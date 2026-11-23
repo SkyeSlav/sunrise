@@ -23,14 +23,18 @@ pub trait Hooks {
     /// moving or removing the entity until the write completes, because the write is still in
     /// progress while this hook runs.
     ///
-    /// Which Host a listener gets decides what it can read. A write told while the mob view is
-    /// borrowed (the write happened inside that mob's own tick) gets a position-only Host: the
-    /// crossing entity's position, and `entity_residency` answers `EntityResidency::Busy` for it
-    /// (its row is lent to the tick) and `Busy` for every other entity of the world open (the view holds them); a player move also
-    /// answers that player's ground flag and velocity before the move updates them, and
-    /// `local_player` on the client. Every other Host operation is refused with its typed
-    /// refusal while a view is borrowed. A write told with the owning Host (including a mob
-    /// write delivered after its row is restored) can read the resident entities. Crossings
+    /// Which Host a listener gets decides what it can read and write. A mob's own `Entity.move`
+    /// and a player's ordinary `Entity.move` (its tick, a piston or shulker push, riptide) pause
+    /// at the position write and are told with the owning Host: the listener reads and writes
+    /// the real level and the entity, and the rest of that move reads what it wrote. Every
+    /// other write of a mob inside its own tick (a teleport, a snap, a size-change nudge, a
+    /// vex's travel, a villager's bed move, stopping riding) is told while the mob view is
+    /// borrowed, with a position-only Host: the crossing entity's position, and
+    /// `entity_residency` answers `EntityResidency::Busy` for every other entity of the world
+    /// open (the view holds them). Every other Host operation is refused with its typed refusal
+    /// there, so a listener's write does nothing. A write told with the owning Host (including
+    /// a mob write delivered after its row is restored) can read the resident entities.
+    /// Crossings
     /// queued while a listener runs, for example by a vehicle teleport, are told after that
     /// callback returns, in the order they were filed, with the owning Host before the pass
     /// resumes. Each keeps the placement of the move that filed it: a later move, or the entity's

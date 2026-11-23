@@ -560,7 +560,8 @@ fn a_real_mob_tick_exposes_each_intermediate_position_to_the_listener() {
                 (Some([8.5, 127.75, 8.5]), EntityResidency::Busy)
             );
             assert!(positions[1].0.is_some_and(|at| at[1] >= 128.0));
-            assert_eq!(positions[1].1, EntityResidency::Busy);
+            // The walk's write is told with the owning Host; the teleport before it is not.
+            assert_eq!(positions[1].1, EntityResidency::InPlace);
         })
     });
 }
