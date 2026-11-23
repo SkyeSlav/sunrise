@@ -12,7 +12,7 @@ mod __private {
     pub use crate::content::registry_keys::{
         block_entity_type_key, block_entity_type_name, block_id as block_key_id, dimension_id,
         dimension_key, effect_id as effect_key_id, enchantment_key_id, entity_type_key_id,
-        item_id as item_key_id, menu_key_id, registry_name_snapshot,
+        item_id as item_key_id, menu_key_id, registry_name_snapshot, resolved_block_id,
     };
     pub use crate::content::registry_keys::{
         block_keys, effect_key, effect_key_by_index, enchantment_keys, entity_type_keys, fluid_id,

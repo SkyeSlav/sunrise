@@ -307,6 +307,7 @@ impl Game<'_> {
             items.retain_unbound_tags(self.items());
         }
         class_tags::install(&mut items, self.res.facts());
+        items.bind_block_tag_names();
         // Tag files are read before their tags are bound, so the tag readers below keep the
         // context without tags: there `neoforge:tag_empty` is unsupported, never answered from a
         // part of this load's tags.

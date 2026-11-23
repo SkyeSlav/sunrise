@@ -52,6 +52,7 @@ impl std::ops::DerefMut for Names {
 #[derive(Clone, PartialEq)]
 pub struct Request {
     pub id: String,
+    identifier: sunrise_core::identifier::Identifier,
     pub mods: Vec<&'static str>,
 }
 
@@ -91,11 +92,12 @@ impl Names {
             self.slots.insert(id.clone(), slot);
             self.entries.push(Request {
                 id,
+                identifier: identifier.clone(),
                 mods: Vec::new(),
             });
+            self.identifiers.insert(identifier, slot);
             slot
         };
-        self.identifiers.insert(identifier, slot);
         let mods = &mut self.entries[slot as usize].mods;
         if !mods.contains(&mod_id) {
             mods.push(mod_id);
@@ -256,6 +258,15 @@ pub fn tag_slot(id: &sunrise_core::identifier::Identifier) -> Option<u32> {
         .ok()?
         .request_identifier("sunrise", id)
         .ok()
+}
+
+/// Read a retained tag's validated identity without requiring any bound tags.
+pub fn tag_identifier(slot: u32) -> Option<sunrise_core::identifier::Identifier> {
+    let names = TAG_NAMES.read().ok()?;
+    names
+        .entries
+        .get(slot as usize)
+        .map(|entry| entry.identifier.clone())
 }
 
 /// Borrow a retained tag name while its table is read-locked. No string is allocated.

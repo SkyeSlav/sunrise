@@ -1,5 +1,6 @@
 //! Borrow the item engine's authoritative merged tags during custom loot evaluation.
 use crate::items::{Items, TagRegistry};
+use sunrise_core::identifier::Identifier;
 use sunrise_world::loot::ItemTagNames;
 
 impl sunrise_world::loot::LootTags for Items {
@@ -14,6 +15,14 @@ impl sunrise_world::loot::LootTags for Items {
     }
     fn item_tag_names(&self) -> Option<&ItemTagNames> {
         self.item_tag_names.as_ref()
+    }
+    fn member_tag_names(&self, registry: &str, member: &str) -> Option<Vec<Identifier>> {
+        match registry {
+            "block" => self.block_tag_names.as_ref(),
+            "fluid" => self.fluid_tag_names.as_ref(),
+            _ => None,
+        }?
+        .names(member)
     }
     fn contains(&self, registry: &str, tag: &str, id: &str) -> bool {
         match registry {

@@ -388,6 +388,11 @@ pub fn block_key(id: &str) -> Option<BlockKey> {
     Some(BlockKey(*resolved_block_keys().get()?.names.slots.get(id)?))
 }
 
+/// The canonical registry name of a resolved block key.
+pub fn resolved_block_id(key: BlockKey) -> Option<&'static str> {
+    resolved_block_keys().get()?.names.id(key.0)
+}
+
 /// Borrow the immutable definitions published with completed block identities.
 pub fn block_definitions() -> Option<&'static sunrise_mod_runtime::block_definitions::Blocks> {
     resolved_block_keys().get().map(|blocks| &**blocks)

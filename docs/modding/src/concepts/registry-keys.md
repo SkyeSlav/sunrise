@@ -416,7 +416,9 @@ A bare name uses the `minecraft` namespace; an invalid name refuses the mod at l
 `host.tags()` and a restricted level host's `tags()` expose the same `Tags` service. Later,
 `tags.key(&identifier)` resolves the same key from a validated identifier. Naming a tag does
 not require it to have any members. Item, block and fluid tags share one name table; the
-membership method chooses the registry. Reload replaces membership, not key identity.
+membership method chooses the registry. `tags.name(tag_key)` returns the key's canonical
+`Identifier` even before tags have been applied or when no tag binds that name. It returns
+`None` if the key has no name. Reload replaces membership, not key identity.
 `tags.is_in_tag(item_key, tag_key)` tests merged item membership. It returns `Some(false)`
 for either an absent tag or a loaded empty tag. Use `tags.items(tag_key)`,
 `tags.blocks(tag_key)` or `tags.fluids(tag_key)` to tell them apart. Each returns a
@@ -431,15 +433,18 @@ for either an absent tag or a loaded empty tag. Use `tags.items(tag_key)`,
 
 Include a fallback arm when matching `TagMembers`: the enum is non-exhaustive.
 
-Use `tags.item_tags(item_key)` to find which tags contain an item, or `tags.item_tag_names()`
-to list every currently bound item tag, including bound empty tags. Both return each
-`Identifier` once with no specified order. `None` means the authoritative names or a
-required item mapping are unavailable; `Some(vec![])` means the lookup succeeded and found
-nothing. Listing does not resolve keys; use `tags.key(&id)` if you need one. A reload replaces
-both lists along with `is_in_tag`. Requesting a key never adds its name to a list.
+Use `tags.item_tags(item_key)`, `tags.block_tags(block_key)` or `tags.fluid_tags(fluid_key)`
+to list the tags that currently contain a registry entry. `tags.item_tag_names()` lists every
+bound item tag, including bound empty tags. These methods return each `Identifier` once
+in no specified order. `Some(vec![])` means the lookup succeeded and found nothing. `None`
+means the registry's authoritative tags are unavailable, the supplied key is unresolved,
+or the result would be incomplete. Listing does not allocate tag keys; use `tags.key(&id)`
+if you need one. Requesting a key never adds its name to a list. Refresh any lists you keep
+when `tags_updated` fires after a server reload or client tag update.
 
-Clients read only the tags their server sent. Member enumeration includes keys no mod
-requested. Key resolution itself can be refused if the runtime cannot allocate a name slot.
+Clients list only tags applied from their server, not locally generated tags. Member
+enumeration includes keys no mod requested. Key resolution itself can be refused if the
+runtime cannot allocate a name slot.
 The engine `TagRegistry`, `StackData`, `StackView` and `DisplayContext` are not API types.
 
 ## Scoped Parts

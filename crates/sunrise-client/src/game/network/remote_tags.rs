@@ -79,6 +79,7 @@ impl Game<'_> {
             let tags = tags.iter().map(|(tag, ids)| (tag.clone(), members(ids)));
             items.set_tags(registry, tags.collect());
         }
+        // Parts still use the local class overlay; mod tag-name lists keep the packet's bindings.
         super::class_tags::install(&mut items, self.res.facts());
         // Rebuild scoped parts against the received tags before refreshing state-only facts.
         let mut part_items = self.items().clone();
@@ -222,36 +223,59 @@ mod tests {
             return;
         }
 
-        struct ItemTagProbe(Arc<Mutex<Vec<TagsUpdateCause>>>);
+        fn id(path: &str) -> Identifier {
+            Identifier::from_parts("item_tag_listing", path).unwrap()
+        }
+        fn scoped(mut names: Vec<Identifier>) -> Vec<Identifier> {
+            names.retain(|id| id.namespace() == "item_tag_listing");
+            names.sort_unstable();
+            names
+        }
+        fn assert_member_tags(tags: &dyn Tags, current: &str, server: bool) {
+            let stone = mod_api::__private::block_key("minecraft:stone").unwrap();
+            let water = mod_api::__private::fluid_key("minecraft:water").unwrap();
+            let empty = mod_api::__private::fluid_key("minecraft:empty").unwrap();
+            let stone_tags = tags.block_tags(stone).unwrap();
+            let class = Identifier::parse("sunrise:class/block").unwrap();
+            assert_eq!(stone_tags.contains(&class), server);
+            assert_eq!(scoped(stone_tags), [id("always"), id(current)]);
+            assert_eq!(
+                scoped(tags.fluid_tags(water).unwrap()),
+                [id("always"), id(current)]
+            );
+            assert_eq!(tags.fluid_tags(empty), Some(vec![]));
+        }
+
+        struct TagListingProbe {
+            seen: Arc<Mutex<Vec<TagsUpdateCause>>>,
+            unbound: mod_api::TagKey,
+        }
         #[mod_api::__subscriptions]
-        impl Hooks for ItemTagProbe {
+        impl Hooks for TagListingProbe {
             fn tags_updated(
                 &self,
                 context: &dyn mod_api::ReloadContext,
                 event: &mut TagsUpdatedEvent,
             ) {
-                let mut seen = self.0.lock().unwrap();
+                let mut seen = self.seen.lock().unwrap();
                 let tags = context.tags();
-                let id = |path| Identifier::from_parts("item_tag_listing", path).unwrap();
-                // Allocating a key for an unbound name must not make it discoverable.
-                tags.key(&id("never_bound")).unwrap();
+                assert_eq!(tags.name(self.unbound), Some(id("never_bound")));
                 let stick = context
                     .item_key(&Identifier::parse("minecraft:stick").unwrap())
                     .unwrap();
-                let scoped = |names: Option<Vec<Identifier>>| {
-                    let mut names: Vec<_> = names
-                        .unwrap()
-                        .into_iter()
-                        .filter(|id| id.namespace() == "item_tag_listing")
-                        .collect();
-                    names.sort_unstable();
-                    names
-                };
                 let reloaded = seen.len() % 2 == 1;
                 let current = if reloaded { "new" } else { "old" };
-                assert_eq!(scoped(tags.item_tags(stick)), [id("always"), id(current)]);
+                assert_member_tags(
+                    tags,
+                    current,
+                    matches!(event.cause, TagsUpdateCause::ServerDataLoad { .. }),
+                );
                 assert_eq!(
-                    scoped(tags.item_tag_names()),
+                    scoped(tags.item_tags(stick).unwrap()),
+                    [id("always"), id(current)]
+                );
+                assert_eq!(
+                    scoped(tags.item_tag_names().unwrap()),
                     [id("always"), id("empty"), id(current)]
                 );
                 let key = |path| tags.key(&id(path)).unwrap();
@@ -266,7 +290,7 @@ mod tests {
 
         let save = tempfile::tempdir().unwrap();
         let pack = save.path().join("datapacks/test");
-        let tags = pack.join("data/item_tag_listing/tags/item");
+        let tags = pack.join("data/item_tag_listing/tags");
         std::fs::create_dir_all(&tags).unwrap();
         std::fs::write(
             save.path().join("datapacks.json"),
@@ -278,21 +302,34 @@ mod tests {
             br#"{"pack":{"description":"Item tag listing fixture","min_format":94,"max_format":94}}"#,
         )
         .unwrap();
-        let write = |path: &str, values: &[&str]| {
+        let write = |registry: &str, tag: &str, values: &[&str]| {
             std::fs::write(
-                tags.join(path),
+                tags.join(registry).join(format!("{tag}.json")),
                 serde_json::json!({"values": values}).to_string(),
             )
             .unwrap();
         };
-        write("old.json", &["minecraft:stick"]);
-        write("always.json", &["minecraft:stick"]);
-        write("empty.json", &[]);
+        let members = [
+            ("item", "minecraft:stick"),
+            ("block", "minecraft:stone"),
+            ("fluid", "minecraft:water"),
+        ];
+        for (registry, member) in members {
+            std::fs::create_dir_all(tags.join(registry)).unwrap();
+            write(registry, "old", &[member]);
+            write(registry, "always", &[member]);
+        }
+        write("item", "empty", &[]);
 
+        // Keep one key for an unbound name across both sides and generations.
+        let unbound = mod_api::__private::tag_key(&id("never_bound")).unwrap();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let mods = vec![ModEntry::new(
             "item_tag_listing",
-            Box::new(ItemTagProbe(seen.clone())),
+            Box::new(TagListingProbe {
+                seen: seen.clone(),
+                unbound,
+            }),
         )]
         .into();
         mod_platform::testing::with_mods(mods, || {
@@ -309,8 +346,14 @@ mod tests {
                 .unwrap();
                 request.save_root = save.path().to_owned();
                 game.load_world(request).unwrap();
-                let packet = |game: &super::Game<'_>| {
-                    sync::sync_data(
+                let packet = |game: &super::Game<'_>, current| {
+                    let loot = &game.world_tables.as_ref().unwrap().loot;
+                    assert_member_tags(
+                        &crate::game::loot_tags::LootTags(loot.as_ref()),
+                        current,
+                        true,
+                    );
+                    let mut packet = sync::sync_data(
                         &game.options.resources,
                         &game.res.core.item_data,
                         game.items(),
@@ -318,22 +361,39 @@ mod tests {
                     )
                     .unwrap()
                     .tags
-                    .clone()
+                    .clone();
+                    // The local class table still supplies this tag to engine readers.
+                    // Mod enumeration on a client must see only what the packet binds.
+                    packet
+                        .registries
+                        .iter_mut()
+                        .find(|tags| tags.registry == "minecraft:block")
+                        .unwrap()
+                        .tags
+                        .retain(|tag| tag.name != "sunrise:class/block");
+                    packet
                 };
-                packets.push(packet(game));
-                std::fs::remove_file(tags.join("old.json")).unwrap();
-                write("new.json", &["minecraft:stick"]);
+                packets.push(packet(game, "old"));
+                for (registry, member) in members {
+                    std::fs::remove_file(tags.join(registry).join("old.json")).unwrap();
+                    write(registry, "new", &[member]);
+                }
                 game.reload_datapacks(true, &game.level.enabled_features.clone())
                     .unwrap();
-                packets.push(packet(game));
+                packets.push(packet(game, "new"));
             });
             with_client_game(|game| {
                 let (pipe, _server) = sunrise_protocol::connection::Pipe::pair();
                 game.connect_local(pipe, "Steve").unwrap();
                 game.handle_packet(login()).unwrap();
                 let stick = mod_api::__private::item_key("minecraft:stick").unwrap();
+                let stone = mod_api::__private::block_key("minecraft:stone").unwrap();
+                let water = mod_api::__private::fluid_key("minecraft:water").unwrap();
                 assert_eq!(game.item_tags(stick), None);
                 assert_eq!(game.item_tag_names(), None);
+                assert_eq!(game.block_tags(stone), None);
+                assert_eq!(game.fluid_tags(water), None);
+                assert_eq!(game.name(unbound), Some(id("never_bound")));
                 for packet in packets {
                     game.handle_packet(C::UpdateTags(packet)).unwrap();
                 }

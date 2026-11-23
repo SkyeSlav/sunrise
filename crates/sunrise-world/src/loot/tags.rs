@@ -30,6 +30,43 @@ impl ItemTagNames {
     }
 }
 
+/// Reverse membership for one generation of a registry's bound tags.
+#[derive(Clone)]
+pub struct MemberTagNames(Arc<HashMap<String, Option<Vec<Identifier>>>>);
+
+impl MemberTagNames {
+    /// Build from the final bindings, as `MappedRegistry.refreshTagsInHolders` does.
+    pub fn bind(tags: &super::RegistryTags) -> Self {
+        let mut by_member = HashMap::<String, Option<Vec<Identifier>>>::new();
+        for (name, members) in tags {
+            let name = Identifier::parse(name).ok();
+            for member in members {
+                let names = by_member
+                    .entry(member.clone())
+                    .or_insert_with(|| Some(Vec::new()));
+                match (&name, names.as_mut()) {
+                    (Some(name), Some(names)) => names.push(name.clone()),
+                    (None, _) => *names = None,
+                    (Some(_), None) => {}
+                }
+            }
+        }
+        for names in by_member.values_mut().flatten() {
+            names.sort_unstable();
+            names.dedup();
+        }
+        Self(Arc::new(by_member))
+    }
+
+    /// A member absent from the index has no tags. Refuse a member with any invalid tag name.
+    pub fn names(&self, member: &str) -> Option<Vec<Identifier>> {
+        self.0
+            .get(member)
+            .cloned()
+            .unwrap_or_else(|| Some(Vec::new()))
+    }
+}
+
 /// Authoritative tag reads without a game or registry borrow.
 /// Registry names are vanilla directory names (`item`, `block`, `fluid`).
 pub trait LootTags {
@@ -37,6 +74,10 @@ pub trait LootTags {
     fn members(&self, registry: &str, tag: &str) -> Option<Vec<String>>;
     /// The bound item tags, including empty tags, or `None` before the registry binds.
     fn item_tag_names(&self) -> Option<&ItemTagNames>;
+    /// Bound tag names for a resolved block or fluid, or `None` if unavailable or incomplete.
+    fn member_tag_names(&self, _registry: &str, _member: &str) -> Option<Vec<Identifier>> {
+        None
+    }
     /// Whether one registry value belongs to a tag.
     fn contains(&self, registry: &str, tag: &str, id: &str) -> bool {
         self.members(registry, tag)
@@ -51,6 +92,15 @@ impl LootTags for super::LootData {
 
     fn item_tag_names(&self) -> Option<&ItemTagNames> {
         self.item_tag_names.as_ref()
+    }
+
+    fn member_tag_names(&self, registry: &str, member: &str) -> Option<Vec<Identifier>> {
+        match registry {
+            "block" => self.block_tag_names.as_ref(),
+            "fluid" => self.fluid_tag_names.as_ref(),
+            _ => None,
+        }?
+        .names(member)
     }
 
     fn contains(&self, registry: &str, tag: &str, id: &str) -> bool {
@@ -87,4 +137,37 @@ pub(super) fn check_cycles(registry: &str, tags: &HashMap<String, TagLayers>) ->
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reverse_binding_lists_distinct_names_and_refuses_only_affected_members() {
+        let index = MemberTagNames::bind(&HashMap::from([
+            (
+                "test:a".into(),
+                vec!["minecraft:stone".into(), "minecraft:stone".into()],
+            ),
+            (
+                "test:b".into(),
+                vec!["minecraft:stone".into(), "minecraft:dirt".into()],
+            ),
+            ("test:other".into(), vec!["minecraft:dirt".into()]),
+            ("test:empty".into(), vec![]),
+            ("..:bad".into(), vec!["minecraft:dirt".into()]),
+        ]));
+        let mut stone = index.names("minecraft:stone").unwrap();
+        stone.sort_unstable();
+        assert_eq!(
+            stone,
+            [
+                Identifier::parse("test:a").unwrap(),
+                Identifier::parse("test:b").unwrap()
+            ]
+        );
+        assert_eq!(index.names("minecraft:air"), Some(vec![]));
+        assert_eq!(index.names("minecraft:dirt"), None);
+    }
 }

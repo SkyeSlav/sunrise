@@ -21,7 +21,7 @@ use sunrise_world::loot::number::int_value;
 use sunrise_world::registry::{BlockRegistry, BlockStateId};
 use sunrise_world::{
     item_defaults::ItemDefaults,
-    loot::{ItemTagNames, MAX_LOOT_LEVEL, PackOverlay},
+    loot::{ItemTagNames, MAX_LOOT_LEVEL, MemberTagNames, PackOverlay},
     tag_layers,
 };
 
@@ -789,6 +789,8 @@ pub struct Items {
     /// place, first occurrence kept), the order `TagSlotDisplay` resolves.
     pub item_tag_order: HashMap<String, Vec<String>>,
     pub(crate) item_tag_names: Option<ItemTagNames>,
+    pub(crate) block_tag_names: Option<MemberTagNames>,
+    pub(crate) fluid_tag_names: Option<MemberTagNames>,
     tags_loaded: [bool; 3],
     /// Block tags in the same order.
     pub block_tag_order: HashMap<String, Vec<String>>,
@@ -1638,7 +1640,10 @@ impl Items {
                 self.item_tag_names = Some(ItemTagNames::bind(&tags));
                 (&mut self.item_tags, &mut self.item_tag_order)
             }
-            TagRegistry::Fluid => (&mut self.fluid_tags, &mut self.fluid_tag_order),
+            TagRegistry::Fluid => {
+                self.fluid_tag_names = Some(MemberTagNames::bind(&tags));
+                (&mut self.fluid_tags, &mut self.fluid_tag_order)
+            }
         };
         *sets = tags
             .iter()
@@ -1647,9 +1652,15 @@ impl Items {
         *order = tags;
         self.tags_loaded[registry as usize] = true;
         if registry == TagRegistry::Block {
+            self.bind_block_tag_names();
             let names = self.block_state_names();
             self.rebuild_block_tag_flags(names);
         }
+    }
+    /// Bind reverse membership from the ordered block tags. The server does this again
+    /// after adding generated tags; the client keeps the binding from its packet.
+    pub fn bind_block_tag_names(&mut self) {
+        self.block_tag_names = Some(MemberTagNames::bind(&self.block_tag_order));
     }
     /// Whether `block` is in the block tag `tag` (`minecraft:fire`, no `#`).
     pub fn block_in_tag(&self, tag: &str, block: &str) -> bool {

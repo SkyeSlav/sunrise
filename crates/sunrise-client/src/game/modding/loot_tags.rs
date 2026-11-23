@@ -17,6 +17,12 @@ impl Tags for LootTags<'_> {
     fn item_tag_names(&self) -> Option<Vec<Identifier>> {
         super::native_tags::item_tag_names(self.0)
     }
+    fn block_tags(&self, block: BlockKey) -> Option<Vec<Identifier>> {
+        super::native_tags::block_tags(self.0, block)
+    }
+    fn fluid_tags(&self, fluid: FluidKey) -> Option<Vec<Identifier>> {
+        super::native_tags::fluid_tags(self.0, fluid)
+    }
     fn items(&self, tag: TagKey) -> TagMembers<ItemKey> {
         super::native_tags::members(
             tag,

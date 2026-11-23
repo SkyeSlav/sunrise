@@ -34,12 +34,17 @@ pub enum TagMembers<K> {
 /// A client reads the tags its server sent. The list methods distinguish absent tags
 /// from loaded empty tags, and report unavailable until that registry's authoritative tags
 /// are applied or if a member key cannot be resolved. A retained tag key reads the current
-/// snapshot on each call, including after reload.
+/// snapshot on each call, including after reload. Refresh retained lists after `tags_updated`.
 pub trait Tags {
     /// Resolve a validated name once. The name need not currently have members;
     /// retain its key across reloads. None if the runtime cannot allocate a name slot.
     fn key(&self, _id: &Identifier) -> Option<TagKey> {
         unimplemented!("Tags::key")
+    }
+    /// The canonical name of `tag`, even when it is unbound or no tag snapshot is available.
+    /// The name is stable across reloads. `None` means the key's name is unavailable.
+    fn name(&self, tag: TagKey) -> Option<Identifier> {
+        sunrise_mod_runtime::registry_keys::tag_identifier(tag.0)
     }
     /// Whether `item` is in the current item tag. An unknown tag is false;
     /// unavailable authoritative tags or item mappings answer None.
@@ -58,6 +63,20 @@ pub trait Tags {
     /// Call [`key`](Self::key) separately if you need a key for membership reads.
     fn item_tag_names(&self) -> Option<Vec<Identifier>> {
         unimplemented!("Tags::item_tag_names")
+    }
+    /// The names of the currently bound tags containing `block`, each once in unspecified order.
+    /// A resolved block with no tags returns an empty list. `None` means the block cannot be
+    /// resolved, the authoritative block tags are unavailable, or the list would be incomplete.
+    /// This does not allocate tag keys.
+    fn block_tags(&self, _block: BlockKey) -> Option<Vec<Identifier>> {
+        None
+    }
+    /// The names of the currently bound tags containing `fluid`, each once in unspecified order.
+    /// A resolved fluid with no tags returns an empty list. `None` means the fluid cannot be
+    /// resolved, the authoritative fluid tags are unavailable, or the list would be incomplete.
+    /// This does not allocate tag keys.
+    fn fluid_tags(&self, _fluid: FluidKey) -> Option<Vec<Identifier>> {
+        None
     }
     /// Read the current item tag in vanilla's order, including unrequested vanilla items.
     fn items(&self, _tag: TagKey) -> TagMembers<ItemKey> {
@@ -81,4 +100,16 @@ pub fn tag_key(id: &Identifier) -> Option<TagKey> {
 /// Borrow a tag's canonical name within the runtime's read lock, without formatting or cloning.
 pub fn with_tag_name<R>(key: TagKey, read: impl FnOnce(Option<&str>) -> R) -> R {
     sunrise_mod_runtime::registry_keys::with_tag_name(key.0, read)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unnamed_tag_key_has_no_name() {
+        struct UnavailableTags;
+        impl Tags for UnavailableTags {}
+        assert_eq!(UnavailableTags.name(TagKey(u32::MAX)), None);
+    }
 }

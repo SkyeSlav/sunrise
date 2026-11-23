@@ -17,6 +17,8 @@ fn data(tables: Vec<(&str, Value)>) -> LootData {
         support_answers: Default::default(),
         tags: HashMap::new(),
         item_tag_names: None,
+        block_tag_names: None,
+        fluid_tag_names: None,
         smelting: vec![],
     }
 }

@@ -1,5 +1,5 @@
-//! One membership implementation for full-game and in-write tag services.
-use mod_api::{Identifier, ItemKey, TagKey, TagMembers};
+//! One membership implementation for full-game, restricted and loot tag services.
+use mod_api::{BlockKey, FluidKey, Identifier, ItemKey, TagKey, TagMembers};
 use sunrise_items::items::{Items, TagRegistry};
 use sunrise_world::loot::LootTags;
 
@@ -23,6 +23,14 @@ pub(super) fn item_tags(tags: &dyn LootTags, item: ItemKey) -> Option<Vec<Identi
 
 pub(super) fn item_tag_names(tags: &dyn LootTags) -> Option<Vec<Identifier>> {
     tags.item_tag_names()?.matching(|_| true)
+}
+
+pub(super) fn block_tags(tags: &dyn LootTags, block: BlockKey) -> Option<Vec<Identifier>> {
+    tags.member_tag_names("block", mod_api::__private::resolved_block_id(block)?)
+}
+
+pub(super) fn fluid_tags(tags: &dyn LootTags, fluid: FluidKey) -> Option<Vec<Identifier>> {
+    tags.member_tag_names("fluid", mod_api::__private::fluid_id(fluid)?)
 }
 
 pub(super) fn snapshot_members<K>(
@@ -82,6 +90,16 @@ macro_rules! impl_tags {
                 let $this = self;
                 let items: Option<&sunrise_items::items::Items> = $items;
                 $crate::game::native_tags::item_tag_names(items?)
+            }
+            fn block_tags(&self, block: mod_api::BlockKey) -> Option<Vec<mod_api::Identifier>> {
+                let $this = self;
+                let items: Option<&sunrise_items::items::Items> = $items;
+                $crate::game::native_tags::block_tags(items?, block)
+            }
+            fn fluid_tags(&self, fluid: mod_api::FluidKey) -> Option<Vec<mod_api::Identifier>> {
+                let $this = self;
+                let items: Option<&sunrise_items::items::Items> = $items;
+                $crate::game::native_tags::fluid_tags(items?, fluid)
             }
             fn items(&self, tag: mod_api::TagKey) -> mod_api::TagMembers<mod_api::ItemKey> {
                 let $this = self;

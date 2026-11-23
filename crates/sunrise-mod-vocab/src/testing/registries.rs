@@ -126,6 +126,14 @@ impl crate::Tags for FakeRegistries {
         crate::parts::installed()?.resolved_items.get()?;
         Some(Vec::new())
     }
+    fn block_tags(&self, block: crate::BlockKey) -> Option<Vec<crate::Identifier>> {
+        crate::content::registry_keys::resolved_block_id(block)?;
+        Some(Vec::new())
+    }
+    fn fluid_tags(&self, fluid: crate::FluidKey) -> Option<Vec<crate::Identifier>> {
+        crate::content::registry_keys::fluid_id(fluid)?;
+        Some(Vec::new())
+    }
     fn items(&self, _: crate::TagKey) -> crate::TagMembers<crate::ItemKey> {
         if crate::parts::installed()
             .and_then(|parts| parts.resolved_items.get())
