@@ -1,0 +1,3 @@
+ids = ["handle:PlayerRef::show_dialog", "handle:PlayerRef::show_dialog_by_id", "handle:PlayerRef::clear_dialog"]
+why = "Server mods can show a player a dialog, inline as SNBT or by its minecraft:dialog registry id, and clear the dialog that player sees, as /dialog show and /dialog clear do."
+migrate = "Nothing to migrate: the methods are new."
