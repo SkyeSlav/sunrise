@@ -1,2 +1,2 @@
-ids = ["type:CommandInvocation.entity", "type:CommandInvocation.rotation", "handle:CommandInvocation::player", "handle:CommandInvocation::with_entity", "handle:CommandInvocation::with_player", "handle:CommandInvocation::with_rotation"]
+ids = ["type:command::CommandInvocation.entity", "type:command::CommandInvocation.rotation", "handle:command::CommandInvocation::player", "handle:command::CommandInvocation::with_entity", "handle:command::CommandInvocation::with_player", "handle:command::CommandInvocation::with_rotation"]
 why = "Additive reads: the executing entity (CommandSourceStack.getEntity, after execute as/on), its player projection (getPlayer) and the execution rotation (getRotation, [yaw, pitch]). CommandSource keeps meaning the origin."
