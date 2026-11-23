@@ -42,9 +42,8 @@ impl Game<'_> {
 impl Game<'_> {
     /// Ask `living_breathe` about the air update `step` decided for the player in
     /// `living`, then check with `unchanged` that what the decision read still
-    /// stands. The listener's writes and that check are one transaction: a
-    /// refusal (`None`) rolls the listener's transactional writes back and
-    /// leaves the air as it is, and the caller applies nothing.
+    /// stands. A refusal (`None`) leaves the air as the listener left it, and the
+    /// caller applies nothing; the listener's own writes stand.
     pub(in crate::game) fn ask_breath(
         &mut self,
         living: mod_api::LivingRef,
@@ -53,20 +52,13 @@ impl Game<'_> {
     ) -> Option<sunrise_client::breathing::Breath> {
         let mut breath = vanilla;
         let failures = mod_api::runtime::isolated_failures();
-        let answered: Result<(), ()> = self.storage_transaction(|game, _| {
-            game.native_living_breathe(
-                living,
-                &mut breath.can_breathe,
-                &mut breath.consume,
-                &mut breath.refill,
-            );
-            if mod_api::runtime::isolated_failures() == failures && unchanged(game) {
-                Ok(())
-            } else {
-                Err(())
-            }
-        });
-        answered.ok().map(|()| breath)
+        self.native_living_breathe(
+            living,
+            &mut breath.can_breathe,
+            &mut breath.consume,
+            &mut breath.refill,
+        );
+        (mod_api::runtime::isolated_failures() == failures && unchanged(self)).then_some(breath)
     }
 
     /// The acting (guest) player's breathing, the answer to apply to the air

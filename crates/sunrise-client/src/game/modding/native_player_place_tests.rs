@@ -56,6 +56,24 @@ fn a_block_placed_as_a_player_runs_set_placed_by() {
     });
 }
 
+/// `SignBlock.setPlacedBy` opens the editor for the placing player, so a sign written for a
+/// player is that player's to edit; one written with no player is nobody's.
+#[test]
+#[ignore = "daily"]
+fn a_sign_placed_as_a_player_opens_its_editor_for_that_player() {
+    with_guests(|game| {
+        loaded(game);
+        let b = game.player(13).unwrap();
+        let level = game.level(game.dim.id()).unwrap();
+        let sign = api_state(game, "minecraft:oak_sign");
+        assert_eq!(b.place_block(game, level, [2, 70, 2], sign, true), Ok(()));
+        assert_eq!(
+            game.world.block_entities.sign_editor(&(2, 70, 2)),
+            Some(b.uuid())
+        );
+    });
+}
+
 /// Each refusal is its own name and writes nothing.
 #[test]
 #[ignore = "daily"]

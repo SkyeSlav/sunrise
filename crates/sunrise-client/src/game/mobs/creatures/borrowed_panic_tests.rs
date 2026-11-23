@@ -1332,7 +1332,7 @@ fn retained_stale_push_target() {
 
 /// `living_breathe` with the owning host: a listener reads the mob's air and edits what it holds
 /// through a transaction, and the game applies its answer to the air it had decided on, or
-/// refuses when the listener changed that air and rolls the transactional edit back.
+/// refuses when the listener changed that air; the listener's own edit stands.
 struct Breather {
     meddle: bool,
     seen_air: Arc<std::sync::Mutex<Vec<i32>>>,
@@ -1432,15 +1432,15 @@ fn a_mob_breathes_with_what_its_listener_answers_and_wrote() {
 
 #[test]
 #[ignore = "daily"]
-fn a_mob_whose_air_the_listener_changed_keeps_it_and_loses_the_transactional_writes() {
+fn a_mob_whose_air_the_listener_changed_keeps_it_and_the_listeners_writes() {
     // The decision read 100; the listener left 50, so the answer is refused rather than
-    // recomputed (not 43, not 54), and the sword's edit is undone.
-    assert_eq!(breathing_tick(true), (vec![100], 50, 0));
+    // recomputed (not 43, not 54); the sword's edit, committed by the listener, stands.
+    assert_eq!(breathing_tick(true), (vec![100], 50, 5));
 }
 
 /// A listener that edits the mob's sword in a transaction and then panics in `living_breathe`
-/// without touching `air`: under the unified failure rule, the panic is contained, the enclosing
-/// transaction aborts (rolling back the sword edit and leaving air unchanged), and the listener is
+/// without touching `air`: under the unified failure rule, the panic is contained, the sword edit the
+/// listener already committed stands, the air is left unchanged, and the listener is
 /// disabled for `living_breathe` for the rest of the session so subsequent ticks run vanilla.
 struct BreathPanic(Arc<AtomicUsize>);
 #[mod_api::__subscriptions]
@@ -1506,7 +1506,7 @@ fn retained_breathing_tail() {
                 assert_eq!(calls.load(Ordering::SeqCst), 1);
                 let mob = game.mobs.iter().find(|m| m.id == 72).unwrap();
                 assert_eq!(mob.air, 100);
-                assert_eq!(mob.extra.main_hand_stack().unwrap().damage, 0);
+                assert_eq!(mob.extra.main_hand_stack().unwrap().damage, 5);
                 assert_eq!(
                     mod_api::__private::take_hook_panics(),
                     [mod_api::__private::HookPanicReport {
@@ -1519,7 +1519,7 @@ fn retained_breathing_tail() {
                 assert_eq!(calls.load(Ordering::SeqCst), 1);
                 let mob = game.mobs.iter().find(|m| m.id == 72).unwrap();
                 assert_eq!(mob.air, 104);
-                assert_eq!(mob.extra.main_hand_stack().unwrap().damage, 0);
+                assert_eq!(mob.extra.main_hand_stack().unwrap().damage, 5);
             });
         },
     );
@@ -1527,7 +1527,7 @@ fn retained_breathing_tail() {
 
 #[test]
 #[ignore = "daily"]
-fn player_living_breathe_panic_rolls_back_transactional_writes() {
+fn player_living_breathe_panic_keeps_committed_writes() {
     struct PlayerBreathPanic {
         player: u128,
         calls: Arc<AtomicUsize>,
@@ -1583,7 +1583,7 @@ fn player_living_breathe_panic_rolls_back_transactional_writes() {
                     assert!(game.ask_player_breath(step).is_none());
                     assert_eq!(calls.load(Ordering::SeqCst), 1);
                     assert_eq!(game.player.as_ref().unwrap().air, 100);
-                    assert_eq!(game.inventory[0].as_ref().unwrap().damage, 0);
+                    assert_eq!(game.inventory[0].as_ref().unwrap().damage, 5);
                     assert_eq!(
                         mod_api::__private::take_hook_panics(),
                         [mod_api::__private::HookPanicReport {
@@ -1594,7 +1594,7 @@ fn player_living_breathe_panic_rolls_back_transactional_writes() {
                     // Second call skips the poisoned listener and accepts the vanilla breath.
                     assert_eq!(game.ask_player_breath(step), Some(step.vanilla));
                     assert_eq!(calls.load(Ordering::SeqCst), 1);
-                    assert_eq!(game.inventory[0].as_ref().unwrap().damage, 0);
+                    assert_eq!(game.inventory[0].as_ref().unwrap().damage, 5);
                 },
             );
         })

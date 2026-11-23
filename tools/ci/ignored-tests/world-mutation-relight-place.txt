@@ -3,6 +3,7 @@ sunrise-client game::native_chunk_relight_tests::a_stale_handle_is_refused_by_na
 sunrise-client game::native_chunk_relight_tests::a_chunk_is_resent_only_when_loaded lib daily resources
 sunrise-client game::native_chunk_relight_tests::a_client_cannot_relight_or_resend lib daily resources
 sunrise-client game::native_player_place_tests::a_block_placed_as_a_player_runs_set_placed_by lib daily resources
+sunrise-client game::native_player_place_tests::a_sign_placed_as_a_player_opens_its_editor_for_that_player lib daily resources
 sunrise-client game::native_player_place_tests::each_place_block_refusal_has_its_own_name_and_writes_nothing lib daily resources
 sunrise-client game::native_player_place_tests::a_level_not_in_place_is_other_level lib daily resources
 sunrise-client game::native_player_place_tests::a_client_cannot_place_a_block_as_a_player lib daily resources

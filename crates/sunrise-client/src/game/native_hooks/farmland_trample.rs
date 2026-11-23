@@ -52,18 +52,14 @@ impl Game<'_> {
             let Some(living) = self.entity(entity).and_then(|e| self.living(e)) else {
                 return;
             };
-            self.storage_transaction(|game, _| {
-                let mut cancel = false;
-                game.native_farmland_trample(living, pos, state, distance, &mut cancel);
-                let valid =
-                    |game: &Self| game.entity(entity) == Some(living.entity()) && still(game);
-                (!cancel && game.apply_farmland_trample(player, trample, valid, true))
-                    .then_some(())
-                    .ok_or(())
-            })
-            .is_ok()
+            let mut cancel = false;
+            self.native_farmland_trample(living, pos, state, distance, &mut cancel);
+            !cancel
+                && self.apply_farmland_trample(player, trample, |game| {
+                    game.entity(entity) == Some(living.entity()) && still(game)
+                })
         } else {
-            self.apply_farmland_trample(player, trample, still, false)
+            self.apply_farmland_trample(player, trample, still)
         };
         if applied {
             let who = if player {
@@ -85,7 +81,6 @@ impl Game<'_> {
         player: bool,
         trample: FarmlandTrample,
         still: impl Fn(&Self) -> bool,
-        journalled: bool,
     ) -> bool {
         let FarmlandTrample {
             position: pos,
@@ -110,12 +105,7 @@ impl Game<'_> {
         // A section listener during the lift can change the decided cell too.
         // Validate after all such callbacks, with no callback between this check and the write.
         self.push_entities_up(pos, state, base, |game| {
-            still(game)
-                && if journalled {
-                    game.journal_set_block(at, base)
-                } else {
-                    game.level_set(at, base).is_ok()
-                }
+            still(game) && game.level_set(at, base).is_ok()
         })
     }
 }
@@ -512,17 +502,31 @@ mod tests {
                     let m = game.mob_object(LANDING).unwrap();
                     (m.position.y, m.health)
                 };
-                let floor = if converted { dirt } else { farmland };
+                // A listener's own writes stand: its replaced field and removed crop stay so.
+                let floor = match (converted, choice) {
+                    (true, _) => dirt,
+                    (false, Choice::Replace | Choice::ReplaceDuringLift) => {
+                        reg.default_state("minecraft:stone").unwrap()
+                    }
+                    (false, _) => farmland,
+                };
                 let y_after = if converted { 64.0 } else { LANDING_Y };
                 assert_eq!(game.world.block(x, y, z), floor);
                 if !converted {
-                    assert_eq!(game.world.block(x, y + 1, z), wheat);
+                    let crop = if choice == Choice::Cancel { air } else { wheat };
+                    assert_eq!(game.world.block(x, y + 1, z), crop);
                 }
                 let [wx, wy, wz] = LISTENER_WRITE;
+                // A listener's writes stand as in NeoForge, whatever the trample then does.
+                let wrote = matches!(choice, Choice::Cancel | Choice::Replace);
                 assert_eq!(
                     game.world.block(wx, wy, wz),
-                    air,
-                    "listener writes rolled back"
+                    if wrote {
+                        reg.default_state("minecraft:stone").unwrap()
+                    } else {
+                        air
+                    },
+                    "listener writes stand"
                 );
                 if choice == Choice::Trap {
                     let [wx, wy, wz] = HEALTHY_WRITE;
@@ -560,16 +564,24 @@ mod tests {
                 if choice == Choice::Cancel {
                     expected.push(Moment::CropRemoved(api_state(air)));
                 }
+                if choice == Choice::Replace {
+                    // The listener's own write of the field stands, and is heard as a write.
+                    expected.push(Moment::Write(api_state(
+                        reg.default_state("minecraft:stone").unwrap(),
+                    )));
+                }
                 if converted || choice == Choice::ReplaceDuringLift {
                     let following = if choice == Choice::ReplaceDuringLift {
                         reg.default_state("minecraft:stone").unwrap()
                     } else {
                         farmland
                     };
-                    expected.extend([
-                        Moment::Lift(LANDING, 64.0, Some(api_state(farmland))),
-                        Moment::Lift(OTHER, 64.0, Some(api_state(following))),
-                    ]);
+                    expected.push(Moment::Lift(LANDING, 64.0, Some(api_state(farmland))));
+                    if choice == Choice::ReplaceDuringLift {
+                        // The lift callback's own write stands and is heard between the lifts.
+                        expected.push(Moment::Write(api_state(following)));
+                    }
+                    expected.push(Moment::Lift(OTHER, 64.0, Some(api_state(following))));
                 }
                 if converted {
                     expected.push(Moment::Write(api_state(floor)));
@@ -629,9 +641,9 @@ mod tests {
 
     #[test]
     #[ignore = "daily"]
-    fn a_trapping_listener_rolls_back_without_preventing_fall_damage() {
+    fn a_trapping_listener_loses_its_writes_without_preventing_fall_damage() {
         crate::game::in_own_process(
-            "game::native_hooks::farmland_trample::tests::a_trapping_listener_rolls_back_without_preventing_fall_damage",
+            "game::native_hooks::farmland_trample::tests::a_trapping_listener_loses_its_writes_without_preventing_fall_damage",
             || {
                 for body in [WALKING, Body::Pig] {
                     land(body, Choice::Trap);

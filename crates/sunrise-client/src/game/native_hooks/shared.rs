@@ -2730,11 +2730,9 @@ impl Game<'_> {
             let placer = by_player
                 .then(|| self.native_clicker().1.cast_unsigned())
                 .and_then(|entity| self.entity(entity));
-            // The block revision and journal epoch cover supporting blocks and
-            // block-entity shapes without tracing ordinary reads.
-            let level = (self.dim, self.world.revision, self.transactions.writes());
+            // NeoForge's `onPlaceItemIntoWorld` posts the event for the placement it is about to
+            // make; only what this placement reads (its cells and the hand) must still stand.
             if self.placement_canceled(placer, preview.pos, preview.state, against, extra)
-                || level != (self.dim, self.world.revision, self.transactions.writes())
                 || block(self, preview.pos) != target_before
                 || block(self, against_pos) != against
                 || (by_player && self.held() != hand.as_ref())

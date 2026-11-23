@@ -149,8 +149,8 @@ pub trait PlayerInteractionBackendMut {
     /// obstruction, build permission, spawn protection), no `placed_block` advancement trigger or
     /// statistic, generic item placement sound or game event, or item use or consumption.
     /// The block callback may produce its own effects.
-    /// `setPlacedBy` is not given the player as placer. The player is only whose turn `setPlacedBy` runs in, so it is
-    /// not "as player" in the sense of a use-on. The state is written as given. Refuses, writing
+    /// `setPlacedBy` is given `player` as the placer, as `BlockItem.place` gives it the
+    /// player (a sign opens its editor for them). The state is written as given. Refuses, writing
     /// nothing, with `PlayerWorldRefusal`: `Client`, `Stale`, `Dead`, `StaleLevel`, `OtherLevel`
     /// (that `level` is not the level in place: both placement steps, the write
     /// and `setPlacedBy`, use the supplied level), `UnknownState`, `OutOfWorld`, `NotLoaded`,

@@ -383,13 +383,13 @@ fn a_guest_breathes_with_what_its_listener_answers_and_wrote() {
 
 #[test]
 #[ignore = "daily"]
-fn a_guest_whose_air_the_listener_changed_keeps_it_and_loses_the_transactional_writes() {
+fn a_guest_whose_air_the_listener_changed_keeps_it_and_the_listeners_writes() {
     // The decision read 300; the listener left 200, so the answer is refused rather than
-    // recomputed, and the chestplate's edit is undone.
+    // recomputed; the chestplate's edit, committed by the listener, stands.
     assert_isolated_breathing_tick(
-        "a_guest_whose_air_the_listener_changed_keeps_it_and_loses_the_transactional_writes",
+        "a_guest_whose_air_the_listener_changed_keeps_it_and_the_listeners_writes",
         true,
         200,
-        0,
+        5,
     );
 }

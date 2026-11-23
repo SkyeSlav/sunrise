@@ -189,9 +189,12 @@ fn item_parts_rewrite_or_refuse_context_and_control_survival_on_both_sides() {
                     let fallback = preview(level, ticks, "minecraft:glass").unwrap();
                     assert_eq!(fallback.pos, BlockPos::new(4, 64, 4));
                     assert!(preview(level, ticks, "minecraft:dirt").is_none());
-                    for item in ["minecraft:sand", "minecraft:red_sand", "minecraft:gravel"] {
+                    for item in ["minecraft:sand", "minecraft:gravel"] {
                         assert!(preview(level, ticks, item).is_none(), "{item}");
                     }
+                    // A replacement naming another item is not refused: the placement keeps
+                    // the placing stack and uses the replacement's position.
+                    assert!(preview(level, ticks, "minecraft:red_sand").is_some());
                     assert!(
                         b.placement_preview(level, ticks, &context("minecraft:poppy"))
                             .is_some(),

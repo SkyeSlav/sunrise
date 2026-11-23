@@ -44,10 +44,6 @@ impl GameLevel<'_> {
                     log::warn!("placement_context: refused {item}: nonfinite hit or rotation");
                     return None;
                 }
-                if snapshot.item.and_then(mod_api::__private::item_key_id) != Some(item) {
-                    log::warn!("placement_context: refused {item}: replacement changed the item");
-                    return None;
-                }
                 Some(PlacementContext {
                     pos: snapshot.pos,
                     hit_pos: snapshot.hit_pos,

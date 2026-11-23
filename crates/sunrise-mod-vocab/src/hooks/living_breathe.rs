@@ -18,22 +18,19 @@ pub trait Hooks {
     ///
     /// The listener has the entity's level and can read its air
     /// (`entity_air_supply`), its equipment and the block it stands in, and
-    /// write items, attachments and criteria. What it writes before the air
-    /// update is committed with it. The game then applies the answer to the air
-    /// the entity had when the listener was called: if the entity has gone, died
-    /// or had its air changed in the meantime, it refuses (never recomputes),
-    /// the air is left as the listener left it, and the writes of the listener
-    /// that go through the transaction (inventory edits through `ItemPlace::edit`)
-    /// are rolled back. A criterion a listener granted stays granted: criteria are
-    /// granted at once, not through the transaction. Mod effects that this
-    /// tick's air update causes (drowning, drying out) are not part of the call.
+    /// write items, attachments and criteria, each at once as in NeoForge. The game
+    /// then applies the answer to the air the entity had when the listener was called:
+    /// if the entity has gone, died or had its air changed in the meantime, it refuses
+    /// (never recomputes) and the air is left as the listener left it; what the
+    /// listener wrote stands. Mod effects that this tick's air update causes
+    /// (drowning, drying out) are not part of the call.
     #[hook(
         dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "LivingBreatheEvent",
         cancellable = false,
-        version = 3
+        version = 4
     )]
     fn living_breathe(
         entity: mod_api::LivingRef,

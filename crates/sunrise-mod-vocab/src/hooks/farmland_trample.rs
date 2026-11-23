@@ -9,17 +9,15 @@ pub trait Hooks {
     /// Cancel and the farmland and its crop stay as they are; the entity takes its fall
     /// damage either way.
     ///
-    /// The listener has the entity's level and can read and write it. The server asks inside
-    /// the landing, before the lift, block write or fall damage. The listener's writes and the
-    /// apply run in one transaction. If the landing entity is gone or the block at `pos` is no
-    /// longer `state`, the apply refuses without recomputing, and transactional writes roll back.
-    /// Otherwise, an allowed trample first lifts every intersecting body, then writes the base
-    /// block and posts the block-change game event. A real cancellation or stale preconditions
-    /// roll back the whole trample transaction. If a listener panics or incurs a phase refusal,
+    /// The listener has the entity's level and can read and write it; its writes stand at
+    /// once, as in NeoForge. The server asks inside the landing, before the lift, block write
+    /// or fall damage. If the landing entity is gone or the block at `pos` is no longer
+    /// `state` when the listener returns, the apply refuses without recomputing. Otherwise,
+    /// an allowed trample first lifts every intersecting body, then writes the base block and
+    /// posts the block-change game event. If a listener panics or incurs a phase refusal,
     /// only its own writes and cancel flag are discarded; later eligible listeners still run.
     /// Only a panic disables that mod's callback for the session. Fall damage follows whether
-    /// the trample applies or not. With no listener, the lift, write and damage run in the same
-    /// order, without a transaction.
+    /// the trample applies or not.
     #[hook(
         dispatch = "flat",
         side = "server",
@@ -27,7 +25,7 @@ pub trait Hooks {
         out = "cancel",
         neoforge = "BlockEvent.FarmlandTrampleEvent",
         cancellable = true,
-        version = 4
+        version = 5
     )]
     fn farmland_trample(
         entity: mod_api::LivingRef,

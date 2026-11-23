@@ -23,7 +23,8 @@ fn placement_flags(update_neighbour_shapes: bool) -> BlockUpdateFlags {
 
 impl Game<'_> {
     /// The one block write (`level_set_block`, its block entity included) with a placement's
-    /// flags, then `Block.setPlacedBy` in the player's turn; nothing else of `BlockItem.place`.
+    /// flags, then `Block.setPlacedBy` in the player's turn with that player as the placer; nothing
+    /// else of `BlockItem.place`.
     pub(super) fn player_place_block(
         &mut self,
         player: PlayerRef,
@@ -82,7 +83,7 @@ impl Game<'_> {
             Err(_) => return Err(Refusal::Stale),
         }
         let ran = self.native_as_player_handle(player, |game| {
-            game.run_mod_placement_callback(pos, state, None);
+            game.run_mod_placement_callback(pos, state, Some(player), None);
         });
         if ran { Ok(()) } else { Err(Refusal::Stale) }
     }
@@ -155,7 +156,7 @@ impl Game<'_> {
         if !self.level_set_block(level, pos, state, flags)? {
             return Ok(false);
         }
-        self.run_mod_placement_callback(pos, state, None);
+        self.run_mod_placement_callback(pos, state, None, None);
         Ok(true)
     }
     /// `Block.setPlacedBy` of a block already standing at `pos`, with no placer. Its stack
@@ -173,7 +174,7 @@ impl Game<'_> {
         if !self.placement_allowed(pos, state, None)? {
             return Ok(false);
         }
-        self.run_mod_placement_callback(pos, state, stack);
+        self.run_mod_placement_callback(pos, state, None, stack);
         Ok(true)
     }
 
@@ -207,6 +208,7 @@ impl Game<'_> {
         &mut self,
         pos: [i32; 3],
         expected: BlockStateId,
+        placer: Option<PlayerRef>,
         stack: Option<&ItemStack>,
     ) {
         let [x, y, z] = pos;
@@ -218,7 +220,7 @@ impl Game<'_> {
         self.with_level(|b, level, ticks| {
             b.set_placed_by_state(level, ticks, BlockPos::new(x, y, z), placed);
         });
-        let _ = self.set_placed_by(pos, None, stack);
+        let _ = self.set_placed_by(pos, placer, stack);
         let _ = self.process_level_events();
     }
 

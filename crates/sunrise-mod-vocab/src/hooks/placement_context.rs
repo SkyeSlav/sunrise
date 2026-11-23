@@ -5,7 +5,8 @@ pub trait Hooks {
     /// the block's placement state, on both sides with a read-only level host.
     /// `Some(Some(context))` rewrites the target and click, `Some(None)` refuses
     /// placement, and `None` keeps the item's vanilla rewrite (including
-    /// scaffolding's column walk). The placing item cannot be changed.
+    /// scaffolding's column walk). The placement uses the replacement's position, click and
+    /// rotation with the placing `stack`, whatever item the replacement names.
     /// The actual pre-use `stack` supplies the item key and components. `placer`
     /// supplies the player's handle and eyes on this side, or is absent for a
     /// dispenser. A player's original destination may be occupied: a part can
@@ -25,7 +26,7 @@ pub trait Hooks {
         out = "answer",
         target = "sunrise_client::game::native_hooks::placement_context::GameLevel<'_>::native_placement_context",
         neoforge = "none (vanilla BlockItem.updatePlacementContext)",
-        version = 2
+        version = 3
     )]
     fn placement_context(
         stack: &ItemStack,
