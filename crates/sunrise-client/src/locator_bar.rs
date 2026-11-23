@@ -241,8 +241,8 @@ impl ClientWaypoints {
 pub struct View<'a> {
     pub gui_width: i32,
     pub gui_height: i32,
-    /// The camera entity's UUID, its block position and its position.
-    pub camera_uuid: u128,
+    /// The camera entity's UUID, if known, and its current feet position.
+    pub camera_uuid: Option<u128>,
     pub camera_entity_pos: [f64; 3],
     /// `Camera.position()` and `yRot()`, `xRot()`, `getFov()` in degrees.
     pub camera_pos: [f64; 3],
@@ -342,8 +342,10 @@ impl View<'_> {
         if let WaypointId::Uuid(uuid) = w.id
             && let Some((block, eyes)) = (self.entity)(uuid)
         {
-            let manhattan: i32 = (0..3).map(|i| (block[i] - v[i]).abs()).sum();
-            if manhattan <= 3 {
+            // Vec3i.distManhattan uses Java int differences and abs, then a float sum.
+            let [dx, dy, dz] =
+                std::array::from_fn(|i| v[i].wrapping_sub(block[i]).wrapping_abs() as f32);
+            if (dx + dy + dz) as i32 <= 3 {
                 return eyes;
             }
         }
@@ -457,7 +459,10 @@ impl ClientWaypoints {
         sorted.sort_by(|a, b| b.0.total_cmp(&a.0));
         let mut out = Vec::new();
         for (distance_sq, w) in sorted {
-            if w.id == WaypointId::Uuid(view.camera_uuid) {
+            if view
+                .camera_uuid
+                .is_some_and(|uuid| w.id == WaypointId::Uuid(uuid))
+            {
                 continue;
             }
             let angle = view.yaw_angle(w);
@@ -703,7 +708,7 @@ mod tests {
         let view = View {
             gui_width: 427,
             gui_height: 240,
-            camera_uuid: 9,
+            camera_uuid: Some(9),
             camera_entity_pos: [0.5, 64.0, 0.5],
             camera_pos: [0.5, 65.62, 0.5],
             yaw: 0.0,
