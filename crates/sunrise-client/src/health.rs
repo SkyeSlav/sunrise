@@ -323,6 +323,8 @@ pub struct DamageLevel<'a> {
     shape: crate::chunk::LevelShape,
     chunks: &'a crate::chunk_map::ChunkMap,
     air: sunrise_world::registry::BlockStateId,
+    game_time: i64,
+    paused_mob_hurt: Option<&'a mut Option<Box<crate::mobs::PausedMobHurt>>>,
     registry: &'a sunrise_world::registry::BlockRegistry,
     tags: Option<&'a crate::items::Items>,
     block_registries: Option<&'a crate::command::args::Registries>,
@@ -364,6 +366,7 @@ impl<'a> DamageLevel<'a> {
             chunks,
             shape,
             air,
+            game_time,
             random,
             attachments,
             attachment_syncs,
@@ -373,6 +376,8 @@ impl<'a> DamageLevel<'a> {
             shape: *shape,
             chunks,
             air: *air,
+            game_time: *game_time,
+            paused_mob_hurt: None,
             registry,
             tags,
             block_registries,
@@ -403,6 +408,8 @@ impl<'a> DamageLevel<'a> {
             shape: world.shape,
             chunks: &world.chunks,
             air: world.air,
+            game_time: world.game_time,
+            paused_mob_hurt: None,
             registry,
             tags,
             block_registries,
@@ -434,6 +441,8 @@ impl<'a> DamageLevel<'a> {
             shape: self.shape,
             chunks: self.chunks,
             air: self.air,
+            game_time: self.game_time,
+            paused_mob_hurt: self.paused_mob_hurt.as_deref_mut(),
             registry: self.registry,
             tags: self.tags,
             block_registries: self.block_registries,
@@ -454,6 +463,44 @@ impl<'a> DamageLevel<'a> {
             player_equipment: self.player_equipment,
         }
     }
+    /// The owner's slot for a hit that must release its borrows before resuming.
+    pub fn with_mob_hurt_handoff(
+        mut self,
+        paused: &'a mut Option<Box<crate::mobs::PausedMobHurt>>,
+    ) -> Self {
+        self.paused_mob_hurt = Some(paused);
+        self
+    }
+
+    pub(crate) fn can_pause_mob_hurt(&self) -> bool {
+        self.paused_mob_hurt.is_some()
+    }
+
+    pub(crate) fn pause_mob_hurt(&mut self, hit: crate::mobs::PausedMobHurt) {
+        let slot = self
+            .paused_mob_hurt
+            .as_deref_mut()
+            .expect("owning hit slot");
+        debug_assert!(slot.is_none());
+        *slot = Some(Box::new(hit));
+    }
+
+    pub(crate) fn paused_mob_hurt(&mut self) -> &mut crate::mobs::PausedMobHurt {
+        self.paused_mob_hurt
+            .as_deref_mut()
+            .and_then(Option::as_deref_mut)
+            .expect("paused hit")
+    }
+
+    pub(crate) fn lent_attacker(&self) -> Option<i32> {
+        self.effects.as_ref()?.lent.as_ref().map(|lent| lent.id)
+    }
+
+    pub(crate) fn wake_mob(&self, mob: &mut crate::mobs::Mob) {
+        // Standalone hit simulations have no live bed to update.
+        crate::mobs::villager::wake(mob, self.game_time, None, None);
+    }
+
     /// Lend the stacks worn by this hit's player victim for enchantment immunity.
     pub fn with_player_equipment(self, player_equipment: PlayerEquipment<'a>) -> Self {
         Self {
@@ -942,12 +989,16 @@ pub struct Attack {
     pub projectile: Option<i32>,
     /// The class family of [`Self::projectile`] (`AbstractArrow`, `LargeFireball`, or another `Projectile`).
     pub projectile_kind: DirectEntity,
+    /// The projectile's entity type, independent of its damage source and class family.
+    pub projectile_type: Option<&'static str>,
     /// An explicitly supplied direct entity, including 0 for no direct entity.
     /// None uses the normal melee/projectile factory rules.
     pub direct: Option<i32>,
     /// The class family of an explicitly supplied [`Self::direct`] entity (`Some(id)` with `id != 0`).
     /// Ignored when [`Self::direct`] is `None` or `Some(0)`.
     pub direct_kind: Option<DirectEntity>,
+    /// The entity type of an explicitly supplied direct entity.
+    pub direct_type: Option<String>,
     /// `DamageSource.getSourcePosition`, as supplied by the hit's factory.
     pub position: Option<[f64; 3]>,
     /// An arrow's fired-from weapon or a thrown trident's complete stack.
@@ -965,8 +1016,10 @@ pub static NO_ATTACK: Attack = Attack {
     attacker: 0,
     projectile: None,
     projectile_kind: DirectEntity::Other,
+    projectile_type: None,
     direct: None,
     direct_kind: None,
+    direct_type: None,
     position: None,
     projectile_weapon: None,
     player_uuid: None,

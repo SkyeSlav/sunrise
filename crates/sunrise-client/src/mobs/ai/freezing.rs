@@ -1,21 +1,5 @@
-//! `LivingEntity.canFreeze` and the powder-snow test behind it.
+//! `LivingEntity.canFreeze`.
 use super::{Mob, MobWorld};
-use sunrise_core::geometry::Vec3;
-
-pub(crate) fn in_powder_snow(m: &Mob, w: &MobWorld) -> bool {
-    let b = m.bounds().deflate(Vec3::new(1e-5, 1e-5, 1e-5));
-    let (min, max) = (b.min_position(), b.max_position());
-    for x in min.x.floor() as i32..=max.x.floor() as i32 {
-        for y in min.y.floor() as i32..=max.y.floor() as i32 {
-            for z in min.z.floor() as i32..=max.z.floor() as i32 {
-                if &*w.facts.get(w.world.block(x, y, z)).name == "minecraft:powder_snow" {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
 
 /// `LivingEntity.canFreeze`: not a `#freeze_immune_entity_types` mob and no
 /// worn piece in `#freeze_immune_wearables`.

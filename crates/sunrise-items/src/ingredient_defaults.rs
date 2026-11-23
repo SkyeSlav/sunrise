@@ -43,6 +43,27 @@ impl Items {
             },
         );
     }
+
+    /// Bind a damage type registry received rather than loaded, a client's from its server:
+    /// its type names and its tags' members, where [`Self::bind_component_damage_catalog`] and
+    /// [`Enchantments::bind_damage_catalog`](crate::enchant::Enchantments::bind_damage_catalog)
+    /// put a loaded catalog's.
+    pub fn bind_damage_registry(
+        &mut self,
+        mut ids: Vec<String>,
+        tags: HashMap<String, std::collections::HashSet<String>>,
+    ) {
+        ids.sort();
+        let mut names: Vec<_> = tags.keys().cloned().collect();
+        names.sort();
+        Arc::make_mut(&mut self.component_registry)
+            .by_registry
+            .insert(
+                "minecraft:damage_type".into(),
+                sunrise_client_core::registries::RegistryIds { ids, tags: names },
+            );
+        Arc::make_mut(&mut self.enchantments).damage_tags = tags;
+    }
 }
 
 /// Standalone catalogs have no world-owned snapshot; load their complete pack registry.

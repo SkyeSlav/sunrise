@@ -629,6 +629,11 @@ impl Game<'_> {
         self.send(S::ContainerClose(play::ContainerClose { container }));
     }
     pub(in crate::game) fn remote_close_local(&mut self) {
+        self.remote_set_menu(None, None);
+        self.remove_remote_menu_screen();
+    }
+
+    pub(in crate::game) fn remove_remote_menu_screen(&mut self) {
         // `Gui.setScreen` clears the focus of the screen it takes down: the
         // container's keyboard focus must not outlive it (a Tab bound to the
         // inventory moves the focus and closes the container in one press).
@@ -638,7 +643,6 @@ impl Game<'_> {
             self.clear_mod_book_placement_screen();
             self.screen_state.build.reopened();
         }
-        self.remote_set_menu(None, None);
         self.mount_menu_reset();
         // The client's menu has no level access: what it holds is the server's.
         self.station = None;

@@ -138,7 +138,7 @@ passes on without checking it).
 | Open to LAN | Pause > Open to LAN | yes | yes | `lan open\|close\|status` |
 | Play with Friends: host, stop, status | Pause | yes | yes | `friends host\|stop\|status` |
 | Vanilla options, every page | Options | yes | yes | `options-get`, `options-set` (all of options.txt, typed) |
-| Sunrise Settings: Extras, PvP & HUD, AI Agent; the graphics screen (Video Settings); Controller (Controls) | Sunrise Settings, Video Settings, Controls | yes | yes | `options sunrise\|graphics\|extras\|agent...`, then `ui`/`click`/`set` |
+| Sunrise Settings: Extras, PvP & HUD, AI Agent; the graphics screen (Extras → Sunrise Graphics...); Controller (Controls) | Sunrise Settings, Extras, Controls | yes | yes | `options sunrise\|graphics\|extras\|agent...`, then `ui`/`click`/`set` |
 | Agent control on or off, status, connection details | Sunrise Settings > AI Agent | yes | yes | `options sunrise`, the page's widgets (`ai-agent`) |
 | Key binds | Controls > Key Binds | yes | yes | `options-set key_key.jump key.keyboard.j` |
 | Resource packs | Options > Resource Packs | yes | yes | `options packs`, then `ui` rows and `click`; `options-set resourcePacks` |

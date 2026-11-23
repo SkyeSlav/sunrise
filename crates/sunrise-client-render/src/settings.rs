@@ -807,6 +807,8 @@ impl Settings {
 pub enum Opt {
     Fov,
     RenderDistance,
+    /// `RenderDistance` on the classic Video Settings page: vanilla's range (2..=32), same saved value.
+    VanillaRenderDistance,
     SimulationDistance,
     Sensitivity,
     WheelSensitivity,
