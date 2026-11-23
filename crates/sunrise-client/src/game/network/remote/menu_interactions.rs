@@ -867,30 +867,31 @@ impl Game<'_> {
             self.capture(false);
         }
     }
-    /// `ClientPacketListener.handleMountScreenOpen`: a horse's or llama's
-    /// inventory; for another entity the window is closed again.
+    /// `ClientPacketListener.handleMountScreenOpen`: only horses and nautiluses
+    /// open a menu. A missing or different entity leaves the current menu alone.
     pub(in crate::game) fn remote_open_mount(&mut self, p: play::MountScreenOpen) {
+        let entity = p.entity as u32;
+        let Some(species) = self
+            .mobs
+            .iter()
+            .find(|m| m.id == entity)
+            .map(sunrise_client::mobs::Mob::species)
+            .filter(|&s| crate::game::mount_menu::has_mount_menu(s))
+        else {
+            return;
+        };
         if self.mod_screen.is_some() {
             self.remote_close_local();
         }
-        let columns = usize::try_from(p.columns).unwrap_or(0).min(5);
-        let record = |game: &mut Self| {
-            game.remote_set_menu(Some((p.container, format!("{MOUNT_MENU}{columns}"))), None);
+        let columns = if sunrise_client::mobs::nautilus::is_nautilus(species) {
+            0
+        } else {
+            usize::try_from(p.columns).unwrap_or(0)
         };
-        // With a screen hook listening, the window is recorded before the
-        // screen opens, so a mod's answer that replaces it closes this window
-        // (a rejection clears it again); otherwise after, as vanilla's order.
-        let staged = self.screen_hooks_heard();
-        if staged {
-            record(self);
-        }
-        if !self.open_remote_mount_menu(p.entity as u32, columns) {
-            self.remote_reject_container(p.container);
-            return;
-        }
-        if !staged {
-            record(self);
-        }
+        // Install the window before opening its screen, including when a mod
+        // replaces the requested screen with the player's own inventory.
+        self.remote_set_menu(Some((p.container, format!("{MOUNT_MENU}{columns}"))), None);
+        self.open_remote_mount_menu(entity, species, columns);
     }
     /// The type of the menu a server opened (`MenuType`'s id).
     pub(in crate::game) fn remote_menu_type(&self) -> Option<&str> {

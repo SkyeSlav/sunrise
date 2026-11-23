@@ -407,6 +407,9 @@ impl Game<'_> {
         if screen != Screen::Inventory && self.active_native_screen().is_some() {
             self.remote_close_container();
         }
+        if screen != Screen::DemoIntro {
+            self.demo_intro = None;
+        }
         self.screen = screen;
         if let Some(owner) = owner {
             self.native_mod_screen = Some(owner.to_owned());

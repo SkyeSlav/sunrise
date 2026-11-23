@@ -183,6 +183,8 @@ impl Game<'_> {
             4 if self.screen != Screen::Win => {
                 self.open_win_screen(true, super::super::win::Finish::RemoteRespawn);
             }
+            // DEMO_EVENT: a parentless popup or a client-system hint.
+            5 => self.apply_demo_event(p.param),
             // START_RAINING, STOP_RAINING, RAIN_LEVEL_CHANGE and THUNDER_LEVEL_CHANGE.
             event @ (1 | 2 | 7 | 8) => self.world.weather.game_event(event, p.param),
             3 => {

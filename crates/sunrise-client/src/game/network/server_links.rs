@@ -313,8 +313,12 @@ impl Game<'_> {
         self.set_screen(Screen::ConfirmLink);
     }
     /// The screen `ConfirmLinkScreen`'s callback returns to (`setScreen(parent)`).
-    pub(super) fn confirm_link_back(&self) -> Screen {
-        self.links_ui.back.unwrap_or(Screen::ServerLinks)
+    pub(super) fn close_confirm_link(&mut self) {
+        let back = self.links_ui.back.unwrap_or(Screen::ServerLinks);
+        self.set_screen(back);
+        if self.screen == Screen::Playing {
+            self.capture(true);
+        }
     }
     /// `ScrollableLayout`'s mouse wheel over the links.
     pub(super) fn server_links_scroll(&mut self, delta: f32) -> bool {
@@ -395,7 +399,7 @@ impl Game<'_> {
                 }
                 _ => {}
             }
-            self.set_screen(self.confirm_link_back());
+            self.close_confirm_link();
             return true;
         }
         false

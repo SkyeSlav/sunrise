@@ -141,9 +141,14 @@ impl Game<'_> {
                 Screen::Stats | Screen::Friends => self.set_screen(Screen::Paused),
                 Screen::Social => self.close_social(),
                 Screen::ServerLinks => self.set_screen(Screen::Paused),
-                // ConfirmScreen.keyPressed: Escape answers no; both return to
-                // the Server Links screen they came from.
-                Screen::ConfirmLink => self.set_screen(self.confirm_link_back()),
+                // ConfirmScreen.keyPressed: Escape answers no and returns to the parent.
+                Screen::ConfirmLink => self.close_confirm_link(),
+                Screen::DemoIntro => {
+                    self.set_screen(Screen::Playing);
+                    if self.screen == Screen::Playing {
+                        self.capture(true);
+                    }
+                }
                 Screen::DialogWarning => self.set_screen(Screen::ServerLinks),
                 Screen::Advancements => self.close_advancements(),
                 Screen::WorldOptions => self.world_options_escape(),
