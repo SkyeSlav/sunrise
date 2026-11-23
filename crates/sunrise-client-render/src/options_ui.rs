@@ -36,6 +36,11 @@ use self::layout::OptionsLayout;
 mod wheel;
 pub(crate) use wheel::slider_unsnapped;
 
+/// `Options.renderDistance`'s upper bound in 26.3 (`IntRange(2, 32)`; 16 below 1 GiB of JVM heap).
+/// Sunrise has no JVM heap to size it by, so the classic page takes the 32; Sunrise Graphics goes
+/// to `MAX_RENDER_DISTANCE`.
+pub(crate) const VANILLA_MAX_RENDER_DISTANCE: i32 = 32;
+
 fn tr(key: &str) -> Text {
     Text::translate(key, &[])
 }
@@ -235,7 +240,7 @@ impl Opt {
     pub(crate) fn caption(self) -> &'static str {
         match self {
             Opt::Fov => "options.fov",
-            Opt::RenderDistance => "options.renderDistance",
+            Opt::RenderDistance | Opt::VanillaRenderDistance => "options.renderDistance",
             Opt::SimulationDistance => "options.simulationDistance",
             Opt::Sensitivity => "options.sensitivity",
             Opt::WheelSensitivity => "options.mouseWheelSensitivity",
@@ -388,6 +393,15 @@ impl Opt {
                 2.0,
                 crate::options_file::MAX_RENDER_DISTANCE as f64,
             ),
+            // `IntRange(2, 32).toSliderValue`: the ends at 0 and 1, every value between them at
+            // its bin's centre. A Sunrise Graphics distance past 32 shows as 32 and stays saved.
+            Opt::VanillaRenderDistance => {
+                Kind::Slider(match s.render_distance.min(VANILLA_MAX_RENDER_DISTANCE) {
+                    d if d <= 2 => 0.0,
+                    VANILLA_MAX_RENDER_DISTANCE => 1.0,
+                    d => (f64::from(d) - 1.5) / f64::from(VANILLA_MAX_RENDER_DISTANCE - 1),
+                })
+            }
             Opt::SimulationDistance => unit(s.simulation_distance as f64, 5.0, 32.0),
             Opt::Sensitivity => Kind::Slider(s.sensitivity),
             Opt::WheelSensitivity => wheel::kind(s.mouse_wheel_sensitivity),
@@ -490,6 +504,7 @@ impl Opt {
             Opt::ChatDelay => Some(60),
             Opt::Fov => Some(80),
             Opt::RenderDistance => Some((crate::options_file::MAX_RENDER_DISTANCE - 2) as u32),
+            Opt::VanillaRenderDistance => Some((VANILLA_MAX_RENDER_DISTANCE - 2) as u32),
             Opt::SimulationDistance => Some(27),
             Opt::MaxFps => Some(25),
             Opt::CloudRange => Some(126),
@@ -564,6 +579,13 @@ impl Opt {
                 v => generic(c, Text::literal(v.to_string())),
             },
             Opt::RenderDistance => generic(c, Text::tr("options.chunks", &[&s.render_distance])),
+            Opt::VanillaRenderDistance => generic(
+                c,
+                Text::tr(
+                    "options.chunks",
+                    &[&s.render_distance.min(VANILLA_MAX_RENDER_DISTANCE)],
+                ),
+            ),
             Opt::SimulationDistance => {
                 generic(c, Text::tr("options.chunks", &[&s.simulation_distance]))
             }
@@ -951,6 +973,18 @@ impl Opt {
                 s.render_distance =
                     step(2.0, crate::options_file::MAX_RENDER_DISTANCE as f64) as i32
             }
+            Opt::VanillaRenderDistance => {
+                // `IntRange(2, 32).fromSliderValue`: floor into the inclusive bins, the top
+                // position read as 0.99999F. `AbstractSliderButton.setValue` applies only a
+                // changed value, so a saved distance past 32 stays until the slider moves.
+                let v = if v >= 1.0 { f64::from(0.99999_f32) } else { v };
+                let distance =
+                    (2.0 + v * f64::from(VANILLA_MAX_RENDER_DISTANCE - 1)).floor() as i32;
+                if distance == s.render_distance.min(VANILLA_MAX_RENDER_DISTANCE) {
+                    return;
+                }
+                s.render_distance = distance;
+            }
             Opt::SimulationDistance => s.simulation_distance = step(5.0, 32.0) as i32,
             Opt::Sensitivity => s.sensitivity = v,
             Opt::WheelSensitivity => s.mouse_wheel_sensitivity = wheel::from_slider(v),
@@ -1014,6 +1048,7 @@ impl Opt {
         matches!(
             self,
             Opt::RenderDistance
+                | Opt::VanillaRenderDistance
                 | Opt::SimulationDistance
                 | Opt::SmoothLighting
                 | Opt::Clouds
@@ -2820,9 +2855,8 @@ impl OptionsUi {
                 rows
             }
             Page::Video => {
-                // Vanilla's VideoSettingsScreen as vanilla lays it out. No menu opens it (Video
-                // Settings... opens the graphics screen, which has all of it); it stays for
-                // `sunrise-ctl options video-vanilla` and the tests that pin vanilla's screen.
+                // Vanilla's VideoSettingsScreen as vanilla lays it out: what Video Settings...
+                // opens. Sunrise's graphics screen is `Page::Graphics`, from the Extras page.
                 let mut rows = vec![Row::Header("options.video.display.header")];
                 rows.push(Row::Big(Opt::ExclusiveMode));
                 rows.extend(pairs(&[
@@ -2839,7 +2873,7 @@ impl OptionsUi {
                 rows.push(Row::Big(Opt::Preset));
                 rows.extend(pairs(&[
                     Opt::BiomeBlend,
-                    Opt::RenderDistance,
+                    Opt::VanillaRenderDistance,
                     Opt::ChunkBuilder,
                     Opt::SimulationDistance,
                     Opt::SmoothLighting,
@@ -5207,6 +5241,69 @@ mod tests {
     }
 
     #[test]
+    fn video_settings_render_distance_stops_at_vanilla_range_and_keeps_saved_value() {
+        let mut s = Settings::default();
+        // Sunrise Graphics' slider still reaches the extended range.
+        set_slider(Opt::RenderDistance, &mut s, 1.0);
+        assert_eq!(s.render_distance, crate::options_file::MAX_RENDER_DISTANCE);
+        // The classic page's slider stops at 32, reached from inside its range.
+        s.render_distance = 10;
+        set_slider(Opt::VanillaRenderDistance, &mut s, 1.0);
+        assert_eq!(s.render_distance, 32);
+        set_slider(Opt::VanillaRenderDistance, &mut s, 0.0);
+        assert_eq!(s.render_distance, 2);
+        // Page rows use the classic slider, never the extended one.
+        let mut ui = OptionsUi::default();
+        ui.show(Page::Video);
+        let rows = ui.list_rows(&s);
+        let has = |opt| {
+            rows.iter().any(|r| match r {
+                Row::Big(o) => *o == opt,
+                Row::Pair(a, b) => *a == opt || *b == Some(opt),
+                _ => false,
+            })
+        };
+        assert!(has(Opt::VanillaRenderDistance) && !has(Opt::RenderDistance));
+        // Vanilla's integer bins: 5.2% of the track is 3 chunks, shown at its bin's centre.
+        set_slider(Opt::VanillaRenderDistance, &mut s, 0.052);
+        assert_eq!(s.render_distance, 3);
+        assert_eq!(
+            Opt::VanillaRenderDistance.slider_position(&s),
+            Some(1.5 / 31.0)
+        );
+        // Stepping walks every distance from 2 to 32 and back.
+        s.render_distance = 2;
+        for distance in 3..=32 {
+            Opt::VanillaRenderDistance.step_slider(&mut s, true, 150.0);
+            assert_eq!(s.render_distance, distance);
+        }
+        for distance in (2..32).rev() {
+            Opt::VanillaRenderDistance.step_slider(&mut s, false, 150.0);
+            assert_eq!(s.render_distance, distance);
+        }
+        // A saved 64 shows as 32. Input that leaves the displayed 32 keeps it; a real move writes.
+        s.render_distance = 64;
+        assert_eq!(Opt::VanillaRenderDistance.slider_position(&s), Some(1.0));
+        set_slider(Opt::VanillaRenderDistance, &mut s, 1.0);
+        Opt::VanillaRenderDistance.step_slider(&mut s, true, 150.0);
+        assert_eq!(s.render_distance, 64);
+        assert_eq!(
+            Opt::VanillaRenderDistance.label(&s).plain(),
+            Opt::VanillaRenderDistance
+                .label(&Settings {
+                    render_distance: 32,
+                    ..Settings::default()
+                })
+                .plain()
+        );
+        let _ = ui.list_rows(&s);
+        assert_eq!(s.render_distance, 64);
+        assert!(Opt::RenderDistance.slider_position(&s).unwrap() > 0.4);
+        set_slider(Opt::VanillaRenderDistance, &mut s, 0.5);
+        assert_eq!(s.render_distance, 17);
+    }
+
+    #[test]
     fn render_distance_slider_round_trips_through_extended_options_range() {
         let mut s = Settings::default();
         for (position, distance) in [(0.0, 2), (0.5, 65), (1.0, 128)] {
@@ -6282,6 +6379,43 @@ mod tests {
         assert_eq!(ui.page(), Page::NativeMod(0));
     }
 
+    /// OptionsScreen's Video Settings button opens VideoSettingsScreen, not Sunrise's graphics
+    /// screen, which has its own row on the Extras page.
+    #[test]
+    fn extras_opens_sunrise_graphics_and_video_settings_opens_vanilla() {
+        let atlas = atlas();
+        let mut s = Settings::default();
+        let mut ui = OptionsUi::default();
+        let (widgets, _, _, _) = ui.layout(&s, 427.0, 240.0);
+        let video = widgets.iter().find(|w| match &w.kind {
+            WKind::Button { label, .. } => label.plain() == lang::get("options.video"),
+            _ => false,
+        });
+        let Some(Widget {
+            kind: WKind::Button { act, .. },
+            ..
+        }) = video
+        else {
+            panic!("no Video Settings button");
+        };
+        assert!(matches!(act, Act::Push(Page::Video)), "{act:?}");
+        // Nothing of Sunrise's graphics screen sits on vanilla's.
+        ui.show(Page::Video);
+        let (widgets, _, _, _) = ui.layout(&s, 427.0, 4000.0);
+        assert!(!widgets.iter().any(|w| matches!(
+            &w.kind,
+            WKind::Button {
+                act: Act::Push(Page::Graphics | Page::ShaderPacks),
+                ..
+            }
+        )));
+        ui.show(Page::Extras);
+        let size = (480.0, 480.0);
+        let at = ui.extras.point_at(&s, size, ExtraRow::Graphics);
+        ui.click(&mut s, &atlas, at.0, at.1, size, [960, 960], false, false);
+        assert_eq!(ui.page(), Page::Graphics);
+    }
+
     #[test]
     fn exclusive_fullscreen_and_its_tooltips_follow_the_option() {
         let mut s = Settings::default();
@@ -6568,7 +6702,7 @@ mod tests {
         assert_eq!(headers(ui.list_rows(&settings)), all_headers);
         for (opt, header) in [
             (Opt::Fullscreen, all_headers[0]),
-            (Opt::RenderDistance, all_headers[1]),
+            (Opt::VanillaRenderDistance, all_headers[1]),
             (Opt::Preset, all_headers[1]),
             (Opt::Autosave, all_headers[2]),
         ] {
@@ -6693,8 +6827,8 @@ mod tests {
         }
         assert_eq!(
             ui.extras.row_labels(&s).len(),
-            // And the note about the Zoom mod over them.
-            1 + crate::extras::rows().iter().filter(|r| r.is_ok()).count()
+            // And the note about the Zoom mod and the Sunrise Graphics row over them.
+            2 + crate::extras::rows().iter().filter(|r| r.is_ok()).count()
         );
         let press = |ui: &mut OptionsUi, s: &mut Settings, item: crate::extras::Item| {
             let at = ui.extras.point_at(s, size, ExtraRow::Item(item));
@@ -7614,9 +7748,9 @@ mod tests {
 
     /// Every setting a player reaches, from the Options screen through every button that opens
     /// a page, is in one place, and every page has one way in. Vanilla's own repeats stay as
-    /// vanilla has them; the graphics screen stands for Video Settings, so the vanilla video
-    /// options it shows count as Video Settings' (Menu Background Blur is in both of
-    /// vanilla's). Vanilla's Video Settings rows are all on the graphics screen.
+    /// vanilla has them; Video Settings is vanilla's own screen, and Sunrise's graphics screen
+    /// (opened from Extras) repeats its options, so they are not counted twice (Menu Background
+    /// Blur is in two of vanilla's). Vanilla's Video Settings rows are all on the graphics screen.
     #[test]
     fn every_setting_and_page_is_reached_from_one_place() {
         use std::collections::{BTreeMap, BTreeSet};
@@ -7662,6 +7796,8 @@ mod tests {
             ui.stack = vec![page];
             let (widgets, _, _, _) = ui.layout(&s, 427.0, 4000.0);
             let name = format!("{page:?}");
+            // Vanilla's Video Settings: the graphics screen has all its rows, listed above.
+            let counted = page != Page::Video;
             for w in &widgets {
                 let id = match &w.kind {
                     WKind::Slider { opt, .. } => format!("{opt:?}"),
@@ -7685,9 +7821,17 @@ mod tests {
                     },
                     _ => continue,
                 };
-                put(id, &name);
+                if counted {
+                    put(id, &name);
+                }
             }
         }
+        // The Extras page's Sunrise Graphics row opens the graphics screen (its shell has no
+        // widgets here; `extras_opens_sunrise_graphics_and_video_settings_opens_vanilla`).
+        ways_in
+            .entry(format!("{:?}", Page::Graphics))
+            .or_default()
+            .insert("Extras".to_owned());
         // Vanilla's own: the same option on two of its screens.
         let vanilla_repeats: BTreeMap<&str, &[&str]> = [
             ("MenuBlur", &["Accessibility", "Graphics"][..]),
@@ -7718,9 +7862,10 @@ mod tests {
             Some(1),
             "{ways_in:?}"
         );
-        assert!(
-            !seen.contains("Video"),
-            "vanilla's own layout has no way in"
+        assert_eq!(
+            ways_in.get("Video").map(|f| f.len()),
+            Some(1),
+            "{ways_in:?}"
         );
         // Every row of vanilla's Video Settings is on the graphics screen.
         ui.stack = vec![Page::Video];
@@ -7733,6 +7878,9 @@ mod tests {
             for o in opts {
                 let id = match o {
                     Opt::GraphicsBackend => "graphics-api".to_owned(),
+                    // The classic page's Render Distance row is the graphics screen's
+                    // RenderDistance row: the same saved setting.
+                    Opt::VanillaRenderDistance => "RenderDistance".to_owned(),
                     o => format!("{o:?}"),
                 };
                 // macOS has one graphics API: the graphics screen leaves the row out.
@@ -7772,8 +7920,8 @@ mod tests {
             &main[main.len() - 3..],
             [Page::Sunrise, Page::Mods, Page::Credits]
         );
-        // Video Settings... is the graphics screen, as Sodium's.
-        assert!(main.contains(&Page::Graphics) && !main.contains(&Page::Video));
+        // Video Settings... is vanilla's VideoSettingsScreen; the graphics screen is Extras'.
+        assert!(main.contains(&Page::Video) && !main.contains(&Page::Graphics));
         ui.push(Page::Sunrise);
         assert_eq!(
             pushes(&mut ui),
@@ -8171,6 +8319,7 @@ mod tests {
         let stepped_opts = [
             Opt::Fov,
             Opt::RenderDistance,
+            Opt::VanillaRenderDistance,
             Opt::SimulationDistance,
             Opt::MaxFps,
             Opt::CloudRange,
