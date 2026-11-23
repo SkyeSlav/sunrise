@@ -1,0 +1,11 @@
+ids = ["method:prelude::PlayersClientHost::push_player"]
+why = """
+`push_player` took an `f32` kick, clamped each component to 4 blocks per tick and ignored a spectator. Vanilla
+`Entity.push(double, double, double)` adds the impulse as given and only refuses one that is not finite, in
+any game mode. It now takes `[f64; 3]` and does exactly that. `move_local_player_by` and `EntityRef::move_by`
+likewise refuse only a delta that is not finite, not one beyond 64 blocks: `Entity.move` sweeps any delta.
+"""
+migrate = """
+Pass `[f64; 3]` to `push_player`; do not rely on the game clamping a push to 4 blocks or dropping it for a
+spectator, or on refusing a move delta past 64 blocks.
+"""
