@@ -17,7 +17,7 @@ pub fn can_freeze(m: &Mob, w: &MobWorld) -> bool {
     if m.species() == super::Species::SulfurCube && crate::mobs::sulfur_cube::has_body(m) {
         return false;
     }
-    if w.entity_has("minecraft:freeze_immune_entity_types", &m.kind.id) {
+    if w.entity_tag_bit(&m.kind, crate::items::EntityTypeTags::FREEZE_IMMUNE) {
         return false;
     }
     let immune = w

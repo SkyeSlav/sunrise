@@ -224,6 +224,9 @@ pub struct ItemEntity {
     /// `Entity.random`, after the constructor's draws: `moveTowardsClosestSpace`
     /// takes an item's escape speed from it.
     pub random: sunrise_core::random::LegacyRandom,
+    /// What `entity_size` answered at its last size refresh (`EntityEvent.Size`): its box takes
+    /// the answer while it holds for its vanilla size.
+    pub size_answer: Option<crate::pose::SizeAnswer>,
 }
 /// What `Entity.doWaterSplashEffect` asks the level to do for a dropped item.
 /// Particles are drawn on the client (`Level.addParticle` is empty on the
@@ -439,6 +442,8 @@ impl ItemEntity {
 }
 impl ItemEntity {
     pub const WIDTH: f64 = 0.25;
+    /// `EntityType.ITEM.getDimensions()`: width, height and eye height.
+    pub const DIMENSIONS: [f32; 3] = [0.25, 0.25, 0.2125];
     /// `EntityTypes.ITEM` declares a float eye height, widened by `Entity.getEyeY`.
     pub const EYE_HEIGHT: f64 = 0.2125_f32 as f64;
     /// `Entity.getLightProbePosition(partialTick)` for a dropped item: the eye
@@ -463,13 +468,19 @@ impl ItemEntity {
     }
     pub fn bounds(&self) -> Aabb {
         let h = Self::WIDTH / 2.0;
-        Aabb::new(
+        let vanilla = Aabb::new(
             Vec3::new(self.position.x - h, self.position.y, self.position.z - h),
             Vec3::new(
                 self.position.x + h,
                 self.position.y + Self::WIDTH,
                 self.position.z + h,
             ),
+        );
+        crate::pose::SizeAnswer::sized_box(
+            self.size_answer,
+            Self::DIMENSIONS,
+            self.position,
+            vanilla,
         )
     }
     /// `ItemEntity.hurtServer`'s health: `amount` off the health, and an item
@@ -770,6 +781,9 @@ pub struct ExperienceOrb {
     pub fire_ticks: i32,
     /// `Entity.fallDistance` (`fall_distance` in its save).
     pub fall_distance: f64,
+    /// What `entity_size` answered at its last size refresh (`EntityEvent.Size`): its box takes
+    /// the answer while it holds for its vanilla size.
+    pub size_answer: Option<crate::pose::SizeAnswer>,
 }
 /// An orb's `Entity.move` this tick, for the fall bookkeeping its caller
 /// finishes (the long-move cast, `checkFallDamage`'s HIT_GROUND).
@@ -800,6 +814,7 @@ impl ExperienceOrb {
     /// health, no age, fall or followed player, not yet ticked.
     pub fn new(id: u32, position: Vec3, velocity: Vec3, value: i32) -> Self {
         Self {
+            size_answer: None,
             attachment_lifetime: Default::default(),
             rotation: [0.0, 0.0],
             join: Default::default(),
@@ -834,8 +849,15 @@ impl ExperienceOrb {
             Vec3::new(at.x + h, at.y + 0.5, at.z + h),
         )
     }
+    /// `EntityType.EXPERIENCE_ORB.getDimensions()`: width, height and eye height.
+    pub const DIMENSIONS: [f32; 3] = [0.5, 0.5, 0.425];
     pub fn bounds(&self) -> Aabb {
-        Self::box_at(self.position)
+        crate::pose::SizeAnswer::sized_box(
+            self.size_answer,
+            Self::DIMENSIONS,
+            self.position,
+            Self::box_at(self.position),
+        )
     }
     /// `Entity.unstuckIfPossible`, which `ExperienceOrb`'s constructor runs as
     /// `if (!level.noCollision(box)) unstuckIfPossible(box.getSize())`: the free
@@ -1819,6 +1841,9 @@ pub struct ArmorStand {
     pub speed_instance: bool,
     /// `NAME_TAG_DISTANCE` and `BELOW_NAME_DISTANCE` from server attribute updates.
     pub nameplate: crate::entities::nameplate::NameplateDistances,
+    /// What `entity_size` answered at its last size refresh (`EntityEvent.Size`): its box takes
+    /// the answer while it holds for its vanilla size.
+    pub size_answer: Option<crate::pose::SizeAnswer>,
     /// Synced client-side effects from `UpdateMobEffect` / `RemoveMobEffect`, as a mob's.
     pub client_effects: crate::effects::PlayerEffects,
     /// `MobEffectInstance.BlendState` (previous, current) for its client-side darkness.
@@ -2051,6 +2076,7 @@ impl ArmorStand {
     }
     pub fn new(id: u32, position: Vec3, yaw: f32) -> Self {
         Self {
+            size_answer: None,
             attachment_lifetime: Default::default(),
             pitch: 0.0,
             previous_pitch: 0.0,
@@ -2217,6 +2243,15 @@ impl ArmorStand {
         // `brokenByAnything` receives as the `DamageSource`.
         (self.health <= 0.5).then(|| hit_by.unwrap_or("minecraft:generic"))
     }
+    /// `ArmorStand.getDefaultDimensions`: MARKER_DIMENSIONS, or BABY_DIMENSIONS (the type's at
+    /// half scale, its eyes at 0.9875) for a small one, else the type's.
+    pub fn default_dimensions(&self) -> [f32; 3] {
+        match (self.marker, self.small) {
+            (true, _) => [0.0; 3],
+            (_, true) => [0.25, 0.9875, 0.9875],
+            _ => [0.5, 1.975, 1.7775],
+        }
+    }
     /// EntityType.ARMOR_STAND dimensions (0.5 x 1.975F, half for small).
     pub fn bounds(&self) -> Aabb {
         let s = if self.small { 0.5 } else { 1.0 };
@@ -2224,10 +2259,11 @@ impl ArmorStand {
         // (halving it for the small stand is exact).
         let (w, h) = (0.25 * s, f64::from(1.975_f32) * s);
         let p = self.position;
-        Aabb::new(
+        let vanilla = Aabb::new(
             Vec3::new(p.x - w, p.y, p.z - w),
             Vec3::new(p.x + w, p.y + h, p.z + w),
-        )
+        );
+        crate::pose::SizeAnswer::sized_box(self.size_answer, self.default_dimensions(), p, vanilla)
     }
     /// Leather boots on its feet: it walks on powder snow (`PowderSnowBlock.canEntityWalkOnPowderSnow`).
     fn feet_are_leather_boots(&self) -> bool {
@@ -2627,6 +2663,7 @@ mod fire_environment_tests {
             )
             .unwrap();
         let make = |id: &str| ItemEntity {
+            size_answer: None,
             random: sunrise_core::random::LegacyRandom::new(0),
             attachment_lifetime: Default::default(),
             fall_distance: 0.0,
@@ -2825,6 +2862,7 @@ mod destroyed_bundle_environment_tests {
             ItemStack::new("minecraft:diamond", 1),
         ];
         let mut bundle = ItemEntity {
+            size_answer: None,
             random: sunrise_core::random::LegacyRandom::new(0),
             attachment_lifetime: Default::default(),
             fall_distance: 0.0,
@@ -3033,6 +3071,7 @@ mod merge_tests {
     fn item(id: &str, count: u32, x: f64, age: i32) -> ItemEntity {
         let at = Vec3::new(x, 64.0, 0.5);
         ItemEntity {
+            size_answer: None,
             random: sunrise_core::random::LegacyRandom::new(0),
             attachment_lifetime: Default::default(),
             fall_distance: 0.0,
@@ -3357,6 +3396,7 @@ mod world_border_tests {
                 None,
             );
             let mut orb = ExperienceOrb {
+                size_answer: None,
                 attachment_lifetime: Default::default(),
                 fall_distance: 0.0,
                 rotation: [0.0, 0.0],
@@ -3565,6 +3605,7 @@ mod honey_slide_tests {
     pub(super) fn falling_item(x: f64, y: f64, z: f64, vx: f64, vy: f64, vz: f64) -> ItemEntity {
         let at = Vec3::new(x, y, z);
         ItemEntity {
+            size_answer: None,
             random: sunrise_core::random::LegacyRandom::new(0),
             attachment_lifetime: Default::default(),
             fall_distance: 0.0,
@@ -3668,6 +3709,7 @@ mod slime_bounce_tests {
     fn grounded_item() -> ItemEntity {
         let at = Vec3::new(0.5, 2.0, 0.5);
         ItemEntity {
+            size_answer: None,
             random: sunrise_core::random::LegacyRandom::new(0),
             attachment_lifetime: Default::default(),
             fall_distance: 0.0,
@@ -4579,6 +4621,7 @@ mod item_destroyed_tests {
             .map(|(id, count)| ItemStack::new(id, *count))
             .collect();
         ItemEntity {
+            size_answer: None,
             random: sunrise_core::random::LegacyRandom::new(0),
             attachment_lifetime: Default::default(),
             fall_distance: 0.0,
@@ -4730,6 +4773,7 @@ mod orb_underwater_tests {
             .iter()
             .map(|(v, _)| {
                 let mut orb = ExperienceOrb {
+                    size_answer: None,
                     attachment_lifetime: Default::default(),
                     fall_distance: 0.0,
                     rotation: [0.0, 0.0],
@@ -4768,6 +4812,7 @@ mod render_light_tests {
 
     fn orb(y: f64) -> ExperienceOrb {
         ExperienceOrb {
+            size_answer: None,
             attachment_lifetime: Default::default(),
             fall_distance: 0.0,
             rotation: [0.0, 0.0],
@@ -4846,6 +4891,7 @@ mod dropped_item_light_tests {
 
     fn item(previous_y: f64, y: f64) -> ItemEntity {
         ItemEntity {
+            size_answer: None,
             random: sunrise_core::random::LegacyRandom::new(0),
             attachment_lifetime: Default::default(),
             fall_distance: 0.0,
@@ -4984,6 +5030,7 @@ mod orb_lava_tests {
 
     fn sample_orb(at: Vec3, health: i32) -> ExperienceOrb {
         ExperienceOrb {
+            size_answer: None,
             attachment_lifetime: Default::default(),
             fall_distance: 0.0,
             rotation: [0.0, 0.0],

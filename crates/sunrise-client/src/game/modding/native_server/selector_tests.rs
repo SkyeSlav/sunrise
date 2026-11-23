@@ -409,10 +409,10 @@ fn entity_selection_has_no_additional_count_cap() {
     );
 }
 
-/// One overworld cow (entity 1, tag `over`) and one nether cow (entity 2, tag `under`), then
-/// `lines` run as the first guest with the console's permission; each line's last invocation
-/// names the expected entities in its `argument` (their ids, sorted). Entity ids are handed
-/// out in summon order.
+/// One overworld cow (cow 1, tag `over`) and one nether cow (cow 2, tag `under`), then `lines`
+/// run as the first guest with the console's permission; each line's last invocation names the
+/// expected cows in its `argument` (their numbers, sorted). The cows take the next entity ids in
+/// summon order, after those the guests reserved.
 fn in_two_levels(lines: &[(&str, &str, &[u32])]) {
     let heard = Arc::new(Mutex::new(Vec::new()));
     mod_platform::testing::with_mods(
@@ -426,6 +426,7 @@ fn in_two_levels(lines: &[(&str, &str, &[u32])]) {
                 game.build_registries();
                 game.register_native_commands();
                 game.ui.registries.permission = 4;
+                let before_cows = game.next_entity;
                 assert!(game.run_command(r#"summon minecraft:cow 4 64 5 {Tags:["over"]}"#));
                 assert!(game.run_command(
                     r#"execute in minecraft:the_nether run summon minecraft:cow 4 64 5 {Tags:["under"]}"#
@@ -446,7 +447,9 @@ fn in_two_levels(lines: &[(&str, &str, &[u32])]) {
                             other => panic!("{line}: {other:?}"),
                         };
                         ids.sort_unstable();
-                        assert_eq!(&ids, expected, "{line}");
+                        let expected: Vec<u32> =
+                            expected.iter().map(|cow| before_cows + cow).collect();
+                        assert_eq!(ids, expected, "{line}");
                     }
                 })
                 .unwrap();

@@ -368,6 +368,7 @@ impl Game<'_> {
                 // the raw compound alone does not contain generated clouds.
                 let mut tag = self.other_to_nbt(
                     &super::OtherEntity {
+                        size_answer: None,
                         attachment_lifetime: Default::default(),
                         join: Default::default(),
                         id,
@@ -450,6 +451,7 @@ impl Game<'_> {
                 let fence = self.natural_knot(id)?;
                 let uuid = *self.persist.uuids.get(&id)?;
                 let knot = super::OtherEntity {
+                    size_answer: None,
                     attachment_lifetime: Default::default(),
                     // A serialization view, not a second resident entity.
                     join: sunrise_client::join_seq::JoinSeq::UNJOINED,
@@ -2028,6 +2030,7 @@ mod tests {
             game.persist.raw.insert(12, Tag::Compound(raw));
             game.persist.uuids.insert(12, [1, 2, 3, 4]);
             game.others.push(super::super::OtherEntity {
+                size_answer: None,
                 attachment_lifetime: Default::default(),
                 join: Default::default(),
                 item_transformation: None,

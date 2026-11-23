@@ -13,6 +13,21 @@ file by hand into the game folder (the folder that holds `options.txt`):
 | Content mod (`.smod`, or a folder holding `sunrise-mod.toml`) | `sunrise-mods/` | Read when the game starts |
 | Native mod (`.smod` with Rust source) | `sunrise-native-mods/` | The launcher builds it for that instance ([Native mods](../how-to/native-mods.md)) |
 
+The **Discover** tab of the launcher's **Mods** page lists the registry's signed, reviewed releases for the profile named in
+**Showing mods for**, on every channel. A mod shows only when the registry lists a release that fits that
+profile's exact game build, and each card offers the newest such release. **Show all** adds the rest, greyed out
+and without Install, each saying whether it doesn't fit your build or hasn't been checked against it yet. A
+mod's page shows its description, screenshots, categories, the versions that fit and the repository it is
+published from. To install a mod that isn't in the registry, see
+[Add a mod from source](../how-to/native-mods/08-add-from-source.md).
+
+Several projects in the registry can be ports of the same mod, sharing its in-game ID. Discover groups them as
+alternatives, such as "2 ports of Jade", each labelled by the repository it is published from, and a profile
+holds only one of them. An installed mod's page lists the other ports, each with **Switch to** and its
+repository. A switch shows what will change, including any saved worlds at risk, before it goes ahead, and
+Cancel leaves the profile as it was. A switch that would break another installed mod that depends on this one
+is refused before anything downloads.
+
 **Browse Mods** in the game lists content mods only, checked against the same registry as the launcher. Native mods
 install from the launcher or by hand.
 
@@ -37,6 +52,13 @@ A mod released to the [Sunrise mod registry](https://github.com/sunrise-org/sunr
   for. A native mod is released as source, which is built on your computer for the exact game you run.
 - **One signed list.** The registry publishes its releases as one list signed with its own key, and a takedown
   there removes a release or a whole project.
+
+When the launcher installs a registry release, or switches to another port, it checks the file's hash and its
+attestation against the repository and workflow the registry lists before anything is installed. The first
+install remembers that repository and workflow as the mod's publisher on this computer. If a later release comes
+from a different publisher, the launcher stops and asks, naming the old and new repositories and workflows (and
+the repository IDs when both have the same name). **Keep current version** is the default; the release installs
+only if you choose **Accept new publisher**.
 
 To check a downloaded release yourself, keep its `.sigstore.json` file beside it and run
 [`cargo sunrise-mod check <file.smod>`](../reference/sdk/05-commands.md#check-a-released-package). This

@@ -2365,7 +2365,10 @@ impl Mob {
         // in the water than its jump threshold rises 0.04 a tick, which is
         // what keeps a ridden horse and its rider afloat.
         if (self.rider.is_some() || self.extra.rider.is_some())
-            && w.entity_has("minecraft:can_float_while_ridden", &self.kind.id)
+            && w.entity_tag_bit(
+                &self.kind,
+                crate::items::EntityTypeTags::CAN_FLOAT_WHILE_RIDDEN,
+            )
             && self.fluids.water > self.fluid_jump_threshold()
         {
             self.velocity.y += f64::from(0.04_f32);

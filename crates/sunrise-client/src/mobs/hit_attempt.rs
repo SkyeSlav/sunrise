@@ -53,9 +53,10 @@ impl Mob {
                     creative_source: self.creative_attacker,
                     fire_immune: self.fire_immune(),
                     fall_immune: items.is_some_and(|items| {
-                        items
-                            .enchantments
-                            .entity_in_tag(&self.kind.id, "minecraft:fall_damage_immune")
+                        items.entity_type_tags.has_bit(
+                            self.kind.flags.entity_tag_slot,
+                            crate::items::EntityTypeTags::FALL_DAMAGE_IMMUNE,
+                        )
                     }),
                     source_has_tag: |tag| match tag {
                         ImmunityTag::BypassesInvulnerability => bypasses,

@@ -2677,6 +2677,7 @@ mod tests {
         game.options.dedicated = Some(Vec::new());
         let at = sunrise_core::geometry::Vec3::new(1.0, 70.0, 1.0);
         game.orbs.push(sunrise_client::entities::ExperienceOrb {
+            size_answer: None,
             attachment_lifetime: Default::default(),
             fall_distance: 0.0,
             rotation: [0.0, 0.0],

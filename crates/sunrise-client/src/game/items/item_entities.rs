@@ -582,6 +582,7 @@ impl Game<'_> {
         }
         self.next_entity += 1;
         self.orbs.push(ExperienceOrb {
+            size_answer: None,
             attachment_lifetime: Default::default(),
             fall_distance: 0.0,
             rotation: [0.0, 0.0],

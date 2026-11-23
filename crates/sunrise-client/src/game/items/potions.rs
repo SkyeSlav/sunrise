@@ -404,13 +404,14 @@ pub(super) fn mob_effect_id(id: &str) -> Option<&'static str> {
 /// still takes the wither as a victim (`AreaEffectCloud` asks `canBeAffected`),
 /// so its instant effects land and it shrinks.
 pub(super) fn mob_can_be_affected(
-    tags: &std::collections::HashMap<String, std::collections::HashSet<String>>,
+    tags: &sunrise_client::items::EntityTypeTags,
     kind: &str,
+    slot: Option<usize>,
     effect: &str,
 ) -> bool {
+    use sunrise_client::items::EntityTypeTags;
     let effect = effect.trim_start_matches("minecraft:");
-    let kind = kind.trim_start_matches("minecraft:");
-    let overridden = match kind {
+    let overridden = match kind.trim_start_matches("minecraft:") {
         "wither" | "wither_skeleton" => effect == "wither",
         "spider" | "cave_spider" | "nautilus" | "zombie_nautilus" => effect == "poison",
         "parched" => effect == "weakness",
@@ -419,16 +420,13 @@ pub(super) fn mob_can_be_affected(
     if overridden {
         return false;
     }
-    let in_tag = |tag: &str| {
-        tags.get(tag)
-            .is_some_and(|t| t.contains(&format!("minecraft:{kind}")))
-    };
-    if in_tag("minecraft:immune_to_infested") {
+    let in_tag = |flag| tags.has_bit(slot, flag);
+    if in_tag(EntityTypeTags::IMMUNE_TO_INFESTED) {
         effect != "infested"
-    } else if in_tag("minecraft:immune_to_oozing") {
+    } else if in_tag(EntityTypeTags::IMMUNE_TO_OOZING) {
         effect != "oozing"
     } else {
-        !in_tag("minecraft:ignores_poison_and_regen")
+        !in_tag(EntityTypeTags::IGNORES_POISON_AND_REGEN)
             || (effect != "regeneration" && effect != "poison")
     }
 }
@@ -1100,10 +1098,10 @@ impl Game<'_> {
                 let Some(i) = self.mobs.iter().position(|m| m.id == id && m.alive()) else {
                     return;
                 };
-                let inverted = self
-                    .items()
-                    .entity_type_tags
-                    .contains("minecraft:inverted_healing_and_harm", &self.mobs[i].kind.id);
+                let inverted = self.items().entity_type_tags.has_bit(
+                    self.mobs[i].kind.flags.entity_tag_slot,
+                    sunrise_client::items::EntityTypeTags::INVERTED_HEALING_AND_HARM,
+                );
                 for (effect, duration, amp) in effects {
                     // A mod's `onEffectAdded` may have changed the mobs.
                     let Some(index) = self.mob_index.find(&self.mobs, id) else {
@@ -1463,7 +1461,10 @@ impl Game<'_> {
             Some(EffectApplicable::Deny) => false,
             // An unanswered hook, or a future variant, defers to the
             // vanilla tag check.
-            _ => mob_can_be_affected(self.items().entity_type_tags.members(), kind, effect),
+            _ => {
+                let tags = &self.items().entity_type_tags;
+                mob_can_be_affected(tags, kind, tags.slot(kind), effect)
+            }
         }
     }
     pub(super) fn add_player_effect(&mut self, effect: EffectInstance) -> bool {
@@ -2156,10 +2157,10 @@ impl Game<'_> {
                     return;
                 };
                 // Undead invert healing and harming.
-                let tags = &world_stations!(self).enchantments.entity_tags;
-                let inverted = tags
-                    .get("minecraft:inverted_healing_and_harm")
-                    .is_some_and(|t| t.contains(&self.mobs[i].kind.id));
+                let inverted = self.items().entity_type_tags.has_bit(
+                    self.mobs[i].kind.flags.entity_tag_slot,
+                    sunrise_client::items::EntityTypeTags::INVERTED_HEALING_AND_HARM,
+                );
                 for (id, duration, amp) in effects {
                     // A mod's `onEffectAdded` may have changed the mobs.
                     let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) else {
@@ -2531,15 +2532,16 @@ impl Game<'_> {
         // `LivingEntity`s, the players among them).
         self.for_each_player(|g| g.splash_on_player(&effects, at, age, owner, duration_scale));
         // Mobs take the instant effects (undead invert healing and harming).
-        let undead = &self.stations().enchantments.entity_tags;
+        let undead = &self.items().entity_type_tags;
         let mut hits = Vec::new();
         for (i, m) in self.mobs.iter().enumerate() {
             if m.alive()
                 && let Some(d2) = splash_distance_sqr(at, age, m.bounds())
             {
-                let inverted = undead
-                    .get("minecraft:inverted_healing_and_harm")
-                    .is_some_and(|t| t.contains(&m.kind.id));
+                let inverted = undead.has_bit(
+                    m.kind.flags.entity_tag_slot,
+                    sunrise_client::items::EntityTypeTags::INVERTED_HEALING_AND_HARM,
+                );
                 hits.push((i, 1.0 - d2.sqrt() / 4.0, inverted));
             }
         }
@@ -3753,14 +3755,19 @@ pub(super) mod tests {
     /// as a victim (`AreaEffectCloud.serverTick` asks `canBeAffected`).
     #[test]
     fn a_cloud_still_counts_the_wither_as_a_victim() {
-        let tags = std::collections::HashMap::new();
+        let tags = sunrise_client::items::EntityTypeTags::default();
         for effect in ["strength", "instant_health"] {
             assert!(
-                mob_can_be_affected(&tags, "minecraft:wither", effect),
+                mob_can_be_affected(&tags, "minecraft:wither", None, effect),
                 "{effect}"
             );
         }
-        assert!(!mob_can_be_affected(&tags, "minecraft:wither", "wither"));
+        assert!(!mob_can_be_affected(
+            &tags,
+            "minecraft:wither",
+            None,
+            "wither"
+        ));
     }
 
     /// #5876: a potion thrown straight up from inside its thrower's box does
@@ -5051,7 +5058,7 @@ mod depleted_absorption_tests {
 }
 
 #[cfg(test)]
-mod arrow_contents {
+pub(in crate::game) mod arrow_contents {
     //! Actual in-memory Game potion paths. No run loop, world load or server startup.
     use super::*;
     use crate::game::{Audio, Options, Progress, Settings, execution_role, load_resources};
@@ -5112,6 +5119,10 @@ mod arrow_contents {
     #[test]
     #[ignore = "explicit SUNRISE_TEST_RESOURCES and isolated potion oracle input/output"]
     fn actual_arrow_contents_match_pinned_methods() {
+        run_actual_arrow_contents_match_pinned_methods();
+    }
+
+    pub(in crate::game) fn run_actual_arrow_contents_match_pinned_methods() {
         let root =
             PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").expect("explicit resources"));
         let input =

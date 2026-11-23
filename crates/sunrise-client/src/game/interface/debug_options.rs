@@ -553,7 +553,7 @@ fn debug_options_interrupts(screen: Screen, playing_overlay: bool) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::game) mod tests {
     use super::*;
 
     #[test]
@@ -668,6 +668,10 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn title_debug_overlay_draws_without_a_level() {
+        run_title_debug_overlay_draws_without_a_level();
+    }
+
+    pub(in crate::game) fn run_title_debug_overlay_draws_without_a_level() {
         use mod_api::prelude::ScreensClientHost;
         use sunrise_client::debug_keys::KeyAction;
         let mut resources = None;
@@ -709,6 +713,10 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn title_debug_options_open_draw_and_return_without_a_level() {
+        run_title_debug_options_open_draw_and_return_without_a_level();
+    }
+
+    pub(in crate::game) fn run_title_debug_options_open_draw_and_return_without_a_level() {
         use sunrise_client::debug_keys::KeyAction;
         let mut resources = None;
         let mut game = title_game(&mut resources);

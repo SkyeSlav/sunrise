@@ -300,7 +300,6 @@ impl Game<'_> {
             m.alive() && m.bounds().intersects(area)
         });
         let tags = self.items().entity_type_tags.clone();
-        let immune = tags.members().get("minecraft:not_affected_by_geysers");
         for &j in &near {
             let mob = &mut self.mobs[j as usize];
             // Entity.checkFallDistanceAccumulation.
@@ -308,7 +307,10 @@ impl Game<'_> {
                 mob.fall_distance = 1.0;
             }
             if !mob.extra.passenger
-                && !immune.is_some_and(|t| t.contains(&mob.kind.id))
+                && !tags.has_bit(
+                    mob.kind.flags.entity_tag_slot,
+                    sunrise_client::items::EntityTypeTags::NOT_AFFECTED_BY_GEYSERS,
+                )
                 && mob.velocity.y < limit
             {
                 mob.velocity.y += push;
