@@ -5480,7 +5480,7 @@ pub(super) mod fake_action_tests {
                 sunrise_client::menu::Kind::Inventory,
             ));
             menu.carried = Some(ItemStack::new("minecraft:stick", 3));
-            host.menus.entry(conn).or_default().crafting.inventory = Some(menu);
+            *host.menus.entry(conn).or_default().crafting.inventory = Some(menu);
 
             let temp_position = [1.5, 64.0, 0.5];
             let setup = PlayerActionSetup::new(
