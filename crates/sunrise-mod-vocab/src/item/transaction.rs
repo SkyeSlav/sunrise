@@ -62,6 +62,7 @@ pub trait RootCommitEffect: 'static {
 
 // no wire: the effect and its attribution belong to this process.
 // exhaustive: opaque engine-only ownership boundary.
+// hidden: the game's journal holds it; mods enlist through `TransactionContext::on_root_commit`.
 /// An enlisted effect with the mod identity captured at the call site.
 #[doc(hidden)]
 pub struct PendingRootCommitEffect {
