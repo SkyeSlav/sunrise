@@ -1,5 +1,6 @@
 //! Entities, mobs, players, effects and their handles.
 
+pub(crate) mod account_profile;
 pub(crate) mod attachment_holder;
 pub(crate) mod attachment_query;
 pub(crate) mod chunk_areas;

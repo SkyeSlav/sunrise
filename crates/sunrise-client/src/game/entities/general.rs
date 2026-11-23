@@ -1312,6 +1312,9 @@ impl Entity for GeneralRow {
     fn velocity_mut(&mut self) -> &mut Vec3 {
         &mut self.velocity
     }
+    fn fall_distance(&self) -> f64 {
+        self.fall_distance
+    }
     fn reset_fall_distance(&mut self) {
         self.fall_distance = 0.0;
     }

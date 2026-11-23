@@ -335,9 +335,10 @@ impl Game<'_> {
         if !dying(self, guest) {
             return;
         }
-        // The killing blow, for the death hooks.
-        let blow = (!mod_api::__private::mods().is_empty()).then(|| self.guest_damage_source(conn));
-        if self.guest_death_canceled(gi, conn) {
+        // The fatal source, for the death hooks.
+        let fatal =
+            (!mod_api::__private::mods().is_empty()).then(|| self.guest_fatal_source(gi, conn));
+        if self.guest_death_canceled(gi, conn, fatal.as_ref()) {
             return;
         }
         // A dead player carries no mob a mod seated on it.
@@ -483,17 +484,16 @@ impl Game<'_> {
             );
             // LivingEntity.die: the death animation, the dying player included.
             host.hub.entity_event(id, 3);
-            let recently_hit = killing.is_some()
-                && self
-                    .guest_combat_record(conn)
-                    .is_some_and(|c| c.recently_hit_by_player(self.world.game_time));
+            // LivingDropsEvent: the source living_death heard, even with no
+            // combat entry (`/kill`), and the last-hurt-by-player memory.
+            let recently_hit = self
+                .guest_combat_record(conn)
+                .is_some_and(|c| c.recently_hit_by_player(self.world.game_time));
             let dropping = crate::game::creatures::DyingDrops {
                 entity: id as u32,
                 kind: "minecraft:player",
                 player: Some(uuid),
-                source: killing.as_ref().map(|(damage_type, attacker)| {
-                    crate::game::creatures::death_hurt_source(damage_type, attacker.unwrap_or(0))
-                }),
+                source: fatal.as_ref().map(|fatal| fatal.source()),
                 recently_hit,
             };
             // LivingEntity.die: the death is heard, and a sculk catalyst
@@ -556,13 +556,13 @@ impl Game<'_> {
                 game.stats.reset_death_timers();
             });
             // `ServerPlayer.die`'s `broadcastEntityEvent`, after the message,
-            // the loot and the experience: Fabric's AFTER_DEATH. The blow is
+            // the loot and the experience: Fabric's AFTER_DEATH. The source is
             // the one `living_death` heard, so a death it cancelled returns
             // above and is never told here.
-            if let Some((damage_type, attacker)) = &blow
+            if let Some(fatal) = &fatal
                 && mod_api::__private::listened(mod_api::HookId::LivingDeathPost)
             {
-                self.native_living_death_post(id as u32, damage_type, *attacker);
+                self.native_living_death_post(id as u32, &fatal.damage_type, fatal.causing);
             }
         }
     }

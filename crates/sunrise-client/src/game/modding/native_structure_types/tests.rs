@@ -69,7 +69,7 @@ fn the_same_context_gives_the_same_pieces() {
         let (position, pieces) = adapter
             .find_generation_point(
                 &mut StubContext,
-                test_resources(),
+                &inputs(test_resources()),
                 ChunkPos::new(3, 7),
                 &Arc::new(Tag::Compound(Compound::new())),
                 &mut random,
@@ -91,12 +91,13 @@ fn a_saved_piece_loads_back_the_same() {
     let (_, pieces) = adapter
         .find_generation_point(
             &mut StubContext,
-            resources,
+            &inputs(resources),
             ChunkPos::new(0, 0),
             &Arc::new(Tag::Compound(Compound::new())),
             &mut random,
         )
         .unwrap();
+    let pieces = legacy(pieces);
     let tag = pieces[0].save().unwrap();
     assert!(matches!(
         tag.get(&"id".into()),
@@ -171,12 +172,13 @@ fn the_engines_after_place_call_reaches_the_type() {
     let (_, pieces) = adapter
         .find_generation_point(
             &mut StubContext,
-            test_resources(),
+            &inputs(test_resources()),
             ChunkPos::new(1, 1),
             &Arc::new(Tag::Compound(Compound::new())),
             &mut random,
         )
         .unwrap();
+    let pieces = legacy(pieces);
     let boxes: Vec<BoundingBox> = pieces.iter().map(|p| p.bounding_box()).collect();
     let resources = test_resources();
     struct NoSolid;
@@ -204,6 +206,162 @@ fn the_engines_after_place_call_reaches_the_type() {
     // What the engine does once per chunk: the first piece's call.
     pieces[0].after_place(&mut engine, &boxes).unwrap();
     assert_eq!(*calls.lock().unwrap(), vec![boxes.len()]);
+}
+
+/// A mod's own structure type lays its start out from the data pack's pools through
+/// `assemble_jigsaw`, at a depth `minecraft:jigsaw`'s codec refuses: one link three blocks tall,
+/// a jigsaw at its foot facing down and one at its head facing up, stacks 46 deep above the
+/// start, 47 jigsaw pieces in all, each on the one before.
+#[test]
+fn a_mod_type_assembles_from_pools_past_the_jigsaw_types_depth() {
+    use std::collections::BTreeMap;
+    use sunrise_world::worldgen::structure::{
+        BlockInfo, StateTransforms, StructureResources, jigsaw::Pools, save_nbt, start::Piece,
+    };
+    struct Deep;
+    impl StructureType for Deep {
+        fn find_generation_point(
+            &self,
+            context: &mut dyn GenerationContext,
+        ) -> Option<FoundStructure> {
+            let chunk = context.chunk();
+            let mut settings =
+                mod_api::JigsawSettings::new(mod_api::Identifier::parse("test:links").ok()?, 46);
+            settings.max_distance_from_center = mod_api::JigsawReach {
+                horizontal: 16,
+                vertical: 400,
+            };
+            let layout = context.assemble_jigsaw(&settings, [chunk.x * 16, 0, chunk.z * 16])?;
+            assert_eq!(layout.pieces.len(), 47);
+            Some(FoundStructure {
+                position: layout.position,
+                pieces: Vec::new(),
+            })
+        }
+        fn load_piece(
+            &self,
+            _: &dyn BlockMetadata,
+            _: &Compound,
+        ) -> Result<Arc<dyn StructurePiece>, StructureError> {
+            Err(StructureError("the type saves no piece of its own".into()))
+        }
+    }
+    mod_platform::__private::part_tests::install_parts_fixture(&[]).unwrap();
+    let state = |id: &str, properties: serde_json::Value| serde_json::json!([id, id.ends_with("air"), false, "", {"id": id, "properties": properties}]);
+    let facts = serde_json::json!({
+        "states": [
+            state("minecraft:air", serde_json::json!({})),
+            state("minecraft:stone", serde_json::json!({})),
+            state("minecraft:jigsaw", serde_json::json!({"orientation": "down_south"})),
+            state("minecraft:jigsaw", serde_json::json!({"orientation": "up_north"})),
+            state("minecraft:cave_air", serde_json::json!({})),
+            state("minecraft:void_air", serde_json::json!({})),
+        ],
+        "defaults": {"minecraft:air": 0, "minecraft:stone": 1, "minecraft:jigsaw": 2,
+            "minecraft:cave_air": 4, "minecraft:void_air": 5}
+    });
+    let registry: &'static _ = Box::leak(Box::new(
+        sunrise_world::registry::BlockRegistry::from_facts_json(facts.to_string().as_bytes())
+            .unwrap(),
+    ));
+    crate::game::api_values::resolve_block_definitions(registry).unwrap();
+    let transforms = || {
+        StateTransforms::from_json(
+            r#"{"rotate":[[0,0,0,0],[1,1,1,1],[2,2,2,2],[3,3,3,3],[4,4,4,4],[5,5,5,5]],"mirror":[[0,0],[1,1],[2,2],[3,3],[4,4],[5,5]],"full_block":[false,true,false,false,false,false]}"#,
+            6,
+        )
+        .unwrap()
+    };
+    let jigsaw = |state: u32, pool: &str, name: &str, target: &str, y: i32| BlockInfo {
+        pos: [0, y, 0],
+        state: sunrise_world::registry::BlockStateId(state),
+        nbt: Some(Box::new(Compound::from_iter([
+            ("id".into(), Tag::String("minecraft:jigsaw".into())),
+            ("pool".into(), Tag::String(pool.into())),
+            ("name".into(), Tag::String(name.into())),
+            ("target".into(), Tag::String(target.into())),
+            ("final_state".into(), Tag::String("minecraft:air".into())),
+        ]))),
+    };
+    let link = save_nbt(
+        registry,
+        &transforms(),
+        [1, 3, 1],
+        vec![
+            jigsaw(2, "minecraft:empty", "test:foot", "minecraft:empty", 0),
+            BlockInfo {
+                pos: [0, 1, 0],
+                state: sunrise_world::registry::BlockStateId(1),
+                nbt: None,
+            },
+            jigsaw(3, "test:links", "minecraft:empty", "test:foot", 2),
+        ],
+        &[],
+        sunrise_world::DATA_VERSION,
+    );
+    let raw = sunrise_core::nbt::write_named(
+        &sunrise_core::nbt::NamedTag {
+            name: "".into(),
+            tag: link,
+        },
+        sunrise_core::nbt::Limits::templates(),
+    )
+    .unwrap();
+    let file = sunrise_world::compression::Compression::Gzip
+        .encode(&raw)
+        .unwrap();
+    let resources: &'static _ = Box::leak(Box::new(
+        StructureResources::new(
+            registry,
+            transforms(),
+            std::path::Path::new("/nonexistent"),
+            BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .with_pack_templates([("test:link".to_owned(), file.into())].into()),
+    ));
+    let pools: &'static _ = Box::leak(Box::new(Pools::new(BTreeMap::from([
+        (
+            "minecraft:empty".to_owned(),
+            serde_json::json!({"fallback": "minecraft:empty", "elements": []}).to_string(),
+        ),
+        (
+            "test:links".to_owned(),
+            serde_json::json!({"fallback": "minecraft:empty", "elements": [{"weight": 1,
+                "element": {"element_type": "minecraft:single_pool_element",
+                    "location": "test:link", "projection": "rigid",
+                    "processors": {"processors": []}}}]})
+            .to_string(),
+        ),
+    ]))));
+    let bindings: &'static _ = Box::leak(Box::new(
+        sunrise_world::worldgen::block_feature::FeatureBlockBindings::new(
+            registry,
+            Default::default(),
+        )
+        .unwrap(),
+    ));
+    let inputs = sunrise_world::worldgen::structure::mod_types::StructureInputs::new(
+        resources, pools, bindings,
+    );
+    let mut random = WorldgenRandom::new(LegacyRandom::new(0));
+    random.set_large_feature_seed(0, 0, 0);
+    let (_, pieces) = Adapter::new("testmod:deep", Arc::new(Deep))
+        .find_generation_point(
+            &mut StubContext,
+            &inputs,
+            ChunkPos::new(0, 0),
+            &Arc::new(Tag::Compound(Compound::new())),
+            &mut random,
+        )
+        .expect("a start from the pool");
+    assert_eq!(pieces.len(), 47);
+    assert!(pieces.iter().all(|piece| matches!(piece, Piece::Pool(_))));
+    let bottoms: Vec<i32> = pieces.iter().map(|p| p.bounding_box().min[1]).collect();
+    assert_eq!(
+        bottoms,
+        (0..47).map(|i| bottoms[0] + 3 * i).collect::<Vec<_>>()
+    );
 }
 
 /// The start context the stub answers: heights from a flat 64.
@@ -409,14 +567,48 @@ impl sunrise_world::worldgen::structure::legacy::PieceWorld for RecordingWorld {
 /// The engine's own placement tests build their registry this way
 /// (`legacy::tests::registry`): two facts rows, held once for the
 /// `&'static` the engine's resources take — no game resources needed.
+/// What a start builds from over `resources`: no template pools, as these types lay out none.
+fn inputs(
+    resources: &'static sunrise_world::worldgen::structure::StructureResources,
+) -> sunrise_world::worldgen::structure::mod_types::StructureInputs<'static> {
+    let pools: &'static _ = Box::leak(Box::new(
+        sunrise_world::worldgen::structure::jigsaw::Pools::new(Default::default()),
+    ));
+    let bindings: &'static _ = Box::leak(Box::new(
+        sunrise_world::worldgen::block_feature::FeatureBlockBindings::new(
+            resources.registry,
+            Default::default(),
+        )
+        .unwrap(),
+    ));
+    sunrise_world::worldgen::structure::mod_types::StructureInputs::new(resources, pools, bindings)
+}
+
+/// The adapter's pieces, which are all its own legacy pieces.
+fn legacy(
+    pieces: Vec<sunrise_world::worldgen::structure::start::Piece>,
+) -> Vec<Box<dyn sunrise_world::worldgen::structure::legacy::LegacyPiece>> {
+    pieces
+        .into_iter()
+        .map(|piece| match piece {
+            sunrise_world::worldgen::structure::start::Piece::Legacy(piece) => piece,
+            sunrise_world::worldgen::structure::start::Piece::Pool(_) => {
+                unreachable!("the adapter lays out no jigsaw")
+            }
+        })
+        .collect()
+}
+
 fn test_resources() -> &'static sunrise_world::worldgen::structure::StructureResources {
     mod_platform::__private::part_tests::install_parts_fixture(&[]).unwrap();
     let facts = serde_json::json!({
         "states": [
             ["air", true, false, "", {"id":"minecraft:air","properties":{}}],
-            ["stone", false, false, "", {"id":"minecraft:stone","properties":{}}]
+            ["stone", false, false, "", {"id":"minecraft:stone","properties":{}}],
+            ["cave_air", true, false, "", {"id":"minecraft:cave_air","properties":{}}],
+            ["void_air", true, false, "", {"id":"minecraft:void_air","properties":{}}]
         ],
-        "defaults":{"minecraft:air":0,"minecraft:stone":1}
+        "defaults":{"minecraft:air":0,"minecraft:stone":1,"minecraft:cave_air":2,"minecraft:void_air":3}
     });
     let registry =
         sunrise_world::registry::BlockRegistry::from_facts_json(facts.to_string().as_bytes())
@@ -622,7 +814,7 @@ fn structure_config_is_converted_at_load_and_shared_by_starts() {
             kind.ty
                 .find_generation_point(
                     &mut StubContext,
-                    resources,
+                    &inputs(resources),
                     ChunkPos::new(0, 0),
                     &kind.config,
                     &mut random
@@ -833,12 +1025,13 @@ fn piece_beardifier_shapes_terrain_and_is_resolved_once() {
     let (_, generated) = adapter
         .find_generation_point(
             &mut StubContext,
-            resources,
+            &inputs(resources),
             ChunkPos::new(0, 0),
             &Arc::new(Tag::Compound(Compound::new())),
             &mut WorldgenRandom::new(LegacyRandom::new(0)),
         )
         .unwrap();
+    let generated = legacy(generated);
     assert_eq!(calls.load(Ordering::SeqCst), 3);
     let loaded: Vec<_> = generated
         .iter()

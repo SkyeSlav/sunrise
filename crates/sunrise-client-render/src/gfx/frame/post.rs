@@ -360,9 +360,10 @@ impl Renderer {
             cull.end(&self.device, &mut encoder);
         }
         // GPU culling's counts once its world passes are done (phase 2's too), and sourced
-        // geometry's beside them.
+        // geometry's beside them; whether the frame drew sourced geometry rides the near
+        // copy, so its half waits for sourced geometry's (`in_flight::collect_stats`).
         if gpu_frame && let Some(gpu) = &mut self.gpu_culling {
-            gpu.copy_stats(&mut encoder, serial, cpu);
+            gpu.copy_stats(&mut encoder, serial, cpu, sourced_frame);
         }
         if sourced_frame {
             self.sourced.copy_stats(&mut encoder, serial, sourced_cpu);

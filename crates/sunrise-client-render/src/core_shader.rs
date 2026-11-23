@@ -15,13 +15,15 @@
 //! - an integer texel buffer (26.3's clouds read `uniform isamplerBuffer CloudFaces;`) becomes a
 //!   read-only storage buffer of `int`s (`uint`s for `usamplerBuffer`), and `texelFetch` on it
 //!   reads one into the first channel of an `ivec4`: wgpu has no texel buffers. Like any block a
-//!   pipeline gives, it is bound at [`other_binding`], and refused when not given.
+//!   pipeline gives, it is bound at [`other_binding`], and refused when not given;
+//! - every program is compiled, and its includes chosen, with the backend's
+//!   [`DEPTH_ZERO_TO_ONE`] before its pipeline's defines, as `GlslCompiler` compiles it.
 
 use std::collections::HashSet;
 use std::fmt::Write;
 
 use naga::ShaderStage;
-use naga::front::glsl::{Frontend, Options};
+use naga::front::glsl::{Frontend, InterfaceLimits, Options};
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 
 mod glsl_fixups;
@@ -41,6 +43,15 @@ pub const SAMPLERS: [(&str, u32); 3] = [("Sampler0", 4), ("Sampler1", 6), ("Samp
 /// `#ifdef OIT`): fine while the preprocessor drops them, an error when a stage uses one.
 const OTHER_BINDINGS: u32 = 16;
 
+/// A device's stage interface limits, as naga's GLSL front end takes them: its
+/// `max_inter_stage_shader_variables` and `max_vertex_attributes`.
+pub fn interface_limits(limits: &wgpu::Limits) -> InterfaceLimits {
+    InterfaceLimits {
+        inter_stage_variables: limits.max_inter_stage_shader_variables,
+        vertex_attributes: limits.max_vertex_attributes,
+    }
+}
+
 /// What the caller's pipeline gives the pack's vertex shader.
 pub struct Glue<'a> {
     /// The inputs of the pipeline's vanilla vertex format: name and GLSL type.
@@ -53,6 +64,8 @@ pub struct Glue<'a> {
     pub finish: &'a str,
     /// The expression the pack's `gl_VertexID` and `gl_VertexIndex` read.
     pub vertex_id: &'a str,
+    /// The stage interface limits the stages are translated with ([`sunrise_shaders::DEVICELESS_INTERFACE_LIMITS`]).
+    pub interface: InterfaceLimits,
 }
 
 /// A pipeline's two stages, validated.
@@ -176,8 +189,8 @@ impl CoreProgram {
                         .as_ref()
                         .is_some_and(|b| b.group == 0 && b.binding == binding)
                 })
-                .all(|(_, g)| match &module.types[g.ty].inner {
-                    naga::TypeInner::Struct { members, .. } => {
+                .all(|(_, g)| match (g.space, &module.types[g.ty].inner) {
+                    (naga::AddressSpace::Uniform, naga::TypeInner::Struct { members, .. }) => {
                         matches!(
                             members.as_slice(),
                             [member] if matches!(
@@ -328,14 +341,22 @@ pub fn translate_core_at(
         .map_err(|e| format!("vertex shader: {e}"))?;
     let fragment_code = rewrite(&fragment_text, ShaderStage::Fragment, glue, &mut names)
         .map_err(|e| format!("fragment shader: {e}"))?;
-    let vertex = compile(ShaderStage::Vertex, &vertex_code, defines, &names, provided)
-        .map_err(|e| format!("vertex shader: {e}"))?;
+    let vertex = compile(
+        ShaderStage::Vertex,
+        &vertex_code,
+        defines,
+        &names,
+        provided,
+        glue.interface,
+    )
+    .map_err(|e| format!("vertex shader: {e}"))?;
     let fragment = compile(
         ShaderStage::Fragment,
         &fragment_code,
         defines,
         &names,
         provided,
+        glue.interface,
     )
     .map_err(|e| format!("fragment shader: {e}"))?;
     let given = locations(&vertex.0, false);
@@ -424,8 +445,9 @@ pub(crate) fn expand_imports(
     expand_with(text, dir, read, None)
 }
 
-/// Resolve only includes reached by this core pipeline. Macros defined by an included
-/// file also govern the rest of its caller. Post shaders keep their own preprocessing.
+/// Resolve only includes reached by this core pipeline under its `defines` and the backend's
+/// ([`program_defines`]), as the compiler sees them. Macros defined by an included file also
+/// govern the rest of its caller. Post shaders keep their own preprocessing.
 pub(crate) fn expand_core_imports(
     text: &str,
     dir: &str,
@@ -436,8 +458,41 @@ pub(crate) fn expand_core_imports(
         text,
         dir,
         read,
-        Some(import_conditions::Conditions::new(defines)),
+        Some(import_conditions::Conditions::new(&program_defines(
+            defines,
+        ))),
     )
+}
+
+/// What `GlslCompiler.createBaseShaderOptions` defines for every program it compiles, core and
+/// post alike, on a backend whose depth runs from 0 to 1, as wgpu's does.
+pub(crate) const DEPTH_ZERO_TO_ONE: &str = "RENDERPEARL_DEPTH_IS_ZERO_TO_ONE";
+
+/// A program's defines as vanilla's compiler gives them: the backend's ([`DEPTH_ZERO_TO_ONE`]),
+/// then the pipeline's `defines` (`NAME` or `NAME value`).
+fn program_defines<'a>(defines: &[&'a str]) -> Vec<&'a str> {
+    std::iter::once(DEPTH_ZERO_TO_ONE)
+        .chain(defines.iter().copied())
+        .collect()
+}
+
+/// naga's options for one `stage` of a program with the pipeline's `defines`: the backend's
+/// first ([`program_defines`]), and the device's stage interface `limits`. The core shaders' and
+/// the post shaders' one way in.
+pub(crate) fn glsl_options(
+    stage: ShaderStage,
+    defines: &[&str],
+    limits: InterfaceLimits,
+) -> Options {
+    let mut options = Options {
+        interface_limits: limits,
+        ..Options::from(stage)
+    };
+    for define in program_defines(defines) {
+        let (name, value) = define.split_once(' ').unwrap_or((define, ""));
+        options.defines.insert(name.to_owned(), value.to_owned());
+    }
+    options
 }
 
 mod import_conditions;
@@ -1005,12 +1060,9 @@ fn compile(
     defines: &[&str],
     names: &Names,
     provided: &dyn Fn(&str) -> bool,
+    limits: InterfaceLimits,
 ) -> Result<(naga::Module, naga::valid::ModuleInfo), String> {
-    let mut options = Options::from(stage);
-    for define in defines {
-        let (name, value) = define.split_once(' ').unwrap_or((define, ""));
-        options.defines.insert(name.to_owned(), value.to_owned());
-    }
+    let options = glsl_options(stage, defines, limits);
     let module = Frontend::default().parse(&options, code).map_err(|e| {
         e.errors
             .iter()
@@ -1117,6 +1169,7 @@ mod tests {
         setup: "Position = vec3(hz_pos, 0.0); Color = hz_color; UV0 = hz_uv;",
         finish: "gl_Position.z = 0.5 * gl_Position.w;",
         vertex_id: "hz_vertex_id()",
+        interface: sunrise_shaders::DEVICELESS_INTERFACE_LIMITS,
     };
 
     /// 26.3's `text.vsh` and `text.fsh` in shape: `#include`, explicit locations, an extension.
@@ -1429,6 +1482,17 @@ mod tests {
         assert_eq!(block_name("uniform Globals"), Some("Globals"));
         assert_eq!(block_name("uniform float x;"), None);
         assert_eq!(block_name("uniform sampler2D Sampler0;"), None);
+    }
+
+    /// An array too large to lay out (#4134) is the shader's error at its line, not a panic.
+    #[test]
+    fn an_array_too_large_to_lay_out_is_an_error() {
+        let vsh = "#version 330\nout vec4 vertexColor;\nvoid main() { vertexColor = vec4(1.0); }\n";
+        let fsh = "#version 330\nin vec4 vertexColor;\nfloat big[0x7fffffff];\nout vec4 fragColor;\n\
+            void main() { fragColor = vertexColor; }\n";
+        let error = translate_core(vsh, fsh, &[], &include, &GLUE).unwrap_err();
+        assert!(error.starts_with("fragment shader: line "), "{error}");
+        assert!(error.contains("(float big[0x7fffffff];)"), "{error}");
     }
 
     #[test]

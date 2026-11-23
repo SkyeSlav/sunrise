@@ -144,7 +144,9 @@ impl Game<'_> {
             {
                 return None;
             }
-            let origin = self.entity_position(entity)?;
+            let origin = self
+                .pick_object_origin(entity.id())
+                .or_else(|| self.entity_position(entity))?;
             return Some(ObjectHit {
                 id: entity.id() as i32,
                 distance,
@@ -843,6 +845,11 @@ impl Game<'_> {
             let mut level = self.predicting_damage_level(&mut lent, &hooks);
             mob.tick(&world, &mut level, &mut events);
         }
+        // LivingEntity.baseTick's tickEffects, inside the mount's own tick (#3948).
+        super::potions::client_tick_effects(
+            &mut mob.extra.client_effects,
+            &mut mob.extra.darkness_blend,
+        );
         // Only the server's packets take the mount away.
         mob.removed = false;
         lent.give_back(&mut self.world);
@@ -961,7 +968,7 @@ pub(super) fn generic_player_seat(
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::game) mod tests {
     #[test]
     fn local_player_on_block_display_and_interaction() {
         for kind in ["minecraft:block_display", "minecraft:interaction"] {
@@ -1052,6 +1059,10 @@ mod tests {
     #[test]
     #[ignore = "requires prepared resources and the vanilla mount-control reference"]
     fn steering_mount_control_matches_vanilla() {
+        run_steering_mount_control_matches_vanilla();
+    }
+
+    pub(in crate::game) fn run_steering_mount_control_matches_vanilla() {
         use super::super::{
             Audio, Options, Progress, Settings, execution_role::ExecutionRole, load_resources,
         };

@@ -130,7 +130,7 @@ pub(super) struct DyingDrops<'a> {
     pub(super) kind: &'a str,
     /// The UUID of a dying player.
     pub(super) player: Option<u128>,
-    /// The killing blow; none when no mod listens.
+    /// The death's source; none when no mod listens.
     pub(super) source: Option<HurtSource<'a>>,
     /// Whether a player hurt it within 100 ticks.
     pub(super) recently_hit: bool,
@@ -520,7 +520,7 @@ impl Game<'_> {
     /// [`Self::player_view`], so a tick that lends no guest's view names its
     /// player (#1077). None where the view stands for nobody: no player of
     /// the game's own, a fake one, or a guest's turn acting in its place.
-    pub(super) fn player_identity(&self) -> Option<([i32; 4], u32)> {
+    pub(in crate::game) fn player_identity(&self) -> Option<([i32; 4], u32)> {
         if self.lan_acting_fake || self.lan_acting_uuid.is_some() || self.player.is_none() {
             return None;
         }
@@ -981,6 +981,21 @@ impl Game<'_> {
         pre_checked: bool,
         after: impl FnOnce(&mut Self, &mut Mob),
     ) -> Option<u32> {
+        self.convert_to_moved(from, kind, params, pre_checked, None, after)
+    }
+    /// [`Self::convert_to`] for a conversion its mob made during its own tick, before the rest
+    /// of that tick moved it: `at_conversion` is the mob as it was then, and the new mob takes
+    /// its place and motion from it (`conversion::motion_at`), the rest from the original as
+    /// the events before this one left it.
+    pub(super) fn convert_to_moved(
+        &mut self,
+        from: &Mob,
+        kind: &str,
+        params: sunrise_client::mobs::conversion::Params,
+        pre_checked: bool,
+        at_conversion: Option<&Mob>,
+        after: impl FnOnce(&mut Self, &mut Mob),
+    ) -> Option<u32> {
         // Tick conversions can have been removed from the tick list before
         // their queued event is handled. Restore them until Post has returned.
         match self.mobs.iter_mut().find(|m| m.id == from.id) {
@@ -1002,7 +1017,10 @@ impl Game<'_> {
         if cancel {
             return None;
         }
-        let from = self.mobs.iter().find(|m| m.id == from.id)?.clone();
+        let mut from = self.mobs.iter().find(|m| m.id == from.id)?.clone();
+        if let Some(at) = at_conversion {
+            sunrise_client::mobs::conversion::motion_at(&mut from, at);
+        }
         self.next_entity += 1;
         let mut mob = Mob::new(self.next_entity, t, from.position, from.yaw);
         sunrise_client::mobs::conversion::single(&from, &mut mob, params);
@@ -1387,6 +1405,7 @@ impl Game<'_> {
         // `EntityEvent.Size` for the sizes that changed outside the mob ticks (spawns,
         // commands, a player's interaction), before the ticks move by them.
         self.native_mob_sizes();
+        self.native_entity_sizes();
         // Hit-driven deaths already ran inside the hurt. Handle deaths from other
         // state changes before the mob ticks.
         let killed: Vec<Mob> = self
@@ -1705,6 +1724,7 @@ impl Game<'_> {
         laps.lap("creature_outbox");
         // And for the sizes the ticks changed (a pose, a baby grown, a scale).
         self.native_mob_sizes();
+        self.native_entity_sizes();
         Ok(())
     }
 
@@ -1791,6 +1811,7 @@ impl Game<'_> {
                 world_items!(self),
                 &world_stations!(self).enchantments,
             );
+            // The paused hit carries its setup's decision: an attacker id only if it was lent then.
             let lent_index = paused
                 .lent_attacker
                 .and_then(|id| self.mob_index.find(&self.mobs, id as u32));
@@ -1803,17 +1824,14 @@ impl Game<'_> {
             } else {
                 (
                     &mut self.mobs[index],
-                    paused
-                        .lent_attacker
-                        .filter(|_| sunrise_client::health::hit_host_listened())
-                        .and_then(|id| {
-                            HitLend::attacking_player(
-                                self.player.as_mut(),
-                                id,
-                                &self.potions.effects,
-                                acting_equipment!(self),
-                            )
-                        }),
+                    paused.lent_attacker.and_then(|id| {
+                        HitLend::attacking_player(
+                            self.player.as_mut(),
+                            id,
+                            &self.potions.effects,
+                            acting_equipment!(self),
+                        )
+                    }),
                 )
             };
             hurt = mob.resume_hurt(
@@ -2191,10 +2209,10 @@ impl Game<'_> {
         let plan = self.prepare_knockback_credit(target as i32, source.attacker, &attack);
         let mut credit = plan.lend(&mut self.last_hurt_by_player);
         let mut target_index = self.mobs.iter().position(|m| m.id == target);
+        // One subscription decision for the hit's attacker loan.
+        let listened = sunrise_client::health::hit_host_listened();
         let attacker_index = match source.attacker {
-            Some(Who::Mob(id)) if sunrise_client::health::hit_host_listened() => {
-                self.mobs.iter().position(|m| m.id == id)
-            }
+            Some(Who::Mob(id)) if listened => self.mobs.iter().position(|m| m.id == id),
             _ => None,
         };
         if let Some(ti) = target_index {
@@ -2210,7 +2228,7 @@ impl Game<'_> {
                 }
                 None => (
                     &mut self.mobs[ti],
-                    sunrise_client::health::hit_host_listened()
+                    listened
                         .then(|| {
                             sunrise_client::health::HitLend::attacking_player(
                                 self.player.as_mut(),
@@ -3144,7 +3162,7 @@ impl Game<'_> {
                                 .mobs
                                 .iter()
                                 .find(|m| m.id == id)
-                                .map_or(0.0, super::lan_attributes::mob_knockback_resistance);
+                                .map_or(0.0, Mob::knockback_resistance);
                             (hurt, resistance)
                         }
                     };
@@ -3208,11 +3226,11 @@ impl Game<'_> {
                             Who::Player => self.player.as_mut().map_or(0.0, |p| {
                                 p.attribute("minecraft:knockback_resistance").unwrap_or(0.0)
                             }),
-                            Who::Mob(id) => {
-                                self.mobs.iter().find(|m| m.id == id).map_or(0.0, |m| {
-                                    super::lan_attributes::mob_knockback_resistance(m)
-                                })
-                            }
+                            Who::Mob(id) => self
+                                .mobs
+                                .iter()
+                                .find(|m| m.id == id)
+                                .map_or(0.0, Mob::knockback_resistance),
                         };
                         let up = f64::from(0.4f32) * (1.0 - resistance).max(0.0);
                         match target {
@@ -3370,7 +3388,8 @@ impl Game<'_> {
                     kind,
                     params,
                     after,
-                } => self.convert_event(&from, kind, params, after),
+                    before_travel,
+                } => self.convert_event(&from, kind, params, after, before_travel),
                 MobEvent::ThrowItem {
                     mob,
                     stack,
@@ -3388,6 +3407,18 @@ impl Game<'_> {
                 MobEvent::DropStack { mob, stack, at } => {
                     self.native_entity_drop_item(mob, &stack.item, stack.count as i32, at);
                     self.spawn_item_own(stack, at, 10);
+                }
+                MobEvent::DropInventory { mob, at } => {
+                    let stacks = self
+                        .mobs
+                        .iter_mut()
+                        .find(|m| m.id == mob)
+                        .map(|m| std::mem::take(&mut m.extra.inventory))
+                        .unwrap_or_default();
+                    for stack in stacks.into_iter().filter(|stack| stack.count > 0) {
+                        self.native_entity_drop_item(mob, &stack.item, stack.count as i32, at);
+                        self.spawn_item_own(stack, at, 10);
+                    }
                 }
                 MobEvent::DropItem {
                     mob,
@@ -7502,10 +7533,10 @@ impl Game<'_> {
         } else {
             false
         };
-        let cannot = self
-            .items()
-            .entity_type_tags
-            .contains("minecraft:cannot_be_age_locked", &m.kind.id);
+        let cannot = self.items().entity_type_tags.has_bit(
+            m.kind.flags.entity_tag_slot,
+            sunrise_client::items::EntityTypeTags::CANNOT_BE_AGE_LOCKED,
+        );
         sunrise_client::mobs::ai::can_use_golden_dandelion(
             item,
             baby,
@@ -9814,7 +9845,7 @@ mod conversion_tag_tests;
 mod pickable_projectile_tests;
 
 #[cfg(test)]
-mod mob_pearl_hook_tests;
+pub(in crate::game) mod mob_pearl_hook_tests;
 
 #[cfg(test)]
 mod breeding_orb_tests;
@@ -9879,7 +9910,7 @@ mod leash_without_item_postbaseline_controls;
 #[path = "../tests/revenge_home_tests.rs"]
 mod revenge_home_tests;
 
-mod knockback;
+pub(super) mod knockback;
 
 #[cfg(test)]
 mod death_loot_context_tests;
@@ -9893,8 +9924,8 @@ mod frame_projectile_tests;
 
 #[cfg(test)]
 #[path = "projectile_targets_tests.rs"]
-mod projectile_targets_tests;
+pub(in crate::game) mod projectile_targets_tests;
 
 #[cfg(test)]
 #[path = "projectiles_120_124_tests.rs"]
-mod projectiles_120_124_tests;
+pub(in crate::game) mod projectiles_120_124_tests;

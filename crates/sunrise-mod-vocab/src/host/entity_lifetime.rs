@@ -26,8 +26,11 @@ pub trait EntityLifetimeBackend {
     /// counter. It counts each tick the client level gives the entity
     /// (`Entity.commonTick`) from when the server added it: a frozen level counts only
     /// the players and what carries them, and the local player counts before its own
-    /// update, so also before it has loaded and while it sleeps. The new local player of a
-    /// respawn or a dimension change starts at 0.
+    /// update, so also before it has loaded and while it sleeps. A root counts at its own
+    /// visit, after its `entity_tick_pre` lets it through (not when canceled); a passenger
+    /// counts before its own tick, whatever its Pre answers. The new local player of a
+    /// respawn or a dimension change starts at 0 when it is admitted, before the server's
+    /// first teleport.
     fn entity_tick_count(&self, entity: EntityRef) -> Option<i32>;
 }
 /// The handles' writes of the `entity_lifetime` area, implemented by the game and reached through [`BackendMut`].

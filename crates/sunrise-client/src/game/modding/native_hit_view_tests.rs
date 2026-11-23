@@ -229,6 +229,30 @@ fn a_hit_listener_reads_its_victim_and_causer_live_and_their_attachments_read_on
             let zombie_before = handle_read(game, zombie);
             assert_eq!(player_before.health, Some(20.0));
             assert_eq!(player_before.speed, Some((1, 400)));
+            // Each body's kept type key is the registry's own, as the full host reads it too, and
+            // present: two missing keys must not compare equal.
+            let key = mod_api::__private::resolved_entity_type_key;
+            assert_eq!(
+                player_before.kind,
+                Some(key("minecraft:player").expect("player"))
+            );
+            assert_eq!(
+                zombie_before.kind,
+                Some(key("minecraft:zombie").expect("zombie"))
+            );
+            let stand = match game
+                .summon_with_nbt("minecraft:armor_stand", [2.5, 70.0, 0.5], "{}")
+                .unwrap()
+                .unwrap()
+            {
+                crate::game::commands::Target::Stand(id) => id,
+                other => panic!("an armor stand summoned as {other:?}"),
+            };
+            let stand = game.entity(stand).unwrap();
+            assert_eq!(
+                stand.kind(game),
+                Some(key("minecraft:armor_stand").expect("armor stand"))
+            );
             assert_eq!(player_before.main_hand, Some((5, true)));
             game.mob_hits_player_caused(
                 4.0,
@@ -303,6 +327,7 @@ fn a_hit_listener_reads_its_victim_and_causer_live_and_their_attachments_read_on
             let pig_before = handle_read(game, pig);
             assert_eq!(pig_before.health, Some(10.0));
             assert_eq!(pig_before.no_ai, Some(true));
+            assert_eq!(pig_before.kind, Some(key("minecraft:pig").expect("pig")));
             assert!(game.mob_hits_mob(pig, 4.0, Damage::player([0.5, 70.0, 0.5])));
             let pig_after = handle_read(game, pig);
             assert!(pig_after.health.unwrap() < 10.0);

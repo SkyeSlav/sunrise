@@ -1193,6 +1193,7 @@ mod tests {
             layer: None,
         };
         let kind = MobType {
+            type_key: Default::default(),
             shadow: None,
             id: "minecraft:player".into(),
             species: Species::Zombie,

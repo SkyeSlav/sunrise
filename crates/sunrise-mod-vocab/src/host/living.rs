@@ -311,6 +311,13 @@ pub trait LivingClientBackend {
 #[sunrise_mod_api_macros::host_area]
 pub trait LivingBackendMut {
     /// Side: server.
+    /// Pushes the living entity away from `direction` ([x, z]) using `LivingEntity.knockback`.
+    /// `living_knockback` can edit or cancel the push before knockback resistance is applied.
+    /// A successful push also sends the resulting motion to a player's own client.
+    /// False for an unavailable body, a non-finite input, a canceled push, or a strength
+    /// that is zero or less after resistance. This does not deal damage or assign credit.
+    fn living_knockback(&mut self, living: LivingRef, strength: f64, direction: [f64; 2]) -> bool;
+    /// Side: server.
     /// Apply one loaded consumable effect without consuming the item.
     /// Mod-defined kinds enter the normal consume_effect hook: Some(true) means
     /// dispatch was entered, not that a listener changed game state. Reapplying

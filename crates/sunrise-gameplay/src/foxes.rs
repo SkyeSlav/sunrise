@@ -213,6 +213,7 @@ mod tests {
 
     fn kind(id: &str, species: Species) -> Arc<MobType> {
         Arc::new(MobType {
+            type_key: Default::default(),
             shadow: None,
             id: id.into(),
             species,
@@ -268,6 +269,7 @@ mod tests {
     fn dropped(stack: ItemStack) -> ItemEntity {
         let at = Vec3::new(0.5, 64.0, 0.5);
         ItemEntity {
+            size_answer: None,
             random: sunrise_core::random::LegacyRandom::new(0),
             attachment_lifetime: Default::default(),
             fall_distance: 0.0,

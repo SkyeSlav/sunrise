@@ -2703,7 +2703,7 @@ mod tests {
             "one word, not two"
         );
         // A name the game has is not taken over.
-        let (_, _, problems) = super::super::native_server::command_tree(
+        let (_, _, problems) = super::super::native_server::client_command_tree(
             &[mod_api::Command::new("help <x:word>")],
             |name| vanilla.find(name).is_some(),
             &arguments,

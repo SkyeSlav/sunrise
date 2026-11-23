@@ -16,7 +16,7 @@ use sunrise_world::{
 /// `getEntityInsideCollisionShape` as the shared walk sees it: the whole block, boxes
 /// to sweep the move against, or nothing. This is the one point #1011 adds the Part's
 /// own shape at.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum InsideShape {
     /// `Shapes.block()`: every move through the block is inside it.
     Full,
@@ -24,6 +24,42 @@ pub enum InsideShape {
     Boxes(Vec<sunrise_core::geometry::Aabb>),
     /// An empty shape: nothing is inside it.
     Empty,
+    /// A shape every state of the block shares, in block space: each box is moved to
+    /// the block and swept in turn, with nothing collected.
+    Fixed(&'static sunrise_core::geometry::VoxelShape),
+}
+
+/// `LavaCauldronBlock.FILLED_SHAPE`: `Shapes.or(AbstractCauldronBlock.SHAPE,
+/// Block.column(12, 4, 15))`, the cauldron's solid shape plus its lava. It is the
+/// block's `getEntityInsideCollisionShape` whatever the collision tables hold.
+pub(crate) fn lava_cauldron_filled_shape() -> &'static sunrise_core::geometry::VoxelShape {
+    use sunrise_core::geometry::{ShapeOp, VoxelShape};
+    static SHAPE: std::sync::OnceLock<VoxelShape> = std::sync::OnceLock::new();
+    SHAPE.get_or_init(|| {
+        let cuboid = |x0, y0, z0, x1, y1, z1| {
+            VoxelShape::from_box(Aabb::new(
+                Vec3::new(x0 / 16.0, y0 / 16.0, z0 / 16.0),
+                Vec3::new(x1 / 16.0, y1 / 16.0, z1 / 16.0),
+            ))
+            .expect("valid cauldron box")
+        };
+        let mut solid = VoxelShape::block();
+        // AbstractCauldronBlock.SHAPE: the openings under its feet
+        // and its hollow centre are cut out of the unit block.
+        for hole in [
+            cuboid(0.0, 0.0, 4.0, 16.0, 3.0, 12.0),
+            cuboid(4.0, 0.0, 0.0, 12.0, 3.0, 16.0),
+            cuboid(2.0, 0.0, 2.0, 14.0, 3.0, 14.0),
+            cuboid(2.0, 4.0, 2.0, 14.0, 16.0, 14.0),
+        ] {
+            solid = solid
+                .join(&hole, ShapeOp::ONLY_FIRST)
+                .expect("valid cauldron cutout");
+        }
+        solid
+            .join(&cuboid(2.0, 4.0, 2.0, 14.0, 15.0, 14.0), ShapeOp::OR)
+            .expect("valid filled cauldron")
+    })
 }
 
 /// The collector a walk queues its per-step effects into. `advanceStep` is the only
@@ -36,6 +72,12 @@ pub trait StepCollector {
 impl StepCollector for mod_api::InsideEffects {
     fn advance_step(&mut self, step: i32) {
         mod_api::InsideEffects::advance_step(self, step);
+    }
+}
+
+impl<W: From<mod_api::EntityWrite>> StepCollector for mod_api::__private::InsideCollector<W> {
+    fn advance_step(&mut self, step: i32) {
+        mod_api::__private::InsideCollector::advance_step(self, step);
     }
 }
 
@@ -124,6 +166,13 @@ pub fn contact_at<W: InsideWalk>(
         InsideShape::Boxes(boxes) => walk
             .bounds_at(from)
             .collided_along_vector(to.subtract(from), &boxes),
+        InsideShape::Fixed(shape) => {
+            let (bounds, offset) = (walk.bounds_at(from), Vec3::from_block(at));
+            shape
+                .boxes()
+                .iter()
+                .any(|b| bounds.collided_along_vector(to.subtract(from), &[b.move_by(offset)]))
+        }
     };
     Contacted {
         block,

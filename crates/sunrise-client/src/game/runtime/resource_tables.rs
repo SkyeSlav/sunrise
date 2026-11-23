@@ -62,6 +62,11 @@ impl Resources {
     pub(super) fn mob_types(&self) -> &HashMap<String, Arc<MobType>> {
         &self.rest().mob_types
     }
+    /// The player's, the armor stand's and the dragon's registry keys, resolved with these
+    /// resources.
+    pub(super) fn living_type_keys(&self) -> sunrise_client::health::LivingTypeKeys {
+        self.rest().living_type_keys
+    }
     pub(super) fn mob_data(&self) -> &sunrise_client::mobs::MobData {
         &self.rest().mob_data
     }

@@ -159,6 +159,21 @@ pub(super) const PLAYER: &str = "minecraft:player";
 pub(super) const ARMOR_STAND: &str = "minecraft:armor_stand";
 pub(super) const ENDER_DRAGON: &str = "minecraft:ender_dragon";
 
+/// The registry key of the type a living body is of (`Entity.getType`), as the accepted
+/// resources resolved it: a mob's type keeps its own, the other three are in `keys`. The one read
+/// both the full host's `entity_kind` and a hit's view make.
+pub(super) fn body_kind(
+    body: LivingBody<'_>,
+    keys: sunrise_client::health::LivingTypeKeys,
+) -> Option<mod_api::EntityTypeKey> {
+    match body {
+        LivingBody::Mob(m) => m.kind.type_key,
+        LivingBody::Player(_) => keys.player,
+        LivingBody::Stand(_) => keys.armor_stand,
+        LivingBody::Dragon(_) => keys.ender_dragon,
+    }
+}
+
 /// The holder of a living body's attachments: a player's by UUID where its borrower knows it,
 /// any other entity's by id.
 pub(super) fn body_holder(body: LivingBody<'_>) -> Option<mod_api::Holder> {

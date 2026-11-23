@@ -178,6 +178,7 @@ fn encode(draws: &[GuiDraw]) -> Vec<Value> {
                 out.push(json!({"type": "item", "slot": slot, "x": x, "y": y, "seed": seed, "matrix": m}));
                 continue;
             }
+            GuiDraw::PlayerFace { .. } => unreachable!("the HUD layout draws no player face op"),
         };
         if pose != IDENTITY {
             v["matrix"] = json!(pose);
@@ -222,9 +223,17 @@ fn decorations(c: &Value, atlas: &HudAtlas) -> Vec<GuiDraw> {
             offhand: !c["offhand"].is_null(),
             slots,
             offhand_pop: pop(&c["offhand"]).unwrap_or(0.0),
-            attack: (indicator == "HOTBAR").then(|| float("attackScale", 1.0)),
         };
         draws.extend(hud_layout::hotbar(w, h, &inputs));
+        if indicator == "HOTBAR" {
+            hud_layout::hotbar_attack_indicator(
+                w,
+                h,
+                inputs.right_handed,
+                float("attackScale", 1.0),
+                &mut draws,
+            );
+        }
     }
     let vehicle_hearts = if c.get("vehicleMaxHealth").is_some() {
         hud_layout::vehicle_max_hearts(float("vehicleMaxHealth", 0.0))

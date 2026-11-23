@@ -192,8 +192,8 @@ impl Game<'_> {
     /// add starts at its target immediately; an update preserves the old blend.
     /// `partial` is not clamped. The registration-slot key is resolved at load.
     /// 0 when the entity lacks the effect. None before effect resolution, for a stale
-    /// handle, or an entity other than the local player: the client keeps no
-    /// other entity's effects.
+    /// handle, or an entity other than the local player: the client keeps other living
+    /// entities' effects, but this query reads only the local player's.
     pub(super) fn living_effect_blend_factor(
         &self,
         living: LivingRef,

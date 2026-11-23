@@ -926,8 +926,9 @@ impl ItemStack {
     /// `ItemStack.getUseAnimation` with the mods' `use_animation` answers applied: the
     /// animation the renderer draws while this stack is in use. A `Spear` answer for a stack
     /// without kinetic data reads `None`, as it draws. Read from inside an
-    /// `ItemPart::use_animation` callback, it is the item's own answer: the Parts are not asked
-    /// again. `None` for an item the host doesn't know or a host without the engine backend.
+    /// `ItemPart::use_animation` callback for a stack of the item that callback is answering
+    /// (a copy with another count or components included), it is the item's own answer: that
+    /// Part is not asked again. Another item's Parts are asked. `None` for an item the host doesn't know or a host without the engine backend.
     pub fn use_animation(&self, host: &dyn crate::Host) -> crate::UseAnimation {
         crate::backend_of(host)
             .and_then(|backend| backend.item_stack_use_animation(self))

@@ -627,9 +627,8 @@ fn block_use_nested_originals_and_replacements_are_isolated() {
 #[test]
 #[ignore = "daily"]
 fn block_use_registry_guard_final_hand_matches_original() {
-    mod_platform::__private::install(Arc::from([]));
     let _recording = Recording::start();
-    crate::game::native_guest_turn_tests::with_guests(|g| {
+    let scan_registry = |g: &mut Game<'_>| {
         g.build_registries();
         g.set_mode_id(0);
         g.world
@@ -682,6 +681,9 @@ fn block_use_registry_guard_final_hand_matches_original() {
             reports > 0,
             "registry guard exercised no consuming block uses"
         );
+    };
+    mod_platform::testing::with_mods(Arc::from([]), || {
+        crate::game::native_guest_turn_tests::with_guests(scan_registry);
     });
 }
 

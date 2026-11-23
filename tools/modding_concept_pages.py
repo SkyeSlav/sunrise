@@ -28,7 +28,8 @@ from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "docs/modding/src"
-LINK = re.compile(r"(\!?\[[^\n]*?\]\()([^\s)]+)(\))")
+# An inline link or image, with its optional title (`[text](page.md#anchor "Title")`) in the closing group.
+LINK = re.compile(r"""(\!?\[[^\n]*?\]\()([^\s)]+)((?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?[ \t]*\))""")
 REFERENCE = re.compile(r"^( {0,3}\[[^\]\n]+\]:[ \t]*<?)([^\s>]+)(>?)", re.MULTILINE)
 INCLUDE = re.compile(r"(\{\{#(?:rustdoc_)?include )([^ }]+)(\s*\}\})")
 # The game repository and the mod registry are sunrise-org's, and the book is published at
@@ -50,8 +51,13 @@ NOT_A_MANUAL = re.compile(r"\b(design|designs|proposal|proposed|draft|roadmap|tr
 # Reader pages never cite tracker issue or PR numbers (such as `#42` or `#100000`);
 # hex colours, Markdown link destinations and explicit heading IDs are excluded before matching.
 ISSUE_REF = re.compile(r"(?<![A-Za-z0-9_`/&#-])#(\d+)(?![A-Za-z0-9_])")
-# Match fenced code blocks at the top level or inside blockquote containers (`> ```rust`).
-FENCE_OPEN = re.compile(r"^((?:[ \t]*>[ \t]?)*)([ \t]*)(`{3,}|~{3,})(.*)$")
+# CommonMark's block syntax, enough to find fenced code blocks inside block quotes and list items.
+QUOTE_MARK = re.compile(r" {0,3}> ?")
+LIST_MARK = re.compile(r"( {0,3})([-+*]|(\d{1,9})[.)])( *)")
+THEMATIC_BREAK = re.compile(r" {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$")
+ATX_HEADING = re.compile(r" {0,3}#{1,6}(?:[ \t]|$)")
+FENCE = re.compile(r"( {0,3})(`{3,}|~{3,})(.*)")
+FENCE_CLOSE = re.compile(r" {0,3}(`{3,}|~{3,})[ \t]*$")
 INCLUDE_ONLY = re.compile(r"\{\{#(?:rustdoc_)?include ([^\s}]+)\s*\}\}")
 COMPILED_EXAMPLE_STEM = re.compile(r"^[a-z0-9_]+$")
 HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
@@ -59,59 +65,105 @@ HEADING_EXPLICIT_ID = re.compile(r"^(#{1,6} .*?)\s*\{#[\w-]+\}\s*$", re.MULTILIN
 BARE_URL = re.compile(r"https?://\S+")
 
 
-def strip_html_comments_outside_fences(text):
-    """Remove HTML comments outside fenced code blocks so commented headings do not count."""
-    out = []
-    prose_chunk = []
-    fenced = ""
-    fence_prefix = ""
-    for line in text.splitlines(keepends=True):
-        if not fenced:
-            m = FENCE_OPEN.match(line.rstrip("\r\n"))
-            if m:
-                if prose_chunk:
-                    out.append(HTML_COMMENT.sub("", "".join(prose_chunk)))
-                    prose_chunk = []
-                fence_prefix, fenced = m.group(1), m.group(3)
-                out.append(line)
+def list_item(line, paragraph):
+    """`(content indent, rest of the line)` when `line` opens a list item, else None."""
+    m = LIST_MARK.match(line)
+    if not m or THEMATIC_BREAK.match(line) or not (m.group(4) or m.end() == len(line)):
+        return None
+    empty = m.end() == len(line)
+    # A list item interrupts a paragraph only when it has content and, if ordered, starts at 1.
+    if paragraph and (empty or (m.group(3) is not None and int(m.group(3)) != 1)):
+        return None
+    marker = len(m.group(1)) + len(m.group(2))
+    if empty or len(m.group(4)) > 4:
+        # An empty item, or one whose content starts as indented code, is indented one column past the marker.
+        return marker + 1, line[marker + 1:]
+    return m.end(), line[m.end():]
+
+
+def scan_fences(text):
+    """The fenced code blocks of `text`, nested in block quotes and list items as CommonMark nests them.
+
+    Returns `(fences, fenced)`: each fence as `(line index, info string, body lines)`, the body without its
+    container markers or the fence's own indent, and for each line whether it belongs to a fence (its opener
+    and closer included). A fence ends at its closer or where its container ends.
+    """
+    lines = text.splitlines()
+    fences, fenced = [], [False] * len(lines)
+    containers = []  # None for a block quote, else a list item's content indent
+    fence = None  # [opening line index, info, body, indent, character, length]
+    paragraph = False
+    for index, raw in enumerate(lines):
+        line = raw.expandtabs(4)
+        depth = 0
+        for indent in containers:
+            if indent is None:
+                m = QUOTE_MARK.match(line)
+                if not m:
+                    break
+                line = line[m.end():]
+            elif not line.strip():
+                line = ""
+            elif len(line) - len(line.lstrip(" ")) >= indent:
+                line = line[indent:]
+            else:
+                break
+            depth += 1
+        if fence is not None:
+            if depth == len(containers):
+                fenced[index] = True
+                m = FENCE_CLOSE.match(line)
+                if m and m.group(1)[0] == fence[4] and len(m.group(1)) >= fence[5]:
+                    fences.append(tuple(fence[:3]))
+                    fence = None
+                else:
+                    fence[2].append(line[min(fence[3], len(line) - len(line.lstrip(" "))):])
                 continue
-            prose_chunk.append(line)
-        else:
-            out.append(line)
-            raw = line.rstrip("\r\n")
-            if raw.startswith(fence_prefix):
-                rest = raw[len(fence_prefix):]
-                close_re = re.compile(rf"^[ \t]*{re.escape(fenced[0])}{{{len(fenced)},}}\s*$")
-                if close_re.match(rest):
-                    fenced = ""
-                    fence_prefix = ""
-    if prose_chunk:
-        out.append(HTML_COMMENT.sub("", "".join(prose_chunk)))
-    return "".join(out)
+            fences.append(tuple(fence[:3]))
+            fence = None
+        elif depth < len(containers):
+            lazy = (paragraph and line.strip() and not QUOTE_MARK.match(line) and not FENCE.match(line)
+                    and not ATX_HEADING.match(line) and not THEMATIC_BREAK.match(line)
+                    and list_item(line, True) is None)
+            if lazy:
+                continue
+        del containers[depth:]
+        while True:
+            if m := QUOTE_MARK.match(line):
+                containers.append(None)
+                line = line[m.end():]
+            elif item := list_item(line, paragraph):
+                containers.append(item[0])
+                line = item[1]
+            else:
+                break
+            paragraph = False
+        m = FENCE.match(line)
+        if m and not (m.group(2)[0] == "`" and "`" in m.group(3)):
+            fence = [index, m.group(3).strip(), [], len(m.group(1)), m.group(2)[0], len(m.group(2))]
+            fenced[index] = True
+            paragraph = False
+            continue
+        indented_code = not paragraph and line.startswith("    ")
+        paragraph = bool(line.strip()) and not indented_code and not ATX_HEADING.match(line) and not THEMATIC_BREAK.match(line)
+    if fence is not None:
+        fences.append(tuple(fence[:3]))
+    return fences, fenced
 
 
 def h1_headings(text):
-    """Yield real, non-empty top-level ATX H1 titles outside fenced blocks and HTML comments."""
-    cleaned = strip_html_comments_outside_fences(text)
-    fenced = ""
-    fence_prefix = ""
-    for line in cleaned.splitlines():
-        if not fenced:
-            m = FENCE_OPEN.match(line)
-            if m:
-                fence_prefix, fenced = m.group(1), m.group(3)
-                continue
-            if line.startswith("# "):
-                title = line[2:].strip()
-                if title:
-                    yield title
-        else:
-            if line.startswith(fence_prefix):
-                rest = line[len(fence_prefix):]
-                close_re = re.compile(rf"^[ \t]*{re.escape(fenced[0])}{{{len(fenced)},}}\s*$")
-                if close_re.match(rest):
-                    fenced = ""
-                    fence_prefix = ""
+    """Yield real, non-empty top-level ATX H1 titles outside fenced code blocks and HTML comments."""
+    _, fenced = scan_fences(text)
+    chunk = []
+    # A sentinel fenced line flushes the last run of prose.
+    for line, in_fence in chain(zip(text.splitlines(), fenced), [("", True)]):
+        if not in_fence:
+            chunk.append(line)
+            continue
+        for prose_line in HTML_COMMENT.sub("", "\n".join(chunk)).splitlines():
+            if prose_line.startswith("# ") and prose_line[2:].strip():
+                yield prose_line[2:].strip()
+        chunk = []
 
 
 def is_compiled_example(target, src):
@@ -123,36 +175,10 @@ def is_compiled_example(target, src):
     return resolved.stem == "lib" or bool(COMPILED_EXAMPLE_STEM.fullmatch(resolved.stem))
 
 
-def strip_blockquote_prefix(line, prefix):
-    if prefix and line.startswith(prefix):
-        return line[len(prefix):]
-    if prefix:
-        # Allow trailing-space differences on empty blockquote lines (`>` vs `> `).
-        stripped_prefix = prefix.rstrip(" \t")
-        if line.startswith(stripped_prefix):
-            return line[len(stripped_prefix):]
-    return line
-
-
 def check_rust_fences(text, path, src):
-    """Refuse non-ignored inline Rust fences (including blockquoted ones) and uncompiled include targets."""
-    lines = text.splitlines()
-    i = 0
-    while i < len(lines):
-        m = FENCE_OPEN.match(lines[i])
-        if not m:
-            i += 1
-            continue
-        prefix, mark, info = m.group(1), m.group(3), m.group(4).strip()
-        close_re = re.compile(rf"^[ \t]*{re.escape(mark[0])}{{{len(mark)},}}\s*$")
-        j = i + 1
-        body = []
-        while j < len(lines):
-            inner = strip_blockquote_prefix(lines[j], prefix)
-            if close_re.match(inner):
-                break
-            body.append(inner)
-            j += 1
+    """Refuse non-ignored inline Rust fences (in block quotes and list items too) and uncompiled include targets."""
+    fences, _ = scan_fences(text)
+    for i, info, body in fences:
         tokens = [t.strip().lower() for t in re.split(r"[,\s]+", info) if t.strip()]
         if tokens and tokens[0] in ("rust", "rs") and "ignore" not in tokens[1:]:
             non_blank = [line.strip() for line in body if line.strip()]
@@ -168,7 +194,6 @@ def check_rust_fences(text, path, src):
                     f"{path}:{i + 1}: Rust include {name} must target a compiled source in "
                     "docs/modding/examples/src/"
                 )
-        i = j + 1
 
 
 def check_issue_refs(body, path):
@@ -207,14 +232,9 @@ def page_title(text, path):
 
 def prose(text):
     """`text` without fenced code blocks and inline code spans, whose brackets are not links."""
-    out, fenced = [], False
-    for line in text.splitlines():
-        if line.lstrip().startswith(("```", "~~~")):
-            fenced = not fenced
-            continue
-        if not fenced:
-            out.append(re.sub(r"(`+)(?:(?!\1).)+?\1", "", line))
-    return "\n".join(out)
+    _, fenced = scan_fences(text)
+    return "\n".join(re.sub(r"(`+)(?:(?!\1).)+?\1", "", line)
+                     for line, in_fence in zip(text.splitlines(), fenced) if not in_fence)
 
 
 def check_url(link, where):

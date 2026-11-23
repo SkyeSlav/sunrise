@@ -2441,8 +2441,11 @@ fn sense_axolotl_attackables(m: &mut Mob, w: &MobWorld) {
         super::axolotl::prey_eligible(
             m.distance_sqr(s.position),
             s.in_water,
-            w.entity_has("minecraft:axolotl_always_hostiles", &s.kind.id),
-            w.entity_has("minecraft:axolotl_hunt_targets", &s.kind.id),
+            w.entity_tag_bit(
+                &s.kind,
+                crate::items::EntityTypeTags::AXOLOTL_ALWAYS_HOSTILES,
+            ),
+            w.entity_tag_bit(&s.kind, crate::items::EntityTypeTags::AXOLOTL_HUNT_TARGETS),
             cooldown,
             s.alive && !s.playing_dead,
         )
@@ -3101,6 +3104,8 @@ mod axolotl_parity_tests {
         ));
         let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
         kind.id = "test:custom_prey".into();
+        // Its place in the registry IDs above, as a content type's is set at load.
+        kind.flags.entity_tag_slot = Some(0);
         kind.species = Species::Cod;
         let mut prey = Mob::new(2, Arc::new(kind), Vec3::new(2.0, 80.0, 0.0), 0.0);
         prey.fluids.in_water = true;

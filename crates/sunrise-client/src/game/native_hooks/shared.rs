@@ -2292,7 +2292,8 @@ impl Game<'_> {
         // The victim as the death or protection callback left it, beside the lent attacker:
         // the player in place, or a mob split from the attacker in the same list.
         let victim_mob = self.mobs.iter().position(|m| m.id as i32 == entity);
-        let original_lend = original_lend.filter(|_| sunrise_client::health::hit_host_listened());
+        // The Post record exists only for a Post subscriber, and names an attacker only if the hit
+        // lent one: it carries the setup's decision.
         let lend_mob = original_lend
             .and_then(|id| self.mobs.iter().position(|m| m.id as i32 == id))
             .filter(|&index| Some(index) != victim_mob);

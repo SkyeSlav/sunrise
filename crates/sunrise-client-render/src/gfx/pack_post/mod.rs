@@ -298,6 +298,9 @@ mod shadow_faces_tests;
 mod r11f_image_tests;
 
 #[cfg(test)]
+mod normalized_image_tests;
+
+#[cfg(test)]
 mod work_group_fold_tests;
 
 #[cfg(test)]

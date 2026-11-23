@@ -18,6 +18,8 @@ pub(super) struct Var {
     /// Of a struct type: the pack's declaration stays as a private global, and the members
     /// travel in varyings of ours (`struct_parts`).
     pub(super) structure: bool,
+    /// The token of its type, where an error about it points.
+    pub(super) at: usize,
 }
 
 /// `layout(rgba16f) uniform writeonly image2D colorimg4;`
@@ -586,6 +588,7 @@ impl<'p> Stage<'p> {
                 name,
                 decl: format!("{ty} @;"),
                 structure: false,
+                at: 0,
             });
         }
     }
@@ -864,6 +867,7 @@ impl<'p> Stage<'p> {
                         name,
                         decl,
                         structure: true,
+                        at: ty_at,
                     };
                     if input {
                         self.ins.push(var);
@@ -875,6 +879,7 @@ impl<'p> Stage<'p> {
                     name,
                     decl,
                     structure: false,
+                    at: ty_at,
                 }),
                 _ if fragment => {
                     let n = location.unwrap_or(self.outputs.len() as u32);
@@ -908,6 +913,7 @@ impl<'p> Stage<'p> {
                     name,
                     decl,
                     structure: false,
+                    at: ty_at,
                 }),
             }
         }

@@ -2,6 +2,19 @@
 #[allow(unused_imports)]
 use crate::*;
 use std::borrow::Cow;
+
+/// Keep a listener's replacement within `Player.getAttackStrengthScale`'s output range.
+pub(crate) fn validate_hotbar_attack_indicator_progress(
+    _accepted: &f32,
+    proposed: &f32,
+) -> Result<(), &'static str> {
+    if (0.0..=1.0).contains(proposed) {
+        Ok(())
+    } else {
+        Err("progress")
+    }
+}
+
 /// A `Matrix3x2fStack` operation applied to a copy of the current pose.
 #[derive(Clone, Copy, Debug, PartialEq)]
 // exhaustive: a closed set the game matches without a wildcard
@@ -119,6 +132,22 @@ pub enum GuiDraw {
         seed: i32,
         scale: [f32; 2],
         pivot: [f32; 2],
+    },
+    /// `PlayerFaceExtractor.extractRenderState` of the player `uuid`'s skin: the face, then the
+    /// hat layer when `hat`, each `size` GUI pixels square at `x, y`, tinted ARGB `color`, under
+    /// the current pose and clip. `flip` draws it upside down; nothing is read from a name.
+    /// The skin is the one the client has: a player on the connection's player list draws its
+    /// `PlayerInfo` skin, any other UUID its profile's, looked up once in the background as a
+    /// player head's is. Until that skin is downloaded and uploaded, and when there is none,
+    /// the UUID's default skin is drawn (`DefaultPlayerSkin.get`), so the op never waits.
+    PlayerFace {
+        uuid: u128,
+        x: i32,
+        y: i32,
+        size: i32,
+        hat: bool,
+        flip: bool,
+        color: u32,
     },
     /// `pose().pushMatrix()` followed by `ops`.
     Push(Vec<PoseOp>),

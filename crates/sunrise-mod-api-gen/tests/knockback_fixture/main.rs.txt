@@ -25,6 +25,7 @@ fn main() {
         let mut game = Game {
             player: Some(motion::PlayerMotion {
                 velocity: Vec3::default(), ground: Ground { on_ground: true }, entity_id: 1,
+                attributes: motion::Attributes, random: Random,
             }),
             level,
             last_hurt_by_player: (),

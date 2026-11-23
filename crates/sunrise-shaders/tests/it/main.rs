@@ -3,6 +3,7 @@
 
 mod array_declarators;
 mod array_initializer_lists;
+mod arrays_too_large;
 mod atomic_member_reads;
 mod callable_macro_boundary;
 mod global_constant_division;

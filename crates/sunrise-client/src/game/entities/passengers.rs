@@ -374,9 +374,10 @@ impl Game<'_> {
                     vehicle,
                     rider,
                     vehicle.rider.is_some() || self.riding == Some(v),
-                    self.items()
-                        .entity_type_tags
-                        .contains("minecraft:non_controlling_rider", &rider.kind.id),
+                    self.items().entity_type_tags.has_bit(
+                        rider.kind.flags.entity_tag_slot,
+                        sunrise_client::items::EntityTypeTags::NON_CONTROLLING_RIDER,
+                    ),
                 );
                 let takes_body = riders::takes_vehicle_body(vehicle, rider, controlling);
                 let vehicle_width = vehicle.width();
@@ -433,9 +434,11 @@ impl Game<'_> {
                         .map(|at| (v, at))
                 })
                 .collect();
-            for display in self.text_displays.values_mut() {
+            let sections = self.client_pick.sections.get_mut();
+            for (&id, display) in &mut self.text_displays {
                 if let Some(at) = display.vehicle.and_then(|v| seats.get(&v)) {
                     display.ride(*at);
+                    sections.move_id(id as u32, display.position().to_array());
                 }
             }
             for interaction in self.interactions.values_mut() {

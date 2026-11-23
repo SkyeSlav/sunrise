@@ -76,8 +76,13 @@ stack: `PackType::ServerData` takes `mymod:machines/furnace.json` from `data/`, 
 `PackType::ClientResources` takes `mymod:models/block/furnace.json` from `assets/`. As with
 `ResourceManager.getResource`, the highest selected pack that supplies the file wins; filters,
 a world's datapacks and a mod's own root data all apply. The answer is the winning bytes, or
-`None` for a missing, unreadable or over-64-MiB file. Use a reload listener for a whole folder
-or for parsing at reload time; a single read does not reload packs. Directory-pack
+`None` for a missing, unreadable or over-64-MiB file. `host.resource_stack(pack_type, &identifier)`
+gives every selected pack's copy instead, lowest first and the winning one last
+(`ResourceManager.getResourceStack`), leaving out unreadable and over-64-MiB copies.
+`host.list_resources(pack_type, "textures/item", ".png")` names the files under that folder of every
+namespace that end in the suffix, in identifier order (`ResourceManager.listResources`); metadata
+files (`.mcmeta`) are never listed. Use a reload listener for parsing at reload time; these reads
+never reload packs. Directory-pack
 symlinks follow vanilla pack behavior: linked resource files are read through the pack.
 
 ## Embedded data

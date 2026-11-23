@@ -23,7 +23,7 @@ use super::{
 };
 use mod_api::DragonPhase;
 use sunrise_client::{
-    health::{DamageContainer, DamageLevel, HurtSource, Reduction},
+    health::{DamageContainer, DamageLevel, HurtSource, Hurting, Knock, Reduction},
     hud::HudBatch,
     hud_layout, hud_overlays,
     mesher::Vertex,
@@ -152,6 +152,14 @@ pub(super) const MAX_HEALTH: f32 = 200.0;
 /// `Mob.getAmbientSoundInterval`.
 const AMBIENT_INTERVAL: i32 = 80;
 
+/// A full hit's default knockback (`dealDefaultKnockback`): where it comes from, and the
+/// dragon's knockback resistance when it lands, which the hurt alone cannot read.
+#[derive(Clone, Copy, Debug)]
+struct Push {
+    from: Vec3,
+    resistance: f64,
+}
+
 #[derive(Default)]
 pub(super) struct Fight {
     pub(super) loaded: bool,
@@ -244,17 +252,23 @@ pub(super) struct Crystal {
     /// as loaded until `/tp` grounds it or a cobweb or powder snow resets the
     /// fall (`crystal.rs`).
     pub fall: (bool, f64),
+    /// What `entity_size` answered at its last size refresh (`EntityEvent.Size`): its box takes
+    /// the answer while it holds for its vanilla size.
+    pub size_answer: Option<sunrise_client::pose::SizeAnswer>,
 }
 sunrise_client::impl_joined!(Crystal);
 sunrise_mod_runtime::impl_attachment_lifetime!(Crystal);
 impl Crystal {
+    /// `EntityType.END_CRYSTAL.getDimensions()`: width, height and eye height.
+    pub(super) const DIMENSIONS: [f32; 3] = [2.0, 2.0, 1.7];
     /// `EntityType.END_CRYSTAL`: 2 x 2.
     pub(super) fn bounds(&self) -> Aabb {
         let p = self.position;
-        Aabb::new(
+        let vanilla = Aabb::new(
             Vec3::new(p.x - 1.0, p.y, p.z - 1.0),
             Vec3::new(p.x + 1.0, p.y + 2.0, p.z + 1.0),
-        )
+        );
+        sunrise_client::pose::SizeAnswer::sized_box(self.size_answer, Self::DIMENSIONS, p, vanilla)
     }
 }
 #[derive(Clone, Debug, Default)]
@@ -785,8 +799,9 @@ impl Dragon {
     ) -> Hurt {
         self.hurt_part_from(level, part, damage, counts, kind, direct, None, false)
     }
-    /// `hurt_part` with the melee attacker's position (`DamageSource.getSourcePosition`,
-    /// the direct entity's feet). `None` for a hit that is not a player's melee.
+    /// `hurt_part` with where a full hit's default knockback comes from: the melee attacker's
+    /// position (`DamageSource.getSourcePosition`, the direct entity's feet) and the dragon's
+    /// knockback resistance at the hit. `None` for a hit that is not a player's melee.
     fn hurt_part_from(
         &mut self,
         level: &mut DamageLevel<'_>,
@@ -795,7 +810,7 @@ impl Dragon {
         counts: Option<HurtSource<'_>>,
         kind: DamageKind,
         direct: Option<&ProjectileKind>,
-        from: Option<Vec3>,
+        push: Option<Push>,
         invulnerability_checked: bool,
     ) -> Hurt {
         // The game-level invulnerability hook includes the part's fire immunity in
@@ -809,7 +824,7 @@ impl Dragon {
             damage,
             counts,
             shrugs(direct),
-            from,
+            push,
             invulnerability_checked,
         )
     }
@@ -850,7 +865,7 @@ impl Dragon {
         damage: f32,
         counts: Option<HurtSource>,
         arrow: bool,
-        from: Option<Vec3>,
+        push: Option<Push>,
         invulnerability_checked: bool,
     ) -> Hurt {
         if matches!(self.phase, Phase::Dying { .. }) || !self.alive() {
@@ -975,13 +990,16 @@ impl Dragon {
         // and maybe takes off. `from` is the attacker's feet for a player's
         // melee hit. Explosions are `#no_knockback`; their push is
         // `explosion_knockback`.
-        if full && let Some(from) = from {
+        if full && let Some(Push { from, resistance }) = push {
             self.knockback(
                 level,
-                f64::from(0.4_f32),
-                from.x - self.position.x,
-                from.z - self.position.z,
+                Knock {
+                    strength: f64::from(0.4_f32),
+                    x: from.x - self.position.x,
+                    z: from.z - self.position.z,
+                },
                 source,
+                resistance,
             );
         }
         // The last of `LivingEntity.hurtServer` (`reallyHurt`'s `super.hurtServer`):
@@ -1006,48 +1024,17 @@ impl Dragon {
         Hurt::Landed { full }
     }
     /// `EnderDragon.knockback`: `LivingEntity.knockback` only when the phase
-    /// is not sitting. `(xd, zd)` points at the hit (`dealDefaultKnockback`:
-    /// the source position minus this position). Knockback resistance is the
-    /// mob default, 0. `noPhysics` never sets `onGround`, so the vertical
-    /// component stays.
-    fn knockback(
+    /// is not sitting. `noPhysics` never sets `onGround`, so the vertical component stays.
+    pub(super) fn knockback(
         &mut self,
         level: &mut DamageLevel<'_>,
-        power: f64,
-        xd: f64,
-        zd: f64,
+        mut knock: Knock,
         source: HurtSource<'_>,
-    ) {
-        if self.phase.sitting() {
-            return;
-        }
-        let mut knock = sunrise_client::health::Knock {
-            strength: power,
-            x: xd,
-            z: zd,
-        };
-        if level.knockback_canceled(
-            sunrise_client::health::Hurting::Dragon(self.id as i32, source),
-            &mut knock,
-        ) {
-            return;
-        }
-        let sunrise_client::health::Knock {
-            strength: power,
-            x: mut xd,
-            z: mut zd,
-        } = knock;
-        if power <= 0.0 {
-            return;
-        }
-        while xd * xd + zd * zd < f64::from(1.0e-5_f32) {
-            xd = (self.random.next_double() - self.random.next_double()) * 0.01;
-            zd = (self.random.next_double() - self.random.next_double()) * 0.01;
-        }
-        let len = (xd * xd + zd * zd).sqrt();
-        let (kx, kz) = (xd / len * power, zd / len * power);
-        let v = self.velocity;
-        self.velocity = Vec3::new(v.x / 2.0 - kx, v.y, v.z / 2.0 - kz);
+        resistance: f64,
+    ) -> bool {
+        !self.phase.sitting()
+            && !level.knockback_canceled(Hurting::Dragon(self.id as i32, source), &mut knock)
+            && knock.apply(&mut self.velocity, resistance, false, &mut self.random)
     }
     /// `ServerExplosion.hurtEntities` on the dragon: the dragon itself (its
     /// body takes it), then each part, in `Level.getEntities` order, each by
@@ -2006,6 +1993,22 @@ impl Game<'_> {
             },
         )
     }
+    /// The dragon's `getAttributeValue(KNOCKBACK_RESISTANCE)` now, which both knockback entries
+    /// read: its saved attributes over the type's default. 0 without a dragon.
+    pub(super) fn dragon_knockback_resistance(&self) -> f64 {
+        self.dragon
+            .as_ref()
+            .and_then(|d| {
+                d.live.read(
+                    &self.motion.attributes,
+                    "minecraft:ender_dragon",
+                    "minecraft:knockback_resistance",
+                    sunrise_world::attribute_map::ValueKind::Computed,
+                    Vec::new,
+                )
+            })
+            .unwrap_or(0.0)
+    }
     /// `hurt_dragon_part` with the position a full hit's knockback pushes away from.
     fn hurt_dragon_part_at(
         &mut self,
@@ -2053,6 +2056,11 @@ impl Game<'_> {
             None,
             self.combat.attack(),
         );
+        // `getAttributeValue(KNOCKBACK_RESISTANCE)` as the push reads it, before the hit.
+        let push = origin.from.map(|from| Push {
+            from,
+            resistance: self.dragon_knockback_resistance(),
+        });
         let mut credit = plan.lend(&mut self.last_hurt_by_player);
         let Some(d) = self.dragon.as_mut() else {
             return Hurt::Refused;
@@ -2060,16 +2068,7 @@ impl Game<'_> {
         let was_down = d.down();
         let (cooldown, last_hurt) = (d.invulnerable, d.last_hurt);
         let level = super::entity::damage_level_of!(self, self.combat.attack(), &mut credit, None);
-        let hurt = d.hurt_part_from(
-            level,
-            part,
-            damage,
-            source,
-            kind,
-            origin.direct,
-            origin.from,
-            true,
-        );
+        let hurt = d.hurt_part_from(level, part, damage, source, kind, origin.direct, push, true);
         // LivingEntity.hurtServer: damage that is applied sets lastHurtByPlayer
         // (100 ticks); a hit the damage cooldown absorbs returns before that.
         if counts
@@ -3300,10 +3299,18 @@ impl Game<'_> {
         let mobs: Vec<(u32, Aabb, Vec3)> = if no_breath {
             Vec::new()
         } else {
-            let tags = &self.stations().enchantments.entity_tags;
+            let tags = &self.items().entity_type_tags;
             self.mobs
                 .iter()
-                .filter(|m| m.alive() && mob_can_be_affected(tags, &m.kind.id, "instant_damage"))
+                .filter(|m| {
+                    m.alive()
+                        && mob_can_be_affected(
+                            tags,
+                            &m.kind.id,
+                            m.kind.flags.entity_tag_slot,
+                            "instant_damage",
+                        )
+                })
                 .map(|m| (m.id, m.bounds(), m.position))
                 .collect()
         };
@@ -4095,6 +4102,7 @@ impl Crystal {
             value => nbt_value::number(value).unwrap_or_default() as i16,
         };
         Some(Self {
+            size_answer: None,
             attachment_lifetime: Default::default(),
             join: Default::default(),
             id: 0,
@@ -5226,7 +5234,7 @@ impl Game<'_> {
 mod crystal;
 
 #[cfg(test)]
-mod tests {
+pub(in crate::game) mod tests {
     use super::*;
 
     #[test]
@@ -5748,6 +5756,10 @@ mod tests {
     #[test]
     #[ignore]
     fn dragon_render_parity_fixture() {
+        run_dragon_render_parity_fixture();
+    }
+
+    pub(in crate::game) fn run_dragon_render_parity_fixture() {
         let path = std::env::var("SUNRISE_DRAGON_RENDER_OUTPUT").expect("harness output path");
         let mut cases = Vec::new();
         for t in [0.0, 0.05, 0.25, 0.5, 0.8, 0.9, 0.95, 1.0] {
@@ -6011,26 +6023,70 @@ mod tests {
         let mut perched = dragon(Phase::Scanning { time: 0 });
         perched.velocity = velocity;
         assert_eq!(
-            perched.hurt_from(level, 0, 9.0, HIT, false, Some(from), false),
+            perched.hurt_from(
+                level,
+                0,
+                9.0,
+                HIT,
+                false,
+                Some(Push {
+                    from,
+                    resistance: 0.0
+                }),
+                false
+            ),
             Hurt::Landed { full: true }
         );
         assert_eq!(perched.velocity, velocity);
 
         let mut taking_off = dragon(Phase::Flaming { ticks: 0 });
         taking_off.velocity = velocity;
-        taking_off.hurt_from(level, 0, 60.0, HIT, false, Some(from), false);
+        taking_off.hurt_from(
+            level,
+            0,
+            60.0,
+            HIT,
+            false,
+            Some(Push {
+                from,
+                resistance: 0.0,
+            }),
+            false,
+        );
         assert!(matches!(taking_off.phase, Phase::Takeoff { .. }));
         assert_eq!(taking_off.velocity, velocity);
 
         let mut flying = dragon(flying());
         flying.velocity = velocity;
         assert_eq!(
-            flying.hurt_from(level, 0, 9.0, HIT, false, Some(from), false),
+            flying.hurt_from(
+                level,
+                0,
+                9.0,
+                HIT,
+                false,
+                Some(Push {
+                    from,
+                    resistance: 0.0
+                }),
+                false
+            ),
             Hurt::Landed { full: true }
         );
         assert_eq!(flying.velocity, pushed);
         assert_eq!(
-            flying.hurt_from(level, 0, 20.0, HIT, false, Some(from), false),
+            flying.hurt_from(
+                level,
+                0,
+                20.0,
+                HIT,
+                false,
+                Some(Push {
+                    from,
+                    resistance: 0.0
+                }),
+                false
+            ),
             Hurt::Landed { full: false }
         );
         assert_eq!(flying.velocity, pushed);
@@ -6268,6 +6324,49 @@ mod tests {
                 hit(game, true, None);
                 assert_eq!(heard.load(Ordering::SeqCst), 1);
             });
+        });
+    }
+
+    /// `dealDefaultKnockback` reads the dragon's `getAttributeValue(KNOCKBACK_RESISTANCE)` at the
+    /// hit: a netherite chestplate's `0.1F` (`ArmorMaterials.NETHERITE`, widened to the
+    /// modifier's double) shortens the push to `0.4F * (1 - 0.1F)`.
+    #[test]
+    #[ignore = "daily"]
+    fn a_hit_on_the_dragon_pushes_by_its_live_knockback_resistance() {
+        super::super::native_entity_refs::tests::with_game(|game| {
+            let mut d = dragon(flying());
+            d.velocity = Vec3::new(1.0, -0.3, 0.5);
+            d.equipment.set(
+                sunrise_items::equipment::CHEST,
+                Some(sunrise_client::items::ItemStack::new(
+                    "minecraft:netherite_chestplate",
+                    1,
+                )),
+            );
+            game.dragon.replace(d);
+            game.tick_equipment_attributes();
+            let resistance = f64::from(0.1_f32);
+            assert_eq!(game.dragon_knockback_resistance(), resistance);
+            let from = Vec3::new(3.0, 70.0, 4.0);
+            let hurt = game.hurt_dragon_part_at(
+                0,
+                9.0,
+                true,
+                None,
+                DamageKind::Generic,
+                DragonHitOrigin {
+                    direct: None,
+                    entity_id: None,
+                    from: Some(from),
+                    invulnerability_checked: false,
+                },
+            );
+            assert_eq!(hurt, Hurt::Landed { full: true });
+            let power = f64::from(0.4_f32) * (1.0 - resistance);
+            assert_eq!(
+                game.dragon.as_ref().unwrap().velocity,
+                Vec3::new(0.5 - 0.6 * power, -0.3, 0.25 - 0.8 * power)
+            );
         });
     }
 

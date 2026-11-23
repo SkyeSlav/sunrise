@@ -101,22 +101,26 @@ restoring it from a saved chunk fires the hook once with `loaded_from_disk = tru
 The normal join cancellation and transaction rules apply.
 
 `entity_leave_level` reports when the same entities leave. On the server,
-`LevelRef::visit_entities_in` visits block, item and text displays, markers and
-interactions. It does not visit eyes of ender, leash knots or other unmodeled kinds.
-The query uses physical boxes, not rendering bounds: displays and markers have
-zero-sized boxes at their positions; interactions use their saved width and height.
+`LevelRef::visit_entities_in` also visits markers and interactions, and on both sides
+block, item and text displays (see below). It does not visit eyes of ender, leash knots
+or other unmodeled kinds. The query uses physical boxes, not rendering bounds: markers
+have zero-sized boxes at their positions; interactions use their saved width and height.
 A handle expires when its entity unloads, so find it again when the saved entity rejoins.
 
 ## Visiting entities in a box
 
 `level.visit_entities_in(host, min, max, &mut visit)` visits readable `EntityRef`s
 whose boxes intersect the given box. Face-only contact does not intersect, and
-inverted bounds are swapped on each axis. Ordinary entities come first, then item
-frames and paintings in join order (frames first on ties), then the dragon's body. The server then visits
-displays, markers, interactions, fishing hooks and placed non-spectator guests.
-On a client the walk sees the server-tracked entities, including tracked players,
-and visits the window's own player after the dragon's body unless spectating.
-Intersecting dragon parts come last on both sides.
+inverted bounds are swapped on each axis. Ordinary entities are visited in level
+section order, then in entry order within each section. The client sees tracked
+entities and its own player if not spectating; the server includes fishing hooks
+and placed non-spectator guests. Intersecting dragon parts come last on both sides.
+
+Block, item and text displays have zero-sized physical boxes on both sides: a display
+only matches when its position is strictly inside the query on every axis. On the client,
+this is its current tick position after movement interpolation, not the packet's destination
+or the pose drawn between ticks. Overlap with just the render culling box does not count,
+and ordinary crosshair picking still ignores displays.
 
 The visitor can read the entity or run another shared query through the same host:
 no residency guard is held during the callback. Return `ControlFlow::Continue(())`

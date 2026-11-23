@@ -281,6 +281,10 @@ pub struct MobType {
     /// TemptGoal items when they differ from the food.
     pub tempt: Arc<[String]>,
     pub passenger_attachments: Vec<[f32; 3]>,
+    /// The type's key in the entity-type registry the accepted resources were loaded with
+    /// (`Entity.getType`): set when the game accepts its type table, none in a table built
+    /// without one.
+    pub type_key: Option<mod_api::EntityTypeKey>,
 }
 impl MobType {
     /// `EntityType.isAllowedInPeaceful`, including a living mod type's override.
@@ -576,6 +580,7 @@ impl MobTypes {
                         .or(def.food_tag())
                         .map_or_else(|| Arc::from(Vec::new()), tag),
                     passenger_attachments,
+                    type_key: None,
                     category,
                     id,
                 },
@@ -1630,11 +1635,6 @@ pub struct Mob {
     pub sync_position: bool,
     /// Footstep, splash and landing bookkeeping, retained across teleports.
     pub movement_emission: Option<MovementEmission>,
-    /// `getAttributeValue(KNOCKBACK_RESISTANCE)` with the modifiers of the
-    /// items it wears or holds (`Extra::gear_knockback`), which the game
-    /// works out each tick for a mob that has any (the mob itself knows no
-    /// item): `None` for the rest.
-    pub gear_knockback_resistance: Option<f64>,
     pub health: f32,
     pub hurt_time: i32,
     /// `LivingEntity.damageCooldownTime`: 20 after a hit, counting down;
@@ -2306,11 +2306,22 @@ pub enum MobEvent {
         kind: &'static str,
         params: conversion::Params,
         after: conversion::After,
+        /// Vanilla converts at a point of the mob's tick that comes before `travel`, which
+        /// Sunrise runs before raising this: the new mob takes `from`'s place and motion
+        /// (`conversion::motion_at`), not the place travel moved the original to.
+        before_travel: bool,
     },
     DropItem {
         mob: u32,
         item: Arc<str>,
         count: u32,
+        at: [f64; 3],
+    },
+    /// `Piglin.finishConversion`'s `inventory.removeAllItems().forEach(spawnAtLocation)`:
+    /// every stack of `mob`'s inventory, as the game finds it when it handles the event, dropped
+    /// at `at` (where the piglin converted).
+    DropInventory {
+        mob: u32,
         at: [f64; 3],
     },
     /// `Entity.spawnAtLocation` with the complete stack and its components.
@@ -3565,6 +3576,8 @@ pub struct MobWorld<'a> {
     pub mob_griefing: bool,
     /// The `universal_anger` game rule (`NeutralMob.isAngryAtAllPlayers`).
     pub universal_anger: bool,
+    /// The `pvp` game rule (`ServerLevel.isPvpAllowed`).
+    pub pvp: bool,
     /// The `mob_drops` game rule (`shouldDropLoot`).
     pub mob_drops: bool,
     /// The `max_entity_cramming` game rule.
@@ -3760,6 +3773,8 @@ pub trait WhoLookup {
 pub struct Teams<'a> {
     pub player: Option<&'a crate::scoreboard::Team>,
     pub mobs: HashMap<u32, &'a crate::scoreboard::Team>,
+    /// Each real player of the level on a team, host and guests, by entity id.
+    pub players: HashMap<u32, &'a crate::scoreboard::Team>,
 }
 impl<'a> Teams<'a> {
     pub fn of(&self, who: Who) -> Option<&'a crate::scoreboard::Team> {
@@ -3767,6 +3782,10 @@ impl<'a> Teams<'a> {
             Who::Player => self.player,
             Who::Mob(id) => self.mobs.get(&id).copied(),
         }
+    }
+    /// The team of the real player with this entity id.
+    pub fn of_player(&self, id: u32) -> Option<&'a crate::scoreboard::Team> {
+        self.players.get(&id).copied()
     }
 }
 /// `InfestedMobEffect.onMobHurt`'s draws from the bearer's random
@@ -3879,7 +3898,6 @@ impl Mob {
             needs_sync: false,
             sync_position: false,
             movement_emission: None,
-            gear_knockback_resistance: None,
             hurt_time: 0,
             invulnerable: 0,
             invulnerable_time: 0,
@@ -5704,6 +5722,7 @@ mod teams_tests {
     fn borrowed<'a>(board: &'a Scoreboard, uuids: &HashMap<u32, [i32; 4]>) -> Teams<'a> {
         Teams {
             player: board.players_team("Steve"),
+            players: HashMap::new(),
             mobs: uuids
                 .iter()
                 .filter_map(|(id, u)| Some((*id, board.players_team(&uuid_text(*u))?)))
@@ -5808,6 +5827,7 @@ pub mod sensor_scan_tests {
             food: Arc::default(),
             tempt: Arc::default(),
             passenger_attachments: Vec::new(),
+            type_key: None,
         })
     }
     #[test]

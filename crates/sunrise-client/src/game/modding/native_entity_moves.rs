@@ -285,42 +285,11 @@ impl Game<'_> {
             return false;
         };
         if matches!(target, Target::Player | Target::Guest(_)) {
-            let conn = match target {
-                Target::Player => self.lan_acting,
-                Target::Guest(conn) => Some(conn),
-                _ => None,
-            };
-            let Some(conn) = conn else {
-                return false;
-            };
-            let Some(host) = self.lan.as_mut() else {
-                return false;
-            };
-            return host
-                .hub
-                .update_guest(conn, |g| {
-                    let motion = if matches!(target, Target::Player) {
-                        self.player.as_mut()
-                    } else {
-                        g.motion.as_deref_mut()
-                    };
-                    let Some(motion) = motion else {
-                        return false;
-                    };
-                    let v = motion.velocity;
-                    motion.velocity = Vec3::new(v.x + delta[0], v.y + delta[1], v.z + delta[2]);
-                    let v = motion.velocity;
-                    g.send(
-                        &sunrise_protocol::packets::play::Clientbound::SetEntityMotion(
-                            sunrise_protocol::packets::play::SetEntityMotion {
-                                id: g.entity_id,
-                                velocity: [v.x, v.y, v.z],
-                            },
-                        ),
-                    );
-                    true
-                })
-                .unwrap_or(false);
+            let [x, y, z] = delta;
+            return self.write_player_velocity(target, |before| {
+                let velocity = before.add_vector(Vec3::new(x, y, z));
+                velocity.is_finite().then_some(velocity)
+            });
         }
         let Some(h) = self.native_walk_entity(entity.id()) else {
             return false;
@@ -335,6 +304,54 @@ impl Game<'_> {
         }
         true
     }
+    /// Update the resolved player's body, in place for its own turn or in its guest record.
+    /// The resolver already excludes displaced outer players. Send to the owning client only.
+    pub(super) fn write_player_velocity(
+        &mut self,
+        target: Target,
+        change: impl FnOnce(Vec3) -> Option<Vec3>,
+    ) -> bool {
+        let Some((conn, motion)) = self.player_motion_mut(target) else {
+            return false;
+        };
+        let Some(velocity) = change(motion.velocity) else {
+            return false;
+        };
+        motion.velocity = velocity;
+        self.send_guest_motion(conn, Some(velocity));
+        true
+    }
+
+    /// Put back a player's own random after a copy of it drew for them.
+    pub(super) fn write_player_random(
+        &mut self,
+        target: Target,
+        random: sunrise_core::random::EntityRandom,
+    ) {
+        if let Some((_, motion)) = self.player_motion_mut(target) {
+            motion.random = random;
+        }
+    }
+
+    /// The body of the acting player or a guest, with its connection, during or outside a turn.
+    fn player_motion_mut(
+        &mut self,
+        target: Target,
+    ) -> Option<(u32, &mut sunrise_client::motion::PlayerMotion)> {
+        let conn = match target {
+            Target::Player => self.lan_acting,
+            Target::Guest(conn) => Some(conn),
+            _ => None,
+        }?;
+        let host = self.lan.as_mut()?;
+        let motion = if target == Target::Player {
+            host.hub.guest(conn).and(self.player.as_mut())
+        } else {
+            host.hub.guests.motion_mut(conn)
+        }?;
+        Some((conn, motion))
+    }
+
     /// Moves a player by `delta` through the level (`Entity.move`) after the `entity_move` hook
     /// has heard it, and tells its client with a relative teleport (`Hub::displace`). The
     /// displacement made, or `None` (see the host trait for what is refused).
@@ -410,7 +427,7 @@ impl Game<'_> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::game) mod tests {
     #[test]
     #[ignore = "daily"]
     fn moves_and_pushes_a_live_mob() {
@@ -473,6 +490,7 @@ mod tests {
             let stand = game.entity(13).unwrap();
             assert!(!stand.set_rotation(game, 30.0, 10.0));
             game.others.push(super::super::commands::OtherEntity {
+                size_answer: None,
                 attachment_lifetime: Default::default(),
                 knot_check: None,
                 eye: None,
@@ -533,6 +551,10 @@ mod tests {
     /// Independent vanilla outcomes for spawn bounds and the yaw-to-direction conversion.
     #[test]
     fn move_boundaries_match_vanilla() {
+        run_move_boundaries_match_vanilla();
+    }
+
+    pub(in crate::game) fn run_move_boundaries_match_vanilla() {
         use serde_json::Value;
         let cases = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

@@ -134,6 +134,9 @@ pub(super) fn load_world_rest(
             .into_iter()
             .map(|(k, mut v)| {
                 v.flags.tick_alone = each.is_some_and(|each| each.names(&v.id));
+                // The entity-type registry is complete before the rest loads
+                // (`register_iterated_registries`): the type keeps its key from it.
+                v.type_key = mod_api::__private::resolved_entity_type_key(&v.id);
                 (k, Arc::new(v))
             })
             .collect();
@@ -322,6 +325,7 @@ pub(super) fn load_world_rest(
         end_environment,
         behaviours: Arc::new(behaviours?),
         mob_types,
+        living_type_keys: sunrise_client::health::LivingTypeKeys::resolve(),
         mob_data,
         spawner_types,
         player_type,

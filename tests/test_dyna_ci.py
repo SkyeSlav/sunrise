@@ -1,7 +1,9 @@
 """Dyna's switch routes only supported, same-repository events to its pool."""
+import ast
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -618,6 +620,19 @@ class DynaRoutingTests(unittest.TestCase):
         self.assertIn("persist-credentials: false", parity)
         self.assertIn("ref: ${{ inputs.commit }}", parity)
 
+    def test_no_parity_harness_builds_the_client_lib_test(self):
+        # Its one rustc outgrew the 16 GiB parity runner (#4896): a harness runs a sunrise-client fixture from
+        # lab.parity_fixtures() instead.
+        def builds_client_lib_test(path):
+            # Any command list holding cargo, test and sunrise-client, whatever its flags and their order.
+            return any(isinstance(node, ast.List)
+                       and {"cargo", "test", "sunrise-client"} <= {item.value for item in node.elts
+                                                                   if isinstance(item, ast.Constant)}
+                       for node in ast.walk(ast.parse(path.read_text())))
+
+        self.assertEqual([path.name for path in sorted((ROOT / "tools").glob("test_*_parity.py"))
+                          if builds_client_lib_test(path)], [])
+
     def test_daily_harnesses_client_lib_tests_are_built_before_the_harnesses(self):
         from test_ci_runners import jobs
         parity = dict(jobs(PARITY.read_text()))["vanilla-parity"]
@@ -636,6 +651,10 @@ class DynaRoutingTests(unittest.TestCase):
                 'run(["cargo", "test", "--locked", "-p", "sunrise-client-lib", "--lib", "x"])\n')
             (tree / "tools" / "test_game_parity.py").write_text(
                 "run(['cargo', 'test', '-p', 'sunrise-client', '--lib', 'y'])\n")
+            # sunrise-client's fixtures: their own binary, in each variant a harness asks lab for.
+            (tree / "tools" / "test_fixture_parity.py").write_text("run([lab.parity_fixtures(), 'v'])\n")
+            (tree / "tools" / "test_vanilla_fixture_parity.py").write_text(
+                "run([lab.parity_fixtures(default_features=False), 'u'])\n")
             (tree / "tools" / "test_fast_parity.py").write_text(
                 'run(["cargo", "test", "--profile", "fast", "-p", "sunrise-world", "--lib", "z"])\n')
             # A package beside the client's, as dragon_contacts runs sunrise-gameplay's lib tests.
@@ -644,9 +663,13 @@ class DynaRoutingTests(unittest.TestCase):
             env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                    "PARITY_LOG_DIR": temporary, "RUNNER_TEMP": temporary, "BUCKET": "1"}
             subprocess.run(["bash", "-e", "-c", script], cwd=tree, env=env, check=True)
-            self.assertEqual(calls.read_text().splitlines(), ["test --locked --no-run -p sunrise-client --lib",
-                                                             "test --locked --no-run -p sunrise-client-lib --lib",
-                                                             "test --locked --no-run -p sunrise-gameplay --lib"])
+            fixtures = "build --locked --profile test -p sunrise-parity-fixtures"
+            self.assertEqual(calls.read_text().splitlines(), [
+                "test --locked --no-run -p sunrise-client --lib",
+                "test --locked --no-run -p sunrise-client-lib --lib",
+                "test --locked --no-run -p sunrise-gameplay --lib",
+                f"{fixtures} --features fixtures,client-defaults --bin sunrise-parity-fixtures",
+                f"{fixtures} --features fixtures --bin sunrise-parity-fixtures"])
             # A share builds only for the harnesses its plan gives it (a shard named NAME#N), and nothing for none.
             calls.unlink()
             (Path(temporary, "plan")).mkdir()

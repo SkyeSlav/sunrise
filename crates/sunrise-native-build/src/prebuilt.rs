@@ -72,16 +72,13 @@ pub fn refusal(projects: &[api::Project<'_>]) -> Option<Refusal> {
 
 /// Why `project` alone can't build against the prebuilt game, or `None` when it can.
 pub fn project_refusal(project: &api::Project<'_>) -> Option<Refusal> {
-    refusal_with_script(project, project.bundle.dir.join("build.rs").is_file())
-}
-
-fn refusal_with_script(project: &api::Project<'_>, build_script: bool) -> Option<Refusal> {
     let mod_id = || project.bundle.manifest.id.clone();
     let cargo = &project.cargo;
     let package = cargo.get("package");
     let build = package.and_then(|p| p.get("build"));
     let has_script = build.is_some_and(|value| value.as_bool() != Some(false))
-        || (build.and_then(toml::Value::as_bool) != Some(false) && build_script)
+        || (build.and_then(toml::Value::as_bool) != Some(false)
+            && project.bundle.dir.join("build.rs").is_file())
         || cargo
             .get("build-dependencies")
             .and_then(toml::Value::as_table)
@@ -119,51 +116,6 @@ fn refusal_with_script(project: &api::Project<'_>, build_script: bool) -> Option
         }
     }
     None
-}
-
-/// A signed source package can accompany an independently built release library only if
-/// it can also use the API route on its own. This inspects the package; it never invokes Cargo.
-pub fn release_source(source: &sunrise_mod_package::index::native::Bundle) -> Result<(), String> {
-    let bundle = super::Bundle {
-        manifest: source.manifest.clone(),
-        dir: PathBuf::new(),
-    };
-    let cargo = source.files.get("Cargo.toml").ok_or("no Cargo.toml")?;
-    let cargo = std::str::from_utf8(cargo).map_err(|e| format!("Cargo.toml: {e}"))?;
-    let project = api::Project::parse(&bundle, cargo).map_err(|e| e.to_string())?;
-    require_release_api(&project, source.files.contains_key("build.rs"))?;
-    let lock = source
-        .files
-        .get("Cargo.lock")
-        .ok_or("the source package must carry Cargo.lock")?;
-    check_release_lock(lock)
-}
-
-/// Preflight a release build with the same inputs the source package's verifier uses.
-pub fn release_project(project: &api::Project<'_>) -> Result<(), String> {
-    require_release_api(project, project.bundle.dir.join("build.rs").is_file())
-}
-
-fn require_release_api(project: &api::Project<'_>, build_script: bool) -> Result<(), String> {
-    if let Some(refusal) = refusal_with_script(project, build_script) {
-        return Err(refusal.to_string());
-    }
-    if !matches!(Route::of(std::slice::from_ref(project)), Route::Api)
-        || !project.bundle.manifest.dependencies.is_empty()
-    {
-        return Err(
-            "a release library requires a standalone prebuilt-api mod without mod dependencies"
-                .into(),
-        );
-    }
-    Ok(())
-}
-
-pub fn check_release_lock(lock: &[u8]) -> Result<(), String> {
-    super::registry_lock::RegistryLock::parse(
-        std::str::from_utf8(lock).map_err(|e| format!("Cargo.lock: {e}"))?,
-    )?;
-    Ok(())
 }
 
 /// `name`'s sum in a `sha256sum` listing.
@@ -459,7 +411,7 @@ pub fn library(deps: &Path, krate: &str) -> Result<PathBuf, String> {
     match candidates.as_slice() {
         [path] => Ok(path.clone()),
         [] => Err(trf(
-            "The prebuilt game has no {crate}, a library this tool needs: the SDK it comes from is older than the tool. Pin a current build (`cargo sunrise-mod update --sunrise nightly`), or build with the tool in that SDK's own release (`sdk-<build>/tool-<target>.tar.xz`).",
+            "The prebuilt game has no {crate}, a library this tool needs: the SDK it comes from is older than the tool. Pin a current build (`cargo sunrise-mod pin nightly`), or build with the tool in that SDK's own release (`sdk-<build>/tool-<target>.tar.xz`).",
             &[("crate", krate)],
         )),
         _ => Err(facade_refused(krate)),

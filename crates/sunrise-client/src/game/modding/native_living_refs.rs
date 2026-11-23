@@ -16,6 +16,7 @@ use mod_api::{
     AttributeModifier, AttributeOperation, Direction, EntityRef, EquipmentSlot, Identifier,
     ItemStackView, LivingRef, ModifierLifetime,
 };
+use sunrise_client::health::{Attack, DamageLevel, HitEffects, Hurting, Knock, NO_ATTACK};
 use sunrise_client::items::{EntityTypeTags, ItemStack};
 use sunrise_client::mobs::{
     Mob,
@@ -148,6 +149,178 @@ impl Game<'_> {
             _ => None,
         }
     }
+    /// A direct, non-damaging call to the short `LivingEntity.knockback` entry.
+    pub(super) fn living_knockback(
+        &mut self,
+        living: LivingRef,
+        strength: f64,
+        [x, z]: [f64; 2],
+    ) -> bool {
+        if ![strength, x, z].into_iter().all(f64::is_finite) {
+            return false;
+        }
+        let Some(target) = self.native_living_target(living) else {
+            return false;
+        };
+        const SOURCE: mod_api::HurtSource<'static> = mod_api::HurtSource {
+            damage_type: "minecraft:generic",
+            causing: 0,
+            direct: 0,
+            position: None,
+        };
+        let knock = Knock { strength, x, z };
+        let id = living.id();
+        match target {
+            Target::Player | Target::Guest(_) => self
+                .player_knockback_from_mod(living, target, knock, SOURCE)
+                .is_some(),
+            Target::Mob(_) => {
+                let Some(i) = self.mob_index.find(&self.mobs, id) else {
+                    return false;
+                };
+                let plan = self.prepare_knockback_credit(id as i32, None, &NO_ATTACK);
+                let mut credit = plan.lend(&mut self.last_hurt_by_player);
+                let level =
+                    crate::game::entity::damage_level_of!(self, &NO_ATTACK, &mut credit, None);
+                self.mobs[i].knockback(
+                    level,
+                    strength,
+                    x,
+                    z,
+                    &sunrise_client::mobs::Damage::of(sunrise_client::mobs::DamageKind::Generic),
+                    0.0,
+                )
+            }
+            Target::Stand(id) => self.knock_back_armor_stand(id, knock, SOURCE, &NO_ATTACK),
+            Target::Dragon(_) => {
+                let resistance = self.dragon_knockback_resistance();
+                let plan = self.prepare_knockback_credit(id as i32, None, &NO_ATTACK);
+                let mut credit = plan.lend(&mut self.last_hurt_by_player);
+                let level =
+                    crate::game::entity::damage_level_of!(self, &NO_ATTACK, &mut credit, None);
+                level.through_short_knockback(|level| {
+                    self.dragon
+                        .as_mut()
+                        .is_some_and(|d| d.knockback(level, knock, SOURCE, resistance))
+                })
+            }
+            _ => false,
+        }
+    }
+
+    /// Lend the victim's own body and level to the player path without switching turns or levels.
+    fn player_knockback_from_mod(
+        &mut self,
+        living: LivingRef,
+        target: Target,
+        knock: Knock,
+        source: mod_api::HurtSource<'_>,
+    ) -> Option<()> {
+        let id = living.id();
+        // The hook's attacker falls back to the victim's `getLastHurtByMob`, resolved in any
+        // level; the source stays unattributed and kill credit is planned on its own.
+        let remembered = self
+            .living_last_attacker(living)
+            .map(|attacker| self.last_attacker_attack(attacker.id()));
+        let attack = remembered.as_ref().unwrap_or(&NO_ATTACK);
+        let hub = &self.lan.as_ref()?.hub;
+        let player = match target {
+            Target::Player => {
+                hub.guest(self.lan_acting?)?;
+                self.player.as_ref()?
+            }
+            Target::Guest(conn) => hub.guest(conn)?.motion.as_deref()?,
+            _ => return None,
+        };
+        let mut random = player.random.clone();
+        let plan = self.prepare_knockback_credit(id as i32, None, attack);
+        let dimension = self.resident_target_dimension(target).unwrap_or(self.dim);
+        let mut credit = plan.lend(&mut self.last_hurt_by_player);
+        let world = if dimension == self.dim {
+            &mut self.world
+        } else {
+            &mut self.levels.parked_mut(dimension)?.world
+        };
+        let mut level = DamageLevel::of(
+            world,
+            self.pack.assets.registry,
+            Some(world_items!(self)),
+            Some(&self.pack.block_registries),
+            &self.damage_hooks,
+        )
+        .attacked_by(attack)
+        .with_knockback_credit(&mut credit)
+        .with_effects(HitEffects::new(
+            &mut self.creatures.lan_sounds,
+            Some(hub),
+            dimension.id(),
+            self.native_lifecycle.epoch(),
+            None,
+        ));
+        let velocity = level.through_short_knockback(|level| {
+            super::creatures::knockback::player_knockback_velocity(
+                player,
+                &mut random,
+                level,
+                knock,
+                source,
+            )
+        });
+        // The retries drew from the victim's own random, landed or not.
+        self.write_player_random(target, random);
+        let velocity = velocity?;
+        self.write_player_velocity(target, |_| Some(velocity))
+            .then_some(())
+    }
+
+    /// [`Self::attack_of`] for a remembered attacker, which may be a mob in another loaded
+    /// level: its main-hand stack is read there.
+    fn last_attacker_attack(&self, attacker: u32) -> Attack {
+        let mut attack = self.attack_of(attacker as i32);
+        if let Some((_, mob)) = self.mob_in_other_level(attacker)
+            && !mod_api::__private::mods().is_empty()
+        {
+            attack.held[0] = mob.extra.main_hand_stack().cloned();
+        }
+        attack
+    }
+
+    pub(super) fn knock_back_armor_stand(
+        &mut self,
+        id: u32,
+        mut knock: Knock,
+        source: mod_api::HurtSource<'_>,
+        attack: &Attack,
+    ) -> bool {
+        let Some(index) = self.armor_stands.iter().position(|stand| stand.id == id) else {
+            return false;
+        };
+        let resistance = self.armor_stands[index]
+            .live
+            .read(
+                &self.motion.attributes,
+                "minecraft:armor_stand",
+                "minecraft:knockback_resistance",
+                sunrise_world::attribute_map::ValueKind::Computed,
+                Vec::new,
+            )
+            .unwrap_or(0.0);
+        let plan = self.prepare_knockback_credit(id as i32, None, attack);
+        let mut credit = plan.lend(&mut self.last_hurt_by_player);
+        let level = crate::game::entity::damage_level_of!(self, attack, &mut credit, None);
+        let pushed = Hurting::ArmorStand(id as i32, source);
+        if level.through_short_knockback(|level| level.knockback_canceled(pushed, &mut knock)) {
+            return false;
+        }
+        let stand = &mut self.armor_stands[index];
+        knock.apply(
+            &mut stand.velocity,
+            resistance,
+            stand.ground.on_ground,
+            level.random(),
+        )
+    }
+
     /// The entity as a living entity (vanilla's `LivingEntity`: a mob, a
     /// player, an armor stand or the dragon), or None for another kind or a
     /// stale handle.

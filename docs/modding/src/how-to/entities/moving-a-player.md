@@ -24,6 +24,18 @@ A player on a moving collider stays on it when the target is still over it, and 
 (`None`, nothing moves) for a value that is not finite, a target outside the world, a player that is riding something,
 a sleeper, a player without a connection, or a move the collision query cannot answer.
 
+## Velocity and fall distance on the server
+
+Use `player.entity().set_velocity(host, [x, y, z])` to replace a player's velocity, in blocks
+per tick, or `player.entity().push(host, delta)` to add to it. The server updates the player's
+body and sends the result to the player's own client, which uses it on its next movement tick.
+Both return `false` without changing motion for a stale or unavailable body (including a player
+whose turn is suspended) or non-finite input. These calls also work on simulated non-players.
+
+`entity.fall_distance(host)` reads the server's accumulated fall distance in blocks, or `None`
+for a stale or unavailable body. For a player the server tracks it from accepted moves and resets
+it on landing. `entity.reset_fall_distance(host)` clears the server's value without moving the player.
+
 ## Checking what blocks a move
 
 On either side, `entity.piston_push_reaction(host)` reads vanilla's piston reaction, including
@@ -61,8 +73,8 @@ movement:
 
 None of these calls sends a packet. The normal position report carries the movement and ground flag, not the
 fall-distance reset. The server checks the report as usual, correcting a move its speed or collision check refuses.
-The server refuses a write of a player's velocity or ground flag. A server's write of a player's motion reaches
-that player's client only through an explicit motion packet, which replaces the client's velocity outright.
+A server velocity write reaches that player's client by a motion packet, which replaces the
+client's velocity outright.
 
 On either side, `player.supporting_block(host)` returns the player's recorded support block,
 which may be beside the column under their feet. `player.on_block(host)` reads vanilla's

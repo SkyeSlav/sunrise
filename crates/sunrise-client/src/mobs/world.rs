@@ -302,7 +302,7 @@ impl MobWorld<'_> {
     }
     /// Membership in a prebound gameplay tag, indexed by the mob type's registry slot.
     #[inline]
-    pub fn entity_tag_bit(&self, kind: &super::MobType, bit: u8) -> bool {
+    pub fn entity_tag_bit(&self, kind: &super::MobType, bit: u32) -> bool {
         self.items.is_some_and(|items| {
             items
                 .entity_type_tags
@@ -1095,6 +1095,7 @@ fn run_test_world(
         biomes,
         mob_griefing,
         universal_anger: false,
+        pvp: false,
         mob_drops,
         max_entity_cramming: 24,
         difficulty: super::spawning::LocalDifficulty::new(2, 18000, 0, 0.0),

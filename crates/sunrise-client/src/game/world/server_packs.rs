@@ -79,6 +79,8 @@ pub(super) struct ServerPackState {
     pub(super) prompt: Option<PackPrompt>,
     /// The server list entry the setting is saved to (none: a direct join).
     pub(super) address: Option<String>,
+    /// That entry's name, with `address`, so a pack answer updates only that row.
+    pub(super) name: Option<String>,
     /// The account the downloads are made for (the download headers).
     user: (String, u128),
     /// The packs loaded on top of the player's own, bottom first.
@@ -201,22 +203,29 @@ impl Game<'_> {
     /// `ConnectScreen`: the server's setting decides what its packs do
     /// (`configureForServerControl`); single player's own server takes them
     /// all, quietly (`configureForLocalWorld`).
-    pub(super) fn server_packs_connect(&mut self, address: Option<&str>, user: (String, u128)) {
+    pub(super) fn server_packs_connect(
+        &mut self,
+        address: Option<&str>,
+        list_name: Option<&str>,
+        user: (String, u128),
+    ) {
         let state = &mut self.server_packs;
         state.user = user;
         state.prompt = None;
         state.notifiers.clear();
         let Some(address) = address else {
             state.address = None;
+            state.name = None;
             state.packs.local_world();
             return;
         };
         let file = multiplayer::servers_file(&saves());
         // ServerList.get: the shown entries, then the hidden ones.
         let (shown, hidden) = servers::load_all(&file);
-        let entry = shown.into_iter().chain(hidden).find(|s| s.ip == address);
+        let entry = servers::find(&shown, &hidden, address, list_name).cloned();
         let setting = entry.as_ref().and_then(|e| e.accept_textures);
-        state.address = entry.map(|e| e.ip);
+        state.address = entry.as_ref().map(|e| e.ip.clone());
+        state.name = entry.map(|e| e.name);
         state.packs.connect(Prompt::for_server(setting));
         // GetServerDetailsTask.scheduleResourcePackDownload: the Realm's own pack, which the
         // player agreed to before connecting (`allowServerPacks`, then `pushPack`).
@@ -286,11 +295,7 @@ impl Game<'_> {
     fn server_setting(&self) -> Option<bool> {
         let address = self.server_packs.address.as_deref()?;
         let (shown, hidden) = servers::load_all(&multiplayer::servers_file(&saves()));
-        shown
-            .into_iter()
-            .chain(hidden)
-            .find(|s| s.ip == address)?
-            .accept_textures
+        servers::find(&shown, &hidden, address, self.server_packs.name.as_deref())?.accept_textures
     }
     fn send_pack_status(&self, id: u128, status: i32) {
         if let Some(r) = &self.remote {
@@ -323,23 +328,14 @@ impl Game<'_> {
         for (id, url, hash) in prompt.requests {
             self.server_packs.packs.push(id, &url, parse_sha1(&hash));
         }
-        // ServerList.saveSingleServer.
-        if let Some(address) = &self.server_packs.address {
+        // ServerList.saveSingleServer: one row, matched by name and address.
+        if let (Some(address), Some(name)) = (&self.server_packs.address, &self.server_packs.name) {
             let file = multiplayer::servers_file(&saves());
             let _guard = servers::lock();
             let (mut list, mut hidden) = servers::load_all(&file);
-            let mut found = false;
-            for entry in list.iter_mut().filter(|s| &s.ip == address) {
-                entry.accept_textures = setting;
-                found = true;
-            }
-            // Not among the shown entries: the hidden ones (a Direct Connection's).
-            if !found {
-                for entry in hidden.iter_mut().filter(|s| &s.ip == address) {
-                    entry.accept_textures = setting;
-                }
-            }
-            if let Err(e) = servers::save_all(&file, &list, &hidden) {
+            if servers::save_single_accept_textures(&mut list, &mut hidden, name, address, setting)
+                && let Err(e) = servers::save_all(&file, &list, &hidden)
+            {
                 log::warn!("Sunrise: could not save {}: {e}", file.display());
             }
         }

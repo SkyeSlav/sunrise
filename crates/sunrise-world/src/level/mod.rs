@@ -720,10 +720,14 @@ pub trait LevelAccess: BlockEntityNeighbors {
     }
     /// Observe `BlockState.handleNeighborChanged` before the block handles it,
     /// with the level's `ticks`, as vanilla's `neighborChanged` gets the level
-    /// itself (a diode schedules its tick there). The default does nothing;
-    /// implementations must not alter the update queue.
+    /// itself: a diode schedules its tick there, and `RedstoneLampBlock` sets its
+    /// own block. A write goes through `Behaviours::set_block` with these `ticks`,
+    /// so its neighbour updates run next, before the rest of the current update
+    /// (`CollectingNeighborUpdater`); the block's own handling then runs with the
+    /// state it was called with, as code after a `setBlock` in `neighborChanged`
+    /// does. The default does nothing.
     fn observe_neighbor_changed(
-        &self,
+        &mut self,
         _ticks: &mut Ticks,
         _pos: BlockPos,
         _state: BlockStateId,

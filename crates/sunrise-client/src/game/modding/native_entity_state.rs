@@ -687,8 +687,10 @@ impl Game<'_> {
     /// entity pass (`Entity.commonTick`) since the client added it.
     fn client_entity_tick_count(&self, entity: EntityRef) -> Option<i32> {
         let (remote, id) = self.native_client_entity_context(entity)?;
+        // The local player from its admission (Login, Respawn), before the server's first
+        // teleport gives it a body.
         if id == remote.entity_id {
-            return self.player.as_ref().map(|_| remote.own_tick_count);
+            return remote.has_logical_player.then_some(remote.own_tick_count);
         }
         remote
             .entities
@@ -1049,6 +1051,7 @@ mod tests {
             assert_eq!(item.tick_count(game), Some(77));
 
             game.orbs.push(ExperienceOrb {
+                size_answer: None,
                 attachment_lifetime: Default::default(),
                 fall_distance: 0.0,
                 rotation: [0.0, 0.0],
@@ -1144,6 +1147,7 @@ mod tests {
             );
             let item = game.dropped[0].id;
             game.orbs.push(ExperienceOrb {
+                size_answer: None,
                 attachment_lifetime: Default::default(),
                 fall_distance: 0.0,
                 rotation: [0.0, 0.0],
@@ -1215,6 +1219,7 @@ mod tests {
             game.next_entity += 1;
             let falling = game.next_entity;
             game.falling.push(FallingBlock {
+                size_answer: None,
                 ground: Default::default(),
                 fire_ticks: 0,
                 sync_velocity: false,
@@ -1397,6 +1402,7 @@ mod tests {
             game.next_entity += 1;
             let id = game.next_entity;
             game.falling.push(FallingBlock {
+                size_answer: None,
                 ground: Default::default(),
                 fire_ticks: 0,
                 sync_velocity: false,

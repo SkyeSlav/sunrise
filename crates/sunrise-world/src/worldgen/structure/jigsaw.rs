@@ -142,11 +142,7 @@ impl PoolElement {
             "lithostitched:limited" | "lithostitched:guaranteed" | "lithostitched:delegating" => {
                 Self::decode(&value["delegate"], resources, bindings, inherited)?
             }
-            // YUNG's API's element places what a single element places; its
-            // own fields are the pool entry's rules (`Pool::rules`).
-            "minecraft:single_pool_element"
-            | "minecraft:legacy_single_pool_element"
-            | "yungsapi:yung_single_element" => {
+            "minecraft:single_pool_element" | "minecraft:legacy_single_pool_element" => {
                 let location = value["location"]
                     .as_str()
                     .ok_or(DecodeError::Field("location"))?;
@@ -368,7 +364,7 @@ fn template_jigsaws<'a>(
         .iter()
         .map(|j| {
             let relative = StructureTemplate::transform(j.info.pos, Mirror::None, rotation, [0; 3]);
-            let pos = std::array::from_fn(|i| relative[i] + position[i]);
+            let pos = std::array::from_fn(|i| relative[i].wrapping_add(position[i]));
             let state = resources.transforms.rotate(j.info.state, rotation);
             let orientation = resources
                 .registry
@@ -407,8 +403,6 @@ pub struct Pool {
     entries: Vec<usize>,
     /// The elements with their weights, in file order (`rawTemplates`).
     pub(super) raw: Vec<(Arc<PoolElement>, i32)>,
-    /// Per entry of `raw`: a YUNG element's rules.
-    rules: Vec<Rules>,
     /// Per entry of `raw`: a Lithostitched `limited` or `guaranteed`
     /// element's limit.
     limits: Vec<Option<Limit>>,
@@ -433,16 +427,6 @@ impl Pool {
         shuffle(&mut order, random);
         order.into_iter().map(|i| self.entries[i]).collect()
     }
-    /// YUNG's API's pick: `nextInt` of the entries' total weight, walked in
-    /// `order` (indices into `raw`); the entry that takes it below zero.
-    fn weighted(&self, order: &[usize], random: &mut impl RandomSource) -> Option<usize> {
-        let total: i64 = order.iter().map(|&i| i64::from(self.raw[i].1)).sum();
-        let mut pick = crate::worldgen::weighted::draw(total, random)?;
-        order.iter().position(|&i| {
-            pick -= i64::from(self.raw[i].1);
-            pick < 0
-        })
-    }
     pub(super) fn max_size(&self) -> i32 {
         *self.max_size.get_or_init(|| {
             self.templates
@@ -452,37 +436,6 @@ impl Pool {
                 .max()
                 .unwrap_or(0)
         })
-    }
-}
-/// A `yungsapi:yung_single_element`'s own fields (spec-yungsapi §3, §3.2).
-#[derive(Clone, Debug, Default)]
-struct Rules {
-    /// `name` and `max_count`: the most pieces of that name in one start,
-    /// the start not counted.
-    limit: Option<(Arc<str>, i32)>,
-    /// `is_priority`: tried before the pool's other entries, in the
-    /// shuffled order and without a weighted draw.
-    priority: bool,
-    /// `min_required_depth`: the least depth of the parent piece (the start
-    /// is depth 0).
-    min_depth: i32,
-    /// `ignore_bounds`: placed without the free-space test.
-    ignore_bounds: bool,
-}
-impl Rules {
-    fn of(element: &Value) -> Self {
-        if element["element_type"] != "yungsapi:yung_single_element" {
-            return Self::default();
-        }
-        Self {
-            limit: element["name"]
-                .as_str()
-                .zip(element["max_count"].as_i64())
-                .map(|(name, max)| (name.into(), max as i32)),
-            priority: element["is_priority"].as_bool().unwrap_or(false),
-            min_depth: element["min_required_depth"].as_i64().unwrap_or(0) as i32,
-            ignore_bounds: element["ignore_bounds"].as_bool().unwrap_or(false),
-        }
     }
 }
 /// How many pieces of a Lithostitched `limited` or `guaranteed` element one
@@ -550,8 +503,8 @@ impl Pools {
         }
         let pool = self.raw.get(name).and_then(|json| {
             let value: Value = serde_json::from_str(json).ok()?;
-            let (mut templates, mut entries, mut raw, mut rules, mut limits) =
-                (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+            let (mut templates, mut entries, mut raw, mut limits) =
+                (Vec::new(), Vec::new(), Vec::new(), Vec::new());
             for entry in value["elements"].as_array()? {
                 let element =
                     match PoolElement::decode(&entry["element"], resources, bindings, None) {
@@ -573,7 +526,6 @@ impl Pools {
                     entries.push(raw.len());
                 }
                 raw.push((element, weight as i32));
-                rules.push(Rules::of(&entry["element"]));
                 limits.push(Limit::of(&entry["element"]));
             }
             let guaranteed = (limits.iter().enumerate())
@@ -584,7 +536,6 @@ impl Pools {
                 templates,
                 entries,
                 raw,
-                rules,
                 limits,
                 guaranteed,
                 fallback: value["fallback"]
@@ -725,7 +676,7 @@ impl PoolPiece {
         tag
     }
     pub(super) fn moved(&mut self, dy: i32) {
-        self.position[1] += dy;
+        self.position[1] = self.position[1].wrapping_add(dy);
         self.bounding_box = self.bounding_box.moved([0, dy, 0]);
     }
     /// PoolElementStructurePiece.postProcess.
@@ -872,51 +823,35 @@ pub trait JigsawContext {
     /// couldStructureExistInColumn over inclusive block Y bounds.
     fn column_has_valid_biome(&mut self, x: i32, z: i32, min_y: i32, max_y: i32) -> bool;
 }
-/// How a jigsaw structure draws its pieces.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Draws {
-    /// JigsawPlacement's.
-    Vanilla,
-    /// YUNG's API's `yungsapi:yung_jigsaw` (spec-yungsapi §2.1, §3.1, §3.2):
-    /// pools are drawn by weight from their file entries, without
-    /// replacement, priority entries first, and an element at its
-    /// `max_count` or too shallow is skipped.
-    Yung,
+/// A borrowed context, so a `&mut dyn` start context (a mod structure type's) reaches the
+/// generic assembly.
+impl<T: JigsawContext + ?Sized> JigsawContext for &mut T {
+    fn min_y(&self) -> i32 {
+        (**self).min_y()
+    }
+    fn max_y(&self) -> i32 {
+        (**self).max_y()
+    }
+    fn base_height(&mut self, x: i32, z: i32, kind: HeightmapType) -> i32 {
+        (**self).base_height(x, z, kind)
+    }
+    fn column_has_valid_biome(&mut self, x: i32, z: i32, min_y: i32, max_y: i32) -> bool {
+        (**self).column_has_valid_biome(x, z, min_y, max_y)
+    }
 }
-
-/// The elements a jigsaw tries, in order.
-enum Candidates {
-    /// Vanilla: the target pool's weight-expanded entries, then the
-    /// fallback's, each shuffled up front. A pool's Lithostitched
-    /// `guaranteed` entries come first when it is reached, in file order,
-    /// and are not drawn again (spec-lithostitched §3, OPEN-L4).
-    Listed(std::vec::IntoIter<(Arc<Pool>, usize)>),
-    /// YUNG's: picks from each pool in turn (the fallback's only once the
-    /// target's are spent), each pool's entries shuffled when it is
-    /// reached: its priority entries in that order, then weighted picks
-    /// from the others.
-    Weighted {
-        pools: Vec<Arc<Pool>>,
-        current: Option<Drawing>,
-    },
-}
-/// A YUNG pool being drawn: entries (indices into `raw`) not tried yet.
-struct Drawing {
-    pool: Arc<Pool>,
-    priority: VecDeque<usize>,
-    others: Vec<usize>,
-}
+/// The elements a jigsaw tries, in order: the target pool's weight-expanded entries, then the
+/// fallback's, each shuffled up front (`JigsawPlacement.Placer.tryPlacingChildren`). A pool's
+/// Lithostitched `guaranteed` entries come first when it is reached, in file order, and are
+/// not drawn again (spec-lithostitched §3, OPEN-L4).
+struct Candidates(std::vec::IntoIter<(Arc<Pool>, usize)>);
 /// An element to try.
 struct Pick {
     element: Arc<PoolElement>,
-    /// Its YUNG name or Lithostitched limit's key, counted when it is
-    /// placed.
+    /// Its Lithostitched limit's key, counted when it is placed.
     name: Option<Arc<str>>,
-    ignore_bounds: bool,
 }
 impl Candidates {
     fn new(
-        draws: Draws,
         target: &Arc<Pool>,
         fallback: &Arc<Pool>,
         below_max_depth: bool,
@@ -927,90 +862,24 @@ impl Candidates {
         } else {
             vec![fallback.clone()]
         };
-        match draws {
-            Draws::Vanilla => {
-                let mut listed = Vec::new();
-                for pool in &pools {
-                    listed.extend(pool.guaranteed.iter().map(|&e| (pool.clone(), e)));
-                    let drawn = pool.shuffled(random).into_iter();
-                    let drawn = drawn.filter(|&e| !pool.guaranteed.contains(&e));
-                    listed.extend(drawn.map(|e| (pool.clone(), e)));
-                }
-                Self::Listed(listed.into_iter())
-            }
-            Draws::Yung => Self::Weighted {
-                pools: pools.into_iter().rev().collect(),
-                current: None,
-            },
+        let mut listed = Vec::new();
+        for pool in &pools {
+            listed.extend(pool.guaranteed.iter().map(|&e| (pool.clone(), e)));
+            let drawn = pool.shuffled(random).into_iter();
+            let drawn = drawn.filter(|&e| !pool.guaranteed.contains(&e));
+            listed.extend(drawn.map(|e| (pool.clone(), e)));
         }
+        Self(listed.into_iter())
     }
     /// The next element to try for a jigsaw of a piece at `depth`.
-    fn next(
-        &mut self,
-        counts: &HashMap<Arc<str>, i32>,
-        depth: i32,
-        random: &mut impl RandomSource,
-    ) -> Option<Pick> {
-        match self {
-            Self::Listed(entries) => entries.find_map(|(pool, entry)| {
-                let limit = pool.limits[entry].as_ref();
-                limit.is_none_or(|l| l.allows(counts, depth)).then(|| Pick {
-                    element: pool.raw[entry].0.clone(),
-                    name: limit.map(|l| l.key.clone()),
-                    ignore_bounds: false,
-                })
-            }),
-            Self::Weighted { pools, current } => loop {
-                let drawing = match current {
-                    Some(d) if !d.priority.is_empty() || !d.others.is_empty() => d,
-                    _ => {
-                        let pool = pools.pop()?;
-                        let mut order: Vec<usize> = (0..pool.raw.len()).collect();
-                        shuffle(&mut order, random);
-                        let (priority, others): (Vec<usize>, _) =
-                            order.into_iter().partition(|&i| pool.rules[i].priority);
-                        *current = Some(Drawing {
-                            pool,
-                            priority: priority.into(),
-                            others,
-                        });
-                        continue;
-                    }
-                };
-                let entry = match drawing.priority.pop_front() {
-                    Some(entry) => entry,
-                    None => {
-                        let Some(at) = drawing.pool.weighted(&drawing.others, random) else {
-                            drawing.others.clear();
-                            continue;
-                        };
-                        drawing.others.remove(at)
-                    }
-                };
-                // spec-yungsapi §3.1 item 8: an empty element ends the
-                // jigsaw (the caller's), then `max_count`, then the depth.
-                let rules = &drawing.pool.rules[entry];
-                if let Some((name, max)) = &rules.limit
-                    && counts.get(name).copied().unwrap_or(0) >= *max
-                {
-                    continue;
-                }
-                if depth < rules.min_depth {
-                    continue;
-                }
-                let limit = drawing.pool.limits[entry].as_ref();
-                if limit.is_some_and(|l| !l.allows(counts, depth)) {
-                    continue;
-                }
-                return Some(Pick {
-                    element: drawing.pool.raw[entry].0.clone(),
-                    name: (rules.limit.as_ref().map(|(name, _)| name))
-                        .or(limit.map(|l| &l.key))
-                        .cloned(),
-                    ignore_bounds: rules.ignore_bounds,
-                });
-            },
-        }
+    fn next(&mut self, counts: &HashMap<Arc<str>, i32>, depth: i32) -> Option<Pick> {
+        self.0.find_map(|(pool, entry)| {
+            let limit = pool.limits[entry].as_ref();
+            limit.is_none_or(|l| l.allows(counts, depth)).then(|| Pick {
+                element: pool.raw[entry].0.clone(),
+                name: limit.map(|l| l.key.clone()),
+            })
+        })
     }
 }
 
@@ -1045,8 +914,19 @@ struct PieceState {
     depth: i32,
 }
 
-/// JigsawPlacement.addPieces. Returns the structure start position and the
-/// pieces, or None when the start is invalid.
+/// `JigsawPlacement.addPieces` from a start pool: the start piece drawn, rotated, projected
+/// and checked against the height limits ([`place_start`]), then its children laid out to
+/// `config.max_depth` within `config.max_distance` of it ([`lay_out_children`]). Returns the
+/// structure start position and the pieces, or None when the start is invalid. A `max_depth`
+/// of zero or less places no piece at all, as vanilla's stub adds pieces only when it is
+/// positive.
+///
+/// This is the jigsaw assembly every structure kind shares, and the one a mod's structure
+/// type ([`ModStructureType`](super::mod_types::ModStructureType)) calls with its own decoded
+/// settings: it keeps vanilla's placement checks (the biome and height of the projected start,
+/// the dimension padding, each child's free space and the container box) but not
+/// `JigsawStructure`'s codec bounds on `size` and `max_distance_from_center`, which are the
+/// `minecraft:jigsaw` type's own and apply only where that type is decoded.
 pub fn assemble(
     config: &JigsawConfig<'_>,
     context: &mut impl JigsawContext,
@@ -1056,35 +936,11 @@ pub fn assemble(
     random: &mut impl RandomSource,
     position: [i32; 3],
 ) -> Option<([i32; 3], Vec<PoolPiece>)> {
-    assemble_drawing(
-        Draws::Vanilla,
-        config,
-        context,
-        pools,
-        resources,
-        bindings,
-        random,
-        position,
-    )
-}
-
-/// [`assemble`] with the given draws.
-#[allow(clippy::too_many_arguments)]
-pub fn assemble_drawing(
-    draws: Draws,
-    config: &JigsawConfig<'_>,
-    context: &mut impl JigsawContext,
-    pools: &Pools,
-    resources: &StructureResources,
-    bindings: &FeatureBlockBindings<'_>,
-    random: &mut impl RandomSource,
-    position: [i32; 3],
-) -> Option<([i32; 3], Vec<PoolPiece>)> {
     let start = place_start(
-        draws, config, context, pools, resources, bindings, random, position,
+        config, context, pools, resources, bindings, random, position,
     )?;
     Some(lay_out_children(
-        draws, start, config, context, pools, resources, bindings, random,
+        start, config, context, pools, resources, bindings, random,
     ))
 }
 
@@ -1096,13 +952,17 @@ pub struct PlacedStart {
     pub position: [i32; 3],
     center: PoolPiece,
 }
+impl PlacedStart {
+    /// The start piece as placed, before any child is laid out.
+    pub fn piece(&self) -> &PoolPiece {
+        &self.center
+    }
+}
 
-/// The first half of [`assemble_drawing`]: the start piece drawn, rotated, projected to the
+/// The first half of [`assemble`]: the start piece drawn, rotated, projected to the
 /// heightmap and checked against the height limits. None when the start is invalid. The
-/// draws it makes come first in `random`, as in `assemble_drawing`.
-#[allow(clippy::too_many_arguments)]
+/// draws it makes come first in `random`, as in `assemble`.
 pub fn place_start(
-    draws: Draws,
     config: &JigsawConfig<'_>,
     context: &mut impl JigsawContext,
     pools: &Pools,
@@ -1119,21 +979,8 @@ pub fn place_start(
             .unwrap_or_else(|| name.to_owned())
     };
     let center_pool = pools.get(&alias(config.start_pool), resources, bindings)?;
-    let (rotation, element) = match draws {
-        Draws::Vanilla => {
-            let rotation = Rotation::random(random);
-            (rotation, center_pool.random_template(random))
-        }
-        // The entries shuffled, then the rotation, then a weighted pick in
-        // the shuffled order.
-        Draws::Yung => {
-            let mut order: Vec<usize> = (0..center_pool.raw.len()).collect();
-            shuffle(&mut order, random);
-            let rotation = Rotation::random(random);
-            let entry = order[center_pool.weighted(&order, random)?];
-            (rotation, center_pool.raw[entry].0.clone())
-        }
-    };
+    let rotation = Rotation::random(random);
+    let element = center_pool.random_template(random);
     if matches!(element.as_ref(), PoolElement::Empty) {
         return None;
     }
@@ -1147,8 +994,9 @@ pub fn place_start(
         }
         None => position,
     };
-    let local: [i32; 3] = std::array::from_fn(|i| anchored[i] - position[i]);
-    let adjusted: [i32; 3] = std::array::from_fn(|i| position[i] - local[i]);
+    // Java's int arithmetic wraps here; a mod type's position, reach and padding are its own.
+    let local: [i32; 3] = std::array::from_fn(|i| anchored[i].wrapping_sub(position[i]));
+    let adjusted: [i32; 3] = std::array::from_fn(|i| position[i].wrapping_sub(local[i]));
     let mut center = PoolPiece {
         bounding_box: element.bounding_box(adjusted, rotation),
         ground_level_delta: element.ground_level_delta(),
@@ -1159,38 +1007,36 @@ pub fn place_start(
         waterlogging: config.waterlogging,
     };
     let b = center.bounding_box;
-    let cx = (b.max[0] + b.min[0]) / 2;
-    let cz = (b.max[2] + b.min[2]) / 2;
+    let cx = b.max[0].wrapping_add(b.min[0]) / 2;
+    let cz = b.max[2].wrapping_add(b.min[2]) / 2;
     let bottom = match config.project_to {
         None => adjusted[1],
         Some(kind) => {
             if !context.column_has_valid_biome(cx, cz, context.min_y(), context.max_y()) {
                 return None;
             }
-            position[1] + context.base_height(cx, cz, kind)
+            position[1].wrapping_add(context.base_height(cx, cz, kind))
         }
     };
-    let old_ground = b.min[1] + center.ground_level_delta;
-    center.moved(bottom - old_ground);
+    let old_ground = b.min[1].wrapping_add(center.ground_level_delta);
+    center.moved(bottom.wrapping_sub(old_ground));
     let b = center.bounding_box;
     if config.padding != [0, 0]
-        && (b.min[1] < context.min_y() + config.padding[0]
-            || b.max[1] > context.max_y() - config.padding[1])
+        && (b.min[1] < context.min_y().wrapping_add(config.padding[0])
+            || b.max[1] > context.max_y().wrapping_sub(config.padding[1]))
     {
         return None;
     }
-    let cy = bottom + local[1];
+    let cy = bottom.wrapping_add(local[1]);
     Some(PlacedStart {
         position: [cx, cy, cz],
         center,
     })
 }
 
-/// The second half of [`assemble_drawing`]: the children of a [`place_start`]ed start laid out
+/// The second half of [`assemble`]: the children of a [`place_start`]ed start laid out
 /// to `config.max_depth`, with the same `random`. Returns the start position and every piece.
-#[allow(clippy::too_many_arguments)]
 pub fn lay_out_children(
-    draws: Draws,
     start: PlacedStart,
     config: &JigsawConfig<'_>,
     context: &mut impl JigsawContext,
@@ -1203,16 +1049,33 @@ pub fn lay_out_children(
         position: [cx, cy, cz],
         center,
     } = start;
+    // JigsawPlacement.addPieces adds its pieces, the start among them, to the
+    // builder only when `maxDepth > 0`.
+    if config.max_depth <= 0 {
+        return ([cx, cy, cz], Vec::new());
+    }
     let mut pieces = vec![center];
-    if config.max_depth > 0 {
+    {
+        // Java's int arithmetic wraps; a mod type's reach and padding are its own.
         let [h, v] = config.max_distance;
-        let low_y = (cy - v).max(context.min_y() + config.padding[0]);
-        let high_y = (cy + v + 1).min(context.max_y() + 1 - config.padding[1]);
-        let container = BoundingBox::new([cx - h, low_y, cz - h], [cx + h, high_y - 1, cz + h]);
-        // The start does not count toward `max_count` (spec-yungsapi §3).
-        add_children_drawing(
-            draws,
-            HashMap::new(),
+        let low_y = cy
+            .wrapping_sub(v)
+            .max(context.min_y().wrapping_add(config.padding[0]));
+        let high_y = cy.wrapping_add(v).wrapping_add(1).min(
+            context
+                .max_y()
+                .wrapping_add(1)
+                .wrapping_sub(config.padding[1]),
+        );
+        let container = BoundingBox::new(
+            [cx.wrapping_sub(h), low_y, cz.wrapping_sub(h)],
+            [
+                cx.wrapping_add(h),
+                high_y.wrapping_sub(1),
+                cz.wrapping_add(h),
+            ],
+        );
+        add_children(
             config,
             context,
             pools,
@@ -1241,32 +1104,6 @@ pub(super) fn add_children(
     pieces: &mut Vec<PoolPiece>,
     container: BoundingBox,
 ) {
-    add_children_drawing(
-        Draws::Vanilla,
-        HashMap::new(),
-        config,
-        context,
-        pools,
-        resources,
-        bindings,
-        random,
-        pieces,
-        container,
-    );
-}
-#[allow(clippy::too_many_arguments)]
-fn add_children_drawing(
-    draws: Draws,
-    counts: HashMap<Arc<str>, i32>,
-    config: &JigsawConfig<'_>,
-    context: &mut impl JigsawContext,
-    pools: &Pools,
-    resources: &StructureResources,
-    bindings: &FeatureBlockBindings<'_>,
-    random: &mut impl RandomSource,
-    pieces: &mut Vec<PoolPiece>,
-    container: BoundingBox,
-) {
     let free = Rc::new(RefCell::new(Free {
         container,
         removed: vec![pieces[0].bounding_box],
@@ -1278,8 +1115,7 @@ fn add_children_drawing(
         bindings,
         pieces,
         queue: BTreeMap::new(),
-        draws,
-        counts,
+        counts: HashMap::new(),
     };
     placer.children(0, free, 0, context, random);
     while let Some(state) = placer.next() {
@@ -1294,7 +1130,6 @@ struct Placer<'a, 'p> {
     pieces: &'p mut Vec<PoolPiece>,
     /// SequencedPriorityIterator: highest priority first, FIFO within one.
     queue: BTreeMap<i32, VecDeque<PieceState>>,
-    draws: Draws,
     /// Pieces placed per limited element (`Limit::key`).
     counts: HashMap<Arc<str>, i32>,
 }
@@ -1341,8 +1176,8 @@ impl Placer<'_, '_> {
         'jigsaws: for jigsaw in jigsaws {
             let direction = jigsaw.front;
             let s = step(direction);
-            let target_pos: [i32; 3] = std::array::from_fn(|i| jigsaw.pos[i] + s[i]);
-            let local_y = jigsaw.pos[1] - source_y;
+            let target_pos: [i32; 3] = std::array::from_fn(|i| jigsaw.pos[i].wrapping_add(s[i]));
+            let local_y = jigsaw.pos[1].wrapping_sub(source_y);
             let mut base_height = i32::MIN;
             let Some(target_pool) = self.pool(&jigsaw.pool) else {
                 continue;
@@ -1369,7 +1204,6 @@ impl Placer<'_, '_> {
                 context_free.clone()
             };
             let mut candidates = Candidates::new(
-                self.draws,
                 &target_pool,
                 &fallback,
                 depth != self.config.max_depth,
@@ -1378,8 +1212,7 @@ impl Placer<'_, '_> {
             while let Some(Pick {
                 element: target,
                 name,
-                ignore_bounds,
-            }) = candidates.next(&self.counts, depth, random)
+            }) = candidates.next(&self.counts, depth)
             {
                 if matches!(target.as_ref(), PoolElement::Empty) {
                     break;
@@ -1416,14 +1249,16 @@ impl Placer<'_, '_> {
                         }
                         let target_local = target_jigsaw.pos;
                         let raw_position: [i32; 3] =
-                            std::array::from_fn(|i| target_pos[i] - target_local[i]);
+                            std::array::from_fn(|i| target_pos[i].wrapping_sub(target_local[i]));
                         let raw_box = target.bounding_box(raw_position, rotation);
                         let raw_y = raw_box.min[1];
                         let target_rigid = target.projection() == Projection::Rigid;
                         let target_local_y = target_local[1];
-                        let delta_y = local_y - target_local_y + step(jigsaw.front)[1];
+                        let delta_y = local_y
+                            .wrapping_sub(target_local_y)
+                            .wrapping_add(step(jigsaw.front)[1]);
                         let target_y = if source_rigid && target_rigid {
-                            source_y + delta_y
+                            source_y.wrapping_add(delta_y)
                         } else {
                             if base_height == i32::MIN {
                                 base_height = context.base_height(
@@ -1432,29 +1267,35 @@ impl Placer<'_, '_> {
                                     HeightmapType::WorldSurfaceWg,
                                 );
                             }
-                            base_height - target_local_y
+                            base_height.wrapping_sub(target_local_y)
                         };
-                        let offset = target_y - raw_y;
+                        let offset = target_y.wrapping_sub(raw_y);
                         let mut target_box = raw_box.moved([0, offset, 0]);
-                        let target_position =
-                            [raw_position[0], raw_position[1] + offset, raw_position[2]];
+                        let target_position = [
+                            raw_position[0],
+                            raw_position[1].wrapping_add(offset),
+                            raw_position[2],
+                        ];
                         if expand_to > 0 {
-                            let size = (expand_to + 1).max(target_box.max[1] - target_box.min[1]);
-                            target_box.max[1] = target_box.max[1].max(target_box.min[1] + size);
+                            let size = expand_to
+                                .wrapping_add(1)
+                                .max(target_box.max[1].wrapping_sub(target_box.min[1]));
+                            target_box.max[1] =
+                                target_box.max[1].max(target_box.min[1].wrapping_add(size));
                         }
-                        if !ignore_bounds && !children_free.borrow().fits(&target_box) {
+                        if !children_free.borrow().fits(&target_box) {
                             continue;
                         }
                         children_free.borrow_mut().removed.push(target_box);
                         let target_ground = if target_rigid {
-                            source_ground - delta_y
+                            source_ground.wrapping_sub(delta_y)
                         } else {
                             target.ground_level_delta()
                         };
                         let junction_y = if source_rigid {
-                            source_y + local_y
+                            source_y.wrapping_add(local_y)
                         } else if target_rigid {
-                            target_y + target_local_y
+                            target_y.wrapping_add(target_local_y)
                         } else {
                             if base_height == i32::MIN {
                                 base_height = context.base_height(
@@ -1463,11 +1304,13 @@ impl Placer<'_, '_> {
                                     HeightmapType::WorldSurfaceWg,
                                 );
                             }
-                            base_height + delta_y / 2
+                            base_height.wrapping_add(delta_y / 2)
                         };
                         self.pieces[source_index].junctions.push(Junction {
                             source_x: target_pos[0],
-                            source_ground_y: junction_y - local_y + source_ground,
+                            source_ground_y: junction_y
+                                .wrapping_sub(local_y)
+                                .wrapping_add(source_ground),
                             source_z: target_pos[2],
                             delta_y,
                             dest_projection: target.projection(),
@@ -1480,9 +1323,11 @@ impl Placer<'_, '_> {
                             bounding_box: target_box,
                             junctions: vec![Junction {
                                 source_x: jigsaw.pos[0],
-                                source_ground_y: junction_y - target_local_y + target_ground,
+                                source_ground_y: junction_y
+                                    .wrapping_sub(target_local_y)
+                                    .wrapping_add(target_ground),
                                 source_z: jigsaw.pos[2],
-                                delta_y: -delta_y,
+                                delta_y: delta_y.wrapping_neg(),
                                 dest_projection: if source_rigid {
                                     Projection::Rigid
                                 } else {
@@ -1517,42 +1362,10 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn wide_weights_jigsaw() {
-        use sunrise_core::random::LegacyRandom;
-        for weights in [[1, 1, 1], [0, 2, 5], [7, 0, 1]] {
-            for seed in -20..20 {
-                let mut old = LegacyRandom::new(seed);
-                let mut new = old.clone();
-                let small = pool(&weights.map(|w| (w, json!({}))));
-                let mut at = old.next_int_bound(weights.iter().sum()).unwrap();
-                let expected = weights.iter().position(|w| {
-                    at -= w;
-                    at < 0
-                });
-                assert_eq!(small.weighted(&[0, 1, 2], &mut new), expected);
-                assert_eq!(new.next_long(), old.next_long());
-            }
-        }
-        let mut p = pool(&[(1, json!({})), (1, json!({})), (1, json!({}))]);
-        for (_, weight) in &mut Arc::get_mut(&mut p).unwrap().raw {
-            *weight = i32::MAX;
-        }
-        for seed in 0..30 {
-            assert!(
-                p.weighted(
-                    &[0, 1, 2],
-                    &mut sunrise_core::random::LegacyRandom::new(seed)
-                )
-                .is_some()
-            );
-        }
-    }
-
     /// A pool of empty elements, told apart by identity, with these limits.
     fn pool(entries: &[(i32, Value)]) -> Arc<Pool> {
-        let (mut templates, mut indices, mut raw, mut rules, mut limits) =
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut templates, mut indices, mut raw, mut limits) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for (i, (weight, element)) in entries.iter().enumerate() {
             let e = Arc::new(PoolElement::Empty);
             for _ in 0..*weight {
@@ -1560,7 +1373,6 @@ mod tests {
                 indices.push(i);
             }
             raw.push((e, *weight));
-            rules.push(Rules::of(element));
             limits.push(Limit::of(element));
         }
         let guaranteed = (0..entries.len())
@@ -1570,7 +1382,6 @@ mod tests {
             templates,
             entries: indices,
             raw,
-            rules,
             limits,
             guaranteed,
             fallback: "minecraft:empty".into(),
@@ -1590,13 +1401,12 @@ mod tests {
         below_max: bool,
     ) -> Vec<usize> {
         let mut random = LegacyRandom::new(7);
-        let mut candidates =
-            Candidates::new(Draws::Vanilla, target, fallback, below_max, &mut random);
+        let mut candidates = Candidates::new(target, fallback, below_max, &mut random);
         let index = |pool: &Arc<Pool>, element: &Arc<PoolElement>| {
             pool.raw.iter().position(|(e, _)| Arc::ptr_eq(e, element))
         };
         let mut out = Vec::new();
-        while let Some(pick) = candidates.next(counts, depth, &mut random) {
+        while let Some(pick) = candidates.next(counts, depth) {
             out.push(
                 index(target, &pick.element)
                     .or_else(|| index(fallback, &pick.element).map(|i| i + 100))
@@ -1617,10 +1427,9 @@ mod tests {
             "delegate": delegate()});
         let g = Limit::of(&guaranteed).unwrap();
         assert_eq!((g.max, g.min_depth, g.guaranteed), (2, 3, true));
-        // No limit, or YUNG's (`Rules`): none to keep here.
+        // No limit: none to keep here.
         for none in [
             json!({"element_type": "lithostitched:limited", "delegate": delegate()}),
-            json!({"element_type": "yungsapi:yung_single_element", "name": "pile", "max_count": 2}),
             delegate(),
         ] {
             assert!(Limit::of(&none).is_none(), "{none}");

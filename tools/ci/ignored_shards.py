@@ -41,11 +41,15 @@ DAILY_ROWS = "daily-rows"
 DAILY_ROWS_LEGS = {".": DAILY_ROWS}
 # What a package's tests need built that `cargo test` does not build itself, by package: the one command, run
 # before its tests by `verify` (dyna-ci.yml) and the daily run (tools/ci/ignored_tests.py), so they
-# cannot drift. sunrise-mod-package's holder tests start the `holder_actor` example from beside their test executable
+# cannot drift (verify builds sunrise-mod-package's only: the other packages' need it for daily tests alone).
+# sunrise-mod-package's holder tests start the `holder_actor` example from beside their test executable
 # (target/debug/examples, the test profile's folder).
 PREPARE = {
     "sunrise-mod-package": ["cargo", "build", "--locked", "--profile", "test", "-p", "sunrise-mod-package",
                             "--features", "runtime-process", "--example", "holder_actor"],
+    # tests/shader_fuzz_cli.rs drives the `shader_fuzz` example through its command line.
+    "sunrise-render-shaderpack": ["cargo", "build", "--locked", "--profile", "test", "-p", "sunrise-render-shaderpack",
+                                  "--example", "shader_fuzz"],
 }
 # A package too big for one test process's memory runs as several legs, `PACKAGE#NofM` (tools/ci/ignored_tests.py
 # gives each test to exactly one leg). sunrise-client's single process was killed (signal 9) on three main runs.

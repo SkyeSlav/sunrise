@@ -1,13 +1,11 @@
 use super::*;
 
-const WATCHED: &str = "\
-[[repository]]
-id = 101
+const REPOSITORY: &str = "\
 name = 'author/example'
-[[repository.package]]
+[[package]]
 path = '.'
 project = 'Ab3dE9xQ'
-[[repository.package]]
+[[package]]
 path = 'mods/example'
 project = 'Ab3dE9xY'
 ";
@@ -54,7 +52,9 @@ const METADATA: &str = "https://raw.githubusercontent.com/sunrise-org/sunrise-mo
 fn registry(url: &str) -> Result<Option<String>, String> {
     let file = url.strip_prefix(METADATA).and_then(|f| f.strip_prefix('/'));
     Ok(Some(match file {
-        Some("watched.toml") => WATCHED.into(),
+        Some("repositories/101.toml") => REPOSITORY.into(),
+        // Raw GitHub answers not found for a repository with no registration file.
+        Some(f) if f.starts_with("repositories/") => return Ok(None),
         Some("release-workflow.toml") => format!("uses = '{USES}'"),
         Some("projects/Ab3dE9xQ/project.toml") => "mod = 'example'\nkind = 'mod'\n".into(),
         Some("projects/Ab3dE9xY/project.toml") => "mod = 'example'\nkind = 'native-mod'\n".into(),
@@ -89,7 +89,7 @@ fn registration_is_the_repository_id_package_path_mod_id_and_kind() {
         )
         .is_err()
     );
-    // A repository listed under another name is found by its ID; a reused name is not trusted.
+    // A repository registered under another name is found by its ID; a reused name is not trusted.
     let fetch = |url: &str| match url {
         "https://api.github.com/repos/author/renamed" => Ok(Some(r#"{"id":101}"#.into())),
         "https://api.github.com/repos/author/example" => Ok(Some(r#"{"id":102}"#.into())),
@@ -103,18 +103,19 @@ fn registration_is_the_repository_id_package_path_mod_id_and_kind() {
         "mod",
     )
     .unwrap();
-    assert!(
+    // Repository 102 has no registration file.
+    assert_eq!(
         registered(
             &fetch,
             "git@github.com:author/example.git",
             ".",
             "example",
             "mod"
-        )
-        .is_err()
+        ),
+        Err(NOT_REGISTERED.into())
     );
-    let unknown = format!("unknown = true\n{WATCHED}");
-    let fetch = |url: &str| match url.ends_with("watched.toml") {
+    let unknown = format!("unknown = true\n{REPOSITORY}");
+    let fetch = |url: &str| match url.ends_with("repositories/101.toml") {
         true => Ok(Some(unknown.clone())),
         false => registry(url),
     };
@@ -141,6 +142,27 @@ fn caller_matches_root_and_subfolder_workflow_contract() {
     );
     assert!(caller("example/", "mods/a: b", USES).ends_with("path: \"mods/a: b\"\n"));
     assert!(caller("example/", ".nan", USES).ends_with("path: \".nan\"\n"));
+}
+
+#[test]
+fn pull_request_page_is_githubs_compare_view_for_a_github_origin() {
+    assert_eq!(
+        pull_request_url(
+            "git@github.com:author/example.git",
+            "main",
+            "release/example/v1.5.0"
+        )
+        .as_deref(),
+        Some("https://github.com/author/example/compare/main...release/example/v1.5.0?expand=1")
+    );
+    assert_eq!(
+        pull_request_url(
+            "https://gitlab.com/author/example.git",
+            "main",
+            "release/v1.5.0"
+        ),
+        None
+    );
 }
 
 #[test]
@@ -551,7 +573,10 @@ mod git_fixtures {
             fs::read_to_string(repo.root.join("mods/example/sunrise-mod.toml")).unwrap(),
             format!("{}{NATIVE}", MOD.replace("1.4.2", "1.5.0"))
         );
-        assert_eq!(repo.git(["log", "-1", "--format=%s"]), "Release 1.5.0");
+        assert_eq!(
+            repo.git(["log", "-1", "--format=%B"]),
+            "Release 1.5.0\n\nSigned-off-by: Author <author@example.invalid>\n"
+        );
         assert_eq!(
             repo.git(["show", "--pretty=format:", "--name-only", "HEAD"]),
             ".github/workflows/sunrise-release-example.yml\nmods/example/Cargo.lock\nmods/example/Cargo.toml\nmods/example/sunrise-mod.toml"
@@ -599,6 +624,10 @@ mod git_fixtures {
 
         let error = repo.release(".", &["patch"], |_, _| Ok(())).unwrap_err();
         assert!(error.contains("remain local"), "{error}");
+        assert!(
+            error.contains("then run release 1.4.3 --pull-request"),
+            "{error}"
+        );
         assert_eq!(
             repo.git
                 .text(&repo.bare, ["rev-parse", "refs/heads/main"])
@@ -614,5 +643,60 @@ mod git_fixtures {
             repo.git(["rev-parse", "refs/tags/v1.4.3"]),
             repo.git(["rev-parse", "HEAD"])
         );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn pull_request_release_pushes_a_release_branch_and_leaves_a_protected_default_branch() {
+        let repo = Repo::new();
+        repo.put(MANIFEST, MOD);
+        repo.commit();
+        repo.git(["push", "-u", "origin", "main"]);
+        let old = repo.git(["rev-parse", "HEAD"]);
+        let hook = repo.bare.join("hooks/update");
+        fs::write(&hook, "#!/bin/sh\ntest \"$1\" != refs/heads/main\n").unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+
+        repo.release(".", &["minor", "--pull-request"], |_, tag| {
+            assert_eq!(tag, "v1.5.0");
+            Ok(())
+        })
+        .unwrap();
+        let commit = repo.git(["rev-parse", "HEAD"]);
+        assert_eq!(
+            repo.git(["symbolic-ref", "--short", "HEAD"]),
+            "release/v1.5.0"
+        );
+        assert_eq!(repo.git(["rev-parse", "HEAD~1"]), old);
+        assert_eq!(repo.git(["rev-parse", "refs/heads/main"]), old);
+        assert_eq!(
+            repo.git(["log", "-1", "--format=%B"]),
+            "Release 1.5.0\n\nSigned-off-by: Author <author@example.invalid>\n"
+        );
+        for (reference, want) in [
+            ("refs/heads/main", &old),
+            ("refs/heads/release/v1.5.0", &commit),
+            ("refs/tags/v1.5.0", &commit),
+        ] {
+            assert_eq!(
+                &repo.git.text(&repo.bare, ["rev-parse", reference]).unwrap(),
+                want
+            );
+        }
+        assert!(repo.git(["status", "--porcelain"]).is_empty());
+
+        // The next release branch already on origin: refused before the check, with nothing made.
+        repo.git(["switch", "--quiet", "main"]);
+        repo.git([
+            "push",
+            "origin",
+            &format!("{old}:refs/heads/release/v1.4.3"),
+        ]);
+        assert!(
+            repo.release(".", &["patch", "--pull-request"], refused_check)
+                .unwrap_err()
+                .contains("branch refs/heads/release/v1.4.3 already exists on origin")
+        );
+        assert!(repo.git(["tag", "--list", "v1.4.3"]).is_empty());
     }
 }

@@ -319,7 +319,13 @@ impl Game<'_> {
             // ...and the attacker stops sprinting.
             self.stop_sprint_after_extra_knockback();
         }
-        let dismounted = dismounts && self.mobs[index].extra.mount.is_some();
+        // `Player.stabAttack`: a type in `cannot_be_dismounted_by_item_usage` stays seated.
+        let dismounted = dismounts
+            && self.mobs[index].extra.mount.is_some()
+            && !self.items().entity_type_tags.has_bit(
+                self.mobs[index].kind.flags.entity_tag_slot,
+                sunrise_client::items::EntityTypeTags::CANNOT_BE_DISMOUNTED_BY_ITEM_USAGE,
+            );
         if dismounted {
             self.dismount_mob(id);
         }

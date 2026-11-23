@@ -1322,7 +1322,7 @@ impl Game<'_> {
         let (conn, from) = (guest.conn, Dim::from_id(&guest.dimension));
         let uuid = sunrise_client::lan::playerdata::uuid_ints(uuid);
         let Some((dim, target)) = Dim::all().into_iter().find_map(|dim| {
-            self.level_entity_by_uuid(dim, uuid)
+            self.level_target_by_uuid(dim, uuid)
                 .map(|target| (dim, target))
         }) else {
             return;

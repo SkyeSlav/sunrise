@@ -117,6 +117,17 @@ impl Resource {
             ResourceStorage::Bytes(bytes) => Ok(bytes.to_vec()),
         }
     }
+    /// [`Resource::read`], only when the complete resource fits `max` bytes.
+    pub fn read_limited(&self, max: u64) -> io::Result<Vec<u8>> {
+        match &self.0 {
+            ResourceStorage::File { source, name } => source.read_limited(name, max),
+            ResourceStorage::Bytes(bytes) if bytes.len() as u64 <= max => Ok(bytes.to_vec()),
+            ResourceStorage::Bytes(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "resource exceeds the size limit",
+            )),
+        }
+    }
 }
 
 /// A folder or an open zip/jar, with the same relative-name lookup and listing.
@@ -639,20 +650,12 @@ impl ResourceSource {
             Storage::Fixed { names, read, .. } => {
                 read_fixed(names, read.as_ref(), name, Some(max.saturating_add(1)))?
             }
-            Storage::Index(files, ..) => match &files
-                .get(name)
-                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, name.to_owned()))?
-                .0
-            {
-                ResourceStorage::File { source, name } => return source.read_limited(name, max),
-                ResourceStorage::Bytes(bytes) if bytes.len() as u64 <= max => bytes.to_vec(),
-                ResourceStorage::Bytes(_) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "resource exceeds the size limit",
-                    ));
-                }
-            },
+            Storage::Index(files, ..) => {
+                return files
+                    .get(name)
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, name.to_owned()))?
+                    .read_limited(max);
+            }
         };
         if bytes.len() as u64 > max {
             return Err(io::Error::new(

@@ -56,12 +56,10 @@ impl HiveHost for GameHive<'_, '_> {
     }
     fn load(&mut self, tag: &Tag) -> Option<Mob> {
         let kind = sunrise_client::entity_nbt::kind(tag)?;
-        if !self
-            .game
-            .items()
-            .entity_type_tags
-            .contains("minecraft:beehive_inhabitors", &kind)
-        {
+        if !self.game.items().entity_type_tags.has_flag(
+            &kind,
+            sunrise_client::items::EntityTypeTags::BEEHIVE_INHABITORS,
+        ) {
             return None;
         }
         let id = self.game.load_mob(tag.clone(), None)?;

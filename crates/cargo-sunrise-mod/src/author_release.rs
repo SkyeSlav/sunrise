@@ -13,7 +13,8 @@ use std::{
 use sunrise_mod_package::{Manifest, manifest::MANIFEST};
 use toml_edit::DocumentMut;
 
-pub(crate) const USAGE: &str = "release [<version>|patch|minor|major] [--check] | release setup";
+pub(crate) const USAGE: &str =
+    "release [<version>|patch|minor|major] [--check] [--pull-request] | release setup";
 const WORKFLOW: &str = "sunrise-org/sunrise-mods/.github/workflows/release.yml@release-v";
 const DEFAULT_WORKFLOW: &str = "sunrise-org/sunrise-mods/.github/workflows/release.yml@release-v1";
 const CALLER: &str = ".github/workflows/sunrise-release.yml";
@@ -40,26 +41,19 @@ fn registry_file(fetch: Fetch<'_>, name: &str) -> Result<String, String> {
     fetch(&url)?.ok_or_else(|| format!("{url}: not found"))
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Watched {
-    #[serde(default)]
-    repository: Vec<Repository>,
-}
-
+/// `registry/repositories/<numeric repository id>.toml`: one file per registered repository.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Repository {
-    id: u64,
-    // A name can be reused after a rename: the ID is the identity.
+    // A name can be reused after a rename: the ID in the file name is the identity.
     #[serde(rename = "name")]
     _name: String,
-    package: Vec<WatchedPackage>,
+    package: Vec<RegisteredPackage>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct WatchedPackage {
+struct RegisteredPackage {
     path: String,
     project: String,
 }
@@ -111,6 +105,12 @@ fn github_name(origin: &str) -> Option<String> {
     (valid(owner) && valid(repo)).then(|| path.to_owned())
 }
 
+/// GitHub's page for opening a pull request from `head` into `base`, for a GitHub `origin`.
+fn pull_request_url(origin: &str, base: &str, head: &str) -> Option<String> {
+    github_name(origin)
+        .map(|name| format!("https://github.com/{name}/compare/{base}...{head}?expand=1"))
+}
+
 /// The registered package this release is for: origin's repository, found by its numeric GitHub ID
 /// (a name can be reused after a rename), at exactly this package path, with the project record's
 /// mod ID and kind.
@@ -122,16 +122,18 @@ fn registered(
     kind: &str,
 ) -> Result<(), String> {
     let name = github_name(origin).ok_or(NOT_REGISTERED)?;
-    let watched: Watched = toml::from_str(&registry_file(fetch, "watched.toml")?)
-        .map_err(|e| format!("registry/watched.toml: {e}"))?;
     let url = format!("https://api.github.com/repos/{name}");
     let text = fetch(&url)?.ok_or(NOT_REGISTERED)?;
     let GitHubRepository { id } = serde_json::from_str(&text).map_err(|e| format!("{url}: {e}"))?;
-    let package = watched
-        .repository
+    let file = format!("repositories/{id}.toml");
+    let url = format!("{}/{file}", sunrise_addresses::MOD_REGISTRY_METADATA);
+    let text = fetch(&url)?.ok_or(NOT_REGISTERED)?;
+    let repository: Repository =
+        toml::from_str(&text).map_err(|e| format!("registry/{file}: {e}"))?;
+    let package = repository
+        .package
         .iter()
-        .find(|r| r.id == id)
-        .and_then(|repo| repo.package.iter().find(|p| p.path == path))
+        .find(|p| p.path == path)
         .ok_or(NOT_REGISTERED)?;
     let record = format!("projects/{}/project.toml", package.project);
     let ProjectRecord {
@@ -661,6 +663,7 @@ fn release(
     }
     let mut options = Options::new("release", args, &[]);
     let preview = options.switch("--check");
+    let pull_request = options.switch("--pull-request");
     let requested = options.at_most_one()?.unwrap_or("patch");
     options.finish()?;
     let project = Project::read(package, git)?;
@@ -697,10 +700,20 @@ fn release(
     if !git.text(root, ["tag", "--list", &tag])?.is_empty() {
         return Err(format!("tag {tag} already exists locally"));
     }
-    let remote = git.text(
-        root,
-        ["ls-remote", "--refs", "--", &origin, &branch, &tag_ref],
-    )?;
+    // With --pull-request the release commit goes on a new branch, for a default branch that takes
+    // only pull requests. The tag need not be on the default branch for the workflow to run.
+    let release_branch = pull_request.then(|| format!("release/{tag}"));
+    let release_ref = release_branch
+        .as_ref()
+        .map(|name| format!("refs/heads/{name}"));
+    if let Some(reference) = &release_ref
+        && !git.text(root, ["for-each-ref", reference])?.is_empty()
+    {
+        return Err(format!("branch {reference} already exists locally"));
+    }
+    let mut query = vec!["ls-remote", "--refs", "--", &origin, &branch, &tag_ref];
+    query.extend(release_ref.as_deref());
+    let remote = git.text(root, query)?;
     let find_ref = |name: &str| {
         remote
             .lines()
@@ -710,6 +723,11 @@ fn release(
     if find_ref(&tag_ref).is_some() {
         return Err(format!("tag {tag} already exists on origin"));
     }
+    if let Some(reference) = release_ref.as_deref().filter(|r| find_ref(r).is_some()) {
+        return Err(format!("branch {reference} already exists on origin"));
+    }
+    let base = branch.strip_prefix("refs/heads/").unwrap_or(&branch);
+    let target = release_ref.as_deref().unwrap_or(&branch);
     let upstream = git.text(
         root,
         [
@@ -786,8 +804,11 @@ fn release(
             change.describe();
         }
         println!(
-            "  Commit as Release {version}, tag {tag}, and push {branch} and {tag_ref} to origin"
+            "  Commit as Release {version} (signed off), tag {tag}, and push {target} and {tag_ref} to origin"
         );
+        if let Some(name) = &release_branch {
+            println!("  The commit goes on a new branch {name}, for a pull request into {base}");
+        }
         return Ok(());
     }
 
@@ -799,12 +820,19 @@ fn release(
             "the checked-out branch changed during the release check; run release again".into(),
         );
     }
+    if let Some(name) = &release_branch {
+        git.text(root, ["switch", "--quiet", "--create", name, &head])?;
+    }
     // A release only writes: the caller and the version files. Stage exactly those.
     for change in &changes {
         change.apply(root)?;
     }
     stage(root)?;
-    git.text(root, ["commit", "-m", &format!("Release {version}")])?;
+    // Signed off as the committer, for repositories that check the Developer Certificate of Origin.
+    git.text(
+        root,
+        ["commit", "--signoff", "-m", &format!("Release {version}")],
+    )?;
     // A commit hook could change what is committed after the check: tag and push only a commit
     // whose tree is the checked one, by its ID.
     let commit = git.text(root, ["rev-parse", "HEAD"])?;
@@ -816,13 +844,25 @@ fn release(
     git.text(root, ["tag", &tag, &commit])?;
     // Publish both refs together, or neither. In particular, a rejected branch must not release a tag.
     // Explicit destinations, so no remote.origin.push mapping sends them elsewhere.
-    let branch_spec = format!("{commit}:{branch}");
+    let branch_spec = format!("{commit}:{target}");
     let tag_spec = format!("{tag_ref}:{tag_ref}");
     git.text(root, ["push", "--atomic", "--no-follow-tags", "origin", &branch_spec, &tag_spec])
-        .map_err(|e| format!("{e}\nThe release commit and {tag} remain local. Resolve the push error, then push both refs to origin."))?;
+        .map_err(|e| {
+            let protected = match &release_branch {
+                Some(_) => String::new(),
+                None => format!("\nIf origin accepts {base} only through pull requests, undo with `git tag -d {tag}` and `git reset --keep HEAD~1`, then run release {version} --pull-request."),
+            };
+            format!("{e}\nThe release commit and {tag} remain local. Resolve the push error, then push both refs to origin.{protected}")
+        })?;
     println!(
         "Released {version}: pushed {tag} to origin. GitHub Actions will build and attest the release."
     );
+    if let Some(name) = &release_branch {
+        let page = pull_request_url(&origin, base, name).unwrap_or_default();
+        println!(
+            "Open a pull request from {name} into {base} and merge it, so {base} carries the version before the next release. {page}"
+        );
+    }
     Ok(())
 }
 

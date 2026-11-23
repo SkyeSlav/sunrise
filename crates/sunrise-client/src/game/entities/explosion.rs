@@ -2221,7 +2221,7 @@ fn blast_resistance(base: f32, cap: Option<f32>, kept: bool) -> f32 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::game) mod tests {
     use super::*;
 
     #[test]
@@ -2621,6 +2621,10 @@ mod tests {
     #[test]
     #[ignore = "requires prepared resources; tools/test_explosion_items_parity.py"]
     fn explosion_items_parity_fixture() {
+        run_explosion_items_parity_fixture();
+    }
+
+    pub(in crate::game) fn run_explosion_items_parity_fixture() {
         let directory = std::env::var_os("SUNRISE_EXPLOSION_ITEMS_FIXTURE")
             .expect("set SUNRISE_EXPLOSION_ITEMS_FIXTURE to the fixture directory");
         crate::game::native_entity_refs::tests::with_game(|game| {
@@ -2672,6 +2676,7 @@ mod tests {
     fn zombie_type() -> std::sync::Arc<sunrise_client::mobs::MobType> {
         use sunrise_client::mobs::{Anim, Brain, MobType, Part, Species};
         std::sync::Arc::new(MobType {
+            type_key: Default::default(),
             shadow: None,
             id: "minecraft:zombie".into(),
             species: Species::Zombie,

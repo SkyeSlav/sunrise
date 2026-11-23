@@ -146,26 +146,38 @@ impl Game<'_> {
         );
         (steered && player).then_some(first)
     }
-    /// Sets the entity's velocity (`Entity.setDeltaMovement`); clients see it
-    /// as they see the entity move. False for a player (its client moves
-    /// it), an entity Sunrise doesn't simulate, a value that isn't finite,
-    /// or on a client. API 379.
+    /// Replaces `Entity.deltaMovement`; a player also gets a motion packet.
     pub(super) fn entity_set_velocity(&mut self, entity: EntityRef, velocity: [f64; 3]) -> bool {
-        if self.remote.is_some()
-            || !velocity.iter().all(|v| v.is_finite())
-            || self.native_entity_target(entity).is_none()
-        {
+        if !velocity.iter().all(|v| v.is_finite()) {
             return false;
+        }
+        let Some(target) = self.native_entity_target(entity) else {
+            return false;
+        };
+        let [x, y, z] = velocity;
+        let velocity = Vec3::new(x, y, z);
+        if matches!(target, Target::Player | Target::Guest(_)) {
+            return self.write_player_velocity(target, |_| Some(velocity));
         }
         let Some(h) = self.native_walk_entity(entity.id()) else {
             return false;
         };
-        let [x, y, z] = velocity;
-        with_entity_mut!(self, h, e => *e.velocity_mut() = Vec3::new(x, y, z));
+        with_entity_mut!(self, h, e => *e.velocity_mut() = velocity);
         if let EntityHandle::Mob(i) = h {
             self.mobs[i].needs_sync = true;
         }
         true
+    }
+    /// `Entity.fallDistance` on the server body, including the player's accepted moves.
+    pub(super) fn entity_fall_distance(&self, entity: EntityRef) -> Option<f64> {
+        match self.native_entity_target(entity)? {
+            Target::Player => Some(self.player.as_ref()?.fall_distance),
+            Target::Guest(conn) => Some(self.command_guest(conn)?.motion.as_ref()?.fall_distance),
+            _ => Some(self.native_walk_entity(entity.id()).map_or(
+                0.0,
+                |handle| with_entity!(self, handle, e => e.fall_distance()),
+            )),
+        }
     }
     /// `Entity.resetFallDistance`: how far the entity has fallen is forgotten, so its next
     /// landing hurts it as a step does (a fan's or a launcher's push, a mod's soft block).
@@ -328,9 +340,14 @@ impl Game<'_> {
     }
 
     /// The entity's box (`Entity.getBoundingBox`): its lowest and highest
-    /// corner. Displays and markers have zero-sized physical boxes; interactions use
-    /// their saved dimensions. End crystals have their 2 x 2 box. None for the dragon; a dragon part's is its own. API 379.
+    /// corner. Displays and markers have zero-sized physical boxes. A client display's
+    /// corners coincide at its committed tick position, not its rendering box or packet target.
+    /// Interactions use their saved dimensions. End crystals have their 2 x 2 box.
+    /// None for the dragon; a dragon part's is its own. API 379.
     pub(super) fn entity_bounding_box(&self, entity: EntityRef) -> Option<[[f64; 3]; 2]> {
+        if let Some(display) = self.native_client_display(entity) {
+            return Some([display.position().to_array(); 2]);
+        }
         if let Some(row) = self.native_client_general(entity) {
             return Some(corners(row.bounds()));
         }

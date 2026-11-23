@@ -21,6 +21,7 @@ use sunrise_client::{
     text::Text,
 };
 use sunrise_core::nbt::Tag;
+use sunrise_gameplay::stats::{StatScoreChange, StatScoreOp};
 
 /// What `ServerPlayer` last recorded for the criteria that follow the player.
 #[derive(Default)]
@@ -467,23 +468,22 @@ impl Game<'_> {
 
     // ---- criteria ----------------------------------------------------------
 
-    /// `ServerStatsCounter.setValue`'s scoreboard side: the objectives of
+    /// `ServerPlayer.awardStat` and `ServerPlayer.resetStat`: the objectives of
     /// each changed statistic's criteria follow it for the player `name`.
-    pub(super) fn stat_criteria_changed(
-        &mut self,
-        name: &str,
-        events: Vec<(String, String, Option<i32>)>,
-    ) {
+    pub(super) fn stat_criteria_changed(&mut self, name: &str, events: Vec<StatScoreChange>) {
         if self.score.board.objectives.is_empty() {
             return;
         }
-        for (ty, key, amount) in events {
+        for (ty, key, op) in events {
             let criteria = sb::stat_criteria(&ty, &key);
             if self.score.board.has_objectives_for(&criteria) {
                 self.journal_scoreboard();
-                self.score.board.for_all_objectives(&criteria, name, |v| {
-                    amount.map_or(0, |n| v.wrapping_add(n))
-                });
+                self.score
+                    .board
+                    .for_all_objectives(&criteria, name, |v| match op {
+                        StatScoreOp::Add(amount) => v.wrapping_add(amount),
+                        StatScoreOp::Set(value) => value,
+                    });
             }
         }
     }
@@ -747,8 +747,22 @@ impl Game<'_> {
             .iter()
             .filter_map(|m| Some((m.id, tame_owner(m)?)))
             .collect();
+        let host = self
+            .player_identity()
+            .and_then(|(_, id)| Some((id, self.player_team()?)));
+        let guests = self.lan.iter().flat_map(|lan| &lan.hub.guests);
+        let players = host
+            .into_iter()
+            .chain(guests.filter(|g| !g.is_fake()).filter_map(|g| {
+                Some((
+                    u32::try_from(g.entity_id).ok()?,
+                    self.score.board.players_team(&g.name)?,
+                ))
+            }))
+            .collect();
         sunrise_client::mobs::Teams {
             player: self.player_team(),
+            players,
             mobs: self
                 .persist
                 .uuids

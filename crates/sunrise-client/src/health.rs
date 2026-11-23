@@ -185,12 +185,14 @@ impl<'a> HitLend<'a> {
             },
         })
     }
-    /// The mob among `mobs` with id `attacker`, if it is there to borrow.
+    /// The mob among `mobs` with id `attacker`, if it is there to borrow and the hit's
+    /// subscription decision (`listened`, [`hit_host_listened`]) is to lend.
     pub fn attacking_mob(
+        listened: bool,
         mut mobs: impl Iterator<Item = &'a mut crate::mobs::Mob>,
         attacker: i32,
     ) -> Option<Self> {
-        hit_host_listened().then_some(())?;
+        listened.then_some(())?;
         Self::mob(mobs.find(|m| m.id as i32 == attacker)?)
     }
     fn id(&self) -> i32 {
@@ -377,6 +379,26 @@ pub struct PlayerBody<'a> {
     /// The stacks in vanilla `EquipmentSlot` order.
     pub equipment: PlayerEquipment<'a>,
 }
+/// The registry keys of the living types that are not mob types (`EntityType.PLAYER`,
+/// `ARMOR_STAND`, `ENDER_DRAGON`), resolved with the accepted resources, as a mob type keeps its
+/// own ([`crate::mobs::MobType::type_key`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LivingTypeKeys {
+    pub player: Option<mod_api::EntityTypeKey>,
+    pub armor_stand: Option<mod_api::EntityTypeKey>,
+    pub ender_dragon: Option<mod_api::EntityTypeKey>,
+}
+impl LivingTypeKeys {
+    /// The keys of the registry resolved now.
+    pub fn resolve() -> Self {
+        let key = mod_api::__private::resolved_entity_type_key;
+        Self {
+            player: key("minecraft:player"),
+            armor_stand: key("minecraft:armor_stand"),
+            ender_dragon: key("minecraft:ender_dragon"),
+        }
+    }
+}
 /// What a hit's listeners need to name and read the living entities it lends: the open of the
 /// world, the attribute catalog, the player in place's effects, stacks, UUID and attachments, and the
 /// entities' attachment maps, all lent for reading. Built by the game at the site; a level
@@ -384,6 +406,8 @@ pub struct PlayerBody<'a> {
 #[derive(Clone, Copy)]
 pub struct HitReads<'a> {
     pub epoch: mod_api::WorldEpoch,
+    /// The accepted resources' keys of the player, the armor stand and the dragon.
+    pub living_types: LivingTypeKeys,
     pub attributes: &'a std::sync::Arc<sunrise_world::attributes::entity::Catalog>,
     pub player_effects: Option<&'a crate::effects::PlayerEffects>,
     /// The player in place's stacks, in vanilla `EquipmentSlot` order.
@@ -1077,6 +1101,50 @@ pub struct Knock {
     pub x: f64,
     pub z: f64,
 }
+
+impl Knock {
+    /// The movement write shared by the living knockback paths, after the hook returns.
+    pub fn apply(
+        self,
+        velocity: &mut sunrise_core::geometry::Vec3,
+        resistance: f64,
+        on_ground: bool,
+        random: &mut impl sunrise_core::random::RandomSource,
+    ) -> bool {
+        use sunrise_core::geometry::Vec3;
+
+        let Self {
+            strength,
+            mut x,
+            mut z,
+        } = self;
+        let power = strength * (1.0 - resistance);
+        if power <= 0.0 {
+            return false;
+        }
+        while x * x + z * z < f64::from(1.0e-5_f32) {
+            x = (random.next_double() - random.next_double()) * 0.01;
+            z = (random.next_double() - random.next_double()) * 0.01;
+        }
+        let length = (x * x + z * z).sqrt();
+        let next = Vec3::new(
+            velocity.x / 2.0 - x / length * power,
+            if on_ground {
+                (velocity.y / 2.0 + power).min(0.4)
+            } else {
+                velocity.y
+            },
+            velocity.z / 2.0 - z / length * power,
+        );
+        // Entity.setDeltaMovement refuses a result that isn't finite.
+        if !next.is_finite() {
+            return false;
+        }
+        *velocity = next;
+        true
+    }
+}
+
 /// `CombatRules.getDamageAfterAbsorb`'s weapon: the stack
 /// `DamageSource.getWeaponItem` names, the registry its `armor_effectiveness`
 /// enchantments (Breach) are read from, and the entity that swung it.
@@ -2451,9 +2519,10 @@ impl EntityImmunityWorld for Environment<'_> {
     }
     fn fall_immune(&mut self) -> io::Result<bool> {
         Ok(self.level.tags().is_some_and(|items| {
-            items
-                .enchantments
-                .entity_in_tag("minecraft:player", "minecraft:fall_damage_immune")
+            items.entity_type_tags.has_flag(
+                "minecraft:player",
+                crate::items::EntityTypeTags::FALL_DAMAGE_IMMUNE,
+            )
         }))
     }
     fn invulnerability_check(&mut self, vanilla: bool) -> io::Result<bool> {
@@ -3303,7 +3372,7 @@ mod tests {
 
     /// A zombie in full netherite (0.1 a piece) is pushed 60 % as far as one
     /// with no armour: `knockback` scales by the attribute's value with the
-    /// gear's modifiers, which the game hands the mob as `gear_knockback_resistance`.
+    /// gear's modifiers, which the game hands the mob as `gear_knockback`.
     #[test]
     fn a_mobs_gear_resists_knockback() {
         use crate::mobs::{Damage, Mob};
@@ -3319,14 +3388,18 @@ mod tests {
             );
             m.ground.on_ground = true;
             m.attrs.knockback_resistance = own;
-            m.gear_knockback_resistance = gear;
+            m.extra.gear_knockback = gear.map(|amount| {
+                Box::new(crate::mobs::GearKnockback {
+                    worn: Default::default(),
+                    modifiers: vec![(amount, crate::mobs::finalize::Op::AddValue)],
+                })
+            });
             m.knockback(level, 0.4, 3.0, 0.0, &hit, 0.0);
             m.velocity.x
         };
         assert_eq!(pushed(None, 0.0), -0.4);
+        assert_eq!(pushed(None, 0.5), -0.2);
         assert!((pushed(Some(0.4), 0.0) - -0.4 * 0.6).abs() < 1e-12);
-        // The gear's value is the whole attribute: it replaces the mob's own.
-        assert!((pushed(Some(0.4), 0.5) - -0.4 * 0.6).abs() < 1e-12);
     }
     /// `LivingEntity.knockback`: the hook runs before knockback resistance
     /// takes its share and before motion changes; a mod's strength or

@@ -257,6 +257,7 @@ fn direct_connection_remembers_the_address_on_cancel_escape_and_join() {
         f.click("Join Server"),
         Action::Connect {
             address: "localhost:25569".into(),
+            name: None,
             lan: false,
             realm: false,
         }

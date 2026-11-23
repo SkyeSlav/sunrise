@@ -3217,7 +3217,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod environment_read_tests {
+pub(in crate::game) mod environment_read_tests {
     use crate::game::{Dim, native_entity_refs::tests::with_game};
     use mod_api::{BiomeSearch, LevelRef, WorldEpoch};
     use std::sync::Arc;
@@ -3239,6 +3239,11 @@ mod environment_read_tests {
     #[test]
     #[ignore = "daily"]
     fn biome_reads_follow_live_cells_parked_levels_and_client_login_without_loading() {
+        run_biome_reads_follow_live_cells_parked_levels_and_client_login_without_loading();
+    }
+
+    pub(in crate::game) fn run_biome_reads_follow_live_cells_parked_levels_and_client_login_without_loading()
+     {
         use crate::game::execution_role::ExecutionRole;
         use sunrise_protocol::connection::Pipe;
 
@@ -3303,6 +3308,10 @@ mod environment_read_tests {
     #[test]
     #[ignore = "daily"]
     fn floor_reads_real_collision_shapes_and_refuses_unloaded_positions() {
+        run_floor_reads_real_collision_shapes_and_refuses_unloaded_positions();
+    }
+
+    pub(in crate::game) fn run_floor_reads_real_collision_shapes_and_refuses_unloaded_positions() {
         with_game(|game| {
             game.world
                 .chunks
@@ -3346,6 +3355,10 @@ mod environment_read_tests {
     #[test]
     #[ignore = "daily"]
     fn sky_and_logical_height_read_the_named_dimension_and_client_state() {
+        run_sky_and_logical_height_read_the_named_dimension_and_client_state();
+    }
+
+    pub(in crate::game) fn run_sky_and_logical_height_read_the_named_dimension_and_client_state() {
         use crate::game::execution_role::ExecutionRole;
         use sunrise_client::chunk::LevelShape;
         use sunrise_protocol::connection::Pipe;
@@ -3425,6 +3438,11 @@ mod environment_read_tests {
     #[test]
     #[ignore = "daily"]
     fn closest_biome_uses_the_named_generator_without_loading_resident_chunks() {
+        run_closest_biome_uses_the_named_generator_without_loading_resident_chunks();
+    }
+
+    pub(in crate::game) fn run_closest_biome_uses_the_named_generator_without_loading_resident_chunks()
+     {
         use sunrise_client::vanillagen::{TerrainResources, VanillaTerrain};
 
         with_game(|game| {
@@ -3534,6 +3552,11 @@ mod environment_read_tests {
     #[test]
     #[ignore = "daily"]
     fn nearest_structure_uses_the_named_generator_without_loading_resident_chunks() {
+        run_nearest_structure_uses_the_named_generator_without_loading_resident_chunks();
+    }
+
+    pub(in crate::game) fn run_nearest_structure_uses_the_named_generator_without_loading_resident_chunks()
+     {
         use mod_api::StructureSearch;
         use sunrise_client::vanillagen::{TerrainResources, VanillaTerrain};
 
@@ -3631,6 +3654,10 @@ mod environment_read_tests {
     #[test]
     #[ignore = "daily"]
     fn level_environment_reads_match_vanilla_vectors() {
+        run_level_environment_reads_match_vanilla_vectors();
+    }
+
+    pub(in crate::game) fn run_level_environment_reads_match_vanilla_vectors() {
         use serde_json::{Value, json};
         use std::collections::HashMap;
         use sunrise_client::vanillagen::{TerrainResources, VanillaTerrain};

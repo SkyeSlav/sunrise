@@ -66,6 +66,7 @@ impl StartupMenu {
             Some(PendingWorldEntry::Server {
                 address: address.clone(),
                 name: options.player_name(),
+                list_name: None,
                 cookies: None,
                 lan: false,
                 realm: false,
@@ -258,11 +259,13 @@ impl StartupMenu {
             },
             Action::Connect {
                 address,
+                name,
                 lan,
                 realm,
             } => PendingWorldEntry::Server {
                 address,
                 name: player_name,
+                list_name: name,
                 cookies: None,
                 lan,
                 realm,
@@ -2116,6 +2119,7 @@ mod tests {
         menu.queue_entry(
             Action::Connect {
                 address: "localhost:25565".into(),
+                name: None,
                 lan: true,
                 realm: false,
             },

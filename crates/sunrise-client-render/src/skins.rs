@@ -286,7 +286,12 @@ pub struct Resolver {
     send: std::sync::mpsc::Sender<(NameOrId, Option<ResolvedProfile>)>,
     last_sweep: std::time::Instant,
     heads: HeadProfiles,
+    /// Starts the lookup of a key, answering on the sender when done: [`fetch_in_background`],
+    /// or a test's fake backend.
+    lookup: Lookup,
 }
+type ProfileAnswer = std::sync::mpsc::Sender<(NameOrId, Option<ResolvedProfile>)>;
+type Lookup = Box<dyn FnMut(NameOrId, ProfileAnswer) + Send>;
 struct Entry {
     touched: std::time::Instant,
     /// `None` while the fetch is in flight.
@@ -340,6 +345,16 @@ fn resolve_profile(key: &NameOrId, doc: &serde_json::Value) -> Option<ResolvedPr
     })
 }
 
+/// The services' lookup of `key` on a background thread, never waited on.
+fn fetch_in_background(key: NameOrId, send: ProfileAnswer) {
+    std::thread::spawn(move || {
+        let resolved = crate::auth::discovery()
+            .ok()
+            .and_then(|doc| resolve_profile(&key, &doc));
+        let _ = send.send((key, resolved));
+    });
+}
+
 impl Default for Resolver {
     fn default() -> Self {
         Self::new()
@@ -347,6 +362,12 @@ impl Default for Resolver {
 }
 impl Resolver {
     pub fn new() -> Self {
+        Self::with_lookup(fetch_in_background)
+    }
+    /// A resolver whose lookups `lookup` starts instead of the services.
+    pub(crate) fn with_lookup(
+        lookup: impl FnMut(NameOrId, ProfileAnswer) + Send + 'static,
+    ) -> Self {
         let (send, done) = std::sync::mpsc::channel();
         Self {
             entries: Default::default(),
@@ -354,6 +375,7 @@ impl Resolver {
             send,
             last_sweep: std::time::Instant::now(),
             heads: HeadProfiles::default(),
+            lookup: Box::new(lookup),
         }
     }
     /// `CacheBuilder.expireAfterAccess` with `maximumSize`.
@@ -406,13 +428,7 @@ impl Resolver {
         if resolved {
             return Resolve::Done(None);
         }
-        let (key, send) = (key.clone(), self.send.clone());
-        std::thread::spawn(move || {
-            let resolved = crate::auth::discovery()
-                .ok()
-                .and_then(|doc| resolve_profile(&key, &doc));
-            let _ = send.send((key, resolved));
-        });
+        (self.lookup)(key.clone(), self.send.clone());
         Resolve::Pending
     }
 }
@@ -586,53 +602,96 @@ pub fn head_skin(
         return sprite;
     }
     let p = resolver.heads.get(profile);
-    // Dynamic resolution is deliberately not cached: pending answers and the
-    // resolver's expiring service results must still advance on every draw.
-    let resolved = p.info.dynamic.as_ref().and_then(|key| {
-        if p.info.textures.is_some() {
-            return None;
-        }
-        match resolver.state(key) {
-            Resolve::Done(Some(profile)) => {
-                let (_, value, signature) = profile
-                    .properties
-                    .iter()
-                    .find(|(n, _, _)| n == "textures")?;
-                let cache = &mut resolver.heads.resolved[usize::from(signature.is_some())];
-                if let Some(parsed) = cache.get(value) {
-                    return Some(parsed.clone());
-                }
-                if cache.len() >= MAX_HEAD_PROFILES {
-                    cache.clear();
-                }
-                let property = if signature.is_some() {
-                    serde_json::json!({"name": "textures", "value": value, "signature": ""})
-                } else {
-                    serde_json::json!({"name": "textures", "value": value})
-                };
-                let parsed = std::sync::Arc::new(prepare_head(
-                    &serde_json::json!({"properties": [property]}),
-                ));
-                cache.insert(value.clone(), parsed.clone());
-                Some(parsed)
-            }
-            _ => None,
-        }
-    });
-    if let Some((url, location)) = resolved.as_deref().unwrap_or(&p).skin.as_ref() {
-        match downloads.state(Kind::Skin, url) {
-            Download::Ready if atlas(location) => {
-                downloads.drawn(location);
-                return location.clone();
-            }
-            // Its slot was evicted: offer the image again.
-            Download::Ready => {
-                downloads.again(location);
-            }
-            _ => {}
-        }
+    let resolved = p
+        .info
+        .dynamic
+        .as_ref()
+        .filter(|_| p.info.textures.is_none())
+        .and_then(|key| resolved_head(key, resolver));
+    match downloaded_skin(resolved.as_deref().unwrap_or(&p), downloads, &atlas) {
+        Some(location) => location.to_owned(),
+        None => crate::tab_list::default_skin(p.info.id).to_owned(),
     }
-    crate::tab_list::default_skin(p.info.id).to_owned()
+}
+
+/// The skin of the profile `key` resolves to, by its `textures` property (each value parsed
+/// once), starting the lookup the first time. Dynamic resolution is deliberately not cached:
+/// pending answers and the resolver's expiring service results must still advance on every draw.
+fn resolved_head(key: &NameOrId, resolver: &mut Resolver) -> Option<std::sync::Arc<HeadProfile>> {
+    let Resolve::Done(Some(profile)) = resolver.state(key) else {
+        return None;
+    };
+    let (_, value, signature) = profile
+        .properties
+        .iter()
+        .find(|(n, _, _)| n == "textures")?;
+    let cache = &mut resolver.heads.resolved[usize::from(signature.is_some())];
+    if let Some(parsed) = cache.get(value) {
+        return Some(parsed.clone());
+    }
+    if cache.len() >= MAX_HEAD_PROFILES {
+        cache.clear();
+    }
+    let property = if signature.is_some() {
+        serde_json::json!({"name": "textures", "value": value, "signature": ""})
+    } else {
+        serde_json::json!({"name": "textures", "value": value})
+    };
+    let parsed = std::sync::Arc::new(prepare_head(&serde_json::json!({"properties": [property]})));
+    cache.insert(value.clone(), parsed.clone());
+    Some(parsed)
+}
+
+/// `head`'s skin once downloaded and in the atlas (`atlas`), marked drawn; an evicted one is
+/// offered for upload again.
+fn downloaded_skin<'h>(
+    head: &'h HeadProfile,
+    downloads: &mut Downloader,
+    atlas: &impl Fn(&str) -> bool,
+) -> Option<&'h str> {
+    let (url, location) = head.skin.as_ref()?;
+    match downloads.state(Kind::Skin, url) {
+        Download::Ready if atlas(location) => {
+            downloads.drawn(location);
+            Some(location)
+        }
+        // Its slot was evicted: offer the image again.
+        Download::Ready => {
+            downloads.again(location);
+            None
+        }
+        _ => None,
+    }
+}
+
+/// The skin a GUI face of the player `uuid` draws (`GuiDraw::PlayerFace`): `listed`, the drawn
+/// skin of the connection's `PlayerInfo` for `uuid` when there is one; else the profile
+/// `NameOrId::Id(uuid)` resolves to, as a head's `Dynamic` profile resolves ([`head_skin`]),
+/// started once and never waited on, with the UUID's default skin until its texture is in the
+/// atlas (`atlas`). A resolved skin's name is copied into `name`, a buffer reused from face to
+/// face, so a face allocates nothing once it has room.
+pub fn face_skin<'a>(
+    uuid: u128,
+    listed: Option<&'a str>,
+    resolver: &mut Resolver,
+    downloads: &mut Downloader,
+    atlas: impl Fn(&str) -> bool,
+    name: &'a mut String,
+) -> &'a str {
+    if let Some(skin) = listed {
+        return skin;
+    }
+    let Some(head) = resolved_head(&NameOrId::Id(uuid), resolver) else {
+        return crate::tab_list::default_skin(uuid);
+    };
+    match downloaded_skin(&head, downloads, &atlas) {
+        Some(location) => {
+            name.clear();
+            name.push_str(location);
+            name
+        }
+        None => crate::tab_list::default_skin(uuid),
+    }
 }
 
 /// `PlayerSkin.Patch.apply` for a head: the sprite of a profile's `texture`
@@ -2376,5 +2435,96 @@ mod download_bound_tests {
             std::env::temp_dir(),
         ));
         assert!(d.resources.is_empty() && d.resource_order.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod face_skin_tests {
+    use super::{
+        Download, Downloader, Kind, NameOrId, ProfileAnswer, ResolvedProfile, Resolver, face_skin,
+        skin_location,
+    };
+    use std::collections::HashSet;
+    use std::sync::{Arc, Mutex};
+
+    /// `GuiDraw::PlayerFace`'s skin on a fake backend that never reaches the services: it
+    /// records each lookup the resolver starts, and the test answers it. A listed player's skin
+    /// wins and starts no lookup; an unlisted UUID starts one lookup however often it is drawn,
+    /// and draws its default while the lookup and the download are pending and after the
+    /// download until the upload, then its own skin. Every call answers at once.
+    #[test]
+    fn a_face_draws_the_listed_skin_else_the_default_until_its_one_lookup_is_uploaded() {
+        let (listed, offline) = (
+            0x0123_4567_89ab_cdef_0123_4567_89ab_cdef_u128,
+            0x853c_80ef_3c37_49fd_aa49_938b_674a_dae6_u128,
+        );
+        let started: Arc<Mutex<Vec<(NameOrId, ProfileAnswer)>>> = Arc::default();
+        let mut resolver = Resolver::with_lookup({
+            let started = started.clone();
+            move |key, answer| started.lock().unwrap().push((key, answer))
+        });
+        let mut downloads =
+            Downloader::new(std::env::temp_dir().join("sunrise-test-face-skins-absent"));
+        let mut uploaded = HashSet::new();
+        let mut name = String::new();
+        let skin = face_skin(
+            listed,
+            Some("skins/listed"),
+            &mut resolver,
+            &mut downloads,
+            |l| uploaded.contains(l),
+            &mut name,
+        );
+        assert_eq!(skin, "skins/listed");
+        assert!(
+            started.lock().unwrap().is_empty(),
+            "a listed face looked up a profile"
+        );
+
+        let default = crate::tab_list::default_skin(offline);
+        let face =
+            |resolver: &mut Resolver, downloads: &mut Downloader, uploaded: &HashSet<String>| {
+                let mut name = String::new();
+                face_skin(
+                    offline,
+                    None,
+                    resolver,
+                    downloads,
+                    |l| uploaded.contains(l),
+                    &mut name,
+                )
+                .to_owned()
+            };
+        assert_eq!(face(&mut resolver, &mut downloads, &uploaded), default);
+        assert_eq!(face(&mut resolver, &mut downloads, &uploaded), default);
+        let (key, answer) = {
+            let started = started.lock().unwrap();
+            let keys: Vec<_> = started.iter().map(|(key, _)| key.clone()).collect();
+            assert_eq!(keys, [NameOrId::Id(offline)], "one lookup, by id");
+            started[0].clone()
+        };
+
+        // The services answer: a signed `textures` property naming texture `abc123`.
+        let value = "eyJ0ZXh0dXJlcyI6IHsiU0tJTiI6IHsidXJsIjogImh0dHBzOi8vdGV4dHVyZXMubWluZWNyYWZ0Lm5ldC90ZXh0dXJlL2FiYzEyMyJ9fX0=";
+        let profile = ResolvedProfile {
+            id: offline,
+            name: "Offline".into(),
+            properties: vec![("textures".into(), value.into(), Some("sig".into()))],
+        };
+        answer.send((key, Some(profile))).unwrap();
+        let download = (Kind::Skin, "abc123".to_owned());
+        downloads.set_state(download.clone(), Download::Pending);
+        assert_eq!(face(&mut resolver, &mut downloads, &uploaded), default);
+        downloads.set_state(download, Download::Ready);
+        assert_eq!(face(&mut resolver, &mut downloads, &uploaded), default);
+        let location = skin_location("abc123");
+        uploaded.insert(location.clone());
+        assert_eq!(face(&mut resolver, &mut downloads, &uploaded), location);
+        assert!(downloads.take_drawn().contains(&location));
+        assert_eq!(
+            started.lock().unwrap().len(),
+            1,
+            "a later face started a lookup"
+        );
     }
 }

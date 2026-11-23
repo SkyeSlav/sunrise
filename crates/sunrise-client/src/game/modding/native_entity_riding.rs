@@ -267,10 +267,10 @@ impl Game<'_> {
                         .then(|| LivingRef::new(first));
                 }
                 let rider = self.mobs.iter().find(|m| m.id == first.id())?;
-                let tagged = self
-                    .items()
-                    .entity_type_tags
-                    .contains("minecraft:non_controlling_rider", &rider.kind.id);
+                let tagged = self.items().entity_type_tags.has_bit(
+                    rider.kind.flags.entity_tag_slot,
+                    sunrise_client::items::EntityTypeTags::NON_CONTROLLING_RIDER,
+                );
                 (!mob.no_ai && !tagged).then(|| LivingRef::new(first))
             }
             _ => None,
@@ -931,6 +931,7 @@ mod tests {
                         game.armor_stands.push(ArmorStand::new(id, Vec3::ZERO, 0.0));
                     } else {
                         game.others.push(super::super::commands::OtherEntity {
+                            size_answer: None,
                             attachment_lifetime: Default::default(),
                             knot_check: None,
                             eye: None,
@@ -1928,6 +1929,7 @@ mod tests {
             // A marker has a zero-sized box. Entity's default dismount answer is
             // still its position with the box's top as Y, even without a current ride.
             game.others.push(super::super::commands::OtherEntity {
+                size_answer: None,
                 attachment_lifetime: Default::default(),
                 knot_check: None,
                 eye: None,

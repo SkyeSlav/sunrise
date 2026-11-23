@@ -1,7 +1,7 @@
 //! Configuration state: registries, tags, known packs, feature flags and the
 //! common packets (keep-alive, ping, custom payloads, resource packs).
 use crate::{
-    Result,
+    Error, Result,
     buf::{
         Bool, Byte, Codec, Ident, Int, List, Long, Nbt, Opt, Reader, Str, StrN, TrustedComponent,
         TrustedNbt, UByte, Uuid, VarInt,
@@ -111,12 +111,15 @@ packet!(
     CustomClickAction { id: String => Ident, payload: Option<Tag> => ClickPayload }
 );
 /// ServerboundCustomClickActionPacket.UNTRUSTED_TAG_CODEC: an optional tag
-/// (`End` when there is none) behind its length, 65536 bytes at most.
+/// (`End` when there is none) behind its length, 65536 bytes at most, read
+/// with `new NbtAccounter(32768, 16)`: a 32 KiB heap quota and 16 nested
+/// lists and compounds.
 pub struct ClickPayload;
 impl Codec<Option<Tag>> for ClickPayload {
     fn read(r: &mut Reader) -> Result<Option<Tag>> {
         let n = r.count(65536)?;
-        let tag = Reader::new(r.bytes(n)?).nbt()?;
+        let (tag, _) = sunrise_core::nbt::read_network_accounted(r.bytes(n)?, 32768, 16)
+            .map_err(|e| Error::new(format!("NBT: {e}")))?;
         Ok((tag != Tag::End).then_some(tag))
     }
     fn write(v: &Option<Tag>, w: &mut Writer) {
@@ -418,6 +421,23 @@ mod tests {
         let mut w = Writer::new();
         ClickPayload::write(&Some(Tag::Byte(1)), &mut w);
         assert_eq!(w.data, [2, 1, 1]);
+    }
+
+    /// `UNTRUSTED_TAG_CODEC` reads with `new NbtAccounter(32768, 16)`. A root byte array costs
+    /// 24 bytes plus one per element (`ByteArrayTag.TYPE.load`), so 32744 elements fill the
+    /// quota and one more passes it; 16 nested lists are the deepest it takes.
+    #[test]
+    fn click_payload_keeps_vanilla_untrusted_heap_and_depth() {
+        let read = |tag: Tag| {
+            let mut w = Writer::new();
+            ClickPayload::write(&Some(tag), &mut w);
+            ClickPayload::read(&mut Reader::new(&w.data))
+        };
+        assert!(read(Tag::ByteArray(vec![0; 32744])).is_ok());
+        assert!(read(Tag::ByteArray(vec![0; 32745])).is_err());
+        let nested = |depth: usize| (0..depth).fold(Tag::Int(1), |tag, _| Tag::List(vec![tag]));
+        assert_eq!(read(nested(16)).unwrap(), Some(nested(16)));
+        assert!(read(nested(17)).is_err());
     }
 
     #[test]

@@ -45,6 +45,18 @@ impl Game<'_> {
             // A new entity looks its PlayerInfo up afresh.
             r.level_player_textures.remove(&p.id);
             r.level_player_infos.remove(&p.id);
+            if let Some(old_uuid) = r.level_entity_uuids.insert(p.id, p.uuid)
+                && old_uuid != p.uuid
+                && r.level_uuids.get(&old_uuid) == Some(&p.id)
+            {
+                r.level_uuids.remove(&old_uuid);
+            }
+            if let Some(old_id) = r.level_uuids.insert(p.uuid, p.id)
+                && old_id != p.id
+                && r.level_entity_uuids.get(&old_id) == Some(&p.uuid)
+            {
+                r.level_entity_uuids.remove(&old_id);
+            }
             if kind == "minecraft:player" {
                 r.level_players.insert(p.id, p.uuid);
                 r.level_player_infos

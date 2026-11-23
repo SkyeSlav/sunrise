@@ -551,7 +551,7 @@ pub(super) fn client_defaults(m: &mut Mob) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::game) mod tests {
     use super::*;
     use sunrise_protocol::entity_data::serializer as s;
 
@@ -576,6 +576,7 @@ mod tests {
         // Metadata needs no AI or model. Avoid the resource loader, which also
         // initializes process-wide item tags used by unrelated mob tests.
         let kind = Arc::new(MobType {
+            type_key: Default::default(),
             shadow: None,
             id: kind.into(),
             species,
@@ -818,6 +819,10 @@ mod tests {
     #[test]
     #[ignore = "run by tools/test_mob_air_parity.py"]
     fn mob_air_parity_fixture() {
+        run_mob_air_parity_fixture();
+    }
+
+    pub(in crate::game) fn run_mob_air_parity_fixture() {
         use std::io::Write;
         let input =
             std::fs::read_to_string(std::env::var("SUNRISE_MOB_AIR_INPUT").unwrap()).unwrap();
@@ -979,6 +984,10 @@ mod tests {
     #[test]
     #[ignore = "run by tools/test_raider_celebration_parity.py"]
     fn raider_celebration_parity_fixture() {
+        run_raider_celebration_parity_fixture();
+    }
+
+    pub(in crate::game) fn run_raider_celebration_parity_fixture() {
         use std::io::Write;
         let input =
             std::fs::read_to_string(std::env::var("SUNRISE_RAIDER_SYNC_INPUT").unwrap()).unwrap();

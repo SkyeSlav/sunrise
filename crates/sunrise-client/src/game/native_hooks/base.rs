@@ -130,12 +130,17 @@ impl GameLevel<'_> {
 
     /// An authoritative server is about to deliver `neighborChanged`.
     /// State and block IDs are valid in this level's registries for this call.
-    /// The host is the level with its ticks, as vanilla's `neighborChanged` gets the
-    /// level: a part may read its inputs (`signal`, `has_neighbor_signal`) and
-    /// schedule its tick here, as a diode does (`DiodeBlock.checkTickOnNeighbor`).
+    /// The host is the level writer vanilla's `neighborChanged` gets: a part may read
+    /// its inputs (`signal`, `has_neighbor_signal`), schedule its tick, as a diode does
+    /// (`DiodeBlock.checkTickOnNeighbor`), and set blocks, as `RedstoneLampBlock` lights
+    /// itself at once (`level.setBlock(pos, state.cycle(LIT), 2)`). A write's own
+    /// neighbour updates run next, before the rest of the update that delivered this
+    /// call (`CollectingNeighborUpdater`), as `Level.setBlock` from inside
+    /// `neighborChanged` runs them. The block's own handling then runs with the state
+    /// it was called with.
     #[inline(always)]
     pub(in crate::game) fn native_neighbor_changed(
-        &self,
+        &mut self,
         ticks: &mut Ticks,
         dimension: LevelDimension,
         pos: BlockPos,
@@ -1565,6 +1570,27 @@ impl Game<'_> {
     ) {
         self.fire_player_teleported(player, name, from, to, dimension);
     }
+    /// An eligible connection is waiting for the server's pre-profile login decision.
+    pub(in crate::game) fn native_player_handshake(
+        &mut self,
+        requested_host: &mut String,
+        requested_port: u16,
+        protocol_version: i32,
+        peer_ip: Option<&str>,
+        cancel: &mut bool,
+        reason: &mut Option<mod_api::Text>,
+    ) {
+        // Keep the reason typed until it crosses the login packet serialization boundary.
+        mod_api::dispatch_player_handshake(
+            self,
+            requested_host,
+            requested_port,
+            protocol_version,
+            peer_ip,
+            reason,
+            cancel,
+        );
+    }
     /// A player whose login the server has accepted (NeoForge's
     /// `PlayerNegotiationEvent` stage): the name, whitelist, ban and
     /// server-full checks have passed and the player holds a place, but their
@@ -1624,6 +1650,15 @@ impl Game<'_> {
         sprinting: bool,
     ) {
         self.fire_player_sprint(player, name, sprinting);
+    }
+    /// `player_login_profile`: the mods' edit of an admitted login's properties.
+    pub(in crate::game) fn native_player_login_profile(
+        &mut self,
+        player: u128,
+        name: &str,
+        properties: &mut Vec<mod_api::AccountProfileProperty>,
+    ) {
+        self.fire_player_login_profile(player, name, properties);
     }
     /// A server player's client answered a resource pack in play (vanilla's
     /// `ServerboundResourcePackPacket`): `status` is `Action`'s number, 0

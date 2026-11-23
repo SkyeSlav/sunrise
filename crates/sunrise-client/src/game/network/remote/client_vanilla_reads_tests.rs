@@ -160,8 +160,9 @@ fn a_client_counts_its_copies_ticks_and_a_respawned_player_starts_at_zero() {
 
 /// The count follows the client's entity pass, not the player's motion: an admitted local player
 /// counts before `LocalPlayer.tick`'s loaded-only update and while it sleeps, a frozen level
-/// still ticks the player and the cart carrying it (`TickRateManager.isEntityFrozen`), and the
-/// tick callbacks (`EntityTickEvent.Pre`, `PlayerTickEvent.Pre`) already see the new count.
+/// still ticks the player and the cart carrying it (`TickRateManager.isEntityFrozen`). A root
+/// counts at its own visit, after its `EntityTickEvent.Pre`; `PlayerTickEvent.Pre`, inside the
+/// player's tick, already sees the player's new count.
 #[test]
 #[ignore = "daily"]
 fn the_client_count_follows_the_entity_tick_not_the_motion() {
@@ -234,15 +235,183 @@ fn the_client_count_follows_the_entity_tick_not_the_motion() {
                     assert_eq!(counts(game), [Some(3), Some(2), Some(3)]);
 
                     let seen = seen.lock().unwrap();
-                    // The pig's Pre read 1 then 2, the player's (once loaded) 2 then 3.
+                    // The pig's Pre read 0 then 1 (before its visit counts it), the player's
+                    // (once loaded) 2 then 3.
                     let of = |id: u32| {
                         seen.iter()
                             .filter(|(seen, _)| *seen == id)
                             .map(|(_, count)| *count)
                             .collect::<Vec<_>>()
                     };
-                    assert_eq!(of(20), [Some(1), Some(2)]);
+                    assert_eq!(of(20), [Some(0), Some(1)]);
                     assert_eq!(of(PLAYER), [Some(2), Some(3)]);
+                });
+            });
+        },
+    );
+}
+
+/// A root counts at its own visit, after its `EntityTickEvent.Pre` let it through
+/// (`tickNonPassenger`), so a canceled root does not count; a passenger counts before its own
+/// tick whatever its Pre answers (`tickPassenger`).
+#[test]
+#[ignore = "daily"]
+fn a_canceled_root_does_not_count_and_a_passenger_does() {
+    use mod_api::{EntityTickListenedEvent, EntityTickPreEvent, HostSide};
+    use std::sync::{Arc, Mutex};
+    crate::game::in_own_process(
+        "game::remote::tests::client_vanilla_reads_tests::a_canceled_root_does_not_count_and_a_passenger_does",
+        || {
+            /// Cancels pigs 20 (a root) and 22 (a passenger), and records what each Pre read.
+            struct Cancel(Arc<Mutex<Vec<(u32, Option<i32>)>>>);
+            #[mod_api::__subscriptions]
+            impl mod_api::Hooks for Cancel {
+                fn entity_tick_listened(
+                    &self,
+                    _: HostSide<'_>,
+                    event: &mut EntityTickListenedEvent,
+                ) {
+                    event.listened = true;
+                }
+                fn entity_tick_pre(&self, host: HostSide<'_>, event: &mut EntityTickPreEvent<'_>) {
+                    let HostSide::Client(host) = host else {
+                        return;
+                    };
+                    for &id in event.entities {
+                        let count = host.entity(id).and_then(|e| e.tick_count(host));
+                        self.0.lock().unwrap().push((id, count));
+                        if id == 20 || id == 22 {
+                            event.canceled.push(id);
+                        }
+                    }
+                }
+            }
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let mods = vec![mod_api::ModEntry::new(
+                "cancel",
+                Box::new(Cancel(seen.clone())),
+            )]
+            .into();
+            mod_platform::testing::with_mods(mods, || {
+                with_client_game(|game| {
+                    let _connection = join(game);
+                    for id in [20, 21, 22, 23] {
+                        add(game, id, "minecraft:pig");
+                    }
+                    game.handle_packet(C::SetPassengers(play::SetPassengers {
+                        vehicle: 23,
+                        passengers: vec![22],
+                    }))
+                    .unwrap();
+                    for _ in 0..2 {
+                        game.tick_remote().unwrap();
+                    }
+                    let counts = [20, 21, 22, 23].map(|id| tick_count(game, id));
+                    assert_eq!(counts, [Some(0), Some(2), Some(2), Some(2)]);
+                    let seen = seen.lock().unwrap();
+                    let of = |id: u32| {
+                        seen.iter()
+                            .filter(|(seen, _)| *seen == id)
+                            .map(|(_, count)| *count)
+                            .collect::<Vec<_>>()
+                    };
+                    // Told together, the family's Pre runs before any of its visits: each reads
+                    // the count its last tick left.
+                    assert_eq!(of(20), [Some(0), Some(0)]);
+                    assert_eq!(of(21), [Some(0), Some(1)]);
+                    assert_eq!(of(22), [Some(0), Some(1)]);
+                    assert_eq!(of(23), [Some(0), Some(1)]);
+                });
+            });
+        },
+    );
+}
+
+/// Each entity counts at its own visit, so a callback reading another entity sees the count its
+/// visits so far left: told alone, a vehicle's Pre and Post read its passenger's old count (the
+/// passenger's ride visit comes after them, and counts it even when its own Pre is canceled),
+/// and the first root's callbacks read a later root's old count.
+#[test]
+#[ignore = "daily"]
+fn callbacks_read_other_entities_counts_as_their_visits_left_them() {
+    use mod_api::{EntityTickListenedEvent, EntityTickPostEvent, EntityTickPreEvent, HostSide};
+    use std::sync::{Arc, Mutex};
+    crate::game::in_own_process(
+        "game::remote::tests::client_vanilla_reads_tests::callbacks_read_other_entities_counts_as_their_visits_left_them",
+        || {
+            type Seen = Vec<(&'static str, u32, [Option<i32>; 3])>;
+            /// Pigs are told alone; each callback reads pigs 20, 21 and 22, and 21's Pre is
+            /// canceled.
+            struct Read(Arc<Mutex<Seen>>);
+            impl Read {
+                fn read(&self, host: HostSide<'_>, moment: &'static str, entities: &[u32]) {
+                    let HostSide::Client(host) = host else {
+                        return;
+                    };
+                    let counts =
+                        [20, 21, 22].map(|id| host.entity(id).and_then(|e| e.tick_count(host)));
+                    for &id in entities {
+                        self.0.lock().unwrap().push((moment, id, counts));
+                    }
+                }
+            }
+            #[mod_api::__subscriptions]
+            impl mod_api::Hooks for Read {
+                fn register(
+                    &self,
+                    registrar: &mut dyn mod_api::Registrar,
+                    _: &mod_api::RegistrationContext,
+                ) {
+                    registrar.entity_tick_each("minecraft:pig");
+                }
+                fn entity_tick_listened(
+                    &self,
+                    _: HostSide<'_>,
+                    event: &mut EntityTickListenedEvent,
+                ) {
+                    event.listened = true;
+                }
+                fn entity_tick_pre(&self, host: HostSide<'_>, event: &mut EntityTickPreEvent<'_>) {
+                    self.read(host, "pre", event.entities);
+                    if event.entities.contains(&21) {
+                        event.canceled.push(21);
+                    }
+                }
+                fn entity_tick_post(
+                    &self,
+                    host: HostSide<'_>,
+                    event: &mut EntityTickPostEvent<'_>,
+                ) {
+                    self.read(host, "post", event.entities);
+                }
+            }
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let mods = vec![mod_api::ModEntry::new("read", Box::new(Read(seen.clone())))].into();
+            mod_platform::testing::with_mods(mods, || {
+                with_client_game(|game| {
+                    let _connection = join(game);
+                    // Pig 20 carries pig 21; pig 22 is a later root.
+                    for id in [20, 21, 22] {
+                        add(game, id, "minecraft:pig");
+                    }
+                    game.handle_packet(C::SetPassengers(play::SetPassengers {
+                        vehicle: 20,
+                        passengers: vec![21],
+                    }))
+                    .unwrap();
+                    game.tick_remote().unwrap();
+                    let counts = [20, 21, 22].map(|id| tick_count(game, id));
+                    assert_eq!(counts, [Some(1), Some(1), Some(1)]);
+                    assert_eq!(
+                        *seen.lock().unwrap(),
+                        [
+                            ("pre", 20, [Some(0), Some(0), Some(0)]),
+                            ("post", 20, [Some(1), Some(0), Some(0)]),
+                            ("pre", 21, [Some(1), Some(1), Some(0)]),
+                            ("pre", 22, [Some(1), Some(1), Some(0)]),
+                            ("post", 22, [Some(1), Some(1), Some(1)]),
+                        ]
+                    );
                 });
             });
         },
@@ -328,6 +497,72 @@ fn the_contextual_bar_facts_read_the_jumpable_mount_and_the_tracked_waypoints() 
                 assert_eq!(game.contextual_bar(), ContextualBar::Locator);
                 game.handle_packet(waypoint(1)).unwrap();
                 assert_eq!(facts(game), (None, false));
+            });
+        },
+    );
+}
+
+/// `handleRespawn` admits the new `LocalPlayer` at once: its count reads 0 from then, and the
+/// client level ticks it, before the server's first teleport gives it a body.
+#[test]
+#[ignore = "daily"]
+fn a_respawned_player_counts_from_its_admission() {
+    crate::game::in_own_process(
+        "game::remote::tests::client_vanilla_reads_tests::a_respawned_player_counts_from_its_admission",
+        || {
+            with_client_game(|game| {
+                let _connection = join(game);
+                game.tick_remote().unwrap();
+                game.tick_remote().unwrap();
+                assert_eq!(tick_count(game, PLAYER), Some(2));
+                game.handle_packet(C::Respawn(play::Respawn {
+                    spawn: spawn(),
+                    keep: 0,
+                }))
+                .unwrap();
+                assert!(game.player.is_none());
+                let me = mod_api::EntityRef::new(game.native_lifecycle.epoch().unwrap(), PLAYER);
+                let count = |game: &Game<'_>| me.tick_count(game as &dyn ClientHost);
+                assert_eq!(count(game), Some(0));
+                game.tick_remote().unwrap();
+                assert_eq!(count(game), Some(1));
+                stand(game, 2);
+                assert_eq!(count(game), Some(1));
+                game.tick_remote().unwrap();
+                assert_eq!(count(game), Some(2));
+            });
+        },
+    );
+}
+
+/// `LocalPlayer.jumpableVehicle` asks nothing of the mount's health: a saddled horse the player
+/// controls stays its jumpable vehicle, and the jump bar's, while it dies.
+#[test]
+#[ignore = "daily"]
+fn a_dying_mount_stays_the_jumpable_vehicle() {
+    use sunrise_client::locator_bar::ContextualBar;
+    crate::game::in_own_process(
+        "game::remote::tests::client_vanilla_reads_tests::a_dying_mount_stays_the_jumpable_vehicle",
+        || {
+            with_client_game(|game| {
+                let _connection = join(game);
+                add(game, 30, "minecraft:horse");
+                game.mobs
+                    .iter_mut()
+                    .find(|m| m.id == 30)
+                    .unwrap()
+                    .extra
+                    .set_saddled(true);
+                game.handle_packet(C::SetPassengers(play::SetPassengers {
+                    vehicle: 30,
+                    passengers: vec![PLAYER as i32],
+                }))
+                .unwrap();
+                let horse = game.entity(30);
+                assert!(horse.is_some());
+                game.mobs.iter_mut().find(|m| m.id == 30).unwrap().health = 0.0;
+                assert_eq!((&*game as &dyn ClientHost).jumpable_vehicle(), horse);
+                assert_eq!(game.contextual_bar(), ContextualBar::JumpableVehicle);
             });
         },
     );

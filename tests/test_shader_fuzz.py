@@ -30,7 +30,7 @@ class DriverTests(unittest.TestCase):
                 self.assertEqual(run_dir.parent, work / 'runs')
                 self.assertEqual(list(run_dir.iterdir()), [])
                 (run_dir / 'report.json').write_text(json.dumps(report))
-                return subprocess.CompletedProcess(args, 1 if report['groups'] else 0)
+                return subprocess.CompletedProcess(args, 1 if report['groups'] or not report['cases'] else 0)
 
             out = StringIO()
             with patch.object(fuzz.subprocess, 'run', side_effect=fake), redirect_stdout(out):
@@ -39,11 +39,11 @@ class DriverTests(unittest.TestCase):
         return code, out.getvalue(), seen['args']
 
     def test_groups_print_their_replay_and_fail_the_run(self):
-        report = {'cases': 40, 'failing': 3, 'corpus_dir': '/packs', 'groups': [GROUP]}
+        report = {'cases': 40, 'skipped': 2, 'failing': 3, 'corpus_dir': '/packs', 'groups': [GROUP]}
         code, out, args = self.run_driver(report, ['--seed', '7', '--replay', '99'])
         self.assertEqual(code, 1)
         self.assertEqual(out.splitlines(), [
-            '40 cases, 3 failures in 1 groups',
+            '40 cases (2 skipped), 3 failures in 1 groups',
             '     3  panic|declaration|translate/mod.rs:12: boom',
             '        python3 tools/shader_fuzz.py --corpus /packs --replay 99   # shrunk: /w/groups/01-panic'])
         self.assertEqual(args[args.index('--seed') + 1], '7')
@@ -73,11 +73,18 @@ class DriverTests(unittest.TestCase):
                 self.assertEqual(fuzz.main(['--binary', str(binary), '--work-dir', str(work)]), 2)
 
     def test_a_clean_run_passes(self):
-        code, out, args = self.run_driver({'cases': 9, 'failing': 0, 'corpus_dir': None, 'groups': []}, ['--smoke'])
+        report = {'cases': 9, 'skipped': 0, 'failing': 0, 'corpus_dir': None, 'groups': []}
+        code, out, args = self.run_driver(report, ['--smoke'])
         self.assertEqual(code, 0)
-        self.assertEqual(out.splitlines(), ['9 cases, 0 failures in 0 groups'])
+        self.assertEqual(out.splitlines(), ['9 cases (0 skipped), 0 failures in 0 groups'])
         self.assertIn('--smoke', args)
         self.assertNotIn('--corpus', args)
+
+    def test_a_run_in_which_no_case_ran_fails(self):
+        report = {'cases': 0, 'skipped': 3, 'failing': 0, 'corpus_dir': '/packs', 'groups': []}
+        code, out, _ = self.run_driver(report, ['--corpus', '.'])
+        self.assertEqual(code, 1)
+        self.assertEqual(out.splitlines(), ['0 cases (3 skipped), 0 failures in 0 groups', 'no case ran'])
 
 
 if __name__ == '__main__':

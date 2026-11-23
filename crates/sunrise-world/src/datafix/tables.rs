@@ -8,16 +8,12 @@
 //! test, so the order is not part of their meaning. `block_state_data` keeps the order of
 //! vanilla's `register` calls (see `block_state_data.rs`).
 
-use mod_api::NbtUpgradeError;
 use serde::de::DeserializeOwned;
 use serde_json::value::RawValue;
-use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::fmt::Display;
 use std::io;
-use std::panic::{UnwindSafe, catch_unwind, resume_unwind};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// The file in the prepared resources.
 pub const FILE: &str = "datafix-tables.json";
@@ -28,21 +24,76 @@ type IntNames = &'static [(i32, &'static str)];
 
 type BlockIds = &'static [(&'static str, i32)];
 type StructureTemplateRenames = &'static [(&'static str, &'static str, Pairs)];
-type RawTables = BTreeMap<String, Box<RawValue>>;
+/// The file's tables by name, each row list kept raw until its table is first used.
+struct RawTables(BTreeMap<String, Box<RawValue>>);
+
+/// The top level as the struct this map replaced read it (`deny_unknown_fields` and serde's
+/// duplicate-field error): every key one of [`NAMES`], uppercased, at most once. No row is
+/// decoded here.
+impl<'de> serde::Deserialize<'de> for RawTables {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = RawTables;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("the datafix tables by name")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> std::result::Result<RawTables, A::Error> {
+                use serde::de::Error;
+                let mut tables = BTreeMap::new();
+                while let Some(name) = map.next_key::<String>()? {
+                    if !NAMES.iter().any(|known| known.to_ascii_uppercase() == name) {
+                        return Err(A::Error::custom(format!("unknown table {name}")));
+                    }
+                    if tables.contains_key(&name) {
+                        return Err(A::Error::custom(format!("duplicate table {name}")));
+                    }
+                    let rows = map.next_value::<Box<RawValue>>()?;
+                    tables.insert(name, rows);
+                }
+                Ok(RawTables(tables))
+            }
+        }
+        deserializer.deserialize_map(Visitor)
+    }
+}
+
+/// A legacy table could not be loaded or decoded. The cause can be shared by
+/// every upgrade that encounters the same cached error.
+#[derive(Clone, Debug)]
+pub(super) struct Error(Arc<io::Error>);
+
+impl From<io::Error> for Error {
+    fn from(error: io::Error) -> Self {
+        Self(Arc::new(error))
+    }
+}
+
+pub(super) type Result<T = ()> = std::result::Result<T, Error>;
 
 // Keep one cache per table so a malformed row fails only lookups of its own table.
 macro_rules! legacy_tables {
     ($($(#[$doc:meta])* $name:ident: $ty:ty = $convert:ident;)*) => {
+        /// Every table's name, as the file writes it uppercased.
+        const NAMES: &[&str] = &[$(stringify!($name)),*];
         $(
             $(#[$doc])*
-            pub(super) fn $name() -> $ty {
-                static TABLE: OnceLock<io::Result<$ty>> = OnceLock::new();
-                let table = TABLE.get_or_init(|| {
-                    let raw = required(try_raw_tables());
+            pub(super) fn $name() -> Result<$ty> {
+                static TABLE: OnceLock<Result<$ty>> = OnceLock::new();
+                if let Some(table) = TABLE.get() {
+                    return table.clone();
+                }
+                // A file-level failure must not become a cached per-table error.
+                let raw = try_raw_tables()?;
+                TABLE.get_or_init(|| {
                     let name = stringify!($name).to_ascii_uppercase();
-                    decode(raw, &name).map($convert)
-                });
-                required(table.as_ref().copied())
+                    Ok($convert(decode(raw, &name)?))
+                }).clone()
             }
         )*
     };
@@ -169,7 +220,7 @@ fn leak_structure_renames(
 }
 
 fn decode<T: DeserializeOwned>(raw: &RawTables, name: &str) -> io::Result<T> {
-    let value = raw.get(name).ok_or_else(|| {
+    let value = raw.0.get(name).ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidData, format!("missing table {name}"))
     })?;
     serde_json::from_str(value.get()).map_err(|error| {
@@ -198,43 +249,23 @@ fn try_raw_tables() -> io::Result<&'static RawTables> {
     Ok(TABLES.get_or_init(|| tables))
 }
 
-thread_local! {
-    static STANDALONE: Cell<bool> = const { Cell::new(false) };
-}
-
-struct TableUnavailable;
-
-/// The standalone upgrade already contains unwinds from the shared chain. Carry a
-/// distinct failure through its infallible walkers without running a panic hook.
-/// Ordinary save upgrades keep their diagnostic if a required table is missing.
-pub(super) fn required<T>(result: Result<T, impl Display>) -> T {
-    match result {
-        Ok(value) => value,
-        Err(_) if STANDALONE.get() => resume_unwind(Box::new(TableUnavailable)),
-        Err(error) => panic!(
-            "{error} ({}): this upgrade needs the data fixers' tables of the prepared resources; \
-             prepare them again (sunrise-prepare --prepare)",
+/// World loads keep their missing-resource diagnostic; the standalone API
+/// returns a typed refusal instead.
+pub(super) fn required<T>(result: Result<T>) -> T {
+    result.unwrap_or_else(|error| {
+        panic!(
+            "{} ({}): this upgrade needs the data fixers' tables of the prepared resources; \
+         prepare them again (sunrise-prepare --prepare)",
+            error.0,
             path().display()
-        ),
-    }
-}
-
-pub(super) fn standalone<T>(run: impl FnOnce() -> T + UnwindSafe) -> Result<T, NbtUpgradeError> {
-    let previous = STANDALONE.replace(true);
-    let result = catch_unwind(run);
-    STANDALONE.set(previous);
-    result.map_err(|failure| {
-        if failure.is::<TableUnavailable>() {
-            NbtUpgradeError::LegacyTablesUnavailable
-        } else {
-            NbtUpgradeError::MalformedCompound
-        }
+        )
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mod_api::NbtUpgradeError;
 
     #[test]
     #[ignore = "daily"]
@@ -291,6 +322,7 @@ mod tests {
 
         let prepared = PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
         let mut raw: serde_json::Value = crate::json_file::read(&prepared.join(FILE)).unwrap();
+        raw.as_object_mut().unwrap().remove("ENTITIES_V99");
         raw["BLOCK_STATE_DATA"] = serde_json::json!(["not a registration"]);
         raw["ITEM_FLATTENING"] = match case.as_str() {
             "key" => serde_json::json!([["minecraft:wool", "minecraft:red_wool"]]),
@@ -299,7 +331,25 @@ mod tests {
             _ => panic!("unknown malformed table case: {case}"),
         };
         std::fs::write(path(), serde_json::to_vec(&raw).unwrap()).unwrap();
-        // V1515's coral-fan fix needs CORAL_FANS, not ITEM_FLATTENING.
+        // The item walk needs V99's entity table for its nested tree, before the first fix.
+        assert_eq!(
+            upgrade_compound(
+                NbtDataType::ItemStack,
+                99,
+                Compound::from_iter([
+                    ("id".into(), dynamic::string("minecraft:spawn_egg")),
+                    (
+                        "tag".into(),
+                        Tag::compound([(
+                            "EntityTag",
+                            Tag::compound([("id", dynamic::string("Pig"))])
+                        )])
+                    ),
+                ]),
+            ),
+            Err(NbtUpgradeError::LegacyTablesUnavailable),
+        );
+        // V1515's coral-fan fix needs CORAL_FANS, not the missing schema or malformed item tables.
         assert_eq!(
             upgrade_compound(NbtDataType::BlockState, 1514, state("minecraft:sign")),
             Ok(Compound::from_iter([(
@@ -333,6 +383,26 @@ mod tests {
         );
     }
 
+    /// A duplicated or unknown table name refuses the whole file, as the struct read before
+    /// the raw map did, so the upgrade answers `LegacyTablesUnavailable`; one of each known
+    /// name reads, and no row is decoded until its table is asked for.
+    #[test]
+    fn duplicate_and_unknown_table_names_refuse_the_file() {
+        let read = |text: &str| serde_json::from_str::<RawTables>(text);
+        let tables =
+            read(r#"{"ITEM_IDS": [[1, "minecraft:stone"]], "BLOCK_STATE_DATA": "not rows"}"#)
+                .unwrap();
+        assert_eq!(tables.0.len(), 2);
+        assert!(decode::<Vec<String>>(&tables, "BLOCK_STATE_DATA").is_err());
+        for text in [
+            r#"{"ITEM_IDS": [], "ITEM_IDS": []}"#,
+            r#"{"ITEM_IDS": [], "NOT_A_TABLE": []}"#,
+            r#"{"item_ids": []}"#,
+        ] {
+            assert!(read(text).is_err(), "{text}");
+        }
+    }
+
     /// The prepared file holds every table, each non-empty, and `BlockStateData` registers
     /// air at id 0 first, as its `bootstrap0` does.
     #[test]
@@ -341,16 +411,21 @@ mod tests {
             eprintln!("skipping: no {FILE} at {}", path().display());
             return;
         }
-        assert!(block_state_data()[0].starts_with("0\tminecraft:air\t"));
+        assert!(block_state_data().unwrap()[0].starts_with("0\tminecraft:air\t"));
         let id = |name: &str| {
             block_ids()
+                .unwrap()
                 .iter()
                 .find(|(n, _)| *n == name)
                 .map(|(_, i)| *i)
         };
         assert_eq!(id("minecraft:stone"), Some(1));
         assert_eq!(
-            item_ids().iter().find(|(i, _)| *i == 276).map(|(_, n)| *n),
+            item_ids()
+                .unwrap()
+                .iter()
+                .find(|(i, _)| *i == 276)
+                .map(|(_, n)| *n),
             Some("minecraft:diamond_sword")
         );
     }

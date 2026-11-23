@@ -961,6 +961,9 @@ struct Readback {
     cpu: [usize; 3],
     /// Its frame occluded: its counts carry the test's.
     occluded: bool,
+    /// Its frame drew sourced geometry, copied with it: the half waits for sourced
+    /// geometry's counts (`in_flight::collect_stats`) even polls later.
+    drew_sourced: bool,
 }
 
 /// The occlusion test (`gpu_occlusion.wgsl`): its boxes' pipeline and bind
@@ -1257,6 +1260,7 @@ impl GpuCulling {
                     frame: 0,
                     cpu: [0; 3],
                     occluded: false,
+                    drew_sourced: false,
                 })
             })
             .collect::<Option<Vec<_>>>()?;
@@ -1697,13 +1701,19 @@ impl GpuCulling {
     /// the CPU's part of frame `frame` (`Readback::cpu`), into the next readback
     /// if it is free. While three frames' are on their way, this one's
     /// statistics are never shown.
-    pub fn copy_stats(&mut self, encoder: &mut wgpu::CommandEncoder, frame: u64, cpu: [usize; 3]) {
+    pub fn copy_stats(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: u64,
+        cpu: [usize; 3],
+        drew_sourced: bool,
+    ) {
         let r = &mut self.readbacks[self.next];
         if r.state.load(Ordering::Acquire) != FREE {
             return;
         }
         encoder.copy_buffer_to_buffer(&self.counts.buffer, 0, &r.buffer, 0, STATS * 4);
-        (r.frame, r.cpu, r.occluded) = (frame, cpu, self.occluding);
+        (r.frame, r.cpu, r.occluded, r.drew_sourced) = (frame, cpu, self.occluding, drew_sourced);
         self.current = Some(self.next);
     }
 
@@ -1728,14 +1738,15 @@ impl GpuCulling {
         })
     }
 
-    /// The statistics that came back, their readbacks freed: the newest
-    /// frame's, as (frame, [sections drawn, section draws, draw calls]), the
-    /// pass's counts added to the CPU's part. Called as a frame starts, so a
-    /// copy no submission took (a frame that failed on the way) is dropped. The caller polls
+    /// The statistics that came back, their readbacks freed: every ready
+    /// frame's, oldest first, as (frame, [sections drawn, section draws, draw
+    /// calls], whether the frame drew sourced geometry), the pass's counts
+    /// added to the CPU's part. Called as a frame starts, so a copy no
+    /// submission took (a frame that failed on the way) is dropped. The caller polls
     /// the device first (the frame's one poll, `Renderer::draw_frame`).
-    pub fn collect(&mut self) -> Option<(u64, [usize; 3])> {
+    pub fn collect(&mut self) -> Vec<(u64, [usize; 3], bool)> {
         self.current = None;
-        let mut newest: Option<(u64, [usize; 3])> = None;
+        let mut ready = Vec::new();
         for r in &self.readbacks {
             if r.state.load(Ordering::Acquire) != MAPPED {
                 continue;
@@ -1758,17 +1769,17 @@ impl GpuCulling {
                     self.hidden = Some([words[HIDDEN] as usize, words[BOX as usize + 1] as usize]);
                 }
                 let [sections, cpu_draws, calls] = r.cpu;
-                if newest.is_none_or(|(frame, _)| r.frame > frame) {
-                    newest = Some((
-                        r.frame,
-                        [sections + kept as usize, cpu_draws + draws as usize, calls],
-                    ));
-                }
+                ready.push((
+                    r.frame,
+                    [sections + kept as usize, cpu_draws + draws as usize, calls],
+                    r.drew_sourced,
+                ));
             }
             r.buffer.unmap();
             r.state.store(FREE, Ordering::Release);
         }
-        newest
+        ready.sort_unstable_by_key(|&(frame, _, _)| frame);
+        ready
     }
 }
 
@@ -3244,7 +3255,7 @@ pub(super) mod tests {
             gpu.dispatch(&mut encoder, timing.as_mut());
             // Its statistics come back with a CPU part of the case's own.
             let cpu = [case * 7, case * 3, case];
-            gpu.copy_stats(&mut encoder, case as u64, cpu);
+            gpu.copy_stats(&mut encoder, case as u64, cpu, false);
             uploads.finish(&encoder);
             queue.submit([encoder.finish()]);
             if let Some(t) = &mut timing {
@@ -3291,7 +3302,7 @@ pub(super) mod tests {
             let (kept, drawn) = (kept_sections as usize, draw_count as usize);
             assert_eq!(
                 gpu.collect(),
-                Some((case as u64, [cpu[0] + kept, cpu[1] + drawn, cpu[2]])),
+                vec![(case as u64, [cpu[0] + kept, cpu[1] + drawn, cpu[2]], false)],
                 "case {case}: statistics"
             );
             compared += kept_sections as usize;
@@ -3437,9 +3448,10 @@ pub(super) mod tests {
     /// The statistics come back with their frame, in place and from the submit
     /// thread, submitted as gfx.rs submits frames (`submit_later`, or in place
     /// with its `after` handed back): three frames on their way fill the ring, a
-    /// fourth's are skipped, `collect` takes in the newest; and a readback whose
-    /// buffer the device lost after its mapping goes `FAILED`, never copied into
-    /// or unmapped again (as `timing::GpuTimer`'s), so the statistics stop.
+    /// fourth's are skipped, `collect` takes in all the ready ones; and a
+    /// readback whose buffer the device lost after its mapping goes `FAILED`,
+    /// never copied into or unmapped again (as `timing::GpuTimer`'s), so the
+    /// statistics stop.
     #[test]
     #[ignore = "daily"]
     fn the_statistics_come_back_with_their_frame() {
@@ -3454,7 +3466,7 @@ pub(super) mod tests {
                 // Whether the frame's statistics went out.
                 let frame = |gpu: &mut GpuCulling, f: u64| {
                     let mut encoder = device.create_command_encoder(&Default::default());
-                    gpu.copy_stats(&mut encoder, f, [f as usize, 10, 3]);
+                    gpu.copy_stats(&mut encoder, f, [f as usize, 10, 3], false);
                     let after = gpu.submitted().map(|g| Box::new(g) as AfterSubmit);
                     let sent = after.is_some();
                     let job = Job {
@@ -3480,17 +3492,24 @@ pub(super) mod tests {
                     assert!(frame(&mut gpu, f), "frame {f}, threaded {threaded}");
                 }
                 assert!(!frame(&mut gpu, 4), "a full ring, threaded {threaded}");
-                assert_eq!(landed(&mut gpu), Some((3, [3 + 5, 10 + 7, 3])));
-                assert_eq!(gpu.collect(), None);
+                assert_eq!(
+                    landed(&mut gpu),
+                    vec![
+                        (1, [1 + 5, 10 + 7, 3], false),
+                        (2, [2 + 5, 10 + 7, 3], false),
+                        (3, [3 + 5, 10 + 7, 3], false),
+                    ]
+                );
+                assert!(gpu.collect().is_empty());
                 assert!(frame(&mut gpu, 5));
-                assert_eq!(landed(&mut gpu), Some((5, [5 + 5, 10 + 7, 3])));
+                assert_eq!(landed(&mut gpu), vec![(5, [5 + 5, 10 + 7, 3], false)]);
                 // Frame 6's buffer destroyed after its mapping (#6320).
                 let lost = gpu.next;
                 assert!(frame(&mut gpu, 6));
                 queue.landed();
                 device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
                 gpu.readbacks[lost].buffer.destroy();
-                assert_eq!(gpu.collect(), None);
+                assert!(gpu.collect().is_empty());
                 for f in 7..=12 {
                     let sent = frame(&mut gpu, f);
                     let back = landed(&mut gpu);
@@ -3498,7 +3517,7 @@ pub(super) mod tests {
                     assert_eq!(state, FAILED, "frame {f}, threaded {threaded}");
                     // The two other readbacks, then none.
                     assert_eq!(sent, f <= 8, "frame {f}, threaded {threaded}");
-                    assert_eq!(back.is_some(), f <= 8, "frame {f}, threaded {threaded}");
+                    assert_eq!(back.is_empty(), f > 8, "frame {f}, threaded {threaded}");
                 }
             }
         });

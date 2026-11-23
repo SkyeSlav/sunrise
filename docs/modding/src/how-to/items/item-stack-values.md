@@ -161,6 +161,9 @@ either side: the animation the renderer draws while the stack is in use (`Bow`, 
 included), then the item's Part may change it in `ItemPart::use_animation`, which is asked on both
 sides with a read-only `&dyn Host`: answer from the stack alone. There is no global listener; the
 Part is item-scoped. A `Spear` answer for a stack without kinetic data reads `None`, as it draws.
+Inside the Part, reading the effective animation of any stack of the item it is answering (a copy
+with another count or components included) gives the item's own answer: the Part is not asked
+again. Reading another item's stack asks that item's Parts.
 
 ## The NBT escape
 

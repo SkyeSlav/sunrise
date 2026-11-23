@@ -298,6 +298,7 @@ fn area_tiers(camel: &str, file: syn::File) -> Result<BTreeMap<Tier, Vec<Entry>>
                         | "Levels"
                         | "Messages"
                         | "Players"
+                        | "Profiles"
                         | "RuntimeLevels"
                         | "RenderAssets"
                         | "InstanceGroups"

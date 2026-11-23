@@ -1657,24 +1657,37 @@ impl Tag {
     /// bytes. Container nesting is limited to 512. End represents vanilla null.
     /// Malformed input, quota exhaustion and excessive depth return an Error.
     pub fn from_network_bytes(bytes: &[u8], quota: Option<u64>) -> Result<(Self, usize), Error> {
-        let mut reader = Reader {
-            bytes,
-            offset: 0,
-            limits: Limits {
-                max_bytes: usize::MAX,
-                max_nodes: usize::MAX,
-                max_depth: 512,
-            },
-            nodes: 0,
-            heap: Some((0, quota.unwrap_or(NETWORK_NBT_QUOTA))),
-            stream: None,
-            bounded: None,
-            strict: false,
-            entering: 0,
-            rejected: 0,
-        };
-        read_network_with_reader(&mut reader, &mut Tree)
+        read_network_accounted(bytes, quota.unwrap_or(NETWORK_NBT_QUOTA), 512)
     }
+}
+
+/// `NbtIo.readAnyTag` with `new NbtAccounter(quota, max_depth)`: one nameless
+/// network root and its consumed byte count, charging the heap as
+/// `NbtAccounter.accountBytes` does and nesting at most `max_depth` lists and
+/// compounds (`NbtAccounter.pushDepth`). Trailing bytes stay unread; `End` is
+/// vanilla's null.
+pub fn read_network_accounted(
+    bytes: &[u8],
+    quota: u64,
+    max_depth: usize,
+) -> Result<(Tag, usize), Error> {
+    let mut reader = Reader {
+        bytes,
+        offset: 0,
+        limits: Limits {
+            max_bytes: usize::MAX,
+            max_nodes: usize::MAX,
+            max_depth,
+        },
+        nodes: 0,
+        heap: Some((0, quota)),
+        stream: None,
+        bounded: None,
+        strict: false,
+        entering: 0,
+        rejected: 0,
+    };
+    read_network_with_reader(&mut reader, &mut Tree)
 }
 
 #[cfg(test)]

@@ -28,6 +28,10 @@ impl Commands for Game<'_> {
         self.native_feedback(sunrise_client_lib::api_text::to_serialized_engine(&line)?);
         Ok(())
     }
+    fn failure(&mut self, line: Text) -> Result<(), mod_api::text::TextFormError> {
+        self.native_failure(sunrise_client_lib::api_text::to_serialized_engine(&line)?);
+        Ok(())
+    }
     fn run_command(&mut self, line: &str) -> bool {
         self.native_run_command(line)
     }
@@ -58,6 +62,14 @@ impl Players for Game<'_> {
     }
     fn singleplayer_profile(&self) -> Option<GameProfile<'_>> {
         self.native_singleplayer_profile()
+    }
+}
+impl Profiles for Game<'_> {
+    fn resolve_name(&self, name: &str) -> ProfileResolution {
+        self.native_resolve_profile(sunrise_client::skins::NameOrId::Name(name.to_owned()))
+    }
+    fn resolve_id(&self, uuid: u128) -> ProfileResolution {
+        self.native_resolve_profile(sunrise_client::skins::NameOrId::Id(uuid))
     }
 }
 impl RuntimeLevels for Game<'_> {

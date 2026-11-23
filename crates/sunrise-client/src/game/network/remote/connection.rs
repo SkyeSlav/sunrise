@@ -124,7 +124,14 @@ impl Game<'_> {
         };
         *slot = None;
         let realm = self.realm_session && self.server_address() == Some(server.address.as_str());
-        self.connect_server_with_options(&server.address, &server.name, None, server.lan, realm)
+        self.connect_server_with_options(
+            &server.address,
+            &server.name,
+            None,
+            server.lan,
+            realm,
+            None,
+        )
     }
 }
 
@@ -139,7 +146,7 @@ fn retry_slot(title: &mut Option<sunrise_client::title::Title>) -> Option<&mut O
 impl Game<'_> {
     /// Leave the title for a server (ConnectScreen): an empty world fed by the connection.
     pub(in crate::game) fn connect_server(&mut self, address: &str, name: &str) -> Result<()> {
-        self.connect_server_with_options(address, name, None, false, false)
+        self.connect_server_with_options(address, name, None, false, false, None)
     }
     /// `ConnectScreen.startConnecting`: keep LAN discovery's server kind through loading.
     pub(in crate::game) fn connect_server_with_options(
@@ -149,11 +156,13 @@ impl Game<'_> {
         cookies: Option<sunrise_client::net::Cookies>,
         lan: bool,
         realm: bool,
+        list_name: Option<&str>,
     ) -> Result<()> {
         crate::game::world_loading::world_data_used();
         if self.defer_world_entry(crate::game::PendingWorldEntry::Server {
             address: address.to_owned(),
             name: name.to_owned(),
+            list_name: list_name.map(str::to_owned),
             cookies: cookies.clone(),
             lan,
             realm,
@@ -162,7 +171,7 @@ impl Game<'_> {
         }
         self.join_world_rest()?;
         self.client_logging_out();
-        if let Err(error) = self.join_server(address, name, None, cookies, lan, realm) {
+        if let Err(error) = self.join_server(address, name, None, cookies, lan, realm, list_name) {
             log::warn!("Sunrise: could not join server: {error}");
             let skip = self.settings.file.bool("skipMultiplayerWarning");
             match &mut self.title {

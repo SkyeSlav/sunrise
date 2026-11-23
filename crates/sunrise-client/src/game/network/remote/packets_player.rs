@@ -334,8 +334,14 @@ impl Game<'_> {
         match p.slot {
             0..=35 => self.inventory[p.slot as usize] = stack,
             36..=39 => self.armor[3 - (p.slot - 36) as usize] = stack,
-            // Inventory.SLOT_OFFHAND.
+            // Inventory.EQUIPMENT_SLOT_MAPPING: SLOT_OFFHAND, SLOT_BODY_ARMOR, SLOT_SADDLE.
             40 => self.offhand = stack,
+            41 => {
+                self.equipment.set(sunrise_items::equipment::BODY, stack);
+            }
+            42 => {
+                self.equipment.set(sunrise_items::equipment::SADDLE, stack);
+            }
             _ => {}
         }
         self.remote_synced_since(&before);

@@ -2943,6 +2943,7 @@ pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemE
         other => number(other).unwrap_or(default) as i16,
     };
     Some(ItemEntity {
+        size_answer: None,
         attachment_lifetime: Default::default(),
         rotation: rotation(tag),
         join: Default::default(),
@@ -3058,6 +3059,7 @@ pub fn orbs_from_nbt(tag: &Tag) -> Vec<ExperienceOrb> {
     };
     let count = number(tag.get("Count")).unwrap_or(1).max(1) as u32;
     let orb = ExperienceOrb {
+        size_answer: None,
         fire_ticks: number(tag.get("Fire")).unwrap_or(0) as i16 as i32,
         attachment_lifetime: Default::default(),
         fall_distance: float(tag.get("fall_distance")).unwrap_or(0.0),
@@ -6604,6 +6606,7 @@ mod tests {
     #[test]
     fn orbs_save_and_load_their_fire() {
         let mut o = ExperienceOrb {
+            size_answer: None,
             attachment_lifetime: Default::default(),
             rotation: [0.0, 0.0],
             join: Default::default(),

@@ -465,7 +465,7 @@ impl Game<'_> {
     }
     /// `ServerLevel.getEntity(UUID)`: search this level's admitted entities, not unloaded
     /// saves or tracking entries. A departure can overlap a replacement with the same UUID.
-    pub(super) fn level_entity_by_uuid(&self, dim: Dim, uuid: [i32; 4]) -> Option<Target> {
+    pub(super) fn level_target_by_uuid(&self, dim: Dim, uuid: [i32; 4]) -> Option<Target> {
         let dimension = dim.key();
         let mut table = self.resident_entities.table.borrow_mut();
         let mut after = None;

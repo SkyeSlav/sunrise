@@ -1221,7 +1221,6 @@ sunrise-client game::native_entity_motion::tests::on_block_picks_the_support_nea
 sunrise-client game::native_entity_motion::tests::only_a_mount_its_rider_controls_takes_the_riders_speed lib daily resources
 sunrise-client game::native_entity_motion::tests::reset_fall_distance_forgets_a_fall_for_mobs_carts_and_players lib daily resources
 sunrise-client game::native_entity_moves::tests::moves_and_pushes_a_live_mob lib daily resources
-sunrise-client game::native_entity_refs::dragon_query::tests::a_client_lists_the_dragon_and_its_parts_in_a_box lib daily resources
 sunrise-client game::native_entity_refs::dragon_query::tests::all_entities_uses_lookup_order_without_bounds_or_parts lib daily resources
 sunrise-client game::native_entity_refs::dragon_query::tests::entities_in_includes_dragon_and_separate_parts lib daily resources
 sunrise-client game::native_entity_refs::dragon_query::tests::entity_uuid_lookup_includes_the_dragon_and_excludes_its_parts lib daily resources
@@ -1236,9 +1235,6 @@ sunrise-client game::native_entity_refs::roll_loot_tests::component_stack_capaci
 sunrise-client game::native_entity_refs::roll_loot_tests::weighted_pools_conditions_and_functions_roll_as_the_table_says lib daily resources
 sunrise-client game::native_entity_refs::tests::a_block_part_changes_the_bounce_restitution_an_entity_reads lib daily resources
 sunrise-client game::native_entity_refs::tests::a_block_part_decides_whether_the_tool_harvests lib daily resources
-sunrise-client game::native_entity_refs::tests::a_client_finds_the_entities_it_tracks_and_its_own_player_in_a_box lib daily resources
-sunrise-client game::native_entity_refs::tests::a_client_lists_another_player_in_the_box_after_the_tracked_entities lib daily resources
-sunrise-client game::native_entity_refs::tests::a_client_refuses_a_box_with_a_bound_that_is_not_finite_and_swaps_an_inverted_one lib daily resources
 sunrise-client game::native_entity_refs::tests::a_fresh_case_whose_name_matches_no_test_fails lib daily child-process
 sunrise-client game::native_entity_refs::tests::a_level_bone_meals_a_block_and_sets_a_biome_cell lib daily resources
 sunrise-client game::native_entity_refs::tests::a_level_handle_reads_redstone_as_signal_getter_does lib daily resources
@@ -1894,9 +1890,9 @@ sunrise-client game::native_resources::tests::client_assets_read_the_winning_pac
 sunrise-client game::native_resources::tests::server_data_reads_mod_content_and_lets_it_override_the_game lib daily resources
 sunrise-client game::native_resources::tests::server_data_reads_vanilla_files_and_refuses_missing_ones lib daily resources
 sunrise-client game::native_resources::tests::server_resource_uses_the_higher_of_two_selected_world_packs lib daily resources
-sunrise-client game::native_rotate::jigsaw_tests::no_part_fixed_seed_layout_bytes_and_draws_stay_unchanged lib daily resources
-sunrise-client game::native_rotate::jigsaw_tests::placed_palette_keeps_connector_identity_and_named_start_requirement lib daily resources
-sunrise-client game::native_rotate::jigsaw_tests::position_sensitive_part_connects_at_built_height_in_both_assemblers lib daily resources
+sunrise-client game::native_rotate::jigsaw_tests::no_part_fixed_seed_layout_bytes_and_draws_stay_unchanged lib daily child-process
+sunrise-client game::native_rotate::jigsaw_tests::placed_palette_keeps_connector_identity_and_named_start_requirement lib daily child-process
+sunrise-client game::native_rotate::jigsaw_tests::position_sensitive_part_connects_at_built_height_in_both_assemblers lib daily child-process
 sunrise-client game::native_rotate::tests::a_part_turns_its_block_as_a_template_places_it lib daily resources
 sunrise-client game::native_server::fake_action_tests::a_fake_attacks_through_the_players_own_path lib daily resources
 sunrise-client game::native_server::fake_action_tests::a_fake_breaks_blocks_at_once_by_the_game_modes_rules lib daily resources
@@ -2603,7 +2599,6 @@ sunrise-client game::villager_professions::tests::villager_reserved_profession_p
 sunrise-client game::villagers::birth_tests::rejected_birth_leaves_bed_free_and_parents_resting lib daily resources
 sunrise-client game::villagers::birth_tests::untouched_birth_claims_one_bed_and_announces_one_baby lib daily resources
 sunrise-client game::villagers::birth_tests::villager_birth_is_raw_and_does_not_post_the_animal_hook lib daily resources
-sunrise-client game::villagers::nested_spawn_tests::lifted_mob_callback_keeps_nested_spawns_until_the_next_pass lib daily resources
 sunrise-client game::villagers::off_level_tests::retained_ancestor_does_not_consume_a_due_villager_sensor lib daily resources
 sunrise-client game::villagers::witness_tests::murder_uses_only_the_victims_sensor_memory lib daily resources
 sunrise-client game::waxing_tests::honeycomb_and_the_axe_read_the_block_maps_before_vanillas_tables lib daily resources

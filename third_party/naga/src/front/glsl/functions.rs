@@ -1350,6 +1350,39 @@ impl Frontend {
         function: Handle<Function>,
         mut ctx: Context,
     ) -> Result<()> {
+        // Each location-bound element of each interface variable becomes an argument or a result
+        // member of its own: refuse a stage whose variables of one direction take more locations
+        // than the device gives that direction, before making any, at the variable that passes
+        // it. Built-ins take no location.
+        let limits = self.interface_limits;
+        let (input_limit, output_limit) = match self.meta.stage {
+            crate::ShaderStage::Vertex => (limits.vertex_attributes, limits.inter_stage_variables),
+            crate::ShaderStage::Fragment => {
+                (limits.inter_stage_variables, super::MAX_FRAGMENT_OUTPUTS)
+            }
+            _ => (limits.inter_stage_variables, limits.inter_stage_variables),
+        };
+        let (mut inputs, mut outputs) = (0u32, 0u32);
+        for arg in self.entry_args.iter() {
+            let (taken, limit) = match (&arg.binding, arg.storage) {
+                (crate::Binding::Location { .. }, StorageQualifier::Input) => {
+                    (&mut inputs, input_limit)
+                }
+                (crate::Binding::Location { .. }, StorageQualifier::Output) => {
+                    (&mut outputs, output_limit)
+                }
+                _ => continue,
+            };
+            let ty = ctx.module.global_variables[arg.handle].ty;
+            *taken = interface_elements(&ctx.module.types, ty)
+                .and_then(|n| taken.checked_add(n))
+                .filter(|&n| n <= limit)
+                .ok_or_else(|| Error {
+                    kind: ErrorKind::InterfaceTooLarge { limit },
+                    meta: ctx.module.global_variables.get_span(arg.handle),
+                })?;
+        }
+
         let mut arguments = Vec::new();
 
         let body = Block::with_capacity(
@@ -1628,6 +1661,22 @@ impl Context<'_> {
         }
 
         Ok(())
+    }
+}
+
+/// How many locations a stage interface variable of type `ty` takes, one for each scalar, vector
+/// or matrix, each an entry-point argument of its own; `None` past `u32`.
+fn interface_elements(types: &crate::UniqueArena<Type>, ty: Handle<Type>) -> Option<u32> {
+    match types[ty].inner {
+        TypeInner::Array {
+            base,
+            size: crate::ArraySize::Constant(size),
+            ..
+        } => size.get().checked_mul(interface_elements(types, base)?),
+        TypeInner::Struct { ref members, .. } => members.iter().try_fold(0u32, |sum, m| {
+            sum.checked_add(interface_elements(types, m.ty)?)
+        }),
+        _ => Some(1),
     }
 }
 

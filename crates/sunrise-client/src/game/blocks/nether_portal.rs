@@ -1820,9 +1820,10 @@ impl Game<'_> {
         // Construction and join callbacks can insert, cancel, or remove rows.
         // Resolve the surviving arrival by the resident UUID index after them.
         let Some(entity) = uuid.and_then(|uuid| {
-            self.entity_by_uuid(mod_api::EntityUuid(
-                sunrise_client::lan::playerdata::ints_uuid(uuid),
-            ))
+            self.level_entity_by_uuid(
+                self.native_current_level()?,
+                mod_api::EntityUuid(sunrise_client::lan::playerdata::ints_uuid(uuid)),
+            )
         }) else {
             return;
         };
@@ -2004,7 +2005,7 @@ impl Game<'_> {
 impl Game<'_> {}
 
 #[cfg(test)]
-mod tests {
+pub(in crate::game) mod tests {
     use super::super::server_travel::TravelCause;
     use super::*;
     use std::sync::{
@@ -2555,7 +2556,11 @@ mod tests {
                     };
                     game.spawn_teleported_entity(chunk, pending.tag.into(), Some(state));
                 }
-                assert!(game.entity_by_uuid(mod_api::EntityUuid(583)).is_some());
+                let level = game.native_current_level().unwrap();
+                assert!(
+                    game.level_entity_by_uuid(level, mod_api::EntityUuid(583))
+                        .is_some()
+                );
                 let records = game.entity_chunks(&std::collections::HashSet::from([chunk]), false);
                 assert_eq!(records[0].1.len(), 1);
                 assert_eq!(
@@ -2568,6 +2573,11 @@ mod tests {
 
     #[test]
     fn portal_transfer_pending_arrival_does_not_save_transient_tnt_immunity() {
+        run_portal_transfer_pending_arrival_does_not_save_transient_tnt_immunity();
+    }
+
+    pub(in crate::game) fn run_portal_transfer_pending_arrival_does_not_save_transient_tnt_immunity()
+     {
         let arrival = Arrival {
             plan: Plan::end_portal(
                 Dim::End,
@@ -2732,7 +2742,7 @@ mod tests {
 
 #[cfg(test)]
 #[path = "tests/portal_cooldown_tests.rs"]
-mod cooldown_tests;
+pub(in crate::game) mod cooldown_tests;
 
 #[cfg(test)]
 #[path = "nether_portal/arrival_effects_tests.rs"]

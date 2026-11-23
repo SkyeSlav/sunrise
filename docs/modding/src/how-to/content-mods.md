@@ -12,7 +12,7 @@ cargo sunrise-mod new my-mod        # a content mod: manifest, one block with it
 cd my-mod
 cargo sunrise-mod run               # build my-mod.smod, then start the game with it turned on
 cargo sunrise-mod build             # only build: target/sunrise-mod/my_mod.smod
-cargo sunrise-mod check target/sunrise-mod/my_mod.smod   # the registry's checks; --json for JSON
+cargo sunrise-mod check             # validate the project before release
 ```
 
 - `new <path> [--name "Name"]` writes the content template. `--template native` writes
@@ -27,7 +27,7 @@ cargo sunrise-mod check target/sunrise-mod/my_mod.smod   # the registry's checks
   works after one command; your editor needs that first command too. `.sunrise/` is in the template's `.gitignore`
   and is never packed. The fetch checks Sunrise's signature on the release and every file against its `sdk.json`;
   `SUNRISE_SDK_BASE` (a URL or a folder) reads the releases from a mirror instead. When that Nightly has no SDK,
-  `new` says so and asks for `--sunrise`. `update` repins a native mod the same way
+  `new` asks for `--sunrise`. `pin [<build>]` moves a native mod to another build (the current Nightly by default)
   ([the SDK in a mod project](../reference/sdk/03-in-a-project.md)). Its root `impl Hooks` uses
   `#[mod_api::sunrise_mod]`. Compile it with `cargo sunrise-mod build`
   ([writing hooks](../start/writing-hooks.md)). Any other `--template` is refused.
@@ -62,12 +62,9 @@ cargo sunrise-mod check target/sunrise-mod/my_mod.smod   # the registry's checks
   It also checks for blockstates on blocks with `render_shape` set to `MODEL` and warns about missing local loot
   tables, item definitions or English names, or registry content on a client-only package. Reference diagnostics name
   the source file, the relevant field or member index, and the ID.
-- `check <file>` runs what the registry runs: the file's size and SHA-256, its manifest and content, and a signature
-  with `--key <public key> --signature <file>.minisig`. It reads `.smod`, `.spack`, resource pack `.zip`
-  and `.sshader` files.
-- `registry build|review|check|list|release|releases|page` supports the registry repository's CI
-  ([the registry index](../reference/registry-index.md)). `registry releases --out releases.json` discovers stable
-  release tags and commits. The workflow verifies the signed SDK separately.
+- `check <file>` reads `.smod`, `.spack`, resource pack `.zip` and `.sshader` files. A `.smod` also
+  needs its [release attestation](../reference/sdk/05-commands.md#check-a-released-package).
+- To release a mod to the registry, follow [Publishing your mod](publish.md).
 - `use-jar <path>` records and caches an original Java jar as an external asset/data source, without copying it into the mod
   ([Java jars as external assets](#java-jars-as-external-assets)).
 

@@ -33,9 +33,22 @@ pub(crate) struct GameSide<'a> {
     pub(in crate::game) items: &'a Items,
     pub(in crate::game) damage_types: &'a sunrise_world::damage_source::Catalog,
     pub(in crate::game) player_equipment: sunrise_client::health::PlayerEquipment<'a>,
-    /// What a hit on the player in place needs to name and read the living entities it lends.
-    pub(in crate::game) hit_reads: Option<sunrise_client::health::HitReads<'a>>,
+    /// What a hit on the player in place would read beside this side's own data, as borrows:
+    /// assembled into the hit's reads only when a hit builds its level
+    /// ([`SideLevel::hit_reads`](sunrise_client::motion::SideLevel::hit_reads)).
+    pub(in crate::game) hit_borrows: HitBorrows<'a>,
     pub(in crate::game) tag_items: Option<&'a Items>,
+}
+
+/// The game's tables a hit on the player in place reads that this side does not otherwise hold.
+pub(crate) struct HitBorrows<'a> {
+    pub(in crate::game) living_types: sunrise_client::health::LivingTypeKeys,
+    pub(in crate::game) attributes: &'a std::sync::Arc<sunrise_world::attributes::entity::Catalog>,
+    pub(in crate::game) player_effects: &'a sunrise_client::effects::PlayerEffects,
+    pub(in crate::game) player_uuid: Option<u128>,
+    pub(in crate::game) player_attachments: &'a mod_api::Attachments,
+    pub(in crate::game) entity_attachments:
+        &'a sunrise_client::fast_hash::FxHashMap<u32, mod_api::Attachments>,
 }
 
 impl sunrise_client::motion::SideLevel for GameSide<'_> {
@@ -64,7 +77,17 @@ impl sunrise_client::motion::SideLevel for GameSide<'_> {
     }
 
     fn hit_reads(&self) -> Option<sunrise_client::health::HitReads<'_>> {
-        self.hit_reads
+        let borrows = &self.hit_borrows;
+        Some(sunrise_client::health::HitReads {
+            epoch: self.level?.epoch(),
+            living_types: borrows.living_types,
+            attributes: borrows.attributes,
+            player_effects: Some(borrows.player_effects),
+            player_equipment: self.player_equipment,
+            player_uuid: borrows.player_uuid,
+            player_attachments: Some(borrows.player_attachments),
+            entity_attachments: Some(borrows.entity_attachments),
+        })
     }
 
     fn damage_types(&self) -> &sunrise_world::damage_source::Catalog {
@@ -412,6 +435,7 @@ mod tests {
         use sunrise_client::entities::{ExperienceOrb, ItemEntity};
         let at = Vec3::new(5.5, 65.0, 5.5);
         let mut item = ItemEntity {
+            size_answer: None,
             attachment_lifetime: Default::default(),
             rotation: [0.0; 2],
             join: Default::default(),

@@ -210,8 +210,19 @@ class ConceptPages(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, r"concepts/parts/comment-h1\.md: missing top-level `# ` heading"):
             self.expand()
 
+    def test_h1_after_quoted_fence_closed_without_space_is_found(self):
+        (self.src / "concepts/parts/quoted.md").write_text(
+            "> ```text\n> # Not a title\n>```\n\n# Quoted examples\n",
+            encoding="utf-8",
+        )
+        self.expand()
+
     def test_bare_issue_reference_in_prose_is_rejected_while_code_destinations_and_heading_ids_pass(self):
-        text = "# Heading\n\n## Section {#1234}\n\nSee [section](#1234), [anchor](b-block.md#landing) and `#4776` and:\n\n```text\n#1234\n```\n"
+        text = (
+            "# Heading\n\n## Section {#1234}\n\nSee [section](#1234), [anchor](b-block.md#landing) and `#4776` and:\n\n"
+            "```text\n#1234\n```\n\nTitled: [section](#1234 \"Section\") and [anchor](b-block.md#landing 'Landing').\n\n"
+            "> ```text\n> #1234\n> ```\n\n- ```text\n  #1234\n  ```\n"
+        )
         pages.validate(
             text,
             "concepts/parts/a-item.md",
@@ -227,6 +238,9 @@ class ConceptPages(unittest.TestCase):
                         self.src,
                         {},
                     )
+        with self.subTest("prose after a quoted fence that ends at the quote boundary"):
+            with self.assertRaisesRegex(AssertionError, r"bare issue reference #42"):
+                pages.validate("# Heading\n\n> ```text\n> code\nSee #42.\n", "concepts/parts/a-item.md", self.src, {})
 
     def test_inline_plain_rust_fence_and_uncompiled_include_are_rejected(self):
         examples_src = self.src.parent / "examples" / "src"
@@ -251,10 +265,27 @@ class ConceptPages(unittest.TestCase):
             "```rs\nlet x = 1;\n```",
             "```rust,no_run\nlet x = 1;\n```",
             "> ```rust\n> let x = 1;\n> ```",
+            "- ```rust\n  let x = 1;\n  ```",
+            "1. Step:\n\n   ```rust\n   let x = 1;\n   ```",
+            "> - ```rust\n>   let x = 1;\n>   ```",
         ):
             with self.subTest(fence=fence):
                 with self.assertRaisesRegex(AssertionError, r"must use \{\{#include\}\}"):
                     pages.validate(f"# Heading\n\n{fence}\n", "concepts/parts/a-item.md", self.src, {})
+        # A quoted text fence ends where its block quote does, so the top-level Rust fence after it is checked.
+        with self.assertRaisesRegex(AssertionError, r"a-item\.md:5: non-ignored ```rust block"):
+            pages.validate(
+                "# Heading\n\n> ```text\n> output\n```rust\nlet x = 1;\n```\n",
+                "concepts/parts/a-item.md",
+                self.src,
+                {},
+            )
+        pages.validate(
+            "# Heading\n\n- ```rust,ignore\n  let x = 1;\n  ```\n- ```rust\n  {{#include ../../../examples/src/sample.rs:ok}}\n  ```\n",
+            "concepts/parts/a-item.md",
+            self.src,
+            {},
+        )
 
 
 class BookSourceGuards(unittest.TestCase):
