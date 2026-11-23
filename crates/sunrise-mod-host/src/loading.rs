@@ -55,6 +55,12 @@ pub fn main_with(
         eprintln!("Sunrise: {error}");
         std::process::exit(1);
     }
+    if let Err(error) =
+        mod_api::__private::install_named_zone_recorder(sunrise_client::spans::timeline::named_zone)
+    {
+        eprintln!("Sunrise: refusing startup because named profiling is unavailable: {error}");
+        std::process::exit(1);
+    }
     let exe = std::env::current_exe();
     let native: Result<_, Box<dyn std::error::Error + Send + Sync>> = exe
         .as_ref()

@@ -1,6 +1,7 @@
 #[cfg(any(test, feature = "testing"))]
 #[doc(hidden)]
 pub use crate::parts::tests as part_tests;
+pub use crate::profiling::recorder::install_named_zone_recorder;
 pub use mod_vocab::__private::*;
 
 /// Validate registrations above the engine, deriving lookup indexes below it.

@@ -24,3 +24,30 @@ it.
 - Timings are inclusive (an outer call includes the calls inside it) and add up over the whole process: they are
   totals, not a trace of each call or a sampling profile.
 - Only native mods' calls are measured.
+
+## Named zones in a timeline
+
+Use `mod_api::profiling::zone` to measure a specific part of your native mod on either client or server.
+It needs no hook or `Host`. Zones appear under any enclosing engine or mod zone on the same thread.
+Bind the returned guard to a name: it closes when the binding drops, including on early return.
+Keep nested guards on the thread that opened them and let them drop in reverse order.
+
+```rust
+use mod_api::profiling;
+
+fn process_batch(batch_size: usize) {
+    let _batch = profiling::zone(&format!("example: batch ({batch_size} items)"));
+    let _prepare = profiling::zone("example: prepare");
+    if batch_size == 0 {
+        return; // Drops _prepare, then _batch.
+    }
+    // Prepare the batch here.
+    drop(_prepare);
+    // Continue processing within _batch.
+}
+```
+
+Open a capture with `sunrise-ctl profile start --timeline` or `sunrise-ctl trace FILE [SECONDS]`.
+On a dedicated server, use `sunrise-report --timeline` in the console. Without an active timeline the guard
+is inert, and opening a zone never starts a capture. `/modprofile` does not include these zones.
+Labels are saved verbatim and will be visible to anyone you share a capture with. Do not include private data.

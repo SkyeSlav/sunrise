@@ -40,6 +40,7 @@
 //! | [`Registrar`] | What a mod declares in [`Hooks::register`]: registry keys, Parts and settings. |
 //! | [`Host`], [`ServerHost`], [`ClientHost`] | The game as a hook sees it, split by side so a call on the wrong side does not compile. |
 //! | [`AttachmentType`] | Data a mod keeps on levels, chunks, entities and other holders. |
+//! | [`profiling`] | Named timing scopes in the engine's timeline capture. |
 //! | [`Wire`](derive@Wire) | The derive that encodes typed payloads and other values. |
 //!
 //!
@@ -69,6 +70,7 @@ mod load_state;
 
 mod fluid_state;
 mod parts;
+pub mod profiling;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;

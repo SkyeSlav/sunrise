@@ -1,4 +1,5 @@
 //! Test support with API-owned registration and vocabulary-owned fakes.
+pub use crate::profiling::recorder::with_named_zone_recorder;
 pub use mod_vocab::testing::*;
 
 /// Run with these mods and their controller and pose registrations on this thread.

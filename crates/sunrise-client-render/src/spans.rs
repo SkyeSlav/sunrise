@@ -137,38 +137,50 @@ pub fn time<T>(name: &'static str, f: impl FnOnce() -> T) -> T {
     let _span = guard(name);
     f()
 }
-/// A span that ends where it is dropped: [`time`] for a step with several ways out (early
-/// returns). Nothing is read while spans are off.
+/// A span that ends where it is dropped on the opening thread: [`time`] for a step with
+/// several ways out (early returns). Nothing is read while spans are off.
 #[must_use = "the span ends when the guard is dropped"]
 pub struct Guard {
-    open: Option<(&'static str, Instant, Option<Duration>, u8)>,
+    open: Option<OpenSpan>,
     _heap: Option<sunrise_threads::heap_census::Tag>,
     /// The sampler's span before this one.
     outer: u16,
 }
+
+struct OpenSpan {
+    name: &'static str,
+    started: Instant,
+    cpu: Option<Duration>,
+    depth: u8,
+    timeline: Option<timeline::Scope>,
+}
+
 /// Start a span named `name` that ends when the returned [`Guard`] is dropped.
 #[inline]
 pub fn guard(name: &'static str) -> Guard {
     let _heap = sunrise_threads::heap_tag(name);
     let outer = sunrise_threads::work::enter_span(name);
-    if !recording_here() {
-        return Guard {
-            open: None,
-            _heap,
-            outer,
-        };
-    }
-    let depth = DEPTH.with(|d| d.replace(d.get().saturating_add(1)));
-    Guard {
-        open: Some((name, Instant::now(), cpu_if_enabled(), depth)),
-        _heap,
-        outer,
-    }
+    let generation = timeline::active_generation();
+    let open = (generation.is_some() || enabled() || HERE.with(Cell::get) != 0).then(|| OpenSpan {
+        timeline: generation.and_then(timeline::open),
+        depth: DEPTH.with(|d| d.replace(d.get().saturating_add(1))),
+        name,
+        started: Instant::now(),
+        cpu: cpu_if_enabled(),
+    });
+    Guard { open, _heap, outer }
 }
 impl Drop for Guard {
     fn drop(&mut self) {
         sunrise_threads::work::leave_span(self.outer);
-        let Some((name, started, cpu, depth)) = self.open.take() else {
+        let Some(OpenSpan {
+            name,
+            started,
+            cpu,
+            depth,
+            timeline,
+        }) = self.open.take()
+        else {
             return;
         };
         let elapsed = started.elapsed();
@@ -177,7 +189,9 @@ impl Drop for Guard {
             .and_then(|start| Some((thread_cpu()?, start)))
             .map_or(ms, |(end, start)| (end - start).as_secs_f32() * 1000.0);
         DEPTH.with(|d| d.set(depth));
-        timeline::span(name, started, elapsed, depth);
+        if let Some(scope) = timeline {
+            scope.finish(name.into(), started, elapsed);
+        }
         push(Span {
             name,
             ms,
@@ -265,7 +279,7 @@ impl Laps {
             .zip(*cpu)
             .map_or(ms, |(end, start)| (end - start).as_secs_f32() * 1000.0);
         let depth = DEPTH.with(Cell::get);
-        timeline::span(name, *started, elapsed, depth);
+        timeline::lap(name, *started, elapsed);
         nest_since(*mark, depth);
         push(Span {
             name,
@@ -395,10 +409,13 @@ pub fn merge(spans: &[Span]) -> Vec<Span> {
 /// The run's timeline: every span on every thread, kept in per-thread buffers until a capture drains them as `timeline` chunks.
 pub mod timeline {
     use std::{
+        borrow::Cow,
         cell::RefCell,
+        marker::PhantomData,
+        num::NonZeroU64,
         sync::{
             Arc, Mutex, PoisonError,
-            atomic::{AtomicBool, AtomicU32, Ordering},
+            atomic::{AtomicU64, Ordering},
         },
         time::{Duration, Instant},
     };
@@ -406,8 +423,9 @@ pub mod timeline {
     /// The most spans a thread holds between two drains; a thread that records more drops them.
     const THREAD_EVENTS_MAX: usize = 1 << 18;
 
-    static ON: AtomicBool = AtomicBool::new(false);
-    static GENERATION: AtomicU32 = AtomicU32::new(0);
+    // Odd during a capture, even between captures. Advancing one value under RUN's lock makes
+    // the active flag and capture identity change together.
+    static GENERATION: AtomicU64 = AtomicU64::new(0);
     static RUN: Mutex<Option<Run>> = Mutex::new(None);
 
     struct Run {
@@ -421,21 +439,25 @@ pub mod timeline {
         events: Vec<Event>,
     }
 
-    /// This thread's buffer in the timeline it last joined.
+    /// This thread's buffer and open scopes in the timeline it last joined.
     struct Mine {
-        generation: u32,
+        generation: u64,
         origin: Instant,
         thread: Arc<Mutex<Thread>>,
+        open: Vec<NonZeroU64>,
+        next_id: Option<NonZeroU64>,
     }
 
     thread_local! {
         static MINE: RefCell<Option<Mine>> = const { RefCell::new(None) };
+        #[cfg(test)]
+        static TEST_GENERATION: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
     }
 
     /// One finished span.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Event {
-        pub name: &'static str,
+        pub name: Cow<'static, str>,
         /// Microseconds from the timeline's start.
         pub start_us: u64,
         pub dur_us: u32,
@@ -454,7 +476,21 @@ pub mod timeline {
     /// Whether a timeline is being recorded.
     #[inline]
     pub fn on() -> bool {
-        ON.load(Ordering::Relaxed)
+        active_generation().is_some()
+    }
+
+    #[inline]
+    pub(super) fn active_generation() -> Option<u64> {
+        #[cfg(test)]
+        if let Some(generation) = TEST_GENERATION
+            .try_with(std::cell::Cell::get)
+            .ok()
+            .flatten()
+        {
+            return (generation & 1 == 1).then_some(generation);
+        }
+        let generation = GENERATION.load(Ordering::Relaxed);
+        (generation & 1 == 1).then_some(generation)
     }
 
     /// Starts recording, timed from `origin`; false when a timeline already runs (the process has one).
@@ -468,7 +504,6 @@ pub mod timeline {
             threads: Vec::new(),
         });
         GENERATION.fetch_add(1, Ordering::Relaxed);
-        ON.store(true, Ordering::Relaxed);
         true
     }
 
@@ -480,9 +515,12 @@ pub mod timeline {
 
     /// Stops recording and returns what the threads finished since the last drain.
     pub fn finish() -> Vec<ThreadEvents> {
-        ON.store(false, Ordering::Relaxed);
-        let run = RUN.lock().unwrap_or_else(PoisonError::into_inner).take();
-        run.as_ref().map_or_else(Vec::new, take_all)
+        let mut slot = RUN.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(run) = slot.take() else {
+            return Vec::new();
+        };
+        GENERATION.fetch_add(1, Ordering::Relaxed);
+        take_all(&run)
     }
 
     fn take_all(run: &Run) -> Vec<ThreadEvents> {
@@ -499,8 +537,11 @@ pub mod timeline {
     }
 
     /// Takes a buffer for this thread: the one of an exited thread of the same name, else a new one.
-    fn join() -> Option<Mine> {
+    fn join(generation: u64) -> Option<Mine> {
         let mut slot = RUN.lock().unwrap_or_else(PoisonError::into_inner);
+        if GENERATION.load(Ordering::Relaxed) != generation {
+            return None;
+        }
         let run = slot.as_mut()?;
         let name = std::thread::current()
             .name()
@@ -531,37 +572,254 @@ pub mod timeline {
             }
         };
         Some(Mine {
-            generation: GENERATION.load(Ordering::Relaxed),
+            generation,
             origin: run.origin,
             thread,
+            open: Vec::new(),
+            next_id: Some(NonZeroU64::MIN),
         })
     }
 
-    /// A span of this thread from `started`, `elapsed` long, inside `depth` others.
-    pub(super) fn span(name: &'static str, started: Instant, elapsed: Duration, depth: u8) {
-        if !on() {
-            return;
-        }
-        let generation = GENERATION.load(Ordering::Relaxed);
-        let _ = MINE.try_with(|mine| {
-            let mut mine = mine.borrow_mut();
+    fn with_buffer<R>(generation: u64, f: impl FnOnce(&mut Mine) -> Option<R>) -> Option<R> {
+        MINE.try_with(|mine| {
+            let mut mine = mine.try_borrow_mut().ok()?;
             if mine.as_ref().is_none_or(|m| m.generation != generation) {
-                *mine = join();
+                *mine = join(generation);
             }
-            let Some(mine) = mine.as_ref() else {
-                return;
-            };
-            let event = Event {
-                name,
-                start_us: started.saturating_duration_since(mine.origin).as_micros() as u64,
-                dur_us: elapsed.as_micros().min(u128::from(u32::MAX)) as u32,
+            f(mine.as_mut()?)
+        })
+        .ok()
+        .flatten()
+    }
+
+    /// An open scope's identity on its thread. Depth alone would alias a new scope after a
+    /// malformed suffix was discarded.
+    pub(super) struct Scope {
+        id: NonZeroU64,
+        generation: u64,
+        depth: usize,
+        _thread: PhantomData<*const ()>,
+    }
+
+    pub(super) fn open(generation: u64) -> Option<Scope> {
+        with_buffer(generation, |mine| {
+            let id = mine.next_id?;
+            mine.next_id = id.checked_add(1);
+            let depth = mine.open.len();
+            mine.open.push(id);
+            Some(Scope {
+                id,
+                generation,
                 depth,
-            };
-            let mut thread = mine.thread.lock().unwrap_or_else(PoisonError::into_inner);
-            if thread.events.len() < THREAD_EVENTS_MAX {
-                thread.events.push(event);
+                _thread: PhantomData,
+            })
+        })
+    }
+
+    impl Scope {
+        pub(super) fn finish(self, name: Cow<'static, str>, started: Instant, elapsed: Duration) {
+            if active_generation() != Some(self.generation) {
+                return;
             }
-        });
+            // A scope belongs to the buffer that opened it. Do not join (or replace a buffer)
+            // on drop, including after the thread's recorder has already been torn down.
+            let _ = MINE.try_with(|mine| {
+                let Ok(mut mine) = mine.try_borrow_mut() else {
+                    return;
+                };
+                let Some(mine) = mine.as_mut() else {
+                    return;
+                };
+                if mine.generation != self.generation || mine.open.get(self.depth) != Some(&self.id)
+                {
+                    return;
+                }
+                let top = self.depth + 1 == mine.open.len();
+                // A non-top close discards the malformed open suffix, leaving its parent alone.
+                mine.open.truncate(self.depth);
+                if top {
+                    mine.push(name, started, elapsed);
+                }
+            });
+        }
+    }
+
+    impl Mine {
+        fn push(&self, name: Cow<'static, str>, started: Instant, elapsed: Duration) {
+            let mut thread = self.thread.lock().unwrap_or_else(PoisonError::into_inner);
+            // Recheck under the buffer lock so a finishing capture cannot drain this buffer and
+            // then receive another event from a scope that was already open.
+            if active_generation() != Some(self.generation)
+                || thread.events.len() >= THREAD_EVENTS_MAX
+            {
+                return;
+            }
+            // Quantize both endpoints on the same clock so nested endpoints stay ordered.
+            let start = started.saturating_duration_since(self.origin);
+            let start_us = start.as_micros();
+            let end_us = start.saturating_add(elapsed).as_micros();
+            thread.events.push(Event {
+                name,
+                start_us: start_us as u64,
+                dur_us: (end_us - start_us).min(u128::from(u32::MAX)) as u32,
+                depth: u8::try_from(self.open.len()).unwrap_or(u8::MAX),
+            });
+        }
+    }
+
+    /// Open a mod's named zone in the current timeline. The returned action closes it on the
+    /// same thread; when no timeline is active there is no allocation or clock read.
+    pub fn named_zone(label: &str) -> Option<Box<dyn FnOnce()>> {
+        let scope = open(active_generation()?)?;
+        let name = Cow::Owned(label.to_owned());
+        let started = Instant::now();
+        Some(Box::new(move || {
+            scope.finish(name, started, started.elapsed())
+        }))
+    }
+
+    /// Record a finished lap at the current timeline depth, separate from raw span depth.
+    pub(super) fn lap(name: &'static str, started: Instant, elapsed: Duration) {
+        if let Some(generation) = active_generation() {
+            with_buffer(generation, |mine| {
+                mine.push(name.into(), started, elapsed);
+                Some(())
+            });
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use mod_platform::{profiling::zone, testing::with_named_zone_recorder};
+
+        // Replace just this thread's timeline state, without touching the process recorder.
+        fn with_session<R>(generation: u64, mine: Option<Mine>, f: impl FnOnce() -> R) -> R {
+            struct Restore(Option<u64>, Option<Mine>);
+            impl Drop for Restore {
+                fn drop(&mut self) {
+                    TEST_GENERATION.set(self.0);
+                    MINE.set(self.1.take());
+                }
+            }
+            let _restore = Restore(
+                TEST_GENERATION.replace(Some(generation)),
+                MINE.replace(mine),
+            );
+            f()
+        }
+
+        fn capture<R>(generation: u64, f: impl FnOnce() -> R) -> (R, Vec<Event>) {
+            let thread = Arc::new(Mutex::new(Thread {
+                name: "test".into(),
+                label: "test".into(),
+                events: Vec::new(),
+            }));
+            let mine = Mine {
+                generation,
+                origin: Instant::now(),
+                thread: Arc::clone(&thread),
+                open: Vec::new(),
+                next_id: Some(NonZeroU64::MIN),
+            };
+            let result = with_session(generation, Some(mine), f);
+            let events = std::mem::take(&mut thread.lock().unwrap().events);
+            (result, events)
+        }
+
+        fn names_and_depths(events: &[Event]) -> Vec<(&str, u8)> {
+            events.iter().map(|e| (e.name.as_ref(), e.depth)).collect()
+        }
+
+        #[test]
+        fn named_mod_zones_nest_with_engine_spans_and_close_on_return() {
+            fn work(early: bool) -> bool {
+                let _work = zone("mod-work");
+                let _stage = zone(&format!("mod-stage-{}", 'β'));
+                if early {
+                    return false;
+                }
+                true
+            }
+
+            let ((), events) = capture(1, || {
+                drop(zone("no recorder in standalone tests"));
+                with_named_zone_recorder(named_zone, || {
+                    let _engine = crate::spans::guard("engine");
+                    assert!(!work(true));
+                    let _after_return = zone("after-return");
+                });
+            });
+            assert_eq!(
+                names_and_depths(&events),
+                [
+                    ("mod-stage-β", 2),
+                    ("mod-work", 1),
+                    ("after-return", 1),
+                    ("engine", 0)
+                ]
+            );
+            let inner = &events[0];
+            let outer = &events[1];
+            assert!(inner.start_us >= outer.start_us);
+            assert!(
+                inner.start_us + u64::from(inner.dur_us)
+                    <= outer.start_us + u64::from(outer.dur_us)
+            );
+        }
+
+        #[test]
+        fn inactive_and_stale_zones_do_not_record_in_a_new_capture() {
+            with_named_zone_recorder(named_zone, || {
+                let inactive = with_session(0, None, || zone("off"));
+                let (stale, first_events) = capture(1, || zone("first capture"));
+                assert!(first_events.is_empty());
+                let ((), events) = capture(3, || {
+                    let _new = zone("next capture");
+                    drop(stale);
+                    drop(inactive);
+                });
+                assert_eq!(names_and_depths(&events), [("next capture", 0)]);
+            });
+        }
+
+        #[test]
+        fn closing_a_zone_out_of_order_does_not_close_a_later_zone_at_the_same_depth() {
+            let ((), events) = with_named_zone_recorder(named_zone, || {
+                capture(1, || {
+                    let old_root = zone("old root");
+                    let old_child = zone("old child");
+                    drop(old_root);
+                    let _new_root = zone("new root");
+                    let _new_child = zone("new child");
+                    drop(old_child);
+                })
+            });
+            assert_eq!(
+                names_and_depths(&events),
+                [("new child", 1), ("new root", 0)]
+            );
+        }
+
+        #[test]
+        fn an_engine_lap_uses_the_current_timeline_depth() {
+            let ((), events) = with_named_zone_recorder(named_zone, || {
+                capture(1, || {
+                    let _ = crate::spans::take_raw();
+                    let _mod_scope = zone("mod scope");
+                    crate::spans::laps().lap("engine lap");
+                    let raw = crate::spans::take_raw();
+                    assert_eq!(
+                        raw.iter().map(|s| (s.name, s.depth)).collect::<Vec<_>>(),
+                        [("engine lap", 0)]
+                    );
+                })
+            });
+            assert_eq!(
+                names_and_depths(&events),
+                [("engine lap", 1), ("mod scope", 0)]
+            );
+        }
     }
 }
 
@@ -1134,8 +1392,8 @@ mod tests {
             assert_eq!(thread.events.len(), 2 * runs, "{thread:?}");
             for pair in thread.events.chunks(2) {
                 let [inner, outer] = pair else { unreachable!() };
-                assert_eq!((inner.name, inner.depth), ("inner", 1));
-                assert_eq!((outer.name, outer.depth), ("outer", 0));
+                assert_eq!((inner.name.as_ref(), inner.depth), ("inner", 1));
+                assert_eq!((outer.name.as_ref(), outer.depth), ("outer", 0));
                 assert!(
                     inner.dur_us >= 3_000 && outer.dur_us >= 7_000,
                     "{inner:?} {outer:?}"

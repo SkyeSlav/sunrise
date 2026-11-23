@@ -142,7 +142,7 @@ fn chunk(side: Side, thread: ThreadEvents, strings: &mut Interner) -> TimelineCh
         ..TimelineChunk::default()
     };
     for e in events {
-        chunk.name.push(strings.intern(e.name));
+        chunk.name.push(strings.intern(e.name.as_ref()));
         chunk.start_us.push(e.start_us);
         chunk.dur_us.push(e.dur_us);
         chunk.depth.push(u32::from(e.depth));
@@ -162,11 +162,12 @@ pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
 mod tests {
     use super::*;
     use crate::spans::timeline::Event;
+    use std::borrow::Cow;
     use sunrise_perf_format::v1::StringEntry;
 
-    fn event(name: &'static str, start_us: u64, dur_us: u32, depth: u8) -> Event {
+    fn event(name: impl Into<Cow<'static, str>>, start_us: u64, dur_us: u32, depth: u8) -> Event {
         Event {
-            name,
+            name: name.into(),
             start_us,
             dur_us,
             depth,
@@ -201,7 +202,7 @@ mod tests {
         let mut strings = Interner::default();
         let events = vec![
             event("tick_mobs", 2_000, 700, 1),
-            event("tick_blocks", 2_800, 150, 1),
+            event(String::from("mod-stage-β"), 2_800, 150, 1),
             event("tick", 2_000, 1_000, 0),
         ];
         let chunk = chunk(Side::Server, thread("Server thread", events), &mut strings);
@@ -209,7 +210,7 @@ mod tests {
         assert_eq!(chunk.side(), Side::Server);
         assert_eq!(text(&entries, chunk.thread), "Server thread");
         let names: Vec<_> = chunk.name.iter().map(|&id| text(&entries, id)).collect();
-        assert_eq!(names, ["tick", "tick_mobs", "tick_blocks"]);
+        assert_eq!(names, ["tick", "tick_mobs", "mod-stage-β"]);
         assert_eq!(chunk.start_us, [2_000, 2_000, 2_800]);
         assert_eq!(chunk.dur_us, [1_000, 700, 150]);
         assert_eq!(chunk.depth, [0, 1, 1]);
