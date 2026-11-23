@@ -38,6 +38,7 @@ use sunrise_core::{
 use sunrise_mod_package::content::{
     Block, BlockEntityType, BlockShapes, Content, ContextCollision, CreativeTab, EntityType,
     FluidLook, Item, LocalDeclaration, MenuType, MobEffect, Rarity, StateProperty, StateValues,
+    check_portable_path,
 };
 use sunrise_mod_package::manifest::{
     JarInputsError, JarRef, collect_jar_requirements, missing_jars,
@@ -3177,6 +3178,7 @@ fn place_in_biomes(
         }
         if let Some((ns, path)) = id.split_once(':') {
             let file = format!("data/{ns}/worldgen/biome/{path}.json");
+            check_portable_path(&file)?;
             overlay.write(&file, text.as_bytes())?;
         }
     }
@@ -3772,7 +3774,7 @@ fn load_layers<'a>(jar_store: &Path, mods: &'a [ContentMod]) -> Result<Vec<ModLa
         }
         if !m.content.files.is_empty() {
             use crate::packs::Source;
-            let source = if let Some(content) = m.content.admitted_source() {
+            let source = if let Some(content) = m.content.retained_source() {
                 use std::hash::{DefaultHasher, Hash, Hasher};
                 use sunrise_assets::resource_source::ResourceSource;
                 use sunrise_mod_package::content::ReadError;
@@ -3805,12 +3807,10 @@ fn load_layers<'a>(jar_store: &Path, mods: &'a [ContentMod]) -> Result<Vec<ModLa
                     },
                 ))
             } else {
-                let source = m.content.source().to_owned();
-                if source.is_dir() {
-                    Source::Dir(source)
-                } else {
-                    Source::Zip(source)
+                for name in m.content.files.iter() {
+                    check_portable_path(name)?;
                 }
+                Source::Dir(m.content.source().to_owned())
             };
             layers.push(ModLayer::new(m.id.clone(), source, None)?);
         }
@@ -4111,7 +4111,7 @@ fn stamp(
             .clone()?,
     };
     let mut parts = vec![
-        "sunrise mod content 10".to_owned(),
+        "sunrise mod content 11".to_owned(),
         serde_json::to_string(inventory)?,
     ];
     parts.push(exe);
@@ -4145,20 +4145,22 @@ fn stamp(
             // Declared in code only: nothing to read.
             continue;
         }
-        let source = m.content.source();
-        let admitted = m.content.admitted_source();
-        if let Some(content) = admitted.as_ref().filter(|content| content.is_archive()) {
+        if let Some(content) = m
+            .content
+            .retained_source()
+            .filter(|content| content.is_archive())
+        {
             let reader = content.reader();
             for file in m.content.files.iter() {
                 let digest = Sha256::digest(reader.read(file)?);
                 parts.push(format!("{file} {digest:x}"));
             }
-        } else if admitted.is_some() || source.is_dir() {
+        } else {
+            let source = m.content.source();
             for file in m.content.files.iter() {
+                check_portable_path(file)?;
                 parts.push(format!("{file} {}", hash(&source.join(file))?));
             }
-        } else {
-            parts.push(hash(source)?);
         }
     }
     let mut hasher = Sha256::new();

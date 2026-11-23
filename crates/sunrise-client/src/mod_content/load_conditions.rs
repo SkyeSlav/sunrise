@@ -312,6 +312,7 @@ pub fn build_with_conditions(
         }
     }
     for (file, merge) in &tags {
+        check_portable_path(file)?;
         let vanilla = fs::read_to_string(base.join(file))
             .ok()
             .filter(|_| !merge.replaced);
@@ -442,6 +443,7 @@ pub fn build_with_conditions(
             if m.content.files.contains(&own) {
                 continue;
             }
+            check_portable_path(&own)?;
             let template = block.template.trim_start_matches("minecraft:");
             let vanilla = base.join(format!("assets/minecraft/blockstates/{template}.json"));
             overlay.write(&own, &fs::read(&vanilla)?)?;

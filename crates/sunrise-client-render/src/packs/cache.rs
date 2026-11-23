@@ -259,6 +259,10 @@ fn pack_signature(packs: &[Pack]) -> io::Result<String> {
             ));
         }
         field(&mut hash, pack.id.as_bytes());
+        if pack.mod_resources {
+            // Overlays built without mod path validation cannot satisfy a mod layer.
+            field(&mut hash, b"portable mod resources");
+        }
         // Includes source kind/path, overlay order and compiled filter settings.
         field(&mut hash, format!("{:?}", pack.source).as_bytes());
         field(&mut hash, format!("{:?}", pack.overlays).as_bytes());

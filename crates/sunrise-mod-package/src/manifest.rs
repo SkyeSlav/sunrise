@@ -1019,7 +1019,23 @@ pub(crate) fn plain_path(name: &str) -> bool {
             .any(|part| part.is_empty() || part == "." || part == "..")
 }
 
-/// A mod as found on disk.
+/// Check names from the ZIP directory as stored, without inspecting any payloads.
+pub(crate) fn check_archive_paths<R: Read + std::io::Seek>(
+    zip: &zip::ZipArchive<R>,
+) -> Result<(), String> {
+    for name in zip.file_names() {
+        let name = name.map_err(|e| e.to_string())?;
+        // A single closing forward slash marks a directory. Leave every other slash intact.
+        if !plain_path(name.strip_suffix('/').unwrap_or(&name)) {
+            return Err(format!("invalid package path: {name}"));
+        }
+    }
+    Ok(())
+}
+
+/// A mod as found on disk. Both native and content-only archives must have relative,
+/// forward-slash-separated entry names, with no empty, `.` or `..` components, backslashes or
+/// colons. A directory's single closing `/` is a marker, not part of the path.
 pub struct Package {
     pub manifest: Manifest,
     pub icon: Option<crate::icon::Icon>,
@@ -1077,6 +1093,7 @@ impl Package {
             }
             check_folder_file(path, MANIFEST)?;
             for (name, _) in crate::content::folder_files(path)? {
+                crate::content::check_portable_path(&name)?;
                 check_folder_file(path, &name)?;
             }
             let file =
@@ -1098,8 +1115,9 @@ impl Package {
         Ok(package)
     }
 
-    /// Read and validate an archive, including all selected source and resource entries.
+    /// Read and validate an archive, checking every entry name before selecting or reading files.
     pub fn read_zip<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>) -> Result<Self, String> {
+        check_archive_paths(zip)?;
         let mut icon = None;
         let mut has_cargo = false;
         let mut has_source = false;
@@ -1177,13 +1195,8 @@ impl Package {
             let mut resource_count = 0usize;
             let mut resource_bytes = 0u64;
             for (name, size, directory) in entries {
-                let path = if directory {
-                    name.trim_end_matches('/')
-                } else {
-                    &name
-                };
-                if !plain_path(path) || !names.insert(name.clone()) {
-                    return Err(format!("invalid or duplicate package path: {name}"));
+                if !names.insert(name.clone()) {
+                    return Err(format!("duplicate package path: {name}"));
                 }
                 if !directory {
                     if name != MANIFEST
@@ -1248,7 +1261,9 @@ impl Package {
             None
         } else {
             let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-            Some(zip::ZipArchive::new(file).map_err(|e| e.to_string())?)
+            let zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+            check_archive_paths(&zip)?;
+            Some(zip)
         };
         for (name, _) in table.files() {
             let entry = format!("{RUNTIME_DIR}/{name}");
@@ -1339,11 +1354,12 @@ impl Package {
         Self::pack_directory_with(root, None, None)
     }
 
-    /// The bytes of entry `name` in the `.smod` at `path`, refused past `most` bytes; `None` when
-    /// it has no such entry.
+    /// The bytes of the exact entry `name` in the `.smod` at `path`, refused past `most` bytes;
+    /// `None` when it has no such entry. Checks all entry names before lookup.
     pub fn entry(path: &Path, name: &str, most: u64) -> Result<Option<Vec<u8>>, String> {
         let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("{}: {e}", path.display()))?;
+        check_archive_paths(&zip)?;
         let entry = match zip.by_name(name) {
             Ok(entry) => entry,
             Err(zip::result::ZipError::FileNotFound) => return Ok(None),

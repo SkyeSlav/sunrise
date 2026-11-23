@@ -93,8 +93,9 @@ impl PackageFiles {
             .map(String::as_str)
     }
 
-    /// The bytes of the file at `path`, a package-relative path [`list`](Self::list) gives.
-    /// [`NotFound`](PackageReadError::NotFound) for any other path, including `..` and absolute
+    /// The bytes of the file at the exact package-relative `path` from [`list`](Self::list).
+    /// Dots in archive names are literal. A loose file path must not end any component with a dot.
+    /// [`NotFound`](PackageReadError::NotFound) for any unlisted path, including `..` and absolute
     /// paths, or if a listed loose file has since been removed.
     pub fn read(&self, path: &str) -> Result<Vec<u8>, PackageReadError> {
         self.names
@@ -108,7 +109,8 @@ impl crate::RegistrationContext {
     /// The `assets/…` and `data/…` file list used to load package `id`.
     /// The caller can read its own package or any other package [`mods`](Self::mods) lists.
     /// Native code switched off at startup still registers but its package files are not exposed.
-    /// Admission checks file namespaces against the manifest. A refusal removes a content-only
+    /// Every archive entry name is checked before the resource list is selected. Admission matches
+    /// file namespaces exactly against the manifest. A namespace refusal removes a content-only
     /// package; a native still registers, but its files are unreadable. Checks that need
     /// registration results run later.
     /// Keep the handle to read after registration.

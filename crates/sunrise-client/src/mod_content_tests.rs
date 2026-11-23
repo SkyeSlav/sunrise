@@ -595,6 +595,96 @@ fn an_admitted_archive_keys_resource_caches_by_bytes_not_entry_metadata() {
     assert_ne!(fingerprint(new_root, &second), original_fingerprint);
 }
 
+#[test]
+fn an_archive_read_outside_startup_keeps_the_same_view_for_mounting_and_stamping() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = resources(dir.path());
+    let path = dir.path().join("ruby.smod");
+    let replacement = dir.path().join("replacement.smod");
+    let manifest_text = manifest("ruby", "\"ruby.\"");
+    let name = "assets/ruby./custom/value.bin";
+    let write = |path: &Path, bytes: &[u8]| {
+        fs::write(
+            path,
+            sunrise_mod_package::Package::write_files(&manifest_text, &[(name, bytes)]).unwrap(),
+        )
+        .unwrap();
+    };
+    write(&path, b"opened");
+    let package = sunrise_mod_package::Package::read(&path).unwrap();
+    let mods = [ContentMod {
+        id: "ruby".into(),
+        content: Content::read(&path, &package.manifest).unwrap(),
+        jars: Vec::new(),
+    }];
+    let jars = dir.path().join("jars");
+    let key = || stamp(&base, &jars, &mods, &fixture_inventory(&mods)).unwrap();
+    let original = key();
+    write(&replacement, b"replaced");
+    fs::rename(&replacement, &path).unwrap();
+
+    assert_eq!(key(), original);
+    let loaded =
+        resolved_resources(&base, base.clone(), &jars, &mods, dir.path().join("cache")).unwrap();
+    assert_eq!(loaded.source().read(name).unwrap(), b"opened");
+}
+
+#[test]
+fn mod_generated_files_refuse_dotted_components_before_publication() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = resources(dir.path());
+    let vanilla = base.join("assets/minecraft/blockstates/stone.json");
+    fs::create_dir_all(vanilla.parent().unwrap()).unwrap();
+    fs::write(vanilla, b"{}").unwrap();
+    fs::write(base.join(BIOMES), b"{}").unwrap();
+    fs::write(
+        base.join(PLACED_FEATURES),
+        br#"{"minecraft:ore_coal":"{}"}"#,
+    )
+    .unwrap();
+    let path = dir.path().join("ruby.smod");
+    let out = dir.path().join("output");
+    let cases: &[(&[(&str, &[u8])], &str)] = &[
+        (
+            &[("data/ruby./tags/item/sample.json", br#"{"values":[]}"#)],
+            "data/ruby./tags/item/sample.json",
+        ),
+        (
+            &[("data/ruby./sunrise/block/sample.json", br#"{"template":"minecraft:stone","item":false}"#)],
+            "assets/ruby./blockstates/sample.json",
+        ),
+        (
+            &[
+                ("data/ruby./worldgen/biome/sample.json", br#"{"temperature":1.5,"downfall":0.0,"features":[[]]}"#),
+                ("data/ruby/neoforge/biome_modifier/sample.json", br#"{"type":"neoforge:add_features","biomes":"ruby.:sample","features":"minecraft:ore_coal","step":"underground_ores"}"#),
+            ],
+            "data/ruby./worldgen/biome/sample.json",
+        ),
+    ];
+    for &(files, output) in cases {
+        fs::write(
+            &path,
+            sunrise_mod_package::Package::write_files(&manifest("ruby", "\"ruby.\""), files)
+                .unwrap(),
+        )
+        .unwrap();
+        let package = sunrise_mod_package::Package::read(&path).unwrap();
+        let mods = [ContentMod {
+            id: "ruby".into(),
+            content: Content::read(&path, &package.manifest).unwrap(),
+            jars: Vec::new(),
+        }];
+        let error = build_fixture(&base, &dir.path().join("jars"), &mods, &out)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with(output) && error.contains("trailing dot"),
+            "{error}"
+        );
+        assert!(!out.exists());
+    }
+}
+
 /// Each game folder reaches the one set of prepared resources through its own link
 /// (`.local/sunrise-client/26.3`), and keeps its own copy of the mods.
 #[cfg(unix)]

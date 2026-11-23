@@ -7,10 +7,11 @@ reads its code.
 ## The zip
 
 - A zip archive. Entries are stored or deflate-compressed, the only methods the readers support.
-- A path is relative and `/`-separated: no `\`, no `:`, no empty, `.` or `..` part, and it doesn't start with `/`.
-  Files must be regular files, not symlinks, devices or executables. Executable payloads are refused even under
-  resource paths.
-- Each path appears once. Directory entries carry no payload.
+- Both native and content-only readers check every entry name before selecting files. A path is relative and
+  `/`-separated: no `\`, no `:`, no leading `/`, and no empty, `.` or `..` part. A directory's single closing
+  `/` is a marker, not a part. An invalid name refuses the whole package and is named in the error.
+- Files must be regular files, not symlinks, devices or executables. Executable payloads are refused even under
+  resource paths. Each path appears once. Directory entries carry no payload.
 
 ## Project and archive layout
 
@@ -237,6 +238,11 @@ files before copying them. Whole archives are checked, not treated as source fol
 
 `assets/` or `data/`, then at least two parts of `[a-z0-9_.-]` (vanilla's resource-location characters).
 Code and content use the same top-level resource trees; there is no separate native data folder.
+
+An archive lookup uses the exact spelling, including dots in the namespace declared in `sunrise-mod.toml`.
+`ruby.` and `ruby` are different namespaces. A mod resource used as a filesystem path must not end any
+component with a dot, including the namespace. This applies to loose-file reads and to writing files for
+staging or overlays. Ordinary resource packs and data packs are not subject to the `.smod` admission rule.
 
 `icon.png` is optional for both kinds. It has no manifest key. The package reader fully validates it once:
 a PNG, nonzero square dimensions, at most 512 × 512 pixels and 256 KiB encoded. The launcher shows it in

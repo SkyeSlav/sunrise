@@ -57,6 +57,7 @@ impl Registry<'_> {
             // Only listed files enter staging. Refuse edits to the unpacked cache rather than
             // compiling bytes that weren't covered by the verified archive.
             for (name, expected) in &mut bundle.files {
+                check_staged_resource(name)?;
                 let path = dir.join("source").join(name);
                 let bytes =
                     bounded::read_bytes(&path, expected.len() as u64, bounded::Symlinks::Refuse)?;
@@ -142,6 +143,13 @@ fn test_url(file: &str) -> Option<String> {
     None
 }
 
+fn check_staged_resource(name: &str) -> Result<(), String> {
+    if name.starts_with("assets/") || name.starts_with("data/") {
+        sunrise_mod_package::content::check_portable_path(name)?;
+    }
+    Ok(())
+}
+
 /// Write checked, package-relative paths to a private, fresh directory. `create_new` detects
 /// collisions on case-insensitive filesystems as well as exact duplicates.
 pub(crate) fn write_files(
@@ -150,6 +158,7 @@ pub(crate) fn write_files(
 ) -> Result<(), String> {
     for (name, bytes) in files {
         let name = name.as_ref();
+        check_staged_resource(name)?;
         #[cfg(windows)]
         if name.split('/').any(|part| {
             // Win32 strips trailing spaces/dots and can treat DOS device names as files.

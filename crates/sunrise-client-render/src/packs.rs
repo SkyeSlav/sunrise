@@ -60,6 +60,8 @@ pub struct Pack {
     pub filter: Vec<Filter>,
     /// Presentation and selection supplied by an additional repository source.
     pub selection: Option<crate::pack_screen::PackInfo>,
+    /// This layer supplies mod resources, whose names must be portable when written to disk.
+    mod_resources: bool,
 }
 #[derive(Clone, Debug, Default)]
 pub struct Filter {
@@ -481,6 +483,7 @@ impl Pack {
             polytone_configs,
             filter: Vec::new(),
             selection: None,
+            mod_resources: true,
         }
     }
 
@@ -635,6 +638,7 @@ pub fn pack_for(id: String, title: Text, source: Source, format: (i64, i64)) -> 
         filter: filter_of(&meta),
         source,
         selection: None,
+        mod_resources: false,
     })
 }
 /// Built-in and `resourcepacks/` packs (vanilla itself excluded), sorted like
@@ -851,7 +855,7 @@ pub(crate) fn detected_pack_path(
     }
     Ok(Some(target))
 }
-/// A file a pack provides: its path (folder packs) and its name inside the pack.
+/// A file a pack provides: its loose root (folder packs), open source and name in that source.
 type Provided = (
     Option<PathBuf>,
     crate::resource_source::ResourceSource,
@@ -872,7 +876,7 @@ fn pack_files(
         let source = source.subdirectory(root.trim_end_matches('/'))?;
         for inner in source.list("assets/") {
             let path = match &pack.source {
-                Source::Dir(directory) => Some(directory.join(&root).join(&inner)),
+                Source::Dir(directory) => Some(directory.join(&root)),
                 Source::Zip(_) | Source::Opened(_) => None,
             };
             out.insert(inner.clone(), (path, source.clone(), inner));
@@ -1105,16 +1109,29 @@ fn build_overlay_uncached(
     out: &Path,
     dependencies: &mut cache::Dependencies,
 ) -> io::Result<()> {
-    if out.exists() {
-        fs::remove_dir_all(out)?;
-    }
-    fs::create_dir_all(out)?;
     let ResolvedPacks {
         files,
         stacks,
         hidden,
         ..
     } = resolve(packs)?;
+    // Check both direct outputs and mod inputs to merged outputs before joining disk paths.
+    for (name, (owner, _)) in &files {
+        if packs[*owner].mod_resources && !stacks.contains_key(name) {
+            sunrise_mod_package::content::check_portable_path(name)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        }
+    }
+    for (name, stack) in &stacks {
+        if stack.iter().any(|(owner, _)| packs[*owner].mod_resources) {
+            sunrise_mod_package::content::check_portable_path(name)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        }
+    }
+    if out.exists() {
+        fs::remove_dir_all(out)?;
+    }
+    fs::create_dir_all(out)?;
     // Vanilla sits below every pack, so filters hide its files too.
     let filters: Vec<&Filter> = packs.iter().flat_map(|p| &p.filter).collect();
     for name in stacks.keys() {
@@ -1197,10 +1214,10 @@ fn build_overlay_uncached(
             }
             if let Some(bytes) = merged.get(&child) {
                 fs::write(out.join(&child), bytes)?;
-            } else if let Some((_, (path, source, inner))) = files.get(&child) {
+            } else if let Some((_, (root, source, inner))) = files.get(&child) {
                 let target = out.join(&child);
-                match path {
-                    Some(p) => link(p, &target)?,
+                match root {
+                    Some(root) => link(&root.join(inner), &target)?,
                     // Inflated and written after the walk, on every thread.
                     None => extract.push((source, inner.as_str(), target)),
                 }
@@ -1725,6 +1742,67 @@ impl SelectionModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mod_overlays_refuse_dotted_components_without_changing_virtual_lookup() {
+        use crate::resource_source::ResourceSource;
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base");
+        fs::create_dir(&base).unwrap();
+        let archive = dir.path().join("pack.zip");
+        let out = dir.path().join("overlay");
+        // The language file exercises a merged output; the others are direct outputs.
+        let bytes = br#"{"test.key":"exact blob"}"#;
+        for name in [
+            "assets/ruby./lang/en_us.json",
+            "assets/ruby/notes./sample.json",
+            "assets/ruby/notes/sample.",
+        ] {
+            let mut zip = zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("pack.mcmeta", options).unwrap();
+            zip.write_all(br#"{"pack":{"description":"Test pack"}}"#)
+                .unwrap();
+            zip.start_file(name, options).unwrap();
+            zip.write_all(bytes).unwrap();
+            zip.finish().unwrap();
+            let source = Source::Zip(archive.clone());
+            let layer = Pack::mod_layer("ruby".into(), source.clone());
+            let virtual_assets = resources(
+                ResourceSource::directory(base.clone()),
+                std::slice::from_ref(&layer),
+            )
+            .unwrap();
+            assert_eq!(virtual_assets.read(name).unwrap(), bytes);
+            drop(virtual_assets);
+
+            let error = build_overlay(&base, std::slice::from_ref(&layer), &out).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert!(error.to_string().starts_with(name), "{error}");
+            assert!(!out.exists());
+
+            // On Unix an ordinary pack can materialize the path. Its cached overlay must not
+            // let the same source skip mod validation when mounted as a mod instead.
+            #[cfg(unix)]
+            {
+                let ordinary = pack_for(
+                    "ruby".into(),
+                    Text::literal("ruby"),
+                    source,
+                    RESOURCE_FORMAT,
+                )
+                .unwrap();
+                build_overlay(&base, &[ordinary], &out).unwrap();
+                assert_eq!(fs::read(out.join(name)).unwrap(), bytes);
+                let error = build_overlay(&base, &[layer], &out).unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+                assert!(error.to_string().starts_with(name), "{error}");
+                fs::remove_dir_all(&out).unwrap();
+            }
+        }
+    }
 
     /// A resource manager's `getResourceStack`: every visible copy, lowest first, the packs'
     /// own files (not the merged document the game reads of a stacked kind), with a pack's

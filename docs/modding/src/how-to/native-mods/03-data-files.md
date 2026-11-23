@@ -147,13 +147,16 @@ fn scripts(cx: &mod_api::RegistrationContext) -> Result<Vec<Vec<u8>>, Box<dyn st
 
 The file list is fixed when startup admits the package. Declaration and resource loading use that same list and reader.
 Reads use the archive opened at admission, or the current bytes of a listed file in a `--dev-mod` folder.
+Use the exact names `list` returns; dots in archive names, including in the namespace, are literal.
+A loose file path cannot end any component with a dot. See [Content paths and icon](../../reference/manifest.md#content-paths-and-icon).
 `list(folder)` returns sorted paths under that folder, with or without a trailing slash (`""` lists every file).
 `read` returns `PackageReadError::NotFound` for an unlisted path, including `..` and absolute paths, or when a
 listed loose file has been removed.
 
 `package_files` returns `PackageFilesError::NotEnabled` if the package isn't in `cx.mods()`, `Unreadable` when
 the package's files can't be listed, and `Unavailable` outside a mod's registration. A native mod switched off
-at startup still registers, but its package is absent from both views. Admission checks file namespaces against the manifest.
-A content-only package that fails that check is not listed. A native package that fails it still registers,
+at startup still registers, but its package is absent from both views. Every archive entry name is checked
+before the resource list is selected. Admission matches file namespaces exactly against the manifest.
+A content-only package that fails the namespace check is not listed. A native package that fails it still registers,
 but its files are unreadable. Declaration checks that depend on registration results run later, during
 content loading.

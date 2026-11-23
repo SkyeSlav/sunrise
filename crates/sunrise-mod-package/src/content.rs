@@ -28,7 +28,7 @@ pub const MAX_TOTAL: u64 = 512 << 20;
 
 /// Checks a content path: `assets/` or `data/`, then `/`-separated parts of
 /// `[a-z0-9_.-]`, none of them `.` or `..` (vanilla's resource-location
-/// characters, so the path means the same on every OS).
+/// characters). Dots are literal; filesystem paths additionally use [`check_portable_path`].
 pub fn check_path(name: &str) -> Result<(), String> {
     let plain_char = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || "_.-".contains(c);
     let mut parts = name.split('/');
@@ -43,7 +43,7 @@ pub fn check_path(name: &str) -> Result<(), String> {
         return Ok(());
     }
     let mut error = format!(
-        "{name:?} is not a plain assets/ or data/ path: after assets/ or data/, every part is made of a-z, 0-9, _, . and - (vanilla's resource-location characters, so the path means the same on every OS), and none is . or .."
+        "{name:?} is not a plain assets/ or data/ path: after assets/ or data/, every part is made of a-z, 0-9, _, . and - (vanilla's resource-location characters), and none is . or .."
     );
     if named_ok {
         let fixed: Vec<String> = parts
@@ -60,6 +60,16 @@ pub fn check_path(name: &str) -> Result<(), String> {
         ));
     }
     Err(error)
+}
+
+/// Reject a trailing dot in any component of a mod resource path before using it on disk,
+/// following vanilla's `FileUtil.isPathPartPortable`. This is separate from resource-name syntax
+/// and namespace ownership: archive lookups keep the literal spelling.
+pub fn check_portable_path(name: &str) -> Result<(), String> {
+    if let Some(part) = name.split('/').find(|part| part.ends_with('.')) {
+        return Err(format!("{name}: trailing dot in path component {part:?}"));
+    }
+    Ok(())
 }
 
 /// The single resource location NeoForge's `RecipePriorityManager` reads in pack order.
@@ -1203,6 +1213,7 @@ declaration_kinds! {
 }
 
 /// Where a package's content files are read from: its folder or its `.smod`.
+/// An archive source validates every entry name before filtering to content files.
 #[derive(Debug, Clone)]
 pub struct ContentSource {
     source: Source,
@@ -1219,6 +1230,7 @@ impl ContentSource {
             (Source::Dir(path.to_owned()), folder_files(path)?)
         } else {
             let mut zip = open_zip(path)?;
+            crate::manifest::check_archive_paths(&zip)?;
             let mut out = Vec::new();
             for i in 0..zip.len() {
                 let entry = zip.by_index_raw(i).map_err(|e| e.to_string())?;
@@ -1329,7 +1341,8 @@ impl From<ReadError> for String {
     }
 }
 
-/// Reads a mod's content files ([`Content::reader`]).
+/// Reads a mod's content files ([`Content::reader`]). Archive names are matched literally.
+/// Directory reads refuse a trailing dot in any path component rather than using an alias.
 pub struct FileReader<'a>(FileLocation<'a>);
 
 enum FileLocation<'a> {
@@ -1361,10 +1374,13 @@ impl FileReader<'_> {
             Ok(out)
         };
         match self.0 {
-            FileLocation::Dir(root) => read(
-                &mut std::fs::File::open(root.join(name))
-                    .map_err(|error| ReadError::from_io(name, error))?,
-            ),
+            FileLocation::Dir(root) => {
+                check_portable_path(name).map_err(ReadError::Other)?;
+                read(
+                    &mut std::fs::File::open(root.join(name))
+                        .map_err(|error| ReadError::from_io(name, error))?,
+                )
+            }
             FileLocation::Zip(zip) => {
                 let mut archive = zip
                     .lock()
@@ -1389,6 +1405,7 @@ impl FileReader<'_> {
             FileLocation::Dir(root) => root,
             FileLocation::Zip(_) => return Ok(None),
         };
+        check_portable_path(name)?;
         let path = root.join(name);
         let len = std::fs::metadata(&path)
             .map_err(|e| format!("{name}: {e}"))?
@@ -1667,9 +1684,9 @@ impl Content {
         ))
     }
 
-    /// The fixed listing and reader captured at startup, if this content came from admission.
-    pub fn admitted_source(&self) -> Option<ContentSource> {
-        self.from_admission.then(|| ContentSource {
+    /// The fixed listing and reader captured when this archive or startup-admitted folder opened.
+    pub fn retained_source(&self) -> Option<ContentSource> {
+        (self.from_admission || matches!(self.source, Source::Zip { .. })).then(|| ContentSource {
             source: self.source.clone(),
             files: self.files.clone(),
         })
@@ -2684,6 +2701,131 @@ capabilities = ["registries"]
             ));
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn both_package_readers_check_names_before_selecting_entries() {
+        use crate::manifest::MANIFEST;
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ruby.smod");
+        let native = format!(
+            "{MANIFEST_TEXT}[native]\ngame = '26.3'\nsunrise = '{}'\n[runtime]\n'sample.bin' = '{}'\n",
+            "a".repeat(40),
+            crate::manifest::sha512_of(b"runtime bytes"),
+        );
+        for (manifest, has_native) in [(MANIFEST_TEXT, false), (native.as_str(), true)] {
+            let make = |name, directory| {
+                let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+                let options = zip::write::SimpleFileOptions::default();
+                zip.start_file(MANIFEST, options).unwrap();
+                zip.write_all(manifest.as_bytes()).unwrap();
+                if has_native {
+                    zip.start_file("Cargo.toml", options).unwrap();
+                    zip.write_all(b"[package]\nname = 'ruby'\n").unwrap();
+                    zip.start_file("src/lib.rs", options).unwrap();
+                    zip.write_all(b"pub fn demo() {}\n").unwrap();
+                    zip.start_file("runtime/sample.bin", options).unwrap();
+                    zip.write_all(b"runtime bytes").unwrap();
+                }
+                if directory {
+                    zip.add_directory(name, options).unwrap();
+                } else {
+                    zip.start_file(name, options).unwrap();
+                    zip.write_all(b"ordinary text").unwrap();
+                }
+                zip.finish().unwrap();
+            };
+            make("notes/", true);
+            let package = Package::read(&path).unwrap();
+            assert_eq!(package.is_native(), has_native);
+            if has_native {
+                let runtime = package.read_runtime(&path).unwrap().unwrap();
+                assert_eq!(runtime.file("sample.bin").unwrap().0, b"runtime bytes");
+            }
+            assert!(ContentSource::open(&path).unwrap().names().is_empty());
+            assert_eq!(
+                Package::entry(&path, MANIFEST, 1024).unwrap().unwrap(),
+                manifest.as_bytes()
+            );
+            for (name, directory) in [
+                ("", false),
+                ("/notes", false),
+                ("notes\\section", false),
+                ("notes:section", false),
+                ("notes//page", false),
+                ("notes/./page", false),
+                ("notes/../page", false),
+                ("notes//", true),
+                ("notes\\", true),
+            ] {
+                make(name, directory);
+                let error = format!("invalid package path: {name}");
+                assert_eq!(Package::read(&path).err().unwrap(), error);
+                assert_eq!(ContentSource::open(&path).unwrap_err(), error);
+                assert_eq!(Package::entry(&path, MANIFEST, 1024).unwrap_err(), error);
+                if has_native {
+                    assert_eq!(package.read_runtime(&path).err().unwrap(), error);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn archive_resource_names_and_namespaces_are_literal() {
+        const NAME: &str = "assets/ruby./notes./sample.";
+        const BYTES: &[u8] = b"literal archive lookup";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ruby.smod");
+        let dotted_manifest = format!("{MANIFEST_TEXT}namespaces = ['ruby.']\n");
+        std::fs::write(
+            &path,
+            Package::write_files(&dotted_manifest, &[(NAME, BYTES)]).unwrap(),
+        )
+        .unwrap();
+        let package = Package::read(&path).unwrap();
+        let source = ContentSource::open(&path).unwrap();
+        let unlisted = Manifest::parse(MANIFEST_TEXT).unwrap();
+        assert!(source.clone().admit(&unlisted).unwrap_err().contains(NAME));
+        let admitted = source.admit(&package.manifest).unwrap();
+        let reader = admitted.source().reader();
+        assert_eq!(reader.read(NAME).unwrap(), BYTES);
+        assert!(reader.path(NAME).unwrap().is_none());
+        assert!(matches!(
+            reader.read("assets/ruby/notes./sample."),
+            Err(ReadError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn a_loose_mod_read_refuses_dotted_aliases() {
+        let dir = tempfile::tempdir().unwrap();
+        let reader = FileReader(FileLocation::Dir(dir.path()));
+        let plain = "assets/ruby/notes/page";
+        let path = dir.path().join(plain);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"loose resource").unwrap();
+        for name in [
+            "assets/ruby./notes/page",
+            "assets/ruby/notes./page",
+            "assets/ruby/notes/page.",
+        ] {
+            let error = reader.read(name).unwrap_err();
+            assert!(matches!(&error, ReadError::Other(reason) if reason.starts_with(name)));
+            assert!(reader.path(name).unwrap_err().starts_with(name));
+        }
+        assert_eq!(reader.read(plain).unwrap(), b"loose resource");
+        assert_eq!(reader.path(plain).unwrap(), Some(path));
+
+        #[cfg(unix)]
+        {
+            std::fs::write(dir.path().join(crate::manifest::MANIFEST), MANIFEST_TEXT).unwrap();
+            assert!(Package::read(dir.path()).is_ok());
+            let dotted = "assets/ruby/notes/page.";
+            std::fs::write(dir.path().join(dotted), b"distinct on Unix").unwrap();
+            assert!(Package::read(dir.path()).err().unwrap().starts_with(dotted));
+        }
     }
 
     #[test]
