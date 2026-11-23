@@ -420,9 +420,7 @@ impl Game<'_> {
                                 note.message
                             );
                         }
-                        let separate_ao = properties
-                            .get("separateAo")
-                            .is_some_and(|v| v.trim() == "true");
+                        let separate_ao = properties.separate_ao();
                         renderer.set_separate_ao(separate_ao);
                         // Lava's faces draw with the solid terrain's program.
                         renderer.set_pack_lava_layers(

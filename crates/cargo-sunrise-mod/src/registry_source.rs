@@ -113,10 +113,8 @@ impl Registry {
 }
 
 fn read_index(cache: &Path, url: &str, fetch: &Fetch, key: &str) -> Result<Index, String> {
-    let bytes = fetch(url, index::MAX_INDEX)?;
-    let signature = fetch(&format!("{url}.minisig"), MAX_SIGNATURE as u64)?;
-    let signature = String::from_utf8(signature).map_err(|e| format!("{url}.minisig: {e}"))?;
-    let index = Index::verify(&bytes, &signature, key).map_err(|e| format!("{url}: {e}"))?;
+    let signed = fetch(url, index::MAX_INDEX + MAX_SIGNATURE as u64)?;
+    let index = Index::verify(&signed, key).map_err(|e| format!("{url}: {e}"))?;
     let path = cache.join(SERIAL);
     let last = match fs::read_to_string(&path) {
         Ok(text) => Some(text.trim().parse::<u64>().map_err(|e| {
@@ -197,7 +195,7 @@ fn test_url() -> Option<String> {
     // A test points the index at a local address without changing the published one.
     #[cfg(debug_assertions)]
     if let Ok(base) = std::env::var("SUNRISE_MOD_REGISTRY_TEST_BASE") {
-        return Some(format!("{}/index.json", base.trim_end_matches('/')));
+        return Some(format!("{}/index.signed", base.trim_end_matches('/')));
     }
     None
 }

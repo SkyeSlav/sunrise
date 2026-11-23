@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write;
 
 use naga::ShaderStage;
-use naga::front::glsl::{Frontend, Options};
+use naga::front::glsl::{Frontend, InterfaceLimits, Options};
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 
 use crate::Preprocessed;
@@ -255,35 +255,46 @@ impl AlphaTest {
     }
 }
 
-/// Translates a composite-style program (`composite`, `deferred`, `final`...).
+/// Translates a composite-style program (`composite`, `deferred`, `final`...), for a device with
+/// `limits` (the stage interface's, [`InterfaceLimits`]).
 pub fn translate_composite(
     vertex: &Preprocessed,
     fragment: &Preprocessed,
     target: Target,
+    limits: InterfaceLimits,
 ) -> Result<Program, Vec<Error>> {
-    translate(vertex, fragment, target, None, false)
+    translate(vertex, fragment, target, None, false, limits)
 }
 
 /// Translates a gbuffers-style program (`gbuffers_terrain`...) drawing the game's geometry
-/// described by `inputs`, into `target` (the pack's buffers).
+/// described by `inputs`, into `target` (the pack's buffers), for a device with `limits`.
 pub fn translate_gbuffers(
     vertex: &Preprocessed,
     fragment: &Preprocessed,
     target: Target,
     inputs: &GbuffersInputs,
+    limits: InterfaceLimits,
 ) -> Result<Program, Vec<Error>> {
-    translate(vertex, fragment, target, Some(inputs), false)
+    translate(vertex, fragment, target, Some(inputs), false, limits)
 }
 
 /// Translates a shadow program (`shadow`, `shadow_water`...) drawing the game's geometry
 /// described by `inputs` from the shadow light: its model-view and projection matrices are the
-/// shadow camera's (5.2).
+/// shadow camera's (5.2), for a device with `limits`.
 pub fn translate_shadow(
     vertex: &Preprocessed,
     fragment: &Preprocessed,
     inputs: &GbuffersInputs,
+    limits: InterfaceLimits,
 ) -> Result<Program, Vec<Error>> {
-    translate(vertex, fragment, Target::Buffers, Some(inputs), true)
+    translate(
+        vertex,
+        fragment,
+        Target::Buffers,
+        Some(inputs),
+        true,
+        limits,
+    )
 }
 
 /// The matrices of the compatibility profile in a gbuffers-style program, from the frame's.
@@ -361,6 +372,7 @@ fn translate(
     target: Target,
     gbuffers: Option<&GbuffersInputs>,
     shadow: bool,
+    limits: InterfaceLimits,
 ) -> Result<Program, Vec<Error>> {
     let matrices = if shadow {
         GBUFFERS_MATRICES.replace("gbuffer", "shadow")
@@ -565,7 +577,7 @@ fn translate(
         locations,
         split,
         private,
-    } = varyings::assign(&v, &f, &mut errors);
+    } = varyings::assign(&v, &f, &mut errors, limits.inter_stage_variables as usize);
 
     // Inputs the game gives that the vertex stage reads without declaring them (terrain's
     // fade, a line program's `vaPosition`...): injected only when the renderer provides the
@@ -807,14 +819,14 @@ fn translate(
     if !errors.is_empty() {
         return Err(errors);
     }
-    let mut vertex_module = compile(&v, &v_text, header(&v).lines().count());
+    let mut vertex_module = compile(&v, &v_text, header(&v).lines().count(), limits);
     // A stage that writes an image or a buffer runs once per vertex: run again by the game's
     // `after`, it would write twice. One that only reads them is run again like any other.
     if run_again && vertex_module.as_ref().is_ok_and(writes_storage) {
         let once = v_text.replacen(RUNS_AGAIN, RUNS_ONCE, 1);
-        vertex_module = compile(&v, &once, header(&v).lines().count());
+        vertex_module = compile(&v, &once, header(&v).lines().count(), limits);
     }
-    let fragment_module = compile(&f, &f_text, header(&f).lines().count());
+    let fragment_module = compile(&f, &f_text, header(&f).lines().count(), limits);
     let (vertex, fragment) = match (vertex_module, fragment_module) {
         (Ok(v), Ok(f)) => (v, f),
         (a, b) => return Err(a.err().into_iter().chain(b.err()).flatten().collect()),
@@ -1106,7 +1118,9 @@ pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<E
     if !errors.is_empty() {
         return Err(errors);
     }
-    let module = compile(&c, &text, header.lines().count()).map_err(|e| {
+    // A compute stage has no location-bound interface, so no device limit of it applies.
+    let limits = crate::DEVICELESS_INTERFACE_LIMITS;
+    let module = compile(&c, &text, header.lines().count(), limits).map_err(|e| {
         errors.extend(e);
         std::mem::take(&mut errors)
     })?;
@@ -1422,7 +1436,16 @@ pub(super) fn split_sampler(ty: &str) -> (String, &'static str) {
 }
 
 /// Parses and validates one stage; errors at the pack's files and lines.
-fn compile(stage: &Stage, text: &str, header_lines: usize) -> Result<naga::Module, Vec<Error>> {
+fn compile(
+    stage: &Stage,
+    text: &str,
+    header_lines: usize,
+    limits: InterfaceLimits,
+) -> Result<naga::Module, Vec<Error>> {
+    let options = Options {
+        interface_limits: limits,
+        ..Options::from(stage.kind)
+    };
     let specialized = image_parameters::rewrite(text).map_err(|message| {
         vec![Error {
             file: stage.pp.files.first().cloned().unwrap_or_default(),
@@ -1457,14 +1480,12 @@ fn compile(stage: &Stage, text: &str, header_lines: usize) -> Result<naga::Modul
         }
     };
     let parse = |text: &str| {
-        Frontend::default()
-            .parse(&Options::from(stage.kind), text)
-            .map_err(|e| {
-                e.errors
-                    .into_iter()
-                    .map(|e| at(text, e.meta, e.kind.to_string()))
-                    .collect::<Vec<_>>()
-            })
+        Frontend::default().parse(&options, text).map_err(|e| {
+            e.errors
+                .into_iter()
+                .map(|e| at(text, e.meta, e.kind.to_string()))
+                .collect::<Vec<_>>()
+        })
     };
     // naga's frontend refuses a few things GL takes: a scalar's swizzle (`f.x`, GLSL 4.20), a
     // matrix column's component written to (`m[1].y =`) and `min`/`max`/`clamp` of a `uint` and
@@ -1474,7 +1495,7 @@ fn compile(stage: &Stage, text: &str, header_lines: usize) -> Result<naga::Modul
     let mut tries = 0;
     let mut module = loop {
         tries += 1;
-        match Frontend::default().parse(&Options::from(stage.kind), &text) {
+        match Frontend::default().parse(&options, &text) {
             Ok(m) => break m,
             Err(e) => match e.errors.iter().find_map(|e| {
                 scalar_swizzle(&text, e)
@@ -1761,6 +1782,7 @@ mod tests {
             &preprocess(&pack, &f, &m),
             Target::Buffers,
             game,
+            InterfaceLimits::WGPU_DEFAULT,
         )
     }
 
@@ -1887,8 +1909,14 @@ mod tests {
             body: "hz_Vertex = vec4(0.25, 0.5, -2.0, float(gl_VertexIndex));".into(),
             ..Default::default()
         };
-        let program = translate_gbuffers(&vertex, &fragment, Target::Buffers, &inputs)
-            .unwrap_or_else(|e| panic!("{e:?}"));
+        let program = translate_gbuffers(
+            &vertex,
+            &fragment,
+            Target::Buffers,
+            &inputs,
+            InterfaceLimits::WGPU_DEFAULT,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
         let module = &program.vertex;
         let reads = |f: &naga::Function, name: &str| {
             f.expressions.iter().any(|(_, e)| match *e {
@@ -1938,8 +1966,14 @@ mod tests {
                 after: "    hz_vertex_index = 1u;\n    hz_vertex();\n".into(),
                 ..Default::default()
             };
-            let program = translate_gbuffers(&vertex, &fragment, Target::Buffers, &inputs)
-                .unwrap_or_else(|e| panic!("{declarations} {write}: {e:?}"));
+            let program = translate_gbuffers(
+                &vertex,
+                &fragment,
+                Target::Buffers,
+                &inputs,
+                InterfaceLimits::WGPU_DEFAULT,
+            )
+            .unwrap_or_else(|e| panic!("{declarations} {write}: {e:?}"));
             let module = &program.vertex;
             let (_, constant) = (module.constants.iter())
                 .find(|(_, c)| c.name.as_deref() == Some("hz_vertex_reruns"))
@@ -2015,7 +2049,13 @@ mod tests {
                     .to_vec(),
                 ..Default::default()
             };
-            translate_gbuffers(&vertex, &fragment, Target::Buffers, &inputs)
+            translate_gbuffers(
+                &vertex,
+                &fragment,
+                Target::Buffers,
+                &inputs,
+                InterfaceLimits::WGPU_DEFAULT,
+            )
         };
         let cases = [
             (
@@ -2101,8 +2141,14 @@ mod tests {
                 after: after.into(),
                 ..Default::default()
             };
-            let program = translate_gbuffers(&vertex, &fragment, Target::Buffers, &inputs)
-                .unwrap_or_else(|e| panic!("{e:?}"));
+            let program = translate_gbuffers(
+                &vertex,
+                &fragment,
+                Target::Buffers,
+                &inputs,
+                InterfaceLimits::WGPU_DEFAULT,
+            )
+            .unwrap_or_else(|e| panic!("{e:?}"));
             let module = &program.vertex;
             let (_, f) = (module.functions.iter())
                 .find(|(_, f)| f.name.as_deref() == Some("hz_vertex"))
@@ -2190,7 +2236,13 @@ mod tests {
                 ],
                 ..Default::default()
             };
-            translate_gbuffers(&vertex, &fragment, Target::Buffers, &inputs)
+            translate_gbuffers(
+                &vertex,
+                &fragment,
+                Target::Buffers,
+                &inputs,
+                InterfaceLimits::WGPU_DEFAULT,
+            )
         };
         let reads = "void main() {\n    vec4 a = projectionMatrix * modelViewMatrix * vec4(vaPosition, 1.0);\n    \
                      vec4 b = projectionMatrix * modelViewMatrix * vec4(vaPosition + vaNormal, 1.0);\n    \
@@ -2254,8 +2306,14 @@ mod tests {
             .to_vec(),
             ..Default::default()
         };
-        let program = translate_gbuffers(&vertex, &fragment, Target::Buffers, &inputs)
-            .unwrap_or_else(|e| panic!("{e:?}"));
+        let program = translate_gbuffers(
+            &vertex,
+            &fragment,
+            Target::Buffers,
+            &inputs,
+            InterfaceLimits::WGPU_DEFAULT,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
         let module = &program.vertex;
         let ty = |name: &str| {
             let (_, global) = module
@@ -2349,6 +2407,7 @@ mod tests {
             &preprocess(&pack, "gbuffers_terrain.fsh", &macros),
             Target::Buffers,
             &GbuffersInputs::default(),
+            InterfaceLimits::WGPU_DEFAULT,
         )
         .unwrap();
         assert!(
@@ -2438,9 +2497,15 @@ mod tests {
             ..Default::default()
         };
         if shadow {
-            translate_shadow(&vertex, &fragment, &inputs)
+            translate_shadow(&vertex, &fragment, &inputs, InterfaceLimits::WGPU_DEFAULT)
         } else {
-            translate_gbuffers(&vertex, &fragment, Target::Buffers, &inputs)
+            translate_gbuffers(
+                &vertex,
+                &fragment,
+                Target::Buffers,
+                &inputs,
+                InterfaceLimits::WGPU_DEFAULT,
+            )
         }
     }
 
@@ -2479,6 +2544,7 @@ mod tests {
             &preprocess(&pack, "composite.vsh", &m),
             &preprocess(&pack, "composite.fsh", &m),
             target,
+            InterfaceLimits::WGPU_DEFAULT,
         )
     }
 
@@ -2967,6 +3033,7 @@ in VertexData {{ {member} }} vIn;
                 &preprocess(&pack, "gbuffers_clouds.fsh", &m),
                 Target::Buffers,
                 &inputs,
+                InterfaceLimits::WGPU_DEFAULT,
             )
             .unwrap_or_else(|e| panic!("{fsh}: {e:?}"));
         }
@@ -2997,6 +3064,7 @@ in VertexData {{ {member} }} vIn;
                 &preprocess(&pack, "gbuffers_entities.fsh", &m),
                 Target::Buffers,
                 &inputs,
+                InterfaceLimits::WGPU_DEFAULT,
             )
             .unwrap_or_else(|e| panic!("{e:?}"));
             // Calls of the functions named `name`, in every function's body.
@@ -3039,6 +3107,7 @@ in VertexData {{ {member} }} vIn;
                 &preprocess(&pack, "shadow.vsh", &m),
                 &preprocess(&pack, "shadow.fsh", &m),
                 &inputs,
+                InterfaceLimits::WGPU_DEFAULT,
             )
             .unwrap_or_else(|e| panic!("{e:?}"));
             let boxes = (p.interface.uniforms.iter())
@@ -3078,6 +3147,7 @@ in VertexData {{ {member} }} vIn;
                 &preprocess(&pack, "gbuffers_water.fsh", &m),
                 Target::Buffers,
                 &inputs,
+                InterfaceLimits::WGPU_DEFAULT,
             )
             .unwrap_or_else(|e| panic!("{e:?}"));
             let sampler = (p.interface.samplers.iter()).any(|s| s.name == WATER_MASK);
@@ -3122,6 +3192,7 @@ in VertexData {{ {member} }} vIn;
                 &preprocess(&pack, "gbuffers_entities.fsh", &m),
                 Target::Buffers,
                 &inputs,
+                InterfaceLimits::WGPU_DEFAULT,
             )
             .unwrap_or_else(|e| panic!("{e:?}"));
             let functions = p.fragment.functions.iter().map(|(_, f)| f);
@@ -3171,6 +3242,7 @@ in VertexData {{ {member} }} vIn;
                 &preprocess(&pack, "gbuffers_entities.fsh", &m),
                 Target::Buffers,
                 &game,
+                InterfaceLimits::WGPU_DEFAULT,
             )
             .unwrap_or_else(|e| panic!("{e:?}"));
             p.interface
@@ -3218,6 +3290,7 @@ in VertexData {{ {member} }} vIn;
             &preprocess(&pack, "gbuffers_terrain.fsh", &m),
             Target::Buffers,
             &game,
+            InterfaceLimits::WGPU_DEFAULT,
         )
         .unwrap_or_else(|e| panic!("{e:?}"));
         let names: Vec<&str> = p
@@ -3257,6 +3330,7 @@ in VertexData {{ {member} }} vIn;
             &preprocess(&pack, "gbuffers_terrain.vsh", &m),
             &preprocess(&pack, "gbuffers_terrain.fsh", &m),
             &game,
+            InterfaceLimits::WGPU_DEFAULT,
         )
         .unwrap_or_else(|e| panic!("{e:?}"));
         let names: Vec<&str> = (shadow.interface.uniforms.iter())
@@ -3323,15 +3397,89 @@ in VertexData {{ {member} }} vIn;
         // 3 columns + 2 elements + 2 x 2 columns, and the fragment position.
         assert!(inputs >= 9, "{inputs} inputs");
         assert_eq!(
-            varying_parts("flat ivec2 @[2];").unwrap().1,
+            varying_parts("flat ivec2 @[2];", 31).unwrap().unwrap().1,
             [
                 ("flat ivec2 @;".to_owned(), "[0]".to_owned()),
                 ("flat ivec2 @;".to_owned(), "[1]".to_owned())
             ]
         );
-        assert_eq!(varying_parts("mat2x3 @[2];").unwrap().1[3].1, "[1][1]");
-        assert!(varying_parts("vec4 @;").is_none());
-        assert!(varying_parts("vec4 @[N];").is_none());
+        assert_eq!(
+            varying_parts("mat2x3 @[2];", 31).unwrap().unwrap().1[3].1,
+            "[1][1]"
+        );
+        assert_eq!(varying_parts("vec4 @;", 31), Ok(None));
+        assert_eq!(varying_parts("vec4 @[N];", 31), Ok(None));
+    }
+
+    /// A varying splits within the locations the program has left (`room`: of the device's
+    /// `max_inter_stage_shader_variables`, 31 on RADV, D3D12 and Metal): at the room it splits,
+    /// one part past it is refused before any part is made (a size whose parts can't all be made,
+    /// `[99999999999]`, is refused the same way), and a struct's parts count four components each.
+    #[test]
+    fn the_split_of_a_varying_stops_at_the_room_left() {
+        let parts = varying_parts("float @[31];", 31).unwrap().unwrap().1;
+        assert_eq!(parts.len(), 31);
+        assert_eq!(parts[30].1, "[30]");
+        assert_eq!(
+            varying_parts("float @[32];", 31),
+            Err(varyings::TooManyParts)
+        );
+        assert_eq!(
+            varying_parts("float @[4][8];", 31),
+            Err(varyings::TooManyParts)
+        );
+        assert_eq!(varying_parts("mat4 @[8];", 31), Err(varyings::TooManyParts));
+        assert_eq!(
+            varying_parts("float @[99999999999];", 31),
+            Err(varyings::TooManyParts)
+        );
+        let structs = std::collections::HashMap::from([
+            (
+                "S".to_owned(),
+                vec![("float".to_owned(), "a[124]".to_owned())],
+            ),
+            (
+                "T".to_owned(),
+                vec![("float".to_owned(), "a[125]".to_owned())],
+            ),
+            (
+                "V".to_owned(),
+                vec![("vec4".to_owned(), "a[31]".to_owned())],
+            ),
+            // Structs inside themselves can't travel: refused once a path is longer than any
+            // without one, not by a stack overflow.
+            (
+                "R".to_owned(),
+                vec![
+                    ("float".to_owned(), "x".to_owned()),
+                    ("R".to_owned(), "r".to_owned()),
+                ],
+            ),
+            ("Q".to_owned(), vec![("Q".to_owned(), "q".to_owned())]),
+            // No leaves at all: its elements still take steps, which run out.
+            ("E".to_owned(), vec![]),
+        ]);
+        let parts = struct_parts("S @;", &structs, 31).unwrap().unwrap();
+        assert_eq!(parts.len(), 31);
+        assert_eq!(parts[30].1[3].1, ".a[123]");
+        assert_eq!(
+            struct_parts("T @;", &structs, 31),
+            Err(varyings::TooManyParts)
+        );
+        assert_eq!(
+            struct_parts("V @;", &structs, 31).unwrap().unwrap().len(),
+            31
+        );
+        assert_eq!(
+            struct_parts("V @;", &structs, 30),
+            Err(varyings::TooManyParts)
+        );
+        assert_eq!(struct_parts("R @;", &structs, 31), Ok(None));
+        assert_eq!(struct_parts("Q @;", &structs, 31), Ok(None));
+        assert_eq!(
+            struct_parts("E @[99999999999];", &structs, 31),
+            Err(varyings::TooManyParts)
+        );
     }
 
     #[test]
@@ -3373,7 +3521,7 @@ in VertexData {{ {member} }} vIn;
             ],
         )]);
         assert_eq!(
-            struct_parts("S @;", &structs).unwrap(),
+            struct_parts("S @;", &structs, 31).unwrap().unwrap(),
             [
                 (
                     "vec4 @;".to_owned(),
@@ -3396,7 +3544,7 @@ in VertexData {{ {member} }} vIn;
             "B".to_owned(),
             vec![("bool".to_owned(), "b".to_owned())],
         )]);
-        assert!(struct_parts("B @;", &bools).is_none());
+        assert_eq!(struct_parts("B @;", &bools, 31), Ok(None));
     }
 
     #[test]

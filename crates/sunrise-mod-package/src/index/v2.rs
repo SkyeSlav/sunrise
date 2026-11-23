@@ -1,4 +1,4 @@
-//! The signed v2 registry index (`v2/index.json`, sunrise-mods `docs/registry-v2.md` "Published
+//! The signed v2 registry index (`v2/index.signed`, sunrise-mods `docs/registry-v2.md` "Published
 //! index"): only what the mod tool reads to take a library. Under schema 2 a reader ignores
 //! fields it doesn't know, so the published page, build and fit fields are left out here.
 use super::{Kind, MAX_FILE};
@@ -63,8 +63,20 @@ pub struct Revoked {
 }
 
 impl Index {
-    /// Check `signature` (`.minisig` text) over the exact bytes served, then read them.
-    pub fn verify(bytes: &[u8], signature: &str, key: &str) -> Result<Self, String> {
+    /// Read `index.signed`: its first four lines are the minisign signature file, and every byte
+    /// after the fourth line feed is `index.json`, checked as served before it is parsed. One file,
+    /// so the signature and the index always come from the same publish.
+    pub fn verify(signed: &[u8], key: &str) -> Result<Self, String> {
+        let split = signed
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| **b == b'\n')
+            .nth(3)
+            .map(|(at, _)| at + 1)
+            .ok_or("fewer than the four signature lines before the index")?;
+        let (signature, bytes) = signed.split_at(split);
+        let signature = std::str::from_utf8(signature)
+            .map_err(|_| "the signature lines are not UTF-8".to_string())?;
         super::verify_signature_bytes(key, signature, bytes)
             .map_err(|_| "the signature doesn't match the registry's key".to_string())?;
         Self::parse(bytes)

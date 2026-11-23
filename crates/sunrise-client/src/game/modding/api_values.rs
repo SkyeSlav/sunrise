@@ -2625,6 +2625,15 @@ mod gui_draw_boundary_tests {
                 scale: [0.5, 1.5],
                 pivot: [55., 56.],
             },
+            D::PlayerFace {
+                uuid: 0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10,
+                x: -57,
+                y: 58,
+                size: 59,
+                hat: false,
+                flip: true,
+                color: 0x8000_0060,
+            },
             D::Push(vec![PoseOp::Translate(61., 62.), PoseOp::Scale(0.5, 1.5)]),
             D::Pop,
         ];

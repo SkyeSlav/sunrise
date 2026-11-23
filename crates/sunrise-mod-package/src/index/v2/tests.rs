@@ -66,3 +66,9 @@ fn ids_digests_sizes_and_versions_outside_their_shapes_refuse_the_whole_index() 
         assert!(error.contains("takedown"), "{error}");
     }
 }
+
+#[test]
+fn a_signed_file_without_four_signature_lines_is_refused_before_any_check() {
+    let error = Index::verify(b"untrusted comment\nsig\ntrusted comment\n{}", "key").unwrap_err();
+    assert!(error.contains("four signature lines"), "{error}");
+}

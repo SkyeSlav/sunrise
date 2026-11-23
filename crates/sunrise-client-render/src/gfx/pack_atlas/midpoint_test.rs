@@ -448,13 +448,19 @@ fn sample_page(
     );
     let inputs = atlas.terrain_inputs(flat);
     let program = if shadow {
-        sunrise_shaders::translate_shadow(&vertex, &fragment, &inputs)
+        sunrise_shaders::translate_shadow(
+            &vertex,
+            &fragment,
+            &inputs,
+            naga::front::glsl::InterfaceLimits::WGPU_DEFAULT,
+        )
     } else {
         sunrise_shaders::translate_gbuffers(
             &vertex,
             &fragment,
             sunrise_shaders::Target::Buffers,
             &inputs,
+            naga::front::glsl::InterfaceLimits::WGPU_DEFAULT,
         )
     }
     .unwrap();

@@ -43,9 +43,9 @@ pub const HORIZON_MIXINS_SOURCE: &str =
 /// Where the fork releases the prebuilt horizon-mixins tool; a release's tag and file follow.
 pub const MIXINS_TOOL_RELEASES: &str = "https://github.com/sunrise-org/sunrise/releases/download";
 
-/// The signed v2 mod registry index, used to resolve library mods during a native build; its
-/// signature is beside it, with `.minisig` added.
-pub const MOD_REGISTRY_INDEX: &str = "https://sunrise-org.github.io/sunrise-mods/v2/index.json";
+/// The signed v2 mod registry index, used to resolve library mods during a native build: the
+/// minisign signature's four lines, then the index's exact bytes, in one file.
+pub const MOD_REGISTRY_INDEX: &str = "https://sunrise-org.github.io/sunrise-mods/v2/index.signed";
 
 /// Registry metadata on the default branch, used by the mod authoring tool.
 pub const MOD_REGISTRY_METADATA: &str =

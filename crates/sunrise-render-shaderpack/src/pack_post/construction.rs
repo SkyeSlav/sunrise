@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use sunrise_shaders::{BUFFERS, Format, Group, Kind, Post, SHADOW_COLORS};
 
 use super::packed;
-use super::{image_format, storage_formats_of};
+use super::{image_binding, image_format, storage_formats_of};
 use crate::pack_draw::DrawUniforms;
 use crate::pack_entities::PackEntities;
 use crate::pack_images;
@@ -1075,18 +1075,19 @@ pub fn bindings(
             ));
             return None;
         }
-        // An `R11F_G11F_B10F` image or buffer this device makes `RGBA16F` (a float stand-in
-        // that neither clamps nor drops NaN) takes `layout(r11f_g11f_b10f)` as `rgba16f`
-        // (`storage_formats_of`): Iris 1.11.7 stored into and read back such an image with a
-        // probe pack of ours (#10490), where Sunrise refused the program.
-        let stand_in = format == wgpu::TextureFormat::Rg11b10Ufloat
-            && actual == wgpu::TextureFormat::Rgba16Float;
-        if actual != format && !stand_in {
-            notes.push(format!(
-                "{name}: `{}` is {} but its texture is {actual:?}",
-                i.name, i.format
-            ));
-            return None;
+        // A qualifier `rebinds` pairs with its texture's format binds the texture's format,
+        // with a note (`storage_formats_of` retypes the image): `layout(rgba16)` on a pack's
+        // `RGBA16F` buffer (decision D-3, #548), and `layout(r11f_g11f_b10f)` on the `RGBA16F`
+        // stand-in for an `R11F_G11F_B10F` image or buffer (a float stand-in that neither clamps
+        // nor drops NaN), which Iris 1.11.7 stored into and read back with a probe pack of ours
+        // (#10490). Any other pair that differs refuses the program.
+        match image_binding(name, &i.name, &i.format, format, actual) {
+            Ok(None) => {}
+            Ok(Some(note)) => notes.push(note),
+            Err(note) => {
+                notes.push(note);
+                return None;
+            }
         }
         let format = actual;
         let access = match i.access.as_str() {

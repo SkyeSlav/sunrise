@@ -1847,6 +1847,7 @@ mod velocity_translate_tests {
                 &fsh,
                 sunrise_shaders::Target::Buffers,
                 &inputs,
+                naga::front::glsl::InterfaceLimits::WGPU_DEFAULT,
             )
             .unwrap_or_else(|e| panic!("{who}: {e:?}"));
             let previous = p
@@ -1898,6 +1899,7 @@ mod tier_translate_tests {
                 &fsh,
                 sunrise_shaders::Target::Buffers,
                 &inputs,
+                naga::front::glsl::InterfaceLimits::WGPU_DEFAULT,
             )
             .unwrap_or_else(|e| panic!("{who}: {e:?}"));
         }

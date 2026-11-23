@@ -5,17 +5,15 @@ use std::{cell::RefCell, rc::Rc};
 const FIRST: &[u8] = include_bytes!("first-index.json");
 const FIRST_SIGNATURE: &[u8] = include_bytes!("first-index.json.minisig");
 const FIRST_SERIAL: u64 = 1795408124;
-const URL: &str = "https://example.org/v2/index.json";
+const URL: &str = "https://example.org/v2/index.signed";
 
+/// `index.signed` as the registry publishes it: the signature file, then the index's bytes.
 fn serve(index: &'static [u8]) -> impl Fn(&str, u64) -> Result<Vec<u8>, String> {
     move |url, limit| {
-        let bytes = match url.strip_prefix(URL) {
-            Some("") => index,
-            Some(".minisig") => FIRST_SIGNATURE,
-            _ => panic!("unexpected URL: {url}"),
-        };
-        assert!(bytes.len() as u64 <= limit);
-        Ok(bytes.to_vec())
+        assert_eq!(url, URL);
+        let signed = [FIRST_SIGNATURE, index].concat();
+        assert!(signed.len() as u64 <= limit);
+        Ok(signed)
     }
 }
 

@@ -379,7 +379,10 @@ impl Renderer {
     /// terrain's in the pack's block atlas (made here when missing; none when it does not fit).
     pub fn pack_inputs(&mut self) -> sunrise_shaders::GameInputs {
         let terrain = self.pack_terrain_inputs();
-        pack_atlas::game_inputs(terrain, self.pack_terrain_flat, &self.pack_lava_layers)
+        sunrise_shaders::GameInputs {
+            interface_limits: crate::core_shader::interface_limits(&self.device.limits()),
+            ..pack_atlas::game_inputs(terrain, self.pack_terrain_flat, &self.pack_lava_layers)
+        }
     }
 
     pub(super) fn pack_terrain_inputs(&mut self) -> Option<sunrise_shaders::GbuffersInputs> {

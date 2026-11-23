@@ -8,19 +8,21 @@
 
 crates/sunrise-render-shaderpack/examples/shader_fuzz/ does the work. A case is a pack of the corpus (the seed pack
 under examples/shader_fuzz/seeds/, and each zip or folder of --corpus, which is read and never copied into the
-repository) cut down to one or two programs (both stages, or compute shaders only) and what they include, then
-mutated by one to six named steps (declaration forms, #include chains and cycles, preprocessor nesting and macros,
-array sizes, names that collide with the game's inputs or later keywords, number extremes, truncation, encodings,
-duplicated or reordered lines, shaders.properties values) drawn from a SplitMix64 stream seeded per case. Each case
-loads through load_post as the game loads a pack, with the game's inputs, in a worker process, and must keep every
-invariant: no panic, within --time-limit and --memory-limit, every stage file within --size-limit once preprocessed,
-every loaded program valid in naga, every note starting with a subject (a `key` or a word before its first ": ") and
-a program the unmutated case loaded loaded or named by a note, the same output twice.
+repository) whole and read by a case process within --memory-limit, with one or two of its programs (both stages, or
+compute shaders only) mutated by one to six named steps (declaration forms, #include chains and cycles, preprocessor
+nesting and macros, array sizes, names that collide with the game's inputs or later keywords, number extremes,
+truncation, encodings, duplicated or reordered lines, shaders.properties values) drawn from a SplitMix64 stream
+seeded per case. Each case loads through load_post as the game loads a pack, with the game's inputs, in an eval
+worker of its case process, and must keep every invariant: no panic, within --time-limit and --memory-limit, every
+stage file of the dimension's folder within --size-limit once preprocessed, every loaded program valid in naga,
+every note starting with a subject (a `key` or a word before its first ": ") and a program the unmutated case loaded
+loaded or named by a note, the same output twice.
 
 Failures are grouped by invariant, first failing step and detail. Each group's smallest case is shrunk while the
 same failure stays (steps, then files, then runs of lines) and written as a pack folder under
-the run's groups/ folder; its report.json lists the groups with the seed that replays each. Exits 1
-when any case fails.
+the run's groups/ folder; its report.json lists the groups with the seed that replays each, the cases run and
+skipped (each skipped one is printed with why), and how each case process ended. Exits 1 when any case fails, or
+when no case ran.
 """
 
 import argparse
@@ -62,8 +64,11 @@ def arguments(args):
 
 
 def summary(report):
-    """One line per group, most cases first, with its replay command."""
-    lines = [f"{report['cases']} cases, {report['failing']} failures in {len(report['groups'])} groups"]
+    """The cases run and skipped, then one line per group, most cases first, with its replay command."""
+    lines = [f"{report['cases']} cases ({report.get('skipped', 0)} skipped), {report['failing']} failures"
+             f" in {len(report['groups'])} groups"]
+    if not report["cases"]:
+        lines.append("no case ran")
     for group in sorted(report["groups"], key=lambda g: (-g["count"], g["group"])):
         corpus = f" --corpus {report['corpus_dir']}" if report.get("corpus_dir") else ""
         lines.append(f"  {group['count']:4d}  {group['group']}")
@@ -77,14 +82,19 @@ def main(argv=None):
     parser.add_argument("--seed", type=int, default=1, help="the run's seed; each case's own seed derives from it")
     parser.add_argument("--count", type=int, default=200, help="cases to generate")
     parser.add_argument("--budget", type=int, help="stop generating cases after this many seconds")
-    parser.add_argument("--corpus", type=Path, help="a folder of packs (zips or folders) to take programs from")
-    parser.add_argument("--jobs", type=int, default=1, help="worker processes")
+    parser.add_argument("--corpus", type=Path,
+                        help="a folder of packs (zips or folders) to take cases from; only case processes read them")
+    parser.add_argument("--jobs", type=int, default=1,
+                        help="case processes, each with its own eval worker")
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--replay", type=int, metavar="SEED", help="run the case of this seed (from a report)")
     source.add_argument("--smoke", action="store_true", help="the seed programs unmutated, which must pass")
-    parser.add_argument("--time-limit", type=int, default=20, help="seconds a case may take")
-    parser.add_argument("--memory-limit", type=int, default=2048, help="MiB a worker may hold")
-    parser.add_argument("--size-limit", type=int, default=16, help="MiB a stage file may grow to, preprocessed")
+    parser.add_argument("--time-limit", type=int, default=20,
+                        help="seconds a load of a case (in its eval worker) or a pack's reading may take")
+    parser.add_argument("--memory-limit", type=int, default=2048,
+                        help="MiB each case process and each eval worker may hold")
+    parser.add_argument("--size-limit", type=int, default=16,
+                        help="MiB a stage file of the dimension's folder may grow to, preprocessed")
     parser.add_argument("--shrink-seconds", type=int, default=120, help="per group")
     parser.add_argument("--binary", type=Path, help="an already built shader_fuzz")
     parser.add_argument("--work-dir", type=Path, default=WORK, help="parent directory for separately stored runs")
@@ -104,7 +114,8 @@ def main(argv=None):
         print(f"shader_fuzz: {args.work_dir}: {error}", file=sys.stderr)
         return 2
     print("\n".join(summary(report)))
-    return 1 if report["groups"] else 0
+    # A run that ran no case checked nothing: not a pass.
+    return 1 if report["groups"] or not report["cases"] else 0
 
 
 if __name__ == "__main__":
