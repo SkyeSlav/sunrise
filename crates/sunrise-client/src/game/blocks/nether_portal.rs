@@ -1820,9 +1820,10 @@ impl Game<'_> {
         // Construction and join callbacks can insert, cancel, or remove rows.
         // Resolve the surviving arrival by the resident UUID index after them.
         let Some(entity) = uuid.and_then(|uuid| {
-            self.entity_by_uuid(mod_api::EntityUuid(
-                sunrise_client::lan::playerdata::ints_uuid(uuid),
-            ))
+            self.level_entity_by_uuid(
+                self.native_current_level()?,
+                mod_api::EntityUuid(sunrise_client::lan::playerdata::ints_uuid(uuid)),
+            )
         }) else {
             return;
         };
@@ -2555,7 +2556,11 @@ mod tests {
                     };
                     game.spawn_teleported_entity(chunk, pending.tag.into(), Some(state));
                 }
-                assert!(game.entity_by_uuid(mod_api::EntityUuid(583)).is_some());
+                let level = game.native_current_level().unwrap();
+                assert!(
+                    game.level_entity_by_uuid(level, mod_api::EntityUuid(583))
+                        .is_some()
+                );
                 let records = game.entity_chunks(&std::collections::HashSet::from([chunk]), false);
                 assert_eq!(records[0].1.len(), 1);
                 assert_eq!(

@@ -20,6 +20,7 @@ fn kind() -> Arc<MobType> {
         layer: None,
     };
     Arc::new(MobType {
+        type_key: Default::default(),
         id: "minecraft:cow".into(),
         species: Species::Cow,
         width: 0.9,

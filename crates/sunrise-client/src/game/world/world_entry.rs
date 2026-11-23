@@ -73,11 +73,19 @@ impl Game<'_> {
             Some(PendingWorldEntry::Server {
                 address,
                 name,
+                list_name,
                 cookies,
                 lan,
                 realm,
             }) => {
-                self.connect_server_with_options(&address, &name, cookies, lan, realm)?;
+                self.connect_server_with_options(
+                    &address,
+                    &name,
+                    cookies,
+                    lan,
+                    realm,
+                    list_name.as_deref(),
+                )?;
             }
             Some(PendingWorldEntry::StudioReplay(path)) => {
                 let path_str = path.to_string_lossy().to_string();

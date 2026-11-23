@@ -38,7 +38,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-const USAGE: &str = "usage: cargo run -p xtask -- package [--no-game] BINARY OUTDIR | package-server [--no-game] ENGINE OUTDIR | mod-api [notes|counterparts] | tokens | icons | perf-wasm | mixins-tool release | mixins-tool patch SOURCE | mixins-tool identity TARGET | sdk-index DIST COMMIT DATE [--nightly NAME] [--previous BUILD DIFF]";
+const USAGE: &str = "usage: cargo run -p xtask -- package [--no-game] BINARY OUTDIR | package-server [--no-game] ENGINE OUTDIR | mod-api [notes|counterparts|reference] | tokens | icons | perf-wasm | mixins-tool release | mixins-tool patch SOURCE | mixins-tool identity TARGET | sdk-index DIST COMMIT DATE [--nightly NAME] [--previous BUILD DIFF]";
 
 /// What the release folder takes from the repository at HEAD, as `git archive` writes it.
 const ARCHIVED: [&str; 6] = [
@@ -75,6 +75,7 @@ fn main() -> ExitCode {
         [task, counterparts] if task == "mod-api" && counterparts == "counterparts" => {
             mod_api::counterparts()
         }
+        [task, reference] if task == "mod-api" && reference == "reference" => mod_api::reference(),
         [task, dist, commit, date, options @ ..] if task == "sdk-index" => {
             sdk_index(Path::new(dist), commit, date, options)
         }

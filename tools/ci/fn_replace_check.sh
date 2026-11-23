@@ -243,12 +243,23 @@ fill 0 100 0 9 100 9 minecraft:hopper[facing=east]{Items:[{Slot:0b,id:"minecraft
   if [[ " ${FNR_MODS:-alpha beta} " == *" loop_second "* ]]; then
     hoppers+=$'\nfill 0 100 12 9 100 12 fnr_loop_second:counter'
   fi
+  # The lower mod's `server_ai` row cancels the step of the piglin named fnr_cancel (angry, its
+  # zombification counting) and lets fnr_control's run: one stays as it was, the other converts.
+  if [[ " ${FNR_MODS:-alpha beta} " == *" lower "* ]]; then
+    hoppers+=$'\nforceload add 0 32\nfill 0 99 32 8 99 36 minecraft:stone'
+    hoppers+=$'\nsummon minecraft:piglin 2.5 100 34.5 {CustomName:"fnr_cancel",PersistenceRequired:1b,TimeInOverworld:200,Brain:{memories:{"minecraft:angry_at":{value:[I;1,2,3,4],ttl:300L}}}}'
+    hoppers+=$'\nsummon minecraft:piglin 6.5 100 34.5 {CustomName:"fnr_control",PersistenceRequired:1b,TimeInOverworld:280}'
+  fi
   (sleep 30; echo "$hoppers"; sleep 5; echo "tick rate 40"; sleep 3; echo "tick rate 13"; sleep 3; echo "tick query"; sleep 3; echo "stop"; sleep 20) |
     (cd "$run" && env "${env_vars[@]}" timeout 180 "$scratch/engine/sunrise-engine" --resources "$(realpath "$resources")" \
       --dedicated --nogui) > "$scratch/server.log" 2>&1 || true
   grep -F 'fnr:' "$scratch/server.log"
   if [[ " ${FNR_MODS:-alpha beta} " == *" alpha "* ]]; then
     grep -F 'OVERWRITE by fnr_alpha' "$scratch/server.log"
+  fi
+  if [[ " ${FNR_MODS:-alpha beta} " == *" lower "* ]]; then
+    grep -F 'fnr: lower server_ai cancelled fnr_cancel 40 steps, unchanged: true' "$scratch/server.log"
+    grep -F 'fnr: lower server_ai fnr_control converted' "$scratch/server.log"
   fi
   if [[ " ${FNR_MODS:-alpha beta} " == *" loop "* ]]; then
     slots=2

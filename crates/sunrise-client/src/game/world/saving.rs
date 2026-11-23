@@ -8,6 +8,13 @@ use std::{
 };
 use sunrise_client::{Result, hud::HudBatch};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ClientQuit {
+    Running,
+    Requested,
+    Stopping,
+}
+
 pub(super) struct ClosingSave {
     pub quit: bool,
     close: bool,
@@ -45,12 +52,40 @@ impl Game<'_> {
                 mod_api::TicketController::from_slot(slot).map(|c| c.id())
             })
     }
+
+    /// `Minecraft.stop`: record the request without reentering the client from a hook.
+    pub(super) fn request_client_quit(&self) -> bool {
+        if !self.native_window()
+            || self.client_quit.get() != ClientQuit::Running
+            || sunrise_threads::stop_requests() > 0
+        {
+            return false;
+        }
+        self.client_quit.set(ClientQuit::Requested);
+        true
+    }
+
     pub(super) fn begin_closing_save(&mut self, quit: bool) -> Result<()> {
         if quit {
+            self.client_quit.set(ClientQuit::Stopping);
             self.close_client_tasks();
         }
         if let Some(save) = &mut self.pending_save {
             save.quit |= quit;
+            return Ok(());
+        }
+        // A world still loading has no client in it yet: its server stops and is joined
+        // through the same fallible path as a running one, before the loop may end.
+        if quit && let Some(starting) = self.integrated_starting.take() {
+            starting.handle.request_stop();
+            self.integrated = Some(starting.handle);
+            self.pending_save = Some(ClosingSave {
+                quit,
+                close: true,
+                reply: None,
+                started: Instant::now(),
+                stage: Stage::Server,
+            });
             return Ok(());
         }
         if self.title.is_some() || self.saved_for_exit {

@@ -2668,6 +2668,43 @@ mod gui_draw_boundary_tests {
     }
 }
 
+pub(in crate::game) fn placement_source_into_engine(
+    source: mod_api::PlacementSource,
+) -> Option<sunrise_world::level::PlacementSource> {
+    match source {
+        mod_api::PlacementSource::Player {
+            yaw,
+            pitch,
+            sneaking,
+        } if yaw.is_finite() && pitch.is_finite() => {
+            Some(sunrise_world::level::PlacementSource::Player {
+                yaw,
+                pitch,
+                sneaking,
+            })
+        }
+        mod_api::PlacementSource::Directional { direction } => {
+            Some(sunrise_world::level::PlacementSource::Directional { direction })
+        }
+        _ => None,
+    }
+}
+
+/// A directional placement question vanilla throws on, as `LevelRef::state_for_placement`
+/// refuses it.
+pub(in crate::game) fn placement_refusal_into_api(
+    refusal: sunrise_world::level::DirectionalRefusal,
+) -> mod_api::PlacementStateError {
+    match refusal {
+        sunrise_world::level::DirectionalRefusal::NoVerticalLook => {
+            mod_api::PlacementStateError::NoVerticalLook
+        }
+        sunrise_world::level::DirectionalRefusal::ReplacingClickedCycle => {
+            mod_api::PlacementStateError::ReplacingClickedCycle
+        }
+    }
+}
+
 impl TryIntoApi for sunrise_world::level::PlacementContext {
     type Api = mod_api::PlacementContext;
     type Error = StackReadError;
@@ -2681,9 +2718,20 @@ impl TryIntoApi for sunrise_world::level::PlacementContext {
         snapshot.hit_pos = self.hit_pos;
         snapshot.hit = [self.hit.x, self.hit.y, self.hit.z];
         snapshot.inside = self.inside;
-        snapshot.yaw = self.yaw;
-        snapshot.pitch = self.pitch;
-        snapshot.sneaking = self.sneaking;
+        snapshot.source = match self.source {
+            sunrise_world::level::PlacementSource::Player {
+                yaw,
+                pitch,
+                sneaking,
+            } => mod_api::PlacementSource::Player {
+                yaw,
+                pitch,
+                sneaking,
+            },
+            sunrise_world::level::PlacementSource::Directional { direction } => {
+                mod_api::PlacementSource::Directional { direction }
+            }
+        };
         snapshot.replace_clicked = self.replace_clicked;
         Ok(snapshot)
     }
@@ -2693,18 +2741,20 @@ impl TryIntoApi for sunrise_world::level::PlacementContext {
 mod placement_snapshot_tests {
     use super::*;
     #[test]
-    fn placement_keeps_click_view_flags_and_empty_hand_without_fallback() {
+    fn placement_keeps_click_source_flags_and_empty_hand_without_fallback() {
         install_parts(&[]).unwrap();
-        mod_api::__private::resolve_items(["minecraft:stone"]).unwrap();
+        mod_api::__private::resolve_items(["minecraft:stone", "minecraft:shulker_box"]).unwrap();
         let mut engine = sunrise_world::level::PlacementContext {
             pos: sunrise_core::position::BlockPos::new(1, 2, 3),
             hit_pos: sunrise_core::position::BlockPos::new(4, 5, 6),
             face: sunrise_core::geometry::Direction::Up,
             hit: sunrise_core::geometry::Vec3::new(4.25, 5.5, 6.75),
             inside: true,
-            yaw: -45.0,
-            pitch: 90.0,
-            sneaking: true,
+            source: sunrise_world::level::PlacementSource::Player {
+                yaw: -45.0,
+                pitch: 90.0,
+                sneaking: true,
+            },
             item: "minecraft:stone".into(),
             replace_clicked: true,
         };
@@ -2717,19 +2767,84 @@ mod placement_snapshot_tests {
         assert_eq!(snapshot.face, sunrise_core::geometry::Direction::Up);
         assert_eq!(snapshot.hit, [4.25, 5.5, 6.75]);
         assert!(snapshot.inside);
-        assert_eq!(snapshot.yaw, -45.0);
-        assert_eq!(snapshot.pitch, 90.0);
-        assert!(snapshot.sneaking && snapshot.replace_clicked);
+        assert_eq!(
+            snapshot.source,
+            mod_api::PlacementSource::Player {
+                yaw: -45.0,
+                pitch: 90.0,
+                sneaking: true,
+            }
+        );
+        assert!(snapshot.replace_clicked);
         assert_eq!(
             snapshot.item,
             mod_api::__private::item_key("minecraft:stone")
         );
+
+        // Dispenser directional placement preserves the dispenser's facing.
+        let dispenser_engine = sunrise_world::level::PlacementContext {
+            pos: sunrise_core::position::BlockPos::new(10, 64, 2),
+            hit_pos: sunrise_core::position::BlockPos::new(10, 64, 2),
+            face: sunrise_core::geometry::Direction::Up,
+            hit: sunrise_core::geometry::Vec3::new(10.5, 64.0, 2.5),
+            inside: false,
+            source: sunrise_world::level::PlacementSource::Directional {
+                direction: sunrise_core::geometry::Direction::East,
+            },
+            item: "minecraft:shulker_box".into(),
+            replace_clicked: true,
+        };
+        let dispenser_snapshot = dispenser_engine.try_into_api().unwrap();
+        assert_eq!(
+            dispenser_snapshot,
+            mod_api::PlacementContext::directional(
+                sunrise_core::position::BlockPos::new(10, 64, 2),
+                sunrise_core::geometry::Direction::East,
+                sunrise_core::geometry::Direction::Up,
+                mod_api::__private::item_key("minecraft:shulker_box"),
+            )
+        );
+
+        // Falling-block directional check: Directional { Down } with empty hand.
+        engine.source = sunrise_world::level::PlacementSource::Directional {
+            direction: sunrise_core::geometry::Direction::Down,
+        };
         engine.item.clear();
-        let mut empty = snapshot;
-        empty.item = None;
-        assert_eq!(engine.try_into_api(), Ok(empty));
+        let mut falling = snapshot;
+        falling.source = mod_api::PlacementSource::Directional {
+            direction: sunrise_core::geometry::Direction::Down,
+        };
+        falling.item = None;
+        assert_eq!(engine.try_into_api(), Ok(falling));
+
         engine.item = "missing:item".into();
         assert_eq!(engine.try_into_api(), Err(StackReadError::UnknownItem));
+
+        // Non-finite player orientation is refused at the mod boundary.
+        assert_eq!(
+            placement_source_into_engine(mod_api::PlacementSource::Player {
+                yaw: f32::NAN,
+                pitch: 0.0,
+                sneaking: false,
+            }),
+            None
+        );
+        assert_eq!(
+            placement_source_into_engine(mod_api::PlacementSource::Player {
+                yaw: 0.0,
+                pitch: f32::INFINITY,
+                sneaking: true,
+            }),
+            None
+        );
+        assert_eq!(
+            placement_source_into_engine(mod_api::PlacementSource::Directional {
+                direction: sunrise_core::geometry::Direction::Down,
+            }),
+            Some(sunrise_world::level::PlacementSource::Directional {
+                direction: sunrise_core::geometry::Direction::Down,
+            })
+        );
     }
 }
 
@@ -2812,9 +2927,15 @@ pub(in crate::game) fn install_parts(mods: &[mod_api::ModEntry]) -> Result<(), V
 }
 #[cfg(test)]
 pub(in crate::game) fn register_game_keys(ids: impl IntoIterator<Item = String>) {
+    let mod_fluids = sunrise_world::fluid::mod_fluids();
+    let mod_fluids: Vec<&str> = mod_fluids
+        .iter()
+        .flat_map(|(_, fluid)| [fluid.id.as_str(), fluid.flowing_id.as_str()])
+        .collect();
     with_rule_schema(|schema| {
         mod_platform::__private::part_tests::register_game_keys(
             ids,
+            &mod_fluids,
             schema,
             super::native_dimensions::valid_shape,
         )

@@ -84,9 +84,11 @@ fn placement_preview_checks_obstruction_without_changing_the_level() {
             face: sunrise_core::geometry::Direction::Up,
             hit: sunrise_core::geometry::Vec3::new(0.5, 1.0, 0.5),
             inside: false,
-            yaw: 0.0,
-            pitch: 45.0,
-            sneaking: false,
+            source: sunrise_world::level::PlacementSource::Player {
+                yaw: 0.0,
+                pitch: 45.0,
+                sneaking: false,
+            },
             item: item.into(),
             can_use_game_master_blocks: false,
         };

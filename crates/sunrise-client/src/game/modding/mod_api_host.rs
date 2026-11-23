@@ -892,6 +892,29 @@ impl mod_api::AttachmentHost for super::native_hooks::HitLevel<'_> {
         let _ = access;
         self.0.attachments(holder)
     }
+    /// The hit's victim and causing entity lend their maps for reading only.
+    fn read_only_attachments(
+        &self,
+        holder: mod_api::Holder,
+    ) -> Option<Result<Option<&mod_api::Attachments>, mod_api::AttachmentError>> {
+        use mod_api::__private::LivingParty;
+        let lent = [LivingParty::Victim, LivingParty::Causing]
+            .into_iter()
+            .any(|party| {
+                self.party_body(party)
+                    .and_then(super::native_living_body::body_holder)
+                    == Some(holder)
+            });
+        if !lent {
+            return None;
+        }
+        let reads = self.0.reads()?;
+        Some(Ok(match holder {
+            mod_api::Holder::Entity(id) => reads.entity_attachments.and_then(|maps| maps.get(&id)),
+            mod_api::Holder::Player(_) => reads.player_attachments,
+            _ => None,
+        }))
+    }
 }
 
 impl mod_api::LevelRandomHost for super::native_hooks::HitLevel<'_> {
@@ -955,6 +978,123 @@ impl mod_api::HitHost for super::native_hooks::HitLevel<'_> {
             .2
             .next_int_bound(bound)
             .ok()
+    }
+    fn victim(&self) -> Option<mod_api::LivingView<'_>> {
+        mod_api::LivingView::new(self, mod_api::__private::LivingParty::Victim)
+    }
+    fn causing(&self) -> Option<mod_api::LivingView<'_>> {
+        mod_api::LivingView::new(self, mod_api::__private::LivingParty::Causing)
+    }
+}
+
+impl super::native_hooks::HitLevel<'_> {
+    /// The body `party` names in this hit: the victim the hurt code lends, or the causer its
+    /// site lends when it is the hook's causing entity
+    /// ([`DamageLevel::causing_body`](sunrise_client::health::DamageLevel::causing_body)).
+    fn party_body(
+        &self,
+        party: mod_api::__private::LivingParty,
+    ) -> Option<sunrise_client::health::LivingBody<'_>> {
+        let body = match party {
+            mod_api::__private::LivingParty::Victim => self.0.victim(),
+            mod_api::__private::LivingParty::Causing => self.0.causing_body(),
+            _ => None,
+        }?;
+        Some(match body {
+            // A lent attacking player is the player in place, whose UUID the reads know.
+            sunrise_client::health::LivingBody::Player(mut p) if p.uuid.is_none() => {
+                p.uuid = self.0.reads().and_then(|reads| reads.player_uuid);
+                sunrise_client::health::LivingBody::Player(p)
+            }
+            body => body,
+        })
+    }
+}
+
+/// A hit's victim and causer, read through the same functions as the `LivingRef` reads.
+impl mod_api::__private::LivingReads for super::native_hooks::HitLevel<'_> {
+    fn living_entity(&self, party: mod_api::__private::LivingParty) -> Option<mod_api::EntityRef> {
+        let reads = self.0.reads()?;
+        let id = match self.party_body(party)? {
+            sunrise_client::health::LivingBody::Mob(m) => m.id,
+            sunrise_client::health::LivingBody::Player(p) => u32::try_from(p.id).ok()?,
+            sunrise_client::health::LivingBody::Stand(s)
+            | sunrise_client::health::LivingBody::Dragon(s) => s.id,
+        };
+        Some(mod_api::EntityRef::new(reads.epoch, id))
+    }
+    fn living_kind(
+        &self,
+        party: mod_api::__private::LivingParty,
+    ) -> Option<mod_api::EntityTypeKey> {
+        let keys = self.0.reads()?.living_types;
+        super::native_living_body::body_kind(self.party_body(party)?, keys)
+    }
+    fn living_holder(&self, party: mod_api::__private::LivingParty) -> Option<mod_api::Holder> {
+        super::native_living_body::body_holder(self.party_body(party)?)
+    }
+    fn living_health(&self, party: mod_api::__private::LivingParty) -> Option<f32> {
+        super::native_living_body::body_health(self.party_body(party)?)
+    }
+    fn living_absorption(&self, party: mod_api::__private::LivingParty) -> Option<f32> {
+        super::native_living_body::body_absorption(self.party_body(party)?)
+    }
+    fn living_max_health(&self, party: mod_api::__private::LivingParty) -> Option<f32> {
+        super::native_living_body::body_max_health(self.party_body(party)?)
+    }
+    fn living_effect(
+        &self,
+        party: mod_api::__private::LivingParty,
+        effect: mod_api::EffectKey,
+    ) -> Option<mod_api::ActiveEffect> {
+        let def = mod_api::__private::effect_index(effect)
+            .and_then(sunrise_client_core::potions::effect_by_index)?;
+        super::native_living_body::body_effect(self.party_body(party)?, def.index)
+    }
+    fn living_effects(
+        &self,
+        party: mod_api::__private::LivingParty,
+    ) -> Option<Vec<mod_api::ActiveEffect>> {
+        super::native_living_body::body_effects(self.party_body(party)?)
+    }
+    fn living_potion_affected(
+        &self,
+        party: mod_api::__private::LivingParty,
+        effect: mod_api::EffectKey,
+    ) -> bool {
+        mod_api::__private::effect_index(effect)
+            .and_then(sunrise_client_core::potions::effect_by_index)
+            .zip(self.party_body(party))
+            .is_some_and(|(def, body)| {
+                super::native_living_body::body_potion_affected(body, def.index)
+            })
+    }
+    fn living_attribute_value(
+        &self,
+        party: mod_api::__private::LivingParty,
+        id: &str,
+    ) -> Option<f64> {
+        super::native_living_body::body_attribute(
+            self.party_body(party)?,
+            self.0.reads()?.attributes,
+            id,
+            sunrise_world::attribute_map::ValueKind::Computed,
+        )
+    }
+    fn living_hand_item(
+        &self,
+        party: mod_api::__private::LivingParty,
+        hand: mod_api::Hand,
+        read: &mut dyn for<'a> FnMut(mod_api::ItemStackView<'a>),
+    ) -> Option<()> {
+        let stack = super::native_living_body::body_equipment(
+            self.party_body(party)?,
+            super::native_living_refs::hand_slot(hand),
+        )?;
+        super::native_living_refs::lend_equipment(stack, read)
+    }
+    fn living_no_ai(&self, party: mod_api::__private::LivingParty) -> Option<bool> {
+        super::native_living_body::body_no_ai(self.party_body(party)?)
     }
 }
 

@@ -13,6 +13,11 @@
 // integers the CPU computed, and facing compares keys that order as the floats
 // the CPU compares. `cull` leaves sections fading in or out to the CPU
 // (`FADING`).
+// A second table of records runs through the same entry points: sourced
+// geometry's meshes (gfx/sourced_geometry/gpu.rs), cells of any size past the
+// render distance. Its parameters switch the view-distance test off
+// (`NO_RANGE`) and cave culling's graph (no `REACH`), and each record's box is
+// in units of its own (`BOX_SHIFT`).
 // Frames that occlude (`OCCLUDE`, gpu_occlusion.wgsl) draw in two phases, each
 // in id order: `cull` leaves to phase 2 the sections whose box the last test
 // did not see and lists the boxes to test; after the test, `count2`, `scan2`
@@ -36,7 +41,7 @@ struct Params {
     cam_z: i32,
     // The tables' first cell: x, y, z, 0.
     first: vec4<i32>,
-    // Their entries along x, y and z, and 0.
+    // Their entries along x, y and z, and the f32 bits of the instances' UV step.
     cells: vec4<u32>,
     // Each frustum plane's w term, its margin in, then 0, 0.
     w: array<vec4<i32>, 2>,
@@ -59,11 +64,11 @@ struct Params {
 // gpu_culling.rs `Record`.
 struct Section {
     // Section x, y (from the level's bottom), z, and its arena page (-1: a
-    // free id).
+    // free id). In the second table, a cell's corner in sections.
     key: vec4<i32>,
     // The first vertex of its solid quads, its solid quads (where its last
     // bucket by facing side ends), its box (gpu_culling.rs `rounded_box`), then
-    // its flags (`FADING`).
+    // its flags (`FADING`, `BOX_SHIFT`).
     a: vec4<u32>,
     // Where its first six buckets end (mesher/sides.rs `BUCKETS`): +X, +Z, the
     // other bucket, +Y, -Z, -X.
@@ -105,8 +110,6 @@ struct Update {
 // a bit each (32 a word, lowest first).
 @group(0) @binding(8) var<storage, read> reached_cells: array<u32>;
 
-// gfx.rs `section_instance`'s w for a whole section: 1 / mesher::UV_STEPS.
-const STEP_BITS: u32 = 0x38000000u;
 // Workgroups along x when the ids need more than one row of them.
 const ROW: u32 = 65535u;
 // Ids per block.
@@ -130,6 +133,11 @@ const FULL_SECTION_BOX: u32 = 0x318C2108u;
 const REACH: u32 = 1u;
 // In a section's `a.w`: it fades in or out, and the CPU draws it with its fade.
 const FADING: u32 = 1u;
+// In its `a.w` too: its box's units are 1 << shift blocks, the shift in bits 8-11
+// along x and z, in bits 12-15 along y (0 for a section: whole blocks).
+const BOX_SHIFT: u32 = 8u;
+// In `params.flags`: the columns are not limited to the render distance.
+const NO_RANGE: u32 = 64u;
 // In `params.flags`: solid quads facing away from the eye are left out, its
 // keys in `tables` from `params.eyes`.
 const EYE: u32 = 4u;
@@ -196,6 +204,9 @@ fn region(page: u32) -> vec2<u32> {
 // streaming.rs `in_view_distance` around the camera's column. A gap at or past
 // the distance cannot pass, so testing it first keeps the squares in range.
 fn near(x: i32, z: i32) -> bool {
+    if (params.flags & NO_RANGE) != 0u {
+        return true;
+    }
     let r = params.near;
     let gx = max(abs(x - params.cam_x) - 1, 0);
     let gz = max(abs(z - params.cam_z) - 1, 0);
@@ -227,10 +238,12 @@ fn term(at: u32) -> i32 {
 
 // gfx.rs `Frustum::intersects` for the box `b` of the section in cell `c` of the
 // tables, in integers (gpu_culling.rs `tables`): it keeps every box the CPU keeps.
-fn in_frustum(c: vec3<u32>, b: u32) -> bool {
+fn in_frustum(c: vec3<u32>, b: u32, shift: u32) -> bool {
     if (b & UNBOUNDED) != 0u {
         return true;
     }
+    let sx = (shift >> BOX_SHIFT) & 15u;
+    let sy = (shift >> (BOX_SHIFT + 4u)) & 15u;
     let nx = params.cells.x;
     let ny = params.cells.y;
     let n = nx + ny + params.cells.z;
@@ -244,7 +257,8 @@ fn in_frustum(c: vec3<u32>, b: u32) -> bool {
         let code_terms = 7u * n + 96u * j;
         let sum = params.w[j / 4u][j % 4u] + term(origin_terms + c.x)
             + term(origin_terms + nx + c.y) + term(origin_terms + nx + ny + c.z)
-            + term(code_terms + kx) + term(code_terms + 32u + ky) + term(code_terms + 64u + kz);
+            + (term(code_terms + kx) << sx) + (term(code_terms + 32u + ky) << sy)
+            + (term(code_terms + 64u + kz) << sx);
         if sum < 0 {
             return false;
         }
@@ -378,14 +392,14 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
         skip_frustum = state == 2u;
         test_box = FULL_SECTION_BOX;
     }
-    if !skip_frustum && !in_frustum(c, test_box) {
+    if !skip_frustum && !in_frustum(c, test_box, s.a.w) {
         return;
     }
     // Kept, whether or not a quad of it can face the eye.
     atomicAdd(&counts[0], 1u);
     let nx = params.cells.x;
     let ny = params.cells.y;
-    let origin = vec4<u32>(tables[c.x], tables[nx + c.y], tables[nx + ny + c.z], STEP_BITS);
+    let origin = vec4<u32>(tables[c.x], tables[nx + c.y], tables[nx + ny + c.z], params.cells.w);
     origins[id] = origin;
     // gfx.rs `facing_runs`: the runs of its buckets that can face the eye, an
     // empty bucket breaking none, a draw each; without an eye, its solid quads.

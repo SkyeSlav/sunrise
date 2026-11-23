@@ -213,6 +213,7 @@ mod tests {
 
     fn kind(id: &str, species: Species) -> Arc<MobType> {
         Arc::new(MobType {
+            type_key: Default::default(),
             shadow: None,
             id: id.into(),
             species,

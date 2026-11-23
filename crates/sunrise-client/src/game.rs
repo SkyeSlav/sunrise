@@ -99,6 +99,14 @@ macro_rules! game_side {
             items: $s.res.items(),
             damage_types: &$s.health_resources.damage,
             player_equipment: acting_equipment!($s),
+            hit_borrows: $crate::game::native_surface::HitBorrows {
+                living_types: $s.res.living_type_keys(),
+                attributes: &$s.motion.attributes,
+                player_effects: &$s.potions.effects,
+                player_uuid: $s.lan_acting_uuid,
+                player_attachments: &$s.player_state.attachments,
+                entity_attachments: &*$s.entity_attachments,
+            },
             tag_items: if $s.options.execution_role.is_client() {
                 $s.remote.as_ref().and_then(|remote| remote.tags.as_ref())
             } else {
@@ -356,6 +364,9 @@ mod container_layout;
 mod container_loot;
 #[path = "game/runtime/control.rs"]
 mod control;
+#[cfg(test)]
+#[path = "game/mobs/conversion_place_tests.rs"]
+mod conversion_place_tests;
 #[path = "game/mobs/copper_golems.rs"]
 mod copper_golems;
 #[cfg(test)]
@@ -1320,6 +1331,9 @@ mod native_hit_effects;
 #[cfg(test)]
 #[path = "game/modding/native_hit_sounds_tests.rs"]
 mod native_hit_sounds_tests;
+#[cfg(test)]
+#[path = "game/modding/native_hit_view_tests.rs"]
+mod native_hit_view_tests;
 mod native_hooks;
 #[path = "game/modding/native_hotbar_slot.rs"]
 mod native_hotbar_slot;
@@ -1421,6 +1435,8 @@ mod native_live_holder_tests;
 mod native_living_absorption;
 #[path = "game/modding/native_living_blocking.rs"]
 mod native_living_blocking;
+#[path = "game/modding/native_living_body.rs"]
+mod native_living_body;
 #[path = "game/modding/native_living_effects.rs"]
 mod native_living_effects;
 #[path = "game/modding/native_living_flags.rs"]
@@ -1599,6 +1615,8 @@ mod native_player_visibility;
 mod native_player_visibility_tests;
 #[path = "game/modding/native_portal_destination.rs"]
 mod native_portal_destination;
+#[path = "game/modding/native_profiles.rs"]
+mod native_profiles;
 #[path = "game/modding/native_projectile_launch.rs"]
 mod native_projectile_launch;
 #[cfg(test)]
@@ -1835,6 +1853,9 @@ mod pickups;
 #[cfg(test)]
 #[path = "game/mobs/piglin_admire_tests.rs"]
 mod piglin_admire_tests;
+#[cfg(test)]
+#[path = "game/mobs/piglin_conversion_tests.rs"]
+mod piglin_conversion_tests;
 #[path = "game/mobs/piglins.rs"]
 mod piglins;
 #[path = "game/blocks/piston_carry.rs"]
@@ -3018,6 +3039,9 @@ struct WorldRest {
     recipes: Recipes,
     transformers: sunrise_client::block_transform::Transformers,
     mob_types: HashMap<String, Arc<MobType>>,
+    /// The registry keys of the player, the armor stand and the dragon, resolved with these
+    /// resources as each mob type's own key is ([`MobType::type_key`]).
+    living_type_keys: sunrise_client::health::LivingTypeKeys,
     mob_data: sunrise_client::mobs::MobData,
     /// Complete pre-creation facts for the registered entity types.
     spawner_types: HashMap<String, sunrise_client::mobs::spawner::SpawnerTypeFacts>,
@@ -4222,6 +4246,8 @@ struct Game<'a> {
     user_input: std::cell::Cell<bool>,
     /// Select All in the append-only text fields.
     text_selection: sunrise_client::clipboard::AppendSelection,
+    /// The client loop consumes a mod's quit request outside the calling hook.
+    client_quit: std::cell::Cell<saving::ClientQuit>,
     /// The world was saved for the application ending (`save_for_exit`).
     saved_for_exit: bool,
     pending_save: Option<saving::ClosingSave>,
@@ -4797,6 +4823,64 @@ impl Game<'_> {
             sunrise_core::LevelKey::parse(dim.id()).unwrap_or(sunrise_core::LevelKey::OVERWORLD),
         )
     }
+    /// Sets up the same block-entity scene for both world draw paths.
+    fn with_block_entity_scene(
+        &self,
+        camera: glam::DVec3,
+        partial: f32,
+        dynamic_visible: &dyn Fn([i32; 3], u32, glam::DVec3, glam::DVec3) -> bool,
+        draw: impl FnOnce(&BlockEntityScene<'_>),
+    ) {
+        let lid = |p: [i32; 3]| self.chest_lid(p, partial);
+        let anim = |p: [i32; 3]| self.block_anim(p, partial);
+        let substitute = |text: &sunrise_client::text::Text| self.substitute_inline_images(text);
+        let inline_sprite = |atlas: &str, sprite: &str| self.gui.atlas.inline_sprite(atlas, sprite);
+        use block_entity_render::SignOutline;
+        let sign_outline =
+            if self.player.is_some() && self.camera_type.is_first_person() && self.scoping() {
+                SignOutline::FirstPersonScope
+            } else {
+                self.camera_subject().map_or(SignOutline::None, |subject| {
+                    SignOutline::CameraEntity(glam::DVec3::from_array(subject.camera.position))
+                })
+            };
+        let scene = BlockEntityScene {
+            camera,
+            sign_outline,
+            orientation: self.camera_orientation(),
+            anim: &anim,
+            texts: None,
+            partial,
+            game_time: self.world.game_time,
+            max_y: self.world.shape.max_y() - 1,
+            world: &self.world,
+            sprites: &self.gui.atlas.sprites,
+            emissive: &self.gui.atlas.emissive,
+            translucent_sprites: &self.gui.atlas.translucent,
+            atlas_revision: self.gui.atlas.revision,
+            nether: self.nether_lighting(),
+            lid: &lid,
+            sign: &|p| match self.world.block_entities.get(&(p[0], p[1], p[2])) {
+                Some(BlockEntity::Sign(sign)) => Some(sign),
+                _ => None,
+            },
+            inline_images: self.inline_images_revision().map(|revision| {
+                block_entity_render::SignInlineImages {
+                    revision,
+                    substitute: &substitute,
+                    sprite: &inline_sprite,
+                }
+            }),
+            banner: &|p| self.banner_layers_at(p),
+            skull: &|p| self.skull_skin_at(p),
+            glyph: &|c| self.gui.atlas.glyph_cell(c),
+            glyphs: self.gui.atlas.font.epoch(),
+            font: Some(&self.gui.atlas.font),
+            dynamic_visible: Some(dynamic_visible),
+        };
+        draw(&scene);
+    }
+
     fn eye_position(&self) -> Option<[f64; 3]> {
         let p = self.player.as_ref()?;
         Some([
@@ -7224,6 +7308,22 @@ impl Game<'_> {
         self.hud_with_reload(size, None)
     }
 
+    /// Aligns `locator_camera` with this frame's render camera before HUD extraction
+    /// (`GameRenderer.renderLevel` sets `mainCamera` before `Gui.render`).
+    pub(in crate::game) fn extract_frame_hud(
+        &mut self,
+        size: [u32; 2],
+        reload_overlay: Option<(f32, sunrise_client::level_loading::OverlayFade)>,
+        title: bool,
+        camera: [f64; 3],
+        view_yaw: f32,
+        view_pitch: f32,
+        fov_degrees: f32,
+    ) -> HudBatch {
+        self.locator_camera = (!title).then_some((camera, view_yaw, view_pitch, fov_degrees));
+        self.hud_with_reload(size, reload_overlay)
+    }
+
     fn hud_with_reload(
         &mut self,
         size: [u32; 2],
@@ -7445,7 +7545,7 @@ impl Game<'_> {
             } else {
                 0
             };
-            let attack = (indicator == 1 || indicator == 2).then(|| {
+            let crosshair_attack = (indicator == 1).then(|| {
                 let speed = self.main_hand_attack_speed();
                 (
                     self.hand_strength.scale(0.0, speed),
@@ -7461,7 +7561,6 @@ impl Game<'_> {
                     && !g.debug_crosshair()
                     && !g.overlay_holds_view()
                 {
-                    let crosshair_attack = attack.filter(|_| indicator == 1);
                     let full = crosshair_attack.is_some_and(|(strength, delay)| {
                         hud_layout::full_attack_indicator(strength, delay, g.crosshair_living())
                     });
@@ -7487,16 +7586,29 @@ impl Game<'_> {
                 }
                 if spectator {
                     g.draw_spectator_hotbar(batch, g.own_player_is_spectator());
-                } else if let Some((inputs, source)) = g.camera_hotbar(
-                    camera,
-                    attack
-                        .filter(|_| indicator == 2)
-                        .map(|(strength, _)| strength),
-                ) {
-                    let draws = hud_layout::hotbar(wi, hi, &inputs);
+                } else if let Some((inputs, source)) = g.camera_hotbar(camera) {
+                    let mut draws = hud_layout::hotbar(wi, hi, &inputs);
                     // `extractSlot` for each item, in order, on the path `gui_paint` takes.
                     let mut items = crate::game::gui_paint_items::HotbarItems { game: g, source };
                     hud_layout::paint_items(batch, &g.gui.atlas, &draws, &mut items);
+                    if indicator == 2 {
+                        // Items and arm follow the camera; the charge belongs to the local player.
+                        let mut progress = g.hand_strength.scale(0.0, g.main_hand_attack_speed());
+                        g.native_hotbar_attack_indicator_progress(
+                            native_hooks::HotbarAttackIndicatorProgressCall {
+                                progress: &mut progress,
+                            },
+                        );
+                        let start = draws.len();
+                        hud_layout::hotbar_attack_indicator(
+                            wi,
+                            hi,
+                            inputs.right_handed,
+                            progress,
+                            &mut draws,
+                        );
+                        hud_layout::paint(batch, &g.gui.atlas, &draws[start..]);
+                    }
                 }
             });
             self.gui_layer(VanillaGuiLayer::Effects, &mut batch, &mut |g, batch| {
@@ -8445,135 +8557,103 @@ impl Game<'_> {
                 );
                 !self.block_entity_occluded(bounds)
             };
-            let lid = |p: [i32; 3]| self.chest_lid(p, alpha as f32);
-            let anim = |p: [i32; 3]| self.block_anim(p, alpha as f32);
-            let substitute =
-                |text: &sunrise_client::text::Text| self.substitute_inline_images(text);
-            let inline_sprite =
-                |atlas: &str, sprite: &str| self.gui.atlas.inline_sprite(atlas, sprite);
-            let scene = BlockEntityScene {
-                camera,
-                orientation: self.camera_orientation(),
-                anim: &anim,
-                texts: None,
-                partial: alpha as f32,
-                game_time: self.world.game_time,
-                max_y: self.world.shape.max_y() - 1,
-                world: &self.world,
-                sprites: &self.gui.atlas.sprites,
-                emissive: &self.gui.atlas.emissive,
-                translucent_sprites: &self.gui.atlas.translucent,
-                atlas_revision: self.gui.atlas.revision,
-                nether: self.nether_lighting(),
-                lid: &lid,
-                sign: &|p| match self.world.block_entities.get(&(p[0], p[1], p[2])) {
-                    Some(BlockEntity::Sign(sign)) => Some(sign),
-                    _ => None,
-                },
-                inline_images: self.inline_images_revision().map(|revision| {
-                    block_entity_render::SignInlineImages {
-                        revision,
-                        substitute: &substitute,
-                        sprite: &inline_sprite,
-                    }
-                }),
-                banner: &|p| self.banner_layers_at(p),
-                skull: &|p| self.skull_skin_at(p),
-                glyph: &|c| self.gui.atlas.glyph_cell(c),
-                glyphs: self.gui.atlas.font.epoch(),
-                font: Some(&self.gui.atlas.font),
-                dynamic_visible: Some(&dynamic_visible),
-            };
-            let visible = camera_list.into_iter().chain(shadow_only.iter().copied());
-            let block_entity_cache = CacheOptions {
-                shulker_boxes: self.settings.sunrise.cache_shulker_boxes,
-                signs: self.settings.sunrise.cache_signs,
-                decorated_pots: self.settings.sunrise.cache_decorated_pots,
-                bells: self.settings.sunrise.cache_bells,
-                chests: self.settings.sunrise.cache_chests,
-                banners: self.settings.sunrise.cache_banners,
-                copper_golem_statues: self.settings.sunrise.cache_copper_golem_statues,
-            };
-            // Entity occlusion is for ordinary entity meshes. Block entities
-            // already have section and per-block frustum culling; routing them
-            // through the per-vertex occlusion callback both repeats that work
-            // and disables their per-section GPU cache. Shader packs still need
-            // per-entity span marks, so they keep the callback path.
-            if self.pack_ids.is_some() {
-                let section_revision = |pos| r.block_entity_section_revision(pos);
-                static_block_entity_stats = self
-                    .res
-                    .block_entity_render()
-                    .render_with_cache_options_and_callbacks(
-                        &scene,
-                        visible,
-                        block_entity_cache,
-                        r.block_entity_revision(),
-                        Some(&section_revision),
-                        &mut out,
-                        |pos, state, start| {
-                            self.mark_block_entity(start, state);
-                            self.mark_motion(start, motion_block_entity(pos));
-                        },
-                        |pos, _, start, out| {
-                            if shadow_only_at.contains(&pos) {
-                                self.hide_spans_from(start, out.len());
-                            }
-                        },
-                    );
-            } else {
-                (
-                    static_block_entities,
-                    visible_static_block_entity_sections,
-                    static_block_entity_stats,
-                ) = self
-                    .res
-                    .block_entity_render()
-                    .render_with_gpu_cache_options(
-                        &scene,
-                        visible,
-                        cache_candidates.into_iter(),
-                        block_entity_cache,
-                        r.block_entity_revision(),
-                        |pos| r.block_entity_section_revision(pos),
-                        &mut out,
-                    );
-            }
-            // Mod block entities: their mods draw them (`native_block_entity_submit`),
-            // culled by the eye-visible section filter (ordinary renderers) and the bounds
-            // they give. A world without any (`has_mods`) has none to find among its other
-            // unrendered block entities (furnaces, hoppers...).
-            let radius = self.effective_render_distance();
-            let untemplated = self.untemplated_mod_block_entities(camera);
-            let mods = self
-                .world
-                .block_entities
-                .has_mods()
-                .then(|| {
-                    r.visible_block_entities(self.settings.chunk_fade as f32, camera, view, radius)
+            self.with_block_entity_scene(camera, alpha as f32, &dynamic_visible, |scene| {
+                let visible = camera_list.into_iter().chain(shadow_only.iter().copied());
+                let block_entity_cache = CacheOptions {
+                    shulker_boxes: self.settings.sunrise.cache_shulker_boxes,
+                    signs: self.settings.sunrise.cache_signs,
+                    decorated_pots: self.settings.sunrise.cache_decorated_pots,
+                    bells: self.settings.sunrise.cache_bells,
+                    chests: self.settings.sunrise.cache_chests,
+                    banners: self.settings.sunrise.cache_banners,
+                    copper_golem_statues: self.settings.sunrise.cache_copper_golem_statues,
+                };
+                // Entity occlusion is for ordinary entity meshes. Block entities
+                // already have section and per-block frustum culling; routing them
+                // through the per-vertex occlusion callback both repeats that work
+                // and disables their per-section GPU cache. Shader packs still need
+                // per-entity span marks, so they keep the callback path.
+                if self.pack_ids.is_some() {
+                    let section_revision = |pos| r.block_entity_section_revision(pos);
+                    static_block_entity_stats = self
+                        .res
+                        .block_entity_render()
+                        .render_with_cache_options_and_callbacks(
+                            scene,
+                            visible,
+                            block_entity_cache,
+                            r.block_entity_revision(),
+                            Some(&section_revision),
+                            &mut out,
+                            |pos, state, start| {
+                                self.mark_block_entity(start, state);
+                                self.mark_motion(start, motion_block_entity(pos));
+                            },
+                            |pos, _, start, out| {
+                                if shadow_only_at.contains(&pos) {
+                                    self.hide_spans_from(start, out.len());
+                                }
+                            },
+                        );
+                } else {
+                    (
+                        static_block_entities,
+                        visible_static_block_entity_sections,
+                        static_block_entity_stats,
+                    ) = self
+                        .res
+                        .block_entity_render()
+                        .render_with_gpu_cache_options(
+                            scene,
+                            visible,
+                            cache_candidates.into_iter(),
+                            block_entity_cache,
+                            r.block_entity_revision(),
+                            |pos| r.block_entity_section_revision(pos),
+                            &mut out,
+                        );
+                }
+                // Mod block entities: their mods draw them (`native_block_entity_submit`),
+                // culled by the eye-visible section filter (ordinary renderers) and the bounds
+                // they give. A world without any (`has_mods`) has none to find among its other
+                // unrendered block entities (furnaces, hoppers...).
+                let radius = self.effective_render_distance();
+                let untemplated = self.untemplated_mod_block_entities(camera);
+                let mods = self
+                    .world
+                    .block_entities
+                    .has_mods()
+                    .then(|| {
+                        r.visible_block_entities(
+                            self.settings.chunk_fade as f32,
+                            camera,
+                            view,
+                            radius,
+                        )
                         .filter(|((_, state), _)| !self.res.block_entity_render().renders(*state))
-                })
-                .into_iter()
-                .flatten();
-            let untemplated_eye = untemplated.iter().map(|block| {
-                (
-                    block,
-                    r.block_entity_section_in_eye_view(block.0, camera, view.as_ref(), radius),
-                )
+                    })
+                    .into_iter()
+                    .flatten();
+                let untemplated_eye = untemplated.iter().map(|block| {
+                    (
+                        block,
+                        r.block_entity_section_in_eye_view(block.0, camera, view.as_ref(), radius),
+                    )
+                });
+                self.mod_block_entity_geometry(
+                    mods.chain(untemplated_eye),
+                    camera,
+                    alpha as f32,
+                    &mut out,
+                );
+                self.mark_stage(out.len(), "DESTROY");
+                for &(pos, stage) in &cracks {
+                    let state = self.world.block(pos[0], pos[1], pos[2]);
+                    self.res
+                        .block_entity_render()
+                        .render_breaking(scene, pos, state.0, stage, &mut out);
+                }
             });
-            self.mod_block_entity_geometry(
-                mods.chain(untemplated_eye),
-                camera,
-                alpha as f32,
-                &mut out,
-            );
-            self.mark_stage(out.len(), "DESTROY");
-            for &(pos, stage) in &cracks {
-                let state = self.world.block(pos[0], pos[1], pos[2]);
-                self.res
-                    .block_entity_render()
-                    .render_breaking(&scene, pos, state.0, stage, &mut out);
-            }
         }
         laps.lap("eg_block_entities");
         self.mark_motion(out.len(), 0);
@@ -11299,16 +11379,23 @@ impl Game<'_> {
         pr.lap("pr_projection");
         let vanilla_skin = self.apply_player_skin_override(title);
         // GUI hooks project against this frame's camera, including its bob/spin and FOV.
-        let mut hud =
-            sunrise_client::spans::time("hud", || self.hud_with_reload(size, reload_overlay));
+        let mut hud = sunrise_client::spans::time("hud", || {
+            self.extract_frame_hud(
+                size,
+                reload_overlay,
+                title,
+                camera.to_array(),
+                view_yaw,
+                view_pitch,
+                fov_degrees,
+            )
+        });
         if reload_overlay.is_none() {
             self.flush_ime(&mut hud);
             self.native_gui_render_post(&mut hud, self.ui.hide_gui, self.focused);
         }
         self.resolve_inline_profiles(&hud.inline_profiles);
         pr.lap("pr_hud");
-        self.locator_camera =
-            (!title).then_some((camera.to_array(), view_yaw, view_pitch, fov_degrees));
         // The packs' Polytone post chains, after vanilla's (#11486).
         let game_ticks = self.world.game_time as f64 + alpha;
         let delta_ticks = (game_ticks - self.polytone_post_ticks).clamp(0.0, 20.0) as f32;
@@ -11389,7 +11476,7 @@ impl Game<'_> {
         let mut pack_inputs = if title {
             Default::default()
         } else {
-            self.shader_pack_inputs(camera, alpha as f32, &sky)
+            self.shader_pack_inputs(camera, eye.map_or(camera, |e| e.0), alpha as f32, &sky)
         };
         // Retain the existing additive particle stream; the ordered dragon emitter appends
         // the eyes and rays to it without changing their material routing.
@@ -14084,6 +14171,7 @@ impl<'a> Game<'a> {
             clipboard: Default::default(),
             user_input: Default::default(),
             text_selection: Default::default(),
+            client_quit: std::cell::Cell::new(saving::ClientQuit::Running),
             saved_for_exit: false,
             pending_save: None,
             server_tick_deadline: None,
@@ -14734,6 +14822,10 @@ impl Game<'_> {
 #[cfg(test)]
 #[path = "game/interface/tests/sign_chain_tests.rs"]
 mod sign_chain_tests;
+
+#[cfg(test)]
+#[path = "game/interface/tests/sign_outline_tests.rs"]
+mod sign_outline_tests;
 
 #[cfg(test)]
 #[path = "game/interface/tests/sign_use_tests.rs"]

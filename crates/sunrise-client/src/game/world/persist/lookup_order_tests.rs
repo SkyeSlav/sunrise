@@ -162,8 +162,11 @@ fn chunk_loaded_families_keep_vanilla_lookup_and_save_order() {
         let tnt = tnt.unwrap();
         tnt.position.y = -20.0;
         // Its movement boundary reports the crossing as it happens.
-        let tnt = tnt.id;
-        game.resident_entities.table.get_mut().entered_section(tnt);
+        let (tnt, at) = (tnt.id, tnt.position.components());
+        game.resident_entities
+            .table
+            .get_mut()
+            .entered_section(tnt, at);
         lookup.push(snapshot(game));
         let mut chunks = game.entity_chunks(&HashSet::from([a, b]), false);
         chunks.sort_by_key(|(key, _)| *key);

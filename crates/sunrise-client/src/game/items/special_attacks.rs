@@ -55,6 +55,7 @@ impl Game<'_> {
         if let (Some(area), Hurt::Landed { .. }) = (area, hurt) {
             let (knockback, _) = self.extra_knockback("minecraft:ender_dragon", scale);
             self.attack_effects(area, sweep, None, false, super::mace::Spared::Nothing, None);
+            self.remember_player_target(None);
             self.post_attack_dragon_burst();
             self.special_attack_slowdown(knockback);
             self.special_attack_exhaustion();
@@ -98,6 +99,7 @@ impl Game<'_> {
         {
             let (knockback, _) = self.extra_knockback(kind, scale);
             self.special_attack_slowdown(knockback);
+            self.remember_player_target(None);
             self.special_attack_exhaustion();
         }
         self.vehicle_attack_sounds(area, sweep, magic.then_some(id));

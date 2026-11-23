@@ -543,13 +543,19 @@ impl Game<'_> {
             p.block_count.max(0) as usize,
             &block_particles,
         );
-        // Entity.pushFromExplosion.
-        if let (Some(push), Some(player)) = (p.knockback, self.player.as_mut()) {
-            player.velocity = Vec3::new(
-                player.velocity.x + push[0],
-                player.velocity.y + push[1],
-                player.velocity.z + push[2],
-            );
+        // `Entity.pushFromExplosion` calls `Entity.push`, which rejects a
+        // non-finite impulse before even marking the entity for sync.
+        if let (Some([x, y, z]), Some(player)) = (p.knockback, self.player.as_mut()) {
+            let impulse = Vec3::new(x, y, z);
+            if impulse.is_finite() {
+                let velocity = player.velocity.add_vector(impulse);
+                // `Entity.setDeltaMovement` can reject the sum, but the push
+                // still marks the entity for sync.
+                if velocity.is_finite() {
+                    player.velocity = velocity;
+                }
+                player.needs_sync = true;
+            }
         }
     }
 

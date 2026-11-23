@@ -263,7 +263,8 @@ impl Game<'_> {
                     self,
                     None,
                     in hit_sounds
-                ));
+                ))
+                .with_reads(crate::game::entity::hit_reads_of!(self));
                 let path_changes = sunrise_client::mobs::collision_changes(&base, &path_writes);
                 laps.lap("creature_prepare");
                 let mut cached_difficulty: Option<((i32, i32), spawning::LocalDifficulty)> = None;
@@ -810,7 +811,7 @@ impl Game<'_> {
                                         [write.to.x, write.to.y, write.to.z],
                                     )
                                 {
-                                    section_entered.push(write.id);
+                                    section_entered.push((write.id, write.to.components()));
                                 }
                             }
                         }
@@ -1249,8 +1250,8 @@ impl Game<'_> {
         }
         // `Callback.onMove`, in the order of the writes.
         let table = self.resident_entities.table.get_mut();
-        for id in section_entered.drain(..) {
-            table.entered_section(id);
+        for (id, to) in section_entered.drain(..) {
+            table.entered_section(id, to);
         }
         self.native_lifecycle.entity_sections.entered = section_entered;
         *state.pushes = pushes;

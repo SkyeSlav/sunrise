@@ -64,6 +64,12 @@ pub trait Goal: std::fmt::Debug + Send + Sync {
     fn every_tick(&self) -> bool {
         false
     }
+    /// A goal that stands in for a brain behaviour: it tries to start on every tick,
+    /// as `Brain.startEachNonRunningBehavior` does, not only on the goal selector's
+    /// full ticks.
+    fn starts_every_tick(&self) -> bool {
+        false
+    }
     fn tick(&mut self, _m: &mut Mob, _cx: &mut Cx) {}
     /// Goals that move the body itself can stop for the owning level to handle
     /// a trample, passenger fall, or hurt. The ordinary path runs without a pause.
@@ -121,6 +127,9 @@ pub struct GoalSelector {
     goals: Vec<Wrapped>,
     locked: [Option<usize>; 4],
     pub disabled: u8,
+    /// How many goals start on every tick ([`Goal::starts_every_tick`]): with none, a tick
+    /// that only ticks the running goals tries no start.
+    brain_starters: usize,
 }
 /// Where a goal tick paused for a game-owned move. Public, with
 /// [`GoalSelector::tick_until_movement_pause`], because `ai::server_ai_step`, a replaceable
@@ -138,6 +147,7 @@ impl GoalSelector {
     }
     /// `add` for a goal built at runtime (`Box<dyn Goal>`).
     pub fn add_boxed(&mut self, priority: i32, goal: Box<dyn Goal>) {
+        self.brain_starters += usize::from(goal.starts_every_tick());
         self.goals.push(Wrapped {
             priority,
             goal,
@@ -154,6 +164,7 @@ impl GoalSelector {
     }
     pub fn clear(&mut self) {
         self.goals.clear();
+        self.brain_starters = 0;
         self.locked = [None; 4];
     }
     pub fn running_names(&self) -> Vec<&'static str> {
@@ -193,6 +204,18 @@ impl GoalSelector {
                 self.stop(i, m, cx);
             }
         }
+        self.start_goals(m, cx, false);
+    }
+
+    /// The start half of `GoalSelector.tick`: each goal not running whose flags are free (or
+    /// held by an interruptable goal of a lower priority) starts if it can. With
+    /// `brain_only`, only the goals that stand in for brain behaviours
+    /// ([`Goal::starts_every_tick`]), on a tick the selector otherwise only ticks its running
+    /// goals.
+    fn start_goals(&mut self, m: &mut Mob, cx: &mut Cx, brain_only: bool) {
+        if brain_only && self.brain_starters == 0 {
+            return;
+        }
         for slot in &mut self.locked {
             if slot.is_some_and(|i| !self.goals[i].running) {
                 *slot = None;
@@ -200,7 +223,10 @@ impl GoalSelector {
         }
         for i in 0..self.goals.len() {
             let flags = self.goals[i].goal.flags();
-            if self.goals[i].running || flags & self.disabled != 0 {
+            if self.goals[i].running
+                || flags & self.disabled != 0
+                || brain_only && !self.goals[i].goal.starts_every_tick()
+            {
                 continue;
             }
             let replaceable =
@@ -231,6 +257,9 @@ impl GoalSelector {
         }
     }
     pub fn tick_running(&mut self, m: &mut Mob, cx: &mut Cx, force: bool) {
+        if !force {
+            self.start_goals(m, cx, true);
+        }
         for g in &mut self.goals {
             if g.running && (force || g.goal.every_tick()) {
                 g.goal.tick(m, cx);
@@ -245,6 +274,8 @@ impl GoalSelector {
     ) -> Option<GoalMovementPause> {
         if force {
             self.prepare_tick(m, cx);
+        } else {
+            self.start_goals(m, cx, true);
         }
         self.tick_from(m, cx, force, 0)
     }
@@ -313,7 +344,8 @@ impl GoalSelector {
         while i < self.goals.len() {
             if predicate(&*self.goals[i].goal) {
                 self.stop(i, m, cx);
-                self.goals.remove(i);
+                let goal = self.goals.remove(i);
+                self.brain_starters -= usize::from(goal.goal.starts_every_tick());
                 removed += 1;
                 for slot in &mut self.locked {
                     match *slot {
@@ -3409,6 +3441,7 @@ mod breeding_variant_tests {
                     }],
                     locked: [Some(0), Some(0), None, None],
                     disabled: 0,
+                    brain_starters: 0,
                 };
                 let mut events = Vec::new();
                 parent.tick(

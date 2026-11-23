@@ -19,6 +19,7 @@ pub(in crate::game) fn mob(
         layer: None,
     };
     let kind = MobType {
+        type_key: Default::default(),
         id: entity.into(),
         species,
         width,

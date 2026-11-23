@@ -5,20 +5,7 @@ the sign editor is on. The two writes take the same paths as the keys the player
 sees only the packets of a normal client.
 
 ```rust
-// Escape: close whatever is open.
-if host.close_screen() {
-    // a screen was open and is now closed
-}
-
-// The inventory key, key.inventory.
-if host.open_inventory() {
-    // the inventory screen is up (or the ridden vehicle's screen was asked for)
-}
-
-// Which sign the editor is on, if any.
-if let Some(sign) = host.sign_editor() {
-    let _ = (sign.pos, sign.front);
-}
+{{#include ../../../examples/src/client_rendering.rs:screen_controls}}
 ```
 
 `ClientHost::close_screen()` follows the screen's own Escape close. A container screen closes as the
@@ -180,6 +167,18 @@ factory and capture only the owned values the callbacks need.
 To draw a sprite from synchronized menu data, see
 [Draw a progress bar and a fuel gauge](menu-gauges.md).
 
+## Reading the level from a block screen
+
+In the menu screen factory, take the opening's position from `open.pos` and the verified
+mod block ID, if present, from `open.block`. Without a matching server payload, only a
+verified clicked opener supplies a position. A menu explicitly opened without a position
+gets `None`, not the world origin.
+
+Capture the position by value in `MenuScreen::with_draw(move |host, frame, draw| ...)`.
+The read-only callback runs beneath the items and labels and can use ordinary level reads
+through the client host, for example to inspect the block beneath a machine. The client view
+may lag the server; use `frame.data` for authoritative live menu values.
+
 ## Reading the hovered stack
 
 In a client screen hook, `host.screen_hovered_stack()` reads the full stack under the pointer,
@@ -304,6 +303,21 @@ Each refusal changes nothing and is named by `ScreenSlotRefusal`:
 
 It moves only the slots a mod screen declares; the player's inventory stays under `inventory_x` and
 `inventory_y`.
+
+## Menu slot icons
+
+In the screen factory's `MenuScreenLayout::slots`, give a visible slot a
+`Some(ScreenSlot { position, no_item_icon })` entry at its backing index. Set
+`no_item_icon` to `Some("minecraft:container/slot/shield".into())` for that GUI atlas sprite,
+or `None` for a visible slot without an icon. The geometry and icon are client-side,
+including for a screen with a bound recipe book.
+
+The icon replaces an empty displayed stack at 16 × 16 pixels, like vanilla's
+`Slot.getNoItemIcon`. An item or a quick-craft preview showing an item takes its place;
+a single-slot drag hides all of the slot's contents. Custom backgrounds do not suppress
+the icon. A local slot move carries the icon with it, and a local hide suppresses it.
+Drawing uses the current GUI atlas without allocating for the lookup and uses its
+missing-texture sprite for an unknown name.
 
 ## Mod container title and inventory labels
 
@@ -496,6 +510,23 @@ contract on the **receiving screen**:
   returns `true`. A custom editor can observe the unhandled composition in `screen_preedit_post`
   and receives committed characters through `char_typed`.
 
+## Quit Game
+
+`ClientHost::request_client_quit()` asks the local client to exit, even on the title screen with no
+world open. It takes a shared host reference. Unlike `close_screen()` or `disconnect()`, it quits
+the application rather than just closing the screen or leaving the world. The request does not save,
+disconnect, or call shutdown listeners during the hook. After dispatch, the client follows Quit
+Game: it disconnects normally and waits for any integrated server to save and release the world lock.
+Shutdown failures use the game's normal error reporting.
+
+The method returns `true` when the request is recorded, not when the client successfully shuts down.
+It returns `false` if the host has no live client or if a quit is already pending or underway.
+For example, to let the player press Q on the title screen while this mod is loaded:
+
+```rust
+{{#include ../../../examples/src/title_quit.rs:title_quit}}
+```
+
 ## Labels: wrapped text without a widget
 
 A label is text laid out in a box: measured, wrapped and placed, and nothing else. Call
@@ -503,23 +534,7 @@ A label is text laid out in a box: measured, wrapped and placed, and nothing els
 scale the label is drawn at, and draw the lines it answers with where it says:
 
 ```rust
-// From a menu screen draw callback, gui_render_post or another drawing hook.
-let scale = 2.0;
-let lines = draw.text_lines(&label, 120.0, TextAlign::Centre, scale)?;
-let mut draws = Vec::with_capacity(lines.lines.len() + 2);
-draws.push(GuiDraw::Push(vec![PoseOp::Scale(scale, scale)]));
-for line in &lines.lines {
-    draws.push(GuiDraw::Text {
-        text: line.text.clone(),
-        x: (x + line.at[0] / scale) as i32,
-        y: (y + line.at[1] / scale) as i32,
-        color: 0xFFFF_FFFF,
-        shadow: false,
-    });
-}
-draws.push(GuiDraw::Pop);
-draw.gui_paint(&draws)?;
-// lines.width and lines.height size the box you reserved for it.
+{{#include ../../../examples/src/client_rendering.rs:scaled_text_lines}}
 ```
 
 The layout is measured unscaled and answered scaled: the text wraps at `120 / scale` GUI pixels, and
@@ -575,9 +590,8 @@ draw.model_3d(Gui3dSubject::Model(self.mirror), Gui3dView::new([120.0, 60.0], 40
 - The view is orthographic. Both subjects have a depth of their own: a draw never intersects
   what the screen drew before or after it, and later drawing covers it in call order. An item's
   faces meet each other by depth, as a model's do, and its enchantment glint follows them. The
-  OptiFine CIT glint layers of a stack are not drawn on this path yet
-  ([#3555](https://github.com/sunrise-org/sunrise/issues/3555)). There is no z input. `push_clip` cuts both
-  as it cuts `fill`.
+  OptiFine CIT glint layers of a stack are not drawn on this path. There is no z input.
+  `push_clip` cuts both as it cuts `fill`.
 - In an available draw context, a `minecraft:air` stack is a no-op (`Ok(())`) even with an
   invalid view or unreadable component overrides, matching `GuiGraphicsExtractor.item`. Refusals draw nothing: `Gui3dError::Unavailable` (no game, or a
   server), `NotFinite` (a non-finite view value or transformed corner, or a non-positive size),

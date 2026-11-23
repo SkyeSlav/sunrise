@@ -272,13 +272,14 @@ are reachable through `BlockEntityRef`.
 Fluid type facts are one record, `FluidTypeProperties` (`crates/sunrise-mod-vocab/src/block/fluid_states.rs`), read with
 `host.fluid_states().type_properties(key)`. They are static per fluid, not per position or block, and they are
 derived today: the record describes water's and lava's families and gives every other fluid inert values
-(`crates/sunrise-client/src/game/modding/native_block_states.rs`). A mod's own fluid declares a sprite and tint,
-not its type properties, so "partial" below means the vanilla answer is readable but a mod fluid cannot set it.
+(`crates/sunrise-client/src/game/modding/native_block_states.rs`). A mod's own fluid declares a sprite and tint
+and its `temperature`, `density` and `viscosity`, but none of the other type properties, so "partial" below means
+the vanilla answer is readable but a mod fluid cannot set it.
 
 | Method | Verdict | Sunrise | Notes |
 | --- | --- | --- | --- |
 | `getExplosionResistance(state, level, pos, explosion)` | Missing | — | No fluid explosion resistance. |
-| `getFluidType()` | Partial | `host.fluid_states().type_properties` | Reads water's and lava's type record; a mod's own fluid cannot declare one and reads as inert. |
+| `getFluidType()` | Partial | `host.fluid_states().type_properties` | Reads water's and lava's type record. A mod's own fluid states its `temperature`, `density` and `viscosity` in its fluid file; the rest of its record reads as inert. |
 | `canConvertToSource(state, level, pos)` | Partial | `create_fluid_source` (`hooks/create_fluid_source.rs`) | Global `CreateFluidSourceEvent`; not per-fluid and not a Part. |
 | `supportsBoating(state, boat)` | Partial | `FluidTypeProperties.supports_boating` | Static, and only a water-family fluid supports boating; a mod fluid cannot opt in. |
 | `getBlockPathType(state, level, pos, mob, canFloat)` | Partial | `BlockPart::is_pathfindable` (`hooks/is_pathfindable.rs`) | Block-level path computation type only; no fluid `PathType`. |

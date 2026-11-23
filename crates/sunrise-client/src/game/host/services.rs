@@ -60,6 +60,14 @@ impl Players for Game<'_> {
         self.native_singleplayer_profile()
     }
 }
+impl Profiles for Game<'_> {
+    fn resolve_name(&self, name: &str) -> ProfileResolution {
+        self.native_resolve_profile(sunrise_client::skins::NameOrId::Name(name.to_owned()))
+    }
+    fn resolve_id(&self, uuid: u128) -> ProfileResolution {
+        self.native_resolve_profile(sunrise_client::skins::NameOrId::Id(uuid))
+    }
+}
 impl RuntimeLevels for Game<'_> {
     fn open(&mut self, id: &str, level: RuntimeLevel) -> Result<LevelRef, RuntimeLevelError> {
         self.runtime_level_open(id, level)

@@ -35,6 +35,7 @@ pub mod handoff;
 pub mod hub;
 pub mod import;
 mod io_pool;
+pub mod login_profile;
 pub mod menu;
 pub mod menu_extra_rev;
 #[cfg(test)]
@@ -65,7 +66,9 @@ use std::{
 };
 use sunrise_protocol::packets::play;
 use sunrise_protocol::{
-    GAME_VERSION, PROTOCOL_VERSION, crypto::uuid_string, packets::configuration::ClientInformation,
+    GAME_VERSION, PROTOCOL_VERSION,
+    crypto::uuid_string,
+    packets::{configuration::ClientInformation, handshake::Intention},
     text::translatable,
 };
 
@@ -449,13 +452,40 @@ impl SecureChat {
     }
 }
 
+/// What the server tick decides for a [`Handoff`]: the intention to log in with, or the
+/// login disconnect's reason as the packet's JSON.
+type HandshakeDecision = Result<Intention, String>;
+
+/// One eligible intention awaiting the server tick's pre-profile login decision. Its connection
+/// waits on the other end of `reply`, so dropping the handoff (the connection was closed to make
+/// room, or the server stopped) ends that wait.
+pub struct Handoff {
+    id: u64,
+    pub intention: Intention,
+    pub peer_ip: Option<IpAddr>,
+    reply: Sender<HandshakeDecision>,
+}
+
+impl Handoff {
+    /// Tells the waiting connection, if it still waits, to log in with this handoff's
+    /// intention, or to disconnect with `refusal`, the login disconnect's reason JSON.
+    pub fn answer(self, refusal: Option<String>) {
+        let _ = self.reply.send(refusal.map_or(Ok(self.intention), Err));
+    }
+}
+
 /// State shared with the connection threads.
 pub struct Shared {
     payload_local: Arc<crate::raw_payloads::Local>,
     /// What the next login is sent; `PlayerList.reloadResources` swaps it.
     sync: Mutex<Arc<data::SyncData>>,
     pub events: crate::net::ingress::Producer<NetEvent>,
+    /// Handshakes waiting for the server tick, when a game drives this listener.
+    handoffs: Option<Mutex<Vec<Handoff>>>,
+    handshake_listeners: mod_api::__private::EnabledListeners,
     configuration_requests: Option<Sender<configuration_tasks::ConfigurationRequest>>,
+    /// Admitted logins' properties for `player_login_profile`, on a server the game drives.
+    login_profiles: Option<Sender<login_profile::LoginProfileRequest>>,
     prepare_spawn: bool,
     lan_incarnation: u64,
     next_configuration_connection: AtomicU64,
@@ -723,6 +753,7 @@ pub struct Lan {
     pub configuration_tasks: configuration_tasks::Tasks,
     events: crate::net::ingress::Consumer<NetEvent>,
     configuration_requests: Option<Receiver<configuration_tasks::ConfigurationRequest>>,
+    login_profiles: Option<Receiver<login_profile::LoginProfileRequest>>,
     pub port: u16,
     listener: Option<JoinHandle<()>>,
     /// Stops the accept loop alone: local connections stay.
@@ -754,11 +785,17 @@ impl Lan {
     fn start_listener(
         sync: Arc<data::SyncData>,
         config: NetConfig,
-        drive_configuration: bool,
+        drive_game: bool,
         prepare_spawn: bool,
     ) -> io::Result<Self> {
         let (tx, events) = event_channel();
-        let (request_tx, request_rx) = if drive_configuration {
+        let (request_tx, request_rx) = if drive_game {
+            let (tx, rx) = channel();
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+        let (profile_tx, profile_rx) = if drive_game {
             let (tx, rx) = channel();
             (Some(tx), Some(rx))
         } else {
@@ -776,7 +813,12 @@ impl Lan {
                 .map_err(io::Error::other)?,
             sync: Mutex::new(sync),
             events: tx,
+            handoffs: drive_game.then(|| Mutex::new(Vec::new())),
+            handshake_listeners: mod_api::__private::EnabledListeners::capture(
+                mod_api::HookId::PlayerHandshake,
+            ),
             configuration_requests: request_tx,
+            login_profiles: profile_tx,
             prepare_spawn,
             lan_incarnation,
             next_configuration_connection: AtomicU64::new(1),
@@ -803,6 +845,7 @@ impl Lan {
             configuration_tasks: configuration_tasks::Tasks::new(lan_incarnation),
             events,
             configuration_requests: request_rx,
+            login_profiles: profile_rx,
             port: 0,
             listener: None,
             listener_stop: Arc::new(AtomicBool::new(false)),
@@ -813,6 +856,15 @@ impl Lan {
         }
         Ok(lan)
     }
+    /// Take the login handshakes waiting for this server tick.
+    pub fn take_handoffs(&self) -> Vec<Handoff> {
+        self.shared
+            .handoffs
+            .as_ref()
+            .map_or_else(Vec::new, |handoffs| {
+                std::mem::take(&mut *handoffs.lock().unwrap_or_else(|e| e.into_inner()))
+            })
+    }
     /// Take registration requests before this server tick admits any guests.
     pub fn configuration_requests(
         &self,
@@ -820,6 +872,12 @@ impl Lan {
         self.configuration_requests
             .iter()
             .flat_map(Receiver::try_iter)
+    }
+    /// Take the admitted logins whose properties wait for `player_login_profile`.
+    pub fn login_profile_requests(
+        &self,
+    ) -> impl Iterator<Item = login_profile::LoginProfileRequest> + '_ {
+        self.login_profiles.iter().flat_map(Receiver::try_iter)
     }
     /// Start accepting connections on `port` (0 picks a free one), and
     /// announce the world on the local network when `announce`
@@ -910,6 +968,9 @@ impl Lan {
     }
     pub fn stop(&mut self) {
         self.shared.stop.store(true, Ordering::Relaxed);
+        if let Some(handoffs) = &self.shared.handoffs {
+            handoffs.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        }
         self.stop_listening();
     }
 }
@@ -971,6 +1032,7 @@ impl Drop for Counted {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .retain(|w| w.id != self.2);
+        self.0.drop_handoff(self.2);
         let mut by = self.0.by_address.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(n) = by.get_mut(&self.1) {
             *n -= 1;
@@ -1003,6 +1065,45 @@ impl Shared {
         self.connections.fetch_add(1, Ordering::AcqRel);
         let id = self.next_connection.fetch_add(1, Ordering::Relaxed);
         Some(Counted(self.clone(), ip, id))
+    }
+
+    /// Waits for the server tick's decision on connection `id`'s `intention`: None when the
+    /// connection was closed to make room or the server stopped first.
+    fn hand_off(
+        &self,
+        id: u64,
+        intention: Intention,
+        peer_ip: Option<IpAddr>,
+    ) -> Option<HandshakeDecision> {
+        let (reply, decision) = channel();
+        {
+            let mut handoffs = self
+                .handoffs
+                .as_ref()?
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            // `Lan::stop` clears the list after setting `stop`, under this lock.
+            if self.stop.load(Ordering::Relaxed) {
+                return None;
+            }
+            handoffs.push(Handoff {
+                id,
+                intention,
+                peer_ip,
+                reply,
+            });
+        }
+        decision.recv().ok()
+    }
+
+    /// Ends connection `id`'s wait for a handshake decision, if it waits.
+    fn drop_handoff(&self, id: u64) {
+        if let Some(handoffs) = &self.handoffs {
+            handoffs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .retain(|h| h.id != id);
+        }
     }
 
     /// Notes `stream`, counted as `counted`, as waiting until it plays.
@@ -1043,8 +1144,9 @@ impl Shared {
             return false;
         };
         let _ = oldest.stream.shutdown(std::net::Shutdown::Both);
-        waiting.remove(0);
+        let closed = waiting.remove(0).id;
         drop(waiting);
+        self.drop_handoff(closed);
         self.turned_away();
         true
     }
@@ -1182,6 +1284,42 @@ mod tests {
     use super::conn::MEMORY_ADDRESS;
     use super::*;
     use std::{io::Read, time::Instant};
+
+    #[test]
+    fn a_handshake_wait_ends_when_its_connection_closes_or_the_server_stops() {
+        let config = NetConfig {
+            listen: false,
+            announce: false,
+            ..NetConfig::lan(0, "handoffs".into(), 1)
+        };
+        let mut lan =
+            Lan::start_listener(Arc::new(data::SyncData::empty()), config, true, false).unwrap();
+        let intention = sunrise_protocol::packets::handshake::Intention {
+            host: "entry.test".into(),
+            port: 25565,
+            protocol: sunrise_protocol::PROTOCOL_VERSION,
+            intent: sunrise_protocol::packets::handshake::LOGIN,
+        };
+        let wait = |id| {
+            let (shared, intention) = (lan.shared.clone(), intention.clone());
+            std::thread::spawn(move || shared.hand_off(id, intention, None))
+        };
+        let (closed, stopped) = (wait(1), wait(2));
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while lan.shared.handoffs.as_ref().unwrap().lock().unwrap().len() < 2 {
+            assert!(
+                Instant::now() < deadline,
+                "the handshakes were not handed off"
+            );
+            std::thread::yield_now();
+        }
+        // The path a connection closed to make room takes.
+        lan.shared.drop_handoff(1);
+        assert!(closed.join().unwrap().is_none());
+        lan.stop();
+        assert!(stopped.join().unwrap().is_none());
+        assert!(lan.shared.hand_off(3, intention, None).is_none());
+    }
 
     #[test]
     fn stale_configuration_connection_cannot_address_replacement_lan_with_same_local_id() {

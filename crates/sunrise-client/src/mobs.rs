@@ -281,6 +281,10 @@ pub struct MobType {
     /// TemptGoal items when they differ from the food.
     pub tempt: Arc<[String]>,
     pub passenger_attachments: Vec<[f32; 3]>,
+    /// The type's key in the entity-type registry the accepted resources were loaded with
+    /// (`Entity.getType`): set when the game accepts its type table, none in a table built
+    /// without one.
+    pub type_key: Option<mod_api::EntityTypeKey>,
 }
 impl MobType {
     /// `EntityType.isAllowedInPeaceful`, including a living mod type's override.
@@ -576,6 +580,7 @@ impl MobTypes {
                         .or(def.food_tag())
                         .map_or_else(|| Arc::from(Vec::new()), tag),
                     passenger_attachments,
+                    type_key: None,
                     category,
                     id,
                 },
@@ -1630,11 +1635,6 @@ pub struct Mob {
     pub sync_position: bool,
     /// Footstep, splash and landing bookkeeping, retained across teleports.
     pub movement_emission: Option<MovementEmission>,
-    /// `getAttributeValue(KNOCKBACK_RESISTANCE)` with the modifiers of the
-    /// items it wears or holds (`Extra::gear_knockback`), which the game
-    /// works out each tick for a mob that has any (the mob itself knows no
-    /// item): `None` for the rest.
-    pub gear_knockback_resistance: Option<f64>,
     pub health: f32,
     pub hurt_time: i32,
     /// `LivingEntity.damageCooldownTime`: 20 after a hit, counting down;
@@ -1725,6 +1725,8 @@ pub struct Mob {
     pub glowing: bool,
     pub air: i32,
     pub last_hurt: f32,
+    /// The living target and this mob’s tick count at `setLastHurtMob`. Not saved.
+    pub last_hurt_mob: Option<(u32, i32)>,
     /// `LivingEntity.getAbsorptionAmount`: golden hearts that soak damage before health.
     pub absorption: f32,
     /// Tenths of absorbed damage a player's hit dealt, which the attack awards as
@@ -2048,7 +2050,8 @@ pub enum MobEvent {
         source: Option<u32>,
         state: sunrise_world::registry::BlockStateId,
     },
-    AttackPlayer(f32, [f64; 3]),
+    /// A player hit. The last field names the attacker only for `Mob.doHurtTarget`.
+    AttackPlayer(f32, [f64; 3], Option<u32>),
     /// `Bee.doHurtTarget`: a sting that lands leaves its stinger and poisons.
     Sting {
         target: Who,
@@ -2060,6 +2063,7 @@ pub enum MobEvent {
     /// cave spider poison, wither skeleton wither): a shield-blocked hit gives
     /// nothing.
     AttackPlayerWithEffect {
+        attacker: u32,
         amount: f32,
         from: [f64; 3],
         effect: &'static str,
@@ -2169,6 +2173,7 @@ pub enum MobEvent {
         target: u32,
         amount: f32,
         source: Damage,
+        remember_target: bool,
     },
     /// A melee hit on another mob whose effect rides the hit:
     /// `CaveSpider`, `Husk` and `WitherSkeleton.doHurtTarget` add it inside
@@ -2211,6 +2216,16 @@ pub enum MobEvent {
     /// target off its mount.
     StabDismount {
         target: Who,
+    },
+    /// `LivingEntity.stabAttack`'s successful tail, after the hit, pushes and dismount.
+    StabMemory {
+        attacker: u32,
+        target: Who,
+        /// Its place among the attacker's contacts this tick, in `stabAttack` order. A player
+        /// target's row is delivered with that player's actions, after the other rows.
+        contact: usize,
+        attempted_damage: bool,
+        otherwise_affected: bool,
     },
     /// `LivingEntity.knockback(power, x, z, source)`; a ram's blocked again first (`RamTarget.tick`).
     Knockback {
@@ -2291,11 +2306,22 @@ pub enum MobEvent {
         kind: &'static str,
         params: conversion::Params,
         after: conversion::After,
+        /// Vanilla converts at a point of the mob's tick that comes before `travel`, which
+        /// Sunrise runs before raising this: the new mob takes `from`'s place and motion
+        /// (`conversion::motion_at`), not the place travel moved the original to.
+        before_travel: bool,
     },
     DropItem {
         mob: u32,
         item: Arc<str>,
         count: u32,
+        at: [f64; 3],
+    },
+    /// `Piglin.finishConversion`'s `inventory.removeAllItems().forEach(spawnAtLocation)`:
+    /// every stack of `mob`'s inventory, as the game finds it when it handles the event, dropped
+    /// at `at` (where the piglin converted).
+    DropInventory {
+        mob: u32,
         at: [f64; 3],
     },
     /// `Entity.spawnAtLocation` with the complete stack and its components.
@@ -2715,6 +2741,7 @@ impl MobEvent {
             | Self::Knockback { target, .. }
             | Self::Sting { target, .. }
             | Self::StabDismount { target }
+            | Self::StabMemory { target, .. }
             | Self::Ignite(target, _)
             | Self::ZombieIgnite(target, _)
             | Self::IronGolemHit { target, .. } => *target == Who::Player,
@@ -3398,7 +3425,7 @@ pub struct PlayerView {
     /// `getLastHurtByMob` (within 100 ticks) and when.
     pub hurt_by: Option<(Who, i64)>,
     /// `getLastHurtMob` and when.
-    pub last_hurt: Option<(Who, i64)>,
+    pub last_hurt: Option<(u32, i32)>,
     pub velocity: Vec3,
     pub yaw: f32,
     /// `Player.isSprinting` and `isPassenger` (what scares an armadillo).
@@ -3863,7 +3890,6 @@ impl Mob {
             needs_sync: false,
             sync_position: false,
             movement_emission: None,
-            gear_knockback_resistance: None,
             hurt_time: 0,
             invulnerable: 0,
             invulnerable_time: 0,
@@ -3907,6 +3933,7 @@ impl Mob {
             glowing: false,
             air: 300,
             last_hurt: 0.0,
+            last_hurt_mob: None,
             absorption: 0.0,
             dealt_absorbed: 0,
             last_damage: None,
@@ -5791,6 +5818,7 @@ pub mod sensor_scan_tests {
             food: Arc::default(),
             tempt: Arc::default(),
             passenger_attachments: Vec::new(),
+            type_key: None,
         })
     }
     #[test]

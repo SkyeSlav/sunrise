@@ -1439,12 +1439,22 @@ fn spawn_mob(
 ) {
     let pkt = add_entity_packet(game, id, uuid, kind);
     game.handle_packet(pkt).unwrap();
+    // The HUD reads the tracked entity's synced max health, not the mob's local cache.
+    let attr = game.motion.attributes.id("minecraft:max_health").unwrap();
+    game.handle_packet(C::UpdateAttributes(play::UpdateAttributes {
+        id,
+        values: vec![play::AttributeSnapshot {
+            attribute: attr.registry_id(),
+            base: f64::from(max_health),
+            modifiers: vec![],
+        }],
+    }))
+    .unwrap();
     let mob = game
         .mobs
         .iter_mut()
         .find(|m| m.id == id as u32)
         .expect("spawned mob");
-    mob.attrs.max_health = max_health;
     mob.health = health;
     mob.extra.set_saddled(saddled);
 }

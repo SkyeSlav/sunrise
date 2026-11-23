@@ -333,6 +333,40 @@ impl<T: ?Sized + 'static> CapabilityKey<T> {
 /// meal only at level eight, and feedback waits for the root commit. Its position-local random
 /// stream is also journaled, so aborted retries keep their chance outcome without rewinding
 /// the level's unrelated random draws.
+///
+/// # Hopper and dropper automation rules
+///
+/// Vanilla block containers, composters and decorated pots keep their direct block automation
+/// paths even if a mod also exposes a block `ITEMS` handler; only blocks without a vanilla
+/// automation container use the block `ITEMS` storage attempt path. Container entities (such as
+/// chest or hopper minecarts and chest boats) use their own entity automation paths separately
+/// from block `ITEMS`.
+///
+/// - **Hopper pull:** skips only a fully stacked hopper. It visits nonempty source indices on the
+///   bottom-face `ITEMS` handler whose move is not cancelled, extracts one in a fresh transaction,
+///   then tries eligible hopper slots in order (empty or matching item and components with room;
+///   an empty lower index wins over a matching later stack), committing on the first success or
+///   aborting an ordinary refusal and continuing. For a block hopper, falling back to item
+///   entities happens only when no source (block container, `ITEMS` handler, or container entity)
+///   is found above it—a failed pull from a found source does not fall back to item entities. A
+///   hopper minecart still tries item entities after a failed pull and has no block-hopper
+///   transfer cooldown.
+/// - **Hopper push:** skips only storage whose slots are all at capacity. One root transaction
+///   covers eligible nonempty hopper slots in order (skipping cancelled moves): snapshots and
+///   removes one, calls indexless insertion on the face opposite the hopper's facing, restores a
+///   refused source slot directly and continues, committing on the first success or aborting if
+///   every eligible slot is refused.
+/// - **Dropper:** in one transaction, reserves (removes) the offered item from the source slot
+///   before calling `insert`, so writable insertion or root-commit callbacks cannot move the same
+///   source item a second time. An ordinary refusal (`Ok(0)`) restores the reserved item to the
+///   source slot and still commits the transaction; only an exceptional refusal (such as a
+///   writable callback replacing the source slot with another item, or an invalid overanswer)
+///   rolls back the dropper attempt's transaction.
+/// - **Ordinary refusal vs. invalid overanswer:** returning `Ok(0)` is an ordinary refusal handled
+///   as above; returning more than offered or requested is an invalid overanswer
+///   (`TransactionError::Aborted(Overanswered)`), which rolls back that attempt's transaction
+///   scope (or the `resource_util` helper's transaction scope when called through a helper, even
+///   if an enclosing transaction later commits).
 pub const ITEMS: CapabilityKey<dyn ResourceHandler<ItemResource>> = CapabilityKey {
     name: "sunrise:items",
     default: Some(BlockCapabilityDefault::Items(|at| Box::new(GameItems(at)))),

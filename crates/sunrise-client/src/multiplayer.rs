@@ -168,6 +168,8 @@ pub enum Outcome {
     Back,
     Connect {
         address: String,
+        /// The saved list row's name, when the join came from that row.
+        name: Option<String>,
         lan: bool,
     },
     /// Another multiplayer screen (`Minecraft.setScreen`): the title opens it
@@ -386,14 +388,18 @@ pub fn save_server_icon(saves: &Path, address: &str, png: &[u8]) {
 }
 
 /// The address and kind of list row `index`: saved servers, then discovered LAN games.
-fn entry_address(servers: &[ServerEntry], lan: &Scanner, index: usize) -> Option<(String, bool)> {
+fn entry_address(
+    servers: &[ServerEntry],
+    lan: &Scanner,
+    index: usize,
+) -> Option<(String, Option<String>, bool)> {
     match servers.get(index) {
-        Some(s) => Some((s.ip.clone(), false)),
+        Some(s) => Some((s.ip.clone(), Some(s.name.clone()), false)),
         None => lan
             .games()
             .into_iter()
             .nth(index - servers.len())
-            .map(|g| (g.address, true)),
+            .map(|g| (g.address, None, true)),
     }
 }
 
@@ -1423,6 +1429,7 @@ impl Screen {
             Self::Direct { address } if servers::parse_address(address).is_some() => {
                 Outcome::Connect {
                     address: direct_address(address),
+                    name: None,
                     lan: false,
                 }
             }
@@ -1432,7 +1439,7 @@ impl Screen {
                 lan,
                 ..
             } => match selected.and_then(|i| entry_address(servers, lan, i)) {
-                Some((address, lan)) => Outcome::Connect { address, lan },
+                Some((address, name, lan)) => Outcome::Connect { address, name, lan },
                 None => Outcome::None,
             },
             _ => Outcome::None,
@@ -1482,9 +1489,10 @@ impl Screen {
                 },
                 Some(40),
             ) => {
-                if let Some((address, lan)) = selected.and_then(|i| entry_address(servers, lan, i))
+                if let Some((address, name, lan)) =
+                    selected.and_then(|i| entry_address(servers, lan, i))
                 {
-                    return Outcome::Connect { address, lan };
+                    return Outcome::Connect { address, name, lan };
                 }
             }
             (Self::List { .. }, Some(41)) => return Outcome::Open(Box::new(Self::direct())),
@@ -1573,6 +1581,7 @@ impl Screen {
                         *selected = Some(k);
                         return Outcome::Connect {
                             address: servers[k].ip.clone(),
+                            name: Some(servers[k].name.clone()),
                             lan: false,
                         };
                     }
@@ -1602,10 +1611,10 @@ impl Screen {
                     None => None,
                 };
                 if let Some(index) = index
-                    && let Some((address, lan)) = entry_address(servers, lan, index)
+                    && let Some((address, name, lan)) = entry_address(servers, lan, index)
                 {
                     if *selected == Some(index) {
-                        return Outcome::Connect { address, lan };
+                        return Outcome::Connect { address, name, lan };
                     }
                     *selected = Some(index);
                     // The press that selects a saved server can drag it.
@@ -1682,6 +1691,7 @@ impl Screen {
                 remember_direct_join(saves, &address);
                 return Outcome::Connect {
                     address,
+                    name: None,
                     lan: false,
                 };
             }
@@ -1691,6 +1701,7 @@ impl Screen {
                     let code: String = code.chars().filter(|c| !c.is_whitespace()).collect();
                     return Outcome::Connect {
                         address: format!("{}{code}", crate::net::FRIEND),
+                        name: None,
                         lan: false,
                     };
                 }
@@ -2243,6 +2254,7 @@ mod tests {
             let Outcome::Connect {
                 address: actual,
                 lan,
+                ..
             } = click(
                 &mut screen,
                 Some(40),
@@ -2582,8 +2594,9 @@ mod tests {
         let size = (427.0, 240.0);
         assert!(screen.arrow(false, false, size, &saves));
         match screen.confirm() {
-            Outcome::Connect { address, lan } => {
+            Outcome::Connect { address, name, lan } => {
                 assert_eq!(address, "127.0.0.1:2");
+                assert_eq!(name.as_deref(), Some("a"));
                 assert!(!lan);
             }
             _ => panic!("Enter did not join the selected server"),
@@ -2591,8 +2604,9 @@ mod tests {
         // Down picks the next server, and Enter joins that one.
         assert!(screen.arrow(false, false, size, &saves));
         match screen.confirm() {
-            Outcome::Connect { address, lan } => {
+            Outcome::Connect { address, name, lan } => {
                 assert_eq!(address, "127.0.0.1:3");
+                assert_eq!(name.as_deref(), Some("b"));
                 assert!(!lan);
             }
             _ => panic!("Enter did not join the second server"),
@@ -2730,8 +2744,9 @@ mod tests {
             size,
             &saves,
         ) {
-            Outcome::Connect { address, lan } => {
+            Outcome::Connect { address, name, lan } => {
                 assert_eq!(address, list[2].ip);
+                assert_eq!(name.as_deref(), Some(list[2].name.as_str()));
                 assert!(!lan);
             }
             _ => panic!("the join arrow connects"),

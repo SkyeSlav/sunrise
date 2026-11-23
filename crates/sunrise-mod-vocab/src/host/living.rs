@@ -124,6 +124,13 @@ pub trait LivingBackend {
     /// client.
     fn living_last_attacker(&self, living: LivingRef) -> Option<EntityRef>;
     /// Side: server.
+    /// The last living target recorded by `LivingEntity.setLastHurtMob`, with
+    /// the holder's `tickCount` at that moment (the same clock as `EntityRef::tick_count`).
+    /// There is no age cutoff. None for a stale holder, no remembered target,
+    /// or a target that is dead or gone.
+    #[goal_view]
+    fn living_last_hurt_mob(&self, living: LivingRef) -> Option<(EntityRef, i32)>;
+    /// Side: server.
     /// `LivingEntity.hasLineOfSight(Entity)`: whether nothing that collides
     /// (`ClipContext.Block.COLLIDER`, fluids ignored) lies between the
     /// living entity's eyes and `target`'s eye height, within 128 blocks.
@@ -303,6 +310,13 @@ pub trait LivingClientBackend {
 #[doc(hidden)]
 #[sunrise_mod_api_macros::host_area]
 pub trait LivingBackendMut {
+    /// Side: server.
+    /// Pushes the living entity away from `direction` ([x, z]) using `LivingEntity.knockback`.
+    /// `living_knockback` can edit or cancel the push before knockback resistance is applied.
+    /// A successful push also sends the resulting motion to a player's own client.
+    /// False for an unavailable body, a non-finite input, a canceled push, or a strength
+    /// that is zero or less after resistance. This does not deal damage or assign credit.
+    fn living_knockback(&mut self, living: LivingRef, strength: f64, direction: [f64; 2]) -> bool;
     /// Side: server.
     /// Apply one loaded consumable effect without consuming the item.
     /// Mod-defined kinds enter the normal consume_effect hook: Some(true) means

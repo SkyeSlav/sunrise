@@ -45,6 +45,18 @@ impl Game<'_> {
             // A new entity looks its PlayerInfo up afresh.
             r.level_player_textures.remove(&p.id);
             r.level_player_infos.remove(&p.id);
+            if let Some(old_uuid) = r.level_entity_uuids.insert(p.id, p.uuid)
+                && old_uuid != p.uuid
+                && r.level_uuids.get(&old_uuid) == Some(&p.id)
+            {
+                r.level_uuids.remove(&old_uuid);
+            }
+            if let Some(old_id) = r.level_uuids.insert(p.uuid, p.id)
+                && old_id != p.id
+                && r.level_entity_uuids.get(&old_id) == Some(&p.uuid)
+            {
+                r.level_entity_uuids.remove(&old_id);
+            }
             if kind == "minecraft:player" {
                 r.level_players.insert(p.id, p.uuid);
                 r.level_player_infos
@@ -70,6 +82,8 @@ impl Game<'_> {
         } else {
             Holder::Entity(p.id as u32)
         };
+        // The constructor's `EntityEvent.Size` comes before `EntityConstructing`.
+        let constructed = self.native_constructing_size(p.id as u32, &kind);
         self.initialize_entity(holder, &kind);
         let replace = self.tracks_remote_entity(p.id);
         self.spawn_entity(p.id, &kind, p.position, rotation);
@@ -92,6 +106,7 @@ impl Game<'_> {
         self.move_remote_interaction(p.id, p.position);
         self.pick_section_sync_id(p.id as u32);
         self.entity_section_joined(p.id as u32, p.position);
+        self.native_constructed_size(p.id as u32, constructed);
     }
 
     /// `C::RemoveEntities`: its arms of `apply_packet`, guard and order kept.

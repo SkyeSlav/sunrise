@@ -43,7 +43,7 @@
 //! # Integration sketch
 //!
 //! ```ignore
-//! use sunrise_world::level::{self, Behaviours, LevelAccess, LevelEvent, PlaceContext, Ticks, flags};
+//! use sunrise_world::level::{self, Behaviours, LevelAccess, LevelEvent, PlaceContext, PlacementSource, Ticks, flags};
 //!
 //! struct GameLevel { chunks: Chunks, random: LegacyRandom, time: i64, events: Vec<LevelEvent> }
 //! impl level::BlockEntityNeighbors for GameLevel {}
@@ -79,7 +79,8 @@
 //!
 //! // Player actions:
 //! behaviours.place_block(&mut level, &mut ticks, &PlaceContext { clicked_pos, face, hit, inside: false,
-//!     yaw, pitch, sneaking, item: "minecraft:oak_stairs".into(), can_use_game_master_blocks: false });
+//!     source: PlacementSource::Player { yaw, pitch, sneaking }, item: "minecraft:oak_stairs".into(),
+//!     can_use_game_master_blocks: false });
 //! let state = level.block_state(pos);
 //! let block_hit = sunrise_core::geometry::BlockHit { block: pos, direction: face, location: hit, inside: false };
 //! behaviours.use_without_item(&mut level, &mut ticks, state, block_hit, player_context);
@@ -211,8 +212,8 @@ pub enum LandingWrite {
 pub use interact::{InteractionResult, PlayerContext, PlayerEffect, UseBranch, hit_slot};
 pub use pistons::{BlockEventData, MovingPiston};
 pub use place::{
-    AppliedPlacement, PlaceContext, PlaceOutcome, PlacementContext, PlacementPreview,
-    ResolvedPlacement,
+    AppliedPlacement, DirectionalRefusal, PlaceContext, PlaceOutcome, PlacementContext,
+    PlacementPreview, PlacementSource, ResolvedPlacement,
 };
 pub use portal::PortalShape;
 pub use states::{BlockId, PropKey, StateTable};
@@ -719,10 +720,14 @@ pub trait LevelAccess: BlockEntityNeighbors {
     }
     /// Observe `BlockState.handleNeighborChanged` before the block handles it,
     /// with the level's `ticks`, as vanilla's `neighborChanged` gets the level
-    /// itself (a diode schedules its tick there). The default does nothing;
-    /// implementations must not alter the update queue.
+    /// itself: a diode schedules its tick there, and `RedstoneLampBlock` sets its
+    /// own block. A write goes through `Behaviours::set_block` with these `ticks`,
+    /// so its neighbour updates run next, before the rest of the current update
+    /// (`CollectingNeighborUpdater`); the block's own handling then runs with the
+    /// state it was called with, as code after a `setBlock` in `neighborChanged`
+    /// does. The default does nothing.
     fn observe_neighbor_changed(
-        &self,
+        &mut self,
         _ticks: &mut Ticks,
         _pos: BlockPos,
         _state: BlockStateId,
@@ -2120,6 +2125,9 @@ pub(crate) struct Sim<'a, L: LevelAccess + ?Sized> {
     signal_reads: Option<&'a Ticks>,
     /// The carried block being settled, before it is written into the cell.
     landing_block: Option<(BlockPos, BlockStateId)>,
+    /// Why a placement rule had no answer for its context (vanilla throws), noted by the rule
+    /// and taken by `state_for_placement`, which returns it as its `Err`.
+    placement_refusal: Option<DirectionalRefusal>,
     /// `RedstoneWireBlock.shouldSignal` is false while a wire samples its
     /// neighbours (`getBlockSignal`).
     pub wire_signal_off: std::cell::Cell<bool>,
@@ -2194,17 +2202,22 @@ impl Behaviours {
     /// Ask `Block.getStateForPlacement` with a resolved context, without placing the result.
     /// Give it a scratch level to discard writes and random draws. Signals may read live ticks;
     /// any ticks requested by the placement rule go into a separate, empty queue.
+    /// A player context is taken as written. A directional context's `replace_clicked` is
+    /// what `DirectionalPlaceContext.replacingClickedOnBlock()` reads from the clicked block
+    /// here, whatever the caller wrote; a question vanilla throws on is refused.
     pub fn state_for_resolved_placement<L: LevelAccess + ?Sized>(
         &self,
         level: &mut L,
         signal_reads: &Ticks,
         block: BlockId,
         context: &PlacementContext,
-    ) -> Option<BlockStateId> {
+    ) -> Result<Option<BlockStateId>, DirectionalRefusal> {
         let mut ticks = Ticks::default();
         let mut sim = self.sim(level, &mut ticks);
         sim.signal_reads = Some(signal_reads);
-        sim.state_for_placement(block, context)
+        let mut context = context.clone();
+        sim.settle_replacing_clicked(&mut context)?;
+        sim.state_for_placement(block, &context)
     }
     pub(crate) fn sim<'a, L: LevelAccess + ?Sized>(
         &'a self,
@@ -2217,6 +2230,7 @@ impl Behaviours {
             ticks,
             signal_reads: None,
             landing_block: None,
+            placement_refusal: None,
             wire_signal_off: std::cell::Cell::new(false),
         }
     }

@@ -83,6 +83,14 @@ class CheckTests(unittest.TestCase):
         self.assertIn("relay.playsunrise.net", problems[0])
         self.assertIn("docs/layers.md#built-in-addresses", problems[0])
 
+    def test_non_address_identity_can_be_scoped_to_its_file(self):
+        identity = "crates/verifier/src/lib.rs"
+        client = "crates/downloader/src/lib.rs"
+        config = dict(CONFIG, not_addresses={f"{identity} github.com": "certificate identity"})
+        problems, _ = check_addresses.check(config, {(identity, "github.com"), (client, "github.com")})
+        self.assertEqual(len(problems), 1)
+        self.assertIn(client, problems[0])
+
     def test_an_address_that_left_its_file_is_a_note(self):
         problems, notes = self.run_check([])
         self.assertEqual(problems, [])

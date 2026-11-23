@@ -59,13 +59,11 @@ pub struct JigsawDef {
     use_expansion_hack: bool,
     project_to: Option<HeightmapType>,
     max_distance: [i32; 2],
-    aliases: Vec<Value>,
+    aliases: Vec<PoolAliasBinding>,
     padding: [i32; 2],
     waterlogging: bool,
     /// A carried mod's start rules (`"sunrise:start_checks"`).
     checks: super::start_checks::StartChecks,
-    /// Vanilla's draws, or YUNG's API's for `yungsapi:yung_jigsaw`.
-    draws: super::jigsaw::Draws,
     /// Laid out by Repurposed Structures' and Moog's piece-limited
     /// assembler (`"sunrise:piece_limited"`).
     piece_limited: Option<super::piece_limited::Config>,
@@ -368,15 +366,10 @@ impl StructureRegistry {
         let mut defs = Vec::new();
         for (name, json) in structures {
             let v: Value = serde_json::from_str(json)?;
-            let draws = match v["type"].as_str() {
-                Some("yungsapi:yung_jigsaw") => super::jigsaw::Draws::Yung,
-                _ => super::jigsaw::Draws::Vanilla,
-            };
             let kind = match v["type"].as_str().unwrap_or_default() {
-                "minecraft:jigsaw" | "yungsapi:yung_jigsaw" => {
+                "minecraft:jigsaw" => {
                     let (depth, max_distance) = jigsaw_depth_and_reach(&v);
                     let def = JigsawDef {
-                        draws,
                         start_pool: v["start_pool"].as_str().unwrap_or_default().to_owned(),
                         start_jigsaw: v["start_jigsaw_name"].as_str().map(str::to_owned),
                         max_depth: depth,
@@ -384,7 +377,12 @@ impl StructureRegistry {
                         use_expansion_hack: v["use_expansion_hack"].as_bool().unwrap_or(false),
                         project_to: v["project_start_to_heightmap"].as_str().and_then(heightmap),
                         max_distance,
-                        aliases: v["pool_aliases"].as_array().cloned().unwrap_or_default(),
+                        aliases: v["pool_aliases"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(PoolAliasBinding::from_json)
+                            .collect(),
                         padding: pair(v.get("dimension_padding"), "bottom", "top", 0, 0),
                         waterlogging: v["liquid_settings"].as_str() != Some("ignore_waterlogging"),
                         checks: super::start_checks::StartChecks::decode(
@@ -1206,7 +1204,7 @@ fn generate(
                 padding: jigsaw.padding,
                 waterlogging: jigsaw.waterlogging,
             };
-            let (position, mut pieces) = match &jigsaw.piece_limited {
+            let (position, pieces) = match &jigsaw.piece_limited {
                 Some(limits) => super::piece_limited::assemble(
                     &config,
                     limits,
@@ -1219,7 +1217,6 @@ fn generate(
                 )?,
                 None => {
                     let placed = place_start(
-                        jigsaw.draws,
                         &config,
                         context,
                         &registry.pools,
@@ -1239,7 +1236,6 @@ fn generate(
                         return Some(Generated::Stub);
                     }
                     lay_out_children(
-                        jigsaw.draws,
                         placed,
                         &config,
                         context,
@@ -1250,11 +1246,6 @@ fn generate(
                     )
                 }
             };
-            // Vanilla's JigsawPlacement keeps no piece at size 0; the
-            // piece-limited assembler keeps the start piece.
-            if jigsaw.max_depth <= 0 && jigsaw.piece_limited.is_none() {
-                pieces.clear();
-            }
             (
                 position,
                 pieces.into_iter().map(Piece::Pool).collect::<Vec<_>>(),
@@ -1507,14 +1498,15 @@ fn generate(
             // The type's own start and pieces; the biome check below and the
             // set's spacing stay the game's, as for every other kind.
             let context: &mut dyn StartContext = context;
-            let (position, pieces) = mod_type.ty.find_generation_point(
+            let inputs =
+                super::mod_types::StructureInputs::new(resources, &registry.pools, bindings);
+            mod_type.ty.find_generation_point(
                 context,
-                resources,
+                &inputs,
                 chunk,
                 &mod_type.config,
                 &mut random,
-            )?;
-            (position, pieces.into_iter().map(Piece::Legacy).collect())
+            )?
         }
         StructureKind::Unsupported(_) => return None,
     };
@@ -1571,8 +1563,71 @@ impl StructureStart {
         }
     }
 }
-/// PoolAliasLookup.create.
-fn resolve_aliases(bindings: &[Value], position: [i32; 3], seed: i64) -> BTreeMap<String, String> {
+/// One of a jigsaw structure's `pool_aliases` (vanilla's `PoolAliasBinding`
+/// kinds), resolved per start by [`resolve_aliases`].
+#[derive(Clone, Debug)]
+pub enum PoolAliasBinding {
+    /// `minecraft:direct`: `alias` always names `target`.
+    Direct { alias: String, target: String },
+    /// `minecraft:random`: `alias` names one of `targets`, drawn by weight.
+    Random {
+        alias: String,
+        targets: WeightedList<String>,
+    },
+    /// `minecraft:random_group`: one of `groups`, drawn by weight, binds all its bindings.
+    RandomGroup {
+        groups: WeightedList<Vec<PoolAliasBinding>>,
+    },
+}
+impl PoolAliasBinding {
+    /// A binding as data writes it; one whose weighted list does not decode,
+    /// or of another type, binds nothing.
+    fn from_json(binding: &Value) -> Option<Self> {
+        fn weighted<T>(
+            binding: &Value,
+            key: &str,
+            decode: impl FnMut(&RawValue) -> Result<T, DecodeError>,
+        ) -> Option<WeightedList<T>> {
+            let raw: Box<RawValue> = serde_json::from_str(&binding[key].to_string()).ok()?;
+            WeightedList::decode(&raw, decode).ok()
+        }
+        let text = |key: &str| binding[key].as_str().unwrap_or_default().to_owned();
+        Some(match binding["type"].as_str().unwrap_or_default() {
+            "minecraft:direct" => Self::Direct {
+                alias: text("alias"),
+                target: text("target"),
+            },
+            "minecraft:random" => Self::Random {
+                alias: text("alias"),
+                targets: weighted(binding, "targets", |v| {
+                    Ok(serde_json::from_str::<Value>(v.get())?
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned())
+                })?,
+            },
+            "minecraft:random_group" => Self::RandomGroup {
+                groups: weighted(binding, "groups", |v| {
+                    Ok(serde_json::from_str::<Value>(v.get())?
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Self::from_json)
+                        .collect())
+                })?,
+            },
+            _ => return None,
+        })
+    }
+}
+
+/// `PoolAliasLookup.create`: the aliases of one start, drawn from a random of
+/// the world seed at the start's position.
+pub fn resolve_aliases(
+    bindings: &[PoolAliasBinding],
+    position: [i32; 3],
+    seed: i64,
+) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
     if bindings.is_empty() {
         return map;
@@ -1582,37 +1637,27 @@ fn resolve_aliases(bindings: &[Value], position: [i32; 3], seed: i64) -> BTreeMa
         position[1],
         position[2],
     ));
-    fn visit(binding: &Value, random: &mut LegacyRandom, map: &mut BTreeMap<String, String>) {
-        let weighted = |key: &str| -> Option<WeightedList<Value>> {
-            let raw: Box<RawValue> = serde_json::from_str(&binding[key].to_string()).ok()?;
-            WeightedList::decode(&raw, |v| Ok(serde_json::from_str::<Value>(v.get())?)).ok()
-        };
-        match binding["type"].as_str().unwrap_or_default() {
-            "minecraft:direct" => {
-                map.insert(
-                    binding["alias"].as_str().unwrap_or_default().to_owned(),
-                    binding["target"].as_str().unwrap_or_default().to_owned(),
-                );
+    fn visit(
+        binding: &PoolAliasBinding,
+        random: &mut LegacyRandom,
+        map: &mut BTreeMap<String, String>,
+    ) {
+        match binding {
+            PoolAliasBinding::Direct { alias, target } => {
+                map.insert(alias.clone(), target.clone());
             }
-            "minecraft:random" => {
-                if let Some(target) =
-                    weighted("targets").and_then(|w| w.sample(random).ok().cloned())
-                {
-                    map.insert(
-                        binding["alias"].as_str().unwrap_or_default().to_owned(),
-                        target.as_str().unwrap_or_default().to_owned(),
-                    );
+            PoolAliasBinding::Random { alias, targets } => {
+                if let Ok(target) = targets.sample(random) {
+                    map.insert(alias.clone(), target.clone());
                 }
             }
-            "minecraft:random_group" => {
-                if let Some(group) = weighted("groups").and_then(|w| w.sample(random).ok().cloned())
-                {
-                    for b in group.as_array().into_iter().flatten() {
+            PoolAliasBinding::RandomGroup { groups } => {
+                if let Ok(group) = groups.sample(random) {
+                    for b in group {
                         visit(b, random, map);
                     }
                 }
             }
-            _ => {}
         }
     }
     for binding in bindings {

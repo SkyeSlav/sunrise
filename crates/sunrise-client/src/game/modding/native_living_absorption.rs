@@ -12,26 +12,8 @@ impl Game<'_> {
     /// During a player's turn only that player resolves, as for health. None
     /// for a stale handle, an armor stand or the dragon (they carry none).
     pub(super) fn living_absorption(&self, living: LivingRef) -> Option<f32> {
-        match self.native_living_read_target(living)? {
-            Target::Player => Some(self.player.as_ref()?.health.absorption()),
-            Target::Guest(conn) => {
-                let guest = self.command_guest(conn)?;
-                Some(
-                    guest
-                        .motion
-                        .as_ref()
-                        .map_or(guest.saved_absorption.unwrap_or(0.0), |m| {
-                            m.health.absorption()
-                        }),
-                )
-            }
-            Target::Mob(id) => self
-                .mobs
-                .iter()
-                .find(|m| m.id == id && !m.removed)
-                .map(|m| m.absorption),
-            _ => None,
-        }
+        let target = self.native_living_read_target(living)?;
+        super::native_living_body::body_absorption(self.native_living_body(target)?)
     }
 
     /// Sets the entity's absorption amount (`LivingEntity.setAbsorptionAmount`),

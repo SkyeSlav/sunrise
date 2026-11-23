@@ -739,7 +739,7 @@ impl Game<'_> {
                 if !self.punch_armor_stand(i) {
                     continue;
                 }
-                let mut knock = sunrise_client::health::Knock {
+                let knock = sunrise_client::health::Knock {
                     strength: f64::from(0.4_f32),
                     x: xd,
                     z: zd,
@@ -750,35 +750,7 @@ impl Game<'_> {
                     direct: attack.attacker,
                     position: None,
                 };
-                let plan = self.prepare_knockback_credit(id as i32, None, &attack);
-                let mut credit = plan.lend(&mut self.last_hurt_by_player);
-                let level = crate::game::entity::damage_level_of!(self, &attack, &mut credit, None);
-                let pushed = sunrise_client::health::Hurting::ArmorStand(id as i32, source);
-                // The smash pushes the armor stand through the short entry, as it pushes the mobs
-                // below (`knockback(power, x, z)`).
-                let canceled = level
-                    .through_short_knockback(|level| level.knockback_canceled(pushed, &mut knock));
-                if canceled || knock.strength <= 0.0 {
-                    continue;
-                }
-                let (mut kx, mut kz) = (knock.x, knock.z);
-                while kx * kx + kz * kz < f64::from(1.0e-5_f32) {
-                    let r = &mut self.world.random;
-                    kx = (r.next_double() - r.next_double()) * 0.01;
-                    kz = (r.next_double() - r.next_double()) * 0.01;
-                }
-                let len = (kx * kx + kz * kz).sqrt();
-                if let Some(s) = self.armor_stands.iter_mut().find(|s| s.id == id) {
-                    s.velocity = Vec3::new(
-                        s.velocity.x / 2.0 - kx / len * knock.strength,
-                        if s.ground.on_ground {
-                            (s.velocity.y / 2.0 + knock.strength).min(0.4)
-                        } else {
-                            s.velocity.y
-                        },
-                        s.velocity.z / 2.0 - kz / len * knock.strength,
-                    );
-                }
+                self.knock_back_armor_stand(id, knock, source, &attack);
                 continue;
             }
             let Some(i) = self.mobs.iter().position(|m| m.id == id) else {

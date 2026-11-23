@@ -102,8 +102,7 @@ jobs:
         run: python3 tools/ci/source_mtimes.py "${CARGO_TARGET_DIR:-target}/ci-source-mtimes-v2.json"
       - name: Cap build parallelism to the runner
         run: python3 tools/ci/cargo_jobs.py --job-mib 3072 --cap
-      # The tool names the commit it was built from (`--version`, a release plan's `tool_commit`), as a release
-      # tool does. Set for every later step, so the test builds below don't rebuild it as `dev`.
+      # The tool names the commit it was built from (`--version`), as a release tool does. Set for every later step, so the test builds below don't rebuild it as `dev`.
       - name: The tool's commit
         run: |
           tool_commit=$(git rev-parse --verify HEAD)
@@ -194,11 +193,6 @@ jobs:
           --ignored --exact installed_lower_bends_and_routes_a_client_model
       - name: The start pages run with the mod tool alone
         run: python3 tools/book_quickstart.py --tool "${CARGO_TARGET_DIR:-target}/debug/cargo-sunrise-mod"
-      - name: Generated native release on this run's Linux SDK
-        if: inputs.own_sdk
-        run: >-
-          python3 tools/ci/mod_release_smoke.py --tool "${CARGO_TARGET_DIR:-target}/debug/cargo-sunrise-mod"
-          --scratch "$QS_SCRATCH" --commit "$(git rev-parse HEAD)"
       - name: Clean private scratch
         if: always() && inputs.own_sdk
         run: |

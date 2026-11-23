@@ -113,7 +113,10 @@ bindings = [
 # wind-up and call the same method again later: `MeleeAttackGoal.checkAndPerformAttack`,
 # `AbstractSkeleton`, `Drowned`, `Witch` and `Pillager.performRangedAttack`; skips
 # `Mob.serverAiStep` for a stunned mob; or answers `Mob.isSunBurnTick` for a mob spared from the sun
-# (sunrise-org/sunrise#4678). Each lets the function run: the build is the check.
+# (sunrise-org/sunrise#4678). Each lets the function run, and the build is the check, except
+# `server_ai` for the piglin the check summons as `fnr_cancel`: the row cancels its step, and the
+# helper notes that 40 cancelled steps left its brain and zombification alone, while the piglin
+# `fnr_control` beside it converts (sunrise-org/sunrise#4824).
 [[native.mixin]]
 id = "melee"
 target = "sunrise_client_lib::mobs::goals::MeleeAttack::check_and_perform_attack"

@@ -50,6 +50,21 @@ pub(super) fn is_render(hook: &Hook) -> bool {
     hook.target.starts_with("mod_render::render::")
 }
 
+pub(super) fn receiver_mut(hook: &Hook) -> Option<bool> {
+    if hook.target == EFFECT_TICK_TARGET {
+        Some(false)
+    } else if hook.target.starts_with("sunrise_client::game::") {
+        hook.receiver.mutability()
+    } else {
+        None
+    }
+}
+
+pub(super) fn listener_host_or_context(hook: &Hook) -> Option<host_param::HostParam> {
+    host_param::context_param(hook)
+        .or_else(|| host_param::host_param(hook, receiver_mut(hook), hook.engine_ticks))
+}
+
 /// Render records only, without game binding or listener dispatch.
 pub(super) fn render(catalog: &Catalog) -> Result<HookSources, String> {
     emit(
@@ -97,13 +112,7 @@ pub(super) fn emit<'a>(
         {
             return Err(format!("wrong target for {name}: {target}"));
         }
-        let receiver_mut = if declaration_only {
-            Some(false)
-        } else if in_game {
-            hook.receiver.mutability()
-        } else {
-            None
-        };
+        let receiver_mut = receiver_mut(hook);
         let ticks = hook.engine_ticks;
         let inert_signal = hook.engine_inert;
         // Only a quick-move Part's panic can refuse its unanswered click.
@@ -115,7 +124,6 @@ pub(super) fn emit<'a>(
             ));
         }
         host_param::validate(hook, name, is_level, receiver_mut, ticks)?;
-        let context = host_param::context_param(hook);
         let declared = hook
             .call
             .iter()
@@ -209,23 +217,21 @@ pub(super) fn emit<'a>(
         } else {
             String::new()
         };
-        let host = context
-            .or_else(|| host_param::host_param(hook, receiver_mut, ticks))
-            .map(|param| {
-                (
-                    fresh_name(
-                        if hook.context.is_some() {
-                            "context"
-                        } else if is_level {
-                            "level"
-                        } else {
-                            "host"
-                        },
-                        &mut used,
-                    ),
-                    param,
-                )
-            });
+        let host = listener_host_or_context(hook).map(|param| {
+            (
+                fresh_name(
+                    if hook.context.is_some() {
+                        "context"
+                    } else if is_level {
+                        "level"
+                    } else {
+                        "host"
+                    },
+                    &mut used,
+                ),
+                param,
+            )
+        });
         let staged_host = hook.staged_surface.as_deref() == Some("host")
             && !args.iter().any(|(arg, _)| arg == "host");
         let mut staged_draw = false;
@@ -662,6 +668,9 @@ pub(super) fn emit<'a>(
             } else {
                 inits.push(name.clone());
             }
+        }
+        if contract == Contract::Listen && hook.output_validator.is_some() && rollback.is_empty() {
+            return Err(format!("{name}: output_validator requires mutable outputs"));
         }
         if mod_cancel {
             if args.iter().any(|(arg, _)| arg == "cancelled") {
@@ -1148,13 +1157,15 @@ pub(super) fn emit<'a>(
             let reply_outside_event =
                 matches!(contract, Contract::Listen | Contract::Replace) || answered_return;
             let shared_collect_output = collected.is_some() && !answered && !collect_cancel;
-            if (!reply_outside_event && !shared_collect_output)
+            // A global cancel hook chains its cancellation through the dispatch's own flag.
+            let chained_cancel = mod_cancel && hook.output_validator.is_none();
+            if (!reply_outside_event && !shared_collect_output && !chained_cancel)
                 || !stack_outputs.is_empty()
                 || hook.owner.is_some()
                 || hook.context == Some(PhaseContext::ChunkDisk)
             {
                 return Err(format!(
-                    "{name}: event_per_listener requires a listen or replace hook, or a collect hook with a shared borrowed output, without scalar or stack writeback or other shared event state"
+                    "{name}: event_per_listener requires a listen, replace or unvalidated cancel hook, or a collect hook with a shared borrowed output, without scalar or stack writeback or other shared event state"
                 ));
             }
             (String::new(), build)
@@ -1217,7 +1228,9 @@ pub(super) fn emit<'a>(
             ));
         }
         let previous_cancel = snaps.len();
-        if mod_cancel {
+        // A per-listener event's cancellation reaches the dispatch only once its listener
+        // returns, so an aborted listener has nothing to undo there.
+        if mod_cancel && !hook.event_per_listener {
             restores.push(format!("{event}.cancelled = {saved}.{previous_cancel};"));
             snaps.push(format!("{event}.cancelled"));
         }
@@ -1335,6 +1348,30 @@ pub(super) fn emit<'a>(
                 expression
             }
         };
+        // Only a completed listener has a proposal for the validator to check. The same
+        // snapshot that handles panics preserves earlier accepted edits on refusal.
+        let validate_proposal = hook.output_validator.as_ref().map(|validator| {
+            let field = fresh_name("refused_field", &mut used);
+            let arguments = rollback
+                .iter()
+                .enumerate()
+                .map(|(index, _)| format!("&{saved}.{index}"))
+                .chain(rollback.iter().map(|(name, by_reference)| {
+                    format!("&{}{event}.{name}", if *by_reference { "*" } else { "" })
+                }))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let restore_statement = &restore_statement;
+            move |mod_id_expr: &str| {
+                format!(
+                    "if let Err({field}) = {validator}({arguments}) {{
+                         {restore_statement}
+                         super::runtime::report_output_refusal({mod_id_expr}, \"{name}\", {field});
+                         continue;
+                     }}"
+                )
+            }
+        });
         // Collision owns one answer for the whole block. Its enclosing adapter
         // discards that answer and disables the block's Parts, not the mod's hook.
         let collision_owns_panic = name == "collision_shape";
@@ -1408,14 +1445,17 @@ pub(super) fn emit<'a>(
                         "let previous = {event}.{output}.clone(); {validated_call}; {validator}({mod_id_expr}, &previous, {event}.{output});"
                     )
                 }
+                Contract::Listen => match &validate_proposal {
+                    Some(validate) => format!("{plain_call}; {}", validate(mod_id_expr)),
+                    None => format!("{plain_call};"),
+                },
                 _ => format!("{plain_call};"),
             };
             format!(
                 "{local_event} {snapshot_statement}{invocation} {local_write_back} {stack_after}"
             )
         };
-        // Global cancel hooks use the same snapshot and invoke path even when they validate
-        // outputs. Only a completed listener has a proposal for the validator to check.
+        // Global cancel hooks also snapshot the cancellation and only commit it on acceptance.
         let cancel_step = if mod_cancel {
             let mod_id_expr = format!("{mod_entry}.id");
             let invocation = run(
@@ -1423,27 +1463,25 @@ pub(super) fn emit<'a>(
                 "continue;",
                 &listener_call(&mod_item, &mod_id_expr),
             );
-            if let Some(validator) = &hook.output_validator {
+            if let Some(validate) = &validate_proposal {
                 let flow = fresh_name("flow", &mut used);
-                let field = fresh_name("refused_field", &mut used);
-                let arguments = rollback
-                    .iter()
-                    .enumerate()
-                    .map(|(index, _)| format!("&{saved}.{index}"))
-                    .chain(rollback.iter().map(|(name, by_reference)| {
-                        format!("&{}{event}.{name}", if *by_reference { "*" } else { "" })
-                    }))
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                let validation = validate(&mod_id_expr);
                 format!(
                     "{snapshot_statement}let {flow} = {invocation};
-                     if let Err({field}) = {validator}({arguments}) {{
-                         {restore_statement}
-                         super::runtime::report_output_refusal({mod_entry}.id, \"{name}\", {field});
-                         continue;
-                     }}
+                     {validation}
                      {event}.cancelled |= {saved}.{previous_cancel} || matches!({flow}, Flow::Cancel);"
                 )
+            } else if hook.event_per_listener {
+                // Each listener's event starts from the cancellation so far and hands it on.
+                let cancel = format!(
+                    "{local_event} {snapshot_statement}if matches!({invocation}, Flow::Cancel) {{ {event}.cancelled = true; }} *{o} = {event}.cancelled; {local_write_back}",
+                    o = cancel_out.unwrap()
+                );
+                if stack_after.is_empty() {
+                    cancel
+                } else {
+                    format!("{cancel}; {stack_after}")
+                }
             } else {
                 let cancel = format!(
                     "{snapshot_statement}if matches!({invocation}, Flow::Cancel) {{ {event}.cancelled = true; }}"
@@ -1537,6 +1575,13 @@ pub(super) fn emit<'a>(
                     ),
                 )
             }
+            None if mod_cancel && hook.event_per_listener => (
+                String::new(),
+                format!(
+                    "let mut {entered} = super::runtime::ListenerScope::new(); for ({receives}, {mod_entry}) in super::listening(HookId::{hook_id}) {{ if *{o} && !{receives} {{ continue; }} let {mod_item} = {entered}.enter({mod_entry}, \"{name}\"); {cancel_step} }}",
+                    o = cancel_out.unwrap()
+                ),
+            ),
             None if mod_cancel => (
                 String::new(),
                 format!(
@@ -3004,6 +3049,30 @@ fn main() {{ game::run(std::env::args_os().nth(1).unwrap().into()); }}
         hook.dispatch = DispatchStyle::Flat;
         hook.call[1].1 = "&mut u32".into();
         assert!(emit(std::iter::once(&hook), &[], true).is_err());
+    }
+
+    #[test]
+    fn an_output_validated_listen_hook_needs_a_mutable_output() {
+        let emit_hook = |ty: &str| {
+            let hook = Hook {
+                name: "checked".into(),
+                output_validator: Some("crate::check".into()),
+                call: vec![("progress".into(), ty.into())],
+                dispatch: DispatchStyle::Flat,
+                ..Hook::sample(
+                    "sunrise_client::game::native_hooks::checked::Game<'_>::native_checked",
+                    Side::Client,
+                )
+            };
+            emit(std::iter::once(&hook), &[], false)
+        };
+        if let Err(error) = emit_hook("&mut f32") {
+            panic!("a listen hook validating a mutable output must generate: {error}");
+        }
+        assert_eq!(
+            emit_hook("&f32").err().as_deref(),
+            Some("checked: output_validator requires mutable outputs")
+        );
     }
 
     #[test]

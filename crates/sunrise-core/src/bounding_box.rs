@@ -16,8 +16,8 @@ impl BoundingBox {
     }
     pub fn moved(self, d: [i32; 3]) -> Self {
         Self {
-            min: std::array::from_fn(|i| self.min[i] + d[i]),
-            max: std::array::from_fn(|i| self.max[i] + d[i]),
+            min: std::array::from_fn(|i| self.min[i].wrapping_add(d[i])),
+            max: std::array::from_fn(|i| self.max[i].wrapping_add(d[i])),
         }
     }
     pub fn is_inside(&self, p: [i32; 3]) -> bool {

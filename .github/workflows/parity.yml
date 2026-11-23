@@ -110,10 +110,16 @@ jobs:
             curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal
           fi
           bash tools/ci/rustup_install.sh --profile minimal
+      # $RUNNER_TEMP and the tool cache are tmpfs counted against the runner's memory, which the sunrise-client lib
+      # test's rustc nearly fills: the JDK is kept on the slot's disk and reused by later jobs (tools/ci/keep_jdk_on_disk.sh).
+      - name: Link the JDK this slot kept
+        run: bash tools/ci/keep_jdk_on_disk.sh before "$DYNA_CI_BUILD/runner-temp-before-java"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '25'
+      - name: Move the JDK out of the runner's memory
+        run: bash tools/ci/keep_jdk_on_disk.sh after "$DYNA_CI_BUILD/runner-temp-before-java"
       # Every job that builds in this runner's persistent target keeps its source snapshot true: a
       # build of another tree without it left artifacts that a later job judged fresh (stale generated
       # sources, 2026-11-13). Only byte-identical Git objects regain their previous timestamps.
@@ -157,6 +163,8 @@ jobs:
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
           CARGO_PROFILE_RELEASE_INCREMENTAL: 'true'
           CARGO_PROFILE_DEV_OPT_LEVEL: '3'
+          # tools/parity.py PROFILE: the harnesses' own builds must match these, or they rebuild.
+          CARGO_PROFILE_TEST_DEBUG: 'false'
         run: |
           export CARGO_TARGET_DIR="$PWD/.local/parity-target"
           exec 3>&1 > "$PARITY_LOG_DIR/game-probes.log" 2>&1

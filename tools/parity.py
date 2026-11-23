@@ -79,6 +79,10 @@ PROFILE = {
     # Probes built in the dev profile keep its overflow checks and debug
     # assertions, but run optimised.
     "CARGO_PROFILE_DEV_OPT_LEVEL": "3",
+    # The sunrise-client lib test, which many harnesses build, outgrew a 16 GiB parity runner with line-table
+    # debuginfo. Parity needs no debuginfo; .github/workflows/parity.yml's warm-up sets the same, so these builds
+    # reuse it.
+    "CARGO_PROFILE_TEST_DEBUG": "false",
 }
 SHIM = STATE_DIR / "shim"
 ORACLE_KEEP = Path(os.environ["PARITY_ORACLE_KEEP"]) if os.environ.get("PARITY_ORACLE_KEEP") else None

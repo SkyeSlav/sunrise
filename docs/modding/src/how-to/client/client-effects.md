@@ -1,6 +1,19 @@
 # Client effects and tooltips
 
-Use client services to edit tooltips, draw extra camera views and change local sound output. See the [API reference](../../reference/api.md) for the generated signatures.
+Use client services to edit tooltips, read effect blends, draw extra camera views and change
+local sound output. See the [API reference](../../reference/api.md) for the generated signatures.
+
+## Client effect interpolation
+
+Pass the render partial tick unchanged to `LivingRef::effect_blend_factor(host, effect, partial)`
+for the local player's client effect blend. The read does not clamp it. An unknown effect,
+stale handle or non-local entity returns `None`; a known but absent effect returns `Some(0.0)`.
+
+An ordinary blended addition starts at 0 before its first effect tick, then interpolates each
+tick to the post-countdown target (1 while active, 0 once expired). An effect that expires on
+its first tick never rises; an infinite effect also interpolates on addition. An unblended
+addition starts at its target, and replacing an effect keeps its blend. Darkness and nausea
+have longer fades.
 
 ## Reading the tooltip preference
 
@@ -147,8 +160,8 @@ fn render_tooltip_pre(
 }
 ```
 
-   `TooltipImage.size` no longer exists. Supply dimensions in your `ClientTooltipComponent`'s
-   `width` and `height` implementations. To read a component's dimensions, use
+   Supply dimensions in your `ClientTooltipComponent`'s `width` and `height`
+   implementations. To read a component's dimensions, use
    `component.width(font)` and `component.height(font)` in Pre, as above (`None` means
    measurement failed). Gather sees unprepared data, not dimensions. The `width` and `height`
    passed to `draw_image` are for the entire tooltip's content box, not that component.
@@ -222,11 +235,8 @@ Extra views also omit the sun, moon, stars, clouds and block outline. Translucen
 terrain uses the player camera's sorting. See the generated `world_views` hook notes
 for the rendering contract.
 
-Views draw the player's own level for now. The other levels a server opens for the
-client (viewed levels) are meshed only while a view names one, after the player's own
-level's work and on one worker at a time, and their meshes stay 5 seconds after no view
-names the level. Once views of a viewed level are drawn, such a view draws the sections
-meshed so far and nothing where a section is not meshed yet.
+Views draw only the player's own level. A request targeting another level is refused with
+`WorldViewRefusalReason::Level`.
 
 ## Muffling sounds
 

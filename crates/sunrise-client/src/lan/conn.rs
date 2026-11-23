@@ -67,9 +67,50 @@ fn login_disconnect(c: &mut Connection, reason: &sunrise_core::nbt::Tag) {
 pub fn component_json(tag: &sunrise_core::nbt::Tag) -> String {
     component_value(tag).compact()
 }
-fn component_value(tag: &sunrise_core::nbt::Tag) -> crate::server::json::Json {
+
+/// A login disconnect's reason JSON for a component already in its JSON form, written as
+/// [`component_json`] writes one, or None when `ClientboundLoginDisconnectPacket`'s codec
+/// would refuse it.
+pub fn login_disconnect_json(component: &serde_json::Value) -> Option<String> {
+    let reason_json = json_component_value(component).compact();
+    let packet = login::Clientbound::Disconnect(login::Disconnect { reason_json }).encode();
+    // The packet id, 0, is one VarInt byte.
+    match login::Clientbound::decode(i32::from(packet[0]), &packet[1..]) {
+        Ok(login::Clientbound::Disconnect(login::Disconnect { reason_json })) => Some(reason_json),
+        _ => None,
+    }
+}
+
+/// [`component_value`] for a JSON component: its numbers keep their JSON form.
+fn json_component_value(value: &serde_json::Value) -> crate::server::json::Json {
     use crate::server::json::Json;
-    use sunrise_core::nbt::Tag;
+    use serde_json::Value;
+    match value {
+        Value::Null => Json::Null,
+        Value::Bool(b) => Json::Bool(*b),
+        Value::Number(n) => Json::Number(n.to_string()),
+        Value::String(s) => Json::String(s.clone()),
+        Value::Array(items) => Json::Array(items.iter().map(json_component_value).collect()),
+        Value::Object(map) => {
+            if map.len() == 1
+                && let Some(Value::String(t)) = map.get("text")
+            {
+                return Json::String(t.clone());
+            }
+            let mut members: Vec<(&String, &Value)> = map.iter().collect();
+            members.sort_by_key(|(k, _)| component_key_rank(k));
+            Json::Object(
+                members
+                    .into_iter()
+                    .map(|(k, v)| (k.clone(), json_component_value(v)))
+                    .collect(),
+            )
+        }
+    }
+}
+
+/// Where ComponentSerialization.CODEC writes the field `key`: unknown fields last.
+fn component_key_rank(key: &str) -> usize {
     const ORDER: &[&str] = &[
         "type",
         "text",
@@ -104,6 +145,12 @@ fn component_value(tag: &sunrise_core::nbt::Tag) -> crate::server::json::Json {
         "insertion",
         "font",
     ];
+    ORDER.iter().position(|o| *o == key).unwrap_or(ORDER.len())
+}
+
+fn component_value(tag: &sunrise_core::nbt::Tag) -> crate::server::json::Json {
+    use crate::server::json::Json;
+    use sunrise_core::nbt::Tag;
     match tag {
         Tag::String(s) => Json::String(s.to_string_lossy()),
         Tag::List(items) => Json::Array(items.iter().map(component_value).collect()),
@@ -114,7 +161,7 @@ fn component_value(tag: &sunrise_core::nbt::Tag) -> crate::server::json::Json {
                 return Json::String(t.to_string_lossy());
             }
             let mut keys: Vec<String> = map.keys().map(|k| k.to_string_lossy()).collect();
-            keys.sort_by_key(|k| ORDER.iter().position(|o| o == k).unwrap_or(ORDER.len()));
+            keys.sort_by_key(|k| component_key_rank(k));
             Json::Object(
                 keys.into_iter()
                     .map(|k| {
@@ -535,28 +582,50 @@ impl PlayerSender {
         self.send_body(body.into());
     }
     pub(super) fn send_body(&self, body: Body) {
+        self.queue_body(body, true);
+    }
+    /// Admit a typed play ping in normal send order, without closing on backpressure.
+    /// Admission to a held queue or transaction is not a promise of delivery.
+    pub fn try_send_play_ping(&self, id: i32) -> bool {
+        self.is_live()
+            && play::Clientbound::Ping(cfg::Ping { id })
+                .try_encode()
+                .is_ok_and(|body| self.queue_body(body.into(), false))
+    }
+    fn queue_body(&self, body: Body, close_on_full: bool) -> bool {
         if matches!(self.to, To::Disabled) {
-            return;
+            return false;
         }
         let cost = io_pool::charge(body.retained());
-        let Err(body) = transaction_packets::capture(self, body, cost) else {
-            return;
+        let body = match transaction_packets::capture(self, body, cost) {
+            Ok(admitted) => return admitted,
+            Err(body) => body,
         };
         if !self.reserve_queued(cost) {
-            self.close();
-            return;
+            if close_on_full {
+                self.close();
+            }
+            return false;
         }
-        self.publish_reserved(body);
+        self.publish_reserved(body)
     }
-    fn publish_reserved(&self, body: Body) {
+    fn publish_reserved(&self, body: Body) -> bool {
         if HOLDING.get() {
             self.held().push(body);
+            true
         } else {
             self.flush();
             match &self.to {
-                To::Disabled => {}
-                To::Channel(tx) => drop(tx.send(Out::Packet(body.into_vec()))),
-                To::Pool(outbox, _) => outbox.send(vec![body], None),
+                To::Disabled => false,
+                To::Channel(tx) => {
+                    let cost = io_pool::body_charge(&body);
+                    if tx.send(Out::Packet(body.into_vec())).is_err() {
+                        self.pending.fetch_sub(cost, Ordering::Relaxed);
+                        return false;
+                    }
+                    true
+                }
+                To::Pool(outbox, _) => outbox.try_send(vec![body], None),
             }
         }
     }
@@ -944,7 +1013,35 @@ fn serve_connection(
                 );
                 return Ok(());
             }
-            serve_login(c, address, &shared, counted)
+            let handed_off = shared.handoffs.is_some() && shared.handshake_listeners.any();
+            let intention = if handed_off {
+                let id = counted.as_ref().map_or_else(
+                    || shared.next_connection.fetch_add(1, Ordering::Relaxed),
+                    |counted| counted.2,
+                );
+                let peer_ip = (!c.is_memory()).then_some(address.ip());
+                let Some(decision) = shared.hand_off(id, intention, peer_ip) else {
+                    return Ok(());
+                };
+                // A server draining its players for a stop keeps listening: `try_admit` refuses
+                // an accepted login there as it refuses one no listener heard.
+                if shared.stop.load(Ordering::Relaxed) {
+                    return Ok(());
+                }
+                match decision {
+                    Ok(accepted) => accepted,
+                    Err(reason_json) => {
+                        let _ = c.send(
+                            &login::Clientbound::Disconnect(login::Disconnect { reason_json })
+                                .encode(),
+                        );
+                        return Ok(());
+                    }
+                }
+            } else {
+                intention
+            };
+            serve_login(c, intention, handed_off, address, &shared, counted)
         }
         other => Err(format!("unknown intent {other}")),
     }
@@ -1117,6 +1214,9 @@ fn authenticate(
 
 fn serve_login(
     mut c: Connection,
+    // The accepted intention is the only requested host; login does not route by host yet.
+    _intention: handshake::Intention,
+    handed_off: bool,
     address: std::net::SocketAddr,
     shared: &Arc<Shared>,
     counted: Option<super::Counted>,
@@ -1127,6 +1227,11 @@ fn serve_login(
         login::Serverbound::Hello(h) => h,
         _ => return Err("expected a login hello".into()),
     };
+    // A peer that left while the server tick decided its handshake may have left a whole
+    // Hello behind: its connection is gone before authentication or admission sees it.
+    if handed_off && c.reader.peer_closed() {
+        return Ok(());
+    }
     if !valid_name(&hello.name) {
         // handleHello's validState throws; Connection.exceptionCaught sends the
         // exception as the login disconnect.
@@ -1260,6 +1365,10 @@ fn login_and_configure(
     properties: Vec<sunrise_core::profile::AccountProperty>,
 ) -> Result<Option<Parts>, String> {
     let e = |e: sunrise_protocol::Error| e.to_string();
+    // `player_login_profile`: the login's properties, as a mod edits them, go to both login
+    // success and the player list.
+    let properties =
+        super::login_profile::edited(shared.login_profiles.as_ref(), uuid, name, properties);
     // ServerLoginPacketListenerImpl: memory connections are not compressed.
     let threshold = shared.config.compression_threshold;
     if threshold >= 0 && !c.is_memory() {
@@ -3857,6 +3966,40 @@ mod outgoing_budget_tests {
             menu_extra_rev: 0,
         }
     }
+    #[test]
+    fn play_ping_reports_queue_admission() {
+        let mut s = sender(Framing::Network(None));
+        s.cap = 0;
+        assert!(!s.try_send_play_ping(-1));
+        assert!(s.is_live());
+        let transaction = transaction_packets::Scope::begin();
+        assert!(!s.try_send_play_ping(-1));
+        assert!(transaction_packets::Scope::refused());
+        drop(transaction);
+        assert_eq!(s.queued(), (0, 0));
+        assert!(s.is_live());
+
+        s.cap = io_pool::MAX_PENDING;
+        let transaction = transaction_packets::Scope::begin();
+        assert!(s.try_send_play_ping(42));
+        assert_eq!(s.queued().0, 0, "tentative packets cannot reach the outbox");
+        drop(transaction);
+        assert_eq!(s.queued(), (0, 0));
+        assert!(
+            s.try_send_play_ping(42),
+            "admission does not require a worker wake"
+        );
+        assert_eq!(s.queued().0, 1);
+        s.close();
+        assert!(!s.try_send_play_ping(43));
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let channel = PlayerSender::new(tx, Arc::default());
+        drop(rx);
+        assert!(!channel.try_send_play_ping(44));
+        assert_eq!(channel.queued(), (0, 0));
+    }
+
     #[test]
     fn empty_prepared_journal_records_are_bounded_and_fully_refunded() {
         let s = sender(Framing::Memory);

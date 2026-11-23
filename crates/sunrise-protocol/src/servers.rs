@@ -256,6 +256,44 @@ pub fn parse_address(text: &str) -> Option<(String, u16)> {
     }
 }
 
+/// `ServerList.get`: shown entries, then hidden. A name plus address picks that
+/// row; an address alone is the first row with that ip.
+pub fn find<'a>(
+    shown: &'a [ServerEntry],
+    hidden: &'a [ServerEntry],
+    address: &str,
+    name: Option<&str>,
+) -> Option<&'a ServerEntry> {
+    let mut rows = shown.iter().chain(hidden.iter());
+    match name {
+        Some(name) => rows.find(|s| s.ip == address && s.name == name),
+        None => rows.find(|s| s.ip == address),
+    }
+}
+
+/// `ServerList.saveSingleServer` for the resource-pack setting: only the shown
+/// or hidden row with this name and address is written.
+pub fn save_single_accept_textures(
+    shown: &mut [ServerEntry],
+    hidden: &mut [ServerEntry],
+    name: &str,
+    address: &str,
+    setting: Option<bool>,
+) -> bool {
+    if let Some(entry) = shown.iter_mut().find(|s| s.name == name && s.ip == address) {
+        entry.accept_textures = setting;
+        true
+    } else if let Some(entry) = hidden
+        .iter_mut()
+        .find(|s| s.name == name && s.ip == address)
+    {
+        entry.accept_textures = setting;
+        true
+    } else {
+        false
+    }
+}
+
 /// HostAndPort uses the default for an empty port, refuses a leading plus,
 /// and accepts signed zero on its non-bracketed path before checking range.
 fn parse_port(text: &str) -> Option<u16> {
@@ -382,5 +420,33 @@ mod tests {
         assert_eq!(parse_address("host:-0"), Some(("host".into(), 0)));
         assert_eq!(parse_address("host:0"), Some(("host".into(), 0)));
         assert_eq!(parse_address("[::1]:65535"), Some(("::1".into(), 65535)));
+    }
+
+    #[test]
+    fn save_single_accept_textures_updates_only_the_named_row() {
+        let address = "play.example.net:25565";
+        let mut shown = vec![
+            ServerEntry::new("Home", address),
+            ServerEntry::new("Work", address),
+        ];
+        let mut hidden = vec![ServerEntry::new("Direct", address)];
+        assert_eq!(
+            find(&shown, &hidden, address, Some("Work")).map(|e| e.name.as_str()),
+            Some("Work")
+        );
+        assert!(save_single_accept_textures(
+            &mut shown,
+            &mut hidden,
+            "Work",
+            address,
+            Some(true),
+        ));
+        assert_eq!(shown[0].accept_textures, None);
+        assert_eq!(shown[1].accept_textures, Some(true));
+        assert_eq!(hidden[0].accept_textures, None);
+        assert_eq!(
+            find(&shown, &hidden, address, None).map(|e| e.name.as_str()),
+            Some("Home")
+        );
     }
 }

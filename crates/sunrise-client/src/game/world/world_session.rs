@@ -48,6 +48,7 @@ impl Game<'_> {
             } => self.open_world(&folder, Some(&name), seed, creative, Some(&options))?,
             Action::Connect {
                 address,
+                name,
                 lan,
                 realm,
             } => self.connect_server_with_options(
@@ -56,6 +57,7 @@ impl Game<'_> {
                 None,
                 lan,
                 realm,
+                name.as_deref(),
             )?,
             Action::DataPacks { dir, selected } => {
                 self.clear_device_keys();

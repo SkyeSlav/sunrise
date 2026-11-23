@@ -1,6 +1,28 @@
 use super::*;
 
 impl Game<'_> {
+    /// Bounding box `[lo, hi]` and world origin `[x, y, z]` of a crosshair entity for
+    /// `Minecraft.startUseItem` (including remote/resident leash knots, which have no API body).
+    fn use_entity_geometry(&self, entity: mod_api::EntityRef) -> Option<([[f64; 3]; 2], [f64; 3])> {
+        let knot_block = self.remote_knots.get(&entity.id()).copied().or_else(|| {
+            self.resident_entities
+                .knots
+                .iter()
+                .find(|k| k.id == entity.id())
+                .map(|k| k.fence)
+        });
+        if let Some(block) = knot_block {
+            let bounds = crate::game::pick_entity::knot_bounds(block);
+            let p = sunrise_client::mobs::leash::knot_state(block).position;
+            let (lo, hi) = (bounds.min_position(), bounds.max_position());
+            return Some(([[lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z]], [p.x, p.y, p.z]));
+        }
+        Some((
+            self.entity_bounding_box(entity)?,
+            self.entity_position(entity)?,
+        ))
+    }
+
     /// `Minecraft.startUseItem`'s entity turn for `hand`: Interact goes to
     /// the server, and whether the click ends there is what this client's
     /// copy of the entity answers (`MultiPlayerGameMode.interact`).
@@ -9,14 +31,32 @@ impl Game<'_> {
         if let Some(r) = self.remote.as_mut() {
             r.use_target = None;
         }
-        if self.uses_stored_pick() {
-            let Some(mod_api::CrosshairTarget::Entity { entity, .. }) = self.crosshair_target()
+        let spectator = self.spectator();
+        let sneaking = self.remote_shift_down();
+        let interact_packet = |id, location| {
+            S::Interact(play::Interact {
+                id,
+                hand: hand_id(hand),
+                location,
+                secondary: sneaking,
+            })
+        };
+        if self.uses_stored_pick() || spectator {
+            let Some(mod_api::CrosshairTarget::Entity { entity, point }) = self.crosshair_target()
             else {
                 return false;
             };
-            let Some([lo, hi]) = self.entity_bounding_box(entity) else {
+            let Some(([lo, hi], origin)) = self.use_entity_geometry(entity) else {
                 return false;
             };
+            // Minecraft.startUseItem checks the target's blockPosition() against the world
+            // border before range/interaction and returns from the whole click when outside.
+            let block = sunrise_core::position::BlockPos::containing(Vec3::new(
+                origin[0], origin[1], origin[2],
+            ));
+            if !self.border.contains(f64::from(block.x), f64::from(block.z)) {
+                return true;
+            }
             let Some(eye) = self.eye_position() else {
                 return false;
             };
@@ -28,8 +68,13 @@ impl Game<'_> {
             if distance_squared >= self.entity_reach.powi(2) {
                 return false;
             }
+            if spectator {
+                // MultiPlayerGameMode.interact sends for either hand before returning PASS.
+                let location = std::array::from_fn(|i| point[i] - origin[i]);
+                self.send(interact_packet(entity.id() as i32, location));
+                return false;
+            }
         }
-        let sneaking = self.remote_shift_down();
         // A boat, minecart, item frame, armor stand or painting nearer than
         // any mob: the server uses it (AbstractBoat.interact boards it).
         if let Some(hit) = self.remote_object_hit()
@@ -109,12 +154,7 @@ impl Game<'_> {
             if response.is_none() && hand == Hand::Off && !passes {
                 return false;
             }
-            self.send(S::Interact(play::Interact {
-                id: hit.id,
-                hand: hand_id(hand),
-                location: hit.location,
-                secondary: sneaking,
-            }));
+            self.send(interact_packet(hit.id, hit.location));
             if let Some(done) = self.entity_interaction(hand, hit.id) {
                 return done;
             }
@@ -149,12 +189,7 @@ impl Game<'_> {
             && self.before_block(distance)
         {
             let id = self.mobs[i].id as i32;
-            self.send(S::Interact(play::Interact {
-                id,
-                hand: hand_id(hand),
-                location,
-                secondary: sneaking,
-            }));
+            self.send(interact_packet(id, location));
             if let Some(done) = self.entity_interaction(hand, id) {
                 return done;
             }

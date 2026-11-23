@@ -84,18 +84,30 @@ pub(crate) fn scan(
     )
 }
 
-/// The table the mod at `root`, pinned to `sdk`, packs: what the scan found, then the game code
+/// The table the mod pinned to `sdk` packs: what the scan found, then the game code
 /// its manifest declares, each with its hash at the pinned build ([`game_uses::entries`]). The
-/// build data is fetched only for a mod that declares some.
+/// build data is fetched only for a mod that declares some, from the signed SDK itself into a
+/// private folder: the project's own cache is the checkout's to edit, so neither packing nor a fit
+/// verdict reads it.
 pub(crate) fn table(
     uses: &Uses,
-    root: &Path,
     manifest: &Manifest,
     sdk: &PinnedSdk,
 ) -> Result<UsesTable, String> {
     let mut table = uses.table(sdk.build.clone());
     if game_uses::declared(manifest) {
-        let data = crate::sdk_fetch::build_data(root, &sdk.build)?;
+        let staging = tempfile::tempdir().map_err(|e| format!("build data: {e}"))?;
+        crate::sdk_fetch::release_data(
+            &crate::sdk_fetch::Base::from_env(),
+            &crate::sdk_fetch::keys(),
+            &sdk.build,
+            staging.path(),
+            true,
+        )?;
+        let data = staging
+            .path()
+            .join(&sdk.build)
+            .join(crate::sdk_fetch::BUILD_DATA);
         // An item the pinned build lacks is refused by the build, by name, and one its build data
         // cannot fingerprint is never shown unchanged; the list records the rest.
         table.entries.extend(

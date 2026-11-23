@@ -64,6 +64,7 @@ impl Game<'_> {
     fn apply_set_entity_data_entry(&mut self, id: i32, entry: &(u8, i32, Value)) {
         let (index, _, value) = entry;
         let single = std::slice::from_ref(entry);
+        let size_key = self.synched_size_key(id as u32);
         if let Some(r) = self.remote.as_mut() {
             if let (0, Value::Byte(flags)) = (index, value) {
                 if let Some(t) = r.entities.get_mut(&id) {
@@ -333,6 +334,9 @@ impl Game<'_> {
         self.remote_object_data(id, single);
         self.remote_projectile_data(id, single);
         self.remote_dragon_data(id, single);
+        // `onSyncedDataUpdated` → `refreshDimensions`: `EntityEvent.Size` when
+        // this value changed the copy's pose or the size it follows.
+        self.native_synched_size(id as u32, size_key, *index, value);
     }
 
     /// `C::SetEquipment`: its arms of `apply_packet`, guard and order kept.
@@ -422,7 +426,8 @@ impl Game<'_> {
         }
     }
 
-    /// `C::RemoveMobEffect`: its arms of `apply_packet`, guard and order kept.
+    /// `C::RemoveMobEffect` (`LivingEntity.removeEffectNoUpdate`): from the player itself or
+    /// from another living entity whose effects this client keeps.
     pub(super) fn apply_remove_mob_effect_packet(&mut self, p: play::RemoveMobEffect) {
         let Some(id) = self.remote_effect_id(p.effect) else {
             return;
@@ -431,6 +436,8 @@ impl Game<'_> {
             self.potions.effects.list.retain(|e| e.id != id);
         } else if let Some(m) = self.mob_index.get_mut(&mut self.mobs, p.id as u32) {
             m.extra.client_effects.list.retain(|e| e.id != id);
+        } else if let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == p.id as u32) {
+            a.client_effects.list.retain(|e| e.id != id);
         }
     }
 

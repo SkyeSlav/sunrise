@@ -568,7 +568,7 @@ impl Game<'_> {
         let Target::Mob(id) = self.native_entity_target(mob.entity())? else {
             return None;
         };
-        Some(self.mobs.iter().find(|m| m.id == id && !m.removed)?.no_ai)
+        super::native_living_body::body_no_ai(self.native_living_body(Target::Mob(id))?)
     }
 
     /// `Mob.setNoAi`: whether the mob's own AI runs. With no AI the mob

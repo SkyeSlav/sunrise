@@ -192,7 +192,8 @@ impl Game<'_> {
                     "key.toggleGui" => self.toggle_hide_gui(),
                     "key.advancements" => self.open_advancements(false),
                     "key.socialInteractions" if self.is_multiplayer_server() => {
-                        self.open_social(false)
+                        self.hide_social_tutorial();
+                        self.open_social(false);
                     }
                     "key.socialInteractions" => {
                         let message = sunrise_client::text::Text::translate(

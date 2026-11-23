@@ -696,8 +696,11 @@ impl Game<'_> {
     }
     /// Fires `window_resize` once when the physical or GUI-scaled dimensions change.
     pub(super) fn notify_window_resize(&mut self) {
-        let Some(window) = &self.window else { return };
-        let now = self.resize_state_of(window.inner_size());
+        // The size `ClientOptionsClientHost::window_size` reads, so the two agree.
+        let Some([width, height]) = self.window_size() else {
+            return;
+        };
+        let now = self.resize_state_of(winit::dpi::PhysicalSize::new(width, height));
         if now.differs_from(&mut self.resize_state) {
             self.native_window_resize(
                 now.size.width,
@@ -958,6 +961,103 @@ mod resize_state_tests {
                     assert!(events.lock().unwrap().is_empty());
                 });
             }
+        });
+    }
+
+    /// `ClientOptionsClientHost::window_size` (`Window.getWidth`, `getHeight`): none without a
+    /// window, then the size `window_resize` reports, before and after the window is resized.
+    #[test]
+    #[ignore = "daily"]
+    fn window_size_reads_the_size_window_resize_reports() {
+        // Winit permits only one event loop per process, even after it is dropped.
+        if crate::game::native_entity_refs::tests::run_fresh_cases(
+            "game::options::resize_state_tests::window_size_reads_the_size_window_resize_reports",
+            "SUNRISE_WINDOW_SIZE_CHILD",
+            &["window"],
+        ) {
+            return;
+        }
+        use mod_api::{ClientHost, Hooks, ModEntry, WindowResizeEvent};
+        use mod_platform::testing::with_mods;
+        use std::sync::{Arc, Mutex};
+        use winit::platform::pump_events::EventLoopExtPumpEvents;
+        struct Listener(Arc<Mutex<Vec<[u32; 2]>>>);
+        #[mod_api::__subscriptions]
+        impl Hooks for Listener {
+            fn window_resize(&self, _: &mut dyn ClientHost, event: &mut WindowResizeEvent) {
+                self.0.lock().unwrap().push([event.width, event.height]);
+            }
+        }
+        /// Creates the hidden window when the loop resumes; the resize request is the
+        /// test's own, so its events need no handling.
+        #[derive(Default)]
+        struct Hidden(Option<Arc<winit::window::Window>>);
+        impl winit::application::ApplicationHandler for Hidden {
+            fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+                if self.0.is_none() {
+                    let attributes = winit::window::Window::default_attributes()
+                        .with_visible(false)
+                        .with_inner_size(PhysicalSize::new(1920, 1080));
+                    self.0 = Some(Arc::new(event_loop.create_window(attributes).unwrap()));
+                }
+            }
+            fn window_event(
+                &mut self,
+                _: &winit::event_loop::ActiveEventLoop,
+                _: winit::window::WindowId,
+                _: winit::event::WindowEvent,
+            ) {
+            }
+        }
+        let reported = Arc::new(Mutex::new(Vec::new()));
+        let mut builder = winit::event_loop::EventLoop::builder();
+        #[cfg(target_os = "linux")]
+        {
+            use winit::platform::x11::EventLoopBuilderExtX11;
+            builder.with_x11().with_any_thread(true);
+        }
+        // Libtest runs the test on a thread of its own.
+        #[cfg(target_os = "windows")]
+        {
+            use winit::platform::windows::EventLoopBuilderExtWindows;
+            builder.with_any_thread(true);
+        }
+        let mut event_loop = builder.build().unwrap();
+        let mut app = Hidden::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.0.is_none() && std::time::Instant::now() < deadline {
+            event_loop.pump_app_events(Some(std::time::Duration::from_millis(10)), &mut app);
+        }
+        let window = app
+            .0
+            .clone()
+            .expect("the event loop resumed and made the window");
+        let mods = vec![ModEntry::new("size", Box::new(Listener(reported.clone())))].into();
+        with_mods(mods, || {
+            super::super::native_entity_refs::tests::with_client_game(|game| {
+                game.options.offscreen = true;
+                assert_eq!((&*game as &dyn ClientHost).window_size(), None);
+                game.window = Some(window.clone());
+                assert_eq!(
+                    (&*game as &dyn ClientHost).window_size(),
+                    Some([1920, 1080])
+                );
+                game.notify_window_resize();
+                assert_eq!(reported.lock().unwrap().pop(), Some([1920, 1080]));
+
+                let _ = window.request_inner_size(PhysicalSize::new(1280, 720));
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while window.inner_size() != PhysicalSize::new(1280, 720)
+                    && std::time::Instant::now() < deadline
+                {
+                    event_loop
+                        .pump_app_events(Some(std::time::Duration::from_millis(10)), &mut app);
+                }
+                assert_eq!((&*game as &dyn ClientHost).window_size(), Some([1280, 720]));
+                game.notify_window_resize();
+                assert_eq!(reported.lock().unwrap().pop(), Some([1280, 720]));
+                assert!(reported.lock().unwrap().is_empty());
+            });
         });
     }
 

@@ -2440,6 +2440,29 @@ mod tests {
         assert_eq!(quads, 1);
     }
 
+    /// `GlslCompiler` compiles a type's own shader, as every program, with
+    /// `RENDERPEARL_DEPTH_IS_ZERO_TO_ONE` on a backend whose depth runs from 0 to 1: one reading a
+    /// block it is not given only where the define is missing is used, and one reading it only
+    /// where the define is there is refused.
+    #[test]
+    fn a_gpu_types_shader_has_the_zero_to_one_depth_define() {
+        let fsh = |directive: &str| {
+            BRIGHT_FSH.replace(
+                "    fragColor = vertexColor * brightnessValue;\n",
+                &format!(
+                    "    fragColor = vertexColor;\n{directive} RENDERPEARL_DEPTH_IS_ZERO_TO_ONE\n    \
+                     fragColor *= brightnessValue;\n#endif\n"
+                ),
+            )
+        };
+        let batches = |directive| {
+            let pack = shader_pack("rain", &fsh(directive), serde_json::json!({}), &[]);
+            spawn_rain(&pack).0.len()
+        };
+        assert_eq!(batches("#ifndef"), 1);
+        assert_eq!(batches("#ifdef"), 0);
+    }
+
     /// A quoted include starts from the shader's own folder: `test:weather/rain`'s
     /// `"common.glsl"` is `assets/test/shaders/core/weather/common.glsl`, not a file of
     /// `minecraft:shaders/core/`.

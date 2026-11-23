@@ -267,12 +267,35 @@ impl Game<'_> {
             // `player.move(SELF, (0, 1.1999999, 0))` when on the ground: the player's own move
             // (LocalPlayer.move, through the move gate, #2414), which stops at a ceiling and whose
             // end writes the ground state, so the rest of the tick travels in the air.
-            if self.player.as_ref().is_some_and(|p| p.ground.on_ground) {
-                let _ = self.move_local_player(
+            if let Some(before) = self
+                .player
+                .as_ref()
+                .filter(|p| p.ground.on_ground)
+                .map(|p| p.position.components())
+            {
+                let lift = self.move_local_player(
                     sunrise_world::entity_move::MoverType::SelfMovement,
                     Vec3::new(0.0, f64::from(1.1999999f32), 0.0),
                     true,
                 );
+                if matches!(lift, Ok(Some(_)))
+                    && let (Some(conn), Some(body), Some(host)) =
+                        (self.lan_acting, self.player.as_ref(), self.lan.as_mut())
+                {
+                    // ServerPlayer inherits Entity.move: commit the lift to its server record,
+                    // not as a teleport in leave_guest. The client runs the same move and still
+                    // has its own push; it reports its position after travelling.
+                    host.hub.update_guest(conn, |g| {
+                        // Leave a teleport by a listener for the normal guest turn sync.
+                        if !body.teleported && g.position == before {
+                            let lifted = body.position.components();
+                            g.moved |= g.position != lifted;
+                            g.position = lifted;
+                            g.on_ground = body.ground.on_ground;
+                            g.rests_on_ground = body.collision.below;
+                        }
+                    });
+                }
             }
             if !server_client {
                 let sound = format!("minecraft:item.trident.riptide_{}", riptide.min(3));

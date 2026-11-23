@@ -2095,6 +2095,26 @@ impl Game<'_> {
                 HostEvent::RawPayload(delivery) => {
                     self.run_payload(delivery.endpoint, delivery.incoming);
                 }
+                HostEvent::PlayerPong { conn, id } => {
+                    let Some(guest) = self.lan.as_ref()?.hub.guest(conn).filter(|g| {
+                        g.joined() && g.participates_online() && g.play_connection_open()
+                    }) else {
+                        continue;
+                    };
+                    let Some(epoch) = self.native_lifecycle.epoch() else {
+                        continue;
+                    };
+                    let player = mod_api::__private::game::player_ref(
+                        mod_api::EntityRef::new(epoch, guest.entity_id as u32),
+                        guest.uuid,
+                    );
+                    let name = guest.name.clone();
+                    self.native_player_pong(crate::game::native_hooks::PlayerPongCall {
+                        player,
+                        name: &name,
+                        id,
+                    });
+                }
                 event @ (HostEvent::Chat { .. } | HostEvent::Warn(_) | HostEvent::Error(_)) => {
                     self.lan_log_event(event);
                 }
@@ -2521,6 +2541,11 @@ impl Game<'_> {
             .level_pass
             .first
             .then(|| host.hub.lan.configuration_requests().collect::<Vec<_>>());
+        let handoffs = self.level_pass.first.then(|| host.hub.lan.take_handoffs());
+        let login_profiles = self
+            .level_pass
+            .first
+            .then(|| host.hub.lan.login_profile_requests().collect::<Vec<_>>());
         let holding = lan::Holding::start();
         // Last tick's tracked entities: enough for place collision and joins
         // before this tick moves anyone.
@@ -2610,10 +2635,94 @@ impl Game<'_> {
         self.level_pass.packets_drained = true;
         drop(holding);
         self.lan = Some(host);
+        if let Some(handoffs) = handoffs {
+            self.tick_lan_player_handshakes(handoffs);
+        }
+        for request in login_profiles.into_iter().flatten() {
+            self.answer_login_profile(request);
+        }
         if let Some(requests) = configuration_requests {
             sunrise_client::spans::time("lan_configuration_tasks", || {
                 self.tick_lan_configuration_tasks(requests)
             });
+        }
+    }
+
+    /// `player_login_profile` for one admitted login: the mods' list when the packet can carry
+    /// it, else the login's own, sent back to its connection.
+    fn answer_login_profile(&mut self, request: lan::login_profile::LoginProfileRequest) {
+        use sunrise_core::profile::AccountProperty;
+        let lan::login_profile::LoginProfileRequest {
+            uuid,
+            name,
+            properties,
+            reply,
+        } = request;
+        let mut edited: Vec<_> = properties
+            .iter()
+            .map(|property| mod_api::AccountProfileProperty {
+                name: property.name.clone(),
+                value: property.value.clone(),
+                signature: property.signature.clone(),
+            })
+            .collect();
+        self.native_player_login_profile(uuid, &name, &mut edited);
+        let edited: Vec<_> = edited
+            .into_iter()
+            .map(|property| AccountProperty {
+                name: property.name,
+                value: property.value,
+                signature: property.signature,
+            })
+            .collect();
+        let chosen = if lan::login_profile::properties_fit(&edited) {
+            edited
+        } else {
+            log::warn!(
+                "player_login_profile: the properties for {name} don't fit the login packet; \
+                 keeping the login's own"
+            );
+            properties
+        };
+        // A connection that closed meanwhile no longer waits.
+        let _ = reply.send(chosen);
+    }
+
+    fn tick_lan_player_handshakes(&mut self, handoffs: Vec<lan::Handoff>) {
+        for mut handoff in handoffs {
+            let peer_ip = handoff.peer_ip.map(|ip| ip.to_string());
+            let mut cancel = false;
+            let mut reason = None;
+            self.native_player_handshake(
+                &mut handoff.intention.host,
+                handoff.intention.port,
+                handoff.intention.protocol,
+                peer_ip.as_deref(),
+                &mut cancel,
+                &mut reason,
+            );
+            let refusal = cancel.then(|| {
+                // The reason is checked once more where it becomes the packet's JSON.
+                let reason = reason.and_then(|text| {
+                    let json = sunrise_client::api_text::to_serialized_engine(&text)
+                        .map_err(|error| error.to_string())
+                        .and_then(|text| {
+                            lan::conn::login_disconnect_json(&text.component_view())
+                                .ok_or_else(|| "too long for a login disconnect".to_owned())
+                        });
+                    json.inspect_err(|error| {
+                        log::warn!("player_handshake disconnect reason refused: {error}");
+                    })
+                    .ok()
+                });
+                reason.unwrap_or_else(|| {
+                    lan::conn::component_json(&sunrise_protocol::text::translatable(
+                        "multiplayer.disconnect.generic",
+                        &[],
+                    ))
+                })
+            });
+            handoff.answer(refusal);
         }
     }
 
@@ -3818,6 +3927,464 @@ mod tests {
                 idle_states: Default::default(),
             }
         }
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn player_handshake_dispatch_before_login() {
+        use crate::game::native_entity_refs::tests::{run_fresh_cases, with_game};
+        use mod_api::{Flow, Hooks, ModEntry, PlayerHandshakeEvent, ServerHost, Text};
+        use serde_json::{Value, json};
+        use std::{
+            net::{Shutdown, TcpStream},
+            sync::{Arc, Mutex, mpsc},
+            thread,
+            time::{Duration, Instant},
+        };
+        use sunrise_client::lan::{Lan, NetConfig, chunks::ChunkEncoder, data::SyncData};
+        use sunrise_core::nbt::Tag;
+        use sunrise_protocol::{
+            PROTOCOL_VERSION,
+            connection::Connection,
+            crypto::offline_uuid,
+            packets::{Empty, handshake, login, status},
+        };
+
+        const WAIT: Duration = Duration::from_secs(5);
+        const ORIGINAL: &str = "entry.test\0suffix";
+        const REWRITTEN: &str = "route.test\0kept";
+        if run_fresh_cases(
+            "game::lan::tests::player_handshake_dispatch_before_login",
+            "SUNRISE_PLAYER_HANDSHAKE_CHILD",
+            &["login"],
+        ) {
+            return;
+        }
+
+        #[derive(Debug, PartialEq, Eq)]
+        struct Seen {
+            host: String,
+            port: u16,
+            protocol: i32,
+            peer_ip: Option<String>,
+            thread: thread::ThreadId,
+        }
+        struct Listener {
+            rewrite: bool,
+            seen: Arc<Mutex<Vec<Seen>>>,
+        }
+        #[mod_api::__subscriptions]
+        impl Hooks for Listener {
+            fn player_handshake(
+                &self,
+                _: &mut dyn ServerHost,
+                event: &mut PlayerHandshakeEvent<'_>,
+            ) -> Flow {
+                self.seen.lock().unwrap().push(Seen {
+                    host: event.requested_host.clone(),
+                    port: event.requested_port,
+                    protocol: event.protocol_version,
+                    peer_ip: event.peer_ip.map(str::to_owned),
+                    thread: thread::current().id(),
+                });
+                if self.rewrite {
+                    // The handshake's own values are this listener's copy: the next one
+                    // still reads what the connection sent.
+                    event.requested_port = 1;
+                    event.protocol_version = 0;
+                    event.peer_ip = Some("10.0.0.1");
+                    match event.requested_host.as_str() {
+                        "closed.test" => {
+                            event.cancelled = true;
+                            *event.reason = Some(Text::literal("Fixture refused"));
+                        }
+                        "default.test" => event.cancelled = true,
+                        "item.test" => {
+                            event.cancelled = true;
+                            let mut style = mod_api::text::TextStyle::default();
+                            style.hover = Some(mod_api::text::TextHover::Item {
+                                id: "minecraft:stone".into(),
+                                count: 1,
+                                components: Some(Tag::compound([(
+                                    "minecraft:custom_model_data",
+                                    Tag::compound([(
+                                        "floats",
+                                        Tag::List(vec![Tag::Float(0.5f32.to_bits())]),
+                                    )]),
+                                )])),
+                            });
+                            *event.reason = Some(Text::literal("Fixture item").with_style(style));
+                        }
+                        "long.test" => {
+                            event.cancelled = true;
+                            // Valid Text, longer than the login disconnect's 262144-unit string.
+                            *event.reason = Some(Text::literal("a".repeat(262_145)));
+                        }
+                        "deep.test" => {
+                            event.cancelled = true;
+                            let mut text = Text::literal("too deep to serialize");
+                            for _ in 0..mod_api::text::MAX_TEXT_DEPTH {
+                                text = Text::literal("").append(text);
+                            }
+                            *event.reason = Some(text);
+                        }
+                        _ if event.requested_host.starts_with("local") => {
+                            *event.requested_host = format!("{REWRITTEN}{}", "a".repeat(255));
+                        }
+                        _ => *event.requested_host = REWRITTEN.into(),
+                    }
+                }
+                Flow::Continue
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mods = [("handshake_rewrite", true), ("handshake_observe", false)]
+            .into_iter()
+            .map(|(id, rewrite)| {
+                ModEntry::new(
+                    id,
+                    Box::new(Listener {
+                        rewrite,
+                        seen: seen.clone(),
+                    }),
+                )
+            })
+            .collect::<Vec<_>>()
+            .into();
+        mod_platform::testing::with_mods(mods, || {
+            with_game(|game| {
+                let (gate, gate_calls) = mpsc::channel();
+                let net = NetConfig {
+                    compression_threshold: -1,
+                    gate: Some(Arc::new(move |addr, uuid, name| {
+                        let _ = gate.send((addr, uuid, name.to_owned()));
+                        None
+                    })),
+                    ..NetConfig::loopback(0, "Handshake fixture".into(), 8)
+                };
+                let sync = Arc::new(SyncData::empty());
+                let lan = Lan::start_with_spawn_preparation(sync.clone(), net).unwrap();
+                let port = lan.port;
+                let shared = lan.shared.clone();
+                let config = super::HubConfig {
+                    default_game_mode: 0,
+                    guest_commands: false,
+                    force_game_mode: false,
+                    hardcore: false,
+                    view_distance: 10,
+                    simulation_distance: 10,
+                    dimension: "minecraft:overworld".into(),
+                    allow_flight: false,
+                    seed: 0,
+                    max_players: 8,
+                    integrated: true,
+                    levels: Default::default(),
+                    level_seeds: Default::default(),
+                };
+                let encoder = ChunkEncoder::new(
+                    [] as [(Arc<str>, bool); 0],
+                    &sync.builtin,
+                    &[],
+                    &[],
+                    Default::default(),
+                );
+                game.lan = Some(LanHost::for_test(Hub::new(
+                    lan,
+                    sync,
+                    encoder,
+                    config,
+                    game.loop_context.clone(),
+                )));
+                let tcp = || {
+                    let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+                    let connection = Connection::from_stream(stream.try_clone().unwrap()).unwrap();
+                    connection.reader.set_read_timeout(Some(WAIT)).unwrap();
+                    (connection, stream)
+                };
+                let intention = |c: &mut Connection, host: &str, port, protocol, intent| {
+                    c.send(
+                        &handshake::Serverbound::Intention(handshake::Intention {
+                            host: host.into(),
+                            port,
+                            protocol,
+                            intent,
+                        })
+                        .encode(),
+                    )
+                    .unwrap();
+                };
+                let hello = |c: &mut Connection, name: &str| {
+                    c.send(
+                        &login::Serverbound::Hello(login::ServerHello {
+                            name: name.into(),
+                            uuid: 1, // Offline admission derives the UUID from the name instead.
+                        })
+                        .encode(),
+                    )
+                    .unwrap();
+                };
+                let login_packet = |c: &mut Connection| {
+                    let (id, data) = c.recv().unwrap();
+                    login::Clientbound::decode(id, &data).unwrap()
+                };
+                let assert_login = |c: &mut Connection, name: &str, addr| {
+                    let login::Clientbound::LoginFinished(done) = login_packet(c) else {
+                        panic!("expected LoginFinished for {name}");
+                    };
+                    assert_eq!(done.profile.name, name);
+                    assert_eq!(done.profile.uuid, offline_uuid(name));
+                    assert_eq!(
+                        gate_calls.try_recv().unwrap(),
+                        (addr, offline_uuid(name), name.into())
+                    );
+                };
+                let assert_closed = |c: &mut Connection| {
+                    assert!(c.recv().unwrap_err().is_end_of_stream());
+                };
+                let observed = |host: &str, port, peer_ip: Option<&str>| Seen {
+                    host: host.into(),
+                    port,
+                    protocol: PROTOCOL_VERSION,
+                    peer_ip: peer_ip.map(str::to_owned),
+                    thread: thread::current().id(),
+                };
+                let pump = |game: &mut crate::game::Game<'_>, count| {
+                    let deadline = Instant::now() + WAIT;
+                    while seen.lock().unwrap().len() < count {
+                        assert!(Instant::now() < deadline, "handshake was not dispatched");
+                        game.level_pass = Default::default();
+                        game.tick_lan_packets();
+                        thread::yield_now();
+                    }
+                    std::mem::take(&mut *seen.lock().unwrap())
+                };
+                let tcp_ip = Some("127.0.0.1");
+                let (mut c, stream) = tcp();
+                intention(&mut c, ORIGINAL, 25565, PROTOCOL_VERSION, handshake::LOGIN);
+                hello(&mut c, "FirstPeer");
+                assert_eq!(
+                    pump(game, 2),
+                    [
+                        observed(ORIGINAL, 25565, tcp_ip),
+                        observed(REWRITTEN, 25565, tcp_ip)
+                    ]
+                );
+                assert_login(&mut c, "FirstPeer", stream.local_addr().unwrap());
+                drop((c, stream));
+
+                let generic = json!({"translate": "multiplayer.disconnect.generic"});
+                for (host, expected) in [
+                    ("closed.test", json!("Fixture refused")),
+                    ("default.test", generic.clone()),
+                    ("deep.test", generic.clone()),
+                    ("long.test", generic.clone()),
+                    ("item.test", Value::Null),
+                ] {
+                    let (mut c, _stream) = tcp();
+                    intention(&mut c, host, 25565, PROTOCOL_VERSION, handshake::LOGIN);
+                    assert_eq!(pump(game, 1), [observed(host, 25565, tcp_ip)]);
+                    let login::Clientbound::Disconnect(refusal) = login_packet(&mut c) else {
+                        panic!("expected login disconnect");
+                    };
+                    let reason: Value = serde_json::from_str(&refusal.reason_json).unwrap();
+                    if expected.is_null() {
+                        assert_eq!(reason["text"], "Fixture item");
+                        let hover = &reason["hover_event"];
+                        assert_eq!(
+                            (&hover["action"], &hover["id"]),
+                            (&json!("show_item"), &json!("minecraft:stone"))
+                        );
+                        assert_eq!(
+                            hover["components"]["minecraft:custom_model_data"]["floats"],
+                            json!([0.5])
+                        );
+                    } else {
+                        assert_eq!(reason, expected);
+                    }
+                    assert_closed(&mut c);
+                }
+
+                let mut c =
+                    Connection::local(game.lan.as_ref().unwrap().hub.lan.connect_local().unwrap());
+                c.reader.set_read_timeout(Some(WAIT)).unwrap();
+                intention(&mut c, "local.test", 0, PROTOCOL_VERSION, handshake::LOGIN);
+                let long_host = format!("{REWRITTEN}{}", "a".repeat(255));
+                assert_eq!(
+                    pump(game, 2),
+                    [
+                        observed("local.test", 0, None),
+                        observed(&long_host, 0, None)
+                    ]
+                );
+                hello(&mut c, "LocalPeer");
+                assert_login(
+                    &mut c,
+                    "LocalPeer",
+                    sunrise_client::lan::conn::MEMORY_ADDRESS,
+                );
+                drop(c);
+
+                // A peer that leaves a whole Hello behind once its handshake was taken reaches
+                // no admission.
+                let mut c =
+                    Connection::local(game.lan.as_ref().unwrap().hub.lan.connect_local().unwrap());
+                intention(&mut c, "local.left", 0, PROTOCOL_VERSION, handshake::LOGIN);
+                let deadline = Instant::now() + WAIT;
+                let handoffs = loop {
+                    let handoffs = game.lan.as_ref().unwrap().hub.lan.take_handoffs();
+                    if !handoffs.is_empty() {
+                        break handoffs;
+                    }
+                    assert!(Instant::now() < deadline, "memory handshake was not queued");
+                    thread::yield_now();
+                };
+                hello(&mut c, "LeftPeer");
+                drop(c);
+                game.tick_lan_player_handshakes(handoffs);
+                assert_eq!(seen.lock().unwrap().len(), 2);
+                seen.lock().unwrap().clear();
+                assert_eq!(
+                    gate_calls.recv_timeout(Duration::from_millis(500)),
+                    Err(mpsc::RecvTimeoutError::Timeout)
+                );
+
+                let (mut c, _stream) = tcp();
+                intention(&mut c, ORIGINAL, 25565, PROTOCOL_VERSION, handshake::STATUS);
+                c.send(&status::Serverbound::StatusRequest(Empty).encode())
+                    .unwrap();
+                let (id, bytes) = c.recv().unwrap();
+                assert!(matches!(
+                    status::Clientbound::decode(id, &bytes).unwrap(),
+                    status::Clientbound::StatusResponse(_)
+                ));
+                c.send(&status::Serverbound::PingRequest(status::Ping { time: 4242 }).encode())
+                    .unwrap();
+                let (id, bytes) = c.recv().unwrap();
+                assert_eq!(
+                    status::Clientbound::decode(id, &bytes).unwrap(),
+                    status::Clientbound::PongResponse(status::Ping { time: 4242 })
+                );
+                assert_closed(&mut c);
+
+                let (mut c, _stream) = tcp();
+                intention(
+                    &mut c,
+                    &"a".repeat(256),
+                    25565,
+                    PROTOCOL_VERSION,
+                    handshake::LOGIN,
+                );
+                assert_closed(&mut c);
+
+                for (protocol, intent, key) in [
+                    (
+                        PROTOCOL_VERSION - 1,
+                        handshake::LOGIN,
+                        "multiplayer.disconnect.incompatible",
+                    ),
+                    (
+                        PROTOCOL_VERSION,
+                        handshake::TRANSFER,
+                        "multiplayer.disconnect.transfers_disabled",
+                    ),
+                ] {
+                    let (mut c, _stream) = tcp();
+                    intention(&mut c, ORIGINAL, 25565, protocol, intent);
+                    let login::Clientbound::Disconnect(reason) = login_packet(&mut c) else {
+                        panic!("expected vanilla refusal");
+                    };
+                    assert!(reason.reason_json.contains(key));
+                    assert_closed(&mut c);
+                }
+                game.level_pass = Default::default();
+                game.tick_lan_packets();
+                assert!(seen.lock().unwrap().is_empty());
+                assert_eq!(gate_calls.try_recv(), Err(mpsc::TryRecvError::Empty));
+
+                shared.set_accepts_transfers(true);
+                let (mut c, stream) = tcp();
+                intention(
+                    &mut c,
+                    ORIGINAL,
+                    25565,
+                    PROTOCOL_VERSION,
+                    handshake::TRANSFER,
+                );
+                hello(&mut c, "TransferPeer");
+                assert_eq!(
+                    pump(game, 2),
+                    [
+                        observed(ORIGINAL, 25565, tcp_ip),
+                        observed(REWRITTEN, 25565, tcp_ip)
+                    ]
+                );
+                assert_login(&mut c, "TransferPeer", stream.local_addr().unwrap());
+                drop((c, stream));
+
+                let (mut c, stream) = tcp();
+                intention(&mut c, ORIGINAL, 25565, PROTOCOL_VERSION, handshake::LOGIN);
+                hello(&mut c, "Abandoned");
+                // Signal EOF to the server without giving up our ability to observe its reply.
+                stream.shutdown(Shutdown::Write).unwrap();
+                assert_eq!(
+                    pump(game, 2),
+                    [
+                        observed(ORIGINAL, 25565, tcp_ip),
+                        observed(REWRITTEN, 25565, tcp_ip)
+                    ]
+                );
+                assert_closed(&mut c);
+                assert_eq!(gate_calls.try_recv(), Err(mpsc::TryRecvError::Empty));
+
+                assert!(mod_api::__private::set_mod_enabled(
+                    "handshake_rewrite",
+                    false
+                ));
+                assert!(mod_api::__private::set_mod_enabled(
+                    "handshake_observe",
+                    false
+                ));
+                let (mut c, stream) = tcp();
+                intention(
+                    &mut c,
+                    "closed.test",
+                    25565,
+                    PROTOCOL_VERSION,
+                    handshake::LOGIN,
+                );
+                hello(&mut c, "NoListenerPeer");
+                // No tick is needed; the worker uses the captured table's current enabled set.
+                assert_login(&mut c, "NoListenerPeer", stream.local_addr().unwrap());
+                assert!(seen.lock().unwrap().is_empty());
+                drop((c, stream));
+
+                // A server draining for a stop still listens and refuses an accepted login.
+                for id in ["handshake_rewrite", "handshake_observe"] {
+                    assert!(mod_api::__private::set_mod_enabled(id, true));
+                }
+                shared.refuse_logins();
+                let (mut c, _stream) = tcp();
+                intention(&mut c, ORIGINAL, 25565, PROTOCOL_VERSION, handshake::LOGIN);
+                hello(&mut c, "DrainPeer");
+                assert_eq!(
+                    pump(game, 2),
+                    [
+                        observed(ORIGINAL, 25565, tcp_ip),
+                        observed(REWRITTEN, 25565, tcp_ip)
+                    ]
+                );
+                let login::Clientbound::Disconnect(refusal) = login_packet(&mut c) else {
+                    panic!("expected the shutdown refusal");
+                };
+                assert_eq!(
+                    serde_json::from_str::<Value>(&refusal.reason_json).unwrap(),
+                    json!({"translate": "multiplayer.disconnect.server_shutdown"})
+                );
+                assert_closed(&mut c);
+                assert_eq!(gate_calls.try_recv(), Err(mpsc::TryRecvError::Empty));
+            });
+        });
     }
 
     #[test]
@@ -5285,6 +5852,9 @@ impl super::Dim {
 }
 
 #[cfg(test)]
+mod player_packet_tests;
+
+#[cfg(test)]
 pub(crate) mod world_spawn_sync_tests {
     use super::*;
     use std::sync::{Arc, atomic::AtomicI32, mpsc};
@@ -6542,5 +7112,7 @@ mod merchant_packet_tests {
     }
 }
 
+#[cfg(test)]
+mod login_profile_tests;
 #[cfg(test)]
 mod tracking_hook_tests;

@@ -2201,7 +2201,13 @@ impl Game<'_> {
         let mut pick = super::pick_accumulator::PickAccumulator::new(reach * reach);
         let mut best: Option<(usize, f64)> = None;
         for (i, c) in self.carts.iter().enumerate() {
-            if pick.consider_box(self, c.id, from, to, c.bounds()) {
+            if pick.consider_box(
+                self,
+                c.id,
+                from,
+                to,
+                self.client_copy_box(c.id, c.position, c.bounds()),
+            ) {
                 best = Some((i, pick.hovered.unwrap().distance_sq.sqrt()));
             }
         }
@@ -2855,6 +2861,7 @@ impl Game<'_> {
         let lid = |_: [i32; 3]| 0.0;
         let scene = sunrise_client::block_entity_render::Scene {
             camera: glam::DVec3::ZERO,
+            sign_outline: sunrise_client::block_entity_render::SignOutline::None,
             orientation: glam::Quat::IDENTITY,
             anim: &|_| sunrise_client::block_entity_render::BlockAnim::default(),
             texts: None,

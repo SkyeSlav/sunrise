@@ -248,8 +248,7 @@ pub(crate) fn read_shader_file(
 
 /// The packs' `core/lightmap` with `core/screenquad`, when a pack replaces either stage: the
 /// pass gives it `LightmapInfo` besides vanilla's blocks, and the packs' expression uniforms
-/// (`modifiers`) of either stage's file, resolved here for the blocks its stages read. A block
-/// no file of its stages names, or an expression block that is not one float, refuses it.
+/// (`modifiers`) of either stage's file. Unspecified float blocks read zero.
 fn load_lightmap(
     root: &ResourceSource,
     defaults: &ResourceSource,
@@ -259,7 +258,6 @@ fn load_lightmap(
     Vec<crate::polytone_post::ExpressionUniform>,
 )> {
     let shaders = crate::gfx::core_lightmap::SHADERS;
-    let names = modifiers.names(&shaders);
     let info = crate::gfx::core_lightmap::INFO_BLOCK;
     let globals = sunrise_polytone::globals::BLOCK;
     let program = load_pair(
@@ -268,7 +266,7 @@ fn load_lightmap(
         ("screenquad", "lightmap"),
         &[],
         &crate::gfx::core_lightmap::GLUE,
-        &|block| block == info || block == globals || names.iter().any(|n| n == block),
+        &|_| true,
     )?;
     match modifiers.resolve((shaders[0], shaders[1]), &program, &[info, globals]) {
         Ok(expressions) => Some((program, expressions)),
@@ -312,8 +310,8 @@ impl UnzipOrDefault
 /// The packs' core shader `id` (`minecraft:core/<name>`, one shader for both stages: the sky,
 /// the stars, the block outline, and the text for the GUI's, the world's and the see-through
 /// text) for the program `label` names in the log, with its `defines` (the text's `IS_GUI`,
-/// none, `IS_SEE_THROUGH`), `PolyGlobals` and the blocks its file of `modifiers` names, and its
-/// expression uniforms resolved for the blocks its stages read; none when no pack replaces it,
+/// none, `IS_SEE_THROUGH`), `PolyGlobals`, and expression uniforms for the blocks its stages read.
+/// Returns none when no pack replaces it,
 /// it doesn't translate, or a block refuses it (named in the log with the program).
 fn load_with_expressions(
     root: &ResourceSource,
@@ -327,10 +325,8 @@ fn load_with_expressions(
     Vec<crate::polytone_post::ExpressionUniform>,
 )> {
     let name = id.strip_prefix("minecraft:core/")?;
-    let names = modifiers.names(&[id]);
     let globals = sunrise_polytone::globals::BLOCK;
-    let provided = |block: &str| block == globals || names.iter().any(|n| n == block);
-    let translated = translate_pair(root, defaults, (name, name), defines, glue, &provided)?;
+    let translated = translate_pair(root, defaults, (name, name), defines, glue, &|_| true)?;
     let resolved = translated.map_err(|e| e.to_string()).and_then(|program| {
         let expressions = modifiers.resolve((id, id), &program, &[globals]);
         expressions
@@ -777,8 +773,7 @@ mod tests {
     }
 
     /// A pack's lightmap reading an expression uniform (`Tint`) is given it when a pack's
-    /// `shader_modifiers` gives either stage one of that name, and refused for an unknown block
-    /// otherwise.
+    /// `shader_modifiers` gives either stage one of that name, or zero otherwise.
     #[test]
     fn a_lightmap_shader_is_given_the_packs_expression_uniforms() {
         let fsh = "assets/minecraft/shaders/core/lightmap.fsh";
@@ -806,18 +801,17 @@ mod tests {
         let wide = tinted
             .replace("float value;", "vec4 value;")
             .replace("vec4(value, ", "vec4(value.x, ");
-        assert!(
-            lightmap(&[(fsh, &wide), (&on("lightmap"), r#"{"Tint": "1"}"#)]).is_none(),
-            "a vec4 block"
-        );
-        assert!(
-            lightmap(&[(fsh, tinted)]).is_none(),
-            "no modifier gives Tint"
-        );
-        assert!(
-            lightmap(&[(fsh, tinted), (&on("sky"), r#"{"Tint": "1"}"#)]).is_none(),
-            "another shader's"
-        );
+        assert!(lightmap(&[(fsh, &wide)]).is_none(), "a vec4 block");
+        let other = on("sky");
+        for files in [
+            vec![(fsh, tinted)],
+            vec![(fsh, tinted), (&other, r#"{"Tint": "1"}"#)],
+        ] {
+            let (_, expressions) = lightmap_with_expressions(&files).expect("shader uses zero");
+            assert_eq!(expressions.len(), 1);
+            assert_eq!(expressions[0].name, "Tint");
+            assert_eq!(expressions[0].evaluate(&Default::default()), 0.0);
+        }
     }
 
     /// A pack's lightmap importing Polytone's `polytone_globals.glsl` is given `PolyGlobals`
@@ -1133,8 +1127,8 @@ mod tests {
     }
 
     /// A pack's `core/lightmap` is loaded with vanilla's `core/screenquad` (a stage of another
-    /// name), and the reverse; none when no pack replaces either; refused when it reads a block
-    /// the lightmap pass doesn't give.
+    /// name), and the reverse; none when no pack replaces either; refused when it reads an
+    /// extra block whose layout the lightmap pass cannot bind.
     #[test]
     fn a_pack_replacing_either_lightmap_stage_is_loaded() {
         let red = "#version 330\nlayout(std140) uniform LightmapInfo {\n    float SkyFactor;\n} info;\n\
@@ -1148,7 +1142,10 @@ mod tests {
                     void main() {\n    texCoord = vec2(0.5);\n    gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n}\n";
         assert!(lightmap(&[(vsh, quad)]).is_some());
         assert!(lightmap(&[]).is_none(), "no pack replaces either stage");
-        let other = red.replace("LightmapInfo", "Elsewhere");
+        let other = red
+            .replace("LightmapInfo", "Elsewhere")
+            .replace("float SkyFactor", "vec4 SkyFactor")
+            .replace("info.SkyFactor", "info.SkyFactor.x");
         assert!(lightmap(&[(fsh, &other)]).is_none());
     }
 
@@ -1181,3 +1178,7 @@ mod gpu_tests;
 #[cfg(test)]
 #[path = "pack_text_clouds_tests.rs"]
 mod clouds_tests;
+
+#[cfg(test)]
+#[path = "pack_text_depth_tests.rs"]
+mod depth_tests;

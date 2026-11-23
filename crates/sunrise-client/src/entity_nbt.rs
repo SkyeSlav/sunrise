@@ -108,6 +108,17 @@ pub fn loaded_motion(tag: &Tag) -> Vec3 {
 pub fn rotation(tag: &Tag) -> [f32; 2] {
     read_doubles::<2>(tag.get("Rotation")).map_or([0.0; 2], |r| [r[0] as f32, r[1] as f32])
 }
+/// `Entity.load`: the initial rotation on a new entity, before its subtype reads NBT.
+pub fn loaded_rotation(tag: &Tag) -> [f32; 2] {
+    let [yaw, pitch] = rotation(tag).map(|angle| {
+        if angle.is_finite() {
+            angle % 360.0
+        } else {
+            0.0
+        }
+    });
+    [yaw, pitch.clamp(-90.0, 90.0)]
+}
 /// `TagValueInput.getBooleanOr`: a numeric tag's byteValue is nonzero, with a false default.
 pub fn flag(tag: &Tag, key: &str) -> bool {
     flag_or(tag, key, false)
@@ -3800,21 +3811,6 @@ pub fn cushion_from_nbt(tag: &Tag, id: u32) -> Option<Cushion> {
 
 #[cfg(test)]
 mod cushion_tests;
-/// `ItemFrame.setDirection`: a frame on a wall turns to face away from it
-/// (`yRot` = the 2D data value times 90, `xRot` 0); one on a floor or a
-/// ceiling looks straight down or up (`xRot` = -90 times the axis step).
-/// `facing` is the 3D data value (down, up, north, south, west, east).
-fn frame_rotation(facing: u8) -> [f32; 2] {
-    match facing {
-        0 => [0.0, 90.0],
-        1 => [0.0, -90.0],
-        2 => [180.0, 0.0],
-        3 => [0.0, 0.0],
-        4 => [90.0, 0.0],
-        _ => [270.0, 0.0],
-    }
-}
-
 /// ItemFrame.addAdditionalSaveData.
 pub fn item_frame_to_nbt(
     f: &ItemFrame,
@@ -3832,7 +3828,7 @@ pub fn item_frame_to_nbt(
             (lo[2] + hi[2]) / 2.0,
         ),
         motion: raw.map_or(Vec3::ZERO, loaded_motion),
-        rotation: frame_rotation(f.facing),
+        rotation: f.entity_rotation(),
         on_ground: raw.is_some_and(|raw| flag(raw, "OnGround")),
         fall_distance: raw.map_or(0.0, |raw| ground_from_nbt(raw).1),
     };

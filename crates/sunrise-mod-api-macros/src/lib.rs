@@ -239,8 +239,8 @@ fn expand(mut implementation: ItemImpl, export: bool) -> TokenStream {
     quote!(#implementation #export).into()
 }
 
-/// Generate the defaults of a host area trait. An optional callback method marked
-/// `#[decline_unavailable]` returns without calling it; others panic if unimplemented.
+/// Generate the defaults of a host area trait. Methods marked `#[decline_unavailable]`
+/// do nothing or return `false`, according to their return type. Others panic if unimplemented.
 /// The same declarations drive game forwarders in the build-time API generator.
 /// A backend trait may carry `#[table_backend("path")]`: the game answers its reads from the
 /// borrowed view at `path`, which implements the trait, and `Game` forwards to it. Methods can
@@ -249,6 +249,7 @@ fn expand(mut implementation: ItemImpl, export: bool) -> TokenStream {
 /// `#[serialize_text]` validates Text arguments at a forwarding boundary that writes a packet
 /// or a saved component; unmarked text arguments are converted only for in-process use.
 /// Use `#[manual_handle]` for an inherent handle wrapper written by hand.
+/// `#[goal_view]` marks a read a mob's goal tick answers from its own view for every holder.
 #[proc_macro_attribute]
 pub fn host_area(_attribute: TokenStream, input: TokenStream) -> TokenStream {
     let mut area = parse_macro_input!(input as syn::ItemTrait);
@@ -290,6 +291,7 @@ pub fn host_area(_attribute: TokenStream, input: TokenStream) -> TokenStream {
                 && !attr.path().is_ident("serialize_text")
                 && !attr.path().is_ident("decline_unavailable")
                 && !attr.path().is_ident("manual_handle")
+                && !attr.path().is_ident("goal_view")
         });
         // A shared published read answers from the installed table, without a live Game.
         let published = match method
@@ -312,15 +314,25 @@ pub fn host_area(_attribute: TokenStream, input: TokenStream) -> TokenStream {
             continue;
         }
         method.default = Some(if decline {
-            if !matches!(method.sig.output, syn::ReturnType::Default) {
-                return syn::Error::new_spanned(
-                    &method.sig.output,
-                    "#[decline_unavailable] requires an optional callback method with no return value",
-                )
-                .to_compile_error()
-                .into();
+            match &method.sig.output {
+                syn::ReturnType::Default => syn::parse_quote!({}),
+                syn::ReturnType::Type(_, ty)
+                    if matches!(
+                        ty.as_ref(),
+                        syn::Type::Path(path) if path.qself.is_none() && path.path.is_ident("bool")
+                    ) =>
+                {
+                    syn::parse_quote!({ false })
+                }
+                output => {
+                    return syn::Error::new_spanned(
+                        output,
+                        "#[decline_unavailable] requires no return value or a bool return value",
+                    )
+                    .to_compile_error()
+                    .into();
+                }
             }
-            syn::parse_quote!({})
         } else {
             let operation = method.sig.ident.to_string();
             let label = format!("{union}::{operation}");

@@ -10,6 +10,7 @@ use sunrise_core::nbt::Tag;
 
 fn kind() -> Arc<MobType> {
     Arc::new(MobType {
+        type_key: Default::default(),
         shadow: None,
         id: "minecraft:sheep".into(),
         species: Species::Sheep,

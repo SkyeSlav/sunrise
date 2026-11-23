@@ -195,7 +195,7 @@ fn damage_entities(
     // The attack damage attribute's base value.
     let base = m.attrs.attack_damage;
     let mut affected = false;
-    for (i, _) in hits {
+    for (contact, (i, _)) in hits.into_iter().enumerate() {
         let target = &targets[i];
         let recent = m.extra.stabbed.as_ref().is_some_and(|stabbed| {
             stabbed.iter().any(|&(who, at)| {
@@ -227,6 +227,7 @@ fn damage_entities(
             affected |= stab_attack(
                 m,
                 target.who,
+                contact,
                 amount,
                 (damages, pushes, dismounts),
                 w,
@@ -251,6 +252,7 @@ fn damage_entities(
 fn stab_attack(
     m: &mut Mob,
     target: Who,
+    contact: usize,
     base_damage: f32,
     (deals_damage, deals_knockback, dismounts): (bool, bool, bool),
     w: &MobWorld,
@@ -282,6 +284,7 @@ fn stab_attack(
                 target: id,
                 amount: damage,
                 source,
+                remember_target: false,
             }),
         }
         affected = true;
@@ -297,9 +300,27 @@ fn stab_attack(
         let power = gear::knockback(m) as f32 / 2.0;
         cause_extra_knockback(m, target, power, source, w, events);
     }
-    if dismounts && w.target_info(target).is_some_and(|t| t.passenger) {
+    // `LivingEntity.stabAttack`: a type in `cannot_be_dismounted_by_item_usage` stays seated.
+    let flag = crate::items::EntityTypeTags::CANNOT_BE_DISMOUNTED_BY_ITEM_USAGE;
+    let seated = match target {
+        Who::Player => w
+            .items
+            .is_some_and(|items| items.entity_type_tags.has_flag("minecraft:player", flag)),
+        Who::Mob(id) => w.seen(id).is_some_and(|s| w.entity_tag_bit(&s.kind, flag)),
+    };
+    let dismounted = dismounts && !seated && w.target_info(target).is_some_and(|t| t.passenger);
+    if dismounted {
         affected = true;
         events.push(w.route_player_event(MobEvent::StabDismount { target }));
+    }
+    if affected {
+        events.push(w.route_player_event(MobEvent::StabMemory {
+            attacker: m.id,
+            target,
+            contact,
+            attempted_damage: deals_damage,
+            otherwise_affected: deals_knockback || dismounted,
+        }));
     }
     affected
 }
@@ -922,7 +943,9 @@ impl<G: Goal + Clone + 'static> Goal for NoMeleeWithSpear<G> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Mob, count_use_tick, is_using_item, start_using_item};
+    use super::{
+        Mob, MobEvent, MobWorld, Who, count_use_tick, is_using_item, stab_attack, start_using_item,
+    };
     use sunrise_core::geometry::Vec3;
 
     fn spear_zombie() -> Mob {
@@ -953,5 +976,57 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// `LivingEntity.stabAttack`: a stab that dismounts leaves a rider whose type is in
+    /// `cannot_be_dismounted_by_item_usage` seated and unseats one outside it, and the answer
+    /// follows the tag's membership when it is rebound (a `/reload`).
+    #[test]
+    #[ignore = "daily"]
+    fn a_stab_leaves_a_rider_of_the_no_dismount_tag_seated() {
+        use crate::items::{EntityTypeTags, Items};
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.id = "test:rider".into();
+        // Its place in the one-type registry the tags below bind, as a type's is set at load.
+        kind.flags.entity_tag_slot = Some(0);
+        let mut rider = Mob::new(2, std::sync::Arc::new(kind), Vec3::new(1.0, 80.0, 0.0), 0.0);
+        rider.extra.mount = Some(3);
+        let bind = |members: Vec<String>| {
+            let mut items = Items::empty();
+            items.set_entity_type_tags(EntityTypeTags::from_ordered(
+                [(
+                    "minecraft:cannot_be_dismounted_by_item_usage".to_owned(),
+                    members,
+                )]
+                .into(),
+                vec!["test:rider".to_owned()].into(),
+            ));
+            items
+        };
+        let (tagged, untagged) = (bind(vec!["test:rider".into()]), bind(Vec::new()));
+        let others = [rider.seen(None, &tagged)];
+        assert!(crate::mobs::world::with_test_world(&others, |world, _| {
+            for (items, seated) in [(&tagged, true), (&untagged, false), (&tagged, true)] {
+                let w = MobWorld {
+                    items: Some(items),
+                    ..world.clone()
+                };
+                let mut attacker = spear_zombie();
+                let mut events = Vec::new();
+                stab_attack(
+                    &mut attacker,
+                    Who::Mob(2),
+                    0,
+                    1.0,
+                    (false, false, true),
+                    &w,
+                    &mut events,
+                );
+                let dismounted = events
+                    .iter()
+                    .any(|event| matches!(event, MobEvent::StabDismount { .. }));
+                assert_eq!(dismounted, !seated, "seated {seated}");
+            }
+        }));
     }
 }

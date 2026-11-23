@@ -1,5 +1,9 @@
 //! Client tutorial progression (`net.minecraft.client.tutorial`).
 
+#[cfg(test)]
+#[path = "tutorial/toast_tests.rs"]
+mod toast_tests;
+
 use super::toast_manager::Toast;
 use sunrise_client::hud::{HudAtlas, HudBatch};
 use sunrise_client_gameplay::tutorial::social_hint_progress;
@@ -80,6 +84,7 @@ impl super::Game<'_> {
         }
     }
 
+    /// Tick the current step and queue `Gui.addSocialInteractionsToast` on the first server.
     pub(super) fn tick_tutorial(&mut self) {
         use sunrise_client::actions::Action;
         if self.title.is_some()
@@ -197,10 +202,11 @@ impl super::Game<'_> {
         }
     }
 
+    /// `Tutorial.key`: bold belongs to the bound key, not the translation using it.
     fn tutorial_toast(&self, hint: Hint, progress: Option<f32>) -> Option<HintToast> {
         use sunrise_client::{keybinds, text::Text};
-        let key = |mapping: &str| keybinds::display_name(self.settings.keys.get(mapping)).plain();
-        let (title_key, fallback, description_key, description, icon_args) = match hint {
+        let key = |mapping: &str| keybinds::display_name(self.settings.keys.get(mapping)).bold();
+        let (title_key, fallback, description_key, description, title_args) = match hint {
             Hint::Move => (
                 "tutorial.move.title",
                 "Move with %1$s, %2$s, %3$s, %4$s",
@@ -256,17 +262,7 @@ impl super::Game<'_> {
                 vec![],
             ),
         };
-        let substitute = |mut text: String, values: &[String]| {
-            for (i, value) in values.iter().enumerate() {
-                text = text.replace(&format!("%{}$s", i + 1), value);
-                text = text.replacen("%s", value, 1);
-            }
-            text
-        };
-        let mut title = Text::literal(substitute(
-            self.translate_with_fallback(title_key, fallback),
-            &icon_args,
-        ));
+        let mut title = Text::translate_with_fallback(title_key, fallback, &title_args);
         let desc_args = match hint {
             Hint::Move => vec![key("key.jump")],
             Hint::PunchTree => vec![key("key.attack")],
@@ -274,10 +270,11 @@ impl super::Game<'_> {
             Hint::SocialInteractions => vec![key("key.socialInteractions")],
             _ => vec![],
         };
-        let mut description = Some(Text::literal(substitute(
-            self.translate_with_fallback(description_key, description),
+        let mut description = Some(Text::translate_with_fallback(
+            description_key,
+            description,
             &desc_args,
-        )));
+        ));
         if !self.admit_toast(mod_api::ToastKind::Tutorial, &mut title, &mut description) {
             return None;
         }

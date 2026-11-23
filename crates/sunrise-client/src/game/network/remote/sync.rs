@@ -1,4 +1,24 @@
 use super::*;
+use sunrise_client::tab_list::{TabPlayer, default_skin};
+
+impl Remote {
+    /// `ClientPacketListener.getPlayerInfo(String)`: exact profile name, whether listed or not.
+    pub(in crate::game) fn player_info_by_name(&self, name: &str) -> Option<&TabPlayer> {
+        self.tab_players.values().find(|p| p.name == name)
+    }
+
+    /// `PlayerInfo.getSkin`: resolved skin or the profile's default, independent of listing.
+    pub(in crate::game) fn player_info_skin(&self, uuid: u128) -> &str {
+        self.skins
+            .get(&uuid)
+            .map(String::as_str)
+            .unwrap_or_else(|| default_skin(uuid))
+    }
+}
+
+#[cfg(test)]
+#[path = "team_packet_tests.rs"]
+mod team_packet_tests;
 
 impl Game<'_> {
     /// A `Holder<SoundEvent>` off the wire: an inline event's location, or
@@ -119,16 +139,23 @@ impl Game<'_> {
     pub(in crate::game) fn remote_team(&mut self, p: play::SetPlayerTeam) {
         use sunrise_client::scoreboard::{CollisionRule, Visibility, tag_to_json};
         let board = &mut self.score.board;
+        let team = if p.method == 0 {
+            board.add_team(&p.name)
+        } else if let Some(team) = board.team_mut(&p.name) {
+            team
+        } else {
+            log::warn!(
+                "Received team packet with method {} for unknown team {:?}",
+                p.method,
+                p.name
+            );
+            return;
+        };
         if p.method == 1 {
             board.remove_team(&p.name);
             return;
         }
-        if p.method == 0 {
-            board.add_team(&p.name);
-        }
-        if let Some(params) = &p.parameters
-            && let Some(team) = board.team_mut(&p.name)
-        {
+        if let Some(params) = &p.parameters {
             team.display_name = tag_to_json(&params.display_name);
             team.prefix = tag_to_json(&params.prefix);
             team.suffix = tag_to_json(&params.suffix);
@@ -167,24 +194,19 @@ impl Game<'_> {
     }
     pub(in crate::game) fn remote_tab_players(
         &mut self,
-    ) -> Option<(Vec<sunrise_client::tab_list::TabPlayer>, bool, Vec<u128>)> {
+    ) -> Option<(Vec<TabPlayer>, bool, Vec<u128>)> {
         self.update_remote_skins();
         self.publish_tab_object_skins();
-        let mut players: Vec<_> = {
-            let r = self.remote.as_ref()?;
-            r.listed
-                .iter()
-                .filter_map(|u| r.tab_players.get(u).cloned())
-                .collect()
-        };
-        for p in &mut players {
-            p.skin = self
-                .remote
-                .as_ref()
-                .and_then(|r| r.skins.get(&p.uuid).cloned())
-                .unwrap_or_else(|| sunrise_client::tab_list::default_skin(p.uuid).to_owned());
-        }
         let r = self.remote.as_ref()?;
+        let players: Vec<_> = r
+            .listed
+            .iter()
+            .filter_map(|u| {
+                let mut player = r.tab_players.get(u)?.clone();
+                player.skin = r.player_info_skin(*u).to_owned();
+                Some(player)
+            })
+            .collect();
         let upside_down = players
             .iter()
             .filter(|p| {

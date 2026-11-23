@@ -102,8 +102,8 @@ its own shaders' files (`gfx/expression_blocks.rs`):
   programs). Only the lightmap uses two files: for a block read by both stages or defined in both files, it looks in
   the fragment shader's (`core/lightmap`) first, then in the vertex shader's (`core/screenquad`). Otherwise, it uses
   the file for the stage that reads the block. A block no stage reads is not bound, and a stage that only declares
-  it doesn't decide its shape. If a block a stage reads is not one float, or has no expression, the affected
-  pipeline uses its built-in shader (the light texture is computed natively, the text drawn natively).
+  it doesn't decide its shape. A float block with no expression reads zero. If a block a stage reads is not
+  one float, the affected pipeline uses its built-in shader.
 - Each block, vanilla's and `LightmapInfo` included, of each of these pipelines is bound only to the stages that read it, and counts against
   the device's limit of uniform blocks per stage (`max_uniform_buffers_per_shader_stage`, 12 by default) for those
   stages only: a shader over it in either stage is refused.
