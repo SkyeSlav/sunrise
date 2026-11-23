@@ -4,7 +4,7 @@ use sunrise_protocol::packets::play::{self, PlayerPosition, Serverbound as S, re
 
 /// Only movement updates advance this baseline. A teleport acknowledgement is
 /// separate and must not suppress the next tick's corrected position or look.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct PositionSender {
     position: [f64; 3],
     rotation: (f32, f32),

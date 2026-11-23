@@ -484,7 +484,7 @@ mod tests {
 
     #[test]
     #[ignore = "daily"]
-    fn a_client_hears_player_move_for_the_report_its_own_player_sends() {
+    fn a_client_vetoes_the_report_its_own_player_sends_and_stays_at_from() {
         type Heard = Arc<Mutex<Vec<(bool, u128, [f64; 3], [f64; 3])>>>;
         struct Hear(Heard);
         #[mod_api::__subscriptions]
@@ -500,7 +500,6 @@ mod tests {
                     event.from,
                     event.to,
                 ));
-                // The server rules; a client's veto changes nothing.
                 mod_api::Flow::Cancel
             }
         }
@@ -514,15 +513,36 @@ mod tests {
         mod_platform::testing::with_mods(mods, || {
             crate::game::native_entity_refs::tests::with_client_game(|game| {
                 loaded_client(game);
-                let last = game.remote.as_ref().unwrap().position_sender.last().0;
+                let (session, mut peer, _keepalive) =
+                    sunrise_client::net::Session::packet_hold_probe();
+                let remote = game.remote.as_mut().unwrap();
+                remote.session = session;
+                remote.joined = true;
+                let last = remote.position_sender.last();
+                let at_from = sunrise_core::geometry::Vec3::new(last.0[0], last.0[1], last.0[2]);
                 game.tick_remote().unwrap();
-                let to = game.player.as_ref().unwrap().position;
                 let own = game.own_uuid();
-                assert_eq!(
-                    *heard.lock().unwrap(),
-                    [(true, own, last, [to.x, to.y, to.z])],
-                    "heard once, on the client, from the last report to the new one"
+                let heard = heard.lock().unwrap();
+                assert_eq!(heard.len(), 1, "heard once, on the client");
+                let (client, player, from, to) = heard[0];
+                assert!((client, player, from) == (true, own, last.0));
+                assert_ne!(
+                    to, last.0,
+                    "the tick moved the player, so there was a report to veto"
                 );
+                // The veto predicts the server's: back at `from`, nothing sent, the sender unchanged.
+                assert_eq!(game.player.as_ref().unwrap().position, at_from);
+                assert_eq!(game.previous_position, at_from);
+                assert_eq!(game.remote.as_ref().unwrap().position_sender.last(), last);
+                use sunrise_protocol::ids::play::serverbound::{
+                    MOVE_PLAYER_POS, MOVE_PLAYER_POS_ROT, MOVE_PLAYER_ROT,
+                };
+                while let Ok((id, _)) = peer.recv() {
+                    assert!(
+                        ![MOVE_PLAYER_POS, MOVE_PLAYER_POS_ROT, MOVE_PLAYER_ROT].contains(&id),
+                        "a vetoed report is not sent"
+                    );
+                }
             });
         });
     }

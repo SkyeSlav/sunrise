@@ -21,7 +21,7 @@ ids = [
 why = """
 Passages within a level (a client-first crossing with its own channels and hook) were an Immersive Portals shape that neither vanilla nor NeoForge has. The same moves are done with the general primitives: the client's own movement, `EntityRef::teleport_transition` and `player_move`. The passage types, the `player_passage_cross` hook and the `sunrise:passage_sync` and `sunrise:passage_cross` channels are removed.
 
-`player_move` is now a both-sides hook (version 2): a client hears it at `LocalPlayer.sendPosition` for each report its own player is about to send, with the same `from` and `to` the server will hear. The server's ruling stands, so `cancel` on a client changes nothing. The listener receives a `HostSide`.
+`player_move` is now a both-sides hook (version 2): a client hears it at `LocalPlayer.sendPosition` for each report its own player is about to send, with the same `from` and `to` the server will hear. `cancel` on a client predicts the server's veto: the player goes back to `from` and its previous rotation and the report is not sent, so a mod on both sides decides the same with no correction; the server keeps vanilla's movement checks and its position wins. The listener receives a `HostSide`.
 """
 migrate = """
 Delete uses of `Passage`, `PassageId`, `LevelRef::register_passage`/`remove_passage`, `cross_passage`, `last_passage_refusal` and the `player_passage_cross` listener. Move a player through `EntityRef::teleport_transition` on the server, or apply the move in the client's own tick. Change a `player_move` listener's host parameter to `HostSide<'_>`; match `HostSide::Server` to keep the old behaviour. Mods rebuild.

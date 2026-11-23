@@ -361,6 +361,8 @@ impl Game<'_> {
             }
         };
         let mut moved_or_rotated = false;
+        // The report a listener may veto: the sender as it was, where the packets start, and the
+        // segment it covers.
         let mut reported = None;
         if riding {
             // LocalPlayer.sendChanges: a passenger sends its look, then the
@@ -379,14 +381,16 @@ impl Game<'_> {
             sprint(r, &mut out);
             // LocalPlayer.sendPosition: no move while the view is another
             // entity's (the server keeps the player on it).
-            let last = r.position_sender.last();
+            let before = r.position_sender.clone();
+            let last = before.last();
+            let report_at = out.len();
             if controls_camera
                 && let Some(packet) =
                     r.position_sender
                         .update(pos, (yaw, pitch), on_ground, collision)
             {
                 if last != (pos, (yaw, pitch)) {
-                    reported = Some(last);
+                    reported = Some((before, report_at, last));
                 }
                 // A server that sent colliders reads how old the copy carrying the player is.
                 if !r.colliders.is_empty()
@@ -403,6 +407,39 @@ impl Game<'_> {
                 moved_or_rotated = true;
             }
         }
+        // `player_move` on the client, as the server will hear it. A veto predicts the server's: the
+        // player goes back to where the last report left it and this report is not sent, so a mod
+        // on both sides decides the same and the server's own ruling still wins.
+        if let Some((before, report_at, (from, (from_yaw, from_pitch)))) = reported {
+            let mut cancel = false;
+            self.native_player_move(
+                self.own_uuid(),
+                from,
+                [from_yaw, from_pitch],
+                pos,
+                [yaw, pitch],
+                &mut cancel,
+            );
+            if cancel {
+                out.truncate(report_at);
+                moved_or_rotated = false;
+                if let Some(r) = self.remote.as_mut() {
+                    r.position_sender = before;
+                }
+                if let Some(player) = self.player.as_mut() {
+                    player.position = Vec3::new(from[0], from[1], from[2]);
+                }
+                self.previous_position = Vec3::new(from[0], from[1], from[2]);
+                self.yaw = from_yaw;
+                self.pitch = from_pitch;
+            }
+        }
+        let Some(p) = self.player.as_ref() else {
+            return;
+        };
+        let Some(r) = self.remote.as_mut() else {
+            return;
+        };
         if moved_or_rotated && r.session.is_recording() {
             let pkt = sunrise_protocol::packets::play::Clientbound::PlayerPosition(
                 sunrise_protocol::packets::play::PlayerPosition {
@@ -474,19 +511,6 @@ impl Game<'_> {
                     }
                 }
             }
-        }
-        // `player_move` on the client: the segment this report covers, as the server will hear it.
-        // The server's ruling stands, so a veto here changes nothing.
-        if let Some((from, (from_yaw, from_pitch))) = reported {
-            let mut cancel = false;
-            self.native_player_move(
-                self.own_uuid(),
-                from,
-                [from_yaw, from_pitch],
-                pos,
-                [yaw, pitch],
-                &mut cancel,
-            );
         }
         for packet in out {
             self.send(packet);

@@ -46,9 +46,11 @@ pub trait Hooks {
     ///
     /// On a client the hook runs at `LocalPlayer.sendPosition`, once for each position or rotation
     /// report the client's own player is about to send, with the same `from` (the last position and
-    /// rotation it reported) and `to`, so a mod on both sides decides from the same inputs. The
-    /// server's ruling stands: setting `cancel` on a client changes nothing, and the client is
-    /// corrected by the server's veto as for any other. `player` is the client's own account.
+    /// rotation it reported) and `to`, so a mod on both sides decides from the same inputs. Setting
+    /// `cancel` on a client predicts the server's veto: the player goes back to `from` and its
+    /// previous rotation and the report is not sent, so a mod on both sides makes the same decision
+    /// with no correction, and the server keeps vanilla's movement checks and its position wins.
+    /// `player` is the client's own account.
     /// Version 2: also fires on a client, and a passage crossing no longer exists.
     #[notes = r#"## Player move
 

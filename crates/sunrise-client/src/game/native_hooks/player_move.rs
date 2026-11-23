@@ -4,8 +4,8 @@ use super::*;
 impl Game<'_> {
     /// Player `player` (their UUID) would move from `from` to `to` (or turn from
     /// `from_rotation` to `to_rotation`); on the server, set `cancel` to veto the report before it
-    /// is committed. On a client, the segment its own player is about to report: the server's
-    /// ruling stands and `cancel` changes nothing.
+    /// is committed. On a client, the segment its own player is about to report: `cancel` predicts
+    /// the server's veto: the player goes back to `from` and the report is not sent.
     pub(in crate::game) fn native_player_move(
         &mut self,
         player: u128,
