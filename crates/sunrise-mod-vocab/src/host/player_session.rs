@@ -101,6 +101,37 @@ pub trait PlayerSessionBackend {
 #[sunrise_mod_api_macros::host_area]
 pub trait PlayerSessionBackendMut {
     /// Side: server.
+    /// Offers that player a resource pack while they play (vanilla's
+    /// `ClientboundResourcePackPushPacket`, as `/server_pack push` sends it, to this player only):
+    /// pack `id`, downloaded from `url` and checked against `sha1` when that is 40 hex digits
+    /// (anything else, empty included, is no check, as `DownloadedPackSource.parseSha1` reads it),
+    /// with `prompt` on the confirmation screen. The client asks the player unless it already
+    /// has the pack; a pack with the id of one it holds replaces it, another id stacks on top.
+    /// `required` changes only what the client's screen offers: the server disconnects no one
+    /// who declines a mod's pack (only the `server.properties` pack does that), so a mod that
+    /// needs its pack acts on the declined or failed `resource_pack_status`. Inside the player's
+    /// own hook the packet follows the hook's other packets. Refuses with
+    /// `ResourcePackRefusal`, sending nothing.
+    fn player_push_resource_pack(
+        &mut self,
+        player: PlayerRef,
+        id: u128,
+        url: &str,
+        sha1: &str,
+        required: bool,
+        prompt: Option<Text>,
+    ) -> Result<(), ResourcePackRefusal>;
+    /// Side: server.
+    /// Takes the pack `id` off that player's client (vanilla's
+    /// `ClientboundResourcePackPopPacket`), or every pack the server offered when `id` is None,
+    /// the `server.properties` pack included. The client ignores an id it doesn't hold.
+    /// Refuses with `ResourcePackRefusal` (`Client`, `Stale`, `NoConnection`), sending nothing.
+    fn player_pop_resource_pack(
+        &mut self,
+        player: PlayerRef,
+        id: Option<u128>,
+    ) -> Result<(), ResourcePackRefusal>;
+    /// Side: server.
     /// Disconnects that player with `reason`, as `/kick` does
     /// (`ServerGamePacketListenerImpl.disconnect`): their client shows it, the log's "lost
     /// connection" line names it, `player_kicked` hears it and a dedicated server records a

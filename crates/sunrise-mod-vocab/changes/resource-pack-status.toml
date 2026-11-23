@@ -1,0 +1,3 @@
+ids = ["hook:resource_pack_status", "type:ResourcePackStatusEvent"]
+why = "resource_pack_status version 2 gives the id of the pack each answer is for (ServerboundResourcePackPacket's id), so answers to the packs a mod offers with PlayerRef::push_resource_pack can be told apart, and it is heard while the player is dead too, as vanilla handles the answer whatever the player's health."
+migrate = "Rebuild against this SDK and read event.pack_id to tell which pack an answer is for."

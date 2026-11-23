@@ -1,0 +1,1 @@
+sunrise-client game::native_player_resource_packs_tests::resource_packs_reach_one_player_and_answers_name_their_pack lib daily child-process

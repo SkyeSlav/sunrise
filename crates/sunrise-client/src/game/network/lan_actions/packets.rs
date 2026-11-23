@@ -224,7 +224,8 @@ impl Game<'_> {
         };
         // A dead player acts no more, but the death screen still respawns and chats: its
         // commands run as anyone's (ServerGamePacketListenerImpl.handleChatCommand doesn't
-        // look at the player's health).
+        // look at the player's health), and its client still answers resource packs
+        // (ServerCommonPacketListenerImpl.handleResourcePackResponse doesn't either).
         if host.hub.guests[gi].dead
             && !matches!(
                 packet,
@@ -232,6 +233,7 @@ impl Game<'_> {
                     | S::ChatCommand(_)
                     | S::ChatCommandSigned(_)
                     | S::CustomClickAction(_)
+                    | S::ResourcePack(_)
             )
         {
             if let Some(receipt) = receipt {
@@ -762,7 +764,7 @@ impl Game<'_> {
                 let guest = &host.hub.guests[gi];
                 let (uuid, name) = (guest.uuid, guest.name.clone());
                 self.as_guest(conn, |g| {
-                    g.native_resource_pack_status(uuid, &name, r.action);
+                    g.native_resource_pack_status(uuid, &name, r.id, r.action);
                 });
             }
             // START_SPRINTING and STOP_SPRINTING: the hub has set the sprint

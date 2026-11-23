@@ -110,6 +110,24 @@ UUID: you can use a retained handle after disconnection until its world epoch
 closes. You cannot target arbitrary offline UUIDs. Retain the handle value, not a
 borrowed service.
 
+## Resource packs in play
+
+`player.push_resource_pack(host, id, url, sha1, required, prompt)` offers one player a pack while
+they play, as vanilla's `/server_pack push` does: the client downloads `url`, checks it against
+`sha1` when that is 40 hex digits (any other text, empty included, means no check) and asks the
+player, with `prompt` on the screen, unless it already has the pack. A pack with the `id` of one
+the client holds replaces it; another id stacks on top. `required` changes only what the client's
+screen offers: the server disconnects no one who declines a mod's pack, only the
+`server.properties` pack does that, so a mod that needs its pack acts on the answer.
+`player.pop_resource_pack(host, Some(id))` takes that pack off, and `None` takes off every pack
+the server offered, the `server.properties` pack included. Both refuse with `ResourcePackRefusal`
+and send nothing: `Stale` for a handle of a player no longer on, `NoConnection` for a fake player,
+`UrlTooLong` and `HashTooLong` past the packet's 32767 and 40 UTF-16 units, `BadPrompt` for text
+deeper than 512 component nodes.
+
+`resource_pack_status` hears each answer with the pack's `pack_id`, also while the player is
+dead.
+
 ## Chat lines and respawn
 
 Keeping a public chat line from some players (an ignore list, a chat channel, a party chat): the `chat_recipient`

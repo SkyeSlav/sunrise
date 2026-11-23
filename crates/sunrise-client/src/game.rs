@@ -1582,6 +1582,11 @@ mod native_player_place;
 mod native_player_place_tests;
 #[path = "game/modding/native_player_reach.rs"]
 mod native_player_reach;
+#[path = "game/modding/native_player_resource_packs.rs"]
+mod native_player_resource_packs;
+#[cfg(test)]
+#[path = "game/modding/native_player_resource_packs_tests.rs"]
+mod native_player_resource_packs_tests;
 #[path = "game/modding/native_player_respawn.rs"]
 mod native_player_respawn;
 #[cfg(test)]

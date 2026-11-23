@@ -1639,9 +1639,10 @@ impl Game<'_> {
         &mut self,
         player: u128,
         name: &str,
+        pack_id: u128,
         status: i32,
     ) {
-        self.fire_resource_pack_status(player, name, status);
+        self.fire_resource_pack_status(player, name, pack_id, status);
     }
     /// A server player places a hanging entity: an item frame
     /// (`minecraft:item_frame`, `minecraft:glow_item_frame`), a painting

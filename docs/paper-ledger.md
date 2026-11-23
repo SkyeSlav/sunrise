@@ -667,7 +667,7 @@ Paper is server-only, so only the server side of `both` hooks is comparable; no 
 
 | Sunrise hook | Paper event / status | Evidence and porting boundary |
 |---|---|---|
-| `resource_pack_status` | **Partial:** [`PlayerResourcePackStatusEvent`][paper-PlayerResourcePackStatusEvent] | Both listen for a client resource-pack answer on the server, but Paper exposes the pack UUID through getID(), which the hook omits. No key. |
+| `resource_pack_status` | **Partial:** [`PlayerResourcePackStatusEvent`][paper-PlayerResourcePackStatusEvent] | Both listen for a client resource-pack answer on the server; the hook's `pack_id` is Paper's getID(). No key. |
 | `right_click_block` | **Partial:** [`PlayerInteractEvent`][paper-PlayerInteractEvent] | Action.RIGHT_CLICK_BLOCK identifies the server interaction, with player, block, hit position/face, hand, item and separate block/item use controls. Paper cannot express cancellation_result and its swing/consumption choices. No key. |
 | `screen` | **Gap:** none | No cited Paper event opens a block-entity screen or supplies the hidden-slot layout the hook collects; the dossier's candidates are unrelated inventory/recipe events. No key. |
 | `sculk_bloom` | **Gap:** none (nearest [`SculkBloomEvent`][paper-SculkBloomEvent]) | Paper documents cursor creation at the cursor spawn block, including plugin-triggered creation; sculk_bloom observes the catalyst after its block state has begun blooming. The Javadoc does not establish that post-bloom moment or catalyst position; cursor charge and cancellation also differ. No key. |
