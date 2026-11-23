@@ -27,6 +27,7 @@ pub trait Hooks {
         dimension: LevelDimension,
         pos: BlockPos,
         state: BlockState,
+        vanilla: bool,
         result: &mut TriState,
     );
     /// A crop-like block grew (NeoForge's `CropGrowEvent.Post`).
