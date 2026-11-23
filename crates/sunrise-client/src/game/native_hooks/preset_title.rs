@@ -16,17 +16,21 @@ fn preset_editor_key_code(physical: PhysicalKey) -> u32 {
 }
 
 impl Game<'_> {
-    pub(in crate::game) fn show_title_with_registry(
-        &mut self,
-        mut title: sunrise_client::title::Title,
-    ) {
+    pub(super) fn stage_title(&mut self, mut title: sunrise_client::title::Title) {
         title.set_additional_data_packs(self.pack.additional_data.clone());
         title.set_preset_data_source(self.pack.data_changes.clone());
+        self.screen_state.build.reopened();
+        self.title = Some(title);
+    }
+
+    pub(in crate::game) fn show_title_with_registry(
+        &mut self,
+        title: sunrise_client::title::Title,
+    ) {
         let answer = self
             .screen_hooks_heard()
             .then(|| self.title_change(Some(title.mode.id())));
-        self.screen_state.build.reopened();
-        self.title = Some(title);
+        self.stage_title(title);
         let Some(answer) = answer else {
             self.release_mappings_on_screen_open();
             self.commit_screen_transition();

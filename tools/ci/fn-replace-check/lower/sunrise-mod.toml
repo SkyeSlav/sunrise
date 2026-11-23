@@ -108,3 +108,70 @@ bindings = [
     { name = "layer", ty = "&str", value = "layer" },
     { name = "part", ty = "&str", value = "part" },
 ]
+
+# Cancellable HEADs where a Java mod's mixin cancels a vanilla mob's attack at its start, to play a
+# wind-up and call the same method again later: `MeleeAttackGoal.checkAndPerformAttack`,
+# `AbstractSkeleton`, `Drowned`, `Witch` and `Pillager.performRangedAttack`; skips
+# `Mob.serverAiStep` for a stunned mob; or answers `Mob.isSunBurnTick` for a mob spared from the sun
+# (sunrise-org/sunrise#4678). Each lets the function run: the build is the check.
+[[native.mixin]]
+id = "melee"
+target = "sunrise_client_lib::mobs::goals::MeleeAttack::check_and_perform_attack"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/melee.rs"
+bindings = [
+    { name = "goal", ty = "&MeleeAttack", value = "&*self" },
+    { name = "m", ty = "&Mob", value = "&*m" },
+]
+
+[[native.mixin]]
+id = "skeleton_shot"
+target = "sunrise_client_lib::mobs::undead::perform_ranged_attack"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/skeleton_shot.rs"
+bindings = [
+    { name = "m", ty = "&Mob", value = "&*m" },
+    { name = "power", ty = "f32", value = "power" },
+]
+
+[[native.mixin]]
+id = "drowned_throw"
+target = "sunrise_client_lib::mobs::undead::drowned_throw"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/drowned_throw.rs"
+bindings = [{ name = "m", ty = "&Mob", value = "&*m" }]
+
+[[native.mixin]]
+id = "witch_throw"
+target = "sunrise_client_lib::mobs::witch::witch_attack"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/witch_throw.rs"
+bindings = [{ name = "m", ty = "&Mob", value = "&*m" }]
+
+[[native.mixin]]
+id = "crossbow_shot"
+target = "sunrise_client_lib::mobs::illager::shoot_crossbow"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/crossbow_shot.rs"
+bindings = [{ name = "m", ty = "&Mob", value = "&*m" }]
+
+[[native.mixin]]
+id = "server_ai"
+target = "sunrise_client_lib::mobs::ai::server_ai_step"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/server_ai.rs"
+bindings = [{ name = "m", ty = "&Mob", value = "&*m" }]
+
+[[native.mixin]]
+id = "sun_burn"
+target = "sunrise_client_lib::mobs::ai::sun_burn_tick"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/sun_burn.rs"
+bindings = [{ name = "m", ty = "&Mob", value = "&*m" }]

@@ -634,6 +634,7 @@ impl Game<'_> {
                 }
                 let mut m = self.mobs[i].clone();
                 let mut lent = sunrise_client::health::LentLevel::take(&mut self.world);
+                let mut paused_hurt = None;
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let w = self.mob_world_base(&[]);
                     let mut level = sunrise_client::health::DamageLevel::lent(
@@ -643,7 +644,8 @@ impl Game<'_> {
                         Some(self.items()),
                         Some(&self.pack.block_registries),
                         &self.damage_hooks,
-                    );
+                    )
+                    .with_mob_hurt_handoff(&mut paused_hurt);
                     if let Some(pause) = resume.take() {
                         m.resume_client_moved_fall(&w, &mut level, &mut events, pause)
                     } else {
@@ -659,6 +661,7 @@ impl Game<'_> {
                 lent.give_back(&mut self.world);
                 let pause = outcome.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
                 self.mobs[i] = m;
+                self.paused_mob_hurt = paused_hurt;
                 // LivingEntity.checkFallDamage sends dust before Block.fallOn.
                 // Send it to every nearby player, including the driver.
                 for event in events.extract_if(.., |e| {
