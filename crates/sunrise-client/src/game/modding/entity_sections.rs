@@ -499,6 +499,17 @@ impl Game<'_> {
         }
     }
 
+    /// A paused mob move wrote `from` to `to` (`Entity.setPosRaw`): file it and tell the
+    /// crossing with the ordinary Host, before the move goes on.
+    pub(in crate::game) fn tell_section_entered(&mut self, id: u32, from: [f64; 3], to: [f64; 3]) {
+        if let Some(scope) = self.entity_section_scope() {
+            self.native_lifecycle
+                .entity_sections
+                .moved(scope, id, Some(from), to);
+            self.tell_entity_sections();
+        }
+    }
+
     /// Entity `id` is gone, or replaced under the same id: it starts over untold.
     pub(super) fn entity_section_forget(&mut self, id: u32) {
         self.pick_section_remove(id);

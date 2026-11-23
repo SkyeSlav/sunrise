@@ -421,8 +421,22 @@ pub struct PassengerFall {
 impl TravelPause {
     pub(super) fn action(&self) -> MovementAction {
         match &self.0 {
-            TravelStop::Move { movement, .. } => movement.fall.action(),
-            TravelStop::AfterHit => MovementAction::SettleHit,
+            TravelStop::Move {
+                movement: MovePause::Fall { fall, .. },
+                ..
+            } => fall.action(),
+            TravelStop::Move { .. } | TravelStop::AfterHit => MovementAction::SettleHit,
+        }
+    }
+
+    /// The position write the move stopped after, when it stopped there.
+    pub(super) fn section_write(&self) -> Option<(Vec3, Vec3)> {
+        match &self.0 {
+            TravelStop::Move {
+                movement: MovePause::Section { from, to, .. },
+                ..
+            } => Some((*from, *to)),
+            _ => None,
         }
     }
 
@@ -436,33 +450,64 @@ impl TravelPause {
         let TravelStop::Move { movement, tail } = self.0 else {
             return ControlFlow::Continue(());
         };
-        if let Some(fall) = mob.resume_fall(w, level, events, movement.fall) {
-            return ControlFlow::Break(Self(TravelStop::Move {
-                movement: MovePause { fall, ..movement },
-                tail,
-            }));
+        let next = match movement {
+            MovePause::Fall {
+                fall,
+                wanted,
+                moved,
+                effect,
+            } => {
+                if let Some(fall) = mob.resume_fall(w, level, events, fall) {
+                    return ControlFlow::Break(Self(TravelStop::Move {
+                        movement: MovePause::Fall {
+                            fall,
+                            wanted,
+                            moved,
+                            effect,
+                        },
+                        tail,
+                    }));
+                }
+                if !mob.removed {
+                    mob.finish_move(w, level, wanted, moved, effect, events);
+                }
+                None
+            }
+            MovePause::Section { wanted, moved, .. } => {
+                if mob.removed {
+                    return ControlFlow::Continue(());
+                }
+                mob.move_after_write(w, level, events, wanted, moved, true)
+            }
+        };
+        if let Some(movement) = next {
+            return ControlFlow::Break(Self(TravelStop::Move { movement, tail }));
         }
         if !mob.removed {
-            mob.finish_move(
-                w,
-                level,
-                movement.wanted,
-                movement.moved,
-                movement.effect,
-                events,
-            );
             tail.finish(mob, w, level, events, true)?;
         }
         ControlFlow::Continue(())
     }
 }
 
+/// Where `Entity.move` stopped for its owning level.
 #[derive(Debug)]
-struct MovePause {
-    fall: FallPause,
-    wanted: Vec3,
-    moved: Vec3,
-    effect: (BlockPos, BlockStateId),
+enum MovePause {
+    /// After the position write (`Entity.setPosRaw`'s section callback), before the rest of the
+    /// move reads the mob again.
+    Section {
+        from: Vec3,
+        to: Vec3,
+        wanted: Vec3,
+        moved: Vec3,
+    },
+    /// At `checkFallDamage`.
+    Fall {
+        fall: FallPause,
+        wanted: Vec3,
+        moved: Vec3,
+        effect: (BlockPos, BlockStateId),
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -977,6 +1022,22 @@ impl Mob {
                 self.position.y + moved.y,
                 self.position.z + moved.z,
             );
+            // With a live section observer, a borrowed pass stops here: the owning level
+            // tells the crossing with the ordinary Host and resumes the rest of the move.
+            if pause && w.section_writer.is_some() && from != self.position {
+                super::living::section_writes::record_delivered(
+                    self.id,
+                    self.join,
+                    from,
+                    self.position,
+                );
+                return Some(MovePause::Section {
+                    from,
+                    to: self.position,
+                    wanted,
+                    moved,
+                });
+            }
             super::living::section_writes::record_with(
                 self.id,
                 self.join,
@@ -985,6 +1046,20 @@ impl Mob {
                 w.section_writer.clone(),
             );
         }
+        self.move_after_write(w, level, events, wanted, moved, pause)
+    }
+
+    /// `Entity.move` after its position write: collision flags, the support block, the landing
+    /// and the move's last steps.
+    fn move_after_write(
+        &mut self,
+        w: &MobWorld,
+        level: &mut DamageLevel<'_>,
+        events: &mut Vec<MobEvent>,
+        wanted: Vec3,
+        moved: Vec3,
+        pause: bool,
+    ) -> Option<MovePause> {
         // !Mth.equal(delta, movement)
         let differs = |a: f64, b: f64| (b - a).abs() >= f64::from(1.0e-5_f32);
         let x_hit = differs(wanted.x, moved.x);
@@ -1005,7 +1080,7 @@ impl Mob {
         };
         let effect = self.restitution_contact(w);
         if let Some(fall) = self.species_check_fall_damage(w, level, moved, effect, events, owner) {
-            return Some(MovePause {
+            return Some(MovePause::Fall {
                 fall,
                 wanted,
                 moved,

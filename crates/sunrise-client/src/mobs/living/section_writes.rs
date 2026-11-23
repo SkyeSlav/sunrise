@@ -98,6 +98,19 @@ pub fn record_with(id: u32, join: JoinSeq, from: Vec3, to: Vec3, observer: Optio
     });
 }
 
+/// File a write the owning level has already been asked to tell (a borrowed pass stopped at it),
+/// so the end-of-tick bookkeeping does not tell it again.
+pub fn record_delivered(id: u32, join: JoinSeq, from: Vec3, to: Vec3) {
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        if state.enabled {
+            let mut write = PositionWrite::captured(id, join, from, to);
+            write.delivered = true;
+            state.writes.push_back(write);
+        }
+    });
+}
+
 /// Move the current mob's writes into the game's per-tick record.
 pub fn drain_for(id: u32, out: &mut Vec<PositionWrite>) -> usize {
     STATE.with(|state| {
