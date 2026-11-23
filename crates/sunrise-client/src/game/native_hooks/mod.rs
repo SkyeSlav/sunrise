@@ -13,7 +13,7 @@ pub(in crate::game) use build_creative_mode_tab_contents::CreativeCache;
 pub(in crate::game) use client_pick::ClientPick;
 pub(in crate::game) use fire::{
     ConnectsToCall, EntityChangeBlockPreCall, HotbarAttackIndicatorProgressCall,
-    ItemAfterVerticalCollisionCall, PreRemoveSideEffectsCall, UpdateShapeCall,
+    ItemAfterVerticalCollisionCall, PlayerPongCall, PreRemoveSideEffectsCall, UpdateShapeCall,
 };
 use mod_api::{BlockEntityDataSource, BlockEntityRef, ClockAdjustment};
 
@@ -447,6 +447,7 @@ mod player_item_smithed;
 mod player_leave;
 mod player_move;
 mod player_passage_cross;
+mod player_pong;
 mod player_set_spawn;
 mod player_spawn_phantoms;
 mod player_start_spectating_entity;

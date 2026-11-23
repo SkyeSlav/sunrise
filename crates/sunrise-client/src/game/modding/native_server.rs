@@ -1726,6 +1726,32 @@ impl Game<'_> {
             .then_some(0)
             .ok_or(Refusal::Stale)
     }
+    pub(super) fn player_send_ping(
+        &mut self,
+        player: PlayerRef,
+        id: i32,
+    ) -> Result<(), mod_api::PlayerPingRefusal> {
+        use mod_api::PlayerPingRefusal as Refusal;
+        let Some(guest) = self.online_player_record(player) else {
+            return Err(
+                if self.native_acting_player() == Some(player)
+                    || self.player_handle_read(player).is_some()
+                {
+                    Refusal::NoConnection
+                } else {
+                    Refusal::Stale
+                },
+            );
+        };
+        if !guest.play_connection_open() {
+            return Err(Refusal::NoConnection);
+        }
+        guest
+            .sender
+            .try_send_play_ping(id)
+            .then_some(())
+            .ok_or(Refusal::SendFailed)
+    }
     /// The permission level `player_hide` set, `None` when shown: kept by UUID, and read as
     /// stored before the world is opened to others (an unpublished single-player world runs a
     /// hub for its owner too), where it applies once it is.

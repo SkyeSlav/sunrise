@@ -92,6 +92,15 @@ pub trait PlayerSessionBackend {
 #[sunrise_mod_api_macros::host_area]
 pub trait PlayerSessionBackendMut {
     /// Side: server.
+    /// Queues a play ping with the signed 32-bit `id` for this player's current connection.
+    /// Success means the packet was admitted to the outbound queue (or the current transaction's
+    /// batch), not that it was delivered or answered. An unmodded client echoes the ID in a play
+    /// pong, observable in `player_pong`. This is separate from keep-alive and does not measure
+    /// or change the player's latency.
+    /// Refuses with [`PlayerPingRefusal`] if the handle is stale, the player has no open play
+    /// connection, or the send cannot be queued.
+    fn player_send_ping(&mut self, player: PlayerRef, id: i32) -> Result<(), PlayerPingRefusal>;
+    /// Side: server.
     /// Disconnects that player with `reason`, as `/kick` does
     /// (`ServerGamePacketListenerImpl.disconnect`): their client shows it, the log's "lost
     /// connection" line names it, `player_kicked` hears it and a dedicated server records a
