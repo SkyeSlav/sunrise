@@ -830,6 +830,9 @@ fn fixture(window: Arc<Window>, out: &Path) -> Result<(), Box<dyn std::error::Er
     .map(|pos| Vertex { pos, ..hand[0] });
     frame.sky.sky_color = [0.0, 0.0, 1.0];
     frame.sky.fog_color = [0.0; 3];
+    // The sky disc's fog ends at the render distance, in blocks: the fixture's 12 hides the
+    // whole disc, which lies at least 16 blocks away, in the black fog. 12 chunks shows it.
+    let fixture_distance = std::mem::replace(&mut frame.distance, 192.0);
     let mut celestial_hooks = WorldStageProbe::default();
     frame.celestial = &celestial;
     frame.celestial_bodies = &[client::gfx::CelestialBody::Sun];
@@ -871,6 +874,7 @@ fn fixture(window: Arc<Window>, out: &Path) -> Result<(), Box<dyn std::error::Er
     ]));
     frame.celestial = &[];
     frame.celestial_bodies = &[];
+    frame.distance = fixture_distance;
     renderer.drop_shader_packs();
 
     let mut ordering_frame = fixture_frame(&hud);
