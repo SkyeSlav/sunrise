@@ -1,0 +1,12 @@
+ids = ["type:HotbarSlotError"]
+why = """
+`ClientHost::select_hotbar_slot` refused a spectator with `HotbarSlotError::Refused`. Vanilla
+`Inventory.setSelectedSlot` only rejects a slot outside the hotbar; a spectator's number keys opening the
+spectator menu is the input's rule, not the setter's. The variant is removed and a spectator's slot is
+written like any other. `entity_set_portal_cooldown` likewise stores any `i32`, as
+`Entity.setPortalCooldown(int)` does.
+"""
+migrate = """
+Delete the `HotbarSlotError::Refused` arm of any match on the error; the call now fails only with
+`NoWorld` or `OutOfRange`.
+"""
