@@ -328,9 +328,14 @@ impl Game<'_> {
     }
 
     /// The entity's box (`Entity.getBoundingBox`): its lowest and highest
-    /// corner. Displays and markers have zero-sized physical boxes; interactions use
-    /// their saved dimensions. End crystals have their 2 x 2 box. None for the dragon; a dragon part's is its own. API 379.
+    /// corner. Displays and markers have zero-sized physical boxes. A client display's
+    /// corners coincide at its committed tick position, not its rendering box or packet target.
+    /// Interactions use their saved dimensions. End crystals have their 2 x 2 box.
+    /// None for the dragon; a dragon part's is its own. API 379.
     pub(super) fn entity_bounding_box(&self, entity: EntityRef) -> Option<[[f64; 3]; 2]> {
+        if let Some(display) = self.native_client_display(entity) {
+            return Some([display.position().to_array(); 2]);
+        }
         if let Some(row) = self.native_client_general(entity) {
             return Some(corners(row.bounds()));
         }

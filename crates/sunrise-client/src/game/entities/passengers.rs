@@ -433,9 +433,11 @@ impl Game<'_> {
                         .map(|at| (v, at))
                 })
                 .collect();
-            for display in self.text_displays.values_mut() {
+            let sections = self.client_pick.sections.get_mut();
+            for (&id, display) in &mut self.text_displays {
                 if let Some(at) = display.vehicle.and_then(|v| seats.get(&v)) {
                     display.ride(*at);
+                    sections.move_id(id as u32, display.position().to_array());
                 }
             }
             for interaction in self.interactions.values_mut() {
