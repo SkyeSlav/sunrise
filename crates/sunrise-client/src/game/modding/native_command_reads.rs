@@ -10,19 +10,33 @@ use mod_api::{
 use sunrise_client::advancements::{Advancement, Frame, Tree};
 
 impl Game<'_> {
-    /// A parsed native command with the level and position it executes at: after `execute
-    /// in/at/positioned`, or the console's overworld spawn corner.
+    /// A parsed native command with the level, position, rotation and entity it executes
+    /// with: after `execute in/at/positioned/rotated/facing/as`, or a typed command's player,
+    /// or the console's overworld spawn corner with no entity. The executing entity is the
+    /// source's own target, resolved to a live handle; one that no longer resolves is none.
     pub(super) fn native_invocation(
-        &self,
+        &mut self,
         literals: Vec<String>,
         arguments: Vec<CommandArgument>,
     ) -> CommandInvocation {
-        CommandInvocation::new(
+        let source = self.command_source.unwrap_or_else(|| self.player_source());
+        let invocation = CommandInvocation::new(
             literals,
             arguments,
             self.native_level_key(),
             self.source_position(),
         )
+        .with_rotation(source.rot);
+        let Some(target) = source.entity else {
+            return invocation;
+        };
+        match self.native_command_player_target(target) {
+            Some(player) => invocation.with_player(player),
+            None => match self.native_command_entity_target(target) {
+                Some(entity) => invocation.with_entity(entity),
+                None => invocation,
+            },
+        }
     }
 
     /// `ServerPlayer.getGameProfile`: the name `player_name` reads, and the properties the

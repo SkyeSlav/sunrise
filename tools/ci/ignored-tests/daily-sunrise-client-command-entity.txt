@@ -1,0 +1,3 @@
+# #4631: a native command sees the entity it executes as and the execution rotation; the
+# fixture installs mods and commands, so it runs in its own process.
+sunrise-client game::native_server::tests::native_commands_see_the_executing_entity_and_rotation lib daily child-process

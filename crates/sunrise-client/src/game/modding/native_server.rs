@@ -2312,7 +2312,10 @@ impl Game<'_> {
         }
     }
 
-    fn native_command_player_target(&self, target: super::commands::Target) -> Option<PlayerRef> {
+    pub(super) fn native_command_player_target(
+        &self,
+        target: super::commands::Target,
+    ) -> Option<PlayerRef> {
         use super::commands::Target;
         match target {
             Target::Player => self.native_acting_player(),
@@ -4434,6 +4437,113 @@ mod tests {
                             assert!(game.run_command(
                                 "execute if data storage test:result {value:1} run origin"
                             ));
+                        });
+                    },
+                );
+            },
+        );
+    }
+
+    /// `CommandSourceStack.getEntity` and `getRotation`: `execute as` changes only the
+    /// executing entity and `rotated` only the rotation, never the origin; the console and a
+    /// command block run as no entity at zero rotation, and a command block minecart as itself.
+    #[test]
+    #[ignore = "daily"]
+    fn native_commands_see_the_executing_entity_and_rotation() {
+        crate::game::in_own_process(
+            "game::native_server::tests::native_commands_see_the_executing_entity_and_rotation",
+            || {
+                use mod_api::{CommandInvocation, CommandSource};
+                type Heard = Arc<Mutex<Vec<(CommandSource, CommandInvocation)>>>;
+                struct Commands(Heard);
+                #[mod_api::__subscriptions]
+                impl mod_api::Hooks for Commands {
+                    fn register_commands(
+                        &self,
+                        _: &mut dyn mod_api::ServerHost,
+                        event: &mut mod_api::RegisterCommandsEvent<'_>,
+                    ) {
+                        let heard = self.0.clone();
+                        event
+                            .commands
+                            .push(mod_api::Command::new("origin").executes(
+                                move |_, source: &CommandSource, invocation: &CommandInvocation| {
+                                    heard
+                                        .lock()
+                                        .unwrap()
+                                        .push((source.clone(), invocation.clone()));
+                                    Ok(1)
+                                },
+                            ));
+                    }
+                }
+                let heard: Heard = Arc::default();
+                mod_platform::testing::with_mods(
+                    vec![mod_api::ModEntry::new(
+                        "executors",
+                        Box::new(Commands(heard.clone())),
+                    )]
+                    .into(),
+                    || {
+                        with_command_sources(|game| {
+                            let last = || heard.lock().unwrap().last().unwrap().clone();
+                            assert!(game.run_console_command("origin", false).0);
+                            let (source, console) = last();
+                            assert!(matches!(source, CommandSource::Console { .. }));
+                            assert_eq!(
+                                (console.entity, console.player(), console.rotation),
+                                (None, None, [0.0, 0.0])
+                            );
+                            assert!(
+                                game.run_console_command(
+                                    "summon minecraft:pig 0.5 64 0.5 {Tags:[\"executor\"],NoAI:1b}",
+                                    false
+                                )
+                                .0
+                            );
+                            assert!(
+                                game.run_console_command(
+                                    "execute as @e[tag=executor] rotated 10 20 positioned 2 64 3 run origin",
+                                    false
+                                )
+                                .0
+                            );
+                            let (source, as_pig) = last();
+                            assert!(matches!(source, CommandSource::Console { .. }));
+                            let pig = as_pig.entity.expect("the pig executes the command");
+                            assert_eq!(as_pig.player(), None);
+                            assert_eq!(as_pig.rotation, [10.0, 20.0]);
+                            assert_eq!(as_pig.position, [2.0, 64.0, 3.0]);
+                            // `execute rotated as` takes the entity's rotation, not its identity.
+                            assert!(
+                                game.run_console_command(
+                                    "execute rotated as @e[tag=executor] run origin",
+                                    false
+                                )
+                                .0
+                            );
+                            assert_eq!(last().1.entity, None);
+                            // `at` moves the position and rotation to the entity, keeping `as`.
+                            assert!(
+                                game.run_console_command(
+                                    "execute as @e[tag=executor] at @s run origin",
+                                    false
+                                )
+                                .0
+                            );
+                            let at_pig = last().1;
+                            assert_eq!(at_pig.entity, Some(pig));
+                            assert_eq!(at_pig.position, [0.5, 64.0, 0.5]);
+                            game.command_block_tick(sunrise_core::position::BlockPos::new(
+                                1, 64, 1,
+                            ));
+                            let (source, block) = last();
+                            assert!(matches!(source, CommandSource::CommandBlock { .. }));
+                            assert_eq!((block.entity, block.rotation), (None, [0.0, 0.0]));
+                            assert!(game.perform_cart_command(99));
+                            let (_, cart) = last();
+                            assert_eq!(cart.entity.map(|entity| entity.id()), Some(99));
+                            assert_eq!(cart.player(), None);
                         });
                     },
                 );

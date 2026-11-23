@@ -107,7 +107,12 @@ The executor's `source` is a non-exhaustive `CommandSource`: `Player { player, .
 function permission; blocks and carts use game-master permission. `execute as`,
 `at` and `in` change argument resolution, not the origin. `command.dimension` and
 `command.position` are where the command executes after `execute in`, `at` or
-`positioned`; the console executes in the Overworld at its spawn corner.
+`positioned`; the console executes in the Overworld at its spawn corner. `command.entity` is the entity it executes as
+(`CommandSourceStack.getEntity`): the player who typed it, a command block minecart, a
+function's caller, or the one `execute as` or `on` selected, and `None` for the console, a
+command block or an entity that no longer resolves. `command.player()` is that entity when it
+is a player; a command that needs one refuses `None` itself. `command.rotation` is the
+execution rotation, `[yaw, pitch]` in degrees, after `execute rotated` or `facing`.
 
 Two reads work in a command and elsewhere on the server. `player.profile(host)` returns
 the player's `GameProfile<'_>`: UUID, borrowed name and login properties such as the signed

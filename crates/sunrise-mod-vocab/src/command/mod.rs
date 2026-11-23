@@ -158,11 +158,23 @@ pub struct CommandInvocation {
     /// The execution position, after `execute at` or `positioned`; the console's is the
     /// world spawn's block corner.
     pub position: [f64; 3],
+    /// The entity the command executes as (`CommandSourceStack.getEntity`): the player who
+    /// typed it, a command block minecart, the caller of a function, or the one `execute as`
+    /// or `execute on` selected. None for the server console, a command block, or an entity
+    /// that no longer resolves. [`CommandSource`] stays the origin, which `execute as` doesn't
+    /// change.
+    pub entity: Option<EntityRef>,
+    /// The execution rotation in degrees, **[yaw, pitch]** as entity rotations and
+    /// [`CommandArgumentValue::Rotation`] are (`CommandSourceStack.getRotation`, whose `Vec2`
+    /// holds pitch first), after `execute rotated` or `facing`. The console and command blocks
+    /// start at zero.
+    pub rotation: [f32; 2],
+    player: Option<PlayerRef>,
 }
 
 impl CommandInvocation {
     /// Build an invocation from its parsed literal path, resolved arguments and execution
-    /// level and position.
+    /// level and position, with no executing entity and zero rotation.
     pub fn new(
         literals: Vec<String>,
         arguments: Vec<CommandArgument>,
@@ -174,7 +186,36 @@ impl CommandInvocation {
             arguments,
             dimension,
             position,
+            entity: None,
+            rotation: [0.0; 2],
+            player: None,
         }
+    }
+
+    /// The same invocation at `rotation`, [yaw, pitch] in degrees.
+    pub fn with_rotation(mut self, rotation: [f32; 2]) -> Self {
+        self.rotation = rotation;
+        self
+    }
+
+    /// The same invocation executing as `entity`, which isn't a player.
+    pub fn with_entity(mut self, entity: EntityRef) -> Self {
+        self.entity = Some(entity);
+        self.player = None;
+        self
+    }
+
+    /// The same invocation executing as `player`.
+    pub fn with_player(mut self, player: PlayerRef) -> Self {
+        self.entity = Some(player.entity());
+        self.player = Some(player);
+        self
+    }
+
+    /// The executing entity when it is a player (`CommandSourceStack.getPlayer`). A command
+    /// that needs one maps `None` to its own refusal, as `getPlayerOrException` does.
+    pub fn player(&self) -> Option<PlayerRef> {
+        self.player
     }
 
     /// The last argument registered under `name`, or `None` when it is absent.

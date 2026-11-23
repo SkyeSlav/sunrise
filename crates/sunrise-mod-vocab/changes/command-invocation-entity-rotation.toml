@@ -1,0 +1,2 @@
+ids = ["type:CommandInvocation.entity", "type:CommandInvocation.rotation", "type:CommandInvocation::player", "type:CommandInvocation::with_entity", "type:CommandInvocation::with_player", "type:CommandInvocation::with_rotation"]
+why = "Additive reads: the executing entity (CommandSourceStack.getEntity, after execute as/on), its player projection (getPlayer) and the execution rotation (getRotation, [yaw, pitch]). CommandSource keeps meaning the origin."
