@@ -2,7 +2,7 @@ Evoker.EvokerWololoSpellGoal.canContinueToUse	port	crates/sunrise-client/src/mob
 Evoker.EvokerWololoSpellGoal.performSpellCasting	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::handle_mob_events	MobEvent::Wololo dyes the sheep red (color 14); the event is pushed from UseSpell::tick
 Illusioner.registerGoals	port	crates/sunrise-client/src/mobs/illusioner.rs::register	same goal list and priorities
 Illusioner.createAttributes	skip:data		attribute defaults (speed 0.5, follow 18, health 32) live in data tables
-Illusioner.performRangedAttack	port	crates/sunrise-client/src/mobs/undead.rs::perform_ranged_attack	bow shot at speed 1.6 with the aim and uncertainty the skeleton uses
+Illusioner.performRangedAttack	port	crates/sunrise-client/src/mobs/illusioner.rs::perform_ranged_attack	bow shot at speed 1.6 with the aim and uncertainty the skeleton uses
 Illusioner.getArmPose	port	crates/sunrise-client/src/mobs/illager.rs::arm_pose	spellcasting, bow when aggressive, else crossed
 Illusioner.IllusionerBlindnessSpellGoal.canUse	port	crates/sunrise-client/src/mobs/illusioner.rs::Spell::can_use	target id differs from last target, difficulty above normal
 Illusioner.IllusionerBlindnessSpellGoal.start	port	crates/sunrise-client/src/mobs/illusioner.rs::Spell::start	remembers the target id for the next can_use
