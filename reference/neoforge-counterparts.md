@@ -6,7 +6,7 @@ The book build renders it directly from those declarations; there is no generate
 A key names the event class (`PlayerEvent.Clone`) or runtime callback (`IPayloadHandler.handle`);
 notes about cancelling or the event bus belong in the hook's `///` doc, not in the key.
 
-764 hooks: 460 name a counterpart, 300 say they have none.
+766 hooks: 460 name a counterpart, 302 say they have none.
 This is a declaration reference, not an independent verification of every mapping. Registration events and the
 callbacks they register are different moments: packet receipt names `IPayloadHandler.handle`, and per-draw item
 decoration names `IItemDecorator.render`, not their registration events. A `none` explains why no event or method
@@ -538,6 +538,7 @@ A hook with no NeoForge counterpart is judged on its merits like any other. The 
 | `chat_recipient` | server | NeoForge has no per-receiver server chat event |
 | `chat_suggestion_applied` | client | vanilla command suggestions; NeoForge adds no event |
 | `client_block_changed` | client | vanilla ClientLevel.setBlock; NeoForge adds no client event for it |
+| `client_identity` | client | NeoForge patches ClientBrandRetriever.getClientModName to use BrandingControl.getClientBranding, without a per-address event |
 | `client_mining_predict` | client | client mining prediction |
 | `client_packet` | client | NeoForge has no raw play-packet receive event |
 | `client_packet_send` | client | NeoForge has no raw play-packet send event |
@@ -637,6 +638,7 @@ A hook with no NeoForge counterpart is judged on its merits like any other. The 
 | `menu_clicked` | server | a Java menu overrides AbstractContainerMenu.clicked; no event |
 | `menu_links` | server | Sunrise mod menus expose linked container slots |
 | `menu_quick_move` | server | a Java menu overrides AbstractContainerMenu.quickMoveStack; no event |
+| `menu_slot_changed` | server | vanilla Container.setItem and AbstractContainerMenu.slotsChanged; NeoForge adds no event |
 | `menu_slot_rules` | both | vanilla Slot.mayPlace and mayPickup; NeoForge adds no event or extension for it |
 | `menu_slot_take` | server | a Java menu's slot overrides Slot.onTake; NeoForge adds no event |
 | `menu_still_valid` | server | vanilla AbstractContainerMenu.stillValid, which each menu overrides |

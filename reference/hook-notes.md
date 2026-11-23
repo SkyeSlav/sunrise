@@ -4424,6 +4424,15 @@ menu without a crafting grid. Vanilla menu types are never asked. The contract i
 for a LAN host's own player: the game is the server there, and asks the part on the same server-side path
 (the player's own block container menu, its UUID, `dry_run` for the viewer's check) before its grid transfer.
 
+Version 2 adds the dry run's cells. `missing_cells` names the recipe's cells no item fills and
+`craftable_cells` the ones the menu lacks but could craft (a storage network's autocrafting), both as indices in
+`RecipeTransferCheck`'s cell order: width by height for a shaped recipe, else its ingredients in order. They reach
+the viewer as `RecipeTransferCheck::missing_cells` and `craftable_cells`, with any answer, so a part can answer
+`Moves` and still mark the craftable cells. The game keeps both lists below the recipe's cell count, from its
+known layout (one for a stonecutting recipe, three for smithing, the placement's slots for crafting and cooking;
+256 for a recipe it can't inspect, such as a mod's own type), each once, in ascending order; pushes outside a dry
+run are dropped.
+
 ## Minecart pass
 
 - **`BlockPart::minecart_pass(host, event)`** (`MinecartPassEvent { state, pos, entity }`): a minecart passed over a rail block state the Part is attached to, at the moment vanilla calls `activateMinecart` for an activator rail, here for every rail. It is the Part form of Forge's `IBaseRailExtension.onMinecartPass`, which NeoForge 26.3 no longer has, so there is no global hook. With the old minecart physics it fires once per tick the cart is on a rail; with `minecart_improvements` once per track iteration, so a fast cart can pass several times in a tick. It is recorded during the cart's step and delivered after the cart's batch has ticked, through the same drain as `entity_inside`, with a `&mut dyn ServerHost`, so a write the part makes (a velocity change through `EntityRef`) lands on the stored cart. A pass whose cart is gone or whose rail changed is dropped. Only a rail state a Part listens for is recorded: with no such Part, one `block_listens` test per rail step. Beyond NeoForge; Diverges from upstream: new hook.
