@@ -13,6 +13,8 @@ pub struct Growth {
     /// opens: a reader holds its own `Arc`, so it sees the old registry or the
     /// new one, never a mix.
     features: RwLock<Option<Arc<LiveFeatures>>>,
+    /// The open world's biome keys, which mod features placed on the live level answer with.
+    biome_keys: crate::worldgen::mod_features::ModBiomeKeys,
 }
 
 impl Behaviours {
@@ -35,6 +37,11 @@ impl Behaviours {
             .features
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+    /// The biome keys mod features placed on the live level answer `biome` with; the game
+    /// publishes the open world's on each of its data loads.
+    pub fn mod_biome_keys(&self) -> &crate::worldgen::mod_features::ModBiomeKeys {
+        &self.growth.biome_keys
     }
     /// The installed registry. Take it once per operation and reuse it.
     pub fn live_features(&self) -> Option<Arc<LiveFeatures>> {

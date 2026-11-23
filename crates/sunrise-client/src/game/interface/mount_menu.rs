@@ -7,7 +7,10 @@
 //! server the screen shows the server's menu (`ClientboundMountScreenOpenPacket`)
 //! and its clicks go out as container clicks; a server's players get theirs
 //! from game/network/lan_mount_menu.rs.
-use super::{Game, Screen};
+use super::{
+    Game, Screen,
+    transactions::{After, SaveChunkScope},
+};
 use sunrise_client::{
     hud::{HudBatch, rgba},
     items::ItemStack,
@@ -192,7 +195,7 @@ impl Game<'_> {
         };
         let (saddle, armor) = (open.saddle.clone(), open.armor.clone());
         let body = open.show_armor.then_some(armor);
-        let items = open.items.clone();
+        let items = open.items.iter().take(open.columns * 3).cloned().collect();
         self.mount_store(index, saddle, body, items);
     }
     /// The slots of mount `index` as its menu shows them: the saddle, the
@@ -208,8 +211,9 @@ impl Game<'_> {
         let m = &self.mobs[index];
         let species = m.species();
         let body = shows_body(species).then(|| m.equipment_stacks()[6].clone());
-        let mut items = m.extra.items.clone();
-        items.resize(mount_columns(m) * 3, None);
+        let size = mount_columns(m) * 3;
+        let mut items: Vec<_> = m.extra.items.iter().take(size).cloned().collect();
+        items.resize(size, None);
         (m.saddle_item(), body, items)
     }
     /// The menu's slots back on mount `index` (`body` None: not its slot),
@@ -240,7 +244,6 @@ impl Game<'_> {
                     .unwrap_or_else(|| "minecraft:item.armor.equip_generic".into())
             })
         };
-        let m = &mut self.mobs[index];
         let id = m.id;
         let pos = m.position;
         let saddle_off = m.extra.saddled() && saddle.is_none();
@@ -250,23 +253,35 @@ impl Game<'_> {
         let body_on = body
             .as_ref()
             .is_some_and(|b| b.is_some() && m.extra.body_id().is_none());
+        self.journal_equipment(id);
+        let m = &mut self.mobs[index];
         m.set_saddle(saddle);
         if let Some(body) = body {
             m.extra.set_body_stack(body);
         }
-        let mut items = items;
-        let keep = m.extra.items.len().max(CHEST_SIZE);
-        items.resize(keep, None);
-        m.extra.items = items;
-        let (x, z) = (at[0].floor() as i32 >> 4, at[2].floor() as i32 >> 4);
-        self.world.modified.insert((x, z));
-        if let Some(sound) = sound {
-            self.audio.play(&sound, Some(at), 1.0, 1.0);
+        if !items.is_empty() {
+            self.journal_entity(id);
+            let _ = self.edit_entity_slots(id, |slots, _| {
+                for (slot, stack) in slots.iter_mut().zip(items) {
+                    *slot = stack;
+                }
+            });
         }
-        if saddle_put_on || body_on {
-            self.mob_equip_event(id, [pos.x, pos.y, pos.z], true);
-        } else if saddle_off || body_off {
-            self.mob_equip_event(id, [pos.x, pos.y, pos.z], false);
+        let chunk = (at[0].floor() as i32 >> 4, at[2].floor() as i32 >> 4);
+        if self.has_open_transaction() {
+            self.journal_chunk_save(chunk, SaveChunkScope::Transaction);
+        } else {
+            self.world.modified.insert(chunk);
+        }
+        let equips = saddle_put_on || body_on;
+        if equips || saddle_off || body_off {
+            self.after_commit(After::MountEquipment {
+                dim: self.dim,
+                id,
+                at: [pos.x, pos.y, pos.z],
+                sound: sound.map(|sound| (sound, at)),
+                equips,
+            });
         }
     }
     pub(super) fn mount_slots(&self) -> Option<Vec<usize>> {

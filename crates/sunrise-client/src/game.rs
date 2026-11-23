@@ -2121,6 +2121,8 @@ mod shield;
 mod shoulders;
 #[path = "game/interface/sign_edit.rs"]
 mod sign_edit;
+#[path = "game/modding/slot_changes.rs"]
+mod slot_changes;
 #[cfg(test)]
 #[path = "game/modding/slot_pickup_tests.rs"]
 mod slot_pickup_tests;
@@ -2741,6 +2743,8 @@ struct GameLevel<'w> {
     /// (`Entity.isIgnoringBlockTriggers`).
     trigger_extras: Vec<Aabb>,
     biomes: &'w Biomes,
+    /// `BiomeManager`'s zoom over this level's seed, for `biome_name`.
+    biome_zoom: sunrise_core::biome::BiomeZoom,
     seed: i64,
     behaviours: &'w Behaviours,
     items: &'w Items,
@@ -3651,8 +3655,6 @@ struct Game<'a> {
     was_fall_flying: bool,
     /// Bees whose buzz is playing, and whether it is the aggressive one.
     bee_sounds: HashMap<u32, bool>,
-    /// Guardians whose attack hum is playing.
-    guardian_sounds: HashSet<u32>,
     /// Remote guardian eye targets reused between ticks.
     guardian_look_scratch: Vec<(usize, [f64; 3])>,
     dropped: sunrise_client::join_seq::JoinList<ItemEntity>,
@@ -4027,6 +4029,8 @@ struct Game<'a> {
     transactions: transactions::OpenTransactions,
     /// The source of the running dispenser behaviour, including across mod callbacks.
     dispense_source: Option<dispenser::DispenseSource>,
+    /// Open mod menus whose `menu_slot_changed` dispatch is currently on the call stack.
+    slot_changed_active: Vec<slot_changes::SlotChangedTarget>,
     /// Backing blocks whose contents notice is on the call stack, innermost last.
     contents_changing: Vec<(mod_api::LevelRef, BlockPos)>,
     /// The mod screen of a menu open on this client (`native_screen`).
@@ -5618,6 +5622,7 @@ impl Game<'_> {
             building_player_boxes,
             player_collision,
             biomes: world_biomes!(self),
+            biome_zoom: self.streaming.biome_zoom,
             seed: self.level.seed,
             behaviours: self.res.behaviours(),
             items: world_items!(self),
@@ -12021,6 +12026,7 @@ impl Game<'_> {
             self.physical_buttons.clear();
             self.drag_button = None;
             self.container_buttons.clear();
+            self.mod_browser_focus_lost();
         }
         if let WindowEvent::ModifiersChanged(m) = event {
             self.update_modifiers(m.state());
@@ -12561,13 +12567,17 @@ impl Game<'_> {
                         if delta != [0.0; 2]
                             && let Some(button) = button
                         {
-                            let handled = self.observed_screen_view().is_some()
-                                && self.mounted_widget_mouse_dragged(
-                                    self.cursor(),
-                                    glfw_button(button),
-                                    delta,
-                                    glfw_modifiers(self.modifiers),
-                                );
+                            // A press on the item panel's list is the panel's until its
+                            // release: no widget, menu or slot hears the drag.
+                            let panel = self.mod_browser_drag_move();
+                            let handled = panel
+                                || (self.observed_screen_view().is_some()
+                                    && self.mounted_widget_mouse_dragged(
+                                        self.cursor(),
+                                        glfw_button(button),
+                                        delta,
+                                        glfw_modifiers(self.modifiers),
+                                    ));
                             let handled = handled
                                 || (self.screen_state.screen_instance == initial_instance
                                     && self.screen_drag_response(overlay, button, size, (w, h))?);
@@ -12789,6 +12799,9 @@ impl Game<'_> {
                     if !synthetic {
                         self.track_drag_button(button, pressed);
                     }
+                    if pressed {
+                        self.mod_browser_other_press(button == MouseButton::Left);
+                    }
                     if let Some(receiver) = &receiver {
                         let mut canceled = false;
                         if pressed {
@@ -12808,6 +12821,11 @@ impl Game<'_> {
                             );
                         }
                         if canceled {
+                            // A vetoed release of a press on the item panel
+                            // drops its item, sending nothing.
+                            if !pressed && button == MouseButton::Left {
+                                self.mod_browser_release_vetoed();
+                            }
                             if self.screen_state.screen_instance == initial_instance
                                 && let Some(millis) = press_millis
                             {
@@ -12821,8 +12839,13 @@ impl Game<'_> {
                             return Ok(());
                         }
                     }
-                    let mut handled = owned_release;
-                    if self.screen_state.screen_instance == initial_instance {
+                    // The left release of a press on the item panel's list is
+                    // the panel's, even once its menu closed or was replaced:
+                    // no screen, mounted widget or container hook hears it.
+                    let panel_release =
+                        !pressed && button == MouseButton::Left && self.mod_browser_release();
+                    let mut handled = owned_release || panel_release;
+                    if !panel_release && self.screen_state.screen_instance == initial_instance {
                         let inventory_release = !pressed
                             && matches!(self.screen, Screen::Inventory | Screen::Creative)
                             && self.observed_overlay_now().is_none()
@@ -13859,7 +13882,6 @@ impl<'a> Game<'a> {
             riding_sound: None,
             was_fall_flying: false,
             bee_sounds: HashMap::new(),
-            guardian_sounds: HashSet::new(),
             guardian_look_scratch: Vec::new(),
             dropped: Default::default(),
             next_entity: 0,
@@ -14071,6 +14093,7 @@ impl<'a> Game<'a> {
             hoppers: HashMap::new(),
             transactions: Default::default(),
             dispense_source: None,
+            slot_changed_active: Vec::new(),
             contents_changing: Vec::new(),
             mod_screen: None,
             mod_container_viewers: HashMap::new(),

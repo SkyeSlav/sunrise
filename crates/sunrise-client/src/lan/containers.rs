@@ -444,6 +444,11 @@ impl Hub {
                 title,
             }));
             let mod_type = crate::containers::mod_menu_type(menu_kind);
+            let slot_changed_seen = mod_type.map(|t| {
+                let mut seen = items.clone();
+                seen.resize(t.slots, None);
+                seen
+            });
             g.menu = Some(Menu {
                 window,
                 kind,
@@ -463,6 +468,7 @@ impl Hub {
                 links: Vec::new(),
                 asks_still_valid: super::menu::asks_still_valid(mod_type, menu_kind),
                 opening_item: None,
+                slot_changed_seen,
             });
             window
         });
@@ -518,6 +524,7 @@ impl Hub {
                 links: Vec::new(),
                 asks_still_valid: false,
                 opening_item: None,
+                slot_changed_seen: None,
             });
             window
         });

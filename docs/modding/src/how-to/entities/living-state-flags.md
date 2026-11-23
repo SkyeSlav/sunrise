@@ -32,6 +32,14 @@ mob's movement speed already reads as that modifier (a cat's or ocelot's own AI 
 handle, on a client and for a kind with no sprinting flag. It is the flag `Entity.isSprinting` reads, not
 the player's sprint key: a player's own client sets its flag again from its input.
 
+## No gravity
+
+`EntityRef::no_gravity(host)` reads `Entity.isNoGravity` and
+`EntityRef::set_no_gravity(host, enabled)` sets it on the server. Both cover mobs and live
+dropped items, including an `EntityRef` resolved from `ItemPart::on_entity_item_update`; an
+item honours the flag in its own tick. Stale handles and other kinds read `None` and refuse
+the write. The write marks the item for its next sync, as it does for a mob.
+
 ## Fire, water and consumption
 
 `EntityRef::is_on_fire(host)` reads vanilla `Entity.isOnFire` on either side: an entity that is not

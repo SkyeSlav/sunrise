@@ -254,7 +254,7 @@ pub fn group(found: Vec<Found>) -> BTreeMap<String, Vec<Found>> {
         groups.entry(f.group()).or_default().push(f);
     }
     for members in groups.values_mut() {
-        members.sort_by_key(|f| (f.case.bytes, f.case.seed));
+        members.sort_by_key(|f| (f.case.bytes, f.id));
     }
     groups
 }

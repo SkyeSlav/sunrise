@@ -503,6 +503,32 @@ pub enum ChunkStatus {
     Full,
 }
 
+/// Why `level.load_chunk` did not bring its chunk to FULL: the error of the `ChunkResult`
+/// vanilla's chunk futures carry (`ServerChunkCache.getChunkFuture`, `ChunkResult.isSuccess`),
+/// and the failure Sunrise adds where vanilla would crash. `Ok(())` is the chunk loaded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub enum ChunkLoadError {
+    /// Vanilla's `ChunkResult` error (`ChunkHolder.UNLOADED_CHUNK`): the chunk could not be
+    /// held, or the level went away during the wait. A stale handle, a client, a level the
+    /// server has not opened, a chunk past `ChunkPos.isValid` and a level whose generation is
+    /// paused or stopped answer it too.
+    Unloaded,
+    /// Generation panicked for this chunk or for one its generation needs around it: a mod's
+    /// chunk generator, contained by the engine where vanilla would crash. The level stays open
+    /// and is not generated there again until it opens again; asking again answers `Failed` at
+    /// once.
+    Failed,
+}
+
+impl crate::NoBackend for ChunkLoadError {
+    /// No game: as for a level the server has not opened.
+    fn no_backend() -> Self {
+        Self::Unloaded
+    }
+}
+
 /// A chunk's ticket level (`ChunkLevel`), as the server holds it: how much of
 /// the level the chunk is kept alive for. Lower is more active. Sunrise keeps
 /// no level for a chunk partway through generating, so past `FULL` a chunk is

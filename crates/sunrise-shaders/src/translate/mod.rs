@@ -1295,9 +1295,11 @@ fn work_group_size(code: &str) -> Result<String, String> {
     Ok(tokens.concat())
 }
 
-/// A work group size given as an integer constant expression (GLSL 4.60, 4.4 and 4.4.1):
-/// numbers, `+ - * / %`, brackets, `min`, `max` and `gl_MaxComputeWorkGroupSize`, the minimum
-/// GLSL requires (`ivec3(1024, 1024, 64)`, 7.3); the translation knows no device.
+/// A layout qualifier's value (a work group size, an output's location or component) given as
+/// an integer constant expression (GLSL 4.60, 4.4 and 4.4.1): integer literals (decimal, hex or
+/// octal, `u` or not, 4.1.3), `+ - * / %`, brackets, `min`, `max` and
+/// `gl_MaxComputeWorkGroupSize`, the minimum GLSL requires (`ivec3(1024, 1024, 64)`, 7.3); the
+/// translation knows no device.
 struct ConstantSize<'w> {
     words: &'w [&'w str],
     at: usize,
@@ -1305,11 +1307,14 @@ struct ConstantSize<'w> {
 
 impl<'w> ConstantSize<'w> {
     fn eval(words: &'w [&'w str]) -> Option<u32> {
+        Self::value(words).and_then(|v| u32::try_from(v).ok())
+    }
+
+    /// The expression's value, whatever its range.
+    fn value(words: &'w [&'w str]) -> Option<i64> {
         let mut p = Self { words, at: 0 };
         let v = p.sum()?;
-        (p.at == words.len())
-            .then_some(v)
-            .and_then(|v| u32::try_from(v).ok())
+        (p.at == words.len()).then_some(v)
     }
 
     fn peek(&self) -> Option<&'w str> {
@@ -1391,7 +1396,11 @@ impl<'w> ConstantSize<'w> {
                     _ => None,
                 }
             }
-            number => number.trim_end_matches(['u', 'U']).parse().ok(),
+            // GLSL's literal (hex, octal); one whose digits don't fit its radix (`08`, `018u`)
+            // is read as decimal, as before octal was read.
+            number => crate::condition::int_literal(number)
+                .ok()
+                .or_else(|| number.trim_end_matches(['u', 'U']).parse().ok()),
         }
     }
 }
@@ -4417,6 +4426,22 @@ in VertexData {{ {member} }} vIn;
         assert!(
             work_group_size("layout(local_size_x = 16) in;\nuvec3 s = gl_WorkGroupSize;")
                 .is_ok_and(|c| c.contains("uvec3(16u, 1u, 1u)"))
+        );
+        // Hex and octal literals are GLSL's integers too (4.1.3): `010` is 8.
+        assert_eq!(
+            work_group_size(
+                "layout(local_size_x = 0x10, local_size_y = 010u) in;\nuvec3 s = gl_WorkGroupSize;"
+            )
+            .as_deref(),
+            Ok("layout(local_size_x = 16, local_size_y = 8) in;\nuvec3 s = uvec3(16u, 8u, 1u);")
+        );
+        // Digits octal doesn't have after a leading `0` are decimal, as before octal was read.
+        assert_eq!(
+            work_group_size(
+                "layout(local_size_x = 08, local_size_y = 018u) in;\nuvec3 s = gl_WorkGroupSize;"
+            )
+            .as_deref(),
+            Ok("layout(local_size_x = 8, local_size_y = 18) in;\nuvec3 s = uvec3(8u, 18u, 1u);")
         );
     }
 

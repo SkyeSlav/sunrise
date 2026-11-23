@@ -1403,14 +1403,14 @@ mod tests {
         assert!(code.contains("client_backend_mut_of(host)"));
         // A command result refuses with an unsuccessful run and no feedback.
         let command = entry(
-            "fn entity_run_command_with_output(&mut self, entity: EntityRef, line: &str, level: PermissionLevel) -> CommandResult;",
+            "fn entity_run_command_with_output(&mut self, entity: EntityRef, line: &str, level: PermissionLevel, suppress_output: bool) -> CommandResult;",
         );
         let (handle, code) = handle_method(&command, Tier::BackendMut, &handles)
             .unwrap()
             .unwrap();
         assert_eq!(handle, "EntityRef");
         assert!(code.contains(
-            "backend_mut_of(host).map(|backend| backend.entity_run_command_with_output(self, line, level)).unwrap_or_default()"
+            "backend_mut_of(host).map(|backend| backend.entity_run_command_with_output(self, line, level, suppress_output)).unwrap_or_default()"
         ));
         // A `Result` method refuses with its error's `NoBackend` value on a host without a game.
         let tried = entry("fn level_attempt(&mut self, level: LevelRef) -> Result<u8, Refused>;");

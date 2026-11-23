@@ -1495,6 +1495,22 @@ mod tests {
         assert!(error.contains("(float big[0x7fffffff];)"), "{error}");
     }
 
+    /// An output array whose second element would take location 2^32 (#4912) is the shader's
+    /// error at its line, not an overflow.
+    #[test]
+    fn an_output_whose_locations_pass_u32_is_an_error() {
+        let vsh = "#version 330\nout vec4 vertexColor;\nvoid main() { vertexColor = vec4(1.0); }\n";
+        let fsh = "#version 330\nin vec4 vertexColor;\nout vec4 fragColor;\n\
+            layout(location = 4294967295u) out vec4 extra[2];\n\
+            void main() { fragColor = vertexColor; extra[0] = vertexColor; extra[1] = vertexColor; }\n";
+        let error = translate_core(vsh, fsh, &[], &include, &GLUE).unwrap_err();
+        assert!(error.starts_with("fragment shader: line "), "{error}");
+        assert!(
+            error.contains("(layout(location = 4294967295u) out vec4 extra[2];)"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn what_sunrise_does_not_provide_is_an_error() {
         let fsh = "#version 330\nin vec4 vertexColor;\nout vec4 fragColor;\nvoid main() { fragColor = vertexColor; }\n";

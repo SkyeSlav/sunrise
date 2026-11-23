@@ -897,6 +897,11 @@ impl Game<'_> {
                 b.container_changed(level, ticks, BlockPos::new(pos.0, pos.1, pos.2))
             });
         }
+        // A write outside any transaction (a hopper, `/item replace`): committed writes are
+        // reported once at their root commit instead.
+        if self.transaction_lifecycle() == mod_api::TransactionLifecycle::None {
+            self.notify_block_menu_slot_changed(pos, |_| None);
+        }
     }
     /// `HopperBlockEntity.tryMoveInItem`.
     fn try_move_in_item(

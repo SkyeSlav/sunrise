@@ -89,8 +89,8 @@ fn player_handshake(
 ```
 
 The requested host is untrusted text, including any suffix after a NUL. Each
-listener sees the last accepted rewrite. Login doesn't route by host, so the
-final value only reaches later listeners. The vanilla limit of 255 UTF-16
+listener sees the last accepted rewrite. Login doesn't route by host; the
+final value is what `PlayerRef::virtual_host` reports for the player. The vanilla limit of 255 UTF-16
 code units applies to decoding the packet, not to the rewrite. Each listener
 gets its own copy of the requested port, protocol version and peer IP, so no
 listener changes what the next one reads. The peer IP is the numeric

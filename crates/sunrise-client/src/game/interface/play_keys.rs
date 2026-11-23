@@ -88,6 +88,11 @@ impl Game<'_> {
         {
             return Ok(());
         }
+        // Escape cancels a press on the item panel; one that is a drag takes
+        // the Escape, and the screen stays open.
+        if key == KeyCode::Escape && self.mod_browser_drag_escape() {
+            return Ok(());
+        }
         if key == KeyCode::Escape && self.mod_browser_back() {
             return Ok(());
         }

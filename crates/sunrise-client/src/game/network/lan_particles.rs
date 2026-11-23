@@ -3,8 +3,7 @@
 //! `/particle` uses) and `ClientboundExplodePacket` (`ServerLevel.explode`).
 use super::{Game, explosion_settings::BlastEffects, lan::LanHost, level_sounds::LevelSound};
 use mod_api::{SoundSource, client::particles::PositionSource};
-use sunrise_client::lan::containers::within_range;
-use sunrise_client::lan::hub::Hub;
+use sunrise_client::lan::{Body, containers::within_range, hub::Hub};
 use sunrise_client::particles::{ExplosionParticle, ParticleOptions, ParticleType};
 use sunrise_core::{
     geometry::{Aabb, Vec3},
@@ -197,17 +196,40 @@ pub(super) fn send_hub_level_particles(
         count: count as i32,
         randomization: 0,
     });
-    for g in hub.guests.iter().filter(|g| hub.here(g)) {
-        if sunrise_only && !g.is_sunrise() {
-            continue;
+    let mut recipients = hub
+        .guests
+        .iter()
+        .filter(|guest| {
+            if !hub.here(guest)
+                || !guest.participates_online()
+                || sunrise_only && !guest.is_sunrise()
+            {
+                return false;
+            }
+            // ServerLevel compares the player's block centre, strictly within 32.
+            let distance: f64 = (0..3)
+                .map(|k| (guest.position[k].floor() + 0.5 - at[k]).powi(2))
+                .sum();
+            distance < 32.0 * 32.0
+        })
+        .peekable();
+    let Some(first) = recipients.next() else {
+        return;
+    };
+    let body = match packet.try_encode() {
+        Ok(body) => body,
+        Err(error) => {
+            eprintln!("[lan] send refused: {error}");
+            return;
         }
-        // ServerLevel compares the player's block centre, strictly within 32.
-        let distance: f64 = (0..3)
-            .map(|k| (g.position[k].floor() + 0.5 - at[k]).powi(2))
-            .sum();
-        if distance < 32.0 * 32.0 {
-            g.send(&packet);
-        }
+    };
+    if recipients.peek().is_none() {
+        first.sender.send(body);
+        return;
+    }
+    let shared = Body::shared(body);
+    for guest in std::iter::once(first).chain(recipients) {
+        guest.sender.send_many([shared.clone()]);
     }
 }
 

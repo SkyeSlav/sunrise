@@ -1204,14 +1204,22 @@ pub fn build_pass(
     let mut own_blends: Vec<(Option<wgpu::BlendState>, bool)> = Vec::new();
     for &location in &interface.outputs {
         let l = location as usize;
+        // Only an output with somewhere to go takes a target slot: the location is the pack's
+        // (up to `u32::MAX`), the slots only as many as the buffers it can write.
+        let buffer = if final_pass {
+            (location == 0).then_some(None)
+        } else {
+            p.buffers.get(l).map(Some)
+        };
+        let Some(buffer) = buffer else {
+            continue;
+        };
         if targets.len() <= l {
             targets.resize(l + 1, None);
         }
         if final_pass {
-            if location == 0 {
-                targets[0] = target(screen);
-            }
-        } else if let Some(&buffer) = p.buffers.get(l) {
+            targets[0] = target(screen);
+        } else if let Some(&buffer) = buffer {
             let format = formats[buffer as usize];
             match format.sample_type(None, Some(features)) {
                 Some(wgpu::TextureSampleType::Uint) => {
