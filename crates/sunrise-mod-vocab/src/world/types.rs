@@ -1118,12 +1118,19 @@ pub enum ClipBlock {
     Outline,
 }
 
-/// Fluid mode for a level ray. Only the listed modes are supported.
+/// Fluid mode for a level ray (`ClipContext.Fluid`): which fluids the ray stops at, each at its
+/// surface (`FluidState.getShape`).
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
 pub enum ClipFluid {
-    /// None.
+    /// No fluid: the ray passes through them.
     None,
+    /// Only source fluids, as a bucket picks them.
+    SourceOnly,
+    /// Any fluid, as `Entity.pick` with fluids and a boat item do.
+    Any,
+    /// Fluids in the `minecraft:water` fluid tag.
+    Water,
 }
 
 /// Result of a block ray, including the vanilla miss result.

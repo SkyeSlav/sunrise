@@ -438,8 +438,13 @@ impl Game<'_> {
         ))
     }
     /// What the entity looks at within `distance` blocks of its eyes: `Entity.pick`'s block
-    /// ray along the view vector, outlines and no fluids.
-    pub(super) fn entity_pick(&self, entity: EntityRef, distance: f64) -> Option<ClipHit> {
+    /// ray along the view vector, outlines, and any fluid when `include_fluids`.
+    pub(super) fn entity_pick(
+        &self,
+        entity: EntityRef,
+        distance: f64,
+        include_fluids: bool,
+    ) -> Option<ClipHit> {
         if !(distance.is_finite() && distance >= 0.0) {
             return None;
         }
@@ -450,7 +455,11 @@ impl Game<'_> {
             from,
             to,
             ClipBlock::Outline,
-            ClipFluid::None,
+            if include_fluids {
+                ClipFluid::Any
+            } else {
+                ClipFluid::None
+            },
         )
     }
     /// The square of the distance from the entity's feet to `pos`
@@ -622,19 +631,19 @@ mod tests {
             let eyes = game.entity_eye_position(entity).unwrap();
             let wall = [0, eyes[1].floor() as i32, 2];
             game.world.set(wall[0], wall[1], wall[2], stone).unwrap();
-            let hit = game.entity_pick(entity, 3.0).unwrap();
+            let hit = game.entity_pick(entity, 3.0, false).unwrap();
             assert!(!hit.miss);
             assert_eq!(hit.block, wall);
             assert_eq!(hit.face, BlockFace::North);
             assert_near(hit.location, [0.5, eyes[1], 2.0]);
             // Too short a ray misses, as does one over an empty column.
-            assert!(game.entity_pick(entity, 1.0).unwrap().miss);
+            assert!(game.entity_pick(entity, 1.0, false).unwrap().miss);
             game.mobs[0].position = Vec3::new(5.5, 65.0, 0.5);
-            assert!(game.entity_pick(entity, 3.0).unwrap().miss);
+            assert!(game.entity_pick(entity, 3.0, false).unwrap().miss);
             // Looking straight down from the stand hits the top of its support.
             game.mobs[0].position = Vec3::new(1.5, 65.0, 0.5);
             game.mobs[0].head_pitch = 90.0;
-            let down = game.entity_pick(entity, 3.0).unwrap();
+            let down = game.entity_pick(entity, 3.0, false).unwrap();
             assert_eq!((down.block, down.face), ([1, 64, 0], BlockFace::Up));
             assert_near(down.location, [1.5, 65.0, 0.5]);
             // Looking down 45 degrees tilts the up vector forward.
@@ -648,10 +657,10 @@ mod tests {
                 ],
             );
             // A ray without a length, or with none, or from a stale handle: nothing.
-            assert!(game.entity_pick(entity, -1.0).is_none());
-            assert!(game.entity_pick(entity, f64::NAN).is_none());
+            assert!(game.entity_pick(entity, -1.0, false).is_none());
+            assert!(game.entity_pick(entity, f64::NAN, false).is_none());
             let stale = EntityRef::new(mod_api::WorldEpoch::new(entity.epoch().get() + 1), 40);
-            assert!(game.entity_pick(stale, 3.0).is_none());
+            assert!(game.entity_pick(stale, 3.0, false).is_none());
             assert!(game.entity_on_block(stale).is_none());
             assert!(game.entity_up_vector(stale).is_none());
         });

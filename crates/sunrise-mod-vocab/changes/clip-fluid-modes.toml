@@ -1,0 +1,3 @@
+ids = ["type:ClipFluid", "handle:EntityRef::pick", "handle:LevelRef::clip"]
+why = "ClipFluid gains vanilla's other ClipContext.Fluid modes, SourceOnly, Any and Water, so LevelRef::clip stops at fluid surfaces (FluidState.getShape) as buckets, boat items and look-at reads do; adding the variants changes ClipFluid's Wire layout. EntityRef::pick takes Entity.pick's include_fluids flag, Fluid.ANY when true."
+migrate = "Rebuild against this SDK. Pass false as pick's new include_fluids argument to keep the old block-only pick, and match ClipFluid's new variants where a mod matches it."

@@ -29,9 +29,12 @@ pub trait LevelCollisionBackend {
         kind: BlockShapeKind,
     ) -> Option<Vec<[f64; 6]>>;
     /// Side: both.
-    /// Clip an empty-context ray against collider or outline shapes, without fluids.
-    /// None on failed reads, dynamic shapes, invalid rays or traversal limits, and for a ray
-    /// that enters a column the level doesn't hold. On a client, the level it shows or a
+    /// Clip an empty-context ray against collider or outline shapes, stopping at the fluids
+    /// `fluids` picks (`ClipContext.Fluid`) at their surface (`FluidState.getShape`); a fluid
+    /// hit names the fluid's block, and the nearer of a block and a fluid hit wins, the block
+    /// on a tie (`BlockGetter.clip`). None on failed reads, dynamic shapes, invalid rays or
+    /// traversal limits, for a ray that enters a column the level doesn't hold, and for
+    /// `ClipFluid::Water` where the fluid tags aren't known yet. On a client, the level it shows or a
     /// viewed one (`host.level`), each through its own world.
     fn level_clip(
         &self,

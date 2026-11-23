@@ -156,6 +156,18 @@ server-only reads and the other level reads refuse viewed levels. In particular,
 `visit_entities_in` and `ray_trace_nearest_entity` return `Err(LevelReadError::Unavailable)`
 for a current handle to an open viewed level; they do not query the displayed level instead.
 
+## Level rays and fluids
+
+`level.clip(host, from, to, blocks, fluids)` is `BlockGetter.clip` with an empty collision
+context. `fluids` is `ClipContext.Fluid`: `ClipFluid::None` passes through fluids,
+`SourceOnly` stops at source fluids only (as a bucket picks), `Any` at any fluid (as a boat
+item does) and `Water` at fluids in the `minecraft:water` fluid tag. A fluid is hit at its
+surface (`FluidState.getShape`: a full block under the same fluid, else its own height), and
+the hit names the fluid's block; the nearer of the block and the fluid hit wins, the block on a
+tie. `Water` reads the effective fluid tags, so on a client before its server sent them it is
+`None`. `entity.pick(host, distance, include_fluids)` is `Entity.pick`: outlines along the
+entity's view, and any fluid when `include_fluids`.
+
 ## Crosshair reads
 
 `ClientHost::crosshair_target()` returns the ordinary interaction-range target as

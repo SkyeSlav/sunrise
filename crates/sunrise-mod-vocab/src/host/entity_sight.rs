@@ -26,12 +26,18 @@ pub trait EntitySightBackend {
     fn entity_up_vector(&self, entity: EntityRef) -> Option<[f64; 3]>;
     /// Side: server.
     /// A ray from the entity's eyes along its view vector, `distance` blocks
-    /// long, against block outlines with an empty collision context and no
-    /// fluids (`Entity.pick(distance, 1.0F, false)`): what it looks at. A
+    /// long, against block outlines with an empty collision context, stopping at any
+    /// fluid's surface when `include_fluids` (`Entity.pick(distance, 1.0F, include_fluids)`,
+    /// `ClipContext.Fluid.ANY` or `NONE`): what it looks at. A
     /// miss is the hit with `miss` set. This clips blocks only. For entities, use
     /// [`LevelRef::ray_trace_nearest_entity`] for one accepted hit or
     /// [`LevelRef::ray_trace_entities`] for all hits in order. Returns `None` for a
     /// stale handle, a negative or non-finite `distance`, or when `LevelRef::clip`
     /// returns `None`.
-    fn entity_pick(&self, entity: EntityRef, distance: f64) -> Option<ClipHit>;
+    fn entity_pick(
+        &self,
+        entity: EntityRef,
+        distance: f64,
+        include_fluids: bool,
+    ) -> Option<ClipHit>;
 }

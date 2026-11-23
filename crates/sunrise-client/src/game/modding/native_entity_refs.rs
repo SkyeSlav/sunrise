@@ -909,10 +909,10 @@ impl Game<'_> {
         )
     }
 
-    /// Clip an empty-context ray against collider or outline shapes, without fluids, in the
-    /// world `native_level_view_world` reads. None on failed reads, dynamic shapes (unless
-    /// the block's entity published its shapes, which stand over them), invalid rays or
-    /// traversal limits.
+    /// Clip an empty-context ray against collider or outline shapes, and fluids by `fluids`'
+    /// mode (`ClipContext.Fluid`), in the world `native_level_view_world` reads. None on failed
+    /// reads, dynamic shapes (unless the block's entity published its shapes, which stand over
+    /// them), `Water` with no fluid tags to read, invalid rays or traversal limits.
     pub(super) fn level_clip(
         &self,
         level: LevelRef,
@@ -928,7 +928,7 @@ impl Game<'_> {
             world_ray::{RayBlockMode, RayFluidMode, clip_world},
         };
         let world = self.native_level_view_world(level)?;
-        let mut rays = super::explosion::ColliderRays {
+        let rays = super::explosion::ColliderRays {
             scene: SceneCollisions {
                 world,
                 binding: self.collision,
@@ -949,7 +949,15 @@ impl Game<'_> {
         };
         let fluid = match fluids {
             ClipFluid::None => RayFluidMode::None,
+            ClipFluid::SourceOnly => RayFluidMode::SourceOnly,
+            ClipFluid::Any => RayFluidMode::Any,
+            ClipFluid::Water => RayFluidMode::Water,
             _ => unreachable!("ClipFluid: unhandled variant"),
+        };
+        let mut rays = super::level_clip_fluids::FluidClip {
+            rays,
+            fluids: &self.res.motion().fluids,
+            tags: self.native_tag_items(),
         };
         let result = clip_world(
             &mut rays,

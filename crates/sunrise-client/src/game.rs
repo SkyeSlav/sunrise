@@ -877,6 +877,8 @@ mod launch_timeout;
 mod leads;
 #[path = "game/blocks/level_access.rs"]
 mod level_access;
+#[path = "game/modding/level_clip_fluids.rs"]
+mod level_clip_fluids;
 #[path = "game/modding/level_control_hooks.rs"]
 mod level_control_hooks;
 #[path = "game/interface/level_particles.rs"]

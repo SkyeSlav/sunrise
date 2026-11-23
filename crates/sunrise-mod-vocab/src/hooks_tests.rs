@@ -797,7 +797,7 @@ fn level_queries_take_their_hosts(
 fn entity_queries_take_a_shared_host(read: &dyn Host, entity: EntityRef) {
     let _: Option<[f64; 3]> = entity.up_vector(read);
     let _: Option<[i32; 3]> = entity.on_block(read);
-    let _: Option<ClipHit> = entity.pick(read, 4.5);
+    let _: Option<ClipHit> = entity.pick(read, 4.5, false);
     let _: Option<bool> = entity.is_multipart(read);
     let _: Option<Vec<EntityRef>> = entity.parts(read);
 }
