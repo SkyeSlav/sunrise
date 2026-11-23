@@ -604,6 +604,30 @@ fn item_moon_phase_follows_the_dimension_timeline() {
                 );
                 let owner_a = owner_at([0.5, 64.0, 0.5], 0.0, "minecraft:item");
                 let owner_b = owner_at([8.5, 64.0, 0.5], 0.0, "minecraft:item");
+                assert_eq!(
+                    game.biome_at([0.5, 64.0, 0.5]),
+                    "test:moon_two",
+                    "owner a's biome"
+                );
+                assert_eq!(
+                    game.biome_at([8.5, 64.0, 0.5]),
+                    "test:moon_six",
+                    "owner b's biome"
+                );
+                assert!(
+                    game.dim_environment().biome("test:moon_six").is_some(),
+                    "no attribute map for test:moon_six"
+                );
+                assert_eq!(
+                    game.item_moon_phase(Some([0.5, 64.0, 0.5])),
+                    2,
+                    "owner a's moon phase"
+                );
+                assert_eq!(
+                    game.item_moon_phase(Some([8.5, 64.0, 0.5])),
+                    7,
+                    "owner b's moon phase"
+                );
                 let state_a = game.resolve_item(&stack, DisplayContext::Ground, Some(&owner_a), 0);
                 let state_b = game.resolve_item(&stack, DisplayContext::Ground, Some(&owner_b), 0);
                 // The chosen leaf is the layer's baked geometry: compare it with plain items
