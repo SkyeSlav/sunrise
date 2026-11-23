@@ -5,7 +5,7 @@
 //! (`pack_atlas::game_inputs`).
 //!
 //!     shader_fuzz [--seed N] [--count N] [--budget SECONDS] [--corpus DIR] [--jobs N]
-//!                 [--replay SEED] [--smoke] [--time-limit SECONDS] [--memory-limit MIB]
+//!                 [--replay SEED|smoke:N] [--smoke] [--time-limit SECONDS] [--memory-limit MIB]
 //!                 [--size-limit MIB] [--shrink-seconds N] [--work-dir DIR] [--seed-pack DIR]
 //!
 //! Every case keeps these invariants: no panic; done within `--time-limit`; within
@@ -21,9 +21,11 @@
 //! worker (this binary, `worker`), so a hang or an abort of the translator costs one load. A
 //! failure is grouped by invariant, first failing step and detail; each group's smallest case
 //! is shrunk while the same failure stays, written as a pack folder under `<work-dir>/groups/`,
-//! and listed in `<work-dir>/report.json` with the seed that replays it, beside the cases run
-//! and skipped (each skipped one is printed with why) and how each case process ended. Exits 1
-//! when any case fails, or when no case ran. `--seed-pack` replaces the committed seed pack
+//! and listed in `<work-dir>/report.json` with the arguments that replay its smallest case
+//! (`replay_args`), beside the cases run and skipped (each skipped one is printed with why) and
+//! how each case process ended. `--budget` alone generates cases until it ends, `--count` alone
+//! that many, both until the first is reached, neither 200. Exits 1 when any case fails, or
+//! when no case ran. `--seed-pack` replaces the committed seed pack
 //! (`examples/shader_fuzz/seeds`).
 
 mod cases;
@@ -117,11 +119,14 @@ static ALLOCATOR: Counting = Counting;
 
 struct Options {
     seed: u64,
-    count: u64,
+    /// Cases to generate: none past this many. Unbounded when only `--budget` is given; 200
+    /// when neither is.
+    count: Option<u64>,
+    /// Seconds to generate cases for: none starts past it.
     budget: Option<Duration>,
     corpus: Option<PathBuf>,
     jobs: usize,
-    replay: Option<u64>,
+    replay: Option<CaseId>,
     smoke: bool,
     time_limit: Duration,
     memory_mib: usize,
@@ -137,7 +142,7 @@ struct Options {
 fn options(args: &[String]) -> Result<Options, String> {
     let mut o = Options {
         seed: 1,
-        count: 200,
+        count: None,
         budget: None,
         corpus: None,
         jobs: 1,
@@ -157,11 +162,17 @@ fn options(args: &[String]) -> Result<Options, String> {
         let number = |v: String| v.parse::<u64>().map_err(|_| format!("{arg}: not a number"));
         match arg.as_str() {
             "--seed" => o.seed = number(value()?)?,
-            "--count" => o.count = number(value()?)?,
+            "--count" => o.count = Some(number(value()?)?),
             "--budget" => o.budget = Some(Duration::from_secs(number(value()?)?)),
             "--corpus" => o.corpus = Some(PathBuf::from(value()?)),
             "--jobs" => o.jobs = number(value()?)?.max(1) as usize,
-            "--replay" => o.replay = Some(number(value()?)?),
+            "--replay" => {
+                let id = value()?;
+                let parsed = id
+                    .parse()
+                    .map_err(|()| format!("{arg}: not a seed or smoke:N"))?;
+                o.replay = Some(parsed);
+            }
             "--smoke" => o.smoke = true,
             "--time-limit" => o.time_limit = Duration::from_secs(number(value()?)?),
             "--memory-limit" => o.memory_mib = number(value()?)? as usize,
@@ -172,7 +183,57 @@ fn options(args: &[String]) -> Result<Options, String> {
             _ => return Err(format!("unknown argument {arg}")),
         }
     }
+    if o.count.is_none() && o.budget.is_none() {
+        o.count = Some(200);
+    }
     Ok(o)
+}
+
+/// The arguments that make case `id` of run `o` again, alone (`--replay`), with what decides
+/// its failures: the seed pack when the run had its own (`--seed-pack`: the smoke cases are its
+/// programs, and it is the first pack a generated case draws from), the corpus a generated case
+/// draws its pack from (the smoke cases take the seed pack only), and the run's time, memory and
+/// size limits.
+fn replay_args(o: &Options, id: CaseId) -> Vec<String> {
+    let mut out = vec!["--replay".to_owned(), id.to_string()];
+    if o.seeds != cases::seed_pack() {
+        out.push("--seed-pack".to_owned());
+        out.push(o.seeds.to_string_lossy().into_owned());
+    }
+    if let (CaseId::Seed(_), Some(corpus)) = (id, &o.corpus) {
+        out.push("--corpus".to_owned());
+        out.push(corpus.to_string_lossy().into_owned());
+    }
+    for (flag, value) in [
+        ("--time-limit", o.time_limit.as_secs()),
+        ("--memory-limit", o.memory_mib as u64),
+        ("--size-limit", (o.size_limit >> 20) as u64),
+    ] {
+        out.push(flag.to_owned());
+        out.push(value.to_string());
+    }
+    out
+}
+
+/// `args` as one POSIX shell line: each argument as it is when it holds only characters the
+/// shell takes literally, else in single quotes (a `'` in it written `'"'"'`).
+fn shell_line(args: &[String]) -> String {
+    let plain = |a: &str| {
+        !a.is_empty()
+            && a.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"@%+=:,./_-".contains(&b))
+    };
+    let quoted: Vec<String> = args
+        .iter()
+        .map(|a| {
+            if plain(a) {
+                a.clone()
+            } else {
+                format!("'{}'", a.replace('\'', "'\"'\"'"))
+            }
+        })
+        .collect();
+    quoted.join(" ")
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -600,14 +661,15 @@ enum Ran {
     Found(Vec<Found>),
     /// It makes no case (`cases::NoCase`), or its pack could not be staged: why.
     Skipped(String),
-    /// A smoke case past the last: the smoke cases end there.
-    Past,
+    /// A smoke case past the last (or past a seed pack that doesn't open), why: the smoke cases
+    /// end there; a replay of it is skipped, with why.
+    Past(String),
 }
 
 impl From<cases::NoCase> for Ran {
     fn from(no: cases::NoCase) -> Self {
         match no {
-            cases::NoCase::Past => Ran::Past,
+            cases::NoCase::Past(why) => Ran::Past(why),
             no => Ran::Skipped(no.to_string()),
         }
     }
@@ -720,8 +782,8 @@ fn case_process() {
         let id = parse_id(&v["run"]).expect("a case");
         let case = match cases::sample(&index, id) {
             Ok(case) => case,
-            Err(cases::NoCase::Past) => {
-                reply(serde_json::json!({"past": true}));
+            Err(cases::NoCase::Past(why)) => {
+                reply(serde_json::json!({ "past": why }));
                 continue;
             }
             Err(no) => {
@@ -826,7 +888,9 @@ impl Cases for Remote<'_> {
             .ok()
             .and_then(|l| serde_json::from_str::<serde_json::Value>(l).ok());
         let info = match &sampled {
-            Some(v) if v["past"].as_bool() == Some(true) => return Ran::Past,
+            Some(v) if v["past"].is_string() => {
+                return Ran::Past(v["past"].as_str().unwrap_or("").to_owned());
+            }
             Some(v) if v["skipped"].is_string() => {
                 return Ran::Skipped(v["skipped"].as_str().unwrap_or("").to_owned());
             }
@@ -910,32 +974,35 @@ impl<'a> Run<'a> {
     }
 
     /// The run's cases through `cases`, until none are left: the smoke cases, the case
-    /// `--replay` names, or `--count` generated ones within `--budget`.
+    /// `--replay` names, or generated ones until `--count` of them or `--budget` ends,
+    /// whichever comes first.
     fn cases(&self, cases: &mut dyn Cases) {
         loop {
             let i = self.next.fetch_add(1, Ordering::Relaxed);
             let id = if self.o.smoke {
                 CaseId::Smoke(i as usize)
-            } else if let Some(seed) = self.o.replay {
+            } else if let Some(id) = self.o.replay {
                 if i > 0 {
                     break;
                 }
-                CaseId::Seed(seed)
+                id
             } else {
                 let over = self.o.budget.is_some_and(|b| self.started.elapsed() >= b);
-                if i >= self.o.count || over {
+                if self.o.count.is_some_and(|count| i >= count) || over {
                     break;
                 }
                 CaseId::Seed(cases::case_seed(self.o.seed, i))
             };
             let found = match cases.run(id) {
                 Ran::Found(found) => found,
-                Ran::Skipped(why) => {
-                    eprintln!("shader_fuzz: case {}: {why}; skipped", id.seed());
+                // Past the last of `--smoke`'s cases, they end; the one case a replay names is
+                // skipped, with why, as any other.
+                Ran::Past(_) if self.o.replay.is_none() => break,
+                Ran::Skipped(why) | Ran::Past(why) => {
+                    eprintln!("shader_fuzz: case {id}: {why}; skipped");
                     self.skipped.fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
-                Ran::Past => break,
             };
             self.found.lock().unwrap().extend(found);
             let done = self.done.fetch_add(1, Ordering::Relaxed) + 1;
@@ -953,12 +1020,14 @@ impl<'a> Run<'a> {
 /// A group's report entry; its shrunk case (`shrunk`, written in `dir` by the shrinker) and
 /// `case.txt` in `dir`.
 fn write_group(
+    o: &Options,
     dir: &Path,
     name: &str,
     members: &[Found],
     shrunk: Option<&Summary>,
 ) -> serde_json::Value {
     let first = &members[0];
+    let replay = replay_args(o, first.id);
     output(dir, std::fs::create_dir_all(dir));
     let (steps, files, lines) = match shrunk {
         Some(s) => (s.steps.clone(), s.files.clone(), s.lines),
@@ -967,8 +1036,8 @@ fn write_group(
     let dimension = first.case.dim.map(|d| cases::DIMENSIONS[d].0);
     let terrain = first.case.flat.map(|f| if f { "flat" } else { "grid" });
     let summary = format!(
-        "group: {name}\nreplay: --replay {}\npack: {}\nprograms: {}\ndimension: {}\nterrain: {}\nsteps: {}\n",
-        first.case.seed,
+        "group: {name}\nreplay: {}\npack: {}\nprograms: {}\ndimension: {}\nterrain: {}\nsteps: {}\n",
+        shell_line(&replay),
         first.case.pack,
         first.case.programs.join(" "),
         dimension.unwrap_or("?"),
@@ -987,8 +1056,9 @@ fn write_group(
         "step": first.step,
         "detail": first.failure.detail,
         "count": members.len(),
-        "seeds": members.iter().take(20).map(|m| m.case.seed).collect::<Vec<_>>(),
-        "replay": first.case.seed,
+        "cases": members.iter().take(20).map(|m| m.id.to_string()).collect::<Vec<_>>(),
+        "replay": first.id.to_string(),
+        "replay_args": replay,
         "pack": first.case.pack,
         "programs": first.case.programs,
         "dimension": dimension,
@@ -1058,7 +1128,7 @@ fn fuzz(o: &Options) -> i32 {
                     }
                     let dir = base.join(group);
                     let shrunk = cases.shrink(&members[0], o.shrink, &dir);
-                    let entry = write_group(&dir, name, members, shrunk.as_ref());
+                    let entry = write_group(o, &dir, name, members, shrunk.as_ref());
                     entries.lock().unwrap().insert(i, entry);
                 }
                 processes.lock().unwrap().extend(cases.finish());
@@ -1093,10 +1163,10 @@ fn fuzz(o: &Options) -> i32 {
     );
     for g in &entries {
         println!(
-            "  {:4}  {}  (replay: --replay {}, {} lines in {})",
+            "  {:4}  {}  (replay: {}, {} lines in {})",
             g["count"],
             g["group"].as_str().unwrap_or(""),
-            g["replay"],
+            shell_line(&strings(&g["replay_args"])),
             g["lines"],
             g["dir"].as_str().unwrap_or("")
         );
@@ -1126,6 +1196,15 @@ fn main() {
             std::process::exit(2);
         }
     };
+    // The replay commands name the corpus and a given seed pack as paths from anywhere.
+    let full = |path: PathBuf| match std::fs::canonicalize(&path) {
+        Ok(full) if full.to_str().is_some() => full,
+        _ => path,
+    };
+    o.corpus = o.corpus.map(full);
+    if args.iter().any(|arg| arg == "--seed-pack") {
+        o.seeds = full(o.seeds);
+    }
     if !args.iter().any(|arg| arg == "--work-dir") {
         o.work = output(&o.work, default_folder(&o.work));
     }
@@ -1254,6 +1333,236 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|a| (*a).to_owned()).collect()
+    }
+
+    /// The cases a run of `list` generates through cases that pass at once, until the run
+    /// stops or `fake_end` were made (then the fake ends it, as past the last smoke case does).
+    fn generated(list: &[&str], fake_end: usize) -> Vec<CaseId> {
+        struct Fake(Vec<CaseId>, usize);
+        impl Cases for Fake {
+            fn run(&mut self, id: CaseId) -> Ran {
+                if self.0.len() == self.1 {
+                    return Ran::Past(String::new());
+                }
+                self.0.push(id);
+                Ran::Found(Vec::new())
+            }
+
+            fn shrink(&mut self, _: &Found, _: Duration, _: &Path) -> Option<Summary> {
+                None
+            }
+        }
+        let o = options(&args(list)).unwrap();
+        let run = Run::new(&o);
+        let mut fake = Fake(Vec::new(), fake_end);
+        run.cases(&mut fake);
+        assert_eq!(run.done.load(Ordering::Relaxed), fake.0.len() as u64);
+        fake.0
+    }
+
+    /// `--budget` alone is not capped by a count: the run goes on until the budget ends (here
+    /// an hour, so the fake ends it at 500). 200 cases only when neither control is given.
+    #[test]
+    fn budget_alone_runs_until_the_budget_ends() {
+        let seeds = |n: u64| {
+            (0..n)
+                .map(|i| CaseId::Seed(cases::case_seed(1, i)))
+                .collect()
+        };
+        let ids: Vec<CaseId> = seeds(500);
+        assert_eq!(generated(&["--budget", "3600"], 500), ids);
+        assert_eq!(generated(&[], 500), seeds(200));
+        assert_eq!(generated(&["--count", "7"], 500), seeds(7));
+        assert_eq!(
+            generated(&["--count", "7", "--budget", "3600"], 500),
+            seeds(7)
+        );
+        assert_eq!(generated(&["--budget", "0"], 500), []);
+        // A budget already spent stops a run whatever its count.
+        let o = options(&args(&["--count", "9", "--budget", "5"])).unwrap();
+        let mut run = Run::new(&o);
+        run.started = Instant::now().checked_sub(Duration::from_secs(6)).unwrap();
+        struct Never;
+        impl Cases for Never {
+            fn run(&mut self, id: CaseId) -> Ran {
+                panic!("{id} made past the budget")
+            }
+
+            fn shrink(&mut self, _: &Found, _: Duration, _: &Path) -> Option<Summary> {
+                None
+            }
+        }
+        run.cases(&mut Never);
+        assert_eq!(run.done.load(Ordering::Relaxed), 0);
+    }
+
+    /// `--replay` takes what a report gives: a generated case's seed, or a smoke case by its
+    /// place; anything else is refused.
+    #[test]
+    fn replay_names_a_generated_or_a_smoke_case() {
+        let replay = |id: &str| options(&args(&["--replay", id])).map(|o| o.replay);
+        assert_eq!(replay("0"), Ok(Some(CaseId::Seed(0))));
+        assert_eq!(
+            replay("18446744073709551615"),
+            Ok(Some(CaseId::Seed(u64::MAX)))
+        );
+        assert_eq!(replay("smoke:3"), Ok(Some(CaseId::Smoke(3))));
+        for bad in [
+            "",
+            "smoke:",
+            "smoke:x",
+            "smoke:3:4",
+            "smoke:-1",
+            "-1",
+            "+1",
+            "0x1",
+            " 1",
+            "1 ",
+            "18446744073709551616",
+            "Smoke:1",
+            "seed:1",
+        ] {
+            assert!(replay(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(CaseId::Seed(1234).to_string(), "1234");
+        assert_eq!(CaseId::Smoke(5).to_string(), "smoke:5");
+        // The smoke case replayed is the smoke run's own, not the case seed 0 generates.
+        let index = cases::index(&cases::seed_pack(), None);
+        let smoke = cases::smoke(&index).unwrap();
+        assert!(smoke.len() > 3);
+        for (n, case) in smoke.iter().enumerate() {
+            assert_eq!(
+                cases::sample(&index, CaseId::Smoke(n)).as_ref().ok(),
+                Some(case)
+            );
+        }
+        let seed0 = cases::sample(&index, CaseId::Seed(0)).unwrap();
+        assert!(!seed0.steps.is_empty());
+        assert!(smoke.iter().all(|c| c.steps.is_empty()));
+    }
+
+    /// A group's replay arguments keep what decides its case and its failures: the corpus a
+    /// generated case is drawn from (not a smoke case's: the seed pack only), the run's own seed
+    /// pack (both kinds: the smoke cases' programs, a generated case's first pack), and the run's
+    /// time, memory and size limits, defaults or not. The line quotes what the shell would split.
+    #[test]
+    fn replay_arguments_keep_the_corpus_and_the_limits() {
+        let o = options(&args(&[
+            "--corpus",
+            "/packs/my packs",
+            "--time-limit",
+            "31",
+            "--memory-limit",
+            "777",
+            "--size-limit",
+            "5",
+            "--seed",
+            "9",
+            "--jobs",
+            "3",
+        ]))
+        .unwrap();
+        let seed = replay_args(&o, CaseId::Seed(42));
+        assert_eq!(
+            seed,
+            args(&[
+                "--replay",
+                "42",
+                "--corpus",
+                "/packs/my packs",
+                "--time-limit",
+                "31",
+                "--memory-limit",
+                "777",
+                "--size-limit",
+                "5"
+            ])
+        );
+        assert_eq!(
+            shell_line(&seed),
+            "--replay 42 --corpus '/packs/my packs' --time-limit 31 --memory-limit 777 \
+             --size-limit 5"
+        );
+        assert_eq!(
+            replay_args(&o, CaseId::Smoke(2)),
+            args(&[
+                "--replay",
+                "smoke:2",
+                "--time-limit",
+                "31",
+                "--memory-limit",
+                "777",
+                "--size-limit",
+                "5"
+            ])
+        );
+        // Replayed, the arguments are the run's case and limits again.
+        let again = options(&seed).unwrap();
+        assert_eq!(again.replay, Some(CaseId::Seed(42)));
+        assert_eq!(again.corpus, o.corpus);
+        assert_eq!(
+            (again.time_limit, again.memory_mib, again.size_limit),
+            (o.time_limit, o.memory_mib, o.size_limit)
+        );
+        assert_eq!(
+            shell_line(&args(&[
+                "it's",
+                "$HOME",
+                "a\"b",
+                "",
+                "plain-1.0/x=y,z:@%+_"
+            ])),
+            r#"'it'"'"'s' '$HOME' 'a"b' '' plain-1.0/x=y,z:@%+_"#
+        );
+        // A run's own seed pack is in every case's arguments, and replays as that seed pack.
+        let own = options(&args(&[
+            "--seed-pack",
+            "/packs/my seeds",
+            "--corpus",
+            "/packs/c",
+        ]))
+        .unwrap();
+        let seed = replay_args(&own, CaseId::Seed(7));
+        assert_eq!(
+            seed,
+            args(&[
+                "--replay",
+                "7",
+                "--seed-pack",
+                "/packs/my seeds",
+                "--corpus",
+                "/packs/c",
+                "--time-limit",
+                "20",
+                "--memory-limit",
+                "2048",
+                "--size-limit",
+                "16"
+            ])
+        );
+        assert_eq!(
+            replay_args(&own, CaseId::Smoke(0)),
+            args(&[
+                "--replay",
+                "smoke:0",
+                "--seed-pack",
+                "/packs/my seeds",
+                "--time-limit",
+                "20",
+                "--memory-limit",
+                "2048",
+                "--size-limit",
+                "16"
+            ])
+        );
+        assert_eq!(
+            options(&seed).unwrap().seeds,
+            PathBuf::from("/packs/my seeds")
+        );
+    }
+
     /// A smoke case that is skipped (its pack could not be staged) doesn't end the smoke cases:
     /// only the first past the last does.
     #[test]
@@ -1265,7 +1574,7 @@ mod tests {
                 match id {
                     CaseId::Smoke(0) => Ran::Skipped("seeds: can't stage the pack".into()),
                     CaseId::Smoke(n) if n < 3 => Ran::Found(Vec::new()),
-                    _ => Ran::Past,
+                    _ => Ran::Past(String::new()),
                 }
             }
 
@@ -1291,7 +1600,7 @@ mod tests {
         // Run seed 2: cases of every kind of step that hold, quick enough to run in-process
         // (without the worker's time and memory bounds).
         o.seed = 2;
-        o.count = 4;
+        o.count = Some(4);
         let run = Run::new(&o);
         run.cases(&mut local(&index, InProcess { dir: dir.join("w") }));
         assert_eq!(run.done.load(Ordering::Relaxed), 4);
@@ -1589,7 +1898,7 @@ void main() {
     fn a_planted_failure_is_shrunk_and_grouped() {
         let index = cases::index(&cases::seed_pack(), None);
         let mut o = opts(temp());
-        o.count = 1000;
+        o.count = Some(1000);
         let run = Run::new(&o);
         let mut ev = planted;
         run.cases(&mut local(&index, ev));

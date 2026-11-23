@@ -38,7 +38,7 @@ pub(super) use registered_commands::NativeCommandState;
 use mod_api::LevelRef;
 use mod_api::{
     ActionOutcome, ActionRefused, FakeEffect, GameMode, GlobalPos, Identifier, PlayerAction,
-    PlayerActionSetup, PlayerFood, PlayerRef, PlayerRespawnConfig, ScopedActionResult,
+    PlayerActionSetup, PlayerFood, PlayerRef, PlayerRespawnConfig, ScopedActionResult, VirtualHost,
 };
 use serde_json::{Map, Value, json};
 use std::sync::{
@@ -1499,6 +1499,13 @@ impl Game<'_> {
             return Some(guest.ip_address());
         }
         (self.native_acting_player() == Some(player)).then_some("")
+    }
+
+    pub(super) fn player_virtual_host(&self, player: PlayerRef) -> Option<&VirtualHost> {
+        if !self.is_logical_server() {
+            return None;
+        }
+        self.online_player_record(player)?.sender.virtual_host()
     }
 
     /// The brand the player's client announced when it connected (`ServerPlayer.clientBrand`),

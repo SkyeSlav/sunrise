@@ -117,6 +117,15 @@ impl Game<'_> {
         let mut died = std::mem::take(state.died);
         let mut ticked = std::mem::take(state.ticked);
         let mut guests = std::mem::take(state.guests);
+        let guest_indices = |guests: &super::super::lan_mobs::GuestViews| {
+            guests
+                .iter()
+                .enumerate()
+                .map(|(slot, (conn, _))| (*conn, slot))
+                .collect()
+        };
+        let mut guest_slots: sunrise_client::fast_hash::FxHashMap<u32, usize> =
+            guest_indices(&guests);
         let mut spare = state.spare.take();
         let mut bindings = std::mem::take(state.bindings);
         let mut guest_ids = std::mem::take(state.guest_ids);
@@ -539,7 +548,7 @@ impl Game<'_> {
                     // guest's slot straight after. Its identity is captured with
                     // it, once: the player a goal resolves is the one the tick
                     // sees — a guest on a server, the game's own otherwise (#1077).
-                    let lent = seen_guest.and_then(|conn| guests.iter().position(|g| g.0 == conn));
+                    let lent = seen_guest.and_then(|conn| guest_slots.get(&conn).copied());
                     let active_player = match (seen_guest, lent) {
                         (None, _) => base.player.take(),
                         (Some(_), Some(k)) => spare
@@ -566,7 +575,7 @@ impl Game<'_> {
                                     (active_player.as_ref(), active_identity)
                                 } else if let Some(conn) = player.connection {
                                     (
-                                        guests.iter().find(|g| g.0 == conn).map(|g| &g.1),
+                                        guest_slots.get(&conn).map(|&slot| &guests[slot].1),
                                         self.guest_identity(conn),
                                     )
                                 } else {
@@ -1179,6 +1188,7 @@ impl Game<'_> {
                 break;
             }
             guests = self.lan_guest_views();
+            guest_slots = guest_indices(&guests);
             guest_ids = self
                 .lan
                 .as_ref()

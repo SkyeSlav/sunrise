@@ -186,15 +186,43 @@ pub fn owns_in(folder: &str, program: &str, path: &str) -> bool {
     (stem == program && ["vsh", "fsh", "gsh", "tcs", "tes"].contains(&ext)) || compute
 }
 
-/// Which case to make: generated from a seed, or the `n`th fixed smoke case.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Which case to make: generated from a seed, or the `n`th fixed smoke case. Written as
+/// `--replay` takes it: the seed (`1234`), or `smoke:N`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CaseId {
     Seed(u64),
     Smoke(usize),
 }
 
+impl std::fmt::Display for CaseId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CaseId::Seed(seed) => write!(f, "{seed}"),
+            CaseId::Smoke(n) => write!(f, "smoke:{n}"),
+        }
+    }
+}
+
+impl std::str::FromStr for CaseId {
+    type Err = ();
+
+    /// A seed or `smoke:N`, in decimal digits only.
+    fn from_str(text: &str) -> Result<Self, ()> {
+        let digits = |t: &str| {
+            (!t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()))
+                .then(|| t.parse::<u64>().ok())
+                .flatten()
+                .ok_or(())
+        };
+        match text.strip_prefix("smoke:") {
+            Some(n) => Ok(CaseId::Smoke(usize::try_from(digits(n)?).map_err(|_| ())?)),
+            None => Ok(CaseId::Seed(digits(text)?)),
+        }
+    }
+}
+
 impl CaseId {
-    /// The seed a report gives for the case (the smoke cases' is 0).
+    /// The seed the case is made from (the smoke cases' is 0, as `smoke` makes them).
     pub fn seed(self) -> u64 {
         match self {
             CaseId::Seed(seed) => seed,
@@ -219,8 +247,9 @@ pub enum NoCase {
     Unopened(String),
     /// The pack's folder for the dimension drawn has no program.
     NoPrograms(String),
-    /// A smoke case past the last.
-    Past,
+    /// A smoke case past the last, or past a seed pack that doesn't open (which ends the
+    /// smoke cases at the first): why, naming the seed pack.
+    Past(String),
 }
 
 impl std::fmt::Display for NoCase {
@@ -228,21 +257,29 @@ impl std::fmt::Display for NoCase {
         match self {
             NoCase::Unopened(why) => write!(f, "{why} (the pack doesn't open)"),
             NoCase::NoPrograms(pack) => write!(f, "{pack}: no program in the dimension's folder"),
-            NoCase::Past => f.write_str("past the last smoke case"),
+            NoCase::Past(why) => f.write_str(why),
         }
     }
 }
 
 /// The case `id` names, its pack opened and read here (in a case process, a run's isolation),
 /// or why it makes none. A seed pack that doesn't open makes the first smoke case's
-/// `Unopened`, and ends them there.
+/// `Unopened`, and ends them there: each later one is `Past`, with the same reason.
 pub fn sample(index: &[Entry], id: CaseId) -> Result<Case, NoCase> {
     match id {
         CaseId::Seed(seed) => generate(index, seed, true),
         CaseId::Smoke(n) => match smoke(index) {
-            Ok(cases) => cases.into_iter().nth(n).ok_or(NoCase::Past),
+            Ok(cases) => {
+                let count = cases.len();
+                cases.into_iter().nth(n).ok_or_else(|| {
+                    NoCase::Past(format!(
+                        "past the last smoke case: {} makes {count}",
+                        index[0].name
+                    ))
+                })
+            }
             Err(why) if n == 0 => Err(why),
-            Err(_) => Err(NoCase::Past),
+            Err(why) => Err(NoCase::Past(why.to_string())),
         },
     }
 }

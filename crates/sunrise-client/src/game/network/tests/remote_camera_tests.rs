@@ -169,6 +169,10 @@ fn a_frame_camera_turns_with_its_facing() {
 #[test]
 #[ignore = "run by tools/test_camera_parity.py"]
 fn a_spectated_sleeping_villager_shows_the_bed_view() {
+    run_a_spectated_sleeping_villager_shows_the_bed_view();
+}
+
+pub(in crate::game) fn run_a_spectated_sleeping_villager_shows_the_bed_view() {
     use super::mob_camera_entity;
     use sunrise_client::camera::{Camera, CameraType};
 

@@ -2102,24 +2102,22 @@ impl Goal for NearestTarget {
                 let pos = Vec3::new(m.position.x, m.eye_y(), m.position.z);
                 let id = m.id;
                 let attacker = m.species();
-                let candidates: Vec<(u32, Vec3)> =
-                    cx.w.nearby(pos, range, move |s| {
-                        s.id != id
-                            && !s.playing_dead
-                            && !illager_spares(attacker, s)
-                            && match prey {
-                                Prey::Species(list) => list.contains(&s.species),
-                                Prey::Filter(f) => f(s),
-                                Prey::Player => false,
-                            }
-                    })
-                    .map(|s| (s.id, s.position))
-                    .collect();
-                for (cid, cpos) in candidates {
-                    if m.distance_sqr(cpos) > cx.w.reach_sqr(cid, m, range) {
+                for candidate in cx.w.nearby(pos, range, |s| {
+                    s.id != id
+                        && !s.playing_dead
+                        && !illager_spares(attacker, s)
+                        && match prey {
+                            Prey::Species(list) => list.contains(&s.species),
+                            Prey::Filter(f) => f(s),
+                            Prey::Player => false,
+                        }
+                }) {
+                    let cid = candidate.id;
+                    let distance_sqr = m.distance_sqr(candidate.position);
+                    if distance_sqr > cx.w.reach_sqr(cid, m, range) {
                         continue;
                     }
-                    if self.beyond_sqr.is_some_and(|d| m.distance_sqr(cpos) <= d) {
+                    if self.beyond_sqr.is_some_and(|d| distance_sqr <= d) {
                         continue;
                     }
                     if !m.sees(cx.w, Who::Mob(cid)) {

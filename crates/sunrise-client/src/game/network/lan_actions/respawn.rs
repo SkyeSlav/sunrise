@@ -236,7 +236,7 @@ impl Game<'_> {
                         let chunk = (x >> 4, z >> 4);
                         if !self.world.shape.contains_y(y) {
                             false
-                        } else if self.load_full_chunk(None, chunk) {
+                        } else if self.load_full_chunk(None, chunk).is_ok() {
                             self.is_anchor(self.world.block(x, y, z))
                         } else {
                             log::error!(

@@ -2512,6 +2512,7 @@ impl Game<'_> {
     /// splashes and two bubbles over it, which the level random places, shown here
     /// and to the players within range.
     pub(super) fn bubble_column_particles(&mut self, pos: BlockPos) {
+        let draw_locally = self.options.dedicated.is_none();
         for _ in 0..2 {
             let r = &mut self.world.random;
             let splash = [
@@ -2525,12 +2526,16 @@ impl Game<'_> {
                 f64::from(pos.z) + r.next_double(),
             ];
             let splash_options = ParticleOptions::simple(ParticleType::Splash);
-            self.particles
-                .send_particles(&splash_options, splash, [0.0; 3], 1.0, 1);
+            if draw_locally {
+                self.particles
+                    .send_particles(&splash_options, splash, [0.0; 3], 1.0, 1);
+            }
             self.lan_level_particles(&splash_options, splash, [0.0; 3], 1.0, 1, None);
             let bubble_options = ParticleOptions::simple(ParticleType::Bubble);
-            self.particles
-                .send_particles(&bubble_options, bubble, [0.0, 0.01, 0.0], 0.2, 1);
+            if draw_locally {
+                self.particles
+                    .send_particles(&bubble_options, bubble, [0.0, 0.01, 0.0], 0.2, 1);
+            }
             self.lan_level_particles(&bubble_options, bubble, [0.0, 0.01, 0.0], 0.2, 1, None);
         }
     }

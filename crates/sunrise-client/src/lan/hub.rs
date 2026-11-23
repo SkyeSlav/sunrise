@@ -6504,6 +6504,7 @@ mod tests {
                     links: Vec::new(),
                     asks_still_valid: true,
                     opening_item: None,
+                    slot_changed_seen: None,
                 });
             });
         };
@@ -8306,6 +8307,7 @@ mod tests {
                 links: Vec::new(),
                 opening_item: None,
                 asks_still_valid: false,
+                slot_changed_seen: None,
             });
         });
         let drain_data =

@@ -421,6 +421,7 @@ impl Decoration {
             entities: Vec::new(),
             level_random,
             structure_mobs: worker.structure_mobs.clone(),
+            biome_keys: worker.mod_biome_keys.current(),
             starts: references.clone(),
             biome_names: data.biome_names(),
             blocks: data
@@ -691,6 +692,8 @@ struct World<'a> {
     entities: Vec<sunrise_core::nbt::Compound>,
     level_random: &'a mut dyn super::structure::legacy::PieceRandom,
     structure_mobs: Option<Arc<dyn super::generator::StructureMobs>>,
+    /// The world's biome keys when the region opened, for mod features.
+    biome_keys: Arc<mod_api::__private::BiomeKeys>,
     starts: Vec<Arc<super::structure::start::StructureStart>>,
     biome_names: &'a [Arc<str>],
     blocks: Option<&'a BlockBehavior>,
@@ -1525,6 +1528,13 @@ impl PlacementContext for World<'_> {
             )
             .copied()
             .map_err(Into::into)
+    }
+    fn biome_key(&mut self, position: [i32; 3]) -> Result<mod_api::BiomeKey, PlacementQueryError> {
+        let biome = self.biome_identity(position)?;
+        self.biome_names
+            .get(biome.0 as usize)
+            .and_then(|name| self.biome_keys.key(name))
+            .ok_or(PlacementQueryError::Unavailable)
     }
     fn biome_allows_feature(
         &mut self,

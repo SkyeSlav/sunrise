@@ -60,7 +60,9 @@ updates your caller in the release commit when it has moved, so you never edit t
    artifact attestation that names your repository and the shared workflow, then publishes them on a GitHub
    release with their attestation bundles. A native `.smod` holds source and `Cargo.lock`, never a compiled library.
 2. The registry bot watches registered repositories. For a new release it opens a pull request on
-   sunrise-org/sunrise-mods that adds the release and updates the project's page.
+   sunrise-org/sunrise-mods that adds the release and updates the project's page. A release whose package is of
+   another kind than the project (a content mod that gained `[native]` code, or the reverse) changes the project's
+   kind in the same pull request and removes the project's earlier releases; `release` says so before it tags.
 3. The bot's checks run on that pull request. They are static checks plus a compile, and never load the mod in the
    game:
    - the files' format, sizes and SHA-256 hashes, and both attestations against the registered repository, the

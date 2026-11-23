@@ -1100,7 +1100,7 @@ fn item_hdr_light(state: &ItemRenderState, light: u32) -> u32 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::game) mod tests {
     use super::*;
     use mod_api::ClientHost;
     use serde_json::json;
@@ -1725,6 +1725,11 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn item_display_end_crystal_world_submit_uses_vanilla_glint_scale_and_atlas_uv_26_3() {
+        run_item_display_end_crystal_world_submit_uses_vanilla_glint_scale_and_atlas_uv_26_3();
+    }
+
+    pub(in crate::game) fn run_item_display_end_crystal_world_submit_uses_vanilla_glint_scale_and_atlas_uv_26_3()
+     {
         crate::game::in_own_process(
             "game::item_draw::tests::item_display_end_crystal_world_submit_uses_vanilla_glint_scale_and_atlas_uv_26_3",
             || {

@@ -1409,11 +1409,13 @@ impl Frontend {
 
             let ty = ctx.module.global_variables[arg.handle].ty;
 
+            let meta = ctx.module.global_variables.get_span(arg.handle);
             ctx.arg_type_walker(
                 arg.name.clone(),
                 arg.binding.clone(),
                 pointer,
                 ty,
+                meta,
                 &mut |ctx, name, pointer, ty, binding| {
                     let idx = arguments.len() as u32;
 
@@ -1462,11 +1464,13 @@ impl Frontend {
 
             let ty = ctx.module.global_variables[arg.handle].ty;
 
+            let meta = ctx.module.global_variables.get_span(arg.handle);
             ctx.arg_type_walker(
                 arg.name.clone(),
                 arg.binding.clone(),
                 pointer,
                 ty,
+                meta,
                 &mut |ctx, name, pointer, ty, binding| {
                     members.push(StructMember {
                         name,
@@ -1559,12 +1563,17 @@ impl Context<'_> {
     /// - The pointer expression to the global storage
     /// - The handle to the type of the entry point argument
     /// - The binding of the entry point argument
+    ///
+    /// Each array element and each struct member without a binding of its own takes the next
+    /// location after the one before it; one past `u32::MAX` is an
+    /// [`ErrorKind::LocationTooLarge`] at `meta`, the variable's declaration.
     fn arg_type_walker(
         &mut self,
         name: Option<String>,
         binding: crate::Binding,
         pointer: Handle<Expression>,
         ty: Handle<Type>,
+        meta: Span,
         f: &mut impl FnMut(
             &mut Context,
             Option<String>,
@@ -1582,7 +1591,7 @@ impl Context<'_> {
                 size: crate::ArraySize::Constant(size),
                 ..
             } => {
-                let mut location = match binding {
+                let first = match binding {
                     crate::Binding::Location { location, .. } => location,
                     crate::Binding::BuiltIn(_) => return Ok(()),
                 };
@@ -1606,22 +1615,23 @@ impl Context<'_> {
                     )?;
 
                     let binding = crate::Binding::Location {
-                        location,
+                        location: next_location(first, index, meta)?,
                         interpolation,
                         sampling: None,
                         blend_src: None,
                         per_primitive: false,
                     };
-                    location += 1;
 
-                    self.arg_type_walker(name.clone(), binding, member_pointer, base, f)?
+                    self.arg_type_walker(name.clone(), binding, member_pointer, base, meta, f)?
                 }
             }
             TypeInner::Struct { ref members, .. } => {
-                let mut location = match binding {
+                let first = match binding {
                     crate::Binding::Location { location, .. } => location,
                     crate::Binding::BuiltIn(_) => return Ok(()),
                 };
+                // The members without a binding of their own so far.
+                let mut unbound = 0;
 
                 for (i, member) in members.clone().into_iter().enumerate() {
                     let member_pointer = self.add_expression(
@@ -1643,18 +1653,18 @@ impl Context<'_> {
                                     _ => crate::Interpolation::Flat,
                                 });
                             let binding = crate::Binding::Location {
-                                location,
+                                location: next_location(first, unbound, meta)?,
                                 interpolation,
                                 sampling: None,
                                 blend_src: None,
                                 per_primitive: false,
                             };
-                            location += 1;
+                            unbound += 1;
                             binding
                         }
                     };
 
-                    self.arg_type_walker(member.name, binding, member_pointer, member.ty, f)?
+                    self.arg_type_walker(member.name, binding, member_pointer, member.ty, meta, f)?
                 }
             }
             _ => f(self, name, pointer, ty, binding),
@@ -1662,6 +1672,15 @@ impl Context<'_> {
 
         Ok(())
     }
+}
+
+/// The location `offset` places after `first`, or [`ErrorKind::LocationTooLarge`] at `meta` past
+/// `u32::MAX`.
+fn next_location(first: u32, offset: u32, meta: Span) -> Result<u32> {
+    first.checked_add(offset).ok_or(Error {
+        kind: ErrorKind::LocationTooLarge,
+        meta,
+    })
 }
 
 /// How many locations a stage interface variable of type `ty` takes, one for each scalar, vector

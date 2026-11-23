@@ -97,7 +97,7 @@ use {
     },
 };
 
-mod abilities;
+pub(in crate::game) mod abilities;
 mod chat;
 mod chat_received;
 mod commands;
@@ -2442,22 +2442,22 @@ pub(in crate::game) mod tests {
     mod client_block_changed_tests {
         include!("client_block_changed_tests.rs");
     }
-    mod camera_draw_tests {
+    pub(in crate::game) mod camera_draw_tests {
         include!("camera_draw_tests.rs");
     }
-    mod client_camera_tests {
+    pub(in crate::game) mod client_camera_tests {
         include!("client_camera_tests.rs");
     }
-    mod camera_parity_red_tests {
+    pub(in crate::game) mod camera_parity_red_tests {
         include!("camera_parity_red_tests.rs");
     }
-    mod set_camera_kinds_tests {
+    pub(in crate::game) mod set_camera_kinds_tests {
         include!("set_camera_kinds_tests.rs");
     }
-    mod camera_death_tests {
+    pub(in crate::game) mod camera_death_tests {
         include!("camera_death_tests.rs");
     }
-    mod client_hud_camera_tests {
+    pub(in crate::game) mod client_hud_camera_tests {
         include!("client_hud_camera_tests.rs");
     }
     mod client_day_time_tests {

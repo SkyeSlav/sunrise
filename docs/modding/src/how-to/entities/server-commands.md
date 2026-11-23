@@ -142,7 +142,7 @@ flags), criterion names and requirements, from the set the last `/reload` built.
 
 ## Run a command as a player
 
-`player.entity().run_command_with_output(host, line, level)` runs a command as that
+`player.entity().run_command_with_output(host, line, level, suppress_output)` runs a command as that
 player, from their position and rotation, with `@s` selecting them. Pass
 `PermissionLevel::from_level(i32::from(player.permission_level(host)?))` to use
 the player's own permission level. The supplied level is taken as given, so a mod
@@ -150,11 +150,14 @@ can also choose a different level explicitly. A leading slash is allowed.
 
 The returned `CommandResult` has `success` (the same bool as `run_command`) and
 `feedback`: the success and failure lines received by the source, in order, as
-plain text. The player still receives those lines in chat, and operator
-notifications follow the normal rules. Feedback silenced by the source or game
-rules is absent. Other entities use a silent source and return no lines; a stale,
-removed or unavailable entity returns `success: false` and no lines. Teleports to
-another level still happen at the next tick's start. `run_command(host, line, level)` keeps its bool return.
+plain text. Pass `false` for normal player chat and operator notifications, or
+`true` to suppress both and return an empty `feedback` list. Like vanilla's
+`withSuppressedOutput`, this silences command feedback, not the command's effects:
+`/say` still broadcasts its message. Other entities already use a silent source.
+A stale, removed or unavailable entity returns `success: false` and no lines.
+Teleports to another level still happen at the next tick's start.
+`run_command(host, line, level, suppress_output)` takes the same option and
+returns only whether the command succeeded.
 
 ## Entity and player selectors
 

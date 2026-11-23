@@ -14,10 +14,13 @@ pub trait EntityActionsBackendMut {
     /// then `Commands.performPrefixedCommand`. `level` is the mod's choice, taken
     /// as given whether it is above or below the entity's own: the line is parsed
     /// and checked at it. `@s` is the entity, and the command runs from its
-    /// position and rotation in its level. A player is answered as for their own
-    /// command: its feedback and failures reach their chat, and the other
-    /// operators hear of it (`broadcastToAdmins`). Another entity's source is
-    /// silent: nothing reaches anyone (`CommandSource.NULL`). A command a mod
+    /// position and rotation in its level. With `suppress_output` false, a
+    /// player receives success and failure feedback in chat and the usual
+    /// operator notifications apply (`broadcastToAdmins`). Pass true to silence
+    /// the source (`CommandSourceStack.withSuppressedOutput`): it gives no
+    /// feedback to the player or to operators, but the command's effects (such
+    /// as `/say` broadcasting a message) still happen. Other entities already
+    /// have a silent source (`CommandSource.NULL`). A command a mod
     /// registered hears a player as `CommandSource::Player` and another entity as
     /// `CommandSource::Console`, both at `level`. A teleport to another level
     /// happens at the next tick's start, as `Commands::run_command`'s. Whether
@@ -28,15 +31,20 @@ pub trait EntityActionsBackendMut {
     /// During a guest's turn, live players (the acting one included) can run it
     /// and are reachable; displaced outer players are neither, as on
     /// `Commands::run_command`.
-    fn entity_run_command(&mut self, entity: EntityRef, line: &str, level: PermissionLevel)
-    -> bool;
+    fn entity_run_command(
+        &mut self,
+        entity: EntityRef,
+        line: &str,
+        level: PermissionLevel,
+        suppress_output: bool,
+    ) -> bool;
     /// Side: server.
-    /// Runs the command exactly as `EntityRef::run_command` does, at the supplied
-    /// `level`, returning whether it ran and the success and failure lines its
-    /// source received, in order, as plain text. The player's chat still receives
-    /// those lines and operators are notified under the same rules. Another
-    /// entity's silent source returns no lines. A stale, removed or unavailable
-    /// entity returns unsuccessful with no lines. Cross-level teleports retain
+    /// Runs the command exactly as `EntityRef::run_command` does, returning
+    /// whether it ran and the success and failure lines its source received, in
+    /// order, as plain text. The player's chat still receives those lines and
+    /// operators are notified under the same rules. The feedback list is empty
+    /// with `suppress_output` true or an already silent source. A stale, removed
+    /// or unavailable entity returns unsuccessful with no lines. Cross-level teleports retain
     /// the same next-tick handling. Pass the player's permission level to run
     /// with their own authority; the supplied level is not capped to it.
     fn entity_run_command_with_output(
@@ -44,6 +52,7 @@ pub trait EntityActionsBackendMut {
         entity: EntityRef,
         line: &str,
         level: PermissionLevel,
+        suppress_output: bool,
     ) -> CommandResult;
     /// Side: server.
     /// Drops `stack` at the entity's feet, `y_offset` above

@@ -130,6 +130,10 @@ pub enum ErrorKind {
     /// ([`InterfaceLimits`](super::InterfaceLimits), [`MAX_FRAGMENT_OUTPUTS`](super::MAX_FRAGMENT_OUTPUTS)).
     #[error("Interface variables take more than {limit} locations")]
     InterfaceTooLarge { limit: u32 },
+    /// An interface variable whose elements or members, each taking the next location after its
+    /// `layout(location = N)`, take one past `u32::MAX`.
+    #[error("Interface variable takes a location past {}", u32::MAX)]
+    LocationTooLarge,
     /// A semantic error was detected in the shader.
     #[error("{0}")]
     SemanticError(Cow<'static, str>),

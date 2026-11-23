@@ -3,8 +3,8 @@
 
     python3 tools/shader_fuzz.py --smoke                     # the seed programs unmutated: the tool works
     python3 tools/shader_fuzz.py --seed 1 --count 500        # 500 cases from the committed seed pack
-    python3 tools/shader_fuzz.py --corpus ~/shaderpacks --budget 1200 --jobs 4
-    python3 tools/shader_fuzz.py --corpus ~/shaderpacks --replay 1234567   # one case again, by its seed
+    python3 tools/shader_fuzz.py --corpus ~/shaderpacks --budget 1200 --jobs 4   # as many cases as 20 minutes make
+    python3 tools/shader_fuzz.py --replay 1234567 --corpus ~/shaderpacks ...      # a group's case again, as printed
 
 crates/sunrise-render-shaderpack/examples/shader_fuzz/ does the work. A case is a pack of the corpus (the seed pack
 under examples/shader_fuzz/seeds/, and each zip or folder of --corpus, which is read and never copied into the
@@ -20,13 +20,20 @@ loaded or named by a note, the same output twice.
 
 Failures are grouped by invariant, first failing step and detail. Each group's smallest case is shrunk while the
 same failure stays (steps, then files, then runs of lines) and written as a pack folder under
-the run's groups/ folder; its report.json lists the groups with the seed that replays each, the cases run and
-skipped (each skipped one is printed with why), and how each case process ended. Exits 1 when any case fails, or
-when no case ran.
+the run's groups/ folder; its report.json lists the groups, each with the arguments that replay
+its smallest case (`--replay` with its seed, or `smoke:N` for a fixed smoke case, the corpus of a
+generated case, the seed pack when the run was given one, and the run's time, memory and size
+limits), printed as a command, then the cases run and skipped (each skipped one is printed with
+why), and how each case process ended. Exits 1 when any case fails, or when no case ran.
+
+--budget alone generates cases until it ends, --count alone that many, both until the first is
+reached, neither 200.
 """
 
 import argparse
 import json
+import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -48,14 +55,18 @@ def build():
 
 def arguments(args):
     """The fuzzer's command line for these options."""
-    out = ["--seed", str(args.seed), "--count", str(args.count), "--jobs", str(args.jobs),
+    out = ["--seed", str(args.seed), "--jobs", str(args.jobs),
            "--time-limit", str(args.time_limit), "--memory-limit", str(args.memory_limit),
            "--size-limit", str(args.size_limit), "--shrink-seconds", str(args.shrink_seconds),
            "--work-dir", str(args.work_dir.resolve())]
+    if args.count is not None:
+        out += ["--count", str(args.count)]
     if args.budget is not None:
         out += ["--budget", str(args.budget)]
     if args.corpus is not None:
         out += ["--corpus", str(args.corpus.resolve(strict=True))]
+    if args.seed_pack is not None:
+        out += ["--seed-pack", str(args.seed_pack.resolve(strict=True))]
     if args.replay is not None:
         out += ["--replay", str(args.replay)]
     if args.smoke:
@@ -63,16 +74,22 @@ def arguments(args):
     return out
 
 
+def case_id(text):
+    """A case `--replay` takes: a generated case's seed, or `smoke:N` for a fixed smoke case."""
+    if not re.fullmatch(r"(smoke:)?[0-9]+", text, re.ASCII):
+        raise argparse.ArgumentTypeError(f"not a seed or smoke:N: {text!r}")
+    return text
+
+
 def summary(report):
-    """The cases run and skipped, then one line per group, most cases first, with its replay command."""
+    """The cases run and skipped, then one line per group, most cases first, with the command that replays its case."""
     lines = [f"{report['cases']} cases ({report.get('skipped', 0)} skipped), {report['failing']} failures"
              f" in {len(report['groups'])} groups"]
     if not report["cases"]:
         lines.append("no case ran")
     for group in sorted(report["groups"], key=lambda g: (-g["count"], g["group"])):
-        corpus = f" --corpus {report['corpus_dir']}" if report.get("corpus_dir") else ""
         lines.append(f"  {group['count']:4d}  {group['group']}")
-        lines.append(f"        python3 tools/shader_fuzz.py{corpus} --replay {group['replay']}"
+        lines.append(f"        python3 tools/shader_fuzz.py {shlex.join(group['replay_args'])}"
                      f"   # shrunk: {group['dir']}")
     return lines
 
@@ -80,14 +97,17 @@ def summary(report):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--seed", type=int, default=1, help="the run's seed; each case's own seed derives from it")
-    parser.add_argument("--count", type=int, default=200, help="cases to generate")
+    parser.add_argument("--count", type=int, help="cases to generate (200 when --budget isn't given either)")
     parser.add_argument("--budget", type=int, help="stop generating cases after this many seconds")
     parser.add_argument("--corpus", type=Path,
                         help="a folder of packs (zips or folders) to take cases from; only case processes read them")
     parser.add_argument("--jobs", type=int, default=1,
                         help="case processes, each with its own eval worker")
+    parser.add_argument("--seed-pack", type=Path,
+                        help="a pack folder in place of the committed seed pack (the first pack, and --smoke's)")
     source = parser.add_mutually_exclusive_group()
-    source.add_argument("--replay", type=int, metavar="SEED", help="run the case of this seed (from a report)")
+    source.add_argument("--replay", type=case_id, metavar="SEED|smoke:N",
+                        help="run this one case (from a report's replay command)")
     source.add_argument("--smoke", action="store_true", help="the seed programs unmutated, which must pass")
     parser.add_argument("--time-limit", type=int, default=20,
                         help="seconds a load of a case (in its eval worker) or a pack's reading may take")

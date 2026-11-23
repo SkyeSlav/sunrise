@@ -1807,6 +1807,8 @@ pub(super) struct WorkerState {
     /// Decorate with structure pieces only (for structure parity checks).
     pub(super) structures_only: bool,
     pub(super) structure_mobs: Option<Arc<dyn StructureMobs>>,
+    /// The generator's published biome keys, for mod features.
+    pub(super) mod_biome_keys: super::mod_features::ModBiomeKeys,
     /// The world's surface rule compiled once for this worker's chunks: a
     /// `CompiledSurfaceRule` of the pipeline's random.
     surface_rule: Option<Box<dyn Any + Send>>,
@@ -2687,8 +2689,15 @@ pub struct OverworldGenerator {
     /// The noise range the settings asked for and the build height's part
     /// of it that generates, when they differ.
     noise_clamped: Option<(NoiseSettings, NoiseSettings)>,
+    /// What its workers' mod features answer `biome` with.
+    mod_biome_keys: super::mod_features::ModBiomeKeys,
 }
 impl OverworldGenerator {
+    /// The biome keys its workers' mod features answer with, which the game publishes for each
+    /// data load of the world (a worker reads the current snapshot when it decorates).
+    pub fn mod_biome_keys(&self) -> &super::mod_features::ModBiomeKeys {
+        &self.mod_biome_keys
+    }
     /// Install before workers run, so every cache miss can consult the save before generation.
     pub fn set_saved_starts(&self, source: Arc<SavedStructureStarts>) {
         self.pipeline.set_saved_starts(source);
@@ -2853,6 +2862,7 @@ impl OverworldGenerator {
         Ok(Self {
             pipeline,
             noise_clamped,
+            mod_biome_keys: Default::default(),
         })
     }
     pub fn data(&self) -> &Arc<GeneratorData> {
@@ -2923,6 +2933,7 @@ impl OverworldGenerator {
                 timings: StageTimings::default(),
                 structures_only: false,
                 structure_mobs: None,
+                mod_biome_keys: self.mod_biome_keys.clone(),
                 heights: HashMap::new(),
                 surface_rule: None,
             },
@@ -4029,6 +4040,7 @@ mod tests {
                 .expect("pipeline"),
             ),
             noise_clamped: None,
+            mod_biome_keys: Default::default(),
         };
         let contents = |chunk: &ProtoChunk| {
             let (x0, z0) = (chunk.position().x * 16, chunk.position().z * 16);
@@ -4108,6 +4120,7 @@ mod tests {
         let generator = OverworldGenerator {
             pipeline: pipeline.clone(),
             noise_clamped: None,
+            mod_biome_keys: Default::default(),
         };
         let barrier = std::sync::Barrier::new(6);
         let pos = ChunkPos::new(11, -11); // ancient city for this seed
