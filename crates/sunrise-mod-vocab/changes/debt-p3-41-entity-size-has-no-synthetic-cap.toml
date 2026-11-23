@@ -8,8 +8,14 @@ is not finite or is negative is logged and keeps vanilla's size instead of being
 consumers of a large size follow vanilla: the player pose-fit `noCollision` query walks the whole candidate
 box (`CollisionGetter.noBlockCollision` has no visit counter) and the wither's destruction sweep uses Java
 `int` arithmetic.
+
+A player's standing, crouching and swimming candidate sizes are no longer asked before its motion.
+NeoForge fires `EntityEvent.Size` only from `Entity`'s constructor and from `Entity.refreshDimensions`;
+the candidate fits of `Player.updatePlayerPose` read `getDimensions(pose)`, which fires nothing, so they
+use vanilla's sizes. The hook now fires for a player when its own pose or vanilla size changes.
 """
 migrate = """
 Pin `entity_size` at `hook_version = 3` instead of `2`. Do not rely on the game dropping an answer
-above 32 blocks; validate the size you return.
+above 32 blocks; validate the size you return. Do not rely on a size you answer for a candidate pose
+deciding whether that pose fits: it only sizes the box once the player is in that pose.
 """

@@ -484,8 +484,6 @@ pub struct PlayerMotion {
     /// What `entity_size` answered for this body's pose and vanilla size (see
     /// `game/modding/entity_sizes.rs`); `refresh_dimensions` keeps it while it holds.
     pub size_answer: Option<crate::pose::SizeAnswer>,
-    /// Standing, crouching and swimming answers resolved before motion; cloned with replay state.
-    pub pose_fit_sizes: [Option<crate::pose::SizeAnswer>; 3],
     /// The `minecraft:scale` the dimensions were last built with
     /// (`Entity.refreshDimensions`), for the poses the body takes before it
     /// next refreshes.

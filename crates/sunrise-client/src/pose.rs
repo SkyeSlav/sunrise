@@ -170,31 +170,20 @@ impl PlayerMotion {
             }
         }
     }
+    /// `Entity.getDimensions(pose)`: the pose's vanilla size at the current scale. The fit tests
+    /// of `Player.updatePlayerPose` read this, not `entity_size`'s answer (NeoForge fires
+    /// `EntityEvent.Size` only in the constructor and `Entity.refreshDimensions`).
     pub fn dimensions_for_pose(&mut self, pose: Pose) -> Result<Dimensions> {
-        let vanilla = pose.dimensions(self.attribute("minecraft:scale")? as f32);
-        Ok(self
-            .pose_size_answer(pose, vanilla.to_array())
-            .map_or(vanilla, |answer| Dimensions::from_array(answer.effective())))
-    }
-    fn pose_size_answer(&self, pose: Pose, vanilla: [f32; 3]) -> Option<SizeAnswer> {
-        self.size_answer
-            .filter(|answer| answer.asked(pose.into(), vanilla))
-            .or_else(|| {
-                let answer = match pose {
-                    Pose::Standing => self.pose_fit_sizes[0],
-                    Pose::Crouching => self.pose_fit_sizes[1],
-                    Pose::Swimming => self.pose_fit_sizes[2],
-                    _ => None,
-                };
-                answer.filter(|answer| answer.asked(pose.into(), vanilla))
-            })
+        Ok(pose.dimensions(self.attribute("minecraft:scale")? as f32))
     }
     pub fn refresh_dimensions(&mut self) -> Result<()> {
         self.scale = self.attribute("minecraft:scale")? as f32;
         self.dimensions = self.pose.dimensions(self.scale);
-        // Apply the same pre-resolved answer used by the pose fit decision.
-        if let Some(answer) = self.pose_size_answer(self.pose, self.dimensions.to_array()) {
-            self.size_answer = Some(answer);
+        // `EntityEvent.Size`'s answer for this pose and size, while it still holds.
+        if let Some(answer) = self
+            .size_answer
+            .filter(|answer| answer.asked(self.pose.into(), self.dimensions.to_array()))
+        {
             self.dimensions = Dimensions::from_array(answer.effective());
         }
         Ok(())

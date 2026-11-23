@@ -1497,7 +1497,6 @@ impl Game<'_> {
         let ticks = own.is_none_or(|id| {
             self.native_tick_pre_one(&mut tick_round, id, crate::game::native_ticks::PLAYER)
         });
-        self.native_local_player_fit_sizes();
         let result = if ticks {
             let result = self.tick_local_player(entity_collisions, sprint_window);
             if let Some(id) = own {
