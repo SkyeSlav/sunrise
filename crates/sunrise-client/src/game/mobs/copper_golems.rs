@@ -176,20 +176,7 @@ impl Game<'_> {
     }
     /// `CopperGolem.turnToStatue`, which its weathering asked for.
     pub(super) fn golem_become_statue(&mut self, id: u32) {
-        let Some(i) = self.mobs.iter().position(|m| m.id == id && !m.removed) else {
-            return;
-        };
-        let statue_at = self.with_entity_held_out(id, |game| {
-            let mut m = game.mobs[i].clone();
-            let became_statue = game.golem_turn_to_statue(&mut m);
-            let position = m.position.components();
-            if let Some(i) = game.mobs.iter().position(|x| x.id == id && !x.removed) {
-                game.mobs.update(i, |owner| {
-                    sunrise_client::join_seq::store_back(owner, m);
-                });
-            }
-            became_statue.then_some(position)
-        });
+        let statue_at = self.golem_turn_to_statue(id);
         if let Some(at) = statue_at {
             self.remove_mob_now(id, false);
             self.play_audio(
@@ -210,18 +197,25 @@ impl Game<'_> {
             }
         }
     }
-    fn golem_turn_to_statue(&mut self, m: &mut Mob) -> bool {
+    /// `CopperGolem.turnToStatue` on the row of golem `id`, in place: a listener told of the
+    /// statue's block change sees and edits that row. Where it stood, when it became a statue.
+    fn golem_turn_to_statue(&mut self, id: u32) -> Option<[f64; 3]> {
+        let find = |game: &Self| game.mobs.iter().position(|m| m.id == id && !m.removed);
+        let i = find(self)?;
+        let m = &self.mobs[i];
         let pos = [
             m.position.x.floor() as i32,
             m.position.y.floor() as i32,
             m.position.z.floor() as i32,
         ];
-        // The pose comes from the golem's own random (`this.random.nextInt(0, 4)`).
-        let pose = ["standing", "sitting", "running", "star"]
-            [m.random.next_int_bound(4).unwrap_or(0) as usize];
         // Direction.fromYRot.
         let facing = ["south", "west", "north", "east"]
             [((f64::from(m.yaw) / 90.0 + 0.5).floor() as i32 & 3) as usize];
+        // The pose comes from the golem's own random (`this.random.nextInt(0, 4)`).
+        let roll = self
+            .mobs
+            .update(i, |m| m.random.next_int_bound(4).unwrap_or(0));
+        let pose = ["standing", "sitting", "running", "star"][roll as usize];
         let state = BlockState {
             name: "minecraft:oxidized_copper_golem_statue".into(),
             properties: [
@@ -232,24 +226,29 @@ impl Game<'_> {
             .into(),
         };
         let registry = self.pack.assets.registry;
-        let Some(id) = registry.id(&state) else {
-            return false;
-        };
-        if self.level_set(pos, id).is_err() {
-            return false;
+        let state_id = registry.id(&state)?;
+        if self.level_set(pos, state_id).is_err() {
+            return None;
         }
         // `createStatue`: the golem's custom name goes into the statue's components.
         let mut components = Compound::new();
-        if let Some(name) = self.golem_name_tag(m) {
+        if let Some(name) = self.golem_name_tag(&self.mobs[find(self)?]) {
             components.insert("minecraft:custom_name".into(), name);
         }
         self.world.block_entities.insert(
             (pos[0], pos[1], pos[2]),
             BlockEntity::CopperGolemStatue(components),
         );
-        self.golem_drop_equipment(m);
-        m.extra.opened_chest = None;
-        true
+        let i = find(self)?;
+        let at = self.mobs[i].position;
+        let stacks = self.mobs.update(i, |m| {
+            m.extra.opened_chest = None;
+            Self::golem_preserved_equipment(m)
+        });
+        for stack in stacks {
+            self.spawn_at_location(at, 0.0, stack);
+        }
+        Some(at.components())
     }
     /// The golem's `CustomName` as a component: the styled name it was loaded
     /// or summoned with while it still matches the plain name, else the plain one.

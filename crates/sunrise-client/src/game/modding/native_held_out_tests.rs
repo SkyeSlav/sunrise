@@ -82,7 +82,7 @@ fn boat_tick_refuses_a_write_from_a_leash_drop_hook() {
 
 #[test]
 #[ignore = "daily"]
-fn statue_conversion_refuses_a_write_from_an_item_spawn_hook() {
+fn statue_conversion_lets_an_item_spawn_hook_read_and_write_the_golem() {
     with_observer(|game, state| {
         let kind = game
             .res
@@ -98,8 +98,12 @@ fn statue_conversion_refuses_a_write_from_an_item_spawn_hook() {
         assert!(handle.set_velocity(game, [2.0, 0.0, 0.0]));
         assert_eq!(handle.velocity(game), Some([2.0, 0.0, 0.0]));
         game.golem_become_statue(101);
-        assert_eq!(state.lock().unwrap().reads.as_slice(), &[vec![None]]);
-        assert_eq!(state.lock().unwrap().results.as_slice(), &[vec![false]]);
+        // The golem's row is in the level while its drops spawn: the hook reads and writes it.
+        assert_eq!(
+            state.lock().unwrap().reads.as_slice(),
+            &[vec![Some([2.0, 0.0, 0.0])]]
+        );
+        assert_eq!(state.lock().unwrap().results.as_slice(), &[vec![true]]);
     });
 }
 

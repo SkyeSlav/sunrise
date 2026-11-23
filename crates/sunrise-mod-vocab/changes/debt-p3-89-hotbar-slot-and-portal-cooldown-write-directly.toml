@@ -1,12 +1,16 @@
-ids = ["type:HotbarSlotError"]
+ids = ["type:HotbarSlotError", "type:MobAiPauseRefusal", "type:MobAiPauseRefusal.HeldOut"]
 why = """
 `ClientHost::select_hotbar_slot` refused a spectator with `HotbarSlotError::Refused`. Vanilla
 `Inventory.setSelectedSlot` only rejects a slot outside the hotbar; a spectator's number keys opening the
 spectator menu is the input's rule, not the setter's. The variant is removed and a spectator's slot is
 written like any other. `entity_set_portal_cooldown` likewise stores any `i32`, as
 `Entity.setPortalCooldown(int)` does.
+
+`MobAiPauseRefusal::HeldOut` is removed: a mob is never held out of the level while a listener can run (its
+own move pauses with every row back in the level, and a golem turning into a statue edits its row in
+place), so `set_ai_paused` acts on the real row.
 """
 migrate = """
 Delete the `HotbarSlotError::Refused` arm of any match on the error; the call now fails only with
-`NoWorld` or `OutOfRange`.
+`NoWorld` or `OutOfRange`. Delete the `MobAiPauseRefusal::HeldOut` arm of any match on `set_ai_paused`'s error.
 """

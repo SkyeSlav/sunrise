@@ -57,9 +57,6 @@ impl Game<'_> {
         if self.native_lifecycle.epoch() != Some(entity.epoch()) {
             return Err(MobAiPauseRefusal::Stale);
         }
-        if self.held_out.contains(&entity.id()) {
-            return Err(MobAiPauseRefusal::HeldOut);
-        }
         match self.native_entity_target(entity) {
             Some(Target::Mob(id)) => Ok(id),
             Some(Target::Dragon(_) | Target::DragonPart(_)) => Err(MobAiPauseRefusal::NoAiStep),
@@ -503,10 +500,6 @@ mod tests {
             refused(game, stale, MobAiPauseRefusal::Stale);
             let gone = MobRef::new(EntityRef::new(epoch, 999));
             refused(game, gone, MobAiPauseRefusal::Stale);
-
-            game.held_out.push(40);
-            refused(game, pig, MobAiPauseRefusal::HeldOut);
-            game.held_out.pop();
 
             let mut dragon = Dragon::new(Vec3::new(8.0, 80.0, 8.0), 0.0, 0);
             dragon.id = 50;

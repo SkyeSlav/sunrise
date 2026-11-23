@@ -1395,7 +1395,7 @@ sunrise-client game::native_held_out_tests::boat_tick_refuses_a_write_from_a_lea
 sunrise-client game::native_held_out_tests::cart_tick_refuses_a_write_from_a_mount_hook lib daily resources
 sunrise-client game::native_held_out_tests::leash_interaction_keeps_the_stored_boat_writable lib daily resources
 sunrise-client game::native_held_out_tests::nested_held_out_entities_both_refuse lib daily resources
-sunrise-client game::native_held_out_tests::statue_conversion_refuses_a_write_from_an_item_spawn_hook lib daily resources
+sunrise-client game::native_held_out_tests::statue_conversion_lets_an_item_spawn_hook_read_and_write_the_golem lib daily resources
 sunrise-client game::native_hit_attempt_tests::hit_attempts_reach_the_listener_once_including_refusals lib daily resources
 sunrise-client game::native_hooks::base::held_break_slot_tests::held_durability_retains_the_stack_hand_and_explicit_break_slot lib daily resources
 sunrise-client game::native_hooks::base::screen_open_tests::a_cancelled_mapping_press_is_dropped_and_its_release_is_not lib daily resources

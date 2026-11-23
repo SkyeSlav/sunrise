@@ -162,7 +162,7 @@ knocked back, hurt and killed, which `NoAI` does not allow. Its path, move targe
 memories are kept and resume on the next AI step, and the navigation timeout does not count the pause. `NoAI` is
 neither read nor written. The pause is saved with the mob as an attachment-style value (`sunrise:attachments`,
 `sunrise` / `ai_paused`, never a vanilla key) and read back on load. A refusal is a `MobAiPauseRefusal`: `Stale`
-(another epoch's handle or no such entity), `Client`, `HeldOut` (a mob held out of the level for its own tick),
+(another epoch's handle or no such entity), `Client`,
 `NoAiStep` (the dragon and its parts) or `NotAMob` (a player, an armor stand). None changes anything.
 
 For an Allay, the expiring liked-player memory, liked-note-block cooldown and item-pickup cooldown also

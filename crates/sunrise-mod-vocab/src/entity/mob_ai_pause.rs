@@ -12,8 +12,6 @@ pub enum MobAiPauseRefusal {
     Stale,
     /// Asked on a client, or with no game backend: the pause is server side.
     Client,
-    /// The mob is held out of the level for its own tick or a hook on it.
-    HeldOut,
     /// The Ender Dragon or one of its parts: its flight is its phase, and
     /// there is no AI step to pause.
     NoAiStep,
@@ -26,7 +24,6 @@ impl std::fmt::Display for MobAiPauseRefusal {
         f.write_str(match self {
             Self::Stale => "the handle names no entity of this server level",
             Self::Client => "a mob's AI is paused on the server only",
-            Self::HeldOut => "the mob is held out of the level just now",
             Self::NoAiStep => "the dragon and its parts have no AI step to pause",
             Self::NotAMob => "the entity is not a mob",
         })
