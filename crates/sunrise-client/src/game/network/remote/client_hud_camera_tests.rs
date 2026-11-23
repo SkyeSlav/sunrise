@@ -266,11 +266,15 @@ fn set_up(game: &mut Game<'_>, case: &serde_json::Value) {
         }
         "otherPlayer" => {
             let w = &case["watched"];
-            let remote = game.remote.as_mut().unwrap();
-            remote
-                .players
-                .insert(WATCHED as u128 + 1000, "Watched".into());
-            remote.level_players.insert(WATCHED, WATCHED as u128 + 1000);
+            game.handle_packet(C::PlayerInfoUpdate(play::PlayerInfoUpdate {
+                actions: 1, // ADD_PLAYER
+                entries: vec![play::PlayerInfo {
+                    uuid: WATCHED as u128 + 1000,
+                    name: Some("Watched".into()),
+                    ..Default::default()
+                }],
+            }))
+            .unwrap();
             spawn(game, WATCHED, "minecraft:player");
             data(
                 game,

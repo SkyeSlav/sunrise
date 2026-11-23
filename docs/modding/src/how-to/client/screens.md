@@ -442,6 +442,11 @@ screen replacement, even though both receivers have the id `dialog`. If `screen_
 the current dialog's widgets and focus remain; neither `screen_closing` nor a replacement
 `screen_init_post` fires.
 
+When the server closes a container (`ClientboundContainerClosePacket`) and no screen follows,
+`screen_opening` doesn't fire and the close can't be cancelled; `screen_closing` still receives
+the container screen. When the close opens the title or the death screen instead,
+`screen_opening` fires for that screen.
+
 ## Screen input Pre and Post hooks
 
 Screen mouse, keyboard, character, and preedit hooks match NeoForge's `ScreenEvent.*` Pre/Post
