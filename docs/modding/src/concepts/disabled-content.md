@@ -19,7 +19,8 @@ behaviour, the disabled block is inert rather than inheriting its vanilla templa
 - `use_item_on` and `use_without_item` pass without invoking the block template's interaction.
 - `is_valid_bonemeal_target` refuses bone meal. For `on_tree_grow`, the soil under the trunk stays
   unchanged and the rest of the tree grows normally.
-- `dispense_method` retains the original input stack and emits no dispense event unless an earlier
+- When a dispense reaches the Parts (no `dispenser_acts` answer was accepted and the item is
+  enabled), `dispense_method` retains the original input stack and emits no dispense event unless an earlier
   enabled Part supplies a valid reply. A rejected reply does not restore template behaviour.
 - `tool_modified_state` suppresses an unchanged template result, not a listener's replacement.
   The global `block_tool_modification` hook still hears the candidate for each attempted ability, and

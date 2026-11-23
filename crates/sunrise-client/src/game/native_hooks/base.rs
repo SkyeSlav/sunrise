@@ -3096,6 +3096,57 @@ impl Game<'_> {
     /// fail sound (`OptionalDispenseItemBehavior` without success), or 0 for
     /// nothing at all (`DispenseItemBehavior.NOOP`). To drop one normally,
     /// answer `(dispense_default(..), 1000)`.
+    /// `dispenser_acts`: every subscribed mod's answer at `DispenserBlock.getDispenseMethod`,
+    /// before the faced block's and the item's Parts. Each answer is checked as it comes: an
+    /// event other than 0, the click or the fail sound, or a remainder the game can't hold, is
+    /// refused with a warning and the next mod is asked. Returns the first accepted answer,
+    /// converted, or None when none was (a stack the API can't carry asks no one).
+    pub(in crate::game) fn native_dispenser_acts(
+        &mut self,
+        dimension: &str,
+        pos: [i32; 3],
+        facing: Direction,
+        stack: &ItemStack,
+    ) -> Option<crate::game::dispenser::Dispensed> {
+        use crate::game::api_values::TryIntoApi;
+        use crate::game::dispenser::{CLICK, FAIL, mod_dispensed};
+        if !mod_api::__private::listened(mod_api::HookId::DispenserActs) {
+            return None;
+        }
+        let stack = stack.try_into_api().ok()?;
+        let mut answer = None;
+        let mut accepted = None;
+        mod_api::dispatch_dispenser_acts_with(
+            dimension,
+            pos,
+            facing,
+            &stack,
+            &mut answer,
+            |mod_id, listener, event| {
+                let proposal = listener.dispenser_acts(self, event)?;
+                if ![0, CLICK, FAIL].contains(&proposal.1) {
+                    log::warn!(
+                        "mod {mod_id}: dispenser_acts answer at {pos:?} refused: event {} is not 0, {CLICK} or {FAIL}",
+                        proposal.1
+                    );
+                    return None;
+                }
+                match mod_dispensed(proposal.clone(), self.items()) {
+                    Ok(dispensed) => {
+                        accepted = Some(dispensed);
+                        Some(proposal)
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "mod {mod_id}: dispenser_acts remainder at {pos:?} refused: {error:?}"
+                        );
+                        None
+                    }
+                }
+            },
+        );
+        accepted
+    }
     pub(in crate::game) fn native_dispense_item(
         &mut self,
         dimension: &str,

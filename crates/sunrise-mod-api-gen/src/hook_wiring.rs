@@ -171,7 +171,12 @@ fn check_target(sources: &mut Sources<'_>, hook: &Hook, build: &Build) -> Result
         require_calls(&bodies, Some(&fire), &[&format!("Self::{fire}")])?;
         return Ok(true);
     }
-    let direct = format!("mod_api::dispatch_{name}");
+    // An engine that accepts each answer calls the listeners through the `_with` entry point.
+    let direct = if hook.engine_accepts {
+        format!("mod_api::dispatch_{name}_with")
+    } else {
+        format!("mod_api::dispatch_{name}")
+    };
     if package == "sunrise_mod_vocab" {
         require_calls(&bodies, None, &[&format!("crate::dispatch_{name}")])?;
         return Ok(true);

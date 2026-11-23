@@ -34,7 +34,7 @@ use sunrise_gameplay::dispense_rules::{
 use sunrise_world::{fluid::FluidKind, level::PlaceContext, registry::BlockStateId};
 
 /// A behaviour returns a detached stack; the dispenser applies the slot limit afterwards.
-fn mod_dispensed(
+pub(super) fn mod_dispensed(
     (stack, event): mod_api::Dispensed,
     items: &Items,
 ) -> std::result::Result<Dispensed, mod_api::StackWriteError> {
@@ -545,10 +545,25 @@ impl Game<'_> {
         facing: Direction,
         stack: ItemStack,
     ) -> Result<ControlFlow<(), Option<ItemStack>>> {
+        // `DispenserBlock.getDispenseMethod`: an item the world's feature flags disable gets
+        // the default behaviour, before any registered one or a mod is asked.
+        let enabled = self
+            .creative_screen
+            .catalog()
+            .item_enabled(&stack.item, self.enabled_feature_ids());
         let mut answer = None;
-        if self.serving.is_some() || self.options.dedicated.is_some() {
-            // The block the dispenser faces has the first say (`dispense_method`), then the
-            // item's own part (`dispense_item`); the first answer wins.
+        if enabled && (self.serving.is_some() || self.options.dedicated.is_some()) {
+            // Every mod's `dispenser_acts` has the first say: an answer the engine accepted
+            // wins over the Parts and vanilla.
+            if let Some(dispensed) =
+                self.native_dispenser_acts(self.dim.id(), [pos.0, pos.1, pos.2], facing, &stack)
+            {
+                return Ok(ControlFlow::Continue(
+                    self.dispensed_feedback(pos, facing, &stack, dispensed),
+                ));
+            }
+            // Then the block the dispenser faces (`dispense_method`), then the item's own part
+            // (`dispense_item`); the first answer wins.
             let front = self.block_at(offset(pos, facing));
             let mut inert = false;
             self.native_dispense_method(
@@ -583,28 +598,18 @@ impl Game<'_> {
                     return Ok(ControlFlow::Break(()));
                 }
             };
-            if event == FAIL {
-                self.native_block_failed_dispense(
-                    self.dim.id(),
-                    [pos.0, pos.1, pos.2],
-                    &stack.item,
-                );
-            }
-            // Feedback follows the behaviour's effects. Event 0 still replaces the slot,
-            // but plays neither sound nor smoke.
-            if event != 0 {
-                self.after_commit(super::transactions::After::DispenserFeedback {
-                    pos,
-                    facing,
-                    event,
-                });
-            }
-            return Ok(ControlFlow::Continue(left));
+            return Ok(ControlFlow::Continue(self.dispensed_feedback(
+                pos,
+                facing,
+                &stack,
+                (left, event),
+            )));
         }
         let item = stack.item.to_string();
         // A stack able to `shears_harvest` is dispensed as shears are, whatever its item.
         let shears = self.stack_shears(&stack, ability::SHEARS_HARVEST);
         let (left, event) = match item.as_str() {
+            _ if !enabled => self.dispense_default_method(pos, facing, stack)?,
             _ if shears => self.dispense_shears(pos, facing, stack)?,
 
             "minecraft:arrow"
@@ -660,6 +665,25 @@ impl Game<'_> {
         }
         self.after_commit(super::transactions::After::DispenserFeedback { pos, facing, event });
         Ok(ControlFlow::Continue(left))
+    }
+
+    /// A mod's accepted answer, after its behaviour: the fail notice for 1001, then its sound
+    /// and smoke. Event 0 still replaces the slot, but plays neither sound nor smoke.
+    fn dispensed_feedback(
+        &mut self,
+        pos: Pos,
+        facing: Direction,
+        stack: &ItemStack,
+        (left, event): Dispensed,
+    ) -> Option<ItemStack> {
+        if event == FAIL {
+            self.native_block_failed_dispense(self.dim.id(), [pos.0, pos.1, pos.2], &stack.item);
+        }
+        // Feedback follows the behaviour's effects.
+        if event != 0 {
+            self.after_commit(super::transactions::After::DispenserFeedback { pos, facing, event });
+        }
+        left
     }
     /// `DispenserBlock.getDefaultDispenseMethod`: equipment, spawn eggs, or a drop.
     fn dispense_default_method(

@@ -4,7 +4,8 @@ pub trait Hooks {
     /// `DispenserBlock.getDispenseMethod`, before the item's `dispense_item`:
     /// the block the dispenser faces chooses what the dispense does, for any
     /// item, including vanilla items, on the authoritative server (not
-    /// droppers). `state` is the block at `pos` moved by `facing` (air
+    /// droppers), when no `dispenser_acts` answer was accepted and the world's
+    /// feature flags enable the item. `state` is the block at `pos` moved by `facing` (air
     /// included), and the part is asked only for that block. An answer wins:
     /// no item part is asked and vanilla's behaviour
     /// doesn't run. The answer is `dispense_item`'s: a remainder of None
@@ -27,7 +28,7 @@ pub trait Hooks {
         inert = "signal",
         key = "state",
         neoforge = "none (vanilla DispenserBlock.getDispenseMethod; NeoForge adds no event or extension for it)",
-        version = 4
+        version = 5
     )]
     fn dispense_method(
         dimension: &str,

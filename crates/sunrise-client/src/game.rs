@@ -449,6 +449,9 @@ mod dispense_container_tests;
 mod dispense_fixture;
 #[path = "game/blocks/dispenser.rs"]
 mod dispenser;
+#[cfg(test)]
+#[path = "game/blocks/dispenser_acts_tests.rs"]
+mod dispenser_acts_tests;
 #[path = "game/mobs/dragon.rs"]
 mod dragon;
 #[cfg(test)]

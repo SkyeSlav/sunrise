@@ -218,6 +218,10 @@ pub struct Hook {
     pub stack_count: Option<StackCount>,
     /// Rebuild a listener event from its original inputs for every subscriber.
     pub event_per_listener: bool,
+    /// A direct global replace hook whose engine accepts or refuses each answer: the engine
+    /// calls each listener with its own host through `dispatch_<name>_with` and returns the
+    /// answer only once it accepts it; a refused answer lets the next listener answer.
+    pub engine_accepts: bool,
 }
 
 /// A drawing surface of the game's that drawing hooks get as a trait object (the catalog's
@@ -347,6 +351,8 @@ struct HookEntry {
     stack_count: Option<StackCount>,
     #[serde(default)]
     event_per_listener: bool,
+    #[serde(default)]
+    engine_accepts: bool,
     inert: Option<String>,
     neoforge: Option<serde_json::Value>,
     fabric: Option<serde_json::Value>,
@@ -567,6 +573,20 @@ impl Hook {
                     .into(),
             });
         }
+        if entry.engine_accepts
+            && (api.contract != Contract::Replace
+                || scope.is_some()
+                || api.part.is_some()
+                || answered_by_mod
+                || entry.dispatch != DispatchStyle::Direct
+                || entry.side != Side::Server
+                || entry.event_per_listener)
+        {
+            return Err(CatalogError::InvalidHook {
+                hook: name,
+                error: "engine_accepts requires a direct, global server replace hook".into(),
+            });
+        }
         let counterparts = Counterparts {
             neoforge: counterparts(&name, "neoforge", entry.neoforge)?,
             fabric: counterparts(&name, "fabric", entry.fabric)?,
@@ -601,6 +621,7 @@ impl Hook {
             engine_inert,
             stack_count: entry.stack_count,
             event_per_listener: entry.event_per_listener,
+            engine_accepts: entry.engine_accepts,
         })
     }
 }
@@ -1053,6 +1074,7 @@ impl Hook {
             engine_inert: false,
             stack_count: None,
             event_per_listener: false,
+            engine_accepts: false,
         }
     }
 }
@@ -1458,6 +1480,31 @@ mod tests {
             assert_eq!(
                 answered(api).unwrap_err(),
                 CatalogError::AnsweredNeedsGlobalOutput("a".into())
+            );
+        }
+    }
+    #[test]
+    fn engine_accepts_needs_a_direct_global_server_replace_hook() {
+        let accepted = |extra: serde_json::Value| Hook::parse(hook("e", extra));
+        let replace = json!({"contract": "replace", "out": "o"});
+        assert!(
+            accepted(json!({"engine_accepts": true, "dispatch": "direct", "mod_api": replace}))
+                .unwrap()
+                .engine_accepts
+        );
+        for extra in [
+            json!({"engine_accepts": true, "mod_api": replace}),
+            json!({"engine_accepts": true, "dispatch": "direct", "side": "client", "mod_api": replace}),
+            json!({"engine_accepts": true, "dispatch": "direct", "mod_api": {"contract": "cancel", "out": "o"}}),
+            json!({"engine_accepts": true, "dispatch": "direct",
+                "mod_api": {"contract": "replace", "out": "o", "scope": "item", "key": "k"}}),
+        ] {
+            assert!(
+                matches!(
+                    accepted(extra.clone()),
+                    Err(CatalogError::InvalidHook { .. })
+                ),
+                "{extra}"
             );
         }
     }

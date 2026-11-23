@@ -3,9 +3,10 @@
 
 pub trait Hooks {
     /// `DispenserBlock.getDispenseMethod`: choose a behaviour for any item,
-    /// including vanilla items, on the authoritative server (not droppers).
-    /// The block the dispenser faces is asked first (`dispense_method`), and
-    /// its answer keeps this part from being asked. Leave answer None for
+    /// including vanilla items, on the authoritative server (not droppers),
+    /// when no `dispenser_acts` answer was accepted and the world's feature
+    /// flags enable the item. The block the dispenser faces is asked first
+    /// (`dispense_method`), and its answer keeps this part from being asked. Leave answer None for
     /// vanilla. Otherwise answer `(remainder, event)`:
     /// a remainder of None empties the slot, `Some(stack)` replaces it (the hook
     /// owns consumption: no extra item is removed afterwards). `event` is the
@@ -25,7 +26,7 @@ pub trait Hooks {
         scope = "item",
         key = "stack",
         neoforge = "none (vanilla DispenserBlock.getDispenseMethod; NeoForge adds no event or extension for it)",
-        version = 4
+        version = 5
     )]
     fn dispense_item(
         dimension: &str,

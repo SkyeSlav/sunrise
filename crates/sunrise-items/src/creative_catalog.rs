@@ -149,6 +149,10 @@ fn enabled(required: Option<&Vec<String>>, features: &[String]) -> bool {
 }
 
 impl Catalog {
+    /// `ItemStack.isItemEnabled`: whether every feature flag `item` requires is in `features`.
+    pub fn item_enabled(&self, item: &str, features: &[String]) -> bool {
+        enabled(self.item_features.get(item), features)
+    }
     pub fn parse(json: &serde_json::Value) -> Result<Self, String> {
         let mut catalog = Self::deserialize(json).map_err(|e| e.to_string())?;
         if catalog.schema != 4 {

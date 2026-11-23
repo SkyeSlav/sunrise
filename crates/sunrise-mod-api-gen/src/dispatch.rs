@@ -1016,6 +1016,9 @@ pub(super) fn emit<'a>(
             (Contract::Cancel, Some(out)) => method_source.push_str(&format!(
                 "///\n/// Return `Flow::Cancel` to take it: this sets `{out}`, and later {callee}s are skipped.\n"
             )),
+            (Contract::Replace, Some(out)) if hook.engine_accepts => method_source.push_str(&format!(
+                "///\n/// Return `Some` to set `{out}`; the first answer the game accepts wins. A refused answer is\n/// reported with the mod, and the next mod is asked.\n"
+            )),
             (Contract::Replace, Some(out)) => method_source.push_str(&format!(
                 "///\n/// Return `Some` to set `{out}`; the first {callee} returning `Some` wins.\n"
             )),
@@ -1361,6 +1364,12 @@ pub(super) fn emit<'a>(
                     on_abort,
                     &format!("{invoke_part}({callee}, &mut {event})"),
                 )
+            } else if hook.engine_accepts {
+                run(
+                    mod_id_expr,
+                    on_abort,
+                    &format!("{invoke_part}({mod_id_expr}, {callee}, &mut {event})"),
+                )
             } else {
                 run(mod_id_expr, on_abort, &format!("{callee}.{name}({invoke})"))
             };
@@ -1681,6 +1690,20 @@ pub(super) fn emit<'a>(
             dispatch.push_str(&format!(
                 "#[doc(hidden)] pub fn dispatch_{name}({wrapper_params}) {{ dispatch_{name}_for({args}, |_| true); }}\n\
                  #[doc(hidden)] pub fn dispatch_{name}_for({dispatch_signature}, {allow_subscriber}: impl FnMut(&str) -> bool) {{ {unpack}{early_return}\n{body} }}\n"
+            ));
+        } else if hook.engine_accepts {
+            // The engine calls each listener with its own host and returns only an answer it
+            // accepts; the plain entry point accepts every answer.
+            let args = dispatch_params[1..]
+                .iter()
+                .map(|param| param.split_once(':').unwrap().0)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let params = dispatch_params[1..].join(", ");
+            let (host, _) = host.as_ref().unwrap();
+            dispatch.push_str(&format!(
+                "#[doc(hidden)] pub fn dispatch_{name}({dispatch_signature}) {{ dispatch_{name}_with({args}, |_, listener, event| listener.{name}(&mut *{host}, event)); }}\n\
+                 #[doc(hidden)] pub fn dispatch_{name}_with({params}, mut {invoke_part}: impl FnMut(&'static str, &dyn Hooks, &mut {event_type}{elided}){result}) {{ {unpack}{early_return}\n{body} }}\n"
             ));
         } else {
             dispatch.push_str(&format!(

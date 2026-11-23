@@ -37,6 +37,7 @@
 //! | `target` | the function that fires the hook; defaults to `Game::native_<name>` in the `native_hooks` module with the same filename as the declaration |
 //! | `receiver` | a game target borrows `&mut self` by default; `"read"` borrows `&self`, `"associated"` has no receiver |
 //! | `dispatch` | a game target takes the generated engine carrier by default; existing flat, already-converted (`"api_carrier"`), and direct bindings name their shape explicitly |
+//! | `engine_accepts` | `true` on a direct, global server replace hook whose answers the engine must check before one wins (a remainder it converts, a value it bounds): the target calls `dispatch_<name>_with` with a closure that calls each listener with the engine's host and returns its answer only once accepted. A refused answer is the engine's to report; the next listener is asked |
 //!
 //! Every hook needs `///` lines: they are the rustdoc of its trait method, and a hook without them
 //! is refused. `HookId` values are process-local dispatch indexes, not persistent API identities.

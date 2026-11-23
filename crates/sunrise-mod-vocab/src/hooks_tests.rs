@@ -1183,3 +1183,60 @@ fn register_configuration_tasks_rolls_back_staged_tasks_on_panic() {
         },
     );
 }
+
+/// `dispenser_acts`: the engine checks each answer as it comes; a refused one lets the next
+/// mod answer, and the first accepted one ends the dispatch.
+#[test]
+fn dispenser_acts_asks_the_next_mod_after_a_refused_answer() {
+    use mod_api::{DispenserActsEvent, dispatch_dispenser_acts_with};
+    use std::sync::{Arc, Mutex};
+    struct Answers(i32, Arc<Mutex<Vec<i32>>>);
+    #[mod_api::__subscriptions]
+    impl Hooks for Answers {
+        fn dispenser_acts(
+            &self,
+            _: &mut dyn ServerHost,
+            _: &mut DispenserActsEvent<'_>,
+        ) -> Option<Dispensed> {
+            self.1.lock().unwrap().push(self.0);
+            Some((None, self.0))
+        }
+    }
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let stack = ItemStack::new(ItemKey(0), 2).unwrap();
+    let mut answer = None;
+    let mut refused = Vec::new();
+    testing::with_dispatch(
+        [7, 1001, 1000]
+            .into_iter()
+            .enumerate()
+            .map(|(index, event)| {
+                ModEntry::new(
+                    ["first", "second", "third"][index],
+                    Box::new(Answers(event, asked.clone())),
+                )
+            })
+            .collect::<Vec<_>>()
+            .into(),
+        || {
+            dispatch_dispenser_acts_with(
+                "minecraft:overworld",
+                [5, 64, 5],
+                Direction::East,
+                &stack,
+                &mut answer,
+                |mod_id, listener, event| {
+                    let proposal = listener.dispenser_acts(&mut FakeHost::new(), event)?;
+                    if proposal.1 == 7 {
+                        refused.push(mod_id);
+                        return None;
+                    }
+                    Some(proposal)
+                },
+            );
+        },
+    );
+    assert_eq!(refused, ["first"]);
+    assert_eq!(*asked.lock().unwrap(), [7, 1001]);
+    assert_eq!(answer, Some((None, 1001)));
+}
