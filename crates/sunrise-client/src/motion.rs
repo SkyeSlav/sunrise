@@ -3148,10 +3148,16 @@ impl crate::block_contact::InsideWalk for PlayerInside<'_, '_, '_, '_> {
         if powder_snow && (shape.is_empty() || shape.boxes() == VoxelShape::block().boxes()) {
             return InsideShape::Full;
         }
+        let offset = Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z));
+        let mut boxes: Vec<_> = shape.moved(offset).boxes().to_vec();
         if let Some(top) = content_top {
-            return crate::block_contact::filled_cauldron_inside_shape(&shape, p, top);
+            // The cauldron's shape or its content, `Block.column(12, 4, top)`.
+            boxes.push(Aabb::new(
+                Vec3::new(2.0 / 16.0, 4.0 / 16.0, 2.0 / 16.0).add_vector(offset),
+                Vec3::new(14.0 / 16.0, top, 14.0 / 16.0).add_vector(offset),
+            ));
         }
-        InsideShape::Boxes(shape.moved(Vec3::from_block(p)).boxes().to_vec())
+        InsideShape::Boxes(boxes)
     }
     fn entity_inside(
         &mut self,

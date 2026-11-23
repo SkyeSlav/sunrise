@@ -2056,9 +2056,13 @@ struct MobBlockWalk {
     writes: Option<std::vec::IntoIter<InsideAction<MobInsideWrite>>>,
 }
 
+/// A write the mob's own blocks queue on its collector, beside a Part's.
 #[derive(Debug)]
 enum MobInsideWrite {
+    /// `Entity::lavaHurt`, after a lava cauldron's LAVA_IGNITE.
     LavaHurt,
+    /// Powder snow's check before EXTINGUISH: a burning mob that may grief melts it.
+    MeltPowderSnow([i32; 3]),
     Part(mod_api::EntityWrite),
 }
 
@@ -2127,9 +2131,20 @@ impl MobBlockWalk {
                 InsideAction::Effect(InsideEffect::LavaIgnite) if !m.fire_immune() => {
                     m.ignite_for_ticks(300);
                 }
+                InsideAction::Effect(InsideEffect::Extinguish) => m.extinguish_fire(),
                 InsideAction::Write(MobInsideWrite::LavaHurt) if !m.fire_immune() => {
                     m.damage(level, 4.0, Damage::of(DamageKind::Lava));
                     hurt_teleports(m, w, events);
+                }
+                InsideAction::Write(MobInsideWrite::MeltPowderSnow(pos)) => {
+                    if m.is_on_fire() && w.can_grief(m.id) {
+                        events.push(MobEvent::BreakBlock {
+                            pos,
+                            drop: false,
+                            by: None,
+                            breaker: None,
+                        });
+                    }
                 }
                 InsideAction::Write(MobInsideWrite::Part(write)) => {
                     apply_entity_write(m, w, level, events, write);
@@ -2226,18 +2241,14 @@ impl crate::block_contact::InsideWalk for MobInside<'_, '_, '_> {
     fn inside_shape(
         &mut self,
         state: BlockStateId,
-        at: BlockPos,
+        _at: BlockPos,
     ) -> crate::block_contact::InsideShape {
         use crate::block_contact::InsideShape;
         if &*self.w.facts.get(state).name != "minecraft:lava_cauldron" {
             return InsideShape::Full;
         }
-        // LavaCauldronBlock.getEntityInsideCollisionShape: the vanilla shell
-        // and its lava column, independently of movement collision overrides.
-        let Ok(Some(shell)) = self.w.collision.cached_shapes().cached_shape(state) else {
-            return InsideShape::Empty;
-        };
-        crate::block_contact::filled_cauldron_inside_shape(shell, at, 15.0 / 16.0)
+        // LavaCauldronBlock.getEntityInsideCollisionShape: its fixed FILLED_SHAPE.
+        InsideShape::Fixed(crate::block_contact::lava_cauldron_filled_shape())
     }
     fn entity_inside(
         &mut self,
@@ -2280,20 +2291,14 @@ impl crate::block_contact::InsideWalk for MobInside<'_, '_, '_> {
             effects.absorb_step(staged);
             crate::block_contact::inside_written(state, at, writes);
         }
-        // PowderSnowBlock.entityInside: a burning mob destroys the
-        // block (`canEntityGrief` for the mob), then EXTINGUISH puts it out.
+        // PowderSnowBlock.entityInside: before this step's EXTINGUISH, a burning
+        // mob destroys the block (`canEntityGrief` for the mob), so a lava
+        // cauldron's ignition earlier in the same step melts it first.
         if name == "minecraft:powder_snow" {
             // InsideBlockEffectType.FREEZE: `setIsInPowderSnow(true)`.
             self.m.in_powder_snow = true;
-            if self.m.is_on_fire() && self.w.can_grief(self.m.id) {
-                self.events.push(MobEvent::BreakBlock {
-                    pos: p,
-                    drop: false,
-                    by: None,
-                    breaker: None,
-                });
-            }
-            self.m.extinguish_fire();
+            effects.run_before(InsideEffect::Extinguish, MobInsideWrite::MeltPowderSnow(p));
+            effects.apply(InsideEffect::Extinguish);
         }
         match name {
             "minecraft:cactus" => {
@@ -7235,7 +7240,14 @@ mod burn_and_rose_tests {
     fn a_mob_in_a_lava_cauldron_burns() {
         let ran = crate::mobs::world::with_built_test_world(
             &[],
-            build_with("minecraft:lava_cauldron"),
+            |world, registry| {
+                build_with("minecraft:lava_cauldron")(world, registry);
+                // A second cauldron with powder snow on top of it.
+                let cauldron = registry.default_state("minecraft:lava_cauldron").unwrap();
+                let snow = registry.default_state("minecraft:powder_snow").unwrap();
+                world.set(-3, 64, -3, cauldron).unwrap();
+                world.set(-3, 65, -3, snow).unwrap();
+            },
             |w, types| {
                 for (y, hurt) in [(64.25, true), (65.0, false)] {
                     let kind = Arc::new(types.types["minecraft:pig"].clone());
@@ -7273,6 +7285,48 @@ mod burn_and_rose_tests {
                 assert_eq!(m.fire_ticks, 300);
                 assert_eq!(m.health, start - 4.0);
                 assert_eq!(m.ticks_frozen, 0);
+
+                // The hurt runs after the ignition: a pig the lava kills is
+                // already burning when it dies.
+                let kind = Arc::new(types.types["minecraft:pig"].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.25, 0.5), 0.0);
+                register(&mut m);
+                m.previous = m.position;
+                m.health = 1.0;
+                effects_from_blocks(&mut m, w, &mut lr.level(), &mut events);
+                assert!(!m.alive());
+                assert_eq!(m.fire_ticks, 300);
+
+                // CLEAR_FREEZE thaws a fire-immune mob, which the lava neither
+                // lights nor hurts.
+                let kind = Arc::new(types.types["minecraft:blaze"].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.25, 0.5), 0.0);
+                register(&mut m);
+                m.previous = m.position;
+                m.ticks_frozen = 100;
+                let (start, fire) = (m.health, m.fire_ticks);
+                effects_from_blocks(&mut m, w, &mut lr.level(), &mut events);
+                assert_eq!((m.ticks_frozen, m.fire_ticks, m.health), (0, fire, start));
+
+                // Feet in the lava and back in the powder snow above, in one
+                // step: the ignition comes first, so the burning pig melts the
+                // snow before EXTINGUISH puts it out.
+                let kind = Arc::new(types.types["minecraft:pig"].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(-2.5, 64.25, -2.5), 0.0);
+                register(&mut m);
+                m.previous = m.position;
+                let start = m.health;
+                events.clear();
+                effects_from_blocks(&mut m, w, &mut lr.level(), &mut events);
+                assert_eq!(m.health, start - 4.0);
+                assert!(!m.is_on_fire());
+                assert!(events.iter().any(|event| matches!(
+                    event,
+                    MobEvent::BreakBlock {
+                        pos: [-3, 65, -3],
+                        ..
+                    }
+                )));
             },
         );
         assert!(ran, "vanilla data is missing");

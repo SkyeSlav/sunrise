@@ -113,112 +113,58 @@ pub enum PlannedInside {
     Write(EntityWrite),
 }
 
-impl From<InsideAction<EntityWrite>> for PlannedInside {
-    fn from(action: InsideAction<EntityWrite>) -> Self {
-        match action {
-            InsideAction::Effect(effect) => Self::Effect(effect),
-            InsideAction::Write(write) => Self::Write(write),
-        }
-    }
-}
-
-/// A planned effect or a write with an engine-owned payload.
-// hidden: only the engine handles the unspecialized plan.
-// exhaustive: the internal sequencer distinguishes effects from their surrounding writes.
-#[doc(hidden)]
-#[derive(Debug)]
-pub enum InsideAction<W> {
-    /// An [`InsideEffect`] applied to the swept entity.
-    Effect(InsideEffect),
-    /// A write applied to the swept entity.
-    Write(W),
-}
-
 /// `InsideBlockEffectApplier.StepBasedCollector`: the effects and entity writes of one
 /// block sweep. The walk advances a step per block it reaches; a step's effects flush
 /// once each, in [`InsideEffect`] order, with the writes asked `run_before` an effect
 /// before it and those asked `run_after` after it. Steps flush in the order the walk
 /// reached them, and [`InsideEffects::take_planned`] hands the whole ordered plan to the
 /// entity's own tick, which stops applying at the first item after the entity dies.
-pub type InsideEffects = InsideCollector<EntityWrite, PlannedInside>;
-
-/// The shared sequencer, specialized to the link contract for Parts and to
-/// typed native writes in the engine. Only the Part specialization is sent over Wire.
-// hidden: mods use only the concrete InsideEffects collector.
 // exhaustive: the collector's state is private to the crate; a part only calls its methods.
-#[doc(hidden)]
-#[derive(Clone, Debug, PartialEq, sunrise_mod_api_macros::Wire)]
-pub struct InsideCollector<W, P = InsideAction<W>> {
-    /// `lastStep`: the last step; the walk's initial stationary pass shares step 0.
+#[derive(Clone, Debug, Default, PartialEq, sunrise_mod_api_macros::Wire)]
+pub struct InsideEffects {
+    /// `lastStep`: the step the walk last advanced, `-1` before the first.
     pub(crate) last_step: i32,
     /// `effectsInStep`: the effect types queued for the current step.
     pub(crate) in_step: [bool; 5],
     /// `beforeEffectsInStep`: the writes asked before each effect this step.
-    pub(crate) before: [Vec<W>; 5],
+    pub(crate) before: [Vec<EntityWrite>; 5],
     /// `afterEffectsInStep`: the writes asked after each effect this step.
-    pub(crate) after: [Vec<W>; 5],
+    pub(crate) after: [Vec<EntityWrite>; 5],
     /// `finalEffects`: the flushed plan, steps in the order they were reached.
-    pub(crate) planned: Vec<P>,
+    pub(crate) planned: Vec<PlannedInside>,
 }
 
-impl<W, P> Default for InsideCollector<W, P> {
-    fn default() -> Self {
-        Self {
-            last_step: 0,
-            in_step: Default::default(),
-            before: Default::default(),
-            after: Default::default(),
-            planned: Vec::new(),
-        }
-    }
-}
-
-impl<W, P: From<InsideAction<W>>> InsideCollector<W, P> {
+impl InsideEffects {
     /// `advanceStep`: flush the current step when the walk reaches a new one. The walk
     /// calls this before a block's effects, as vanilla does.
     pub fn advance_step(&mut self, step: i32) {
-        if self.last_step != step {
-            self.last_step = step;
-            self.flush_step();
-        }
+        self.steps().advance_step(step);
     }
     /// `apply`: queue an effect for the current step. A type queued twice in one step
     /// still applies once.
     pub fn apply(&mut self, effect: InsideEffect) {
-        self.in_step[effect as usize] = true;
+        self.steps().apply(effect);
     }
     /// `runBefore`: a write that applies just before `effect` in the flush order. It
     /// runs even when nothing queued `effect` itself that step, as vanilla's do.
-    pub fn run_before(&mut self, effect: InsideEffect, write: W) {
-        self.before[effect as usize].push(write);
+    pub fn run_before(&mut self, effect: InsideEffect, write: EntityWrite) {
+        self.steps().run_before(effect, write);
     }
     /// `runAfter`: a write that applies just after `effect` in the flush order.
-    pub fn run_after(&mut self, effect: InsideEffect, write: W) {
-        self.after[effect as usize].push(write);
+    pub fn run_after(&mut self, effect: InsideEffect, write: EntityWrite) {
+        self.steps().run_after(effect, write);
     }
     /// `applyAndClear`: flush the last step and take the whole plan, in order. The
     /// caller applies the writes to the swept entity inside its own tick and stops at
     /// the first item after it dies.
-    pub fn take_planned(&mut self) -> Vec<P> {
-        self.flush_step();
-        self.last_step = -1;
-        std::mem::take(&mut self.planned)
+    pub fn take_planned(&mut self) -> Vec<PlannedInside> {
+        self.steps().take_planned()
     }
     /// Commit another collector's current step into this one: a staged callback
     /// answered, so what it queued joins this step. The staged collector must not
     /// have flushed (its plan stays empty); a panicking callback is never absorbed.
-    pub fn absorb_step(&mut self, staged: InsideEffects)
-    where
-        W: From<EntityWrite>,
-    {
-        let mut staged = staged;
-        for index in 0..5 {
-            self.in_step[index] |= staged.in_step[index];
-            let before = std::mem::take(&mut staged.before[index]);
-            self.before[index].extend(before.into_iter().map(W::from));
-            let after = std::mem::take(&mut staged.after[index]);
-            self.after[index].extend(after.into_iter().map(W::from));
-        }
+    pub fn absorb_step(&mut self, staged: Self) {
+        self.steps().absorb_step(staged);
     }
 
     /// Whether nothing is queued: the walk builds no collector work when no part listens.
@@ -228,18 +174,172 @@ impl<W, P: From<InsideAction<W>>> InsideCollector<W, P> {
             && self.before.iter().all(Vec::is_empty)
             && self.after.iter().all(Vec::is_empty)
     }
+
+    fn steps(&mut self) -> Steps<'_, EntityWrite, PlannedInside> {
+        Steps {
+            last_step: &mut self.last_step,
+            in_step: &mut self.in_step,
+            before: &mut self.before,
+            after: &mut self.after,
+            planned: &mut self.planned,
+        }
+    }
+}
+
+/// A planned effect or a write with an engine-owned payload: the item
+/// [`InsideCollector`] plans.
+// hidden: only the engine plans its own writes beside a Part's.
+// exhaustive: the engine applies each effect and each write it queued.
+#[doc(hidden)]
+#[derive(Debug, PartialEq)]
+pub enum InsideAction<W> {
+    /// An [`InsideEffect`] applied to the swept entity.
+    Effect(InsideEffect),
+    /// A write applied to the swept entity.
+    Write(W),
+}
+
+/// [`InsideEffects`]'s sequencing for an entity whose own block writes are not
+/// [`EntityWrite`]s: the engine queues them in vanilla's order beside the writes a Part's
+/// staged [`InsideEffects`] answered with.
+// hidden: the engine's typed collector; mods use InsideEffects.
+// exhaustive: the collector's state is private to the crate; the engine only calls its methods.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct InsideCollector<W> {
+    last_step: i32,
+    in_step: [bool; 5],
+    before: [Vec<W>; 5],
+    after: [Vec<W>; 5],
+    planned: Vec<InsideAction<W>>,
+}
+
+impl<W> Default for InsideCollector<W> {
+    fn default() -> Self {
+        Self {
+            last_step: 0,
+            in_step: [false; 5],
+            before: Default::default(),
+            after: Default::default(),
+            planned: Vec::new(),
+        }
+    }
+}
+
+impl<W: From<EntityWrite>> InsideCollector<W> {
+    /// [`InsideEffects::advance_step`].
+    pub fn advance_step(&mut self, step: i32) {
+        self.steps().advance_step(step);
+    }
+    /// [`InsideEffects::apply`].
+    pub fn apply(&mut self, effect: InsideEffect) {
+        self.steps().apply(effect);
+    }
+    /// [`InsideEffects::run_before`].
+    pub fn run_before(&mut self, effect: InsideEffect, write: W) {
+        self.steps().run_before(effect, write);
+    }
+    /// [`InsideEffects::run_after`].
+    pub fn run_after(&mut self, effect: InsideEffect, write: W) {
+        self.steps().run_after(effect, write);
+    }
+    /// [`InsideEffects::take_planned`].
+    pub fn take_planned(&mut self) -> Vec<InsideAction<W>> {
+        self.steps().take_planned()
+    }
+    /// [`InsideEffects::absorb_step`]: a Part's staged writes join this step.
+    pub fn absorb_step(&mut self, staged: InsideEffects) {
+        self.steps().absorb_step(staged);
+    }
+
+    fn steps(&mut self) -> Steps<'_, W, InsideAction<W>> {
+        Steps {
+            last_step: &mut self.last_step,
+            in_step: &mut self.in_step,
+            before: &mut self.before,
+            after: &mut self.after,
+            planned: &mut self.planned,
+        }
+    }
+}
+
+/// How a collector's plan holds an effect and a write.
+trait PlanItem<W> {
+    fn effect(effect: InsideEffect) -> Self;
+    fn write(write: W) -> Self;
+}
+
+impl PlanItem<EntityWrite> for PlannedInside {
+    fn effect(effect: InsideEffect) -> Self {
+        Self::Effect(effect)
+    }
+    fn write(write: EntityWrite) -> Self {
+        Self::Write(write)
+    }
+}
+
+impl<W> PlanItem<W> for InsideAction<W> {
+    fn effect(effect: InsideEffect) -> Self {
+        Self::Effect(effect)
+    }
+    fn write(write: W) -> Self {
+        Self::Write(write)
+    }
+}
+
+/// `StepBasedCollector`'s state, borrowed from either collector: the one place its
+/// sequencing lives.
+struct Steps<'a, W, P> {
+    last_step: &'a mut i32,
+    in_step: &'a mut [bool; 5],
+    before: &'a mut [Vec<W>; 5],
+    after: &'a mut [Vec<W>; 5],
+    planned: &'a mut Vec<P>,
+}
+
+impl<W: From<EntityWrite>, P: PlanItem<W>> Steps<'_, W, P> {
+    fn advance_step(mut self, step: i32) {
+        if *self.last_step != step {
+            *self.last_step = step;
+            self.flush_step();
+        }
+    }
+    fn apply(self, effect: InsideEffect) {
+        self.in_step[effect as usize] = true;
+    }
+    fn run_before(self, effect: InsideEffect, write: W) {
+        self.before[effect as usize].push(write);
+    }
+    fn run_after(self, effect: InsideEffect, write: W) {
+        self.after[effect as usize].push(write);
+    }
+    fn take_planned(mut self) -> Vec<P> {
+        self.flush_step();
+        *self.last_step = -1;
+        std::mem::take(self.planned)
+    }
+    fn absorb_step(self, staged: InsideEffects) {
+        let mut staged = staged;
+        for index in 0..5 {
+            self.in_step[index] |= staged.in_step[index];
+            let before = std::mem::take(&mut staged.before[index]);
+            self.before[index].extend(before.into_iter().map(W::from));
+            let after = std::mem::take(&mut staged.after[index]);
+            self.after[index].extend(after.into_iter().map(W::from));
+        }
+    }
     /// `flushStep`: this step's writes and effects into the plan, in `InsideEffect`
     /// order, before the effect, the effect itself, then after it.
     fn flush_step(&mut self) {
         for (index, effect) in EFFECT_ORDER.into_iter().enumerate() {
             for write in self.before[index].drain(..) {
-                self.planned.push(InsideAction::Write(write).into());
+                self.planned.push(P::write(write));
             }
             if std::mem::take(&mut self.in_step[index]) {
-                self.planned.push(InsideAction::Effect(effect).into());
+                self.planned.push(P::effect(effect));
             }
             for write in self.after[index].drain(..) {
-                self.planned.push(InsideAction::Write(write).into());
+                self.planned.push(P::write(write));
             }
         }
     }
