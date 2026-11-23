@@ -9,6 +9,9 @@ pub trait Hooks {
     /// The waiting screen and a warning's live return dialog can replace a
     /// receiver with the same `dialog` id. `Cancel` keeps its mounted widgets
     /// and focus, without emitting Closing or the replacement's Init.Post.
+    /// A server's container close that leaves no screen fires no Opening and
+    /// can't be cancelled; `screen_closing` still gets the screen it closes.
+    /// One that opens the title or the death screen fires Opening for it.
     #[hook(
         receiver = "read",
         dispatch = "flat",

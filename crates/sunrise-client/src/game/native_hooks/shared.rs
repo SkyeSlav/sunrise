@@ -134,22 +134,137 @@ impl Game<'_> {
         let Some(id) = self.observed_overlay_now() else {
             return self.screen_view_now();
         };
-        let renderer = self.renderer.as_ref()?;
-        let batch = HudBatch::new(
-            [renderer.config.width, renderer.config.height],
-            self.settings.gui_scale_inputs(),
-        );
-        Some(ScreenView::from(mod_api::__private::built::ScreenView {
+        self.renderer.as_ref()?;
+        Some(self.screen_overlay_view(id))
+    }
+
+    fn screen_overlay_view(&self, id: &'static str) -> ScreenView<'_> {
+        let rect = self.renderer.as_ref().map_or([0.0; 4], |renderer| {
+            let batch = HudBatch::new(
+                [renderer.config.width, renderer.config.height],
+                self.settings.gui_scale_inputs(),
+            );
+            [0.0, 0.0, batch.width, batch.height]
+        });
+        ScreenView::from(mod_api::__private::built::ScreenView {
             id,
             mod_screen: None,
             menu: None,
             title: None,
-            rect: [0.0, 0.0, batch.width, batch.height],
+            rect,
             slots: 0,
             mouse: self.cursor(),
             partial_tick: self.clock.fraction() as f32,
             regions: &[],
-        }))
+        })
+    }
+
+    /// `LocalPlayer.clientSideCloseContainer`: restore the logical inventory
+    /// menu, then `Gui.setScreen(null)`. Keep the old screen and its view for
+    /// `ScreenEvent.Closing` before running its removal, not its user close.
+    pub(super) fn close_screen_to_level(&mut self, show_death_screen: bool) -> super::Result<()> {
+        let overlay = self.observed_overlay_now();
+        let inventory_screen = overlay.is_none()
+            && self.screen == Screen::Inventory
+            && self.remote_menu_type().is_none();
+        let heard = self.screen_hooks_heard();
+        let outgoing = heard
+            .then(|| {
+                if let Some(id) = overlay {
+                    Some(self.observe_view(self.screen_overlay_view(id)))
+                } else if self.screen != Screen::Playing {
+                    Some(self.observe_view(self.screen_change_view(self.screen)))
+                } else {
+                    self.title
+                        .as_ref()
+                        .map(|title| self.observe_view(self.screen_overlay_view(title.mode.id())))
+                }
+            })
+            .flatten();
+        self.remote_set_menu(None, None);
+        let has_level = self.remote.as_ref().is_some_and(|r| r.has_level());
+        let dead = self
+            .player
+            .as_ref()
+            .is_some_and(|player| player.health.health() <= 0.0);
+        let title = if has_level {
+            None
+        } else {
+            Some(
+                self.new_title(std::env::current_dir()?.join("saves"))
+                    .with_user(|| self.options.player_name()),
+            )
+        };
+        let screen = if has_level && dead && show_death_screen {
+            Screen::Dead
+        } else {
+            if has_level && dead {
+                self.respawn_player()?;
+            }
+            Screen::Playing
+        };
+        let decision = if heard {
+            let none = self.screen_overlay_view(Screen::Playing.id());
+            let old = outgoing.as_ref().map(ObservedScreen::view);
+            let new = self
+                .screen_overlay_view(title.as_ref().map_or(screen.id(), |title| title.mode.id()));
+            let answer = self.screen_change(
+                old.as_ref().unwrap_or(&none),
+                &new,
+                title.is_some() || screen != Screen::Playing,
+                old.is_some(),
+            );
+            self.screen_decision_for_context(answer, true, title.is_some() || self.title.is_some())
+        } else {
+            ScreenDecision::Open
+        };
+        let (screen, owner, target) = match decision {
+            ScreenDecision::Keep => return Ok(()),
+            ScreenDecision::ModScreen(owner) => (Screen::Mod, Some(owner), None),
+            ScreenDecision::Vanilla(target) => (screen, None, Some(target)),
+            ScreenDecision::Open => (screen, None, None),
+        };
+
+        self.reset_inventory_clicks();
+        self.remove_remote_menu_screen();
+        if inventory_screen && let Some(remote) = self.remote.as_mut() {
+            // InventoryMenu.removed clears the result, not the client input grid.
+            remote.craft_result = None;
+        }
+        self.remove_sign_editor();
+        self.remove_chat_screen();
+        self.close_dialogs();
+        self.book = None;
+        self.link_prompt = None;
+        self.command_prompt = None;
+        self.code_of_conduct = None;
+        self.server_packs.prompt = None;
+        self.pause_focus = None;
+        if self.screen == Screen::Options {
+            self.ui.options.discard_draw();
+        }
+        if screen == Screen::Dead && self.screen != Screen::Dead {
+            self.ui.death_time = 0;
+            self.ui.death_confirm = None;
+        }
+        if let Some(mut title) = title {
+            title.set_rule_registry(Arc::new(crate::game::api_values::game_rule_registry()));
+            self.stage_title(title);
+            self.screen = Screen::Playing;
+            self.native_mod_screen = None;
+        }
+        if let Some(target) = target {
+            self.open_screen_target(target);
+        } else {
+            if self.title.is_some() && screen == Screen::Playing {
+                self.release_mappings_on_screen_open();
+            }
+            self.apply_screen_with_mod_book(screen, owner);
+        }
+        self.capture(
+            self.screen == Screen::Playing && self.title.is_none() && !self.screen_over_playing(),
+        );
+        Ok(())
     }
 
     /// Opens `screen` (`Gui.setScreen`; `Screen::Playing` is vanilla's null):
@@ -275,9 +390,17 @@ impl Game<'_> {
         answer: Option<Answered<ScreenOpening>>,
         clears_overlays: bool,
     ) -> ScreenDecision {
+        self.screen_decision_for_context(answer, clears_overlays, self.title.is_some())
+    }
+    fn screen_decision_for_context(
+        &self,
+        answer: Option<Answered<ScreenOpening>>,
+        clears_overlays: bool,
+        title_available: bool,
+    ) -> ScreenDecision {
         let blocked = if clears_overlays {
             self.lan_acting.is_some()
-                || (self.player.is_none() && self.title.is_none())
+                || (self.player.is_none() && !title_available)
                 || self.remote_loading()
         } else {
             self.mod_screen_blocked()
@@ -299,10 +422,8 @@ impl Game<'_> {
             }) => {
                 let opens = match title_target_id(target) {
                     // An overlay over the title would stay in front of it unless cleared.
-                    Some(_) => {
-                        self.title.is_some() && (clears_overlays || !self.screen_over_playing())
-                    }
-                    None => self.title.is_none() && !blocked,
+                    Some(_) => title_available && (clears_overlays || !self.screen_over_playing()),
+                    None => !title_available && !blocked,
                 };
                 if opens {
                     ScreenDecision::Vanilla(target)
@@ -2228,8 +2349,10 @@ impl Game<'_> {
             held,
             projectile: None,
             projectile_kind: sunrise_client::health::DirectEntity::Other,
+            projectile_type: None,
             direct: None,
             direct_kind: None,
+            direct_type: None,
             position: None,
             projectile_weapon: None,
             attacker_uuid: (player_uuid.is_none() && attacker != 0)

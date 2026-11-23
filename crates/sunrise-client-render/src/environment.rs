@@ -54,6 +54,9 @@ pub struct Sky {
     /// Environmental fog (`visual/fog_start_distance` / `fog_end_distance`).
     pub fog_start: f32,
     pub fog_end: f32,
+    /// `visual/sky_fog_end_distance`.
+    #[serde(default)]
+    pub sky_fog_end: f32,
     /// `visual/cloud_fog_end_distance`.
     pub cloud_fog_end: f32,
     /// `visual/cloud_height`.
@@ -1151,6 +1154,7 @@ impl Environment {
             sky_light_level: float("gameplay/sky_light_level"),
             fog_start: float("visual/fog_start_distance"),
             fog_end: float("visual/fog_end_distance"),
+            sky_fog_end: float("visual/sky_fog_end_distance"),
             cloud_fog_end: float("visual/cloud_fog_end_distance"),
             cloud_height: float("visual/cloud_height"),
         }

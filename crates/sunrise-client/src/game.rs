@@ -1678,6 +1678,11 @@ mod native_shaders;
 #[cfg(test)]
 #[path = "game/modding/native_shield_totem_tests.rs"]
 mod native_shield_totem_tests;
+#[path = "game/modding/native_singleplayer_owner.rs"]
+mod native_singleplayer_owner;
+#[cfg(test)]
+#[path = "game/modding/native_singleplayer_owner_tests.rs"]
+mod native_singleplayer_owner_tests;
 #[cfg(test)]
 #[path = "game/modding/native_small_reads_tests.rs"]
 mod native_small_reads_tests;
@@ -3580,6 +3585,7 @@ struct Game<'a> {
     setting_overrides: std::cell::RefCell<std::collections::BTreeMap<(String, String), String>>,
     /// The native damage hooks every level of this game lends to its hits.
     damage_hooks: sunrise_client::health::DamageHooks,
+    paused_mob_hurt: Option<Box<sunrise_client::mobs::PausedMobHurt>>,
     music: sunrise_client::music::MusicManager,
     /// The tracks native mods play over the music (`native_music_layers`).
     music_layers: sunrise_client::music::MusicLayers,
@@ -4136,6 +4142,9 @@ struct Game<'a> {
     level_shapes: sunrise_client::chunk::LevelShapes,
     /// This game is that server thread's (game/world/integrated.rs).
     serving: Option<integrated::Serving>,
+    /// `IntegratedServer`'s single-player profile, fixed when the server thread is created,
+    /// before its startup hooks (game/modding/native_singleplayer_owner.rs). None elsewhere.
+    singleplayer_profile: Option<native_singleplayer_owner::SingleplayerProfile>,
     /// The open world is shared behind an invite code (game/network/friends.rs).
     #[cfg(feature = "friends")]
     friends: Option<friends::Sharing>,
@@ -11606,22 +11615,19 @@ impl Game<'_> {
             hud: &hud,
             glint_alpha: self.glint_frame.alpha,
             glint_ticks: self.glint_frame.scroll_ticks(),
-            clouds: (!title
-                && self.overworld_skybox()
-                && sunrise_client::clouds::visible(&self.settings.clouds, sky.cloud_color[3]))
-            .then(|| self.gui.atlas.sprites.get("sunrise/white"))
-            .flatten()
-            .map(|white| sunrise_client::clouds::Input {
-                texture: &self.pack.clouds,
-                uv: [(white.u0 + white.u1) / 2.0, (white.v0 + white.v1) / 2.0],
-                camera,
-                time: self.world.game_time,
-                partial_tick: alpha,
-                range: self.settings.cloud_range,
-                fast: self.settings.clouds == "fast",
-                color: sky.cloud_color,
-                height: sky.cloud_height,
-            }),
+            clouds: self
+                .frame_cloud_uv(title, &sky)
+                .map(|uv| sunrise_client::clouds::Input {
+                    texture: &self.pack.clouds,
+                    uv,
+                    camera,
+                    time: self.world.game_time,
+                    partial_tick: alpha,
+                    range: self.settings.cloud_range,
+                    fast: self.settings.clouds == "fast",
+                    color: sky.cloud_color,
+                    height: sky.cloud_height,
+                }),
             entities: &entities,
             explicit_particles: Some(&explicit_particle_quads),
             static_block_entities: &static_block_entities,
@@ -13724,6 +13730,7 @@ impl<'a> Game<'a> {
             tick: sunrise_client::parallel::TickThread::mint(),
             setting_overrides: Default::default(),
             damage_hooks: native_hooks::DAMAGE_HOOKS,
+            paused_mob_hurt: None,
             music: {
                 // The manager starts with the saved option (MusicManager's constructor).
                 let mut music = sunrise_client::music::MusicManager::default();
@@ -14038,6 +14045,7 @@ impl<'a> Game<'a> {
             integrated: None,
             level_shapes: Default::default(),
             serving: None,
+            singleplayer_profile: None,
             world_options: None,
             options_to_world_options: false,
             command_block_screen: None,
