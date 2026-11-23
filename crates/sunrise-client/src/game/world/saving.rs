@@ -8,6 +8,13 @@ use std::{
 };
 use sunrise_client::{Result, hud::HudBatch};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ClientQuit {
+    Running,
+    Requested,
+    Stopping,
+}
+
 pub(super) struct ClosingSave {
     pub quit: bool,
     close: bool,
@@ -45,8 +52,22 @@ impl Game<'_> {
                 mod_api::TicketController::from_slot(slot).map(|c| c.id())
             })
     }
+
+    /// `Minecraft.stop`: record the request without reentering the client from a hook.
+    pub(super) fn request_client_quit(&self) -> bool {
+        if !self.native_window()
+            || self.client_quit.get() != ClientQuit::Running
+            || sunrise_threads::stop_requests() > 0
+        {
+            return false;
+        }
+        self.client_quit.set(ClientQuit::Requested);
+        true
+    }
+
     pub(super) fn begin_closing_save(&mut self, quit: bool) -> Result<()> {
         if quit {
+            self.client_quit.set(ClientQuit::Stopping);
             self.close_client_tasks();
         }
         if let Some(save) = &mut self.pending_save {

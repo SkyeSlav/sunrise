@@ -4213,6 +4213,8 @@ struct Game<'a> {
     user_input: std::cell::Cell<bool>,
     /// Select All in the append-only text fields.
     text_selection: sunrise_client::clipboard::AppendSelection,
+    /// The client loop consumes a mod's quit request outside the calling hook.
+    client_quit: std::cell::Cell<saving::ClientQuit>,
     /// The world was saved for the application ending (`save_for_exit`).
     saved_for_exit: bool,
     pending_save: Option<saving::ClosingSave>,
@@ -14076,6 +14078,7 @@ impl<'a> Game<'a> {
             clipboard: Default::default(),
             user_input: Default::default(),
             text_selection: Default::default(),
+            client_quit: std::cell::Cell::new(saving::ClientQuit::Running),
             saved_for_exit: false,
             pending_save: None,
             server_tick_deadline: None,

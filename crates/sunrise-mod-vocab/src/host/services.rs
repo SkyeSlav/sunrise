@@ -29,6 +29,14 @@ pub trait ServicesClientHost {
     /// such as the client-side `entity_entering_section` callback, or after a task from
     /// the calling mod panicked in this client session.
     fn client_executor(&self) -> Option<ClientExecutor>;
+    /// Ask the local client to quit, even from the title screen without a world open.
+    /// The client uses the normal Quit Game path after the calling hook returns,
+    /// disconnecting from any server and waiting for an integrated server to save
+    /// and release its world lock before exiting. This is not a server operation.
+    /// Returns `true` if the request was recorded, not if shutdown succeeded;
+    /// returns `false` if there is no live client or a quit is pending or underway.
+    #[decline_unavailable]
+    fn request_client_quit(&self) -> bool;
     /// Persistent model groups.
     #[service]
     fn instance_groups(&self) -> &dyn InstanceGroups;

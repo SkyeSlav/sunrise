@@ -491,6 +491,45 @@ contract on the **receiving screen**:
   returns `true`. A custom editor can observe the unhandled composition in `screen_preedit_post`
   and receives committed characters through `char_typed`.
 
+## Quit Game
+
+`ClientHost::request_client_quit()` asks the local client to exit, even on the title screen with no
+world open. It takes a shared host reference. Unlike `close_screen()` or `disconnect()`, it quits
+the application rather than just closing the screen or leaving the world. The request does not save,
+disconnect, or call shutdown listeners during the hook. After dispatch, the client follows Quit
+Game: it disconnects normally and waits for any integrated server to save and release the world lock.
+Shutdown failures use the game's normal error reporting.
+
+The method returns `true` when the request is recorded, not when the client successfully shuts down.
+It returns `false` if the host has no live client or if a quit is already pending or underway.
+For example, to let the player press Q on the title screen while this mod is loaded:
+
+```rust
+use mod_api::{ClientHost, Flow, Hooks, ScreenKeyPressedPreEvent};
+
+#[derive(Default)]
+struct TitleQuit;
+
+#[mod_api::sunrise_mod]
+impl Hooks for TitleQuit {
+    fn screen_key_pressed_pre(
+        &self,
+        host: &dyn ClientHost,
+        event: &mut ScreenKeyPressedPreEvent<'_>,
+    ) -> Flow {
+        if event.screen.id == "title"
+            && event.key == "key.keyboard.q"
+            && !event.repeat
+            && host.request_client_quit()
+        {
+            Flow::Cancel
+        } else {
+            Flow::Continue
+        }
+    }
+}
+```
+
 ## Labels: wrapped text without a widget
 
 A label is text laid out in a box: measured, wrapped and placed, and nothing else. Call
