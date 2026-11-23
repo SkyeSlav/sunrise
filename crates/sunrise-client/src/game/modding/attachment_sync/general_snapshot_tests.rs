@@ -151,7 +151,7 @@ fn remote_player_attachments_only_apply_while_the_foreign_player_is_tracked() {
     use sunrise_mod_runtime::attachments::AttachmentSync;
     use sunrise_protocol::{
         attachment_sync::Message,
-        packets::play::{AddEntity, Clientbound, RemoveEntities},
+        packets::play::{AddEntity, Clientbound, PlayerInfo, PlayerInfoUpdate, RemoveEntities},
     };
 
     crate::game::item_entities::thrown_items_tests::with_remote_game(|game| {
@@ -188,6 +188,15 @@ fn remote_player_attachments_only_apply_while_the_foreign_player_is_tracked() {
             !mirrored(game),
             "sync before pairing must not create a mirror"
         );
+        game.handle_packet(Clientbound::PlayerInfoUpdate(PlayerInfoUpdate {
+            actions: 1,
+            entries: vec![PlayerInfo {
+                uuid,
+                name: Some("TrackedPlayer".into()),
+                ..Default::default()
+            }],
+        }))
+        .unwrap();
         game.handle_packet(Clientbound::AddEntity(AddEntity {
             id,
             uuid,
