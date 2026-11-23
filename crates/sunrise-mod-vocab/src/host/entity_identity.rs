@@ -74,6 +74,11 @@ pub trait EntityIdentityBackend {
         entity: EntityRef,
         visit: &mut dyn FnMut(EntityRef) -> core::ops::ControlFlow<()>,
     ) -> Result<core::ops::ControlFlow<()>, EntityReadError>;
+    /// Side: both.
+    /// The entity as a player handle (`Player`), or `None` when it is not a
+    /// player or the handle is stale. On a server, resolves real online
+    /// players and placed fake players; on a client, resolves the local player.
+    fn entity_as_player(&self, entity: EntityRef) -> Option<PlayerRef>;
     /// Side: server.
     /// `Entity.getSoundSource`: the group an entity's sounds play under.
     /// Players are `Players`; `Monster`s, the dragon, hoglins, ghasts,

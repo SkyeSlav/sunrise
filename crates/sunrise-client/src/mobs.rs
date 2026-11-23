@@ -3604,7 +3604,8 @@ pub struct MobWorld<'a> {
     pub items: Option<&'a crate::items::Items>,
     /// `ChestBlockEntity.getOpenCount`: the players with each chest open.
     pub lid_openers: &'a HashMap<(i32, i32, i32), i32>,
-    /// What a content mod's effects do, on a server (None on a client).
+    /// `MobEffectInstance.tickServer` for a content mod's effect: its
+    /// `MobEffectEvent.Expired` check.
     pub mod_effects: Option<&'a dyn ModEffectTicks>,
     /// The mod hooks the AI asks mid-tick, on a server where a mod listens
     /// (None otherwise: the AI asks nothing).
@@ -3627,31 +3628,8 @@ pub struct MobWorld<'a> {
     pub border: Option<&'a sunrise_core::geometry::border::BorderGeometry>,
     pub section_writer: Option<living::section_writes::Observer>,
 }
-/// The read-only decision from a registered effect's native tick Parts.
-pub struct ModEffectTick {
-    /// False ends the effect before its countdown, after applying its actions.
-    pub keep: bool,
-    pub actions: Vec<MobEffectAction>,
-}
-
-/// A write to the ticking mob, with damage resolved by the owning registry.
-#[derive(Debug)]
-pub enum MobEffectAction {
-    Heal(f32),
-    Hurt(DamageKind, f32),
-}
-
-/// `MobEffectInstance.tickServer` for a content mod's effect: its
-/// `shouldApplyEffectTickThisTick` and `applyEffectTick`, which the game's
-/// native mods answer. The mob's tick applies their queued actions.
+/// `MobEffectEvent.Expired` callback during a mob's borrowed effect pass.
 pub trait ModEffectTicks {
-    fn tick_mod_effect(
-        &self,
-        effect: usize,
-        mob: &Mob,
-        tick_count: i32,
-        amplifier: i32,
-    ) -> ModEffectTick;
     /// `MobEffectEvent.Expired`: `mob`'s `effect` (`amplifier` from 0)
     /// counted down to nothing. A mod that cancels refuses the expiry: the
     /// effect stays at no ticks and asks again next tick.

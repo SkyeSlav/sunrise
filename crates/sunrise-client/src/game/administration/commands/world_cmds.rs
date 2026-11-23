@@ -148,17 +148,6 @@ impl Game<'_> {
             .unwrap_or(DamageKind::Generic)
     }
 
-    /// Resolve a mod-supplied source against the world's registry, with no default on a miss.
-    pub(in crate::game) fn registered_damage_kind(
-        catalog: &DamageCatalog,
-        ty: &str,
-    ) -> Option<DamageKind> {
-        match Self::builtin_damage_kind(ty) {
-            Some(kind) => catalog.id(ty).map(|_| kind),
-            None => NamedDamage::registered(catalog, ty).map(DamageKind::Named),
-        }
-    }
-
     fn builtin_damage_kind(ty: &str) -> Option<DamageKind> {
         Some(match ty.strip_prefix("minecraft:").unwrap_or(ty) {
             "player_attack" => DamageKind::PlayerAttack,

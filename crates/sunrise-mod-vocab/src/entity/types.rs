@@ -1530,50 +1530,6 @@ pub struct PlayerExperience {
     pub total: i32,
 }
 
-/// A change requested by an effect tick, applied after its hooks return.
-// hidden: a game-side type, not part of the mod surface
-#[doc(hidden)]
-#[derive(Clone, Debug, PartialEq)]
-#[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub enum EffectTickChange {
-    Heal(f32),
-    Hurt(String, f32),
-    AddExhaustion(f32),
-    Eat(i32, f32),
-}
-
-impl ApplyEffectTickEvent<'_> {
-    /// `LivingEntity.hasEffect`: whether the holder currently has `effect`.
-    pub fn has_effect(&self, effect: crate::EffectKey) -> bool {
-        self.active_effects.contains(&effect)
-    }
-    /// Queue `LivingEntity.heal` on the holder.
-    pub fn heal(&mut self, amount: f32) {
-        self.changes.push(EffectTickChange::Heal(amount));
-    }
-
-    /// Queue damage of a registered damage type on the holder: a vanilla
-    /// one (`minecraft:magic`, `minecraft:wither`) or a datapack's
-    /// (`demo:heat`). It reaches the holder's hurt hooks with that type; an
-    /// unregistered type hurts nothing.
-    pub fn hurt(&mut self, damage_type: &str, amount: f32) {
-        self.changes
-            .push(EffectTickChange::Hurt(damage_type.to_owned(), amount));
-    }
-
-    /// Queue food exhaustion; a non-player holder ignores it.
-    pub fn add_exhaustion(&mut self, amount: f32) {
-        self.changes.push(EffectTickChange::AddExhaustion(amount));
-    }
-
-    /// Queue `FoodData.eat`; a non-player holder ignores it.
-    pub fn eat(&mut self, nutrition: i32, saturation_modifier: f32) {
-        self.changes
-            .push(EffectTickChange::Eat(nutrition, saturation_modifier));
-    }
-}
-
 /// A player's server-side abilities (`Abilities`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]

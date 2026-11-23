@@ -8,7 +8,7 @@ use std::sync::{
 use sunrise_client::{
     chunk::Chunk,
     join_seq::residency::{
-        Change, Journal, Kind, Owner,
+        Change, Kind, Owner,
         table::{EntityLookup, EntityTable, SourceEntity},
     },
 };
@@ -153,12 +153,15 @@ impl mod_api::MobEffectPart for GoalPart {
     }
     fn apply_effect_tick(
         &self,
-        _: &dyn mod_api::Host,
-        event: &mut mod_api::ApplyEffectTickEvent<'_>,
+        host: &mut dyn mod_api::ServerHost,
+        event: &mut mod_api::ApplyEffectTickEvent,
     ) {
-        if self.0.family == Family::Knockback && event.entity == Some(72) {
+        if self.0.family == Family::Knockback && event.holder.entity().id() == 72 {
             eprintln!("BORROWED_REAL_EFFECT_HURT");
-            event.hurt("minecraft:mob_attack", 1.0);
+            event
+                .holder
+                .entity()
+                .hurt(host, "minecraft:mob_attack", 1.0, None, None);
         }
     }
 }
@@ -626,13 +629,17 @@ fn run_fixture(family: Family, output: Output, dim: Dim) {
                 queue_egg(game);
                 game.clear_entities();
             }
-            let journal = Journal::default();
             let owner = Owner {
                 dimension: game.dim.key(),
                 kind: Kind::Mob,
             };
-            game.mobs
-                .bind_residency(&journal, owner, |m| (m.id, m.join));
+            let journal = game
+                .resident_entities
+                .table
+                .borrow()
+                .producer()
+                .observe_structural_events();
+            journal.clear();
             let ids: &[u32] = match output {
                 Output::Push => &[70, 71, 72],
                 Output::Mixed => &[71, 72, 73],
@@ -766,7 +773,9 @@ fn run_fixture(family: Family, output: Output, dim: Dim) {
             journal.drain_into(&mut pending);
             let (mut depth, mut lifts) = (0usize, 0usize);
             for e in pending {
-                assert_eq!(e.owner, owner);
+                if e.owner != owner {
+                    continue;
+                }
                 match e.change {
                     Change::Lifted => {
                         depth += 1;

@@ -884,6 +884,13 @@ impl crate::prelude::EntityIdentityBackend for FakeHost {
         }
         Some(self.level.entity_at(entity.id())?.level)
     }
+    fn entity_as_player(&self, entity: EntityRef) -> Option<PlayerRef> {
+        if entity.epoch() != WorldEpoch::new(FAKE_EPOCH) {
+            return None;
+        }
+        let (uuid, _) = self.players.by_entity(entity.id())?;
+        self.players.handle(uuid)
+    }
 }
 impl crate::prelude::KeysBackend for FakeHost {
     fn entity_type_key_id(&self, key: crate::EntityTypeKey) -> Option<crate::RegistryName> {

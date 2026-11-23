@@ -714,6 +714,27 @@ pub fn resume_after_damage(
     })
 }
 
+/// Resume the tick after the owning server ran a mod effect's tick callback.
+pub fn resume_after_effect_tick(
+    mobs: &mut JoinList<Mob>,
+    index: usize,
+    w: &MobWorld,
+    level: &mut super::DamageLevel<'_>,
+    pause: super::ai::EffectTickPause,
+    keep: bool,
+    events: &mut Vec<super::MobEvent>,
+    movement: &mut Option<super::ai::MobMovement>,
+) -> super::ai::TickProgress {
+    tick_with(mobs, index, w, level, events, |m, w, level, events| {
+        let progress =
+            super::ai::resume_after_effect_tick(m, w, level, events, pause, keep, Some(movement));
+        if matches!(progress, super::ai::TickProgress::Complete(_)) {
+            super::neutral_anger::after_tick(m, w.game_time);
+        }
+        progress
+    })
+}
+
 /// Resume after the level applied (or refused) the paused landing.
 pub fn resume_movement(
     mobs: &mut JoinList<Mob>,

@@ -181,36 +181,50 @@ pub(crate) fn optional_provider_lost(
         && !provider_admitted(namespace)
 }
 
-/// Run each effect Part's cadence and action as one pair, sharing the holder snapshots.
-/// Queued writes remain deferred until this entire dispatch returns.
-pub fn dispatch_mob_effect_tick<'a>(
-    host: &dyn Host,
-    tick_count: i32,
-    effect: crate::EffectKey,
-    amplifier: i32,
-    make_call: impl FnOnce(crate::EffectKey, i32) -> crate::__private::ApplyEffectTickCall<'a>,
-) {
+/// Whether any installed mod attached a tick `MobEffectPart` to the effect at registry `index`.
+pub fn has_effect_tick_parts(index: usize) -> bool {
     let Some(resolved) = installed().and_then(|installed| installed.effect_ticks.0.get()) else {
-        return;
+        return false;
+    };
+    let Some(effect) = crate::content::registry_keys::effect_key_by_index(index) else {
+        return false;
+    };
+    crate::content::registry_keys::effect_id(effect)
+        .and_then(|id| resolved.ticks.get(id))
+        .is_some_and(|parts| !parts.is_empty())
+}
+
+/// Run each effect Part's cadence and action as one pair against the live holder and server host.
+/// Returns whether the effect keeps running this tick (`false` ends it before the countdown).
+pub fn dispatch_mob_effect_tick(
+    host: &mut dyn ServerHost,
+    level: crate::LevelRef,
+    holder: crate::LivingRef,
+    effect: crate::EffectKey,
+    tick_count: i32,
+    amplifier: i32,
+) -> bool {
+    let Some(resolved) = installed().and_then(|installed| installed.effect_ticks.0.get()) else {
+        return true;
     };
     let Some(attached) =
         crate::content::registry_keys::effect_id(effect).and_then(|id| resolved.ticks.get(id))
     else {
-        return;
+        return true;
     };
-    let mut due = crate::entered_parts(
+    let mut keep = true;
+    for (mod_id, part) in crate::entered_parts(
         HookId::ShouldApplyEffectTickThisTick,
         attached,
         "should_apply_effect_tick_this_tick",
-    )
-    .filter(|&(mod_id, part)| {
+    ) {
         let mut should = crate::ShouldApplyEffectTickThisTickEvent {
             effect,
             tick_count,
             amplifier,
             apply: false,
         };
-        crate::runtime::invoke(
+        let apply = crate::runtime::invoke(
             HookId::ShouldApplyEffectTickThisTick,
             "should_apply_effect_tick_this_tick",
             mod_id,
@@ -219,43 +233,28 @@ pub fn dispatch_mob_effect_tick<'a>(
                 should.apply
             },
         )
-        .unwrap_or_default()
-    });
-    let Some(first) = due.next() else {
-        return;
-    };
-    let call = make_call(effect, amplifier);
-    for (mod_id, part) in std::iter::once(first).chain(due) {
-        if crate::runtime::poisoned(HookId::ApplyEffectTick, mod_id) {
+        .unwrap_or_default();
+        if !apply || crate::runtime::poisoned(HookId::ApplyEffectTick, mod_id) {
             continue;
         }
-        let changes_len = call.changes.len();
-        match crate::runtime::invoke(HookId::ApplyEffectTick, "apply_effect_tick", mod_id, || {
-            let mut event = crate::ApplyEffectTickEvent {
-                effect: call.effect,
-                dimension: call.dimension,
-                entity: call.entity,
-                amplifier: call.amplifier,
-                holder: call.holder,
-                health: call.health,
-                max_health: call.max_health,
-                food: call.food,
-                active_effects: call.active_effects,
-                changes: &mut *call.changes,
-                keep: *call.keep,
-            };
-            part.apply_effect_tick(host, &mut event);
-            event.keep
-        }) {
-            Some(keep) => {
-                *call.keep = keep;
-                if !*call.keep {
-                    break;
-                }
-            }
-            None => {
-                call.changes.truncate(changes_len);
+        if let Some(next_keep) =
+            crate::runtime::invoke(HookId::ApplyEffectTick, "apply_effect_tick", mod_id, || {
+                let mut event = crate::ApplyEffectTickEvent {
+                    effect,
+                    level,
+                    holder,
+                    amplifier,
+                    keep,
+                };
+                part.apply_effect_tick(host, &mut event);
+                event.keep
+            })
+        {
+            keep = next_keep;
+            if !keep {
+                break;
             }
         }
     }
+    keep
 }

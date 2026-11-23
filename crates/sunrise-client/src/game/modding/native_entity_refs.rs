@@ -1264,6 +1264,34 @@ impl Game<'_> {
         };
         Some(uuid_from_words(words))
     }
+    /// The entity as a player handle (`Player`), or `None` when it is not a
+    /// player or the handle is stale.
+    pub(super) fn entity_as_player(&self, entity: EntityRef) -> Option<mod_api::PlayerRef> {
+        let epoch = self.native_lifecycle.epoch()?;
+        if epoch != entity.epoch() {
+            return None;
+        }
+        if let Some(remote) = self.remote.as_ref() {
+            let id = i32::try_from(entity.id()).ok()?;
+            return (remote.logged_in && id == remote.entity_id)
+                .then(|| mod_api::__private::game::player_ref(entity, remote.profile));
+        }
+        match self.native_entity_target(entity)? {
+            Target::Player => {
+                let uuid = self.lan_acting_uuid.or_else(|| {
+                    self.level
+                        .player_uuid
+                        .map(sunrise_client::lan::playerdata::ints_uuid)
+                })?;
+                Some(mod_api::__private::game::player_ref(entity, uuid))
+            }
+            Target::Guest(conn) => {
+                let guest = self.command_guest(conn)?;
+                Some(mod_api::__private::game::player_ref(entity, guest.uuid))
+            }
+            _ => None,
+        }
+    }
     /// The level the entity is in (`Entity.level`): on a client, the
     /// client's level. API 373.
     pub(super) fn entity_level(&self, entity: EntityRef) -> Option<LevelRef> {

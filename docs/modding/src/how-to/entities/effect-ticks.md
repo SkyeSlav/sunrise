@@ -21,22 +21,23 @@ Implement the Part with `#[mod_api::sunrise_part]`. Its methods are:
 - `should_apply_effect_tick_this_tick` receives the resolved `effect` key, remaining
   duration (`tick_count`, or the holder's tick count for an infinite effect), and
   amplifier. Set `event.apply = true` to run the effect now; it starts false.
-- `apply_effect_tick` runs only when this Part's own cadence method says to apply. It receives the
-  holder's `LivingRef`, dimension, health, maximum health and optional `PlayerFood`.
-  Queue `heal`, `hurt`, `eat` or `add_exhaustion` changes through the event. These
-  apply after every Part returns, in Part order. On a mob, each queued `hurt`
-  finishes its damage, including death or protection and `living_damage_post`, before
-  the next change runs. Clear `event.keep` to end the effect after its accepted changes,
-  before its duration counts down, and skip later Parts.
+- `apply_effect_tick` runs only when this Part's own cadence method says to apply. It receives
+  `&mut dyn ServerHost`, the live `level: LevelRef`, the live `holder: LivingRef`, `effect` and
+  `amplifier`. Read and write health (`holder.health`, `holder.heal`), damage
+  (`holder.entity().hurt`), active effects (`holder.effect`), level rules (`level.game_rule`),
+  and player food (`holder.entity().as_player(host)` -> `player.food`, `player.feed`,
+  `player.add_exhaustion`) directly against the live world. Clear `event.keep` to end the effect
+  before its duration counts down and skip later Parts.
 
-The tick methods are version 4 and `on_effect_added` is version 2; all are scoped to `effect` and keyed by `effect`; there are no
+`should_apply_effect_tick_this_tick` is version 4, `apply_effect_tick` is version 5, and
+`on_effect_added` is version 2; all are scoped to `effect` and keyed by `effect`; there are no
 corresponding global `Hooks` methods. Each Part has its own `apply`, starting false,
 so one package's cadence never drives another package's action. The owning package's
 Parts (the declaring package's, or the serving native host's for an effect declared by a
 `served_by` content package) run first within that effect, even with `order = "before"` or `"none"`. Other Parts
-run by mod dispatch order, then registration order. All tick Parts share the same holder snapshots.
-This owner-first rule is specific to effects; it does not change package dispatch or
-the order of block entity Parts.
+run by mod dispatch order, then registration order. Each Part sees the live holder state left
+by earlier Parts. This owner-first rule is specific to effects; it does not change package
+dispatch or the order of block entity Parts.
 
 A Part may attach to an effect declared by its own package, by a content package it
 serves (`served_by`), or by an active required
@@ -58,29 +59,26 @@ which fires after `canBeAffected` / `mob_effect_applicable` and before active-ef
 mutation with `entity`, `old_effect`, `new_effect` and optional `source` (including
 reapplications and unchanged updates; non-cancellable).
 
-## Reading the holder
+## Reading and mutating the holder
 
-The ticking holder may be borrowed out of the read-only Host, so do not depend on
-resolving its live entity storage through the handle during this callback. Use the
-provided health and food snapshots and `event.has_effect(key)` instead. The
-`active_effects: &[EffectKey]` snapshot reflects the holder's active list at this
-point in the pass, including changes earlier in that pass. It is borrowed only
-for the call: copy a key if you need to keep it.
+`apply_effect_tick` receives the live server host, `event.level`, and `event.holder` with the
+entity in place (for mobs, the borrowed mob tick suspends and restores the mob list before
+dispatch).
 
 For example, an effect that heals every 80 ticks can set `apply` when
-`event.tick_count % 80 == 0`, then skip healing when
-`event.has_effect(regeneration_key)` or when a player's saturation is positive.
-A mob has `event.food == None` and can still heal.
+`event.tick_count % 80 == 0`, then check `event.holder.effect(host, regeneration_key).is_none()`,
+check `event.holder.entity().as_player(host).and_then(|p| p.food(host))` for positive saturation,
+and call `event.holder.heal(host, 1.0)`. A mob returns `None` from `as_player` and can still heal.
 
-The level remains readable. Obtain it with `host.level(event.dimension)` and use
-`level.game_rule(host, "minecraft:natural_health_regeneration")` to read vanilla's
-natural-regeneration rule. This read works while a mob's entity storage is
-borrowed for its tick.
+Read level rules through `event.level.game_rule(host, "minecraft:natural_health_regeneration")`.
 
-`event.add_exhaustion(amount)` follows vanilla's `FoodData.addExhaustion` on players:
+`player.add_exhaustion(host, amount)` follows vanilla's `FoodData.addExhaustion` on players:
 it adds the amount and caps the result at 40, without a lower clamp. Negative
-amounts therefore subtract exhaustion. To remove at most 4, read the current food
-snapshot and add `-food.exhaustion.min(4.0)` only when exhaustion is positive. Food
-changes have no effect on a mob without food data.
+amounts therefore subtract exhaustion. To remove at most 4, read `player.food(host)`
+and pass `-food.exhaustion.min(4.0)` only when exhaustion is positive.
+
+If a callback structurally adds or removes effects on the holder during `apply_effect_tick`,
+the current effect finishes and the active-effect pass stops before advancing to later effects,
+matching vanilla's `LivingEntity.tickEffects` (`ConcurrentModificationException`).
 
 A `side = "server"` package can attach a Part because its methods are server-only.

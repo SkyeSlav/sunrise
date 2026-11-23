@@ -1,49 +1,38 @@
 //! The `on_effect_added` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
 
 pub trait Hooks {
-    /// `MobEffect.applyEffectTick`: the content mod's resolved `EffectKey` `effect` acts on
-    /// `entity` in `dimension` (`minecraft:overworld`). Clear `keep` and the
-    /// effect ends now, before it counts down. `entity` is a mob's
-    /// `Entity.getId`, None for a player (`host.players().acting_player()` says who).
-    /// It runs inside the entity's tick: a mob's world borrows the game
-    /// there, so the game is read-only, and it does not hold the ticking
-    /// mobs, nor the player's effects. `holder` identifies the holder; Host
-    /// reads of a mob holder are unavailable while it is ticking. Queued
-    /// changes apply after the hook; clearing `keep` ends the effect.
-    /// `active_effects` is the holder's live active-effect snapshot at this point in the
-    /// pass; `has_effect(key)` reads it, reflecting removals earlier in the pass.
-    /// The current level's game rules remain readable through `host.level(dimension)`.
-    /// Called only when this Part's own cadence requests it. All Parts see
-    /// the same snapshots; their queued changes apply in Part order afterward
-    /// (with the declaring package's — or, for a `served_by` content package,
-    /// its serving native host's — Parts running first).
-    /// On mobs, each queued hurt finishes its damage, death or protection, and
-    /// `living_damage_post` before the next queued change or the effect countdown.
-    /// Clearing `keep` skips later Parts. Server-side.
+    /// `MobEffect.applyEffectTick`: the content mod's resolved `EffectKey` `effect` acts on the
+    /// live `holder` in `level` at `amplifier`. Clear `keep` and the effect ends now, before it
+    /// counts down.
+    ///
+    /// Runs on the server with `&mut dyn ServerHost` and the live holder in place: read health,
+    /// max health, active effects (`holder.effect(host, key)`), food (narrow `holder.entity()`
+    /// with `EntityRef::as_player`), and level game rules directly through the handles, and apply
+    /// healing (`holder.heal`), damage (`holder.entity().hurt`), food/exhaustion (`PlayerRef::feed`,
+    /// `PlayerRef::add_exhaustion`), or other world changes immediately.
+    ///
+    /// Called only when this Part's own cadence requests it (with the declaring package's — or,
+    /// for a `served_by` content package, its serving native host's — Parts running first). Each
+    /// Part sees the live state left by earlier Parts; clearing `keep` skips later Parts and ends
+    /// the effect before its countdown. Structural edits to the holder's active effects during the
+    /// callback follow vanilla `LivingEntity.tickEffects` (`ConcurrentModificationException`): the
+    /// current effect finishes and the pass stops before advancing to later effects. Server-side.
     #[hook(
         side = "server",
         scope = "effect",
         key = "effect",
         target = "mod_api::parts::effects::dispatch_mob_effect_tick",
-        version = 4,
+        version = 5,
         contract = "listen",
-        host = "read",
         neoforge = "none (vanilla MobEffect.applyEffectTick; NeoForge adds no event or extension for it)"
     )]
     fn apply_effect_tick(
         effect: EffectKey,
-        dimension: &str,
-        entity: Option<i32>,
-        amplifier: i32,
+        level: LevelRef,
         holder: LivingRef,
-        health: f32,
-        max_health: f32,
-        food: Option<PlayerFood>,
-        active_effects: &[EffectKey],
-        changes: &mut Vec<EffectTickChange>,
+        amplifier: i32,
         keep: &mut bool,
         #[engine] tick_count: i32,
-        #[engine] make_call: impl FnOnce(EffectKey, i32) -> ApplyEffectTickCall<'_>,
     );
     /// `MobEffect.onEffectAdded`: called on the [`MobEffectPart`]s attached to the mod effect
     /// `effect` after `LivingEntity.addEffect` inserts an instance of `effect` onto `entity`

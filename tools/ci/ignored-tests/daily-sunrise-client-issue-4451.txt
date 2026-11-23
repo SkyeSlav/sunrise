@@ -2176,6 +2176,7 @@ sunrise-client game::potions::tests::a_mod_adds_a_line_to_an_effect_tooltip lib 
 sunrise-client game::potions::tests::lifecycle_cloud_commands_and_parked_owners lib daily resources
 sunrise-client game::potions::tests::mod_tick_heals_and_feeds_player lib daily resources
 sunrise-client game::potions::tests::mod_tick_kills_mob_through_death_and_drops lib daily resources
+sunrise-client game::potions::tests::mod_tick_live_writes_removal_and_structural_stop lib daily resources
 sunrise-client game::potions::tests::mod_tick_magic_respects_player_hit_frames lib daily resources
 sunrise-client game::potions::tests::mod_tick_sees_prior_regeneration lib daily resources
 sunrise-client game::potions::tests::residency_cloud_load_expiry_bottling_and_late_ids lib daily resources

@@ -99,7 +99,7 @@ pub(super) fn emit<'a>(
             return Err(format!("wrong target for {name}: {target}"));
         }
         let receiver_mut = if declaration_only {
-            Some(false)
+            Some(hook.host != Some(HostAccess::Read))
         } else if in_game {
             hook.receiver.mutability()
         } else {
@@ -140,12 +140,11 @@ pub(super) fn emit<'a>(
         }
         let carrier = format!("{}Call", hook_id(name));
         let uses_carrier = !declared.is_empty()
-            && (name == "apply_effect_tick" && declaration_only
-                || in_game
-                    && matches!(
-                        hook.dispatch,
-                        DispatchStyle::Carrier | DispatchStyle::ApiCarrier
-                    ));
+            && in_game
+            && matches!(
+                hook.dispatch,
+                DispatchStyle::Carrier | DispatchStyle::ApiCarrier
+            );
         let mut used: HashSet<_> = args.iter().map(|(name, _)| name.clone()).collect();
         let mod_item = fresh_name("mod_hook", &mut used);
         let listener_id = fresh_name("listener_id", &mut used);
@@ -671,8 +670,7 @@ pub(super) fn emit<'a>(
                 None if task_registration
                     || matches!(
                         (event_type.as_str(), name.as_str()),
-                        ("ApplyEffectTickEvent", "changes")
-                            | ("StepOnEvent", "writes")
+                        ("StepOnEvent", "writes")
                             | ("ExtractBlockScreenEffectEvent", "renderer")
                             | ("RegisterDebugRenderersEvent", "entries")
                     ) =>

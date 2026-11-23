@@ -1120,10 +1120,24 @@ pub enum Pause {
     },
     /// A hit needs its owning level before the tick goes on.
     AfterDamage(DamageResume),
+    /// A mod effect's tick needs the owning server host before continuing.
+    EffectTick(EffectTickPause),
     /// A landing's farmland decision, before its superclass hurt.
     Trample(sunrise_world::block_landing::FarmlandTrample),
     /// A vehicle must propagate the selected fall before this move continues.
     FallToPassengers(super::living::PassengerFall),
+}
+
+/// The paused state for one mod effect tick on a mob.
+#[derive(Debug)]
+pub struct EffectTickPause {
+    pub effect_index: usize,
+    pub tick_count: i32,
+    pub amplifier: i32,
+    join: crate::join_seq::JoinSeq,
+    contact: Contact,
+    pass: EffectPass,
+    known_speed: Vec3,
 }
 
 /// The remainder of the mob tick after a drink finishes on its owning level.
@@ -1321,7 +1335,10 @@ pub fn tick(
                 resume_after_damage(m, w, level, events, resume, None)
             }
             TickProgress::Paused(
-                Pause::Equipment { .. } | Pause::Trample(_) | Pause::FallToPassengers(_),
+                Pause::Equipment { .. }
+                | Pause::Trample(_)
+                | Pause::FallToPassengers(_)
+                | Pause::EffectTick(_),
             ) => unreachable!("a hostless tick cannot reach this pause"),
         };
     }
@@ -1413,7 +1430,59 @@ fn finish_base_progress(
                 },
             }))
         }
+        BaseTick::EffectTick {
+            effect_index,
+            tick_count,
+            amplifier,
+            contact,
+            pass,
+        } => TickProgress::Paused(Pause::EffectTick(EffectTickPause {
+            effect_index,
+            tick_count,
+            amplifier,
+            join: m.join,
+            contact,
+            pass,
+            known_speed,
+        })),
     }
+}
+
+/// Continue the mob's effect pass and rest of the tick after its owner ran a mod
+/// effect's `apply_effect_tick` with `&mut dyn ServerHost`. `keep == false` ends
+/// the effect before its countdown.
+pub(super) fn resume_after_effect_tick(
+    m: &mut Mob,
+    w: &MobWorld,
+    level: &mut DamageLevel<'_>,
+    events: &mut Vec<MobEvent>,
+    mut pause: EffectTickPause,
+    keep: bool,
+    movement: Option<&mut Option<MobMovement>>,
+) -> TickProgress {
+    if m.removed {
+        return TickProgress::Complete(false);
+    }
+    if m.join != pause.join {
+        return TickProgress::Complete(true);
+    }
+    if !keep && let Some(suspended) = pause.pass.interrupted.as_mut() {
+        suspended.tick.expired = true;
+        // If the listener removed this effect while returning `keep = false`, NeoForge's
+        // `MobEffectEvent.Expired` still fires for this tick.
+        if suspended.tick.detached_expiry.is_none() {
+            suspended.tick.detached_expiry = Some((pause.effect_index, pause.amplifier));
+        }
+    }
+    let progress = continue_base_tick(
+        m,
+        w,
+        level,
+        events,
+        pause.contact,
+        BaseStage::EffectCountdown(pause.pass),
+    );
+    finish_base_progress(m, w, level, events, progress, pause.known_speed, movement)
 }
 
 /// Resume a mob after its owner asked `living_breathe`: apply `breath` to the air
@@ -2755,12 +2824,22 @@ fn keeps_its_air(m: &Mob) -> bool {
     m.species() == Species::IronGolem
 }
 
-/// `base_tick` finished, or stopped at its air update for the owner to ask
-/// the mods (`living_breathe`) with a host.
+/// `base_tick` finished, or stopped at its air update, a hit, or a mod effect
+/// tick for the owner to run with a host.
 enum BaseTick {
     Done(bool),
     Air(AirPause),
-    AfterDamage { contact: Contact, next: BaseStage },
+    AfterDamage {
+        contact: Contact,
+        next: BaseStage,
+    },
+    EffectTick {
+        effect_index: usize,
+        tick_count: i32,
+        amplifier: i32,
+        contact: Contact,
+        pass: EffectPass,
+    },
 }
 
 #[cfg(test)]
@@ -2769,7 +2848,7 @@ impl BaseTick {
     fn was_on_fire(self) -> bool {
         match self {
             Self::Done(was_on_fire) => was_on_fire,
-            Self::Air(_) | Self::AfterDamage { .. } => {
+            Self::Air(_) | Self::AfterDamage { .. } | Self::EffectTick { .. } => {
                 panic!("the base tick stopped at its air update")
             }
         }
@@ -3015,7 +3094,7 @@ fn continue_base_tick(
                     }
                 };
                 // LivingEntity.baseTick runs tickEffects after the timers count down.
-                if let Some(cursor) = tick_effects_until_hurt(
+                match tick_effects_until_pause(
                     m,
                     w.loop_context,
                     level,
@@ -3024,10 +3103,27 @@ fn continue_base_tick(
                     true,
                     cursor,
                 ) {
-                    return BaseTick::AfterDamage {
-                        contact,
-                        next: BaseStage::EffectCountdown(cursor),
-                    };
+                    EffectsStep::Done => {}
+                    EffectsStep::AfterDamage(cursor) => {
+                        return BaseTick::AfterDamage {
+                            contact,
+                            next: BaseStage::EffectCountdown(cursor),
+                        };
+                    }
+                    EffectsStep::ModEffectTick {
+                        effect_index,
+                        tick_count,
+                        amplifier,
+                        pass,
+                    } => {
+                        return BaseTick::EffectTick {
+                            effect_index,
+                            tick_count,
+                            amplifier,
+                            contact,
+                            pass,
+                        };
+                    }
                 }
                 // The fire and lava contacts can each hurt. Re-read contact if the previous
                 // hurt teleported the mob before this part of the tick.
@@ -4984,7 +5080,19 @@ fn tick_effects_hurting(
     after_effect: &mut dyn FnMut(&mut Mob),
 ) {
     let pass = EffectPass::new(m);
-    tick_effects_until_hurt(m, context, level, mods, after_effect, false, pass);
+    let _ = tick_effects_until_pause(m, context, level, mods, after_effect, false, pass);
+}
+
+#[derive(Debug)]
+enum EffectsStep {
+    Done,
+    AfterDamage(EffectPass),
+    ModEffectTick {
+        effect_index: usize,
+        tick_count: i32,
+        amplifier: i32,
+        pass: EffectPass,
+    },
 }
 
 #[derive(Debug)]
@@ -5054,22 +5162,21 @@ struct SuspendedEffect {
 struct EffectTick {
     effect: &'static str,
     expired: bool,
-    changes: std::vec::IntoIter<super::MobEffectAction>,
     detached_expiry: Option<(usize, i32)>,
 }
 /// `LivingEntity.tickEffects`: each active effect's `MobEffectInstance.tickServer`.
 /// `after_effect` runs after each effect's tick, before its countdown, so a
 /// hurt the tick dealt finishes there: `Enderman.hurtServer` teleports inside
 /// the hurt, before the next effect's hurt draws (#1608).
-fn tick_effects_until_hurt(
+fn tick_effects_until_pause(
     m: &mut Mob,
     context: &LoopContext,
     level: &mut DamageLevel<'_>,
     mods: Option<&dyn super::ModEffectTicks>,
     after_effect: &mut dyn FnMut(&mut Mob),
-    pause_hurt: bool,
+    pause_owner: bool,
     mut pass: EffectPass,
-) -> Option<EffectPass> {
+) -> EffectsStep {
     // LivingEntity.tickEffects ticks each active effect with the mob's list
     // still in place: the damage a Poison or Wither tick deals reads the
     // list it finds (Resistance softens the hit, Infested spawns silverfish,
@@ -5139,7 +5246,6 @@ fn tick_effects_until_hurt(
             let interval = |base: i32| base.wrapping_shr(amp as u32).max(1);
             // A refused mod effect expires before the next effect ticks.
             let mut expired = false;
-            let mut changes = Vec::new();
             match effect {
                 "minecraft:poison"
                     if count % interval(25) == 0 && !m.kind.flags.undead && m.health > 1.0 =>
@@ -5175,12 +5281,22 @@ fn tick_effects_until_hurt(
                     expired = true;
                 }
                 id if sunrise_client_core::potions::is_mod_effect(id) => {
-                    if let Some(mods) = mods
+                    if pause_owner
+                        && mods.is_some()
                         && let Some(index) = m.extra.effects[i].registry_index
+                        && mod_api::__private::has_effect_tick_parts(index)
                     {
-                        let tick = mods.tick_mod_effect(index, m, count, amp);
-                        expired = !tick.keep;
-                        changes = tick.actions;
+                        let tick = EffectTick {
+                            effect,
+                            expired: false,
+                            detached_expiry: None,
+                        };
+                        return EffectsStep::ModEffectTick {
+                            effect_index: index,
+                            tick_count: count,
+                            amplifier: amp,
+                            pass: pass.suspend(m, i, first, tick),
+                        };
                     }
                 }
                 _ => {}
@@ -5189,42 +5305,18 @@ fn tick_effects_until_hurt(
             let tick = EffectTick {
                 effect,
                 expired,
-                changes: changes.into_iter(),
                 detached_expiry: None,
             };
-            if pause_hurt && m.hurt_needs_owner() {
-                return Some(pass.suspend(m, i, first, tick));
+            if pause_owner && m.hurt_needs_owner() {
+                return EffectsStep::AfterDamage(pass.suspend(m, i, first, tick));
             }
             tick
         };
         let EffectTick {
             effect,
             expired,
-            mut changes,
             detached_expiry,
         } = tick;
-        while let Some(change) = changes.next() {
-            match change {
-                super::MobEffectAction::Heal(amount) => m.heal(context, amount),
-                super::MobEffectAction::Hurt(kind, amount) => {
-                    m.damage(level, amount, Damage::of(kind));
-                    after_effect(m);
-                    if pause_hurt && m.hurt_needs_owner() {
-                        return Some(pass.suspend(
-                            m,
-                            i,
-                            first,
-                            EffectTick {
-                                effect,
-                                expired,
-                                changes,
-                                detached_expiry,
-                            },
-                        ));
-                    }
-                }
-            }
-        }
         if m.extra.effects.get(i).is_some_and(|e| e.id == effect) {
             if !expired {
                 if let Some(hidden) = m.extra.effect_chains.iter_mut().find(|e| e.id == effect) {
@@ -5296,7 +5388,7 @@ fn tick_effects_until_hurt(
     if max_absorption != pass.max_absorption {
         m.absorption = m.absorption.min(max_absorption);
     }
-    None
+    EffectsStep::Done
 }
 
 /// `Entity.getMovementEmission` is not NONE: only a shulker moves without
@@ -9017,26 +9109,6 @@ mod hidden_speed_causal_tests {
     }
     #[test]
     fn native_cancellation_drops_the_whole_chain_before_promotion() {
-        struct Cancel(std::cell::Cell<usize>);
-        impl crate::mobs::ModEffectTicks for Cancel {
-            fn effect_expired(&self, _: u32, _: usize, _: i32, _: &mut bool) {}
-            fn tick_mod_effect(
-                &self,
-                _: usize,
-                m: &Mob,
-                count: i32,
-                amp: i32,
-            ) -> crate::mobs::ModEffectTick {
-                let (id, mob) = (m.extra.effects[0].id, m.id);
-                assert_eq!((id, mob, amp), ("h202:cancel", 202, 1));
-                assert!(count == 1 || count == 17);
-                self.0.set(self.0.get() + 1);
-                crate::mobs::ModEffectTick {
-                    keep: false,
-                    actions: Vec::new(),
-                }
-            }
-        }
         for duration in [1, -1] {
             let mut m = mob();
             m.age = 17;
@@ -9062,14 +9134,26 @@ mod hidden_speed_causal_tests {
             }
             // This fixture stands in for a registered mod effect at slot zero.
             m.extra.effects[0].registry_index = Some(0);
-            let cancel = Cancel(std::cell::Cell::new(0));
-            tick_effects(
+            let mut pass = EffectPass::new(&m).suspend(
+                &mut m,
+                0,
+                1,
+                EffectTick {
+                    effect: "h202:cancel",
+                    expired: true,
+                    detached_expiry: Some((0, 1)),
+                },
+            );
+            let step = tick_effects_until_pause(
                 &mut m,
                 crate::test_resources::server_loop_context(),
                 &mut crate::health::TestLevel::new(0).level(),
-                Some(&cancel),
+                None,
+                &mut |_| {},
+                false,
+                pass,
             );
-            assert_eq!(cancel.0.get(), 1);
+            assert!(matches!(step, EffectsStep::Done));
             assert!(m.extra.effects.is_empty() && m.extra.effect_chains.is_empty());
         }
     }

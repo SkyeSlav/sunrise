@@ -4318,11 +4318,10 @@ pub(in crate::game) mod tests {
 
             fn apply_effect_tick(
                 &self,
-                _: &dyn mod_api::Host,
-                event: &mut mod_api::ApplyEffectTickEvent<'_>,
+                _: &mut dyn mod_api::ServerHost,
+                _: &mut mod_api::ApplyEffectTickEvent,
             ) {
                 self.trace.lock().unwrap().push((self.package, "action"));
-                event.heal(PERIOD as f32);
             }
         }
         #[mod_api::__subscriptions]
@@ -4387,31 +4386,15 @@ pub(in crate::game) mod tests {
                         "the serving host and its dependent may attach to the served effect",
                     );
 
-                    let mut changes = Vec::new();
-                    let mut keep = true;
-                    let active_effects = [effect];
-                    mod_api::__private::dispatch_mob_effect_tick(
-                        &mod_platform::testing::FakeHost::new(),
-                        6,
-                        effect,
-                        0,
-                        |effect, amplifier| mod_api::__private::ApplyEffectTickCall {
-                            effect,
-                            dimension: "minecraft:overworld",
-                            entity: Some(7),
-                            amplifier,
-                            holder: mod_api::LivingRef::new(mod_api::EntityRef::new(
-                                mod_api::WorldEpoch::new(1),
-                                7,
-                            )),
-                            health: 10.0,
-                            max_health: 20.0,
-                            food: None,
-                            active_effects: &active_effects,
-                            changes: &mut changes,
-                            keep: &mut keep,
-                        },
-                    );
+                    let mut fake = mod_platform::testing::FakeHost::new();
+                    let level = <dyn mod_api::Host>::level(&fake, "minecraft:overworld").unwrap();
+                    let holder = mod_api::LivingRef::new(mod_api::EntityRef::new(
+                        mod_api::WorldEpoch::new(1),
+                        7,
+                    ));
+                    assert!(mod_api::__private::dispatch_mob_effect_tick(
+                        &mut fake, level, holder, effect, 6, 0,
+                    ));
                     assert_eq!(
                         *trace.lock().unwrap(),
                         [
@@ -4419,13 +4402,6 @@ pub(in crate::game) mod tests {
                             ("horizon_java", "action"),
                             ("dependent", "cadence"),
                             ("dependent", "action"),
-                        ]
-                    );
-                    assert_eq!(
-                        changes,
-                        [
-                            mod_api::EffectTickChange::Heal(2.0),
-                            mod_api::EffectTickChange::Heal(3.0)
                         ]
                     );
                 });

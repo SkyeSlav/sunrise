@@ -203,6 +203,7 @@ impl Game<'_> {
         let mut movement = None;
         let mut resume_entity = None;
         let mut resume_air_answer = None;
+        let mut resume_effect_keep = true;
         let mut resume_selection: Option<PlayerSelection> = None;
         // An invalid removed vehicle is retried once at this rider's own
         // eligible entity tick, never from the later global positioning pass.
@@ -227,6 +228,7 @@ impl Game<'_> {
             let mut sting = None;
             let mut brain_from = 0;
             let mut air_answer = None;
+            let mut effect_keep = true;
             let mut retry_rider = None;
             let mut removing_vehicle = None;
             let mut pending_effects: Vec<MobEvent> = Vec::new();
@@ -574,7 +576,11 @@ impl Game<'_> {
                         let mut selection = resume_selection.take();
                         if matches!(
                             resume,
-                            Some(Pause::AfterDamage(_) | Pause::Equipment { .. })
+                            Some(
+                                Pause::AfterDamage(_)
+                                    | Pause::EffectTick(_)
+                                    | Pause::Equipment { .. }
+                            )
                         ) && let Some(selection) = &mut selection
                         {
                             selection.refresh_views(|player| {
@@ -709,6 +715,18 @@ impl Game<'_> {
                                 &w,
                                 &mut level,
                                 damage,
+                                &mut events,
+                                &mut movement,
+                            )
+                        }
+                        Some(Pause::EffectTick(effect_pause)) => {
+                            sunrise_client::mobs::riders::resume_after_effect_tick(
+                                &mut mobs,
+                                i,
+                                &w,
+                                &mut level,
+                                effect_pause,
+                                resume_effect_keep,
                                 &mut events,
                                 &mut movement,
                             )
@@ -1146,6 +1164,30 @@ impl Game<'_> {
                                 self.settle_creaking_hurt(id);
                             }
                         }
+                        Pause::EffectTick(effect_pause) => {
+                            let before_effect = events.split_off(resume_from);
+                            let _ = self.handle_mob_events(before_effect);
+                            if let Some(i) = self.mob_index.find(&self.mobs, id)
+                                && self.mobs[i].join == join
+                                && !self.mobs[i].removed
+                                && let Some(epoch) = self.native_lifecycle.epoch()
+                                && let Some(effect) = mod_api::__private::effect_key_by_index(
+                                    effect_pause.effect_index,
+                                )
+                            {
+                                let level = self.level_ref(epoch, self.dim.key());
+                                let holder =
+                                    mod_api::LivingRef::new(mod_api::EntityRef::new(epoch, id));
+                                effect_keep = mod_api::__private::dispatch_mob_effect_tick(
+                                    self,
+                                    level,
+                                    holder,
+                                    effect,
+                                    effect_pause.tick_count,
+                                    effect_pause.amplifier,
+                                );
+                            }
+                        }
                         Pause::Trample(trample) => {
                             self.trample_farmland(id, false, *trample);
                         }
@@ -1276,6 +1318,7 @@ impl Game<'_> {
             lent = sunrise_client::health::LentLevel::take(&mut self.world);
             resume = pause;
             resume_air_answer = air_answer;
+            resume_effect_keep = effect_keep;
             retried_rider = retry_rider;
             section_writes::set_enabled(capture_sections);
         }

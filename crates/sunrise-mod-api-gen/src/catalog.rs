@@ -488,7 +488,6 @@ impl Hook {
         }
         let mut engine_ticks = false;
         let mut engine_inert = false;
-        let mut effect_factory = false;
         let mut effect_count = false;
         for (param, ty) in &entry.engine {
             match (param.as_str(), ty.as_str()) {
@@ -496,11 +495,6 @@ impl Hook {
                 ("inert", "& mut bool") if !is_effect_tick => engine_inert = true,
                 ("tick_count", "i32") if name == "apply_effect_tick" && is_effect_tick => {
                     effect_count = true
-                }
-                ("make_call", "impl FnOnce (EffectKey , i32) -> ApplyEffectTickCall < '_ >")
-                    if is_effect_tick =>
-                {
-                    effect_factory = true
                 }
                 _ => {
                     return Err(CatalogError::InvalidHook {
@@ -517,12 +511,10 @@ impl Hook {
                     .into(),
             });
         }
-        if is_effect_tick && (!effect_factory || effect_count != (name == "apply_effect_tick")) {
+        if is_effect_tick && effect_count != (name == "apply_effect_tick") {
             return Err(CatalogError::InvalidHook {
                 hook: name,
-                error:
-                    "effect dispatch requires the engine-only factory and an action-only tick count"
-                        .into(),
+                error: "effect dispatch requires an action-only tick count".into(),
             });
         }
         let answered_by_mod = api.answered_by.is_some();

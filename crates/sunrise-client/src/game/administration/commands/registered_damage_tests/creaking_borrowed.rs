@@ -65,8 +65,11 @@ impl MobEffectPart for FinalHurt {
         event.apply = event.tick_count == 1;
     }
 
-    fn apply_effect_tick(&self, _: &dyn Host, event: &mut ApplyEffectTickEvent<'_>) {
-        event.hurt("minecraft:magic", 1.0);
+    fn apply_effect_tick(&self, host: &mut dyn ServerHost, event: &mut ApplyEffectTickEvent) {
+        event
+            .holder
+            .entity()
+            .hurt(host, "minecraft:magic", 1.0, None, None);
     }
 }
 

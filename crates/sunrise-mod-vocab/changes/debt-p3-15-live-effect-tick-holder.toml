@@ -1,0 +1,24 @@
+ids = [
+    "handle:ApplyEffectTickEvent::add_exhaustion",
+    "handle:ApplyEffectTickEvent::eat",
+    "handle:ApplyEffectTickEvent::has_effect",
+    "handle:ApplyEffectTickEvent::heal",
+    "handle:ApplyEffectTickEvent::hurt",
+    "hook:apply_effect_tick",
+    "hook:apply_effect_tick.active_effects",
+    "hook:apply_effect_tick.dimension",
+    "hook:apply_effect_tick.entity",
+    "hook:apply_effect_tick.food",
+    "hook:apply_effect_tick.health",
+    "hook:apply_effect_tick.max_health",
+    "method:MobEffectPart::apply_effect_tick",
+    "type:ApplyEffectTickEvent",
+    "type:ApplyEffectTickEvent.active_effects",
+    "type:ApplyEffectTickEvent.dimension",
+    "type:ApplyEffectTickEvent.entity",
+    "type:ApplyEffectTickEvent.food",
+    "type:ApplyEffectTickEvent.health",
+    "type:ApplyEffectTickEvent.max_health",
+]
+why = "MobEffectPart::apply_effect_tick now receives &mut dyn ServerHost with the live LevelRef and LivingRef in place (suspending the borrowed mob tick during dispatch) instead of read-only holder snapshots and a queued EffectTickChange list, matching vanilla MobEffect.applyEffectTick(ServerLevel, LivingEntity, int)."
+migrate = "Update MobEffectPart::apply_effect_tick to take (&mut dyn ServerHost, &mut ApplyEffectTickEvent), bump hook version to 5 if pinned, and read/mutate the live level and holder directly: event.level.game_rule(host, ...), event.holder.health(host), event.holder.max_health(host), event.holder.effect(host, key), event.holder.heal(host, amount), event.holder.entity().hurt(host, damage_type, amount, None, None), and for players event.holder.entity().as_player(host) with player.food(host), player.feed(host, nutrition, saturation_modifier), and player.add_exhaustion(host, amount)."

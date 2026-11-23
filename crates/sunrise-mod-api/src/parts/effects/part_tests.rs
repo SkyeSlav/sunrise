@@ -18,13 +18,10 @@ impl<const PERIOD: i32> MobEffectPart for Cadence<PERIOD> {
         assert!(!event.apply);
         event.apply = event.tick_count % PERIOD == 0;
     }
-    fn apply_effect_tick(&self, _: &dyn Host, event: &mut ApplyEffectTickEvent<'_>) {
-        assert!(event.has_effect(event.effect));
-        self.trace
-            .lock()
-            .unwrap()
-            .push((self.package, event.health));
-        event.heal(PERIOD as f32);
+    fn apply_effect_tick(&self, host: &mut dyn ServerHost, event: &mut ApplyEffectTickEvent) {
+        let health = event.holder.health(host).unwrap();
+        self.trace.lock().unwrap().push((self.package, health));
+        assert!(event.holder.heal(host, PERIOD as f32));
         if matches!(
             (self.package, event.amplifier),
             ("owner", 99) | ("other", 100)
@@ -252,9 +249,39 @@ fn registration_refuses_malformed_effect_key_distinctly_from_duplicate() {
     );
 }
 
-struct World;
-impl Host for World {}
+struct World {
+    health: f32,
+}
+impl crate::prelude::LivingBackend for World {
+    fn living_health(&self, _: LivingRef) -> Option<f32> {
+        Some(self.health)
+    }
+}
+impl crate::prelude::LivingBackendMut for World {
+    fn living_heal(&mut self, _: LivingRef, amount: f32) -> bool {
+        self.health += amount;
+        true
+    }
+}
+impl crate::prelude::LivingClientBackend for World {}
+impl Backend for World {}
+crate::impl_backend_areas!(World, except(living));
+impl BackendMut for World {}
+crate::impl_backend_mut_areas!(World, except(living));
+impl Host for World {
+    fn backend(&self) -> Option<BackendRef<'_>> {
+        Some(mod_vocab::__private::parts_installation::backend_ref(self))
+    }
+}
 crate::impl_host_areas!(World);
+impl ServerHost for World {
+    fn backend_mut(&mut self) -> Option<BackendMutRef<'_>> {
+        Some(mod_vocab::__private::parts_installation::backend_mut_ref(
+            self,
+        ))
+    }
+}
+crate::impl_server_host_areas!(World);
 
 fn install(mods: &[ModEntry]) -> EffectKey {
     install_parts(mods, &crate::parts::tests::rule_schema(), |_| false).unwrap();
@@ -299,79 +326,30 @@ fn effect_owner_runs_first_even_when_the_dependent_dispatches_first() {
         || {
             crate::testing::with_mods(mods.clone(), || {
                 let effect = install(&mods);
-                let active_effects = [effect];
                 mod_vocab::__private::validate_effect_part_owners(|_| Some("owner"), |_| true)
                     .unwrap();
-                for (ticks, amplifier, expected, expected_trace, expected_keep) in [
-                    (1, 0, vec![], vec![], true),
-                    (
-                        2,
-                        0,
-                        vec![EffectTickChange::Heal(2.0)],
-                        vec![("owner", 10.0)],
-                        true,
-                    ),
-                    (
-                        3,
-                        0,
-                        vec![EffectTickChange::Heal(3.0)],
-                        vec![("behaviour", 10.0)],
-                        true,
-                    ),
+                let level = LevelRef::new(WorldEpoch::new(1), crate::DimensionKey::OVERWORLD);
+                let holder = LivingRef::new(EntityRef::new(WorldEpoch::new(1), 7));
+                for (ticks, amplifier, expected_health, expected_trace, expected_keep) in [
+                    (1, 0, 10.0, vec![], true),
+                    (2, 0, 12.0, vec![("owner", 10.0)], true),
+                    (3, 0, 13.0, vec![("behaviour", 10.0)], true),
                     (
                         6,
                         0,
-                        vec![
-                            EffectTickChange::Heal(2.0),
-                            EffectTickChange::Heal(6.0),
-                            EffectTickChange::Heal(3.0),
-                        ],
-                        vec![("owner", 10.0), ("other", 10.0), ("behaviour", 10.0)],
+                        21.0,
+                        vec![("owner", 10.0), ("other", 12.0), ("behaviour", 18.0)],
                         true,
                     ),
-                    (
-                        6,
-                        99,
-                        vec![EffectTickChange::Heal(2.0)],
-                        vec![("owner", 10.0)],
-                        false,
-                    ),
-                    (
-                        6,
-                        100,
-                        vec![EffectTickChange::Heal(2.0), EffectTickChange::Heal(6.0)],
-                        vec![("owner", 10.0), ("other", 10.0)],
-                        false,
-                    ),
+                    (6, 99, 12.0, vec![("owner", 10.0)], false),
+                    (6, 100, 18.0, vec![("owner", 10.0), ("other", 12.0)], false),
                 ] {
                     trace.lock().unwrap().clear();
-                    let mut changes = Vec::new();
-                    let mut keep = true;
-                    let prepared = std::cell::Cell::new(false);
-                    mod_vocab::__private::dispatch_mob_effect_tick(
-                        &World,
-                        ticks,
-                        effect,
-                        amplifier,
-                        |effect, amplifier| {
-                            prepared.set(true);
-                            mod_vocab::__private::ApplyEffectTickCall {
-                                effect,
-                                dimension: "minecraft:overworld",
-                                entity: Some(7),
-                                amplifier,
-                                holder: LivingRef::new(EntityRef::new(WorldEpoch::new(1), 7)),
-                                health: 10.0,
-                                max_health: 20.0,
-                                food: None,
-                                active_effects: &active_effects,
-                                changes: &mut changes,
-                                keep: &mut keep,
-                            }
-                        },
+                    let mut world = World { health: 10.0 };
+                    let keep = mod_vocab::__private::dispatch_mob_effect_tick(
+                        &mut world, level, holder, effect, ticks, amplifier,
                     );
-                    assert_eq!(prepared.get(), !expected_trace.is_empty());
-                    assert_eq!(changes, expected);
+                    assert_eq!(world.health, expected_health);
                     assert_eq!(*trace.lock().unwrap(), expected_trace);
                     assert_eq!(keep, expected_keep);
                 }
