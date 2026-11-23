@@ -1,7 +1,7 @@
 ClientPacketListener.<init>	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::join_server	the chat is cleared on join (hud_disconnected leaves it out), while a reconfiguration keeps it: Event::Reconfiguring flushes it and ChatComponent.storeState's state survives
 ClientPacketListener.clearCacheSlots	skip:java		weak-reference cache slots; Sunrise has no such cache
-ClientPacketListener.handleAddEntity	inline	crates/sunrise-client/src/game/network/remote/packets_object.rs::Game::apply_add_entity_packet	AddEntity arm: spawn_entity, then object or projectile spawn, then motion
-ClientPacketListener.createEntityFromPacket	inline	crates/sunrise-client/src/game/network/remote/packets_object.rs::Game::apply_add_entity_packet	gap: minor: the player spawns without checking that its profile is known
+ClientPacketListener.handleAddEntity	inline	crates/sunrise-client/src/game/network/remote/packets_object.rs::Game::apply_add_entity_packet	AddEntity arm: admit before replacing a tracked entity, then spawn and apply motion
+ClientPacketListener.createEntityFromPacket	inline	crates/sunrise-client/src/game/network/remote/packets_object.rs::Game::apply_add_entity_packet	only creates a player if its PlayerInfo exists, whether listed or not
 ClientPacketListener.handleSetEntityData	port	crates/sunrise-client/src/game/network/remote/packets_entity.rs::Game::apply_set_entity_data_packet	gap: minor: only the data indexes Sunrise reads are applied (flags, names, sleep, crouch, mob fields)
 ClientPacketListener.handleEntityPositionSync	port	crates/sunrise-client/src/game/network/remote/motion.rs::Game::move_entity	absolute move with the packet rotation and on-ground flag
 ClientPacketListener.handleTeleportEntity	inline	crates/sunrise-client/src/game/network/remote/packets_object.rs::Game::apply_teleport_entity_packet	TeleportEntity arm works out the relative position, then move_entity; gap: minor: a teleport of the player's former vehicle is not applied to the player
@@ -36,7 +36,7 @@ ClientPacketListener.handleSetPlayerInventory	port	crates/sunrise-client/src/gam
 ClientPacketListener.handleContainerContent	port	crates/sunrise-client/src/game/network/remote/packets_player.rs::Game::apply_container_set_content_packet	ContainerSetContent arm: each slot, then the carried stack
 ClientPacketListener.handleBlockEntityData	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::remote_block_entity_data
 ClientPacketListener.handleContainerSetData	port	crates/sunrise-client/src/game/network/remote/packets_player.rs::Game::apply_container_set_data_packet	ContainerSetData arms (lectern, furnace, crafter, brewing); station containers go to remote_stations.rs::Game::remote_station_data
-ClientPacketListener.handleContainerClose	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::apply_packet	ContainerClose arm: closes the inventory screen; gap: minor: a server close while the creative screen is open is ignored
+ClientPacketListener.handleContainerClose	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::apply_packet	ContainerClose arm: restores the inventory menu and closes the active screen without sending a close
 ClientPacketListener.handleBlockEvent	port	crates/sunrise-client/src/game/network/remote/packets_world.rs::Game::apply_block_event_packet	BlockEvent arm: client block event, then the block entity event
 ClientPacketListener.handleGameEvent	port	crates/sunrise-client/src/game/network/remote/packets_world.rs::Game::apply_game_event_packet	GameEvent arm (weather, mode, credits, respawn, arrow hit, sting, limited crafting, chunks load start); gap: minor: demo mode (5) is not shown
 ClientPacketListener.openDemoIntroScreen	skip:other		demo mode only (GameEvent 5); Sunrise has no demo mode

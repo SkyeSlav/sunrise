@@ -157,6 +157,10 @@ impl Game<'_> {
                         1.0,
                         source,
                     );
+                    self.complete_mob_hurt(index, false);
+                    let Some(m) = self.mobs.get_mut(index) else {
+                        continue;
+                    };
                     // `Enderman.hurtServer` for a thrown potion: the hit is
                     // `Enderman.hurtWithCleanWater`, then
                     // `Enderman.repeatedlyTryToTeleport`, which does nothing
