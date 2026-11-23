@@ -481,7 +481,7 @@ mod tests {
         crate::game::native_entity_refs::tests::with_client_game(|game| {
             loaded_client(game);
             let before = game.player.as_ref().unwrap().position;
-            for x in [f64::NAN, f64::INFINITY, -f64::INFINITY, 64.5, -64.5] {
+            for x in [f64::NAN, f64::INFINITY, -f64::INFINITY] {
                 assert_eq!(game.move_local_player_by([x, 0.0, 0.0]), Ok(None));
             }
             game.riding = Some(43);

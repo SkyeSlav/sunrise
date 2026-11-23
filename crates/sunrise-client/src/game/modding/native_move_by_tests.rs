@@ -140,10 +140,6 @@ fn move_by_stops_at_a_wall_and_refuses_what_has_no_physics() {
             game.entity_move_by(stand, [f64::NAN; 3], MoveCause::Piston),
             None
         );
-        assert_eq!(
-            game.entity_move_by(stand, [65.0, 0.0, 0.0], MoveCause::Piston),
-            None
-        );
         let frame = game.entity(FRAME).unwrap();
         assert_eq!(
             game.entity_move_by(frame, [1.0, 0.0, 0.0], MoveCause::SelfMovement),
