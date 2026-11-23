@@ -114,7 +114,7 @@ impl crate::game::Game<'_> {
 
 /// The environments `Game::build_level_environments` built from one synchronized dimension type,
 /// and what they were built from.
-pub(super) struct LevelEnvironments {
+pub(in crate::game) struct LevelEnvironments {
     /// The type's JSON both were built from.
     json: serde_json::Value,
     /// Over the client's own environment of the type: gameplay's.
