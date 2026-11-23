@@ -6,6 +6,7 @@ pub(super) type Predicted = (
     i16,
     i32,
     Input,
+    Vec<ItemStack>, // Creative drops sent during the click, before ContainerClick.
     Vec<(i16, Option<ItemStack>)>,
     Option<ItemStack>,
 );
@@ -96,7 +97,14 @@ pub(in crate::game) fn predict_clicks_with(
         m.click(&step_env, i32::from(slot), button, input).ok()?;
         dropped |= m.dropped.len() > thrown;
         let changed = changed_slots(&before, m);
-        predicted.push((slot, button, input, changed, m.carried.clone()));
+        predicted.push((
+            slot,
+            button,
+            input,
+            m.take_predicted_creative_throws(),
+            changed,
+            m.carried.clone(),
+        ));
     }
     Some((predicted, dropped))
 }
@@ -390,11 +398,7 @@ impl Game<'_> {
         if let Some(synced) = r.synced.get_mut(i) {
             *synced = stack.clone();
         }
-        let item = self.to_network(&stack);
-        self.send(S::SetCreativeModeSlot(play::SetCreativeModeSlot {
-            slot: creative_sync_slot(i),
-            item,
-        }));
+        self.send_creative_item_add(creative_sync_slot(i), stack);
     }
     /// The server set inventory `slot` (`shield::OFFHAND_SLOT` for the off
     /// hand), `changed` from the stack this client held there. The stack

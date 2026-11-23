@@ -186,6 +186,12 @@ impl Catalog {
         &self.tabs
     }
 
+    /// `Item.requiredFeatures` from the built-in registry export. Items outside
+    /// that registry (such as mod items) have no requirements in this catalog.
+    pub fn is_item_enabled(&self, item: &str, features: &[String]) -> bool {
+        enabled(self.item_features.get(item), features)
+    }
+
     /// The canonical display order of the global search tab in this build.
     pub fn search_display<'a>(&self, contents: &'a [Arc<TabContents>]) -> &'a [ItemStack] {
         self.tabs
@@ -219,8 +225,7 @@ impl Catalog {
             let width = u16::from(p.width.get());
             (width * u16::from(p.height.get()), width)
         });
-        let admits =
-            |stack: &ItemStack| enabled(self.item_features.get(&*stack.item), params.features);
+        let admits = |stack: &ItemStack| self.is_item_enabled(&stack.item, params.features);
         for category in [true, false] {
             for (i, tab) in self.tabs.iter().enumerate() {
                 if category != (tab.kind == Kind::Category) {

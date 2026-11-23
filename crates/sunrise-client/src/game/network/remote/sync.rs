@@ -479,11 +479,7 @@ impl Game<'_> {
             self.send(packet);
         }
         for (slot, stack) in creative_slots {
-            let item = self.to_network(&stack);
-            self.send(S::SetCreativeModeSlot(play::SetCreativeModeSlot {
-                slot,
-                item,
-            }));
+            self.send_creative_item_add(slot, stack);
         }
     }
     pub(in crate::game) fn creative_stacks(&self) -> Vec<Option<ItemStack>> {
@@ -511,12 +507,28 @@ impl Game<'_> {
             }
         }
         for (slot, stack) in changed {
-            let item = self.to_network(&stack);
-            self.send(S::SetCreativeModeSlot(play::SetCreativeModeSlot {
-                slot,
-                item,
-            }));
+            self.send_creative_item_add(slot, stack);
         }
+    }
+
+    /// `MultiPlayerGameMode.handleCreativeModeItemAdd`, shared by each creative slot sender.
+    pub(super) fn send_creative_item_add(&self, slot: i16, stack: Option<ItemStack>) {
+        if !self.creative || self.remote.is_none() {
+            return;
+        }
+        let stack = stack.filter(|stack| !stack.is_empty());
+        if stack.as_ref().is_some_and(|stack| {
+            !self
+                .creative_screen
+                .catalog()
+                .is_item_enabled(&stack.item, self.enabled_feature_ids())
+        }) {
+            return;
+        }
+        self.send_play(S::SetCreativeModeSlot(play::SetCreativeModeSlot {
+            slot,
+            item: self.to_network(&stack),
+        }));
     }
     /// `MultiPlayerGameMode.ensureHasSentCarriedItem`: the server hears of a
     /// new selected slot before anything the slot acts with.

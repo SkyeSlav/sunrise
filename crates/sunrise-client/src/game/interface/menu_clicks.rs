@@ -25,6 +25,12 @@ impl Game<'_> {
             self.creative_display_click(slot, button, input);
             return true;
         }
+        if self.screen == Screen::Creative
+            && input == sunrise_client::menu::Input::Throw
+            && !self.drop_spam_throttler.is_under_threshold()
+        {
+            return true;
+        }
         if let Some(slot) = slot
             && input == sunrise_client::menu::Input::Throw
             && self.carried.is_some()
@@ -44,7 +50,12 @@ impl Game<'_> {
     /// `handleCreativeModeItemAdd`); the carried stack stays. Only the server drops it: this is
     /// the client of a server (`remote`).
     pub(super) fn creative_throw_carrying(&mut self, slot: usize, button: i32) {
-        let Some(old) = self.slot_mut(slot).clone() else {
+        let Some(old) = self
+            .slot_mut(slot)
+            .as_ref()
+            .filter(|s| !s.is_empty())
+            .cloned()
+        else {
             return;
         };
         let count = if button == 0 {
@@ -65,7 +76,7 @@ impl Game<'_> {
         });
         self.player_equipment_changed(&before);
         self.apply_equipment();
-        self.remote_creative_throw(ItemStack { count, ..old });
+        self.creative_screen_drop(ItemStack { count, ..old });
         self.send_creative_slots();
     }
     /// A click on an item tab's display slot: the screen's own handling
@@ -84,6 +95,11 @@ impl Game<'_> {
             search.move_cursor_to_end(false);
             search.highlight = 0;
         }
+        if input == sunrise_client::menu::Input::Throw
+            && !self.drop_spam_throttler.is_under_threshold()
+        {
+            return;
+        }
         let shown = self.creative_display_stack(slot);
         let catalog = world_items!(self);
         let max = |s: &ItemStack| catalog.get(&s.item).map_or(64, |i| i.max_stack);
@@ -94,7 +110,7 @@ impl Game<'_> {
             DisplayClick::Offhand(stack) => self.offhand = Some(stack),
             // handleCreativeModeItemDrop: on a server the stack goes to it (SetCreativeModeSlot
             // to slot -1), which drops it; a local drop here would never reach the server.
-            DisplayClick::Drop(stack) if self.remote.is_some() => self.remote_creative_throw(stack),
+            DisplayClick::Drop(stack) if self.remote.is_some() => self.creative_screen_drop(stack),
             DisplayClick::Drop(stack) => {
                 self.player_drop(stack);
             }
@@ -435,6 +451,7 @@ impl Game<'_> {
             None => game_of.iter().position(|x| *x == Some(g)),
         };
         let mut menu = Menu::new(kind);
+        self.predict_menu_drops(&mut menu, self.drop_spam_throttler);
         let menu_id = if matches!(kind, Kind::Mount(_)) {
             Some("sunrise:mount_inventory")
         } else if matches!(kind, Kind::Inventory | Kind::ItemPicker) {
@@ -702,12 +719,12 @@ impl Game<'_> {
                 self.award_furnace_recipes(pos, at);
             }
         } else if self.screen == Screen::Creative {
-            // A THROW in the creative screen with an empty hand: on an item tab's hotbar
-            // `AbstractContainerMenu.doClick` calls `Player.handleCreativeModeItemDrop`, on the
-            // Survival Inventory tab the screen does. The stack goes to the server, the slot
-            // follows with the others (SetCreativeModeSlot). Only the server can drop it; the
-            // slot has already given it up.
-            for stack in dropped {
+            // `Player.drop` swings even when the creative packet is suppressed. Only THROW's
+            // `handleCreativeModeItemDrop` requests go out, before the changed-slot sync.
+            for _ in dropped {
+                self.swing_hand(Hand::Main, SwingAnimation::DEFAULT);
+            }
+            for stack in menu.take_predicted_creative_throws() {
                 self.remote_creative_throw(stack);
             }
         }
@@ -883,6 +900,7 @@ impl Game<'_> {
         game_of.extend((9..36).chain(0..9).map(Some));
         let to_menu = |g: usize| game_of.iter().position(|x| *x == Some(g));
         let mut menu = Menu::new(Kind::Anvil);
+        self.predict_menu_drops(&mut menu, self.drop_spam_throttler);
         // Prediction must dispatch the result update between the two input writes in onTake.
         menu.anvil_hook = true;
         menu.set_registry_id(self.remote_menu_type());

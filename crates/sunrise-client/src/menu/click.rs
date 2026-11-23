@@ -1434,6 +1434,9 @@ impl Menu {
                 {
                     break;
                 }
+                if !self.can_throw() {
+                    break;
+                }
                 let Some(taken) = self.safe_take(env, slot, amount, u32::MAX) else {
                     break;
                 };
@@ -1445,8 +1448,8 @@ impl Menu {
                         repeat,
                     }));
                 }
-                self.drop_stack(&taken, env.items);
-                if !repeat {
+                self.throw_stack(&taken, env.items);
+                if !repeat || taken.is_empty() {
                     break;
                 }
                 previous = Some(taken);
@@ -1465,8 +1468,8 @@ impl Menu {
                 taken,
                 repeat,
             } => {
-                self.drop_stack(&taken, env.items);
-                if repeat {
+                self.throw_stack(&taken, env.items);
+                if repeat && !taken.is_empty() {
                     return self.run_click_step(
                         env,
                         ClickStep::Throw {

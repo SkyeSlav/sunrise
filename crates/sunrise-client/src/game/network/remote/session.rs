@@ -908,6 +908,7 @@ impl Game<'_> {
         r.level_key = mod_api::__private::dimension_key(&spawn.dimension);
         r.hashed_seed = spawn.seed;
         if new_logical_player {
+            self.drop_spam_throttler = Default::default();
             r.abilities = sunrise_client::lan::abilities::PlayerAbilities::default();
             r.own_player_info = std::cell::OnceCell::new();
         } else if let Some((flying, flying_speed)) = body_flight {

@@ -37,6 +37,8 @@ pub mod container_items;
 pub use container_items::fits_inside_container_items;
 mod click;
 pub use click::{ClickContinuation, SlotTake, apply_stacked_outcome};
+mod client_drops;
+pub use client_drops::DropSpamThrottler;
 mod storage;
 pub use storage::{MutationStamp, Snapshot};
 mod equip_movement;
@@ -796,6 +798,7 @@ impl Menu {
                 data: vec![0; data],
                 creative: false,
                 on_client: false,
+                client_drops: None,
                 selected: 0,
                 drops: Vec::new(),
                 dropped: Vec::new(),

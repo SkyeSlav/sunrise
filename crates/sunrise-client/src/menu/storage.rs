@@ -109,6 +109,7 @@ pub struct State {
     /// The menu is a server's client's copy (its level no `ServerLevel`): `CraftingMenu` and
     /// `InventoryMenu.slotsChanged` work out no crafting result there; the server sends it.
     pub on_client: bool,
+    pub(super) client_drops: Option<client_drops::ClientDropPrediction>,
     /// The selected hotbar slot (`Inventory.selected`).
     pub selected: usize,
     /// Dropped stacks (canonical text), `xp+N` and the like, in order.
