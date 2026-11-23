@@ -1,11 +1,37 @@
-//! What a server mod reads of the tick times and of whether the server is published, and sets
-//! of the view and simulation distance.
-use super::Game;
+//! What a server mod reads of the tick times, the mob tick costs and of whether the server is
+//! published, and sets of the view and simulation distance.
+use super::{Game, tick_profile};
 
 impl Game<'_> {
     /// `MinecraftServer.getTickTimesNanos`.
     pub(super) fn tick_times(&self) -> Vec<u64> {
         self.clock.tick_times()
+    }
+    /// A mod's mob tick timing switch (`tick_profile`'s mod sums), refused off a running server.
+    pub(super) fn mob_cost_sampling(&mut self, on: bool) -> bool {
+        if !self.is_logical_server() {
+            return false;
+        }
+        tick_profile::set_mod_sampling(on);
+        true
+    }
+    /// The mob tick costs timed for the mods since their last take; none off a running server.
+    pub(super) fn take_mob_costs(&mut self) -> Vec<mod_api::MobTickCost> {
+        if !self.is_logical_server() {
+            return Vec::new();
+        }
+        tick_profile::take_mod()
+            .into_iter()
+            .map(|cost| {
+                mod_api::__private::built::MobTickCost {
+                    dimension: cost.dimension.to_owned(),
+                    kind: cost.kind,
+                    nanos: cost.nanos,
+                    mob_ticks: cost.mob_ticks,
+                }
+                .into()
+            })
+            .collect()
     }
     /// `PlayerList.getViewDistance`.
     pub(super) fn server_view_distance(&self) -> Option<i32> {

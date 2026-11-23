@@ -84,6 +84,18 @@ pub trait ConfigServerHost {
     /// has the average.
     fn tick_times(&self) -> Vec<u64>;
     /// Side: server.
+    /// Start or stop timing every mob's own tick on this server, for [`take_mob_costs`](Self::take_mob_costs);
+    /// off when a server starts. True when the server took the change, false off a running
+    /// server. The switch is shared by every mod. Turning it off discards the costs no one took;
+    /// nothing is timed while it is off. Stopping the server discards everything.
+    fn mob_cost_sampling(&mut self, on: bool) -> bool;
+    /// Side: server.
+    /// The mob tick costs timed since the last take, by level and mob type, and clears them:
+    /// costliest first, then by mob type id, then by level id. Empty when nothing was timed.
+    /// A mob tick a `entity_tick_pre` listener cancels adds nothing. Every mod drains the same
+    /// totals; `sunrise-report`'s own sampling is separate, and neither clears the other.
+    fn take_mob_costs(&mut self) -> Vec<MobTickCost>;
+    /// Side: server.
     /// The server's view distance in chunks (`PlayerList.getViewDistance`, `view-distance`):
     /// how far players are sent chunks at most. None off a server open to players.
     fn server_view_distance(&self) -> Option<i32>;

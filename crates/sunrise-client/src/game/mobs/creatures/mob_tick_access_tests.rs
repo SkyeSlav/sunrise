@@ -755,3 +755,58 @@ fn a_mob_moved_in_one_arrows_post_is_hit_by_the_next_arrow() {
         });
     });
 }
+
+/// Cancels the first pig's tick; names pigs and cows so each mob gets its own Pre.
+struct CancelFirstPig;
+
+#[mod_api::__subscriptions]
+impl mod_api::Hooks for CancelFirstPig {
+    fn entity_tick_listened(&self, _: HostSide<'_>, event: &mut EntityTickListenedEvent) {
+        event.listened = true;
+    }
+    fn entity_tick_pre(&self, _: HostSide<'_>, event: &mut EntityTickPreEvent<'_>) {
+        if event.entities == [71] {
+            event.canceled.push(71);
+        }
+    }
+    fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+        r.entity_tick_each("minecraft:pig");
+        r.entity_tick_each("minecraft:cow");
+    }
+}
+
+/// `take_mob_costs`: a cow riding the second pig is timed under its own type, the canceled
+/// first pig adds nothing, and a take clears the rows.
+#[test]
+#[ignore = "daily"]
+fn mob_costs_exclude_canceled_ticks_and_charge_a_rider_to_its_type() {
+    let mods: mod_api::Mods = vec![ModEntry::new("mob-costs", Box::new(CancelFirstPig))].into();
+    mod_platform::testing::with_mods(mods, || {
+        with_two_pigs(|game| {
+            let cow = game.res.mob_types().get("minecraft:cow").unwrap().clone();
+            let mut rider = Mob::new(73, cow, Vec3::new(2.0, 81.0, 0.5), 0.0);
+            rider.no_ai = true;
+            rider.no_gravity = true;
+            game.mobs.push(rider);
+            game.mount_mob(73, 72);
+            assert!(game.mob_cost_sampling(true));
+            game.tick_creature_entities().unwrap();
+            let mut rows: Vec<_> = game
+                .take_mob_costs()
+                .into_iter()
+                .map(|cost| (cost.dimension, cost.kind, cost.mob_ticks))
+                .collect();
+            rows.sort();
+            let overworld = || "minecraft:overworld".to_owned();
+            assert_eq!(
+                rows,
+                [
+                    (overworld(), "minecraft:cow".to_owned(), 1),
+                    (overworld(), "minecraft:pig".to_owned(), 1),
+                ]
+            );
+            assert!(game.take_mob_costs().is_empty());
+            assert!(game.mob_cost_sampling(false));
+        });
+    });
+}

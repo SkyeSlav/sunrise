@@ -1,8 +1,9 @@
-//! What each kind of mob costs the server tick, for `sunrise-report` (dedicated/report.rs): while
-//! a report records, one tick in [`SAMPLE_EVERY`] times every mob's own tick and adds it up by
-//! level and mob type.
+//! What each kind of mob costs the server tick, for `sunrise-report` (dedicated/report.rs) and
+//! for mods (`mob_cost_sampling`): while a report records, one tick in [`SAMPLE_EVERY`] times
+//! every mob's own tick and adds it up by level and mob type; while a mod samples, every tick
+//! does, into sums of its own. Neither reader's take clears the other's sums.
 //! Off, a mob costs one thread-local read; sampled, two clock reads and a map update.
-//! A mob's riders tick inside its own tick, so they count for it. The server tick's
+//! A rider ticks as its own mob, so its time counts for its own type. The server tick's
 //! spans stay enabled while the report or slow-tick ring needs them ([`want_spans`]).
 use std::{
     cell::{Cell, RefCell},
@@ -19,6 +20,8 @@ pub const SAMPLE_EVERY: usize = 4;
 
 /// The report sampling bit.
 const REPORT: u8 = 1;
+/// The mods' sampling bit.
+const MODS: u8 = 2;
 
 /// The time and the ticks of one mob type in one level.
 #[derive(Default)]
@@ -31,10 +34,12 @@ struct Cost {
 type Totals = FxHashMap<&'static str, FxHashMap<String, Cost>>;
 
 thread_local! {
-    /// The report bit, set while it samples.
+    /// The report and mod bits, each set while it samples.
     static SAMPLING: Cell<u8> = const { Cell::new(0) };
-    /// The report's sums.
-    static COSTS: RefCell<[Totals; 1]> = RefCell::default();
+    /// When the mods last started sampling: a tick that began before belongs to no interval.
+    static MODS_SINCE: Cell<Option<Instant>> = const { Cell::new(None) };
+    /// The report's sums, then the mods'.
+    static COSTS: RefCell<[Totals; 2]> = RefCell::default();
 }
 
 /// Who wants the tick's spans recorded besides nobody: `SUNRISE_SPIKES` (the slow ring's steps),
@@ -73,6 +78,24 @@ pub fn set_sampling(on: bool) {
     set(REPORT, on);
 }
 
+/// Sample every mob tick this thread runs next for the mods, or stop and discard what they
+/// haven't taken.
+pub fn set_mod_sampling(on: bool) {
+    let was = SAMPLING.with(Cell::get) & MODS != 0;
+    set(MODS, on);
+    if on && !was {
+        MODS_SINCE.with(|since| since.set(Some(Instant::now())));
+    } else if !on {
+        MODS_SINCE.with(|since| since.set(None));
+        COSTS.with(|c| c.borrow_mut()[1].clear());
+    }
+}
+
+/// The mods' costs sampled since their last take, costliest first; clears them.
+pub fn take_mod() -> Vec<MobCost> {
+    take_of(1)
+}
+
 fn set(who: u8, on: bool) {
     SAMPLING.with(|s| s.set(if on { s.get() | who } else { s.get() & !who }));
 }
@@ -104,12 +127,23 @@ pub fn end_mob(dim: &'static str, sampled: Option<(Instant, Arc<MobType>)>) {
 }
 
 /// [`add`] for the type with registry id `id`.
-fn add_kind(dim: &'static str, id: &str, started: Instant) {
-    let nanos = started.elapsed().as_nanos() as u64;
-    let who = SAMPLING.with(Cell::get);
+pub fn add_kind(dim: &'static str, id: &str, started: Instant) {
+    add_nanos(dim, id, started, started.elapsed().as_nanos() as u64);
+}
+
+/// One mob tick of `nanos` that began at `started`, for every reader sampling it.
+fn add_nanos(dim: &'static str, id: &str, started: Instant, nanos: u64) {
+    let mut who = SAMPLING.with(Cell::get);
+    // Sampling turned off and on again inside this tick: the new interval starts after it.
+    if MODS_SINCE
+        .with(Cell::get)
+        .is_some_and(|since| started < since)
+    {
+        who &= !MODS;
+    }
     COSTS.with(|c| {
         let mut costs = c.borrow_mut();
-        for (sums, bit) in costs.iter_mut().zip([REPORT]) {
+        for (sums, bit) in costs.iter_mut().zip([REPORT, MODS]) {
             if who & bit == 0 {
                 continue;
             }
@@ -152,7 +186,12 @@ fn take_of(sums: usize) -> Vec<MobCost> {
             })
         })
         .collect();
-    out.sort_by(|a, b| b.nanos.cmp(&a.nanos).then_with(|| a.kind.cmp(&b.kind)));
+    out.sort_by(|a, b| {
+        b.nanos
+            .cmp(&a.nanos)
+            .then_with(|| a.kind.cmp(&b.kind))
+            .then_with(|| a.dimension.cmp(b.dimension))
+    });
     out
 }
 
@@ -160,7 +199,7 @@ fn take_of(sums: usize) -> Vec<MobCost> {
 pub fn sample_cost_nanos() -> f64 {
     const N: u32 = 20_000;
     let was = SAMPLING.with(Cell::get);
-    let kept = COSTS.with(|c| std::mem::take(&mut c.borrow_mut()[0]));
+    let kept = COSTS.with(|c| std::mem::take(&mut *c.borrow_mut()));
     SAMPLING.with(|s| s.set(REPORT));
     let timer = Instant::now();
     for _ in 0..N {
@@ -170,7 +209,7 @@ pub fn sample_cost_nanos() -> f64 {
     }
     let per = timer.elapsed().as_nanos() as f64 / f64::from(N);
     SAMPLING.with(|s| s.set(was));
-    COSTS.with(|c| c.borrow_mut()[0] = kept);
+    COSTS.with(|c| *c.borrow_mut() = kept);
     per
 }
 
@@ -211,6 +250,42 @@ mod tests {
             (nether.kind.as_str(), nether.mob_ticks),
             ("minecraft:zombie", 1)
         );
+        assert!(take().is_empty());
+    }
+
+    /// The mods' sums: every tick while on, costliest first, then by type; apart from the
+    /// report's, cleared when switched off, and blind to a tick begun before they switched on.
+    #[test]
+    fn mod_costs_are_their_own_and_start_with_their_interval() {
+        let (pig, cow) = ("minecraft:pig", "minecraft:cow");
+        let at = "minecraft:overworld";
+        set_sampling(true);
+        add_nanos(at, pig, Instant::now(), 5);
+        set_mod_sampling(true);
+        add_nanos(at, pig, Instant::now(), 11);
+        add_nanos(at, pig, Instant::now(), 19);
+        add_nanos(at, cow, Instant::now(), 30);
+        let rows = |costs: Vec<MobCost>| {
+            costs
+                .into_iter()
+                .map(|c| (c.kind, c.nanos, c.mob_ticks))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(rows(take_mod()), [(cow.into(), 30, 1), (pig.into(), 30, 2)]);
+        assert!(take_mod().is_empty());
+        // The report kept its own, the mods' take changing nothing there.
+        assert_eq!(rows(take()), [(pig.into(), 35, 3), (cow.into(), 30, 1)]);
+        set_sampling(false);
+        // Off discards; a tick begun before switching back on is no part of the new interval.
+        add_nanos(at, cow, Instant::now(), 7);
+        let begun = Instant::now() - std::time::Duration::from_secs(1);
+        set_mod_sampling(false);
+        set_mod_sampling(true);
+        add_nanos(at, pig, begun, 3);
+        assert!(take_mod().is_empty());
+        set_mod_sampling(false);
+        add_nanos(at, pig, Instant::now(), 3);
+        assert!(take_mod().is_empty());
         assert!(take().is_empty());
     }
 

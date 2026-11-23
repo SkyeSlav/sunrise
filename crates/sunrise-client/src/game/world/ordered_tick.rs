@@ -204,7 +204,16 @@ impl Game<'_> {
                     };
                     let at = dragon.position;
                     if entity_ticking(at.x.floor() as i32, at.z.floor() as i32) {
+                        // Its own tick's cost by type, as every mob's (tick_profile.rs).
+                        let sampled = super::tick_profile::start();
                         self.tick_dragon();
+                        if let Some(started) = sampled {
+                            super::tick_profile::add_kind(
+                                self.dim.id(),
+                                "minecraft:ender_dragon",
+                                started,
+                            );
+                        }
                         if let Some(dragon) = self.dragon.as_ref().filter(|d| d.join == join) {
                             self.entity_section_step(
                                 dragon.id,

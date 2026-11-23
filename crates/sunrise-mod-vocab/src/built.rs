@@ -663,3 +663,27 @@ impl<'a> From<ContainerLootFilled<'a>> for super::ContainerLootFilled<'a> {
         }
     }
 }
+// exhaustive: the game builds it with a literal; mods only read it
+#[derive(sunrise_mod_api_macros::Wire)]
+pub struct MobTickCost {
+    pub dimension: String,
+    pub kind: String,
+    pub nanos: u64,
+    pub mob_ticks: u64,
+}
+impl From<MobTickCost> for super::MobTickCost {
+    fn from(v: MobTickCost) -> Self {
+        let MobTickCost {
+            dimension,
+            kind,
+            nanos,
+            mob_ticks,
+        } = v;
+        Self {
+            dimension,
+            kind,
+            nanos,
+            mob_ticks,
+        }
+    }
+}

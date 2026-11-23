@@ -112,6 +112,24 @@ pub struct ChannelRef {
     pub id: u64,
 }
 
+/// One mob type's sampled tick cost in one level, from
+/// [`take_mob_costs`](ConfigServerHost::take_mob_costs): the time its mobs' own ticks took
+/// (vanilla's per-entity-type profiler spans in `ServerLevel.tickNonPassenger` and
+/// `tickPassenger`), a rider's under its own type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub struct MobTickCost {
+    /// The level's dimension id (`minecraft:overworld`).
+    pub dimension: String,
+    /// The mob type's id (`minecraft:zombie`).
+    pub kind: String,
+    /// The timed ticks' total wall time, in nanoseconds.
+    pub nanos: u64,
+    /// How many of its mobs' ticks were timed.
+    pub mob_ticks: u64,
+}
+
 /// A player on the server, as a server hook sees them.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]

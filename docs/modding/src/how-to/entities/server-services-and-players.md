@@ -245,6 +245,18 @@ ticking is frozen, `None` on a client. A frozen server still runs the ticks `/ti
 `server_tick_start`'s `world_running` can be true while it is frozen; read this to tell a frozen server from a
 paused level.
 
+## Mob tick costs
+
+`host.mob_cost_sampling(true)` starts timing every mob's own tick on the running server, as
+vanilla's per-entity-type profiler spans do; `host.take_mob_costs()` returns the `MobTickCost`
+rows timed since the last take (level, mob type, total nanoseconds, timed ticks), costliest first,
+and clears them. A rider is timed under its own type, and a tick an `entity_tick_pre` listener
+cancels adds nothing. The switch and the rows are shared by every mod: one mod's take empties
+them for all. `mob_cost_sampling(false)` stops timing and discards the rows no one took; the
+server starts with it off and stopping the server discards everything. Both return `false` or an
+empty list off a running server. `sunrise-report`'s own sampling is separate: neither clears the
+other's totals.
+
 ## Finding blocks in a chunk
 
 `chunk.sections_with_block(host, block)` names the sections of a loaded chunk whose block palette may hold any

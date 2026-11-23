@@ -44,6 +44,8 @@ impl Game<'_> {
     ) -> Result<()> {
         // There will be no next server tick; do not keep logs for another world.
         sunrise_client::logging::stop_tap();
+        // Nor the mods' mob tick costs: a server's diagnostics end with it.
+        super::tick_profile::set_mod_sampling(false);
         let mut failure = None;
         self.exclude_interrupted_players(crashed, |m| log::warn!("{m}"));
         if let Err(payload) =
