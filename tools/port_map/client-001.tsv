@@ -7,8 +7,8 @@ AccountProfileKeyPairManager.fetchProfileKeyPair	port	crates/sunrise-client-rend
 AccountProfileKeyPairManager.parsePublicKey	port	crates/sunrise-client-render/src/auth.rs::parse_certificates	publicKeySignatureV2, expiresAt
 CacheSlot.compute	skip:java		memo slot for a computed value; Sunrise has no per-context cache slot
 ChunkBatchSizeCalculator.onBatchFinished	port	crates/sunrise-protocol/src/chunk_batch.rs::ChunkBatchSize::on_batch_finished	timed on the network thread; the load bots share it
-ClientAdvancements.setSelectedTab	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::advancements_mouse	gap: minor: the tab change is local; the openedTab packet to the server is not sent
-ClientAdvancements.setListener	skip:ui		listener plumbing for the advancements screen; Sunrise's screen reads its state each frame
+ClientAdvancements.setSelectedTab	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::select_advancement_tab	reports the selected tab and keeps its root ID on the connection
+ClientAdvancements.setListener	skip:ui		the open screen handles update callbacks directly; opening resolves the connection's saved selection
 ClientAdvancements.get	port	crates/sunrise-client/src/advancements.rs::Tree::get	returns the advancement by id; holder wrapper is not needed
 ClientChunkCache.isValidChunk	skip:other		chunks are stored by position, so there is no ring slot to check
 ClientChunkCache.drop	port	crates/sunrise-client-render/src/streaming.rs::Streaming::forget_columns	Game::client_chunk_unload tells mods (client_chunk_unload) before the column is freed; block entities and renderer columns are cleared in Game::apply_forget_level_chunk_packet
