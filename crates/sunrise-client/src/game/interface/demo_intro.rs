@@ -356,7 +356,17 @@ mod tests {
                                 Screen::Playing,
                                 "Later does not return to Pause"
                             );
-                            assert!(!game.agent_pointer, "Later requests capture");
+                            assert!(
+                                !game.agent_pointer,
+                                "Later requests capture: focused {} title {} over {} dialog {} pack prompt {} command prompt {} guest {}",
+                                game.focused,
+                                game.title.is_some(),
+                                game.screen_over_playing(),
+                                game.dialog_open(),
+                                game.server_packs.prompt.is_some(),
+                                game.command_prompt.is_some(),
+                                game.lan_acting.is_some()
+                            );
                             assert_eq!(game.remote.as_ref().unwrap().chat_received, count);
                             assert!(spoken.lock().unwrap().is_empty());
                         }
