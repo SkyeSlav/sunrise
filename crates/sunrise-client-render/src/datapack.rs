@@ -3027,7 +3027,7 @@ mod tests {
             packs[0].read("data/test/function/a.mcfunction").unwrap(),
             b"say overlay"
         );
-        assert_eq!(packs[0].description(), "root");
+        assert_eq!(packs[0].description(), "root".into());
         assert_eq!(
             packs[0].list_kinds(&["function"]),
             [
@@ -3035,7 +3035,7 @@ mod tests {
                 "data/test/function/b.mcfunction"
             ]
         );
-        let store = DataStore::load(&[&packs[0]]);
+        let store = DataStore::load(&DataPacks::new(&[&packs[0]]));
         assert_eq!(store.functions.len(), 2);
         assert!(store.functions.contains_key("test:b"));
         assert!(!store.functions.contains_key("test:c"));
