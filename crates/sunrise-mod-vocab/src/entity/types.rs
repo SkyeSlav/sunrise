@@ -214,6 +214,31 @@ impl EntityRef {
     pub fn next_int(self, hit: &mut dyn HitHost, bound: i32) -> Option<i32> {
         hit.entity_next_int(self, bound)
     }
+    /// Borrow the entity's own random (`Entity.getRandom`, the entity's `random` field) for `draw`
+    /// only: `entity.with_random(host, |rng| rng.next_float())`. The closure cannot keep or reseed
+    /// the stream. Draws advance the entity's one live stream directly, so they interleave with
+    /// the game's own draws from it in vanilla's order: the entity's next draw after the closure
+    /// sees the value after the last one `draw` took. This is the random vanilla's entity-scoped
+    /// chances use (`player.getRandom().nextFloat()` in the anvil's wear roll, a hit sound's
+    /// pitch); the level's stream is [`LevelRef::with_random`].
+    ///
+    /// Returns `None` without calling `draw` if the host lacks server authority, the handle is
+    /// stale, the entity is not in the level in place, or its kind has no random of its own in
+    /// the engine yet. A mob and a player (a guest parked while the server ticks another
+    /// player's turn included) have one. An armor stand does not (#4826), so it answers `None`,
+    /// and so does every other kind the engine keeps no random for.
+    ///
+    /// Matching vanilla `Entity.getRandom()`, draws are not rolled back if `draw` panics and
+    /// unwinds, or if an enclosing transaction aborts. A hit hook's host is a
+    /// [`HitHost`], not a `ServerHost`: there, draw with [`Self::next_float`] and its siblings.
+    pub fn with_random<T>(
+        self,
+        host: &mut dyn ServerHost,
+        draw: impl FnOnce(&mut dyn RandomSource) -> T,
+    ) -> Option<T> {
+        let backend = crate::backend::backend_mut_of(host)?;
+        crate::world::random::with_random_draw(draw, |draw| backend.with_entity_random(self, draw))
+    }
 }
 
 /// The resolved holder of a mob's or a boat's leash, or its absence.

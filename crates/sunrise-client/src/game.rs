@@ -1733,6 +1733,9 @@ mod native_smoke_source_tests;
 #[path = "game/modding/native_sound_refs.rs"]
 mod native_sound_refs;
 #[cfg(test)]
+#[path = "game/modding/native_entity_random_tests.rs"]
+mod native_entity_random_tests;
+#[cfg(test)]
 #[path = "game/modding/native_sound_seed_tests.rs"]
 mod native_sound_seed_tests;
 #[path = "game/modding/native_special_renderers.rs"]
