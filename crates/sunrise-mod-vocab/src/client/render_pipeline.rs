@@ -523,6 +523,59 @@ pub enum PackUniformType {
     Mat4,
 }
 
+/// How an active shader pack binds a registered [`RenderPipeline`], reported by
+/// [`crate::WorldDrawContext::pack_override_state`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client query value describing active shader-pack override state.
+pub enum PackOverrideState {
+    /// No translated shader pack is active.
+    NoPack,
+    /// A shader pack is active, but the pipeline was not bound to a translated pack program
+    /// (either it has no [`PackBinding`] or no candidate program compiled); the mod's own shader
+    /// runs instead.
+    UnboundPack,
+    /// The active shader pack translated and bound a pack program for this pipeline.
+    Bound,
+}
+
+/// Per-frame value for a mod-declared shader-pack uniform ([`PackUniformDecl`]),
+/// supplied through [`crate::WorldDrawContext::set_pack_uniform`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+// no wire: local client shader-pack per-frame uniform value.
+pub enum PackUniformValue {
+    /// GLSL `float`
+    Float(f32),
+    /// GLSL `int`
+    Int(i32),
+    /// GLSL `vec2`
+    Vec2([f32; 2]),
+    /// GLSL `vec3`
+    Vec3([f32; 3]),
+    /// GLSL `vec4`
+    Vec4([f32; 4]),
+    /// GLSL `mat3` (column-major)
+    Mat3([[f32; 3]; 3]),
+    /// GLSL `mat4` (column-major)
+    Mat4([[f32; 4]; 4]),
+}
+
+impl PackUniformValue {
+    /// The [`PackUniformType`] matching this value's variant.
+    pub const fn ty(&self) -> PackUniformType {
+        match self {
+            Self::Float(_) => PackUniformType::Float,
+            Self::Int(_) => PackUniformType::Int,
+            Self::Vec2(_) => PackUniformType::Vec2,
+            Self::Vec3(_) => PackUniformType::Vec3,
+            Self::Vec4(_) => PackUniformType::Vec4,
+            Self::Mat3(_) => PackUniformType::Mat3,
+            Self::Mat4(_) => PackUniformType::Mat4,
+        }
+    }
+}
+
 /// Mapping from a pipeline vertex attribute or per-draw value to a pack-side GLSL input name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]

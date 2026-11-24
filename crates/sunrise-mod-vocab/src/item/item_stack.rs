@@ -1,6 +1,8 @@
 //! Owned and borrowed item values. Registry-dependent validation belongs to the game's write boundary.
 #[path = "item_stack_text.rs"]
 mod text;
+#[path = "item_stack_wear.rs"]
+mod wear;
 
 use crate::ItemKey;
 use component_edits::{ComponentEdit, ItemComponentEdits};

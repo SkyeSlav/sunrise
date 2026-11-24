@@ -2056,15 +2056,22 @@ impl Renderer {
         crate::mesher::group_parts(adapter.get_info().backend == wgpu::Backend::Metal);
         // Readable as storage where flat draws run, or while a `shaders/` pack's terrain programs
         // read them per section (`arena_storage`): it starts as for the picked pack, taken to
-        // read them, so the pack loading keeps it (`follow_arena_storage`).
-        let terrain_pages = flat::pages_readable(&adapter, &device);
+        // read them, so the pack loading keeps it (`follow_arena_layout`).
+        // `SUNRISE_SHADER_PACK_WITHOUT=vertex-storage` takes reads away as for a pack
+        // (`pack_post::Gpu::vertex_reads`).
+        let terrain_pages = flat::pages_readable(&adapter, &device)
+            && pack_post::Gpu::of(&adapter, device.features()).vertex_reads;
         let arena_storage = arena_storage(flat_wanted, pack_starts_wide && terrain_pages);
+        // With a normal stream where the pack's per-section draws read no pages
+        // (`follow_arena_layout`), as for the pack's taken to fit with it.
+        let arena_normals = pack_starts_wide && !flat_wanted && !terrain_pages;
         let arena = arena::Arena::new(
             &device,
             std::mem::size_of::<TerrainVertex>() as u64,
             1 << 20,
             arena_storage,
-        );
+        )
+        .with_normals(arena_normals);
         // Sections as one index list per frame where multi-draw is emulated.
         let mut flat = flat_wanted.then(|| {
             let buffers = [Some(wgpu::VertexBufferLayout {
@@ -2214,6 +2221,7 @@ impl Renderer {
                 shader_pack,
                 false,
             ),
+            arena_normals,
         );
         if let (Some(flat), Some(arena)) = (&mut flat, &translucent_arena) {
             flat.set_translucent_page_vertices(arena.page_vertices());
@@ -2577,6 +2585,7 @@ impl Renderer {
             pack_terrain_flat: false,
             terrain_pages,
             pack_terrain_pages: false,
+            pack_terrain_normals: false,
             pack_terrain_bindings: Default::default(),
             arena_storage,
             separate_ao: false,

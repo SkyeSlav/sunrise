@@ -117,6 +117,8 @@ pub struct WorldGeometry {
     /// a stage.
     pipeline_quads: Vec<PipelineVertex>,
     pipeline_runs: Vec<PipelineRun>,
+    /// Per-frame shader-pack uniform values submitted via `WorldDrawContext::set_pack_uniform`.
+    pack_uniforms: Vec<(&'static str, mod_api::PackUniformValue)>,
     /// Geometry submitted in `submit_custom_geometry` and debug renderers before pass stages run.
     custom: StageBuffers,
     /// Order-independent transparency sub-pass primitives (`DepthBounds`, `Transmittance`,
@@ -165,6 +167,7 @@ impl Default for WorldGeometry {
             quads: std::array::from_fn(|_| Vec::with_capacity(CAPACITY as usize * 4)),
             pipeline_quads: Vec::with_capacity(CAPACITY as usize * 4),
             pipeline_runs: Vec::with_capacity(CAPACITY as usize),
+            pack_uniforms: Vec::new(),
             custom: StageBuffers::default(),
             oit_quads: Vec::new(),
             oit_quads_through: Vec::new(),
@@ -200,6 +203,7 @@ impl WorldGeometry {
         self.quads.iter_mut().for_each(Vec::clear);
         self.pipeline_quads.clear();
         self.pipeline_runs.clear();
+        self.pack_uniforms.clear();
         self.custom.clear();
         self.oit_quads.clear();
         self.oit_quads_through.clear();
@@ -625,6 +629,14 @@ impl WorldGeometry {
             }),
         }
     }
+    /// Record a per-frame value for a registered shader-pack uniform without heap allocation.
+    pub fn set_pack_uniform(&mut self, name: &'static str, value: mod_api::PackUniformValue) {
+        if let Some((_, existing)) = self.pack_uniforms.iter_mut().find(|(k, _)| *k == name) {
+            *existing = value;
+        } else {
+            self.pack_uniforms.push((name, value));
+        }
+    }
     /// Borrow the existing renderer's batch, with no copying or frame allocation. The frame's
     /// builder names the pipeline set the queued slots belong to.
     pub fn batch(&self) -> Batch<'_> {
@@ -647,6 +659,7 @@ impl WorldGeometry {
                 runs: &self.pipeline_runs,
                 time: self.time,
             },
+            pack_uniforms: &self.pack_uniforms,
         }
     }
     /// [`Self::batch`] for a frame drawn with the resources that built `pipelines`, the set

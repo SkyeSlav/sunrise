@@ -22,6 +22,21 @@ pub struct PipelineVertex {
     pub color: u32,
 }
 
+impl PipelineVertex {
+    /// Vertex attributes matching `PipelineVertex` (`pos`, `uv`, `color`).
+    pub const ATTRIBUTES: [wgpu::VertexAttribute; 3] =
+        wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x2,2=>Unorm8x4];
+
+    /// Vertex buffer layout shared by `ModPipelines` and translated shader-pack mod passes.
+    pub const fn buffer_layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Self>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &Self::ATTRIBUTES,
+        }
+    }
+}
+
 /// Quads that follow each other in a frame's vertices and draw with one pipeline at one stage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PipelineRun {
@@ -243,7 +258,6 @@ impl ModPipelines {
         depth: WorldDepth,
         target: TargetState,
     ) -> wgpu::RenderPipeline {
-        let attributes = wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x2,2=>Unorm8x4];
         // Blending happens in the frame's storage, as every vanilla draw's does. Neither mode
         // writes the frame's alpha past what covering it means.
         let blend_state = match blend {
@@ -272,11 +286,7 @@ impl ModPipelines {
                 module: shader,
                 entry_point: Some(VERTEX_ENTRY),
                 compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<PipelineVertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &attributes,
-                })],
+                buffers: &[Some(PipelineVertex::buffer_layout())],
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -589,15 +599,50 @@ impl ModPipelines {
             .any(|run| first <= run.stage && run.stage <= last)
     }
 
+    /// Whether any prepared runs fall in stages `first..=last` for slots not in `bound_slots`.
+    pub fn has_unbound_runs(&self, first: usize, last: usize, bound_slots: &[usize]) -> bool {
+        self.runs
+            .iter()
+            .any(|run| first <= run.stage && run.stage <= last && !bound_slots.contains(&run.slot))
+    }
+
+    /// Append uploaded vertex chunks for prepared runs whose slot is bound to `PackPost` into
+    /// `out`, reusing `out`'s existing allocation.
+    pub fn pack_bound_chunks_into(
+        &self,
+        indices: &wgpu::Buffer,
+        bound_slots: &[usize],
+        out: &mut Vec<super::pack_post::ModDrawChunk>,
+    ) {
+        if self.runs.is_empty() || bound_slots.is_empty() {
+            return;
+        }
+        for run in &self.runs {
+            if !bound_slots.contains(&run.slot) {
+                continue;
+            }
+            for (buffer, quads) in self.vertices.ranges(0, run.quads.clone()) {
+                out.push(super::pack_post::ModDrawChunk {
+                    slot: run.slot,
+                    vertices: buffer.clone(),
+                    indices: indices.clone(),
+                    quads,
+                });
+            }
+        }
+    }
+
     /// Draws the prepared runs of stages `first..=last` in the order queued, with `indices`
-    /// (6 a quad, `u32`). Leaves the pass with its own pipeline, bind group 0 and buffers, and
+    /// (6 a quad, `u32`), skipping slots in `skip_slots` (e.g. slots bound to a shader pack's
+    /// translated mod pass). Leaves the pass with its own pipeline, bind group 0 and buffers, and
     /// bind group 1 after a textured pipeline.
-    pub fn draw(
+    pub fn draw_excluding(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         indices: &wgpu::Buffer,
         first: usize,
         last: usize,
+        skip_slots: &[usize],
     ) {
         self.draw_runs(
             pass,
@@ -605,19 +650,22 @@ impl ModPipelines {
             false,
             self.runs
                 .iter()
-                .filter(|run| first <= run.stage && run.stage <= last)
+                .filter(|run| {
+                    first <= run.stage && run.stage <= last && !skip_slots.contains(&run.slot)
+                })
                 .map(|run| (run, run.quads.clone())),
         );
     }
 
     /// Same as [`Self::draw`], targeting a shader pack's `colortex0` + `depthtex0` prepared
-    /// with [`Self::ensure_pack_pipelines`].
+    /// with [`Self::ensure_pack_pipelines`], skipping slots bound to translated pack programs.
     pub fn draw_pack(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         indices: &wgpu::Buffer,
         first: usize,
         last: usize,
+        bound_slots: &[usize],
     ) {
         self.draw_runs(
             pass,
@@ -625,7 +673,9 @@ impl ModPipelines {
             true,
             self.runs
                 .iter()
-                .filter(|run| first <= run.stage && run.stage <= last)
+                .filter(|run| {
+                    first <= run.stage && run.stage <= last && !bound_slots.contains(&run.slot)
+                })
                 .map(|run| (run, run.quads.clone())),
         );
     }

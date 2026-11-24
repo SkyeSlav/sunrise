@@ -18,7 +18,7 @@ Declare an integer rule, like vanilla's `random_tick_speed`, with `registrar.gam
 | Category references | Resolved after all mods register; an unknown category refuses loading. |
 | Translation | The category key is `gamerule.category.<namespace>.<path>`. |
 | In-world game rules screen | The host displays a category when it contains a matching rule. Remote clients do not receive mod categories. |
-| World creation | Mod rules use their declared defaults; the world-creation rules screen does not list them. |
+| World creation | The Create New World screen's Game Rules page lists mod rules (boolean and integer) under their categories, from the startup menu on, and the values picked there are written into the new world. A rule left alone uses its declared default. |
 | Persistence | Values are saved with the world, including values belonging to a missing mod. |
 
 <!-- section-pages -->

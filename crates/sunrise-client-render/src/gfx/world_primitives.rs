@@ -153,6 +153,8 @@ pub struct Batch<'a> {
     pub oit: OitBatch<'a>,
     /// The quads mods draw with their own pipelines (`gfx::mod_pipelines`), with their stages.
     pub pipelines: super::mod_pipelines::Batch<'a>,
+    /// Per-frame shader-pack uniform values supplied by mods via `WorldDrawContext::set_pack_uniform`.
+    pub pack_uniforms: &'a [(&'static str, mod_api::PackUniformValue)],
 }
 
 impl Batch<'_> {
@@ -210,6 +212,10 @@ pub struct WorldPrimitives {
     oit_stage_ends: [[u32; 4]; OIT_STAGES - 1],
     /// Mods' own pipelines and their quads, drawn after each stage's primitives.
     pub(super) pipelines: super::mod_pipelines::ModPipelines,
+    pack_uniforms: Vec<(&'static str, mod_api::PackUniformValue)>,
+    /// Pipeline slots currently bound to an active shader pack's translated mod passes,
+    /// refreshed per frame without allocating so fallback engine passes never double-draw them.
+    bound_mod_slots: Vec<usize>,
 }
 
 struct AtlasGroup {
@@ -397,6 +403,8 @@ impl WorldPrimitives {
             oit_counts: [0; 4],
             oit_stage_ends: [[0; 4]; OIT_STAGES - 1],
             pipelines: super::mod_pipelines::ModPipelines::new(device, color_format),
+            pack_uniforms: Vec::new(),
+            bound_mod_slots: Vec::new(),
         }
     }
 
@@ -762,6 +770,8 @@ impl WorldPrimitives {
         let oit_lines = [batch.oit.lines, batch.oit.lines_through].map(|l| l.len() as u32);
         self.oit_counts = [oit_quads[0], oit_quads[1], oit_lines[0], oit_lines[1]];
         self.oit_stage_ends = clamped_ends(batch.oit.stage_ends, self.oit_counts);
+        self.pack_uniforms.clear();
+        self.pack_uniforms.extend_from_slice(batch.pack_uniforms);
         // Before the empty check, which counts the pipeline runs this queues; the pipelines
         // themselves were built with the renderer (`Renderer::build_mod_pipelines`).
         let pipeline_quads =
@@ -909,8 +919,29 @@ impl WorldPrimitives {
         self.draw_prepared_ranges(&mut pass, pipelines, false, draws)
     }
 
-    /// Draws deferred custom geometry (`STAGE_CUSTOM_GEOMETRY`, including `ModPipelines` runs)
-    /// into a classic shader pack's active `colortex0` + `depthtex0` attachments.
+    /// Per-frame shader-pack uniform values uploaded from the latest [`Batch`].
+    pub(super) fn pack_uniforms(&self) -> &[(&'static str, mod_api::PackUniformValue)] {
+        &self.pack_uniforms
+    }
+
+    /// Cache the active shader pack's bound mod pipeline slots for this frame (reusing capacity).
+    pub(super) fn set_bound_mod_slots(&mut self, slots: &[usize]) {
+        self.bound_mod_slots.clear();
+        self.bound_mod_slots.extend_from_slice(slots);
+    }
+
+    /// Append uploaded vertex chunks for mod pipelines bound to translated shader-pack passes.
+    pub(super) fn pack_bound_chunks_into(
+        &self,
+        bound_slots: &[usize],
+        out: &mut Vec<super::pack_post::ModDrawChunk>,
+    ) {
+        self.pipelines
+            .pack_bound_chunks_into(&self.indices, bound_slots, out);
+    }
+
+    /// Draws deferred custom geometry (`STAGE_CUSTOM_GEOMETRY`, including unbound `ModPipelines`
+    /// runs) into a classic shader pack's active `colortex0` + `depthtex0` attachments.
     pub(super) fn draw_pack_custom(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -933,9 +964,11 @@ impl WorldPrimitives {
             && quads_through.is_empty()
             && lines.is_empty()
             && lines_through.is_empty());
-        let has_pipelines = self
-            .pipelines
-            .has_runs(STAGE_CUSTOM_GEOMETRY, STAGE_CUSTOM_GEOMETRY);
+        let has_pipelines = self.pipelines.has_unbound_runs(
+            STAGE_CUSTOM_GEOMETRY,
+            STAGE_CUSTOM_GEOMETRY,
+            &self.bound_mod_slots,
+        );
         if !has_primitives && !has_pipelines {
             return false;
         }
@@ -985,6 +1018,7 @@ impl WorldPrimitives {
                 &self.indices,
                 STAGE_CUSTOM_GEOMETRY,
                 STAGE_CUSTOM_GEOMETRY,
+                &self.bound_mod_slots,
             );
         }
         true
@@ -1119,7 +1153,8 @@ impl WorldPrimitives {
                 (&self.lines, 0, line_range),
             );
         }
-        self.pipelines.draw(pass, &self.indices, first, last);
+        self.pipelines
+            .draw_excluding(pass, &self.indices, first, last, &self.bound_mod_slots);
     }
 }
 

@@ -396,6 +396,56 @@ impl Game<'_> {
     pub(in crate::game) fn enchantments_compatible(&self, a: &str, b: &str) -> bool {
         world_stations!(self).enchantments.compatible(a, b)
     }
+    /// `ItemStack.hurtAndBreak(amount, level, player, onBreak)` on a stack nobody wears: the
+    /// stack after the wear, None once it broke away. A named player is checked as the other
+    /// player reads check it (`player_handle_read`) and must be in `level`, so the wear and its
+    /// random draws stay in the level in place; the player is then swapped in for the wear
+    /// (their infinite materials, their durability trigger) without changing levels. Refused
+    /// off the server, for another level than the one in place, or for a player who is not
+    /// here or is in another level.
+    pub(in crate::game) fn item_stack_hurt_and_break(
+        &mut self,
+        stack: &ItemStack,
+        level: mod_api::LevelRef,
+        amount: i32,
+        player: Option<mod_api::PlayerRef>,
+    ) -> Result<Option<ItemStack>, mod_api::StackWriteError> {
+        use super::commands::Target;
+        use super::durability::Wearer;
+        use mod_api::StackWriteError::Unavailable;
+        if !self.is_logical_server()
+            || level.dimension() != self.dim.key()
+            || self.native_level_world(level).is_none()
+        {
+            return Err(Unavailable);
+        }
+        let (worn, _broken) = match player {
+            None => self.damage_stack_worn(stack, amount, Wearer::Nobody),
+            Some(player) => {
+                self.player_handle_read(player).ok_or(Unavailable)?;
+                let target = self
+                    .native_entity_target(player.entity())
+                    .ok_or(Unavailable)?;
+                let here = match target {
+                    Target::Player => self.acting_in_level_in_place(),
+                    Target::Guest(conn) => self
+                        .lan
+                        .as_ref()
+                        .and_then(|lan| lan.hub.guest(conn))
+                        .is_some_and(|guest| super::Dim::from_id(&guest.dimension) == self.dim),
+                    _ => false,
+                };
+                if !here {
+                    return Err(Unavailable);
+                }
+                self.for_player(target, |game| {
+                    game.damage_stack_worn(stack, amount, Wearer::Player)
+                })
+                .ok_or(Unavailable)?
+            }
+        };
+        Ok(worn)
+    }
     /// Roll through the game's enchantment registry and the active level's random source.
     pub(in crate::game) fn item_resource_enchant_randomly(
         &mut self,

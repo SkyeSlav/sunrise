@@ -448,6 +448,15 @@ pub trait ItemsBackendMut {
         tx: &TransactionContext,
     ) -> bool;
 
+    /// Side: server. Wear a stack nobody wears, behind [`ItemStack::hurt_and_break`]
+    /// (`ItemStack.hurtAndBreak(amount, level, player, onBreak)`).
+    fn item_stack_hurt_and_break(
+        &mut self,
+        stack: &ItemStack,
+        level: LevelRef,
+        amount: i32,
+        player: Option<PlayerRef>,
+    ) -> Result<Option<ItemStack>, StackWriteError>;
     /// Side: server. Roll an enchantment result with the named level's random source.
     fn item_resource_enchant_randomly(
         &mut self,

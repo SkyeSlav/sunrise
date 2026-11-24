@@ -1,5 +1,8 @@
 //! Stable entity material grouping with renderer-owned, reusable CPU scratch.
 use super::Vertex;
+use sunrise_render_core::entity::QuadSort;
+#[cfg(test)]
+use sunrise_render_core::entity::quad_distance_sq;
 pub use sunrise_render_core::entity::{
     TEXT_NORMAL_SOLID_OVERLAY, TEXT_POLYGON_OFFSET_SOLID_OVERLAY,
 };
@@ -191,46 +194,6 @@ pub(crate) struct EntityBatch {
     pub(super) moved_additive: u32,
 }
 
-/// The buffers [`append_sorted`] sorts through, kept between frames so a sort allocates nothing
-/// once warm.
-#[derive(Default)]
-struct QuadSort {
-    /// Each quad's distance and its place before the sort.
-    keys: Vec<(f32, u32)>,
-    quads: Vec<[Vertex; 4]>,
-}
-
-/// `MeshData.decodeQuadCentroids` + `VertexSorting.DISTANCE_TO_ORIGIN`:
-/// JOML `Vector3f(0, 0, 0).distanceSquared(mid)` using JOML's right-to-left unfused `Math.fma`.
-#[inline]
-fn quad_distance_sq(q: &[Vertex; 4]) -> f32 {
-    let dx = 0.0 - (q[0].pos[0] + q[2].pos[0]) * 0.5;
-    let dy = 0.0 - (q[0].pos[1] + q[2].pos[1]) * 0.5;
-    let dz = 0.0 - (q[0].pos[2] + q[2].pos[2]) * 0.5;
-    dx * dx + (dy * dy + dz * dz)
-}
-
-/// Sort `quads` in place far to near by `quad_distance_sq`, preserving arrival order on ties.
-fn sort_quads_in_place(sort: &mut QuadSort, quads: &mut [[Vertex; 4]]) {
-    if quads.len() <= 1 {
-        return;
-    }
-    sort.keys.clear();
-    sort.keys.extend(
-        quads
-            .iter()
-            .enumerate()
-            .map(|(i, q)| (quad_distance_sq(q), i as u32)),
-    );
-    sort.keys
-        .sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
-    sort.quads.clear();
-    sort.quads.extend_from_slice(quads);
-    for (quad, &(_, from)) in quads.iter_mut().zip(&sort.keys) {
-        *quad = sort.quads[from as usize];
-    }
-}
-
 /// `runs` of `entities` appended to `combined`, their quads far to near, quads at one distance
 /// in the order they came: the order a stable sort gives, by an in-place unstable one on
 /// (distance, original index).
@@ -245,7 +208,7 @@ fn append_sorted(
         combined.extend_from_slice(&entities[first * 4..(first + count) * 4]);
     }
     let quads = combined[start..].as_chunks_mut::<4>().0;
-    sort_quads_in_place(sort, quads);
+    sort.sort(quads);
 }
 
 /// `runs` of strictly ordered draws appended to `combined`, preserving draw order across runs
@@ -270,7 +233,7 @@ fn append_sorted_per_run(
         );
         if sort_each {
             let quads = combined[start..].as_chunks_mut::<4>().0;
-            sort_quads_in_place(sort, quads);
+            sort.sort(quads);
         }
     }
 }

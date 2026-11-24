@@ -70,6 +70,12 @@ pub trait LivingBackend {
     /// an armor stand or the dragon.
     fn living_is_jumping(&self, living: LivingRef) -> Option<bool>;
     /// Side: both.
+    /// The ticks before a held jump can jump again (`LivingEntity.noJumpDelay`: 10 after a
+    /// ground jump, counting down each tick): the player in place or a mob on a server, the
+    /// local player's own prediction on a client. None for a server's guests (their clients
+    /// keep their jump), other entities on a client, armor stands, the dragon and stale handles.
+    fn living_no_jump_delay(&self, living: LivingRef) -> Option<i32>;
+    /// Side: both.
     /// Whether the entity is on a climbable block this tick
     /// (`LivingEntity.onClimbable`; Paper's `LivingEntity#isClimbing`), by
     /// the block at its feet: a ladder, a vine, a scaffold or an open

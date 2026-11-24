@@ -16,6 +16,7 @@ pub use types::*;
 
 pub use sunrise_render_shaderpack::pack_post::construction::*;
 pub use sunrise_render_shaderpack::pack_post::execution::*;
+pub use sunrise_render_shaderpack::pack_post::mod_pack::*;
 
 use super::pack_entities::PackEntitiesExt as _;
 use crate::gfx::Frame;
@@ -316,6 +317,9 @@ mod work_group_fold_tests;
 mod forced_flip_tests;
 
 #[cfg(test)]
+mod flip_only_tests;
+
+#[cfg(test)]
 mod weather_depth_tests;
 
 #[cfg(test)]
@@ -338,6 +342,9 @@ mod runtime_length_tests;
 
 #[cfg(test)]
 mod translucent_color_tests;
+
+#[cfg(test)]
+mod water_blend_tests;
 
 #[cfg(test)]
 mod noise_resolution_tests;
@@ -417,4 +424,9 @@ mod material_route_tests;
 mod sign_text_target_tests;
 
 #[cfg(test)]
+mod block_atlas_group_tests;
+#[cfg(test)]
 mod mod_stage_tests;
+
+#[cfg(test)]
+mod mod_pack_binding_tests;

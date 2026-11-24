@@ -31,7 +31,7 @@ use sunrise_core::geometry::{Aabb, Vec3};
 /// The pose a client sizes its copy of a server mob by: `Entity.getPose`, the synched
 /// `DATA_POSE` (a player's as the server sent it, not the one its client tick derives), never a
 /// villager's bed position, which moves it without sizing it.
-fn synced_pose(m: &Mob) -> Pose {
+pub(super) fn synced_pose(m: &Mob) -> Pose {
     match &*m.kind.id {
         "minecraft:player" => Pose::from_id(i32::from(m.extra.synced_pose)),
         "minecraft:mannequin" => m.extra.avatar_pose.into(),

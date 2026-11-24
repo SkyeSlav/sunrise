@@ -13,6 +13,15 @@ pub trait EntityIdentityBackend {
     /// (`Entity.DATA_CUSTOM_NAME`) and a player's profile name. API
     /// 386.
     fn entity_name(&self, entity: EntityRef) -> Option<String>;
+    /// Side: both.
+    /// The entity's custom name with its style (`Entity.getCustomName`), or None when it has
+    /// none, as `setCustomName(null)` leaves it; `Entity.hasCustomName` is `is_some`. Unlike
+    /// `name` it never falls back to a player's or the type's name, and keeps the click events
+    /// `getName` removes. On a client, the name the server synced (`Entity.DATA_CUSTOM_NAME`)
+    /// for a mob, an armor stand, a lightning bolt or a text, item or block display; other kinds read None
+    /// there. None for a player and a stale handle.
+    /// Refuses text deeper than 512 component nodes.
+    fn entity_custom_name(&self, entity: EntityRef) -> Result<Option<Text>, TextFormError>;
     /// Side: server.
     /// Whether the entity's name shows over it at any distance
     /// (`Entity.isCustomNameVisible`); false for the kinds that keep no name.

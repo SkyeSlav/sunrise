@@ -24,6 +24,23 @@ impl GoalCx<'_, '_> {
         )
     }
 
+    pub(super) fn r_entity_custom_name(
+        &self,
+        entity: EntityRef,
+    ) -> Result<Option<mod_api::Text>, mod_api::TextFormError> {
+        use super::super::api_values::TryIntoApi;
+        // A snapshot carries no name, and an unavailable mob has none to read: neither is "unnamed".
+        match self.resolve(entity) {
+            Some(Resolved::Seen(_) | Resolved::Unavailable) => {
+                Err(mod_api::TextFormError::Unavailable)
+            }
+            _ => self
+                .entity_mob(entity)
+                .and_then(super::super::native_entity_data::mob_custom_name)
+                .try_into_api(),
+        }
+    }
+
     pub(super) fn r_entity_added_to_level(&self, entity: EntityRef) -> bool {
         match (self.w.goal_host, self.entity_mob(entity)) {
             (Some(host), Some(mob)) => host.mob_added_to_level(mob),

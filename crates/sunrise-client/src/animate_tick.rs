@@ -1269,29 +1269,11 @@ fn block_animate_tick(
             }
         }
         Animate::EnchantingTable => {
-            for ox in -2i32..=2 {
-                for oy in 0..=1 {
-                    for oz in -2i32..=2 {
-                        if ox.abs() != 2 && oz.abs() != 2 {
-                            continue;
-                        }
-                        if next_int(engine.random(), 16) != 0 {
-                            continue;
-                        }
-                        let provider = ctx.state([pos[0] + ox, pos[1] + oy, pos[2] + oz]);
-                        let between = ctx.state([pos[0] + ox / 2, pos[1] + oy, pos[2] + oz / 2]);
-                        if ctx.enchant_power.has(provider, 1) && ctx.enchant_power.has(between, 2) {
-                            let r = engine.random();
-                            let v = [
-                                f64::from(ox as f32 + r.next_float() - 0.5),
-                                f64::from(oy as f32 - r.next_float() - 1.0),
-                                f64::from(oz as f32 + r.next_float() - 0.5),
-                            ];
-                            add(engine, T::Enchant, [fx + 0.5, fy + 2.0, fz + 0.5], v);
-                        }
-                    }
-                }
-            }
+            enchanting_table_particles(engine, [fx, fy, fz], |[ox, oy, oz]| {
+                let provider = ctx.state([pos[0] + ox, pos[1] + oy, pos[2] + oz]);
+                let between = ctx.state([pos[0] + ox / 2, pos[1] + oy, pos[2] + oz / 2]);
+                ctx.enchant_power.has(provider, 1) && ctx.enchant_power.has(between, 2)
+            })
         }
         Animate::EndRod(facing) => {
             let r = engine.random();
@@ -1971,6 +1953,30 @@ fn block_animate_tick(
         }
     }
 }
+/// `EnchantingTableBlock.animateTick`'s glyphs: for each of `BOOKSHELF_OFFSETS`, in its order,
+/// a `nextInt(16)` draw, and only when it is 0 `isValidBookShelf` (`valid`), then three
+/// `nextFloat`s for the glyph flying from that shelf to the table.
+fn enchanting_table_particles(
+    engine: &mut ParticleEngine,
+    table: [f64; 3],
+    mut valid: impl FnMut([i32; 3]) -> bool,
+) {
+    let [fx, fy, fz] = table;
+    for offset in crate::stations::BOOKSHELF_OFFSETS {
+        if next_int(engine.random(), 16) != 0 || !valid(offset) {
+            continue;
+        }
+        let [ox, oy, oz] = offset;
+        let r = engine.random();
+        let v = [
+            f64::from(ox as f32 + r.next_float()) - 0.5,
+            f64::from(oy as f32 - r.next_float() - 1.0),
+            f64::from(oz as f32 + r.next_float()) - 0.5,
+        ];
+        add(engine, T::Enchant, [fx + 0.5, fy + 2.0, fz + 0.5], v);
+    }
+}
+
 /// `AmbientLeavesBlockSoundPlayer.playAmbientLeavesSounds` for the poplar leaves:
 /// one log and three leaves of the same kind around the block.
 fn leaves_ambient_sound(
@@ -2311,6 +2317,47 @@ mod tests {
             "cache rebuilds must not draw ambient random"
         );
         assert_eq!(other_ambience.random.clone().next_long(), random_before);
+    }
+    /// `EnchantingTableBlock.animateTick` walks `BOOKSHELF_OFFSETS`, which
+    /// `BlockPos.betweenClosedStream(-2, 0, -2, 2, 1, 2)` orders x fastest, then y, then z:
+    /// the shelves are asked in that order within a tick, so each glyph's draws follow it.
+    #[test]
+    fn enchanting_table_asks_its_shelves_in_vanilla_order() {
+        use std::collections::{HashMap, HashSet};
+        let mut vanilla = Vec::new();
+        for z in -2i32..=2 {
+            for y in 0..=1 {
+                for x in -2i32..=2 {
+                    if x.abs() == 2 || z.abs() == 2 {
+                        vanilla.push([x, y, z]);
+                    }
+                }
+            }
+        }
+        let mut engine = ParticleEngine::new(
+            &crate::resource_source::ResourceSource::indexed(Default::default()),
+            &HashMap::new(),
+            &HashSet::new(),
+        );
+        engine.seed_randoms(5, 9, 0);
+        engine.created_requests = Some(Vec::new());
+        engine.camera = [0.5, 66.0, 0.5];
+        let mut several = 0;
+        for _ in 0..200 {
+            let mut asked = Vec::new();
+            enchanting_table_particles(&mut engine, [0.0, 64.0, 0.0], |o| {
+                asked.push(vanilla.iter().position(|v| *v == o).unwrap());
+                true
+            });
+            assert!(asked.is_sorted(), "asked out of vanilla's order: {asked:?}");
+            several += usize::from(asked.len() > 1);
+        }
+        assert!(
+            several > 10,
+            "too few ticks asked two shelves to show the order"
+        );
+        let made = engine.created_requests.take().unwrap();
+        assert!(made.iter().all(|(o, ..)| o.ty == T::Enchant) && !made.is_empty());
     }
     /// `CampfireBlock.makeParticles` through `ClientLevel.doAddParticle`: the
     /// cosy smoke overrides the limiter, the plain smoke does not, so it is

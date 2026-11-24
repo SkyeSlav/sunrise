@@ -75,6 +75,10 @@ impl GoalCx<'_, '_> {
         self.live_living_mob(living).map(|_| false)
     }
 
+    pub(super) fn r_living_no_jump_delay(&self, living: LivingRef) -> Option<i32> {
+        Some(self.live_living_mob(living)?.ai.no_jump_delay)
+    }
+
     pub(super) fn r_living_baby(&self, living: LivingRef) -> Option<bool> {
         Some(self.live_living_mob(living)?.extra.age < 0)
     }

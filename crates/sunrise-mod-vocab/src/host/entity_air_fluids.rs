@@ -28,8 +28,11 @@ pub trait EntityAirFluidsBackend {
     /// or mob) last client update. None for a stale handle or an entity whose body the client
     /// doesn't keep.
     fn entity_is_in_water(&self, entity: EntityRef) -> Option<bool>;
-    /// Side: server.
+    /// Side: both.
     /// Whether the entity is in lava (`Entity.isInLava`): players and mobs.
+    /// On a client, the local player's own predicted state, or a kept entity's (a tracked player
+    /// or mob) last client update. None for a stale handle or an entity whose body the client
+    /// doesn't keep.
     fn entity_is_in_lava(&self, entity: EntityRef) -> Option<bool>;
     /// Side: both.
     /// `Entity.isUnderWater`: the previous eye-in-water sample AND current water contact,

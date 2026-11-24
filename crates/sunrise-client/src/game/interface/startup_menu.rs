@@ -118,6 +118,9 @@ impl StartupMenu {
             );
             title.last_server = settings.file.string("lastServer");
             title.skip_multiplayer_warning = settings.file.bool("skipMultiplayerWarning");
+            // The mods' parts are installed before this menu opens, so Create New World's
+            // Game Rules page lists their rules from the first frame.
+            title.set_rule_registry(Arc::new(crate::game::api_values::game_rule_registry()));
             // Gui.addInitialScreens: the accessibility onboarding comes first.
             if settings.file.bool("onboardAccessibility") {
                 title.start_onboarding();
@@ -1621,6 +1624,54 @@ mod tests {
             menu: StartupMenu::default(),
             error: None,
         }
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn startup_menu_creation_carries_installed_mod_rules() {
+        use mod_api::{Hooks, Registrar, RegistrationContext};
+        use sunrise_client::gamerules::Value;
+        struct Mod;
+        #[mod_api::__subscriptions]
+        impl Hooks for Mod {
+            fn register(&self, registrar: &mut dyn Registrar, _: &RegistrationContext) {
+                registrar.game_rule_category("machines").unwrap();
+                registrar
+                    .game_rule_int("cap", "example:machines", 8, 0, 64)
+                    .unwrap();
+            }
+        }
+        // `set_root` replaces the process's language: keep it in a child process.
+        if super::super::native_entity_refs::tests::run_fresh_cases(
+            "game::startup_menu::tests::startup_menu_creation_carries_installed_mod_rules",
+            "SUNRISE_STARTUP_MOD_RULES_CASE",
+            &["rules"],
+        ) {
+            return;
+        }
+        let mods: mod_api::Mods = vec![mod_api::ModEntry::new("example", Box::new(Mod))].into();
+        mod_platform::testing::with_mods(mods, || {
+            super::super::native_entity_refs::tests::with_client_game(|_| {
+                let scratch = tempfile::tempdir().unwrap();
+                let mut menu = StartupMenu::default();
+                menu.set_root(
+                    scratch.path().to_path_buf(),
+                    &Settings::default(),
+                    Arc::from([]),
+                    "",
+                );
+                let title = menu.title.as_mut().unwrap();
+                title.enter_singleplayer();
+                let Action::Create { mut options, .. } = title.create_action() else {
+                    panic!("creation")
+                };
+                // The page lists `available_rules`: the mod's integer rule is one of them.
+                assert!(options.rules.rule("example:cap").is_some());
+                assert_eq!(options.rules.get("example:cap"), Some(Value::Int(8)));
+                assert!(options.rules.set("example:cap", Value::Int(12)));
+                assert_eq!(options.rules.get("example:cap"), Some(Value::Int(12)));
+            })
+        });
     }
 
     #[test]

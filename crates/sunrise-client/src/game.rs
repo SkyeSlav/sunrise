@@ -1613,6 +1613,11 @@ mod native_player_place;
 #[cfg(test)]
 #[path = "game/modding/native_player_place_tests.rs"]
 mod native_player_place_tests;
+#[path = "game/modding/native_player_post_effects.rs"]
+mod native_player_post_effects;
+#[cfg(test)]
+#[path = "game/modding/native_player_post_effects_tests.rs"]
+mod native_player_post_effects_tests;
 #[path = "game/modding/native_player_reach.rs"]
 mod native_player_reach;
 #[path = "game/modding/native_player_respawn.rs"]

@@ -318,6 +318,16 @@ impl Game<'_> {
             _ => None,
         }
     }
+    /// `LivingEntity.noJumpDelay`: ticks before a held jump can jump again.
+    pub(super) fn living_no_jump_delay(&self, living: LivingRef) -> Option<i32> {
+        match self.native_living_read_target(living)? {
+            Target::Player => Some(self.player.as_ref()?.no_jump_delay),
+            Target::Mob(id) if self.is_logical_server() => {
+                Some(self.mobs.iter().find(|m| m.id == id)?.ai.no_jump_delay)
+            }
+            _ => None,
+        }
+    }
     /// `LivingEntity.setJumping`: whether the player in place's next step
     /// jumps, as their own key does. False for a guest outside its turn,
     /// whose client holds its own jump, a mob, an armor stand or the

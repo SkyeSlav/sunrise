@@ -522,6 +522,30 @@ impl WorldDrawContext for GameWorldDrawContext<'_, '_> {
         self.game
             .native_world_draw_model_instances(&mut *self.surface, model, instances)
     }
+    fn set_pack_uniform(&mut self, name: &str, value: PackUniformValue) -> bool {
+        let Some((static_name, ty)) = sunrise_client::mod_pipelines::lookup_pack_uniform(name)
+        else {
+            return false;
+        };
+        if ty != value.ty() {
+            return false;
+        }
+        self.surface.set_pack_uniform(static_name, value);
+        true
+    }
+    fn pack_override_state(
+        &self,
+        pipeline: RenderPipelineRef,
+    ) -> Result<PackOverrideState, RenderPipelineError> {
+        let slot = self.game.pack.render.mod_pipelines.slot(pipeline)?;
+        Ok(self
+            .game
+            .renderer
+            .as_ref()
+            .map_or(PackOverrideState::NoPack, |renderer| {
+                renderer.pack_override_state(slot as usize)
+            }))
+    }
 }
 /// The only mod surface that appends CPU geometry for named passes.
 pub(crate) struct GamePrepareRenderBuffersContext<'a, 'g> {

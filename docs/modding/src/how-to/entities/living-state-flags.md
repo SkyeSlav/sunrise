@@ -8,7 +8,9 @@ no such state for reads `None` and writes `false`, as every handle does.
 
 Through `LivingRef`: the glide (`is_gliding`, `gliding_ticks`, `start_gliding`, `stop_gliding`), the sleep of a server player or a
 villager (`is_sleeping`, `sleeping_pos`, `start_sleeping`, `stop_sleeping`, `set_sleeping_pos`, `clear_sleeping_pos`),
-the jump of the player in place (`is_jumping`, `set_is_jumping`), climbing (`is_climbing`, the same `onClimbable`
+the jump of the player in place (`is_jumping`, `set_is_jumping`), the jump cooldown (`no_jump_delay`:
+`LivingEntity.noJumpDelay`, 10 after a ground jump and counting down, for the player in place and mobs on a server and the
+local player on a client), climbing (`is_climbing`, the same `onClimbable`
 movement uses, including the gliding exclusion for vines), the baby read (`baby`) and shield blocking
 (`is_blocking`: `LivingEntity.isBlocking`, an item with `blocks_attacks` in use past its block delay, for players
 and mobs). Server player sleep writes
@@ -32,7 +34,8 @@ Villagers use `start_sleeping`/`stop_sleeping`, not the raw player position sett
 `EntityRef::is_sprinting` reads `Entity.isSprinting` and `EntityRef::set_sprinting(host, sprinting)` sets it
 (`Entity.setSprinting`, server only): a player's flag with the movement speed modifier that goes with it, or a mob's flag, which the
 mob's movement speed already reads as that modifier (a cat's or ocelot's own AI may set it again on its next step). It returns `false` for a stale
-handle, on a client and for a kind with no sprinting flag. It is the flag `Entity.isSprinting` reads, not
+handle, on a client and for a kind with no sprinting flag. The read also answers on a client: the local player's
+predicted flag, or a tracked entity's synced one. It is the flag `Entity.isSprinting` reads, not
 the player's sprint key: a player's own client sets its flag again from its input.
 
 ## No gravity

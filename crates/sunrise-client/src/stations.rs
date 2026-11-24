@@ -81,20 +81,30 @@ impl StationData {
 // ---------------------------------------------------------------- enchanting
 
 /// `EnchantingTableBlock.BOOKSHELF_OFFSETS`: the 5x5 ring two blocks out, two high, in
-/// `BlockPos.betweenClosed` order (x fastest, then y, then z), which a float power sum can see.
-pub fn bookshelf_offsets() -> Vec<[i32; 3]> {
-    let mut v = Vec::new();
-    for z in -2i32..=2 {
-        for y in 0..=1 {
-            for x in -2i32..=2 {
+/// `BlockPos.betweenClosed` order (x fastest, then y, then z). The power sum and the
+/// table's particles walk it in this order, so a float sum and the particles' random draws
+/// see what vanilla's do.
+pub const BOOKSHELF_OFFSETS: [[i32; 3]; 32] = {
+    let mut v = [[0; 3]; 32];
+    let mut i = 0;
+    let mut z: i32 = -2;
+    while z <= 2 {
+        let mut y = 0;
+        while y <= 1 {
+            let mut x: i32 = -2;
+            while x <= 2 {
                 if x.abs() == 2 || z.abs() == 2 {
-                    v.push([x, y, z]);
+                    v[i] = [x, y, z];
+                    i += 1;
                 }
+                x += 1;
             }
+            y += 1;
         }
+        z += 1;
     }
     v
-}
+};
 /// The three offers of `EnchantmentMenu.slotsChanged`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EnchantOffers {
@@ -1573,8 +1583,7 @@ mod tests {
 
     #[test]
     fn bookshelf_ring_has_32_positions() {
-        let o = bookshelf_offsets();
-        assert_eq!(o.len(), 32);
+        let o = BOOKSHELF_OFFSETS;
         assert!(o.contains(&[-2, 0, -2]) && o.contains(&[2, 1, 0]) && !o.contains(&[1, 0, 1]));
         // BlockPos.betweenClosed(-2, 0, -2, 2, 1, 2): x fastest, then y, then z.
         let start = [[-2, 0, -2], [-1, 0, -2], [0, 0, -2], [1, 0, -2], [2, 0, -2]];
