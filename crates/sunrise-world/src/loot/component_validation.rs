@@ -177,17 +177,37 @@ pub fn validate_loot_table(value: &Value) -> Result<(), String> {
     }
     Ok(())
 }
-pub(super) fn retain_valid(kind: &str, id: &str, result: Result<(), String>) -> bool {
-    match result {
-        Ok(()) => true,
-        Err(error) => {
-            log::warn!("{kind} {id} rejected: {error}");
-            false
-        }
-    }
+/// The entries a codec refuses, as `<kind> <id>: <reason>` lines.
+pub(super) fn refused_entries<'a>(
+    kind: &str,
+    entries: impl IntoIterator<Item = (&'a String, &'a Value)>,
+    validate: impl Fn(&Value) -> Result<(), String>,
+) -> Vec<String> {
+    entries
+        .into_iter()
+        .filter_map(|(id, value)| {
+            validate(value)
+                .err()
+                .map(|error| format!("{kind} {id}: {error}"))
+        })
+        .collect()
 }
 
-/// `SlotSources.CODEC`: only the stock filtered source owns an item predicate.
+/// `RegistryDataLoader.logErrors`: any refused entry fails the whole load, and
+/// every one is listed, in order.
+pub(super) fn refuse(mut errors: Vec<String>) -> std::io::Result<()> {
+    if errors.is_empty() {
+        return Ok(());
+    }
+    errors.sort();
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        errors.join("\n"),
+    ))
+}
+
+/// `SlotSources.CODEC`: a registered `SLOT_SOURCE_TYPE`, a reference by id or an
+/// inline group; only the stock filtered source owns an item predicate.
 pub fn validate_slot_source(value: &Value) -> Result<(), String> {
     if let Some(values) = value.as_array() {
         for value in values {
@@ -202,6 +222,8 @@ pub fn validate_slot_source(value: &Value) -> Result<(), String> {
             validate_item_predicate(&value["item_filter"])?;
             validate_slot_source(&value["slot_source"])
         }
-        _ => Ok(()),
+        "slot_range" | "empty" => Ok(()),
+        _ if value.is_string() => Ok(()),
+        other => Err(format!("unknown slot source type {other:?}")),
     }
 }
