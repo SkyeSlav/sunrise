@@ -43,6 +43,14 @@ impl CustomRegistriesRegistrar for PartRegistrar {
             ));
             return;
         }
+        if !crate::load_state::owns_namespace(self.mod_id, parsed.namespace()) {
+            self.refused.push(format!(
+                "mod {} declared custom registry {id:?} in foreign namespace {:?}",
+                self.mod_id,
+                parsed.namespace()
+            ));
+            return;
+        }
         let canonical = parsed.to_string();
         if self.has_builtin_registry(&canonical) {
             self.refused.push(format!(
@@ -139,6 +147,14 @@ impl CustomRegistriesRegistrar for PartRegistrar {
             self.refused.push(format!(
                 "mod {} registered entry {entry_id:?} in the reserved minecraft namespace of custom registry {registry_id:?}",
                 self.mod_id
+            ));
+            return invalid;
+        }
+        if !crate::load_state::owns_namespace(self.mod_id, parsed_entry.namespace()) {
+            self.refused.push(format!(
+                "mod {} registered entry {entry_id:?} in foreign namespace {:?} of custom registry {registry_id:?}",
+                self.mod_id,
+                parsed_entry.namespace()
             ));
             return invalid;
         }
@@ -530,6 +546,55 @@ mod tests {
         assert_eq!(err.len(), 2, "got {err:?}");
         assert!(err[0].contains("minecraft"));
         assert!(err[1].contains("valid namespaced identifier"));
+
+        // 7. Foreign namespace on declare_registry refused
+        struct ForeignRegistryDecl;
+        #[crate::__subscriptions]
+        impl Hooks for ForeignRegistryDecl {
+            fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
+                r.declare_registry(GASES, RegistryOptions::new());
+            }
+        }
+        let err = install(&[ModEntry::new("other", Box::new(ForeignRegistryDecl))]).unwrap_err();
+        assert!(
+            err.iter()
+                .any(|m| m.contains("other") && m.contains("chemlib")),
+            "expected foreign namespace refusal on declare_registry, got {err:?}"
+        );
+
+        // 8. Foreign namespace on register_entry refused
+        struct ForeignEntryReg;
+        #[crate::__subscriptions]
+        impl Hooks for ForeignEntryReg {
+            fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
+                r.register_entry(
+                    GASES,
+                    "chemlib:nitrogen",
+                    Gas {
+                        color: 2,
+                        toxic: false,
+                    },
+                );
+            }
+        }
+        let err = install(&[
+            ModEntry::new(
+                "chemlib",
+                Box::new(ChemLib {
+                    sync: false,
+                    with_default: false,
+                    register_default: false,
+                    oxygen: Arc::new(OnceLock::new()),
+                }),
+            ),
+            ModEntry::new("other", Box::new(ForeignEntryReg)),
+        ])
+        .unwrap_err();
+        assert!(
+            err.iter()
+                .any(|m| m.contains("other") && m.contains("chemlib")),
+            "expected foreign namespace refusal on register_entry, got {err:?}"
+        );
     }
 
     #[test]
