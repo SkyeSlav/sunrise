@@ -281,6 +281,10 @@ impl Game<'_> {
             .as_ref()
             .map_or(&self.pack.data_changes, |root| root.data_changes())
             .clone();
+        if opening_world {
+            // `DataPackConfig` keeps `vanilla` in Disabled across opens.
+            self.cmds.vanilla_disabled = datapack::vanilla_disabled(&self.world_root);
+        }
         let additional = super::pack_finders::data_packs(&self.mods);
         let stack = pack_stack(
             &self.world_root,
@@ -504,12 +508,13 @@ impl Game<'_> {
         }
     }
     fn save_datapack_settings(&self) {
-        let disabled: Vec<&String> = self
+        let disabled: Vec<&str> = self
             .fns
             .packs
             .iter()
             .filter(|p| !self.fns.enabled.contains(&p.id))
-            .map(|p| &p.id)
+            .map(|p| p.id.as_str())
+            .chain(self.cmds.vanilla_disabled.then_some("vanilla"))
             .collect();
         let json = serde_json::json!({"enabled": self.fns.enabled, "disabled": disabled});
         let _ = std::fs::write(self.datapack_settings_path(), json.to_string());
@@ -1348,12 +1353,12 @@ impl Game<'_> {
             &additional,
         );
         self.fns.packs = packs.into_iter().map(Arc::new).collect();
+        let known = |g: &Self, n: &str| n == "vanilla" || g.fns.packs.iter().any(|p| p.id == n);
         self.fns.enabled =
             datapack::selected_ids(self.fns.packs.iter().map(Arc::as_ref), &self.fns.enabled);
     }
     pub(super) fn cmd_datapack(&mut self, id: &str, ctx: &Context) -> R<i32> {
         let name = match ctx.get("name") {
-        let known = |g: &Self, n: &str| n == "vanilla" || g.fns.packs.iter().any(|p| p.id == n);
             Some(Arg::Str(n)) => Some(n.clone()),
             _ => None,
         };
@@ -1464,11 +1469,6 @@ impl Game<'_> {
                     "commands.datapack.modify.enable",
                     &[self.pack_link(&name, true)],
                 ));
-                self.apply_pack_change(&enabled, vanilla_disabled)?;
-                Ok(self.selected_packs().len() as i32)
-            }
-            _ => {
-                let name = name.unwrap_or_default();
                 if self
                     .fns
                     .packs
@@ -1486,6 +1486,11 @@ impl Game<'_> {
                         &[&name, &missing.join(", ")],
                     ));
                 }
+                self.apply_pack_change(&enabled, vanilla_disabled)?;
+                Ok(self.selected_packs().len() as i32)
+            }
+            _ => {
+                let name = name.unwrap_or_default();
                 if !known(self, &name) {
                     return Err(err("commands.datapack.unknown", &[&name]));
                 }
@@ -2730,6 +2735,25 @@ mod tests {
             assert!(game.fns.packs.iter().any(|pack| pack.id == "file/b"));
             assert!(game.run_command("datapack enable \"file/b\""));
             assert_eq!(game.fns.enabled.last().map(String::as_str), Some("file/b"));
+        });
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn datapack_disable_vanilla_survives_a_reopen() {
+        use crate::game::native_entity_refs::tests::with_game;
+        let root = datapack_world("datapack-vanilla-off", &["a"]);
+        with_game(|game| {
+            open_datapack_world(game, &root);
+            assert!(game.run_command("datapack disable vanilla"));
+            assert!(game.cmds.vanilla_disabled);
+        });
+        with_game(|game| {
+            assert!(!game.cmds.vanilla_disabled);
+            open_datapack_world(game, &root);
+            assert!(game.cmds.vanilla_disabled);
+            assert!(!game.selected_packs().contains(&"vanilla".to_owned()));
         });
         let _ = std::fs::remove_dir_all(root);
     }

@@ -571,12 +571,7 @@ pub fn for_recreate(world: &Path) -> (Option<PathBuf>, Vec<String>) {
     // it asks for (`for_recreate`'s selection only seeds the new world's
     // `datapacks.json`).
     let mut selected = enabled_ids(world, &packs, &[]);
-    let vanilla_off = std::fs::read(world.join("datapacks.json"))
-        .ok()
-        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-        .and_then(|v| v["disabled"].as_array().cloned())
-        .is_some_and(|a| a.iter().any(|id| id.as_str() == Some("vanilla")));
-    if !vanilla_off {
+    if !vanilla_disabled(world) {
         selected.insert(0, "vanilla".into());
     }
     if packs.is_empty() {
@@ -591,6 +586,15 @@ pub fn for_recreate(world: &Path) -> (Option<PathBuf>, Vec<String>) {
         }
     });
     (dir, selected)
+}
+/// Whether the world's `datapacks.json` lists the built-in `vanilla` pack as
+/// disabled (`DataPackConfig` keeps it in `Disabled`).
+pub fn vanilla_disabled(world: &Path) -> bool {
+    std::fs::read(world.join("datapacks.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .and_then(|v| v["disabled"].as_array().cloned())
+        .is_some_and(|a| a.iter().any(|id| id.as_str() == Some("vanilla")))
 }
 /// A file, or a folder and everything in it.
 fn copy(from: &Path, to: &Path) -> Result<(), String> {

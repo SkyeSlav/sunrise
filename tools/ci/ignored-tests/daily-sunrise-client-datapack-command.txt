@@ -1,1 +1,2 @@
+sunrise-client game::functions::tests::datapack_disable_vanilla_survives_a_reopen lib daily game-boot
 sunrise-client game::functions::tests::datapack_list_scans_the_folder_again_so_a_copied_pack_enables lib daily game-boot
