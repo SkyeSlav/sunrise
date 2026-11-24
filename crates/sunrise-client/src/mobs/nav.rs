@@ -425,17 +425,20 @@ impl Mob {
     pub fn nav_move_to_supplied(
         &mut self,
         w: &MobWorld,
-        nodes: impl IntoIterator<Item = [f64; 3]>,
+        nodes: impl IntoIterator<Item: std::borrow::Borrow<[f64; 3]>>,
         speed: f64,
     ) -> bool {
         let nodes: Vec<PathNode> = nodes
             .into_iter()
-            .map(|at| PathNode {
-                x: at[0].floor() as i32,
-                y: at[1].floor() as i32,
-                z: at[2].floor() as i32,
-                // Replaced by the engine's classification below.
-                kind: PathType::Blocked,
+            .map(|at| {
+                let at = *std::borrow::Borrow::<[f64; 3]>::borrow(&at);
+                PathNode {
+                    x: at[0].floor() as i32,
+                    y: at[1].floor() as i32,
+                    z: at[2].floor() as i32,
+                    // Replaced by the engine's classification below.
+                    kind: PathType::Blocked,
+                }
             })
             .collect();
         let target = nodes.last().map_or([0; 3], |n| [n.x, n.y, n.z]);

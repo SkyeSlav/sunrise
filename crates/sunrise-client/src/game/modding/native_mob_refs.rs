@@ -384,7 +384,7 @@ impl Game<'_> {
 
     /// Whether a player target can be bound in the current level (real, non-fake
     /// player in this dimension with a `lan` slot).
-    fn native_mob_can_bind_player(&self, target: Target) -> bool {
+    pub(in crate::game) fn native_mob_can_bind_player(&self, target: Target) -> bool {
         match target {
             Target::Guest(conn) if self.lan_acting_uuid.is_none() => {
                 self.native_player_facts(target).is_some()
@@ -856,13 +856,14 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::native_entity_refs::tests::with_game;
+    use super::super::native_entity_refs::tests::{fixture_resident_column, with_game};
     use super::*;
     use mod_api::WorldEpoch;
     use sunrise_client::{entities::ArmorStand, mobs::Mob};
     use sunrise_core::geometry::Vec3;
 
     fn add_mob(game: &mut Game<'_>, id: u32, name: &str) -> MobRef {
+        fixture_resident_column(&mut game.world, (0, 0));
         let kind = game.res.mob_types().get(name).unwrap().clone();
         game.mobs.push(Mob::new(id, kind, Vec3::ZERO, 0.0));
         game.mob(game.entity(id).unwrap()).unwrap()
@@ -1275,6 +1276,7 @@ mod tests {
         use sunrise_protocol::packets::configuration::ClientInformation;
 
         with_game(|game| {
+            fixture_resident_column(&mut game.world, (0, 0));
             let settings = super::super::lan::LanSettings {
                 port: 0,
                 guest_commands: false,
@@ -1457,6 +1459,7 @@ mod tests {
     fn fox_enderman_and_zombified_piglin_take_targets_with_their_side_effects() {
         use sunrise_core::random::{LegacyRandom, RandomSource};
         with_game(|game| {
+            fixture_resident_column(&mut game.world, (0, 0));
             for (id, name) in [
                 (12, "minecraft:fox"),
                 (13, "minecraft:enderman"),
@@ -1595,6 +1598,7 @@ mod tests {
     #[ignore = "daily"]
     fn brain_species_take_a_written_attack_target_memory() {
         with_game(|game| {
+            fixture_resident_column(&mut game.world, (0, 0));
             for (id, name) in [
                 (12, "minecraft:warden"),
                 (13, "minecraft:breeze"),
@@ -1674,6 +1678,7 @@ mod tests {
     #[ignore = "daily"]
     fn mob_handles_read_write_and_refuse_unavailable_entities() {
         with_game(|game| {
+            fixture_resident_column(&mut game.world, (0, 0));
             let zombie = game
                 .res
                 .mob_types()
@@ -1767,6 +1772,7 @@ mod tests {
     #[ignore = "daily"]
     fn look_and_jump_go_through_the_mobs_own_controls() {
         with_game(|game| {
+            fixture_resident_column(&mut game.world, (0, 0));
             let zombie = game
                 .res
                 .mob_types()
@@ -1815,6 +1821,7 @@ mod tests {
     fn a_restriction_round_trips_through_the_handle_and_saves() {
         use sunrise_core::nbt::Tag;
         with_game(|game| {
+            fixture_resident_column(&mut game.world, (0, 0));
             let zombie = game
                 .res
                 .mob_types()
@@ -1886,6 +1893,7 @@ mod tests {
     #[ignore = "daily"]
     fn an_extreme_restriction_answers_as_vanilla() {
         with_game(|game| {
+            fixture_resident_column(&mut game.world, (0, 0));
             let zombie = game
                 .res
                 .mob_types()
@@ -1929,6 +1937,7 @@ mod tests {
     fn hand_and_loot_flags_live_on_the_mob_handle() {
         use sunrise_core::nbt::Tag;
         with_game(|game| {
+            fixture_resident_column(&mut game.world, (0, 0));
             let zombie = game
                 .res
                 .mob_types()

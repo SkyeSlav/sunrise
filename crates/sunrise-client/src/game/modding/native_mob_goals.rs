@@ -441,7 +441,7 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::native_entity_refs::tests::with_game;
+    use super::super::native_entity_refs::tests::{fixture_resident_column, with_game};
     use mod_api::{EntityRef, GoalSpec, MobFilter, MobRef, WorldEpoch};
     use std::sync::Arc;
     use sunrise_client::{chunk::Chunk, mobs::Mob};
@@ -450,6 +450,7 @@ mod tests {
     /// A mob of `kind` in the game's list, its species goals registered by
     /// `Mob::new`, as a handle.
     fn mob_in_game(game: &mut super::super::Game<'_>, kind: &str, id: u32) -> MobRef {
+        fixture_resident_column(&mut game.world, (0, 0));
         let t = game.res.mob_types().get(kind).unwrap().clone();
         let mut m = Mob::new(id, t, Vec3::new(3.5, 65.0, 3.5), 0.0);
         m.ground.on_ground = true;

@@ -549,11 +549,11 @@ impl Drop for NavigationLoan<'_> {
 }
 
 /// Read-only view of entities disjoint from the mob currently ticking.
-struct LiveOthers<'a> {
-    before: &'a [Mob],
-    between: &'a [Mob],
-    after: &'a [Mob],
-    vehicle: Option<&'a Mob>,
+pub struct LiveOthers<'a> {
+    pub before: &'a [Mob],
+    pub between: &'a [Mob],
+    pub after: &'a [Mob],
+    pub vehicle: Option<&'a Mob>,
 }
 
 impl super::LiveMobs for LiveOthers<'_> {

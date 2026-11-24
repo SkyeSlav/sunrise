@@ -3498,6 +3498,8 @@ pub fn breeding_experience(parent: &mut Mob, mob_drops: bool) -> Option<u32> {
 }
 
 /// Read-only access to the live mobs outside the actor's current tick loan.
+pub use riders::LiveOthers;
+
 pub trait LiveMobs {
     fn find(&self, id: u32) -> Option<&Mob>;
     /// Visit each mob in the disjoint loan, without allocating a snapshot.

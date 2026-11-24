@@ -1,0 +1,27 @@
+ids = [
+    "handle:GoalContext::move_to_path",
+    "handle:MobRef::move_to_path",
+    "hook:living_change_target",
+]
+why = """
+`GoalContext::move_to_path` and `MobRef::move_to_path` now borrow `&[PathNode]` instead of taking an
+owned `Vec<PathNode>`, avoiding caller allocations on navigation calls.
+
+`living_change_target` now matches vanilla 26.3 `Mob.setTarget` and NeoForge's `Mob.java.patch`
+ordering: live non-fake targets are normalized through `asValidTarget` before `living_change_target`
+fires, so an invalid live target (such as a player on Peaceful or a creeper for an iron golem) arrives
+as `original_target = None` and clears the mob's target unless a listener cancels or redirects it.
+Stale, unavailable, brain-backed, fake-player, or cross-dimension handles still refuse before the
+event. Post-event redirects are checked for bindability without re-running `asValidTarget` on write,
+matching vanilla where `getTarget` re-evaluates validity on read. Goal ticks and `mob_despawn` also
+share live mob and game-entity views with the owning world instead of reading partial snapshots.
+"""
+migrate = """
+Pass a slice (`&nodes`) to `GoalContext::move_to_path` and `MobRef::move_to_path` instead of an owned
+`Vec<PathNode>`.
+
+Pin `living_change_target` at `hook_version = 2` instead of `1`. Callers of `MobRef::set_target` and
+`GoalContext::set_target` that passed an invalid live target previously saw `false` with the previous
+target kept; they now fire `living_change_target` with `original_target = None` and clear the target
+when not canceled or redirected.
+"""

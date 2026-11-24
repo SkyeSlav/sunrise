@@ -34,9 +34,10 @@ fn install_game_mods() {
 static EVENTS: Mutex<Vec<(u32, &'static str)>> = Mutex::new(Vec::new());
 /// The other mob a tick reads through the view, as a handle.
 static OTHER: Mutex<Option<EntityRef>> = Mutex::new(None);
-/// What the last tick read of `OTHER`: its health, position and a refused
-/// read (a potion check, which the snapshot does not carry).
-static READS: Mutex<Vec<(Option<f32>, Option<[f64; 3]>, bool)>> = Mutex::new(Vec::new());
+/// What the last tick read of `OTHER`: its live health, position, rotation
+/// and an absent handle check.
+type PeerRead = (Option<f32>, Option<[f64; 3]>, Option<[f32; 2]>, bool);
+static READS: Mutex<Vec<PeerRead>> = Mutex::new(Vec::new());
 
 fn record(id: u32, call: &'static str) {
     EVENTS.lock().unwrap().push((id, call));
@@ -75,10 +76,15 @@ impl Goal for Counter {
         if let Some(other) = OTHER.lock().unwrap().as_ref().copied() {
             let health = LivingRef::new(other).health(cx.host());
             let position = other.position(cx.host());
-            // A read the view refuses: the snapshot carries no rotation of
-            // another mob (only the ticking mob's own answers).
-            let refused = other.rotation(cx.host()).is_some();
-            READS.lock().unwrap().push((health, position, refused));
+            // The tick lends peer mobs live, so rotation is answered directly.
+            let rotation = other.rotation(cx.host());
+            let absent = EntityRef::new(other.epoch(), 99_999)
+                .rotation(cx.host())
+                .is_some();
+            READS
+                .lock()
+                .unwrap()
+                .push((health, position, rotation, absent));
         }
     }
     fn stop(&mut self, cx: &mut GoalContext<'_>) {
@@ -303,17 +309,15 @@ fn reads_answer_the_tick_view_and_refuse_what_it_lacks() {
         set_other(other);
         tick_goals(game, 0);
         let reads = READS.lock().unwrap();
-        let (health, position, refused) = reads.last().copied().unwrap();
-        assert_eq!(health, Some(12.5), "the other mob's snapshot health");
+        let (health, position, rotation, absent) = reads.last().copied().unwrap();
+        assert_eq!(health, Some(12.5), "the other mob's live health");
         assert_eq!(
             position,
             Some([13.5, 65.0, 13.5]),
-            "the other mob's snapshot position"
+            "the other mob's live position"
         );
-        assert!(
-            !refused,
-            "a read the view refuses: not carried by the snapshot"
-        );
+        assert_eq!(rotation, Some([0.0, 0.0]), "the other mob's live rotation");
+        assert!(!absent, "an absent entity handle is refused");
     });
 }
 

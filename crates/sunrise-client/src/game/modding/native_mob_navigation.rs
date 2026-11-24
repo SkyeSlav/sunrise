@@ -445,6 +445,10 @@ mod tests {
     #[ignore = "daily"]
     fn a_supplied_path_refusal_names_its_cause() {
         with_game(|game| {
+            super::super::native_entity_refs::tests::fixture_resident_column(
+                &mut game.world,
+                (0, 0),
+            );
             let kind = game
                 .res
                 .mob_types()
@@ -486,6 +490,10 @@ mod tests {
     #[ignore = "daily"]
     fn navigation_speed_is_the_paths_speed_modifier() {
         with_game(|game| {
+            super::super::native_entity_refs::tests::fixture_resident_column(
+                &mut game.world,
+                (0, 0),
+            );
             let kind = game
                 .res
                 .mob_types()

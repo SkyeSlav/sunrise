@@ -182,6 +182,7 @@ mod tests {
     use sunrise_protocol::entity_data::{Value, serializer};
 
     fn dragon_in(game: &mut Game<'_>) -> (EntityRef, DragonRef) {
+        fixture_resident_column(&mut game.world, (0, 0));
         let mut dragon = Dragon::new(Vec3::ZERO, 0.0, 0);
         dragon.id = 15;
         game.dragon.replace(dragon);
