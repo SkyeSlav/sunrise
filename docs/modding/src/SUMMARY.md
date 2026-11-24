@@ -38,7 +38,6 @@
 - [Native mods: building and shipping](how-to/native-mods.md)
 - [Config files and settings](how-to/mod-settings.md)
 - [Publishing your mod](how-to/publish.md)
-  - [Group your mods into a collection](how-to/collections.md)
 - [Levels, dimensions and blocks](how-to/world.md)
 - [Items, recipes and loot](how-to/items.md)
 - [Entities, players and commands](how-to/entities.md)
