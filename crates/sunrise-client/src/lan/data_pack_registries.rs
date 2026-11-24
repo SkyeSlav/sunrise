@@ -49,6 +49,14 @@ pub const REGISTRY_KINDS: &[RegistryKind] = &[
         decode: decode_wolf_sound_variant,
     },
     RegistryKind {
+        key: "minecraft:cat_variant",
+        decode: decode_cat_variant,
+    },
+    RegistryKind {
+        key: "minecraft:cat_sound_variant",
+        decode: decode_cat_sound_variant,
+    },
+    RegistryKind {
         key: "minecraft:painting_variant",
         decode: decode_painting_variant,
     },
@@ -132,6 +140,8 @@ enum Definition {
     Instrument(Instrument, Tag),
     WolfVariant(crate::mobs::variants::WolfVariant, Tag),
     WolfSoundVariant(crate::mobs::variants::WolfSoundVariant, Tag),
+    CatVariant(crate::mobs::variants::CatVariant, Tag),
+    CatSoundVariant(crate::mobs::variants::CatSoundVariant, Tag),
 }
 
 impl PackRegistryDefinitions {
@@ -254,7 +264,15 @@ impl PackRegistryDefinitions {
                     }
                     let definition = if kind == "enchantment" {
                         Definition::Enchantment(value)
-                    } else if from_pack || matches!(kind, "wolf_variant" | "wolf_sound_variant") {
+                    } else if from_pack
+                        || matches!(
+                            kind,
+                            "wolf_variant"
+                                | "wolf_sound_variant"
+                                | "cat_variant"
+                                | "cat_sound_variant"
+                        )
+                    {
                         let id = format!("{}:{}", key.0, key.1);
                         match (table.decode)(&mut decoder, &id, value) {
                             Ok(definition) => definition,
@@ -275,7 +293,10 @@ impl PackRegistryDefinitions {
                 }
                 // `RegistryValidator.nonEmpty()` for the variant registries.
                 if had_candidates
-                    && matches!(kind, "wolf_variant" | "wolf_sound_variant")
+                    && matches!(
+                        kind,
+                        "wolf_variant" | "wolf_sound_variant" | "cat_variant" | "cat_sound_variant"
+                    )
                     && entries.values().all(Option::is_none)
                     && !errors.contains_key(registry)
                 {
@@ -407,6 +428,8 @@ impl PackRegistryDefinitions {
                 | "minecraft:instrument"
                 | "minecraft:wolf_variant"
                 | "minecraft:wolf_sound_variant"
+                | "minecraft:cat_variant"
+                | "minecraft:cat_sound_variant"
         )
     }
 
@@ -418,7 +441,9 @@ impl PackRegistryDefinitions {
                     Definition::Encoded(tag)
                     | Definition::Instrument(_, tag)
                     | Definition::WolfVariant(_, tag)
-                    | Definition::WolfSoundVariant(_, tag) => tag.clone(),
+                    | Definition::WolfSoundVariant(_, tag)
+                    | Definition::CatVariant(_, tag)
+                    | Definition::CatSoundVariant(_, tag) => tag.clone(),
                     Definition::Enchantment(json) => json_to_nbt(json),
                 };
                 Some((key.clone(), tag, *from_pack))
@@ -455,7 +480,38 @@ impl PackRegistryDefinitions {
                 })
                 .collect(),
         );
-        crate::mobs::variants::VariantTables { wolf, wolf_sound }
+        let cat = crate::mobs::variants::VariantTable::from_entries(
+            self.entries
+                .get("minecraft:cat_variant")
+                .into_iter()
+                .flatten()
+                .filter_map(|(key, entry)| match entry {
+                    Some((Definition::CatVariant(variant, _), _)) => {
+                        Some((key.clone(), variant.clone()))
+                    }
+                    _ => None,
+                })
+                .collect(),
+        );
+        let cat_sound = crate::mobs::variants::VariantTable::from_entries(
+            self.entries
+                .get("minecraft:cat_sound_variant")
+                .into_iter()
+                .flatten()
+                .filter_map(|(key, entry)| match entry {
+                    Some((Definition::CatSoundVariant(variant, _), _)) => {
+                        Some((key.clone(), variant.clone()))
+                    }
+                    _ => None,
+                })
+                .collect(),
+        );
+        crate::mobs::variants::VariantTables {
+            wolf,
+            wolf_sound,
+            cat,
+            cat_sound,
+        }
     }
 
     /// Use the same selected definitions as the synchronized registry packets.
@@ -851,6 +907,28 @@ fn decode_wolf_sound_variant(
         })?;
     check_network_nbt(&wire)?;
     Ok(Definition::WolfSoundVariant(variant, wire))
+}
+
+/// `CatVariant.DIRECT_CODEC` on disk, `CatVariant.NETWORK_CODEC` on the wire.
+fn decode_cat_variant(_: &mut Decoder<'_>, _: &str, value: Value) -> Result<Definition, String> {
+    let variant = crate::mobs::variants::CatVariant::decode(&value)?;
+    let wire = variant.to_network_nbt();
+    check_network_nbt(&wire)?;
+    Ok(Definition::CatVariant(variant, wire))
+}
+
+/// `CatSoundVariant.DIRECT_CODEC` / `NETWORK_CODEC`.
+fn decode_cat_sound_variant(
+    decoder: &mut Decoder<'_>,
+    _: &str,
+    value: Value,
+) -> Result<Definition, String> {
+    let (variant, wire) =
+        crate::mobs::variants::CatSoundVariant::decode_with(&value, |field, raw| {
+            decode_sound_event_holder(decoder, field, raw)
+        })?;
+    check_network_nbt(&wire)?;
+    Ok(Definition::CatSoundVariant(variant, wire))
 }
 
 // WorldClock.DIRECT_CODEC is a unit map codec: extra keys are permitted.

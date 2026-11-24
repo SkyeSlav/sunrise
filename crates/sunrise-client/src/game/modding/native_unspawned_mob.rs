@@ -1003,7 +1003,7 @@ mod tests {
                     },
                 ),
             ]),
-            wolf_sound: Default::default(),
+            ..Default::default()
         };
         let spotted = variants.wolf.lookup("minecraft:spotted").unwrap();
         let mint = variants.wolf.lookup("test:mint").unwrap();

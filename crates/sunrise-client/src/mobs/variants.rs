@@ -1,6 +1,6 @@
 //! Data-driven mob variant and sound-variant registries (`VariantUtils`,
-//! `SpawnPrioritySelectors`, `WolfVariant`, `WolfSoundVariant`, and the later
-//! families as they move onto `REGISTRY_KINDS`).
+//! `SpawnPrioritySelectors`, `WolfVariant`, `WolfSoundVariant`, `CatVariant`,
+//! `CatSoundVariant`, and the later families as they move onto `REGISTRY_KINDS`).
 //!
 //! Each family's frozen world registry is a [`VariantTable<T>`] whose entries
 //! are sorted in vanilla's `ResourceManagerRegistryLoadTask` file order
@@ -617,14 +617,269 @@ impl WolfSoundVariant {
     }
 }
 
+/// `CatVariant`: adult and baby texture asset ids plus spawn conditions.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CatVariant {
+    pub asset_id: String,
+    pub baby_asset_id: String,
+    pub spawn_conditions: Vec<SpawnSelector>,
+}
+
+impl HasSpawnConditions for CatVariant {
+    fn spawn_conditions(&self) -> &[SpawnSelector] {
+        &self.spawn_conditions
+    }
+}
+
+impl CatVariant {
+    fn missing() -> Self {
+        Self {
+            asset_id: String::new(),
+            baby_asset_id: String::new(),
+            spawn_conditions: Vec::new(),
+        }
+    }
+
+    /// `CatVariant.DIRECT_CODEC`.
+    pub fn decode(value: &Value) -> Result<Self, String> {
+        let obj = value.as_object().ok_or("not a map")?;
+        let asset = |key: &str| -> Result<String, String> {
+            let raw = obj
+                .get(key)
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("{key}: a string is required"))?;
+            let id = Identifier::parse(raw)
+                .map_err(|e| format!("{key}: invalid identifier {raw:?}: {e}"))?;
+            Ok(id.as_str().to_owned())
+        };
+        let asset_id = asset("asset_id")?;
+        let baby_asset_id = asset("baby_asset_id")?;
+        let spawn_conditions = decode_spawn_conditions(
+            obj.get("spawn_conditions")
+                .ok_or("spawn_conditions is required")?,
+        )?;
+        Ok(Self {
+            asset_id,
+            baby_asset_id,
+            spawn_conditions,
+        })
+    }
+
+    /// `CatVariant.NETWORK_CODEC`: `asset_id` and `baby_asset_id` only.
+    pub fn to_network_nbt(&self) -> Tag {
+        Tag::compound([
+            (
+                "asset_id",
+                Tag::String(JavaString::from(self.asset_id.as_str())),
+            ),
+            (
+                "baby_asset_id",
+                Tag::String(JavaString::from(self.baby_asset_id.as_str())),
+            ),
+        ])
+    }
+
+    /// Decode a client's synced `CatVariant.NETWORK_CODEC` NBT entry.
+    pub fn decode_network_nbt(tag: &Tag) -> Option<Self> {
+        let read = |key: &str| match tag.get(key) {
+            Some(Tag::String(s)) => Some(s.to_string_lossy()),
+            _ => None,
+        };
+        Some(Self {
+            asset_id: read("asset_id")?,
+            baby_asset_id: read("baby_asset_id")?,
+            spawn_conditions: Vec::new(),
+        })
+    }
+
+    /// `CatVariant.assetInfo`: the atlas sprite key for this variant's age.
+    /// Default-namespace assets strip `"minecraft:"` to match Sunrise's atlas keys;
+    /// non-default namespaces keep `"<ns>:<path>"`.
+    pub fn texture(&self, baby: bool) -> &str {
+        let asset = if baby {
+            &self.baby_asset_id
+        } else {
+            &self.asset_id
+        };
+        asset.strip_prefix("minecraft:").unwrap_or(asset)
+    }
+}
+
+/// `CatSoundVariant.CatSoundSet`: the nine sound event ids of an age set.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatSoundSet {
+    pub ambient: String,
+    pub stray_ambient: String,
+    pub hiss: String,
+    pub hurt: String,
+    pub death: String,
+    pub eat: String,
+    pub beg_for_food: String,
+    pub purr: String,
+    pub purreow: String,
+}
+
+impl CatSoundSet {
+    fn missing() -> Self {
+        Self {
+            ambient: String::new(),
+            stray_ambient: String::new(),
+            hiss: String::new(),
+            hurt: String::new(),
+            death: String::new(),
+            eat: String::new(),
+            beg_for_food: String::new(),
+            purr: String::new(),
+            purreow: String::new(),
+        }
+    }
+
+    fn decode_with(
+        field: &str,
+        value: &Value,
+        decode_sound: &mut impl FnMut(&str, &Value) -> Result<(String, Tag), String>,
+    ) -> Result<(Self, Tag), String> {
+        let obj = value
+            .as_object()
+            .ok_or_else(|| format!("{field}: not a map"))?;
+        let mut wire = Compound::new();
+        let mut read = |key: &str| -> Result<String, String> {
+            let path = format!("{field}.{key}");
+            let raw = obj.get(key).ok_or_else(|| format!("{path} is required"))?;
+            let (id, tag) = decode_sound(&path, raw)?;
+            wire.insert(key.into(), tag);
+            Ok(id)
+        };
+        let set = Self {
+            ambient: read("ambient_sound")?,
+            stray_ambient: read("stray_ambient_sound")?,
+            hiss: read("hiss_sound")?,
+            hurt: read("hurt_sound")?,
+            death: read("death_sound")?,
+            eat: read("eat_sound")?,
+            beg_for_food: read("beg_for_food_sound")?,
+            purr: read("purr_sound")?,
+            purreow: read("purreow_sound")?,
+        };
+        Ok((set, Tag::Compound(wire)))
+    }
+
+    fn decode_nbt(tag: &Tag) -> Option<Self> {
+        let read = |key: &str| match tag.get(key) {
+            Some(Tag::String(s)) => Some(s.to_string_lossy()),
+            Some(Tag::Compound(_)) => match tag.get(key)?.get("sound_id") {
+                Some(Tag::String(s)) => Some(s.to_string_lossy()),
+                _ => None,
+            },
+            _ => None,
+        };
+        Some(Self {
+            ambient: read("ambient_sound")?,
+            stray_ambient: read("stray_ambient_sound")?,
+            hiss: read("hiss_sound")?,
+            hurt: read("hurt_sound")?,
+            death: read("death_sound")?,
+            eat: read("eat_sound")?,
+            beg_for_food: read("beg_for_food_sound")?,
+            purr: read("purr_sound")?,
+            purreow: read("purreow_sound")?,
+        })
+    }
+
+    pub fn by_kind(&self, kind: &str) -> Option<&str> {
+        let sound = match kind {
+            "ambient" => &self.ambient,
+            "stray_ambient" => &self.stray_ambient,
+            "hiss" => &self.hiss,
+            "hurt" => &self.hurt,
+            "death" => &self.death,
+            "eat" => &self.eat,
+            "beg_for_food" => &self.beg_for_food,
+            "purr" => &self.purr,
+            "purreow" => &self.purreow,
+            _ => return None,
+        };
+        (!sound.is_empty()).then_some(sound.as_str())
+    }
+}
+
+/// `CatSoundVariant`: adult and baby sound sets.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatSoundVariant {
+    pub adult_sounds: CatSoundSet,
+    pub baby_sounds: CatSoundSet,
+}
+
+impl CatSoundVariant {
+    fn missing() -> Self {
+        Self {
+            adult_sounds: CatSoundSet::missing(),
+            baby_sounds: CatSoundSet::missing(),
+        }
+    }
+
+    /// `CatSoundVariant.DIRECT_CODEC` / `NETWORK_CODEC`.
+    pub fn decode_with(
+        value: &Value,
+        mut decode_sound: impl FnMut(&str, &Value) -> Result<(String, Tag), String>,
+    ) -> Result<(Self, Tag), String> {
+        let obj = value.as_object().ok_or("not a map")?;
+        let (adult_sounds, adult_tag) = CatSoundSet::decode_with(
+            "adult_sounds",
+            obj.get("adult_sounds").ok_or("adult_sounds is required")?,
+            &mut decode_sound,
+        )?;
+        let (baby_sounds, baby_tag) = CatSoundSet::decode_with(
+            "baby_sounds",
+            obj.get("baby_sounds").ok_or("baby_sounds is required")?,
+            &mut decode_sound,
+        )?;
+        let wire = Tag::compound([("adult_sounds", adult_tag), ("baby_sounds", baby_tag)]);
+        Ok((
+            Self {
+                adult_sounds,
+                baby_sounds,
+            },
+            wire,
+        ))
+    }
+
+    /// Decode a client's synced `CatSoundVariant.NETWORK_CODEC` NBT entry.
+    pub fn decode_network_nbt(tag: &Tag) -> Option<Self> {
+        Some(Self {
+            adult_sounds: CatSoundSet::decode_nbt(tag.get("adult_sounds")?)?,
+            baby_sounds: CatSoundSet::decode_nbt(tag.get("baby_sounds")?)?,
+        })
+    }
+
+    /// `Cat.getSoundSet`: the sound id for `kind` (`ambient`, `stray_ambient`,
+    /// `hiss`, `hurt`, `death`, `eat`, `beg_for_food`, `purr`, `purreow`) in
+    /// the adult or baby set.
+    pub fn sound(&self, baby: bool, kind: &str) -> Option<&str> {
+        let set = if baby {
+            &self.baby_sounds
+        } else {
+            &self.adult_sounds
+        };
+        set.by_kind(kind)
+    }
+}
+
 /// The frozen world variant tables converted onto `REGISTRY_KINDS`.
 #[derive(Clone, Debug, Default)]
 pub struct VariantTables {
     pub wolf: VariantTable<WolfVariant>,
     pub wolf_sound: VariantTable<WolfSoundVariant>,
+    pub cat: VariantTable<CatVariant>,
+    pub cat_sound: VariantTable<CatSoundVariant>,
 }
 
 impl VariantTables {
+    /// Whether no variant table has been populated yet.
+    pub fn is_empty(&self) -> bool {
+        self.wolf.is_empty() && self.cat.is_empty()
+    }
+
     /// Load the prepared vanilla tables (`data/minecraft/<registry>/`) for worlds
     /// without packs, worldgen helpers and standalone probes.
     pub fn load_prepared(root: &Path) -> Self {
@@ -632,65 +887,84 @@ impl VariantTables {
         let wolf = load_prepared_table(&data.join("wolf_variant"), WolfVariant::decode);
         let wolf_sound =
             load_prepared_table(&data.join("wolf_sound_variant"), decode_prepared_wolf_sound);
-        Self { wolf, wolf_sound }
+        let cat = load_prepared_table(&data.join("cat_variant"), CatVariant::decode);
+        let cat_sound =
+            load_prepared_table(&data.join("cat_sound_variant"), decode_prepared_cat_sound);
+        Self {
+            wolf,
+            wolf_sound,
+            cat,
+            cat_sound,
+        }
     }
 
     /// Build a client's variant tables from the server's synchronized `Dynamic`
     /// registries, keeping the server's exact network id order and resolving
     /// known-pack omitted entries from `fallback`.
     pub fn from_synced(registries: &Dynamic, fallback: &VariantTables) -> Self {
-        let wolf = registries
-            .registries
-            .get("minecraft:wolf_variant")
-            .map(|entries| {
-                VariantTable::from_synced(
-                    entries
-                        .iter()
-                        .map(|(id, data)| {
-                            let entry = data
-                                .as_ref()
-                                .and_then(WolfVariant::decode_network_nbt)
-                                .or_else(|| {
-                                    fallback
-                                        .wolf
-                                        .lookup(id)
-                                        .and_then(|r| fallback.wolf.get(r))
-                                        .cloned()
-                                })
-                                .unwrap_or_else(WolfVariant::missing);
-                            (id.clone(), entry)
-                        })
-                        .collect(),
-                )
-            })
-            .unwrap_or_default();
-        let wolf_sound = registries
-            .registries
-            .get("minecraft:wolf_sound_variant")
-            .map(|entries| {
-                VariantTable::from_synced(
-                    entries
-                        .iter()
-                        .map(|(id, data)| {
-                            let entry = data
-                                .as_ref()
-                                .and_then(WolfSoundVariant::decode_network_nbt)
-                                .or_else(|| {
-                                    fallback
-                                        .wolf_sound
-                                        .lookup(id)
-                                        .and_then(|r| fallback.wolf_sound.get(r))
-                                        .cloned()
-                                })
-                                .unwrap_or_else(WolfSoundVariant::missing);
-                            (id.clone(), entry)
-                        })
-                        .collect(),
-                )
-            })
-            .unwrap_or_default();
-        Self { wolf, wolf_sound }
+        let wolf = synced_table(
+            registries,
+            "minecraft:wolf_variant",
+            WolfVariant::decode_network_nbt,
+            &fallback.wolf,
+            WolfVariant::missing,
+        );
+        let wolf_sound = synced_table(
+            registries,
+            "minecraft:wolf_sound_variant",
+            WolfSoundVariant::decode_network_nbt,
+            &fallback.wolf_sound,
+            WolfSoundVariant::missing,
+        );
+        let cat = synced_table(
+            registries,
+            "minecraft:cat_variant",
+            CatVariant::decode_network_nbt,
+            &fallback.cat,
+            CatVariant::missing,
+        );
+        let cat_sound = synced_table(
+            registries,
+            "minecraft:cat_sound_variant",
+            CatSoundVariant::decode_network_nbt,
+            &fallback.cat_sound,
+            CatSoundVariant::missing,
+        );
+        Self {
+            wolf,
+            wolf_sound,
+            cat,
+            cat_sound,
+        }
     }
+}
+
+fn synced_table<T: Clone>(
+    registries: &Dynamic,
+    key: &str,
+    decode: fn(&Tag) -> Option<T>,
+    fallback: &VariantTable<T>,
+    missing: fn() -> T,
+) -> VariantTable<T> {
+    registries
+        .registries
+        .get(key)
+        .map(|entries| {
+            VariantTable::from_synced(
+                entries
+                    .iter()
+                    .map(|(id, data)| {
+                        let entry = data
+                            .as_ref()
+                            .and_then(decode)
+                            .or_else(|| fallback.lookup(id).and_then(|r| fallback.get(r)).cloned())
+                            .unwrap_or_else(missing);
+                        (id.clone(), entry)
+                    })
+                    .collect(),
+            )
+        })
+        .unwrap_or_default()
 }
 
 fn load_prepared_table<T>(
@@ -720,8 +994,8 @@ fn load_prepared_table<T>(
     VariantTable::from_entries(entries)
 }
 
-fn decode_prepared_wolf_sound(value: &Value) -> Result<WolfSoundVariant, String> {
-    let (decoded, _) = WolfSoundVariant::decode_with(value, |field, raw| match raw {
+fn decode_prepared_sound_holder(field: &str, raw: &Value) -> Result<(String, Tag), String> {
+    match raw {
         Value::String(s) => {
             let id = Identifier::parse(s)
                 .map_err(|e| format!("{field}: invalid sound identifier {s:?}: {e}"))?;
@@ -743,7 +1017,16 @@ fn decode_prepared_wolf_sound(value: &Value) -> Result<WolfSoundVariant, String>
             ))
         }
         _ => Err(format!("{field}: a sound event is required")),
-    })?;
+    }
+}
+
+fn decode_prepared_wolf_sound(value: &Value) -> Result<WolfSoundVariant, String> {
+    let (decoded, _) = WolfSoundVariant::decode_with(value, decode_prepared_sound_holder)?;
+    Ok(decoded)
+}
+
+fn decode_prepared_cat_sound(value: &Value) -> Result<CatSoundVariant, String> {
+    let (decoded, _) = CatSoundVariant::decode_with(value, decode_prepared_sound_holder)?;
     Ok(decoded)
 }
 
