@@ -617,14 +617,91 @@ impl WolfSoundVariant {
     }
 }
 
+/// `FrogVariant`: texture asset id (`asset_id`) plus spawn conditions.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FrogVariant {
+    pub asset_id: String,
+    pub spawn_conditions: Vec<SpawnSelector>,
+}
+
+impl HasSpawnConditions for FrogVariant {
+    fn spawn_conditions(&self) -> &[SpawnSelector] {
+        &self.spawn_conditions
+    }
+}
+
+impl FrogVariant {
+    fn missing() -> Self {
+        Self {
+            asset_id: String::new(),
+            spawn_conditions: Vec::new(),
+        }
+    }
+
+    /// `FrogVariant.DIRECT_CODEC`.
+    pub fn decode(value: &Value) -> Result<Self, String> {
+        let obj = value.as_object().ok_or("not a map")?;
+        let raw_asset = obj
+            .get("asset_id")
+            .and_then(Value::as_str)
+            .ok_or("asset_id: a string is required")?;
+        let asset_id = Identifier::parse(raw_asset)
+            .map_err(|e| format!("asset_id: invalid identifier {raw_asset:?}: {e}"))?
+            .as_str()
+            .to_owned();
+        let spawn_conditions = decode_spawn_conditions(
+            obj.get("spawn_conditions")
+                .ok_or("spawn_conditions is required")?,
+        )?;
+        Ok(Self {
+            asset_id,
+            spawn_conditions,
+        })
+    }
+
+    /// `FrogVariant.NETWORK_CODEC`: `asset_id` only.
+    pub fn to_network_nbt(&self) -> Tag {
+        Tag::compound([(
+            "asset_id",
+            Tag::String(JavaString::from(self.asset_id.as_str())),
+        )])
+    }
+
+    /// Decode a client's synced `FrogVariant.NETWORK_CODEC` NBT entry.
+    pub fn decode_network_nbt(tag: &Tag) -> Option<Self> {
+        let asset_id = match tag.get("asset_id") {
+            Some(Tag::String(s)) => s.to_string_lossy(),
+            _ => return None,
+        };
+        Some(Self {
+            asset_id,
+            spawn_conditions: Vec::new(),
+        })
+    }
+
+    /// `FrogRenderer.extractRenderState`: the atlas sprite key for this variant.
+    /// Default-namespace assets strip `"minecraft:"` to match Sunrise's atlas keys;
+    /// non-default namespaces keep `"<ns>:<path>"`.
+    pub fn texture(&self) -> &str {
+        self.asset_id
+            .strip_prefix("minecraft:")
+            .unwrap_or(&self.asset_id)
+    }
+}
+
 /// The frozen world variant tables converted onto `REGISTRY_KINDS`.
 #[derive(Clone, Debug, Default)]
 pub struct VariantTables {
     pub wolf: VariantTable<WolfVariant>,
     pub wolf_sound: VariantTable<WolfSoundVariant>,
+    pub frog: VariantTable<FrogVariant>,
 }
 
 impl VariantTables {
+    pub fn is_empty(&self) -> bool {
+        self.wolf.is_empty() && self.wolf_sound.is_empty() && self.frog.is_empty()
+    }
+
     /// Load the prepared vanilla tables (`data/minecraft/<registry>/`) for worlds
     /// without packs, worldgen helpers and standalone probes.
     pub fn load_prepared(root: &Path) -> Self {
@@ -632,7 +709,12 @@ impl VariantTables {
         let wolf = load_prepared_table(&data.join("wolf_variant"), WolfVariant::decode);
         let wolf_sound =
             load_prepared_table(&data.join("wolf_sound_variant"), decode_prepared_wolf_sound);
-        Self { wolf, wolf_sound }
+        let frog = load_prepared_table(&data.join("frog_variant"), FrogVariant::decode);
+        Self {
+            wolf,
+            wolf_sound,
+            frog,
+        }
     }
 
     /// Build a client's variant tables from the server's synchronized `Dynamic`
@@ -689,7 +771,36 @@ impl VariantTables {
                 )
             })
             .unwrap_or_default();
-        Self { wolf, wolf_sound }
+        let frog = registries
+            .registries
+            .get("minecraft:frog_variant")
+            .map(|entries| {
+                VariantTable::from_synced(
+                    entries
+                        .iter()
+                        .map(|(id, data)| {
+                            let entry = data
+                                .as_ref()
+                                .and_then(FrogVariant::decode_network_nbt)
+                                .or_else(|| {
+                                    fallback
+                                        .frog
+                                        .lookup(id)
+                                        .and_then(|r| fallback.frog.get(r))
+                                        .cloned()
+                                })
+                                .unwrap_or_else(FrogVariant::missing);
+                            (id.clone(), entry)
+                        })
+                        .collect(),
+                )
+            })
+            .unwrap_or_default();
+        Self {
+            wolf,
+            wolf_sound,
+            frog,
+        }
     }
 }
 

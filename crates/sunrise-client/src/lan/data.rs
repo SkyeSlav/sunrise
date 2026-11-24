@@ -309,7 +309,7 @@ fn synchronized_entries(
     if enchantments
         || matches!(
             path,
-            "instrument" | "jukebox_song" | "wolf_variant" | "wolf_sound_variant"
+            "instrument" | "jukebox_song" | "wolf_variant" | "wolf_sound_variant" | "frog_variant"
         )
     {
         mod_entries(resources, path, &mut entries);

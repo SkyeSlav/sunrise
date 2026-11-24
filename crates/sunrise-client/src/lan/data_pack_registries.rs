@@ -49,6 +49,10 @@ pub const REGISTRY_KINDS: &[RegistryKind] = &[
         decode: decode_wolf_sound_variant,
     },
     RegistryKind {
+        key: "minecraft:frog_variant",
+        decode: decode_frog_variant,
+    },
+    RegistryKind {
         key: "minecraft:painting_variant",
         decode: decode_painting_variant,
     },
@@ -132,6 +136,7 @@ enum Definition {
     Instrument(Instrument, Tag),
     WolfVariant(crate::mobs::variants::WolfVariant, Tag),
     WolfSoundVariant(crate::mobs::variants::WolfSoundVariant, Tag),
+    FrogVariant(crate::mobs::variants::FrogVariant, Tag),
 }
 
 impl PackRegistryDefinitions {
@@ -254,7 +259,9 @@ impl PackRegistryDefinitions {
                     }
                     let definition = if kind == "enchantment" {
                         Definition::Enchantment(value)
-                    } else if from_pack || matches!(kind, "wolf_variant" | "wolf_sound_variant") {
+                    } else if from_pack
+                        || matches!(kind, "wolf_variant" | "wolf_sound_variant" | "frog_variant")
+                    {
                         let id = format!("{}:{}", key.0, key.1);
                         match (table.decode)(&mut decoder, &id, value) {
                             Ok(definition) => definition,
@@ -275,7 +282,7 @@ impl PackRegistryDefinitions {
                 }
                 // `RegistryValidator.nonEmpty()` for the variant registries.
                 if had_candidates
-                    && matches!(kind, "wolf_variant" | "wolf_sound_variant")
+                    && matches!(kind, "wolf_variant" | "wolf_sound_variant" | "frog_variant")
                     && entries.values().all(Option::is_none)
                     && !errors.contains_key(registry)
                 {
@@ -407,6 +414,7 @@ impl PackRegistryDefinitions {
                 | "minecraft:instrument"
                 | "minecraft:wolf_variant"
                 | "minecraft:wolf_sound_variant"
+                | "minecraft:frog_variant"
         )
     }
 
@@ -418,7 +426,8 @@ impl PackRegistryDefinitions {
                     Definition::Encoded(tag)
                     | Definition::Instrument(_, tag)
                     | Definition::WolfVariant(_, tag)
-                    | Definition::WolfSoundVariant(_, tag) => tag.clone(),
+                    | Definition::WolfSoundVariant(_, tag)
+                    | Definition::FrogVariant(_, tag) => tag.clone(),
                     Definition::Enchantment(json) => json_to_nbt(json),
                 };
                 Some((key.clone(), tag, *from_pack))
@@ -455,7 +464,24 @@ impl PackRegistryDefinitions {
                 })
                 .collect(),
         );
-        crate::mobs::variants::VariantTables { wolf, wolf_sound }
+        let frog = crate::mobs::variants::VariantTable::from_entries(
+            self.entries
+                .get("minecraft:frog_variant")
+                .into_iter()
+                .flatten()
+                .filter_map(|(key, entry)| match entry {
+                    Some((Definition::FrogVariant(variant, _), _)) => {
+                        Some((key.clone(), variant.clone()))
+                    }
+                    _ => None,
+                })
+                .collect(),
+        );
+        crate::mobs::variants::VariantTables {
+            wolf,
+            wolf_sound,
+            frog,
+        }
     }
 
     /// Use the same selected definitions as the synchronized registry packets.
@@ -851,6 +877,14 @@ fn decode_wolf_sound_variant(
         })?;
     check_network_nbt(&wire)?;
     Ok(Definition::WolfSoundVariant(variant, wire))
+}
+
+/// `FrogVariant.DIRECT_CODEC` on disk, `FrogVariant.NETWORK_CODEC` on the wire.
+fn decode_frog_variant(_: &mut Decoder<'_>, _: &str, value: Value) -> Result<Definition, String> {
+    let variant = crate::mobs::variants::FrogVariant::decode(&value)?;
+    let wire = variant.to_network_nbt();
+    check_network_nbt(&wire)?;
+    Ok(Definition::FrogVariant(variant, wire))
 }
 
 // WorldClock.DIRECT_CODEC is a unit map codec: extra keys are permitted.
