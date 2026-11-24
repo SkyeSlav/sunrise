@@ -557,6 +557,7 @@ mod should_check_weak_power;
 mod should_display_fluid_overlay;
 mod should_hide_adjacent_fluid_face;
 mod should_redstone_wire_connect_to;
+mod sleep_status_announce;
 mod sound_and_shader_helpers;
 mod spread_players_teleport;
 mod state_at_viewpoint;
