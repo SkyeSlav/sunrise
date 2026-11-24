@@ -50,7 +50,7 @@ impl<T: 'static> RegistryKey<T> {
 /// Links a custom static registry's payload type to its compile-time [`RegistryKey`],
 /// enabling [`EntryKey<Self>`] to be used as a [`DataMap::Entry`](crate::DataMap::Entry)
 /// and read via [`EntryKey::data`].
-pub trait CustomRegistryEntry: Send + Sync + 'static {
+pub trait CustomRegistryEntry: Sized + Send + Sync + 'static {
     /// The compile-time key of the static custom registry holding values of `Self`.
     const REGISTRY: RegistryKey<Self>;
 }
