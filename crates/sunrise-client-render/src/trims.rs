@@ -11,6 +11,8 @@ use std::collections::HashMap;
 #[cfg(test)]
 use std::path::Path;
 use sunrise_assets::palette::apply_palette;
+use sunrise_core::nbt::Tag;
+use sunrise_protocol::registry::Dynamic;
 
 /// Runtime trim slots and the completed ordered requests for their current atlas.
 /// A frame with more requests than slots keeps the same final residents as the
@@ -163,13 +165,71 @@ impl TrimOverride {
     }
 }
 
+/// One synced registry in the server's order: each entry's name and the asset or palette id
+/// the server sent, none for an entry of a known pack, whose data is the client's own files.
+type SyncedEntries = Vec<(String, Option<String>)>;
+
 /// The `trim_pattern` (asset id) and `trim_material` (palette id) registries.
 #[derive(Clone, Debug, Default)]
 pub struct TrimRegistry {
+    /// The resources' entries.
     patterns: HashMap<String, String>,
     materials: HashMap<String, String>,
+    /// The connected server's registries (patterns, materials): when set, only their entries
+    /// resolve, as `ClientPacketListener`'s registry access holds only what the server sent.
+    synced: Option<(SyncedEntries, SyncedEntries)>,
 }
+
+/// `id` in `local`, or in `synced` when the connection has one.
+fn lookup<'a>(
+    local: &'a HashMap<String, String>,
+    synced: Option<&'a SyncedEntries>,
+    id: &str,
+) -> Option<&'a str> {
+    match synced {
+        None => local.get(id),
+        Some(entries) => match &entries.iter().find(|(name, _)| name == id)?.1 {
+            Some(sent) => Some(sent),
+            None => local.get(id),
+        },
+    }
+    .map(String::as_str)
+}
+
 impl TrimRegistry {
+    /// Take the registries a server sent, in its sync order, as the ones that resolve.
+    pub fn set_synced(&mut self, registries: &Dynamic) {
+        let read = |registry: &str, key: &str| -> SyncedEntries {
+            registries
+                .registries
+                .get(registry)
+                .into_iter()
+                .flatten()
+                .map(|(name, data)| {
+                    let sent = data.as_ref().and_then(|data| match data.get(key)? {
+                        Tag::String(id) => Some(qualified(&id.to_string_lossy())),
+                        _ => None,
+                    });
+                    (name.clone(), sent)
+                })
+                .collect()
+        };
+        self.synced = Some((
+            read("minecraft:trim_pattern", "asset_id"),
+            read("minecraft:trim_material", "palette_id"),
+        ));
+    }
+    /// A resource reload's entries, keeping this connection's synced registries.
+    pub fn reloaded(&mut self, mut fresh: Self) {
+        fresh.synced = self.synced.take();
+        *self = fresh;
+    }
+    fn pattern(&self, id: &str) -> Option<&str> {
+        lookup(&self.patterns, self.synced.as_ref().map(|s| &s.0), id)
+    }
+    fn material(&self, id: &str) -> Option<&str> {
+        lookup(&self.materials, self.synced.as_ref().map(|s| &s.1), id)
+    }
     /// Every `data/<namespace>/trim_pattern` and `trim_material` entry.
     pub fn load(root: &ResourceSource) -> Self {
         let mut out = Self::default();
@@ -211,6 +271,7 @@ impl TrimRegistry {
         Self {
             patterns: map(patterns),
             materials: map(materials),
+            synced: None,
         }
     }
 }
@@ -236,8 +297,8 @@ impl TrimTexture {
         layer: &str,
     ) -> Option<Self> {
         let (material, pattern) = (qualified(material), qualified(pattern));
-        let mut texture = registry.patterns.get(&pattern)?.clone();
-        let mut palette = Some(registry.materials.get(&material)?.clone());
+        let mut texture = registry.pattern(&pattern)?.to_owned();
+        let mut palette = Some(registry.material(&material)?.to_owned());
         if let Some(o) = overrides.iter().find(|o| o.matches(&material, &pattern)) {
             if let Some(t) = &o.texture {
                 texture.clone_from(t);
@@ -441,5 +502,50 @@ mod tests {
             slot_size(&ResourceSource::directory(root.clone())),
             (64, 32)
         );
+    }
+
+    /// A server's pack trims render with the asset and palette ids it synced, and only the
+    /// synced entries resolve; a known pack's entry (no data sent) reads the client's own files.
+    #[test]
+    fn a_synced_pack_trim_resolves_from_its_asset_ids() {
+        let entry = |name: &str, field: &str, id: &str| {
+            (
+                name.to_owned(),
+                Some(Tag::compound([(field, Tag::String(id.into()))])),
+            )
+        };
+        let synced = Dynamic {
+            registries: [
+                (
+                    "minecraft:trim_pattern".to_owned(),
+                    vec![
+                        ("minecraft:coast".to_owned(), None),
+                        entry("test:zigzag", "asset_id", "test:zig"),
+                    ],
+                ),
+                (
+                    "minecraft:trim_material".to_owned(),
+                    vec![entry("test:jade", "palette_id", "test:trim/jade")],
+                ),
+            ]
+            .into(),
+            ..Default::default()
+        };
+        let mut registry = registry();
+        registry.set_synced(&synced);
+        let t =
+            TrimTexture::resolve(&registry, &[], "test:jade", "test:zigzag", "humanoid").unwrap();
+        assert_eq!(t.texture, "test:trims/entity/humanoid/zig");
+        assert_eq!(t.palette.as_deref(), Some("test:trim/jade"));
+        // Not in the server's registry: nothing, though the client's files hold it.
+        assert!(
+            TrimTexture::resolve(&registry, &[], "minecraft:gold", "test:zigzag", "humanoid")
+                .is_none()
+        );
+        // A known pack's pattern has no data in the packet: the client's own entry.
+        let known =
+            TrimTexture::resolve(&registry, &[], "test:jade", "minecraft:coast", "humanoid")
+                .unwrap();
+        assert_eq!(known.texture, "minecraft:trims/entity/humanoid/coast");
     }
 }

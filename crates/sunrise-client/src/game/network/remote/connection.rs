@@ -247,6 +247,8 @@ impl Game<'_> {
                     .collect()
             })
             .unwrap_or_default();
+        // The trims render from the registries the server sent, in its sync order.
+        self.armor_stand_assets.trims.set_synced(&registries);
         if let Some(r) = self.remote.as_mut() {
             r.enchantments = enchantments;
             let bits = ceil_log2(biomes.len());
