@@ -426,13 +426,13 @@ fn upgrade_types(
                     continue;
                 };
                 if let Some((_, to)) = ELEMENTS.iter().find(|(from, _)| *from == t) {
-                    if t.starts_with("moogs_structures:") {
-                        let own = element
+                    if t.starts_with("moogs_structures:")
+                        && element
                             .as_object_mut()
-                            .and_then(|o| o.remove(ENHANCED_TERRAIN));
-                        if let Some(kernel) = own.and_then(|a| moogs_terrain(&a, lost)) {
-                            element[SUNRISE_ENHANCED_TERRAIN] = kernel;
-                        }
+                            .and_then(|o| o.remove(ENHANCED_TERRAIN))
+                            .is_some()
+                    {
+                        *lost.entry(ENHANCED_TERRAIN.into()).or_default() += 1;
                     }
                     element["element_type"] = (*to).into();
                     changed = true;
@@ -984,10 +984,20 @@ mod tests {
             pool["elements"][0]["element"]["element_type"],
             "minecraft:single_pool_element"
         );
-        // Its own terrain kernel, band and all, under the game's key.
+        // Its own terrain kernel needs its mod and is recorded as lost.
+        assert!(
+            pool["elements"][0]["element"]
+                .get("sunrise:enhanced_terrain_adaptation")
+                .is_none()
+        );
+        assert!(
+            pool["elements"][0]["element"]
+                .get("enhanced_terrain_adaptation")
+                .is_none()
+        );
         assert_eq!(
-            pool["elements"][0]["element"]["sunrise:enhanced_terrain_adaptation"]["band"],
-            json!({"bottom": 17, "top": 23})
+            report.rules_lost.get("enhanced_terrain_adaptation"),
+            Some(&1)
         );
         assert_eq!(
             pool["elements"][1]["element"]["elements"][0]["element_type"],

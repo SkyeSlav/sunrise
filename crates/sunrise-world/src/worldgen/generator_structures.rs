@@ -5,7 +5,6 @@ use super::{
     generator::{ChunkWork, GeneratorData, GeneratorError, shard_of},
     structure::{
         StructureResources,
-        jigsaw::PoolPiece,
         start::{
             Piece, Rings, StartContext, StructureDef, StructureKind, StructureRegistry,
             StructureStart, beardifier, create_starts, create_starts_with_saved, may_start,
@@ -567,9 +566,7 @@ impl StructureState {
     /// A saved `minecraft:jigsaw` piece, or `None` for any other piece or one that does not decode.
     fn saved_pool_piece(&self, piece: &sunrise_core::nbt::Tag) -> Option<Piece> {
         saved_piece_id(piece)?;
-        PoolPiece::from_saved(&tag_json(piece), &self.resources, &self.bindings)
-            .ok()
-            .map(Piece::Pool)
+        Piece::from_saved_pool(&tag_json(piece), &self.resources, &self.bindings).ok()
     }
     /// A saved piece, as `StructureStart.loadStaticStart` loads it: a jigsaw
     /// piece from `PoolPiece::from_saved`, a mod type's piece from its
@@ -697,7 +694,7 @@ impl StructureState {
             .position(|s| s.name == structure)
             .ok_or_else(|| format!("unknown structure {structure}"))?;
         let pieces = (pieces.iter())
-            .map(|p| PoolPiece::from_saved(p, &self.resources, &self.bindings).map(Piece::Pool))
+            .map(|p| Piece::from_saved_pool(p, &self.resources, &self.bindings))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("{structure} at {chunk:?}: {e}"))?;
         if pieces.is_empty() {
@@ -985,9 +982,7 @@ pub(super) fn read_saved_start(
             if piece.get("O") != Some(&Tag::Int(-1)) || piece.get("GD") != Some(&Tag::Int(0)) {
                 return None;
             }
-            PoolPiece::from_saved(&tag_json(piece), resources, bindings)
-                .ok()
-                .map(Piece::Pool)
+            Piece::from_saved_pool(&tag_json(piece), resources, bindings).ok()
         })
         .collect::<Option<Vec<_>>>()?;
     let mut start = StructureStart::new(index, def, chunk, pieces);
@@ -1098,7 +1093,7 @@ mod tests {
             registry::BlockRegistry,
             worldgen::structure::{
                 Rotation, StateTransforms,
-                jigsaw::{Junction, PoolElement, Projection},
+                jigsaw::{Junction, PoolElement, PoolPiece, Projection},
                 start::StructureKind,
             },
         };
@@ -1144,14 +1139,13 @@ mod tests {
             biomes: BTreeSet::new(),
             step: 0,
             terrain: TerrainAdjustment::BeardThin,
-            enhanced_terrain: None,
         };
         let chunk = ChunkPos::new(-2, 3);
         let pieces = Rotation::ALL
             .into_iter()
             .enumerate()
             .map(|(i, rotation)| {
-                Piece::Pool(PoolPiece {
+                Piece::pool(PoolPiece {
                     element: Arc::new(PoolElement::Feature {
                         feature: "test:tree".into(),
                         projection: Projection::TerrainMatching,

@@ -128,9 +128,6 @@ pub struct StructureDef {
     pub biomes: BTreeSet<BiomeId>,
     pub step: usize,
     pub terrain: TerrainAdjustment,
-    /// A structure library's terrain kernel
-    /// (`"sunrise:enhanced_terrain_adaptation"`).
-    pub enhanced_terrain: Option<super::enhanced_terrain::StructureAdaptation>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Reduction {
@@ -463,10 +460,6 @@ impl StructureRegistry {
                     .position(|s| Some(*s) == v["step"].as_str())
                     .unwrap_or(4),
                 terrain: terrain(v["terrain_adaptation"].as_str()),
-                enhanced_terrain: v
-                    .get("sunrise:enhanced_terrain_adaptation")
-                    .map(super::enhanced_terrain::StructureAdaptation::decode)
-                    .transpose()?,
             });
         }
         let index = |name: &str| defs.iter().position(|d| d.name == name);
@@ -811,29 +804,123 @@ fn reduce(method: Reduction, seed: i64, salt: i32, x: i32, z: i32, probability: 
 
 #[derive(Debug)]
 pub enum Piece {
-    Pool(PoolPiece),
+    Pool {
+        piece: PoolPiece,
+        beardifier: Option<RigidPiece>,
+    },
     Legacy(Box<dyn LegacyPiece>),
 }
 impl Piece {
+    pub fn pool(piece: PoolPiece) -> Self {
+        Self::Pool {
+            piece,
+            beardifier: None,
+        }
+    }
+    pub fn pool_with_beardifier(piece: PoolPiece, beardifier: Option<RigidPiece>) -> Self {
+        Self::Pool { piece, beardifier }
+    }
+    pub fn beardifier(&self) -> Option<RigidPiece> {
+        match self {
+            Self::Pool { beardifier, .. } => *beardifier,
+            Self::Legacy(p) => p.beardifier(),
+        }
+    }
     pub fn bounding_box(&self) -> BoundingBox {
         match self {
-            Self::Pool(p) => p.bounding_box,
+            Self::Pool { piece, .. } => piece.bounding_box,
             Self::Legacy(p) => p.bounding_box(),
         }
     }
     pub fn type_name(&self) -> &'static str {
         match self {
-            Self::Pool(_) => "minecraft:jigsaw",
+            Self::Pool { .. } => "minecraft:jigsaw",
             Self::Legacy(p) => p.type_name(),
         }
     }
     /// `StructurePiece.createTag`; None for a type Sunrise cannot save yet.
     pub fn save(&self) -> Option<sunrise_core::nbt::Compound> {
         match self {
-            Self::Pool(p) => Some(p.save()),
+            Self::Pool { piece, beardifier } => {
+                let mut tag = piece.save();
+                if let Some(rigid) = beardifier {
+                    tag.insert("sunrise:beardifier".into(), save_piece_beardifier(*rigid));
+                }
+                Some(tag)
+            }
             Self::Legacy(p) => p.save(),
         }
     }
+    /// Decodes a saved `minecraft:jigsaw` piece, preserving any per-piece
+    /// beardifier override written by a mod structure type.
+    pub fn from_saved_pool(
+        v: &Value,
+        resources: &StructureResources,
+        bindings: &FeatureBlockBindings<'_>,
+    ) -> Result<Self, DecodeError> {
+        let piece = PoolPiece::from_saved(v, resources, bindings)?;
+        let beardifier = load_piece_beardifier(v)?;
+        Ok(Self::Pool { piece, beardifier })
+    }
+}
+fn terrain_adjustment_name(adjustment: TerrainAdjustment) -> &'static str {
+    match adjustment {
+        TerrainAdjustment::None => "none",
+        TerrainAdjustment::Bury => "bury",
+        TerrainAdjustment::BeardThin => "beard_thin",
+        TerrainAdjustment::BeardBox => "beard_box",
+        TerrainAdjustment::Encapsulate => "encapsulate",
+    }
+}
+fn save_piece_beardifier(rigid: RigidPiece) -> sunrise_core::nbt::Tag {
+    use sunrise_core::nbt::Tag;
+    let min = rigid.bounds.minimum();
+    let max = rigid.bounds.maximum();
+    Tag::compound([
+        (
+            "bounds",
+            Tag::IntArray(vec![min[0], min[1], min[2], max[0], max[1], max[2]]),
+        ),
+        (
+            "adjustment",
+            Tag::String(terrain_adjustment_name(rigid.adjustment).into()),
+        ),
+        ("ground_level_delta", Tag::Int(rigid.ground_level_delta)),
+    ])
+}
+fn load_piece_beardifier(v: &Value) -> Result<Option<RigidPiece>, DecodeError> {
+    let Some(b) = v.get("sunrise:beardifier") else {
+        return Ok(None);
+    };
+    let corners: Vec<i32> = b["bounds"]
+        .as_array()
+        .ok_or(DecodeError::Field("sunrise:beardifier"))?
+        .iter()
+        .map(|i| i.as_i64().and_then(|n| i32::try_from(n).ok()))
+        .collect::<Option<_>>()
+        .ok_or(DecodeError::Field("sunrise:beardifier"))?;
+    let [x0, y0, z0, x1, y1, z1]: [i32; 6] = corners
+        .try_into()
+        .map_err(|_| DecodeError::Field("sunrise:beardifier"))?;
+    let bounds = StructureBounds::new([x0, y0, z0], [x1, y1, z1])
+        .ok_or(DecodeError::Field("sunrise:beardifier"))?;
+    let adjustment = match b["adjustment"].as_str() {
+        Some("none") => TerrainAdjustment::None,
+        Some("bury") => TerrainAdjustment::Bury,
+        Some("beard_thin") => TerrainAdjustment::BeardThin,
+        Some("beard_box") => TerrainAdjustment::BeardBox,
+        Some("encapsulate") => TerrainAdjustment::Encapsulate,
+        _ => return Err(DecodeError::Field("sunrise:beardifier")),
+    };
+    let ground_level_delta = b["ground_level_delta"]
+        .as_i64()
+        .and_then(|n| i32::try_from(n).ok())
+        .ok_or(DecodeError::Field("sunrise:beardifier"))?;
+    Ok(Some(RigidPiece {
+        bounds,
+        adjustment,
+        ground_level_delta,
+    }))
 }
 fn legacy(pieces: Vec<impl LegacyPiece + 'static>) -> Vec<Piece> {
     pieces
@@ -1248,7 +1335,7 @@ fn generate(
             };
             (
                 position,
-                pieces.into_iter().map(Piece::Pool).collect::<Vec<_>>(),
+                pieces.into_iter().map(Piece::pool).collect::<Vec<_>>(),
             )
         }
         StructureKind::BuriedTreasure => {
@@ -1492,7 +1579,7 @@ fn generate(
                 &mut random,
                 chunk,
             )?;
-            (position, pieces.into_iter().map(Piece::Pool).collect())
+            (position, pieces.into_iter().map(Piece::pool).collect())
         }
         StructureKind::Mod(mod_type) => {
             // The type's own start and pieces; the biome check below and the
@@ -1525,19 +1612,28 @@ impl StructureStart {
         let mut bounding_box = pieces[0].bounding_box();
         let mut override_bounds: Option<BoundingBox> = None;
         let mut has_piece_beardifier = false;
+        let include_override = |bounds: BoundingBox, override_bounds: &mut Option<BoundingBox>| {
+            match override_bounds {
+                Some(union) => union.encapsulate(&bounds),
+                None => *override_bounds = Some(bounds),
+            }
+        };
         for (index, piece) in pieces.iter().enumerate() {
             if index != 0 {
                 bounding_box.encapsulate(&piece.bounding_box());
             }
-            if let Piece::Legacy(legacy) = piece
-                && let Some(rigid) = legacy.beardifier()
-            {
+            if let Some(rigid) = piece.beardifier() {
                 has_piece_beardifier = true;
                 if rigid.adjustment != TerrainAdjustment::None {
-                    let bounds = influence_box(rigid.bounds.minimum(), rigid.bounds.maximum());
-                    match &mut override_bounds {
-                        Some(union) => union.encapsulate(&bounds),
-                        None => override_bounds = Some(bounds),
+                    include_override(
+                        influence_box(rigid.bounds.minimum(), rigid.bounds.maximum()),
+                        &mut override_bounds,
+                    );
+                    if let Piece::Pool { piece: pool, .. } = piece {
+                        for j in &pool.junctions {
+                            let p = [j.source_x, j.source_ground_y, j.source_z];
+                            include_override(influence_box(p, p), &mut override_bounds);
+                        }
                     }
                 }
             }
@@ -1547,10 +1643,6 @@ impl StructureStart {
         }
         if let Some(bounds) = override_bounds {
             bounding_box.encapsulate(&bounds);
-        }
-        if let Some(enhanced) = def.enhanced_terrain.as_ref().filter(|e| e.inflate) {
-            let r = enhanced.radius();
-            bounding_box = bounding_box.inflated(r, r);
         }
         Self {
             structure,
@@ -1680,34 +1772,47 @@ pub fn beardifier(
         Some(a) => a.encapsulate(&b),
         None => *any = Some(b),
     };
-    let (mut kernel_pieces, mut kernel_junctions) = (Vec::new(), Vec::new());
-    let mut kernels: Option<BoundingBox> = None;
+    let push_junctions =
+        |pool: &PoolPiece, junctions: &mut Vec<JigsawJunction>, any: &mut Option<BoundingBox>| {
+            for j in &pool.junctions {
+                if j.source_x > bx - 12
+                    && j.source_z > bz - 12
+                    && j.source_x < bx + 15 + 12
+                    && j.source_z < bz + 15 + 12
+                {
+                    junctions.push(JigsawJunction {
+                        source_x: j.source_x,
+                        source_ground_y: j.source_ground_y,
+                        source_z: j.source_z,
+                    });
+                    let p = [j.source_x, j.source_ground_y, j.source_z];
+                    include(BoundingBox::new(p, p), any);
+                }
+            }
+        };
     for start in starts {
         let def = &registry.structures[start.structure];
-        if let Some(enhanced) = &def.enhanced_terrain
-            && let Some(b) =
-                enhanced.collect(start, chunk, &mut kernel_pieces, &mut kernel_junctions)
-        {
-            include(b, &mut kernels);
-        }
         let adjustment = def.terrain;
         if adjustment == TerrainAdjustment::None && !start.has_piece_beardifier {
             continue;
         }
         for piece in &start.pieces {
             if start.has_piece_beardifier
-                && let Piece::Legacy(legacy) = piece
-                && let Some(rigid) = legacy.beardifier()
+                && let Some(rigid) = piece.beardifier()
             {
-                let b = BoundingBox::new(rigid.bounds.minimum(), rigid.bounds.maximum());
-                if rigid.adjustment != TerrainAdjustment::None
-                    && b.max[0] >= bx - 12
-                    && b.min[0] <= bx + 15 + 12
-                    && b.max[2] >= bz - 12
-                    && b.min[2] <= bz + 15 + 12
-                {
-                    rigids.push(rigid);
-                    include(b, &mut any);
+                if rigid.adjustment != TerrainAdjustment::None {
+                    let b = BoundingBox::new(rigid.bounds.minimum(), rigid.bounds.maximum());
+                    if b.max[0] >= bx - 12
+                        && b.min[0] <= bx + 15 + 12
+                        && b.max[2] >= bz - 12
+                        && b.min[2] <= bz + 15 + 12
+                    {
+                        rigids.push(rigid);
+                        include(b, &mut any);
+                    }
+                    if let Piece::Pool { piece: pool, .. } = piece {
+                        push_junctions(pool, &mut junctions, &mut any);
+                    }
                 }
                 continue;
             }
@@ -1722,7 +1827,7 @@ pub fn beardifier(
             if !near {
                 continue;
             }
-            let Piece::Pool(pool) = piece else {
+            let Piece::Pool { piece: pool, .. } = piece else {
                 rigids.push(RigidPiece {
                     bounds: StructureBounds::new(b.min, b.max)?,
                     adjustment,
@@ -1739,37 +1844,15 @@ pub fn beardifier(
                 });
                 include(b, &mut any);
             }
-            for j in &pool.junctions {
-                if j.source_x > bx - 12
-                    && j.source_z > bz - 12
-                    && j.source_x < bx + 15 + 12
-                    && j.source_z < bz + 15 + 12
-                {
-                    junctions.push(JigsawJunction {
-                        source_x: j.source_x,
-                        source_ground_y: j.source_ground_y,
-                        source_z: j.source_z,
-                    });
-                    let p = [j.source_x, j.source_ground_y, j.source_z];
-                    include(BoundingBox::new(p, p), &mut any);
-                }
-            }
+            push_junctions(pool, &mut junctions, &mut any);
         }
     }
-    // The libraries' kernels reach as far as their radius, beyond vanilla's.
-    let mut affected = any.map(|a| a.inflated(24, 24));
-    if let Some(k) = kernels {
-        include(k, &mut affected);
-    }
-    let affected = affected?;
-    Some(
-        Beardifier::new(
-            rigids,
-            junctions,
-            StructureBounds::new(affected.min, affected.max),
-        )
-        .with_kernels(kernel_pieces, kernel_junctions),
-    )
+    let affected = any?.inflated(24, 24);
+    Some(Beardifier::new(
+        rigids,
+        junctions,
+        StructureBounds::new(affected.min, affected.max),
+    ))
 }
 
 /// StructureStart.placeInChunk for pieces intersecting the chunk's writable box.
@@ -1800,7 +1883,7 @@ pub fn place_in_chunk<W: FeatureWorld + PlacementContext, R: RandomSource + 'sta
     for piece in &start.pieces {
         if piece.bounding_box().intersects(&chunk_box) {
             match piece {
-                Piece::Pool(p) => {
+                Piece::Pool { piece: p, .. } => {
                     p.place(&mut site, random, reference, false)?;
                 }
                 Piece::Legacy(p) => {

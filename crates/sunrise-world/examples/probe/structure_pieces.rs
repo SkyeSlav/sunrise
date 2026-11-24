@@ -78,7 +78,7 @@ pub fn main() -> Result<(), Error> {
             for piece in &start.pieces {
                 let b = piece.bounding_box();
                 let placed = match piece {
-                    Piece::Pool(p) => format!(
+                    Piece::Pool { piece: p, .. } => format!(
                         "{} {} {} {} {} {}",
                         element(&p.element),
                         rotation(p.rotation),

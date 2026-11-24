@@ -8,7 +8,7 @@
 //! [`StructureInputs::assemble_jigsaw`] are jigsaw pieces (`Piece::Pool`), saved
 //! and loaded as `minecraft:jigsaw` pieces are. Runs on the worldgen worker
 //! threads, so a type keeps no mutable state and its contexts carry no `Host`.
-use super::jigsaw::{JigsawConfig, Pools, assemble};
+use super::jigsaw::{JigsawConfig, PoolPiece, Pools, assemble};
 use super::legacy::LegacyPiece;
 use super::start::{Piece, StartContext};
 use crate::worldgen::block_feature::FeatureBlockBindings;
@@ -59,8 +59,8 @@ impl<'a> StructureInputs<'a> {
         mut context: &mut dyn StartContext,
         random: &mut impl RandomSource,
         position: [i32; 3],
-    ) -> Option<([i32; 3], Vec<Piece>)> {
-        let (position, pieces) = assemble(
+    ) -> Option<([i32; 3], Vec<PoolPiece>)> {
+        assemble(
             config,
             &mut context,
             self.pools,
@@ -68,8 +68,7 @@ impl<'a> StructureInputs<'a> {
             self.bindings,
             random,
             position,
-        )?;
-        Some((position, pieces.into_iter().map(Piece::Pool).collect()))
+        )
     }
 }
 
@@ -330,7 +329,13 @@ mod tests {
                 padding: [0, 0],
                 waterlogging: true,
             };
-            inputs.assemble_jigsaw(&jigsaw, context, random, [chunk.x * 16, 0, chunk.z * 16])
+            let (position, pieces) = inputs.assemble_jigsaw(
+                &jigsaw,
+                context,
+                random,
+                [chunk.x * 16, 0, chunk.z * 16],
+            )?;
+            Some((position, pieces.into_iter().map(Piece::pool).collect()))
         }
         fn load_piece(
             &self,
@@ -530,7 +535,7 @@ mod tests {
         let bottoms: Vec<i32> = pieces.iter().map(|p| p.bounding_box().min[1]).collect();
         let first = bottoms[0];
         assert_eq!(bottoms, (0..47).map(|i| first + 3 * i).collect::<Vec<_>>());
-        assert!(pieces.iter().all(|p| matches!(p, Piece::Pool(_))));
+        assert!(pieces.iter().all(|p| matches!(p, Piece::Pool { .. })));
 
         // `JigsawPlacement.addPieces` adds no piece at depth 0, the start's included.
         let aliases = BTreeMap::new();

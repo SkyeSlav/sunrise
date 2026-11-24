@@ -235,7 +235,7 @@ fn a_mod_type_assembles_from_pools_past_the_jigsaw_types_depth() {
             assert_eq!(layout.pieces.len(), 47);
             Some(FoundStructure {
                 position: layout.position,
-                pool_pieces: Vec::new(),
+                pool_pieces: layout.pieces,
                 pieces: Vec::new(),
             })
         }
@@ -260,7 +260,11 @@ fn a_mod_type_assembles_from_pools_past_the_jigsaw_types_depth() {
         )
         .expect("a start from the pool");
     assert_eq!(pieces.len(), 47);
-    assert!(pieces.iter().all(|piece| matches!(piece, Piece::Pool(_))));
+    assert!(
+        pieces
+            .iter()
+            .all(|piece| matches!(piece, Piece::Pool { .. }))
+    );
     let bottoms: Vec<i32> = pieces.iter().map(|p| p.bounding_box().min[1]).collect();
     assert_eq!(
         bottoms,
@@ -629,7 +633,7 @@ fn legacy(
         .into_iter()
         .map(|piece| match piece {
             sunrise_world::worldgen::structure::start::Piece::Legacy(piece) => piece,
-            sunrise_world::worldgen::structure::start::Piece::Pool(_) => {
+            sunrise_world::worldgen::structure::start::Piece::Pool { .. } => {
                 unreachable!("the adapter lays out no jigsaw")
             }
         })
@@ -1163,4 +1167,323 @@ fn unordered_beardifier_bounds_add_no_terrain_adjustment() {
         2,
     );
     assert_eq!(engine_beardifier(ordered).unwrap().ground_level_delta, 2);
+}
+
+/// A mod structure type assembles pool pieces through `assemble_jigsaw` and
+/// sets per-piece `PieceBeardifier` overrides on them (surviving save/load):
+/// the mod start adds its terrain contribution even with `"terrain_adaptation":
+/// "none"`, while a vanilla `minecraft:jigsaw` structure next to it produces
+/// its exact unchanged vanilla density.
+#[test]
+fn assembled_pool_pieces_beardifier_adds_density_without_changing_vanilla() {
+    use std::collections::{BTreeMap, BTreeSet};
+    use sunrise_core::density::{
+        Beardifier, DensitySampler, JigsawJunction, RigidPiece, SamplerContext, StructureBounds,
+        TerrainAdjustment as Engine,
+    };
+    use sunrise_world::worldgen::structure::{
+        mod_types::ModStructureTypes,
+        start::{Piece, StructureRegistry, StructureStart, beardifier},
+    };
+
+    struct BeardJigsaw;
+    impl StructureType for BeardJigsaw {
+        fn find_generation_point(
+            &self,
+            context: &mut dyn GenerationContext,
+        ) -> Option<FoundStructure> {
+            let chunk = context.chunk();
+            let mut settings =
+                mod_api::JigsawSettings::new(mod_api::Identifier::parse("test:links").ok()?, 1);
+            settings.max_distance_from_center = mod_api::JigsawReach {
+                horizontal: 16,
+                vertical: 64,
+            };
+            let mut layout =
+                context.assemble_jigsaw(&settings, [chunk.x * 16, 64, chunk.z * 16])?;
+            assert_eq!(layout.pieces.len(), 2);
+            // Piece 0 overrides terrain shaping with a wider Bury box even though the
+            // structure's own terrain_adaptation is "none"; piece 1 leaves it None.
+            layout.pieces[0].beardifier = Some(mod_api::PieceBeardifier::new(
+                BoundingBox::new([0, 64, 0], [4, 68, 4]),
+                mod_api::TerrainAdjustment::Bury,
+                0,
+            ));
+            Some(FoundStructure {
+                position: layout.position,
+                pool_pieces: layout.pieces,
+                pieces: Vec::new(),
+            })
+        }
+        fn load_piece(
+            &self,
+            _: &dyn BlockMetadata,
+            _: &Compound,
+        ) -> Result<Arc<dyn StructurePiece>, StructureError> {
+            Err(StructureError("the type saves no piece of its own".into()))
+        }
+    }
+
+    let inputs = link_inputs();
+    let types: ModStructureTypes = BTreeMap::from([(
+        "probe:beard_jigsaw".to_owned(),
+        Adapter::new("probe:beard_jigsaw", Arc::new(BeardJigsaw)).into_engine_type(),
+    )]);
+    let definitions = BTreeMap::from([
+        (
+            "probe:mod_tower".to_owned(),
+            serde_json::json!({
+                "type": "probe:beard_jigsaw",
+                "biomes": [],
+                "terrain_adaptation": "none"
+            })
+            .to_string(),
+        ),
+        (
+            "minecraft:vanilla_tower".to_owned(),
+            serde_json::json!({
+                "type": "minecraft:jigsaw",
+                "start_pool": "test:links",
+                "size": 1,
+                "start_height": {"absolute": 64},
+                "max_distance_from_center": 16,
+                "biomes": [],
+                "terrain_adaptation": "beard_thin"
+            })
+            .to_string(),
+        ),
+    ]);
+    let registry = StructureRegistry::new(
+        &definitions,
+        &BTreeMap::new(),
+        BTreeMap::new(),
+        &|_| Ok(BTreeSet::new()),
+        &types,
+    )
+    .unwrap();
+    let mod_index = registry
+        .structures
+        .iter()
+        .position(|s| s.name == "probe:mod_tower")
+        .unwrap();
+    let vanilla_index = registry
+        .structures
+        .iter()
+        .position(|s| s.name == "minecraft:vanilla_tower")
+        .unwrap();
+
+    // Build the mod start in chunk (0, 0) through the scoped registry's ModType.
+    let sunrise_world::worldgen::structure::start::StructureKind::Mod(mod_kind) =
+        &registry.structures[mod_index].kind
+    else {
+        panic!("registered mod structure type");
+    };
+    let mut mod_random = WorldgenRandom::new(LegacyRandom::new(0));
+    mod_random.set_large_feature_seed(0, 0, 0);
+    let (_, mod_pieces) = mod_kind
+        .ty
+        .find_generation_point(
+            &mut StubContext,
+            &inputs,
+            ChunkPos::new(0, 0),
+            &mod_kind.config,
+            &mut mod_random,
+        )
+        .expect("mod start");
+    assert_eq!(mod_pieces.len(), 2);
+    assert!(mod_pieces[0].beardifier().is_some());
+    assert!(mod_pieces[1].beardifier().is_none());
+
+    // Round-trip the mod start's pool pieces through NBT save/load.
+    let bindings = sunrise_world::worldgen::block_feature::FeatureBlockBindings::new(
+        inputs.resources.registry,
+        BTreeSet::new(),
+    )
+    .unwrap();
+    let reloaded_pieces: Vec<Piece> = mod_pieces
+        .iter()
+        .map(|piece| {
+            let tag = sunrise_core::nbt::Tag::Compound(piece.save().expect("savable pool piece"));
+            let json = nbt_to_json(&tag);
+            Piece::from_saved_pool(&json, inputs.resources, &bindings).expect("reloaded pool piece")
+        })
+        .collect();
+
+    // Build a vanilla jigsaw start in neighbouring chunk (4, 0).
+    let vanilla_aliases = BTreeMap::new();
+    let vanilla_config = sunrise_world::worldgen::structure::jigsaw::JigsawConfig {
+        start_pool: "test:links",
+        start_jigsaw: None,
+        max_depth: 1,
+        use_expansion_hack: false,
+        project_to: None,
+        max_distance: [16, 64],
+        aliases: &vanilla_aliases,
+        padding: [0, 0],
+        waterlogging: true,
+    };
+    let mut vanilla_random = WorldgenRandom::new(LegacyRandom::new(0));
+    vanilla_random.set_large_feature_seed(0, 4, 0);
+    let (_, vanilla_pool_pieces) = inputs
+        .assemble_jigsaw(
+            &vanilla_config,
+            &mut StubContext,
+            &mut vanilla_random,
+            [64, 64, 0],
+        )
+        .expect("vanilla start");
+    let vanilla_expected_rigids: Vec<RigidPiece> = vanilla_pool_pieces
+        .iter()
+        .map(|p| RigidPiece {
+            bounds: StructureBounds::new(p.bounding_box.min, p.bounding_box.max).unwrap(),
+            adjustment: Engine::BeardThin,
+            ground_level_delta: p.ground_level_delta,
+        })
+        .collect();
+    let vanilla_expected_junctions: Vec<JigsawJunction> = vanilla_pool_pieces
+        .iter()
+        .flat_map(|p| p.junctions.iter())
+        .map(|j| JigsawJunction {
+            source_x: j.source_x,
+            source_ground_y: j.source_ground_y,
+            source_z: j.source_z,
+        })
+        .collect();
+    let vanilla_start = Arc::new(StructureStart::new(
+        vanilla_index,
+        &registry.structures[vanilla_index],
+        ChunkPos::new(4, 0),
+        vanilla_pool_pieces.into_iter().map(Piece::pool).collect(),
+    ));
+    let vanilla_only_density = beardifier(
+        &registry,
+        std::slice::from_ref(&vanilla_start),
+        ChunkPos::new(4, 0),
+    )
+    .expect("vanilla beardifier");
+
+    let mod_expected_rigid = RigidPiece {
+        bounds: StructureBounds::new([0, 64, 0], [4, 68, 4]).unwrap(),
+        adjustment: Engine::Bury,
+        ground_level_delta: 0,
+    };
+    let mod_expected_junctions: Vec<JigsawJunction> = match &mod_pieces[0] {
+        Piece::Pool { piece, .. } => piece
+            .junctions
+            .iter()
+            .map(|j| JigsawJunction {
+                source_x: j.source_x,
+                source_ground_y: j.source_ground_y,
+                source_z: j.source_z,
+            })
+            .collect(),
+        _ => panic!("expected Piece::Pool"),
+    };
+    let direct_mod = Beardifier::new(
+        vec![mod_expected_rigid],
+        mod_expected_junctions,
+        StructureBounds::new([-24, 40, -24], [28, 92, 28]),
+    );
+
+    // Without the override, terrain_adaptation: "none" adds no beardifier at all.
+    let plain_mod_pieces: Vec<Piece> = mod_pieces
+        .iter()
+        .map(|piece| {
+            let mut tag = piece.save().expect("savable pool piece");
+            tag.remove(&"sunrise:beardifier".into());
+            let json = nbt_to_json(&sunrise_core::nbt::Tag::Compound(tag));
+            Piece::from_saved_pool(&json, inputs.resources, &bindings).expect("plain pool piece")
+        })
+        .collect();
+    let plain_mod_start = Arc::new(StructureStart::new(
+        mod_index,
+        &registry.structures[mod_index],
+        ChunkPos::new(0, 0),
+        plain_mod_pieces,
+    ));
+    assert!(beardifier(&registry, &[plain_mod_start], ChunkPos::new(0, 0)).is_none());
+
+    // Check both freshly generated and reloaded mod starts next to the vanilla start.
+    for pieces in [mod_pieces, reloaded_pieces] {
+        let mod_start = Arc::new(StructureStart::new(
+            mod_index,
+            &registry.structures[mod_index],
+            ChunkPos::new(0, 0),
+            pieces,
+        ));
+        assert!(mod_start.bounding_box.is_inside([-12, 64, 0]));
+        let both = [mod_start.clone(), vanilla_start.clone()];
+
+        // Mod chunk (0, 0): piece 0's Bury override (and its jigsaw junctions) contributes
+        // through the standard Beardifier even with terrain_adaptation: "none".
+        let mod_density = beardifier(&registry, &both, ChunkPos::new(0, 0)).expect("mod density");
+        let sample_mod = |pos| {
+            mod_density
+                .sample_value(&mut SamplerContext::default(), pos)
+                .unwrap()
+        };
+        assert!(sample_mod([2, 64, 2]) > 0.5);
+        assert_eq!(sample_mod([25, 64, 2]), 0.0);
+        for pos in [[2, 64, 2], [2, 66, 2], [7, 64, 2], [11, 64, 2], [25, 64, 2]] {
+            let actual = sample_mod(pos);
+            let expected = direct_mod
+                .sample_value(&mut SamplerContext::default(), pos)
+                .unwrap();
+            assert_eq!(actual, expected, "mod beardifier at {pos:?}");
+        }
+
+        // Neighbouring vanilla chunk (4, 0): unchanged from vanilla's own Beardifier sum.
+        let combined_vanilla =
+            beardifier(&registry, &both, ChunkPos::new(4, 0)).expect("vanilla density");
+        let direct_vanilla = Beardifier::new(
+            vanilla_expected_rigids.clone(),
+            vanilla_expected_junctions.clone(),
+            StructureBounds::new([40, 39, -24], [88, 92, 24]),
+        );
+        for pos in [[64, 64, 0], [64, 65, 0], [64, 67, 0], [66, 65, 2]] {
+            let with_mod = combined_vanilla
+                .sample_value(&mut SamplerContext::default(), pos)
+                .unwrap();
+            let alone = vanilla_only_density
+                .sample_value(&mut SamplerContext::default(), pos)
+                .unwrap();
+            let direct = direct_vanilla
+                .sample_value(&mut SamplerContext::default(), pos)
+                .unwrap();
+            assert_eq!(with_mod, alone, "vanilla density at {pos:?}");
+            assert_eq!(with_mod, direct, "exact vanilla formula at {pos:?}");
+        }
+    }
+}
+
+fn nbt_to_json(tag: &Tag) -> serde_json::Value {
+    match tag {
+        Tag::Byte(v) => serde_json::Value::from(i64::from(*v)),
+        Tag::Short(v) => serde_json::Value::from(i64::from(*v)),
+        Tag::Int(v) => serde_json::Value::from(i64::from(*v)),
+        Tag::Long(v) => serde_json::Value::from(*v),
+        Tag::Float(bits) => serde_json::Value::from(f64::from(f32::from_bits(*bits))),
+        Tag::Double(bits) => serde_json::Value::from(f64::from_bits(*bits)),
+        Tag::String(s) => serde_json::Value::from(s.to_string_lossy()),
+        Tag::List(items) => serde_json::Value::Array(items.iter().map(nbt_to_json).collect()),
+        Tag::ByteArray(v) => serde_json::Value::Array(
+            v.iter()
+                .map(|b| serde_json::Value::from(i64::from(*b)))
+                .collect(),
+        ),
+        Tag::IntArray(v) => serde_json::Value::Array(
+            v.iter()
+                .map(|i| serde_json::Value::from(i64::from(*i)))
+                .collect(),
+        ),
+        Tag::LongArray(v) => {
+            serde_json::Value::Array(v.iter().map(|i| serde_json::Value::from(*i)).collect())
+        }
+        Tag::Compound(map) => serde_json::Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.to_string_lossy(), nbt_to_json(v)))
+                .collect(),
+        ),
+        Tag::End => serde_json::Value::Null,
+    }
 }

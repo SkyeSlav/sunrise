@@ -16,7 +16,7 @@
 //! and laid out and placed on the worldgen worker threads. So an element keeps no
 //! mutable state, and the same random gives the same answers.
 use super::structure_template::StructureRotation;
-use super::structure_type::{LiquidSettings, PieceContext, StructureError};
+use super::structure_type::{LiquidSettings, PieceBeardifier, PieceContext, StructureError};
 use crate::{BlockMetadata, Direction, Identifier, RandomSource};
 use std::any::Any;
 use std::sync::Arc;
@@ -389,9 +389,14 @@ pub struct PoolPiece {
     pub liquid: LiquidSettings,
     /// Where its children meet it.
     pub junctions: Vec<JigsawJunction>,
+    /// Override terrain shaping for this piece, even when the structure's
+    /// `terrain_adaptation` is `"none"`. `Some` with
+    /// [`TerrainAdjustment::None`](super::structure_type::TerrainAdjustment::None)
+    /// omits this piece; `None` preserves the structure's default.
+    pub beardifier: Option<PieceBeardifier>,
 }
 impl PoolPiece {
-    /// A piece with no junctions.
+    /// A piece with no junctions and no beardifier override.
     pub fn new(
         element: PoolElementRef,
         position: [i32; 3],
@@ -408,6 +413,7 @@ impl PoolPiece {
             bounding_box,
             liquid,
             junctions: Vec::new(),
+            beardifier: None,
         }
     }
 }

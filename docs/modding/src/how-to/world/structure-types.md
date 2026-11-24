@@ -16,9 +16,8 @@ name stops startup with a message naming your mod.
 `StructureType::find_generation_point(&self, context: &mut dyn GenerationContext)` returns
 `Some(FoundStructure { position, pool_pieces, pieces })` for a start, or `None` to skip the
 chunk. Each of `pieces` is an `Arc<dyn StructurePiece>`; `pool_pieces` are pool element pieces
-your type laid out itself (below). The start needs at least one piece, counting the jigsaw pieces
-below. `FoundStructure` implements `Default`, so `..Default::default()` leaves out what you
-don't use.
+from `assemble_jigsaw` or laid out by hand (below). The start needs at least one piece in all.
+`FoundStructure` implements `Default`, so `..Default::default()` leaves out what you don't use.
 
 World generation has no `Host`. Starts run on worker threads, and pieces place per chunk. Your
 `StructureType` must be `Send + Sync`, stateless and deterministic: the same seed produces the
@@ -64,10 +63,12 @@ placement check of the layout is vanilla's. Aliases are drawn from the world see
 A depth of 0 or below places no piece, as in vanilla.
 
 The call draws from `context.random()` and returns a `JigsawLayout` with the start position and
-every piece's box, or `None` when no start fits there. The game keeps the laid-out pieces itself:
-they join your start, ahead of your own pieces, when `find_generation_point` returns `Some`, and
-they save, load and place as `minecraft:jigsaw` pieces do. Return `layout.position` as the
-start's position to match vanilla's `JigsawStructure`.
+the laid-out `PoolPiece`s (`layout.pieces`), or `None` when no start fits there. It does not add
+them to the start automatically: inspect them, set `piece.beardifier` if a piece needs its own
+`PieceBeardifier` override, and pass them back in `FoundStructure::pool_pieces`. The game then
+keeps, saves, loads and places them as `minecraft:jigsaw` pieces do (preserving any per-piece
+beardifier override). Return `layout.position` as the start's position to match vanilla's
+`JigsawStructure`.
 
 ### Laying out by hand
 
@@ -82,8 +83,8 @@ it.
 
 Hand the pieces back as `FoundStructure::pool_pieces`, each a `PoolPiece::new(element, position,
 ground_level_delta, rotation, bounding_box, liquid)`, with `junctions` set when terrain should
-blend towards them. The game keeps them as it keeps `assemble_jigsaw`'s pieces: after those and
-before your own `pieces`, saved, loaded and placed as `minecraft:jigsaw` pieces are.
+blend towards them and `beardifier` set when a piece overrides terrain shaping. The game keeps
+them ahead of your own `pieces`, saved, loaded and placed as `minecraft:jigsaw` pieces are.
 
 ## Pool element types
 
@@ -125,13 +126,14 @@ Implement `StructurePiece` (`Debug + Send + Sync`) with these methods:
 After the start's pieces place, `StructureType::after_place` runs once per chunk with every
 piece's current bounding box. Its default implementation does nothing.
 
-Construct an override with `PieceBeardifier::new(bounds, TerrainAdjustment::BeardThin, 2)`.
-The bounds are independent of the placement box; the ground is `bounds.min[1] + ground_level_delta`.
-The rules are `None`, `Bury`, `BeardThin`, `BeardBox` and `Encapsulate`. An answer with
-adjustment `None` disables only that piece. No answer inherits the structure's setting.
-An override works even when the structure's `terrain_adaptation` is `"none"`.
-Pieces are queried once when generated or loaded, and the answer is cached
-on the engine piece; terrain generation never calls the mod for it per chunk.
+Construct an override with `PieceBeardifier::new(bounds, TerrainAdjustment::BeardThin, 2)` and
+return it from `StructurePiece::beardifier` or set it on `PoolPiece::beardifier` (for both
+`assemble_jigsaw` and hand-built pool pieces). The bounds are independent of the placement box;
+the ground is `bounds.min[1] + ground_level_delta`. The rules are `None`, `Bury`, `BeardThin`,
+`BeardBox` and `Encapsulate`. An answer with adjustment `None` disables only that piece. No
+answer inherits the structure's setting. An override works even when the structure's
+`terrain_adaptation` is `"none"`. Overrides are cached on the engine piece (and saved with
+pool pieces), so terrain generation never calls the mod for them per chunk.
 
 Use `PieceContext` to work within the chunk:
 

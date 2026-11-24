@@ -34,7 +34,7 @@ pub(super) fn api_rotation(rotation: Rotation) -> StructureRotation {
     }
 }
 
-fn api_projection(projection: Projection) -> mod_api::Projection {
+pub(super) fn api_projection(projection: Projection) -> mod_api::Projection {
     match projection {
         Projection::Rigid => mod_api::Projection::Rigid,
         Projection::TerrainMatching => mod_api::Projection::TerrainMatching,

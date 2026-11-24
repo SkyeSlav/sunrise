@@ -1550,7 +1550,6 @@ mod tests {
             biomes: BTreeSet::new(),
             step: 0,
             terrain: TerrainAdjustment::BeardThin,
-            enhanced_terrain: None,
         };
         let chunk = ChunkPos::new(-2, 3);
         let seed = 12345;
@@ -1596,7 +1595,7 @@ mod tests {
         // orientation is the saved one; no box field is rebuilt from the seed.
         let piece = |t: &Tag| match read(t).unwrap().pieces.into_iter().next().unwrap() {
             Piece::Legacy(p) => p,
-            Piece::Pool(_) => unreachable!(),
+            Piece::Pool { .. } => unreachable!(),
         };
         let mut moved = tag.clone();
         let Tag::List(children) = moved.get_mut("Children").unwrap() else {

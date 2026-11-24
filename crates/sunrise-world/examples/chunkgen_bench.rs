@@ -187,7 +187,7 @@ fn dump_starts(
                     s.pieces.len()
                 ));
                 for piece in &s.pieces {
-                    let Piece::Pool(p) = piece else {
+                    let Piece::Pool { piece: p, .. } = piece else {
                         let b = piece.bounding_box();
                         lines.push(format!(
                             "piece {} {} {} {} {} {} {}",

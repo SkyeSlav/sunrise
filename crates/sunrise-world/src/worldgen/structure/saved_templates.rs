@@ -215,7 +215,6 @@ mod tests {
             biomes: BTreeSet::new(),
             step: 0,
             terrain: TerrainAdjustment::BeardThin,
-            enhanced_terrain: None,
         };
         let mut pieces = Vec::new();
         for rotation in Rotation::ALL {

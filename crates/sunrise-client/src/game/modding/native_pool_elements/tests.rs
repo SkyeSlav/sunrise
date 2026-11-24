@@ -263,19 +263,24 @@ fn a_mod_type_lays_a_chain_out_by_hand_from_a_pool() {
                     mod_api::LiquidSettings::ApplyWaterlogging,
                 )
             };
-            let pool_pieces = vec![piece(start, origin), piece(child, at)];
+            let mut pool_pieces = vec![piece(start, origin), piece(child, at)];
             let settings = mod_api::JigsawSettings::new(Identifier::parse("test:links").ok()?, 1);
-            let assembled = context.assemble_jigsaw(&settings, [0, height, 0])?;
+            let mut assembled = context.assemble_jigsaw(&settings, [0, height, 0])?;
             assert_eq!(
-                assembled.pieces,
+                assembled
+                    .pieces
+                    .iter()
+                    .map(|p| p.bounding_box)
+                    .collect::<Vec<_>>(),
                 pool_pieces
                     .iter()
                     .map(|p| p.bounding_box)
                     .collect::<Vec<_>>()
             );
+            assembled.pieces.append(&mut pool_pieces);
             Some(FoundStructure {
                 position: origin,
-                pool_pieces,
+                pool_pieces: assembled.pieces,
                 pieces: Vec::new(),
             })
         }
@@ -303,7 +308,7 @@ fn a_mod_type_lays_a_chain_out_by_hand_from_a_pool() {
     let boxes: Vec<BoundingBox> = pieces
         .iter()
         .map(|piece| match piece {
-            Piece::Pool(piece) => piece.bounding_box,
+            Piece::Pool { piece, .. } => piece.bounding_box,
             Piece::Legacy(_) => panic!("only pool pieces"),
         })
         .collect();

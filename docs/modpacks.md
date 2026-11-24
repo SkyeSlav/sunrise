@@ -799,14 +799,12 @@ Two cases the oracle fills in:
     structure's piece caps and required pieces from the mod's `*_pieces_spawn_counts` files.
     The game assembles them the mods' way and runs their post-layout steps (centring,
     burying, the Nether land search).
-  - **Enhanced terrain adaptation.** YUNG's API and MoogsStructureLib add a kernel of their
-    own to the Beardifier: its own size and falloff, carving or burying above and below each
-    piece's floor. Carry writes it as `sunrise:enhanced_terrain_adaptation` on the structure
-    and on pool elements with their own (docs/modding/src/how-to/content-mods.md), and the game sums it after vanilla's
-    terrain density. In seed 1234's terrain before structures are placed, Better Fortresses'
-    pieces held 39 to 41 % netherrack and now 3 to 7 %, the mod's open bridges; Moog's mega
-    fortress band 45 % and now 30 %; Better Strongholds' pieces, buried, go from 92 to 97 %
-    solid to 99 %, closing the caves that cut through them.
+  - **Enhanced terrain adaptation.** YUNG's API and MoogsStructureLib each add a terrain
+    kernel of their own through a mixin on `Beardifier`. The engine carries no key for that:
+    carry records `enhanced_terrain_adaptation` as lost (needing its mod), and a mod
+    structure type either expresses its terrain shaping through per-piece `PieceBeardifier`
+    overrides on its pool and structure pieces or patches `Beardifier` through a
+    `[[native.mixin]]`, as on NeoForge.
 
 
   Each mod's `carry-report.json` lists what was mapped, the rules and processors lost by name,

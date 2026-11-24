@@ -108,7 +108,6 @@ mod tests {
             biomes: BTreeSet::new(),
             step: 0,
             terrain: TerrainAdjustment::BeardThin,
-            enhanced_terrain: None,
         })
     }
 

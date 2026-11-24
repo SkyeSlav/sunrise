@@ -4366,7 +4366,7 @@ mod tests {
                     // Locating a generated start can increment its count. A nonzero value also
                     // proves that loading did not silently fall back to seed-identical generation.
                     if original.pieces.iter().all(|p| {
-                        matches!(p, Piece::Pool(_))
+                        matches!(p, Piece::Pool { .. })
                             || matches!(
                                 p.type_name(),
                                 "minecraft:shipwreck"

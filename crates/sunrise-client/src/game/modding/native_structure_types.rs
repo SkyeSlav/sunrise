@@ -1,6 +1,7 @@
 //! Native worker adapters for API-owned structure behaviours.
 use super::native_pool_elements::{
-    Elements, element_ref, engine_element, engine_placement, engine_projection,
+    Elements, api_projection, api_rotation, element_ref, engine_element, engine_placement,
+    engine_projection,
 };
 use super::native_structures::engine_rotation;
 use super::native_worldgen::WorkerResources;
@@ -90,8 +91,6 @@ struct Start<'a> {
     config: &'a Arc<Tag>,
     worker: &'a WorkerResources,
     inputs: &'a sunrise_world::worldgen::structure::mod_types::StructureInputs<'a>,
-    /// The jigsaw pieces [`GenerationContext::assemble_jigsaw`] laid out, ahead of the type's own.
-    assembled: Vec<sunrise_world::worldgen::structure::start::Piece>,
     elements: Elements<'a>,
 }
 
@@ -216,12 +215,10 @@ impl GenerationContext for Start<'_> {
             &mut *self.random.0,
             position,
         )?;
-        let layout = mod_api::__private::jigsaw_layout(
+        Some(mod_api::__private::jigsaw_layout(
             position,
-            pieces.iter().map(|piece| piece.bounding_box()).collect(),
-        );
-        self.assembled.extend(pieces);
-        Some(layout)
+            pieces.into_iter().map(api_pool_piece).collect(),
+        ))
     }
     fn template_pool(&mut self, name: &mod_api::Identifier) -> Option<mod_api::TemplatePool> {
         let pool = self.inputs.pool(&name.to_string())?;
@@ -237,33 +234,69 @@ impl GenerationContext for Start<'_> {
     }
 }
 
+/// An engine pool piece as the API's [`mod_api::PoolPiece`].
+fn api_pool_piece(
+    piece: sunrise_world::worldgen::structure::jigsaw::PoolPiece,
+) -> mod_api::PoolPiece {
+    let mut out = mod_api::PoolPiece::new(
+        element_ref(piece.element),
+        piece.position,
+        piece.ground_level_delta,
+        api_rotation(piece.rotation),
+        piece.bounding_box,
+        if piece.waterlogging {
+            mod_api::LiquidSettings::ApplyWaterlogging
+        } else {
+            mod_api::LiquidSettings::IgnoreWaterlogging
+        },
+    );
+    out.junctions = piece
+        .junctions
+        .into_iter()
+        .map(|junction| {
+            mod_api::JigsawJunction::new(
+                junction.source_x,
+                junction.source_ground_y,
+                junction.source_z,
+                junction.delta_y,
+                api_projection(junction.dest_projection),
+            )
+        })
+        .collect();
+    out
+}
+
 /// A mod's pool piece as the engine's; `None` for an element or rotation
 /// this build doesn't know.
 fn engine_pool_piece(
     piece: mod_api::PoolPiece,
 ) -> Option<sunrise_world::worldgen::structure::start::Piece> {
     use sunrise_world::worldgen::structure::jigsaw::{Junction, PoolPiece};
-    Some(sunrise_world::worldgen::structure::start::Piece::Pool(
-        PoolPiece {
-            element: engine_element(&piece.element)?,
-            position: piece.position,
-            ground_level_delta: piece.ground_level_delta,
-            rotation: engine_rotation(piece.rotation)?,
-            bounding_box: piece.bounding_box,
-            junctions: piece
-                .junctions
-                .iter()
-                .map(|junction| Junction {
-                    source_x: junction.source_x,
-                    source_ground_y: junction.source_ground_y,
-                    source_z: junction.source_z,
-                    delta_y: junction.delta_y,
-                    dest_projection: engine_projection(junction.dest_projection),
-                })
-                .collect(),
-            waterlogging: piece.liquid == mod_api::LiquidSettings::ApplyWaterlogging,
-        },
-    ))
+    let beardifier = piece.beardifier.and_then(engine_beardifier);
+    Some(
+        sunrise_world::worldgen::structure::start::Piece::pool_with_beardifier(
+            PoolPiece {
+                element: engine_element(&piece.element)?,
+                position: piece.position,
+                ground_level_delta: piece.ground_level_delta,
+                rotation: engine_rotation(piece.rotation)?,
+                bounding_box: piece.bounding_box,
+                junctions: piece
+                    .junctions
+                    .iter()
+                    .map(|junction| Junction {
+                        source_x: junction.source_x,
+                        source_ground_y: junction.source_ground_y,
+                        source_z: junction.source_z,
+                        delta_y: junction.delta_y,
+                        dest_projection: engine_projection(junction.dest_projection),
+                    })
+                    .collect(),
+                waterlogging: piece.liquid == mod_api::LiquidSettings::ApplyWaterlogging,
+            },
+            beardifier,
+        ),
+    )
 }
 
 /// The engine's piece context, as a [`PieceContext`].
@@ -431,7 +464,6 @@ impl ModStructureType for Adapter {
             chunk,
             config,
             inputs,
-            assembled: Vec::new(),
             elements: Elements {
                 resources: inputs.resources,
                 worker,
@@ -440,8 +472,11 @@ impl ModStructureType for Adapter {
         let found = self.inner.find_generation_point(&mut context)?;
         let ty = self.inner.clone();
         let id = self.id;
-        let mut pieces = context.assembled;
-        pieces.extend(found.pool_pieces.into_iter().filter_map(engine_pool_piece));
+        let mut pieces: Vec<_> = found
+            .pool_pieces
+            .into_iter()
+            .filter_map(engine_pool_piece)
+            .collect();
         pieces.extend(found.pieces.into_iter().map(|piece| {
             sunrise_world::worldgen::structure::start::Piece::Legacy(Box::new(ModPiece {
                 beardifier: piece.beardifier().and_then(engine_beardifier),

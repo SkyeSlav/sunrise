@@ -63,9 +63,6 @@ pub enum PoolElement {
         legacy: bool,
         projection: Projection,
         waterlogging: Option<bool>,
-        /// The piece's own terrain kernel in a structure that has one
-        /// (`"sunrise:enhanced_terrain_adaptation"`).
-        enhanced_terrain: Option<Arc<super::enhanced_terrain::Adaptation>>,
         /// getGroundLevelDelta: 1, or Formations' `ground_level`
         /// (`"sunrise:ground_level"`).
         ground_level: i32,
@@ -200,10 +197,6 @@ impl PoolElement {
                         Some("ignore_waterlogging") => Some(false),
                         _ => None,
                     },
-                    enhanced_terrain: value
-                        .get("sunrise:enhanced_terrain_adaptation")
-                        .map(|a| super::enhanced_terrain::Adaptation::decode(a).map(Arc::new))
-                        .transpose()?,
                     ground_level: match value.get("sunrise:ground_level") {
                         None => 1,
                         Some(v) => v
@@ -393,15 +386,6 @@ impl PoolElement {
             Self::Single { ground_level, .. } => *ground_level,
             Self::Mod { element, .. } => element.ground_level_delta(),
             _ => 1,
-        }
-    }
-    /// The piece's own terrain kernel, in place of its structure's.
-    pub fn enhanced_terrain(&self) -> Option<&super::enhanced_terrain::Adaptation> {
-        match self {
-            Self::Single {
-                enhanced_terrain, ..
-            } => enhanced_terrain.as_deref(),
-            _ => None,
         }
     }
 }

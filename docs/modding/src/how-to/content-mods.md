@@ -1518,19 +1518,6 @@ A pool element may be one of Lithostitched's: `lithostitched:limited` (`delegate
 `min_depth`) is tried before its pool's other elements at each jigsaw that reaches that pool (as target or fallback)
 until `count` are placed. Neither goes below a piece shallower than `min_depth` (the start is at depth 0).
 
-A structure (and any of its pool elements, in place of the structure's) may hold
-`sunrise:enhanced_terrain_adaptation`: MoogsStructureLib's terrain kernel, which carves or buries terrain around the
-pieces on top of vanilla's `terrain_adaptation`. `kernel_size` and `kernel_distance` shape the kernel; `top` and
-`bottom` (`carve`, `bury` or `none`) act above and below a piece's floor; `bottom_offset`, `padding` (`x`, `top`,
-`bottom`, `z`) and MoogsStructureLib's `band` (`bottom`, `top`, `piece_heights`) move the box it measures from. On a
-structure, `rigid_junctions` adds rigid pieces' junctions as well and `inflate` grows the start's box by the kernel
-radius. `kernel_size` 0 is none.
-
-```json
-{ "sunrise:enhanced_terrain_adaptation": { "kernel_size": 24, "kernel_distance": 24,
-    "top": "carve", "bottom": "none", "rigid_junctions": true, "inflate": true } }
-```
-
 ### Passenger attachment points
 
 An entity type can set `passenger_attachments` to seat offsets relative to its feet.

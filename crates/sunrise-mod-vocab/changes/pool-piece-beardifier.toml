@@ -1,0 +1,8 @@
+ids = [
+    "type:JigsawLayout",
+    "type:JigsawLayout.pieces",
+    "type:PoolPiece",
+    "type:PoolPiece.beardifier",
+]
+why = "GenerationContext::assemble_jigsaw now returns the laid-out PoolPieces in JigsawLayout::pieces instead of stashing them on the context, and PoolPiece carries an optional PieceBeardifier override so a mod structure type can set per-piece Beardifier contributions on its assembled or hand-built pool pieces before handing them back in FoundStructure::pool_pieces."
+migrate = "Pass layout.pieces (with any PoolPiece::beardifier overrides) in FoundStructure::pool_pieces. Use piece.bounding_box where a BoundingBox was read from JigsawLayout::pieces."

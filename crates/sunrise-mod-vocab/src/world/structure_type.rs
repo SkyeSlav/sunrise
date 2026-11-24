@@ -44,17 +44,17 @@ impl From<(crate::Identifier, String)> for StructureError {
 
 /// What [`StructureType::find_generation_point`](StructureType::find_generation_point)
 /// found: the start's position (vanilla's `Structure.findGenerationPoint`
-/// answer) and its pieces (`Structure.generatePieces`). The start holds the
-/// pieces [`GenerationContext::assemble_jigsaw`] laid out first, then
-/// `pool_pieces`, then `pieces`; it needs at least one piece in all.
+/// answer) and its pieces (`Structure.generatePieces`). The start holds
+/// `pool_pieces` first, then `pieces`; it needs at least one piece in all.
 #[derive(Default)]
 // exhaustive: mods build it themselves as find_generation_point's answer
 pub struct FoundStructure {
     /// Where the start sits, in world blocks.
     pub position: [i32; 3],
-    /// Pool element pieces the type laid out itself, from the pools
-    /// [`GenerationContext::template_pool`] reads. The game keeps, saves and
-    /// places them as it does `assemble_jigsaw`'s pieces.
+    /// Pool element pieces from [`GenerationContext::assemble_jigsaw`] or laid
+    /// out by hand from [`GenerationContext::template_pool`]. The game keeps,
+    /// saves and places them as `minecraft:jigsaw` pieces, preserving any
+    /// per-piece [`PoolPiece::beardifier`] override.
     pub pool_pieces: Vec<PoolPiece>,
     /// The type's own pieces, shared with the game, which keeps them in its start.
     pub pieces: Vec<Arc<dyn StructurePiece>>,
@@ -176,15 +176,17 @@ pub enum PoolAliasBinding {
 }
 
 /// What [`GenerationContext::assemble_jigsaw`] laid out: vanilla's
-/// `GenerationStub` of `JigsawPlacement.addPieces`.
+/// `GenerationStub` of `JigsawPlacement.addPieces`. Hand `pieces` (with any
+/// per-piece [`PoolPiece::beardifier`] overrides or edits) back in
+/// [`FoundStructure::pool_pieces`].
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct JigsawLayout {
     /// The start's position: the start piece's centre across, at its
     /// projected height plus the start jigsaw's offset.
     pub position: [i32; 3],
-    /// Every piece's box, the start piece first, in the order they were placed.
-    pub pieces: Vec<BoundingBox>,
+    /// Every laid-out pool piece, the start piece first, in the order they were placed.
+    pub pieces: Vec<PoolPiece>,
 }
 
 /// A mod's structure type: vanilla's `StructureType`, whose code answers for a
@@ -365,7 +367,7 @@ pub fn biome_id(index: u32) -> BiomeId {
 /// Construct the layout the game's adapter answers `assemble_jigsaw` with.
 // hidden: only the game's adapter builds a layout; mods receive one from the context.
 #[doc(hidden)]
-pub fn jigsaw_layout(position: [i32; 3], pieces: Vec<BoundingBox>) -> JigsawLayout {
+pub fn jigsaw_layout(position: [i32; 3], pieces: Vec<PoolPiece>) -> JigsawLayout {
     JigsawLayout { position, pieces }
 }
 
@@ -414,9 +416,11 @@ pub trait GenerationContext {
     /// jigsaw, a start outside the valid biomes or the padding) or when an
     /// alias's weights are invalid.
     ///
-    /// The pieces are jigsaw pieces the game keeps, saves and places itself:
-    /// they join this start if the type then answers `Some`, ahead of its own.
-    /// With `max_depth` 0 or below the layout holds no piece.
+    /// Returns the laid-out [`PoolPiece`]s in [`JigsawLayout::pieces`] without
+    /// adding them to the start automatically: inspect them, set
+    /// [`PoolPiece::beardifier`] if needed, and pass the pieces to keep in
+    /// [`FoundStructure::pool_pieces`]. With `max_depth` 0 or below the layout
+    /// holds no piece.
     fn assemble_jigsaw(
         &mut self,
         settings: &JigsawSettings,

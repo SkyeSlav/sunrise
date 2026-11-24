@@ -1,7 +1,6 @@
 //! Structure templates, processors and placement shared by template features
 //! and structure pieces.
 pub mod end_city;
-pub mod enhanced_terrain;
 pub mod features;
 pub mod formations;
 pub mod fortress;
