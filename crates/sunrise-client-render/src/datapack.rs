@@ -821,10 +821,27 @@ fn content_id(file: &str) -> Option<String> {
     let (ns, rest) = rest.split_once('/')?;
     let (kind, rest) = rest.split_once('/')?;
     let kind = match kind {
-        "recipe" | "recipe_filter" | "loot_table" | "advancement" | "trade_set"
-        | "villager_trade" | "dialog" | "damage_type" | "dimension_type" | "chat_type"
-        | "wolf_variant" | "wolf_sound_variant" | "data_maps" | "enchantment" | "jukebox_song"
-        | "instrument" | "painting_variant" | "banner_pattern" | "predicate" | "item_modifier"
+        "recipe"
+        | "recipe_filter"
+        | "loot_table"
+        | "advancement"
+        | "trade_set"
+        | "villager_trade"
+        | "dialog"
+        | "damage_type"
+        | "dimension_type"
+        | "chat_type"
+        | "wolf_variant"
+        | "wolf_sound_variant"
+        | "zombie_nautilus_variant"
+        | "data_maps"
+        | "enchantment"
+        | "jukebox_song"
+        | "instrument"
+        | "painting_variant"
+        | "banner_pattern"
+        | "predicate"
+        | "item_modifier"
         | "world_clock" => kind,
         "worldgen" => {
             return resource_id(file, "worldgen/biome", ".json")
@@ -974,6 +991,7 @@ impl DataStore {
             "wolf_variant",
             "world_clock",
             "worldgen/biome",
+            "zombie_nautilus_variant",
         ]
         .into_iter()
         .chain(crate::providers::NUMBER_PROVIDER_KINDS)

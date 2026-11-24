@@ -617,14 +617,141 @@ impl WolfSoundVariant {
     }
 }
 
+/// `ZombieNautilusVariant.ModelType`: normal (`zombie_nautilus#main`) or warm
+/// (`zombie_nautilus_coral#main`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ZombieNautilusModelType {
+    #[default]
+    Normal,
+    Warm,
+}
+
+impl ZombieNautilusModelType {
+    fn from_name(raw: &str) -> Option<Self> {
+        match raw {
+            "normal" => Some(Self::Normal),
+            "warm" => Some(Self::Warm),
+            _ => None,
+        }
+    }
+}
+
+/// `ZombieNautilusVariant`: `ModelAndTexture<ModelType>` plus spawn conditions.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ZombieNautilusVariant {
+    pub model: ZombieNautilusModelType,
+    pub asset_id: String,
+    pub spawn_conditions: Vec<SpawnSelector>,
+}
+
+impl HasSpawnConditions for ZombieNautilusVariant {
+    fn spawn_conditions(&self) -> &[SpawnSelector] {
+        &self.spawn_conditions
+    }
+}
+
+impl ZombieNautilusVariant {
+    fn missing() -> Self {
+        Self {
+            model: ZombieNautilusModelType::Normal,
+            asset_id: String::new(),
+            spawn_conditions: Vec::new(),
+        }
+    }
+
+    /// `ZombieNautilusVariant.DIRECT_CODEC`.
+    pub fn decode(value: &Value) -> Result<Self, String> {
+        let obj = value.as_object().ok_or("not a map")?;
+        let model = match obj.get("model") {
+            None => ZombieNautilusModelType::Normal,
+            Some(v) => {
+                let raw = v.as_str().ok_or("model: a string is required")?;
+                ZombieNautilusModelType::from_name(raw)
+                    .ok_or_else(|| format!("model: unknown zombie nautilus model {raw:?}"))?
+            }
+        };
+        let raw_asset = obj
+            .get("asset_id")
+            .and_then(Value::as_str)
+            .ok_or("asset_id: a string is required")?;
+        let asset_id = Identifier::parse(raw_asset)
+            .map_err(|e| format!("asset_id: invalid identifier {raw_asset:?}: {e}"))?
+            .as_str()
+            .to_owned();
+        let spawn_conditions = decode_spawn_conditions(
+            obj.get("spawn_conditions")
+                .ok_or("spawn_conditions is required")?,
+        )?;
+        Ok(Self {
+            model,
+            asset_id,
+            spawn_conditions,
+        })
+    }
+
+    /// `ZombieNautilusVariant.NETWORK_CODEC`: `model` (omitted when default `normal`)
+    /// and `asset_id`.
+    pub fn to_network_nbt(&self) -> Tag {
+        let mut fields = Compound::new();
+        if self.model == ZombieNautilusModelType::Warm {
+            fields.insert("model".into(), Tag::String(JavaString::from("warm")));
+        }
+        fields.insert(
+            "asset_id".into(),
+            Tag::String(JavaString::from(self.asset_id.as_str())),
+        );
+        Tag::Compound(fields)
+    }
+
+    /// Decode a client's synced `ZombieNautilusVariant.NETWORK_CODEC` NBT entry.
+    pub fn decode_network_nbt(tag: &Tag) -> Option<Self> {
+        let model = match tag.get("model") {
+            None => ZombieNautilusModelType::Normal,
+            Some(Tag::String(s)) => ZombieNautilusModelType::from_name(&s.to_string_lossy())?,
+            _ => return None,
+        };
+        let asset_id = match tag.get("asset_id") {
+            Some(Tag::String(s)) => s.to_string_lossy(),
+            _ => return None,
+        };
+        Some(Self {
+            model,
+            asset_id,
+            spawn_conditions: Vec::new(),
+        })
+    }
+
+    /// `ZombieNautilusRenderer.getTextureLocation`: the atlas sprite key for this variant.
+    /// Default-namespace assets strip `"minecraft:"` to match Sunrise's atlas keys;
+    /// non-default namespaces keep `"<ns>:<path>"`.
+    pub fn texture(&self) -> &str {
+        self.asset_id
+            .strip_prefix("minecraft:")
+            .unwrap_or(&self.asset_id)
+    }
+
+    /// `ZombieNautilusRenderer`: the model layer key for this variant's `ModelType`.
+    pub fn model_key(&self) -> &'static str {
+        match self.model {
+            ZombieNautilusModelType::Normal => "zombie_nautilus#main",
+            ZombieNautilusModelType::Warm => "zombie_nautilus_coral#main",
+        }
+    }
+}
+
 /// The frozen world variant tables converted onto `REGISTRY_KINDS`.
 #[derive(Clone, Debug, Default)]
 pub struct VariantTables {
     pub wolf: VariantTable<WolfVariant>,
     pub wolf_sound: VariantTable<WolfSoundVariant>,
+    pub zombie_nautilus: VariantTable<ZombieNautilusVariant>,
 }
 
 impl VariantTables {
+    pub fn is_empty(&self) -> bool {
+        self.wolf.is_empty() && self.wolf_sound.is_empty() && self.zombie_nautilus.is_empty()
+    }
+
     /// Load the prepared vanilla tables (`data/minecraft/<registry>/`) for worlds
     /// without packs, worldgen helpers and standalone probes.
     pub fn load_prepared(root: &Path) -> Self {
@@ -632,7 +759,15 @@ impl VariantTables {
         let wolf = load_prepared_table(&data.join("wolf_variant"), WolfVariant::decode);
         let wolf_sound =
             load_prepared_table(&data.join("wolf_sound_variant"), decode_prepared_wolf_sound);
-        Self { wolf, wolf_sound }
+        let zombie_nautilus = load_prepared_table(
+            &data.join("zombie_nautilus_variant"),
+            ZombieNautilusVariant::decode,
+        );
+        Self {
+            wolf,
+            wolf_sound,
+            zombie_nautilus,
+        }
     }
 
     /// Build a client's variant tables from the server's synchronized `Dynamic`
@@ -689,7 +824,36 @@ impl VariantTables {
                 )
             })
             .unwrap_or_default();
-        Self { wolf, wolf_sound }
+        let zombie_nautilus = registries
+            .registries
+            .get("minecraft:zombie_nautilus_variant")
+            .map(|entries| {
+                VariantTable::from_synced(
+                    entries
+                        .iter()
+                        .map(|(id, data)| {
+                            let entry = data
+                                .as_ref()
+                                .and_then(ZombieNautilusVariant::decode_network_nbt)
+                                .or_else(|| {
+                                    fallback
+                                        .zombie_nautilus
+                                        .lookup(id)
+                                        .and_then(|r| fallback.zombie_nautilus.get(r))
+                                        .cloned()
+                                })
+                                .unwrap_or_else(ZombieNautilusVariant::missing);
+                            (id.clone(), entry)
+                        })
+                        .collect(),
+                )
+            })
+            .unwrap_or_default();
+        Self {
+            wolf,
+            wolf_sound,
+            zombie_nautilus,
+        }
     }
 }
 
