@@ -110,6 +110,9 @@ updates your caller in the release commit when it has moved, so you never edit t
 To check a released package and its attestation yourself, use
 [`check <file.smod>`](../reference/sdk/05-commands.md#check-a-released-package).
 
+Once several of your mods are listed, you can show them as one card in Discover: see
+[Group your mods into a collection](collections.md).
+
 ## Your mod's page
 
 For a tagged registry release, edit `page.toml` beside `sunrise-mod.toml`:
