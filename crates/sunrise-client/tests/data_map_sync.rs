@@ -406,8 +406,7 @@ fn required_map_disconnects_vanilla_client() {
         .encode(),
     )
     .unwrap();
-    let mut disconnected = None;
-    loop {
+    let reason = loop {
         let (id, payload) = c.recv().unwrap();
         match cfg::Clientbound::decode(id, &payload).unwrap() {
             cfg::Clientbound::SelectKnownPacks(_) => c
@@ -417,16 +416,14 @@ fn required_map_disconnects_vanilla_client() {
                 )
                 .unwrap(),
             cfg::Clientbound::Disconnect(d) => {
-                disconnected = Some(format!("{:?}", d.reason));
-                break;
+                break format!("{:?}", d.reason);
             }
             cfg::Clientbound::FinishConfiguration(_) => {
                 panic!("vanilla client must be disconnected when server has mandatory data maps");
             }
             _ => {}
         }
-    }
-    let reason = disconnected.expect("expected disconnect packet");
+    };
     assert!(
         reason.contains("chemlib:fuel") && reason.contains("minecraft:item"),
         "expected disconnect naming chemlib:fuel (minecraft:item), got: {reason}"

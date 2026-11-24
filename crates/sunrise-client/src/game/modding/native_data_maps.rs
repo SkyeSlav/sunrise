@@ -366,11 +366,6 @@ impl DataMaps {
         published
     }
 
-    /// All loaded maps by registry, then map ID, then sorted `(entry_id, Tag)` pairs.
-    pub(crate) fn maps(&self) -> &BTreeMap<String, HashMap<String, Vec<(String, Tag)>>> {
-        &self.maps
-    }
-
     /// Replace one registry's synced maps atomically on a remote client.
     pub(crate) fn replace_registry(
         &mut self,
