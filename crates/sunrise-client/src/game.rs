@@ -3911,6 +3911,8 @@ struct Game<'a> {
     /// The entity ids a hosted server gives the knots its mobs hang on, by
     /// block, while a lead is tied there.
     knot_ids: HashMap<[i32; 3], u32>,
+    /// Fence posts whose natural knot was killed and whose leads drop next tick.
+    broken_knots: Vec<[i32; 3]>,
     text_display_vertices: usize,
     /// Player skin downloads, and which skin each atlas skin slot holds
     /// (least recently shown first).
@@ -13911,6 +13913,7 @@ impl<'a> Game<'a> {
             interactions: Default::default(),
             remote_knots: Default::default(),
             knot_ids: Default::default(),
+            broken_knots: Vec::new(),
             text_display_vertices: 0,
             skin_downloads: RefCell::new({
                 let mut downloads = sunrise_client::skins::Downloader::new(

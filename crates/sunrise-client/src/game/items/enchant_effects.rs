@@ -837,19 +837,30 @@ impl Game<'_> {
         let attacker = attacker.filter(|_| attacker_kind.is_some());
         let direct = direct.or(attacker_kind.as_deref());
         use sunrise_client::mobs::finalize as f;
-        let Some(m) = self.mobs.iter().find(|m| m.id == target && !m.removed) else {
-            return;
-        };
-        let (id, kind) = (m.id, m.kind.id.clone());
+        let (id, kind, is_stand) =
+            if let Some(m) = self.mobs.iter().find(|m| m.id == target && !m.removed) {
+                (m.id, m.kind.id.clone(), false)
+            } else if let Some(a) = self.armor_stands.iter().find(|a| a.id == target) {
+                (a.id, "minecraft:armor_stand".to_owned(), true)
+            } else {
+                return;
+            };
         // EquipmentSlot.VALUES: the hands, then the feet up to the head (the
         // body and the saddle keep no enchantments here).
         for slot in [f::MAINHAND, f::OFFHAND, f::FEET, f::LEGS, f::CHEST, f::HEAD] {
-            let Some(stack) = self
-                .mobs
-                .iter()
-                .find(|m| m.id == id)
-                .and_then(|m| f::item_stack(m, slot))
-            else {
+            let stack = if is_stand {
+                self.armor_stands
+                    .iter()
+                    .find(|a| a.id == id)
+                    .and_then(|a| a.equipment.get(slot))
+                    .cloned()
+            } else {
+                self.mobs
+                    .iter()
+                    .find(|m| m.id == id)
+                    .and_then(|m| f::item_stack(m, slot))
+            };
+            let Some(stack) = stack else {
                 continue;
             };
             let name = MOB_SLOTS[slot];
@@ -939,10 +950,17 @@ impl Game<'_> {
                     },
                 };
                 let damage = random * (max - min) + min;
-                let Some(m) = self.mobs.iter().find(|m| m.id == wearer) else {
-                    return;
-                };
-                let from = [m.position.x, m.position.y, m.position.z];
+                let (from, attacker_species) =
+                    if let Some(m) = self.mobs.iter().find(|m| m.id == wearer) {
+                        (
+                            [m.position.x, m.position.y, m.position.z],
+                            Some(m.species()),
+                        )
+                    } else if let Some(a) = self.armor_stands.iter().find(|a| a.id == wearer) {
+                        ([a.position.x, a.position.y, a.position.z], None)
+                    } else {
+                        return;
+                    };
                 let kind = effect["damage_type"].as_str().unwrap_or("minecraft:thorns");
                 match attacker {
                     Who::Player => {
@@ -953,7 +971,7 @@ impl Game<'_> {
                             kind: Self::damage_kind(&self.health_resources.damage, kind),
                             attacker: Some(Who::Mob(wearer)),
                             from: Some(from),
-                            attacker_species: Some(m.species()),
+                            attacker_species,
                         };
                         self.mob_hits_mob(id, damage, source);
                     }
@@ -972,13 +990,28 @@ impl Game<'_> {
     /// (`LivingEntity.onEquippedItemBroken`).
     fn wear_mob_piece(&mut self, id: u32, slot: usize, amount: u32) {
         use sunrise_client::mobs::finalize as f;
-        let Some(m) = self.mobs.iter().find(|m| m.id == id) else {
-            return;
-        };
-        let at = [m.position.x, m.position.y, m.position.z];
-        let Some(stack) = f::item_stack(m, slot).filter(|s| {
-            amount > 0 && sunrise_client::stations::is_damageable(world_items!(self), s)
-        }) else {
+        let (at, stack, is_stand) = if let Some(m) = self.mobs.iter().find(|m| m.id == id) {
+            let at = [m.position.x, m.position.y, m.position.z];
+            let Some(stack) = f::item_stack(m, slot).filter(|s| {
+                amount > 0 && sunrise_client::stations::is_damageable(world_items!(self), s)
+            }) else {
+                return;
+            };
+            (at, stack, false)
+        } else if let Some(a) = self.armor_stands.iter().find(|a| a.id == id) {
+            let at = [a.position.x, a.position.y, a.position.z];
+            let Some(stack) = a
+                .equipment
+                .get(slot)
+                .filter(|s| {
+                    amount > 0 && sunrise_client::stations::is_damageable(world_items!(self), s)
+                })
+                .cloned()
+            else {
+                return;
+            };
+            (at, stack, true)
+        } else {
             return;
         };
         let loss = self.durability_loss(&stack, amount, Wearer::Living(id));
@@ -989,14 +1022,27 @@ impl Game<'_> {
         let max = world_items!(self)
             .get(&stack.item)
             .map_or(0, |i| i.max_damage);
-        let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
-            return;
-        };
-        if damage < max {
-            f::set_slot_damage(m, slot, damage);
-            return;
+        if is_stand {
+            let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == id) else {
+                return;
+            };
+            if damage < max {
+                if let Some(s) = a.equipment[slot].as_mut() {
+                    s.damage = damage;
+                }
+                return;
+            }
+            a.equipment.set(slot, None);
+        } else {
+            let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
+                return;
+            };
+            if damage < max {
+                f::set_slot_damage(m, slot, damage);
+                return;
+            }
+            sunrise_client::mobs::drops::clear_slot(m, MOB_SLOTS[slot]);
         }
-        sunrise_client::mobs::drops::clear_slot(m, MOB_SLOTS[slot]);
         // LivingEntity.entityEventForEquipmentBreak
         let event = [47, 48, 52, 51, 50, 49][slot];
         self.lan_entity_event(id as i32, event, at);

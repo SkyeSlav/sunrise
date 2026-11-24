@@ -64,8 +64,8 @@ the hooks use. A build server uses the plan contract in
   outside the mod is refused. The `sunrise-mod-api` path in `Cargo.toml` points at `.sunrise/sdk/` and stays as
   written.
 - Do not commit `.sunrise/` (the template's `.gitignore` already skips it).
-- Run `cargo sunrise-mod check` before saying the work is done, and show its output. For the registry's checks on
-  the packed file, run `cargo sunrise-mod build`, then `cargo sunrise-mod check target/sunrise-mod/<id>.smod`.
+- Run `cargo sunrise-mod check` before saying the work is done, and show its output. `cargo sunrise-mod check <file.smod>`
+  is for a [released package with its attestation](reference/sdk/05-commands.md#check-a-released-package).
 
 ## Finding the API
 

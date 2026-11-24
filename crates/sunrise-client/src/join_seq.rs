@@ -423,6 +423,10 @@ impl<T: Joined> ResidentList<T> {
     pub fn id_assigned(&self, index: usize) {
         self.0.id_assigned(index);
     }
+    /// Write stamp advancing whenever the list mutates.
+    pub fn stamp(&self) -> ListStamp {
+        self.0.stamp()
+    }
     /// Find an owner using the same lookup as the joined entity lists.
     pub fn locate(&self, join: JoinSeq) -> Option<usize> {
         self.0.locate(join)

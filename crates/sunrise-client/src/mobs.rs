@@ -1329,6 +1329,8 @@ pub struct Extra {
     /// Who holds this mob's lead, a holder not yet found after loading, and
     /// the spin the rope's torque gives it.
     pub leash: Option<leash::Holder>,
+    /// Entity id of the specific leash knot instance when `leash == Some(Holder::Knot(_))`.
+    pub leash_knot_id: Option<u32>,
     pub leash_pending: Option<leash::Pending>,
     /// The UUID of the player behind `Holder::Player` (host or guest).
     pub leash_player: Option<[i32; 4]>,

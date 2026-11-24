@@ -17,7 +17,7 @@
 //! - `check [--uses]` in a mod folder: the package rules and render pipeline shaders; for a native
 //!   mod, `cargo check` and what the mod uses of its pinned build
 //!   (`sdk_cmds.rs`).
-//! - `check <file> [--kind <kind>] [--key <public key> --signature <file.minisig>] [--json]`: what the registry checks of a submission
+//! - `check <file> [--kind <kind>] [--attestation <bundle>] [--repository <id>] [--json]`: check a release package
 //!   (`.smod`, `.spack`, resource pack `.zip`, `.sshader`).
 //! - `hooks <text> [--all]`: search the pinned build's hooks (or every item) offline.
 //! - `sdk diff <build> <build>`: what changed in the surface between two builds.
@@ -726,33 +726,35 @@ enum Check<'a> {
 struct CheckFile<'a> {
     file: &'a str,
     kind: Option<&'a str>,
-    key: Option<&'a str>,
-    signature: Option<&'a str>,
+    attestation: Option<&'a Path>,
+    repository: Option<u64>,
     json: bool,
 }
 
 /// `check`'s two forms, told apart by whether a file is named, wherever it stands; an option of
 /// the other form is refused by name.
 fn check_args(args: &[String]) -> Result<Check<'_>, String> {
-    let mut options = Options::new("check", args, &["--kind", "--key", "--signature", "--with"]);
+    let mut options = Options::new(
+        "check",
+        args,
+        &["--kind", "--attestation", "--repository", "--with"],
+    );
     let with = options
         .values("--with")?
         .into_iter()
         .map(Path::new)
         .collect::<Vec<_>>();
     let uses = options.switch("--uses");
-    let (kind, key, signature, json) = (
-        options.value("--kind")?,
-        options.value("--key")?,
-        options.value("--signature")?,
-        options.switch("--json"),
-    );
+    let kind = options.value("--kind")?;
+    let attestation = options.value("--attestation")?.map(Path::new);
+    let repository = options.value("--repository")?;
+    let json = options.switch("--json");
     let file = options.at_most_one()?;
     options.finish()?;
     let of_file = [
         ("--kind", kind.is_some()),
-        ("--key", key.is_some()),
-        ("--signature", signature.is_some()),
+        ("--attestation", attestation.is_some()),
+        ("--repository", repository.is_some()),
         ("--json", json),
     ];
     let given = |options: &[(&'static str, bool)]| {
@@ -770,8 +772,13 @@ fn check_args(args: &[String]) -> Result<Check<'_>, String> {
         Some(file) => Ok(Check::File(CheckFile {
             file,
             kind,
-            key,
-            signature,
+            attestation,
+            repository: repository
+                .map(|id| {
+                    id.parse()
+                        .map_err(|_| "--repository expects a numeric GitHub repository ID")
+                })
+                .transpose()?,
             json,
         })),
         None => match given(&of_file) {
@@ -787,8 +794,8 @@ fn check(wanted: CheckFile<'_>) -> Result<(), String> {
     let CheckFile {
         file,
         kind,
-        key,
-        signature,
+        attestation,
+        repository,
         json,
     } = wanted;
     let path = Path::new(file);
@@ -797,10 +804,7 @@ fn check(wanted: CheckFile<'_>) -> Result<(), String> {
         None => check::kind_of(path)
             .ok_or("pass --kind mod|modpack|resourcepack: the extension doesn't say")?,
     };
-    let signature = signature
-        .map(|p| std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}")))
-        .transpose()?;
-    let report = check::check(path, kind, key, signature.as_deref());
+    let report = check::check_release(path, kind, attestation, repository);
     if json {
         let json = match &report {
             Ok(r) => serde_json::json!({"ok": true, "report": r.json()}),
@@ -1114,7 +1118,7 @@ mod tests {
                 .contains(&"data/gems/sunrise/block/glowing_amethyst.json".into())
         );
         assert_eq!(content.files.len(), 8, "{:?}", content.files);
-        let report = check::check(&smod, check::kind_of(&smod).unwrap(), None, None).unwrap();
+        let report = check::inspect(&smod, check::kind_of(&smod).unwrap(), true).unwrap();
         assert!(
             report.text().contains("no code: content only"),
             "{}",
@@ -1193,7 +1197,7 @@ mod tests {
         )
         .unwrap();
         let kind = check::kind_of(&smod).unwrap();
-        assert!(check::check(&smod, kind.clone(), None, None).is_ok());
+        assert!(check::inspect(&smod, kind.clone(), true).is_ok());
 
         // Model an externally supplied archive with executable bytes under an asset name.
         let original = std::fs::read(&smod).unwrap();
@@ -1212,10 +1216,7 @@ mod tests {
         }
         std::fs::write(&smod, output.finish().unwrap().into_inner()).unwrap();
         let expected = ContentFileError::Executable(asset.into()).to_string();
-        assert_eq!(
-            check::check(&smod, kind, None, None).err().unwrap(),
-            expected
-        );
+        assert_eq!(check::inspect(&smod, kind, true).err().unwrap(), expected);
         std::fs::remove_file(&smod).unwrap();
         std::fs::write(path.join(asset), b"MZ-not-an-asset").unwrap();
         assert_eq!(build_in(&path).unwrap_err(), expected);
@@ -1354,7 +1355,7 @@ mod tests {
         );
         assert_eq!(check::kind_of(&dir.join("machine_mod.hnmod")), None);
         // Without the list of what it uses, the mod would work on its pinned build only.
-        let refused = check::check(&smod, check::kind_of(&smod).unwrap(), None, None)
+        let refused = check::inspect(&smod, check::kind_of(&smod).unwrap(), true)
             .err()
             .unwrap();
         assert!(refused.contains("uses.json"), "{refused}");
@@ -1367,7 +1368,7 @@ mod tests {
                 Some(rev),
             )
             .unwrap();
-            check::check(&smod, check::kind_of(&smod).unwrap(), None, None)
+            check::inspect(&smod, check::kind_of(&smod).unwrap(), true)
         };
         // A list made for another build says nothing about the pinned one.
         assert!(pack(&"f".repeat(40)).is_err());
@@ -1388,7 +1389,7 @@ mod tests {
             Some(rev),
         )
         .unwrap();
-        check::check(&smod, check::kind_of(&smod).unwrap(), None, None).unwrap();
+        check::inspect(&smod, check::kind_of(&smod).unwrap(), true).unwrap();
         std::fs::remove_file(path.join("src/m.rs")).unwrap();
         std::fs::write(&project, text).unwrap();
         assert!(
@@ -1496,19 +1497,21 @@ mod tests {
         let file = CheckFile {
             file: "mod.smod",
             kind: None,
-            key: None,
-            signature: None,
+            attestation: None,
+            repository: None,
             json: true,
         };
         assert_eq!(check_args(&argv("--json mod.smod")), Ok(Check::File(file)));
         // A value that reads like the other form's option is still the value.
         assert_eq!(
-            check_args(&argv("mod.smod --key KEY --signature --native")),
+            check_args(&argv(
+                "mod.smod --repository 523043277 --attestation --native"
+            )),
             Ok(Check::File(CheckFile {
                 file: "mod.smod",
                 kind: None,
-                key: Some("KEY"),
-                signature: Some("--native"),
+                attestation: Some(Path::new("--native")),
+                repository: Some(523043277),
                 json: false,
             }))
         );
@@ -1521,6 +1524,11 @@ mod tests {
         );
         for (line, named) in [
             ("--json", "--json"),
+            ("--attestation bundle.json", "--attestation"),
+            ("--repository 523043277", "--repository"),
+            ("mod.smod --repository astral-sh/ruff", "--repository"),
+            ("mod.smod --key KEY", "--key"),
+            ("mod.smod --signature mod.minisig", "--signature"),
             ("mod.smod --uses", "--uses"),
             ("mod.smod --with library", "--with"),
             ("--with", "--with"),
@@ -1572,7 +1580,7 @@ served_by = \"horizon_java\"
             None,
         )
         .unwrap();
-        let report = check::check(&smod, check::kind_of(&smod).unwrap(), None, None).unwrap();
+        let report = check::inspect(&smod, check::kind_of(&smod).unwrap(), true).unwrap();
         assert_eq!(report.facts.id.as_deref(), Some("runes"));
 
         // Invalid syntax, minecraft:air, foreign namespace, or unserved undeclared remainder still fail.

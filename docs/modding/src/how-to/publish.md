@@ -41,14 +41,9 @@ both the package and the registry.
 
 ## 2. Check the new file
 
-Run the `cargo sunrise-mod check <file>` command that `publish` prints, from your mod's folder. For example:
-
-```sh
-cargo sunrise-mod check 'target/sunrise-mod/publish/my_mod-0.1.0.smod'
-```
-
-This checks the new package and, for a signed project, its signature. `publish` also lists anything left to fill in
-on the entry or page. Registry CI checks the whole checkout and plans installations with all listed
+`publish` checks the package and any Minisign signature before staging the submission, and lists anything left to fill in
+on the entry or page. For GitHub-attested releases, use [`check <file.smod>`](../reference/sdk/05-commands.md#check-a-released-package).
+Registry CI checks the whole checkout and plans installations with all listed
 files available. Your submission folder does not contain previously published packages or an existing project's images.
 
 For a first listing, you can also try an index containing just your project once the entry and icon are complete:

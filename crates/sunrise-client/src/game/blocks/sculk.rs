@@ -1980,6 +1980,47 @@ impl Game<'_> {
         };
         self.post_game_event("minecraft:projectile_land", at, ctx);
     }
+    /// `Projectile.onHit`: entity hits post at the ray point with no affected state;
+    /// block hits post at the block center with the post-callback block state.
+    pub(in crate::game) fn projectile_hit_landed_event(
+        &mut self,
+        id: u32,
+        owner: Option<Who>,
+        hit: sunrise_client::projectiles::Hit,
+    ) {
+        match hit {
+            sunrise_client::projectiles::Hit::Entity { at, .. } => {
+                self.projectile_landed_event(id, owner, [at.x, at.y, at.z]);
+            }
+            sunrise_client::projectiles::Hit::Block { pos, .. } => {
+                self.projectile_block_landed_event(id, owner, pos);
+            }
+            sunrise_client::projectiles::Hit::None => {}
+        }
+    }
+    /// `Projectile.onHit` on a block: `PROJECTILE_LAND` at block center with post-callback state.
+    pub(in crate::game) fn projectile_block_landed_event(
+        &mut self,
+        id: u32,
+        owner: Option<Who>,
+        pos: [i32; 3],
+    ) {
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let at = [
+            f64::from(pos[0]) + 0.5,
+            f64::from(pos[1]) + 0.5,
+            f64::from(pos[2]) + 0.5,
+        ];
+        let ctx = Context {
+            source: (id != 0).then_some(EventSource::Entity(id)),
+            owner,
+            player: owner == Some(Who::Player) || self.rides_player(owner),
+            dampening_state: self.state_dampens(Some(state)),
+            affected_state: Some(state),
+            ..Context::default()
+        };
+        self.post_game_event("minecraft:projectile_land", at, ctx);
+    }
     /// A projectile's own event (`gameEvent(event)`, `Context.of(this, state)`):
     /// its owner as the projectile's owner, `state` the affected state. A
     /// guest's projectile posts as theirs, or with no owner once they have left

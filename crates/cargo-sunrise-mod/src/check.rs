@@ -1,9 +1,9 @@
-//! `cargo sunrise-mod check <file>`: what the registry checks of a submission,
-//! run anywhere: its kind's own checks (docs/modding/src/reference/registry-index.md), its signature
-//! when given a key, and for a `.smod` whether it contains native source or only content.
+//! Package inspection and the release attestation policy for `cargo sunrise-mod check <file>`.
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use std::io::ErrorKind;
 use std::path::Path;
+use sunrise_attestation::{Attested, PUBLIC_GOOD_TRUSTED_ROOT};
 use sunrise_mod_package::Package;
 use sunrise_mod_package::index::{self, Facts, Kind};
 use sunrise_mod_package::manifest::{MANIFEST, MAX_USES};
@@ -15,6 +15,7 @@ pub struct Report {
     pub sha256: String,
     pub size: u64,
     pub signed: bool,
+    attestation: Option<Attested>,
 }
 
 impl Report {
@@ -25,7 +26,7 @@ impl Report {
             .iter()
             .map(|r| json!({"id": r.id, "version": r.version, "sha256": r.sha256}))
             .collect();
-        json!({
+        let mut report = json!({
             "kind": self.kind.name(),
             "id": self.facts.id,
             "version": self.facts.version,
@@ -38,7 +39,18 @@ impl Report {
             "sha256": self.sha256,
             "size": self.size,
             "signed": self.signed,
-        })
+        });
+        if let Some(attested) = &self.attestation {
+            report["attestation"] = json!({
+                "repository_id": attested.repository_id,
+                "repository_name": attested.repository_name,
+                "signer_workflow_ref": attested.signer_workflow_ref,
+                "source_ref": attested.source_ref,
+                "source_commit": attested.source_commit,
+                "predicate_type": attested.predicate_type,
+            });
+        }
+        report
     }
 
     pub fn text(&self) -> String {
@@ -69,6 +81,15 @@ impl Report {
             ")\n  {} bytes, SHA-256 {}, {signed}\n",
             self.size, self.sha256
         );
+        if let Some(attested) = &self.attestation {
+            out += &format!(
+                "  repository: {} (ID {})\n  workflow: {}\n  commit: {}\n",
+                attested.repository_name,
+                attested.repository_id,
+                attested.signer_workflow_ref,
+                attested.source_commit
+            );
+        }
         for c in &f.capabilities {
             out += &format!("  may {}\n", c.describe());
         }
@@ -110,35 +131,89 @@ pub fn kind_of(path: &Path) -> Option<Kind> {
     }
 }
 
-/// Checks the file at `path` as `kind`; `key` and `signature` (the
-/// `.minisig` text) check its signature.
-pub fn check(
+/// Inspect a downloaded package and require an attestation for mods.
+pub fn check_release(
     path: &Path,
     kind: Kind,
-    key: Option<&str>,
-    signature: Option<&str>,
+    attestation: Option<&Path>,
+    repository: Option<u64>,
 ) -> Result<Report, String> {
-    check_package(path, kind, key, signature, true)
+    if !matches!(kind, Kind::Mod | Kind::NativeMod)
+        && path.extension().is_none_or(|ext| ext != "smod")
+    {
+        if attestation.is_some() || repository.is_some() {
+            return Err("--attestation and --repository apply only to .smod packages".into());
+        }
+        return inspect(path, kind, true);
+    }
+    let default_sidecar;
+    let sidecar = match attestation {
+        Some(sidecar) => sidecar,
+        None => {
+            let mut name = path.as_os_str().to_owned();
+            name.push(".sigstore.json");
+            default_sidecar = std::path::PathBuf::from(name);
+            &default_sidecar
+        }
+    };
+    let bundle = std::fs::read(sidecar).map_err(|e| match e.kind() {
+        ErrorKind::NotFound => format!(
+            "not signed: the release workflow attests each .smod; bundle not found: {}",
+            sidecar.display()
+        ),
+        _ => format!("{}: {e}", sidecar.display()),
+    })?;
+    let mut report = inspect(path, kind, true)?;
+    let mut sha256 = [0; 32];
+    hex::decode_to_slice(&report.sha256, &mut sha256).map_err(|e| e.to_string())?;
+    report.attestation = Some(
+        verify_release(&bundle, sha256, repository)
+            .map_err(|e| format!("{}: {e}", sidecar.display()))?,
+    );
+    report.signed = true;
+    Ok(report)
 }
 
-/// Inspect a reviewed source when adding only a build. An older source without a uses list
-/// stays exact to its pin; the registry still verifies its source and judges the appended build.
-pub(crate) fn check_reviewed_source(
-    path: &Path,
-    kind: Kind,
-    key: Option<&str>,
-    signature: Option<&str>,
-) -> Result<Report, String> {
-    check_package(path, kind, key, signature, false)
+fn verify_release(
+    bundle: &[u8],
+    sha256: [u8; 32],
+    repository: Option<u64>,
+) -> Result<Attested, String> {
+    const WORKFLOW: &str = "sunrise-org/sunrise-mods/.github/workflows/release.yml";
+    const TAG_PREFIX: &str = "refs/tags/release-v";
+    let attested = sunrise_attestation::verify(bundle, sha256, PUBLIC_GOOD_TRUSTED_ROOT)
+        .map_err(|e| e.to_string())?;
+    if let Some(expected) = repository
+        && attested.repository_id != expected
+    {
+        return Err(format!(
+            "expected repository ID {expected}, attestation names {} (ID {})",
+            attested.repository_name, attested.repository_id
+        ));
+    }
+    let allowed =
+        attested
+            .signer_workflow_ref
+            .split_once('@')
+            .is_some_and(|(workflow, git_ref)| {
+                workflow == WORKFLOW
+                    && git_ref
+                        .strip_prefix(TAG_PREFIX)
+                        .is_some_and(|version| !version.is_empty() && !version.contains('/'))
+            });
+    if !allowed {
+        return Err(format!(
+            "expected workflow {WORKFLOW}@{TAG_PREFIX}*, attestation names {}",
+            attested.signer_workflow_ref
+        ));
+    }
+    Ok(attested)
 }
 
-fn check_package(
-    path: &Path,
-    kind: Kind,
-    key: Option<&str>,
-    signature: Option<&str>,
-    require_uses: bool,
-) -> Result<Report, String> {
+/// Validate a package's contents, independent of signature or registry policy.
+/// A legacy reviewed source being republished with only a new build stays exact
+/// to its pin and need not carry a uses list.
+pub(crate) fn inspect(path: &Path, kind: Kind, require_uses: bool) -> Result<Report, String> {
     let size = std::fs::metadata(path)
         .map_err(|e| format!("{}: {e}", path.display()))?
         .len();
@@ -150,20 +225,13 @@ fn check_package(
     if require_uses && kind == Kind::NativeMod {
         uses_list(path)?;
     }
-    let signed = match (key, signature) {
-        (Some(key), Some(sig)) => {
-            index::verify_signature(key, sig, path)?;
-            true
-        }
-        (None, None) => false,
-        _ => return Err("--key and --signature go together".into()),
-    };
     Ok(Report {
         kind,
         facts,
         sha256: index::sha256_file(path)?,
         size,
-        signed,
+        signed: false,
+        attestation: None,
     })
 }
 
@@ -290,33 +358,57 @@ mod tests {
     #[test]
     fn checks_each_kind_its_own_way() {
         let pack = fixture("cozy-1.0.0.spack");
-        let report = check(&pack, kind_of(&pack).unwrap(), None, None).unwrap();
+        let report = inspect(&pack, kind_of(&pack).unwrap(), true).unwrap();
         assert_eq!(report.facts.requires[0].id, "coords_hud");
         assert!(
             report
                 .text()
                 .contains("cozy 1.0.0 (modpack, format 1, for 26.3)")
         );
-        // A signed content mod passes; a bad signature is still refused.
         let smod = fixture("coords_hud-0.1.0.smod");
-        let key = std::fs::read_to_string(fixture("test.pub")).unwrap();
-        let sig = std::fs::read_to_string(fixture("coords_hud-0.1.0.smod.minisig")).unwrap();
-        let key = key.lines().last().unwrap();
-        let report = check(&smod, Kind::Mod, Some(key), Some(&sig)).unwrap();
-        assert!(report.signed);
+        let report = inspect(&smod, Kind::Mod, true).unwrap();
         assert!(report.text().contains("no code: content only"));
-        let e = check(
-            &smod,
-            Kind::Mod,
-            Some(key),
-            Some("untrusted comment: x\nRUQ=\n"),
-        )
-        .err()
-        .unwrap();
-        assert!(e.contains("signature"), "{e}");
-        let e = check(&pack, Kind::Shader, None, None).err().unwrap();
+        let e = inspect(&pack, Kind::Shader, true).err().unwrap();
         assert!(e.contains("sunrise-shaders.toml"), "{e}");
-        assert!(check(&pack, Kind::Mod, None, None).is_err());
+        assert!(inspect(&pack, Kind::Mod, true).is_err());
+    }
+
+    #[test]
+    fn unsigned_smod_is_refused_and_an_explicit_bundle_is_read() {
+        let smod = fixture("coords_hud-0.1.0.smod");
+        let missing = check_release(&smod, Kind::Mod, None, None).err().unwrap();
+        assert!(missing.starts_with("not signed: the release workflow attests each .smod"));
+        assert!(missing.ends_with("coords_hud-0.1.0.smod.sigstore.json"));
+
+        let bundle =
+            fixture("../../../sunrise-attestation/tests/fixtures/ruff-source.sigstore.json");
+        let mismatch = check_release(&smod, Kind::Mod, Some(&bundle), None)
+            .err()
+            .unwrap();
+        assert!(
+            mismatch.contains("artifact hash does not match"),
+            "{mismatch}"
+        );
+    }
+
+    #[test]
+    fn real_attestation_from_another_workflow_or_repository_is_refused() {
+        let bundle =
+            include_bytes!("../../sunrise-attestation/tests/fixtures/ruff-source.sigstore.json");
+        let mut sha256 = [0; 32];
+        hex::decode_to_slice(
+            "0378ef60356caaad7b84653691a5d57a1d8b57fd59d173cfc27b0fd4a91a13f3",
+            &mut sha256,
+        )
+        .unwrap();
+        let workflow = verify_release(bundle, sha256, Some(523043277)).unwrap_err();
+        assert!(workflow.starts_with("expected workflow sunrise-org/sunrise-mods/"));
+        assert!(workflow.ends_with("astral-sh/ruff/.github/workflows/release.yml@refs/heads/main"));
+        let repository = verify_release(bundle, sha256, Some(1)).unwrap_err();
+        assert_eq!(
+            repository,
+            "expected repository ID 1, attestation names astral-sh/ruff (ID 523043277)"
+        );
     }
 
     #[test]
@@ -336,6 +428,7 @@ mod tests {
             sha256: "0".repeat(64),
             size: 1,
             signed: false,
+            attestation: None,
         };
         let text = report.text();
         for word in ["creature", "^0.1", "jei", "^0.5"] {

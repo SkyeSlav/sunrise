@@ -350,6 +350,8 @@ pub struct Projectile {
     pub stuck_speed: Vec3,
     /// Whether the projectile has left its owner's box (Projectile.leftOwner).
     pub left_owner: bool,
+    /// `Projectile.lastDeflectedBy`: entity id that last deflected this projectile.
+    pub last_deflected_by: Option<u32>,
     /// Non-arrow Projectile.hasBeenShot, independent of entity age.
     pub has_been_shot: bool,
     shoot_event: Option<Vec3>,
@@ -454,6 +456,96 @@ pub fn stuck_speed_of(name: &str) -> Option<Vec3> {
         _ => None,
     }
 }
+/// `ProjectileUtil.computeMargin`: float arithmetic before widening to `f64`.
+#[inline]
+pub fn compute_margin(tick_count: i32) -> f64 {
+    f64::from(((tick_count - 2) as f32 / 20.0_f32).clamp(0.0_f32, 0.3_f32))
+}
+/// Vanilla `EntitySectionStorage.forEachAccessibleNonEmptySection` encounter key,
+/// with dragon parts ordered after all regular entities (`Level.getEntities`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TargetOrder {
+    pub is_dragon_part: bool,
+    pub section_x: i32,
+    pub section_z_key: u32,
+    pub section_y_key: u32,
+    pub join: u64,
+}
+impl TargetOrder {
+    #[inline]
+    pub fn entity(pos: Vec3, join: u64) -> Self {
+        let sx = (pos.x.floor() as i32) >> 4;
+        let sy = (pos.y.floor() as i32) >> 4;
+        let sz = (pos.z.floor() as i32) >> 4;
+        Self {
+            is_dragon_part: false,
+            section_x: sx,
+            section_z_key: (sz as u32) & 0x3F_FFFF,
+            section_y_key: (sy as u32) & 0xF_FFFF,
+            join,
+        }
+    }
+    #[inline]
+    pub fn dragon_part(index: u32) -> Self {
+        Self {
+            is_dragon_part: true,
+            section_x: 0,
+            section_z_key: 0,
+            section_y_key: 0,
+            join: u64::from(index),
+        }
+    }
+}
+/// One live entity candidate for projectile collision queries.
+#[derive(Clone, Copy, Debug)]
+pub struct TargetCandidate {
+    pub who: Who,
+    pub bounds: Aabb,
+    /// Actual `Entity.position()` (center for `HangingEntity`, feet otherwise).
+    pub position: Vec3,
+    pub order: TargetOrder,
+}
+/// Zero-allocation `ProjectileUtil.getEntityHitResult` accumulator.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NearestHit {
+    best: Option<(Who, Vec3, f64, TargetOrder)>,
+}
+impl NearestHit {
+    #[inline]
+    pub fn new() -> Self {
+        Self { best: None }
+    }
+    /// Broad-phase uninflated `bounds.intersects(search_area)`, exact `Aabb::clip`,
+    /// strict nearest (`d < best`) with section encounter order tie-break.
+    #[inline]
+    pub fn consider(
+        &mut self,
+        c: TargetCandidate,
+        search_area: Aabb,
+        from: Vec3,
+        to: Vec3,
+        margin: f64,
+    ) {
+        if !c.bounds.intersects(search_area) {
+            return;
+        }
+        let inflated = c.bounds.inflate(Vec3::new(margin, margin, margin));
+        let Some(at) = inflated.clip(from, to) else {
+            return;
+        };
+        let d = from.distance_squared(at);
+        if self
+            .best
+            .is_none_or(|(_, _, bd, bo)| d < bd || (d == bd && c.order < bo))
+        {
+            self.best = Some((c.who, at, d, c.order));
+        }
+    }
+    #[inline]
+    pub fn finish(self) -> Option<(Who, Vec3)> {
+        self.best.map(|(who, at, _, _)| (who, at))
+    }
+}
 pub trait ProjectileWorld {
     fn clip(&self, from: Vec3, to: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])>;
     /// `Entity.isInWater` as `updateFluidInteraction` sets it: some water
@@ -466,6 +558,38 @@ pub trait ProjectileWorld {
         velocity
     }
     fn targets(&self) -> &[(Who, Aabb)];
+    /// Traverse live entity candidates without allocating; defaults to `targets()` for stubs.
+    fn visit_targets(&self, mut visit: impl FnMut(TargetCandidate)) {
+        for (idx, &(who, bounds)) in self.targets().iter().enumerate() {
+            let c = bounds.center();
+            let pos = Vec3::new(c.x, bounds.min_position().y, c.z);
+            visit(TargetCandidate {
+                who,
+                bounds,
+                position: pos,
+                order: TargetOrder::entity(pos, idx as u64),
+            });
+        }
+    }
+    /// Whether `candidate` shares the owner's root-vehicle tree (`isPassengerOfSameVehicle`).
+    fn owner_tree_contains(&self, owner: Who, candidate: Who) -> bool {
+        candidate == owner
+    }
+    /// `Projectile.isOutsideOwnerCollisionRange`: true when `swept` touches no pickable
+    /// entity in `owner`'s root-vehicle tree.
+    fn outside_owner_collision_range(&self, owner: Who, swept: Aabb) -> bool {
+        !self
+            .targets()
+            .iter()
+            .any(|&(who, b)| who == owner && b.intersects(swept))
+    }
+    /// Box of a specific entity for `ShulkerBullet` homing without scanning a snapshot slice.
+    fn target_bounds(&self, target: Who) -> Option<Aabb> {
+        self.targets()
+            .iter()
+            .find(|(who, _)| *who == target)
+            .map(|(_, b)| *b)
+    }
     /// `Level.getMinY() - 64` (`Entity.checkBelowWorld`); the Overworld's
     /// unless the world says otherwise.
     fn below_world_y(&self) -> f64 {
@@ -681,6 +805,7 @@ impl Projectile {
             stuck: false,
             stuck_speed: Vec3::ZERO,
             left_owner: false,
+            last_deflected_by: None,
             has_been_shot: false,
             shoot_event: None,
             lava_hurt: false,
@@ -1327,10 +1452,7 @@ impl Projectile {
         else {
             return None;
         };
-        w.targets()
-            .iter()
-            .find(|(who, _)| *who == target)
-            .map(|(_, b)| *b)
+        w.target_bounds(target)
     }
     /// `ShulkerBullet.selectNextMoveDirection`.
     fn select_next_move(&mut self, w: &impl ProjectileWorld, excluded: Option<u8>) {
@@ -1422,6 +1544,16 @@ impl Projectile {
     }
     /// `ShulkerBullet.tick`.
     fn tick_bullet(&mut self, w: &impl ProjectileWorld, impact: bool) -> (bool, Hit) {
+        // Projectile.tick runs before ShulkerBullet's motion and collision sweep.
+        if !self.left_owner {
+            let swept = self
+                .bounds()
+                .expand_towards(self.velocity)
+                .inflate(Vec3::new(1.0, 1.0, 1.0));
+            self.left_owner = self
+                .collision_owner()
+                .is_none_or(|o| w.outside_owner_collision_range(o, swept));
+        }
         let target = self.target_box(w);
         let ProjectileKind::ShulkerBullet { delta, .. } = &mut self.kind else {
             return (false, Hit::None);
@@ -1446,28 +1578,21 @@ impl Projectile {
         let block = w.clip(from, to);
         let end = block.map_or(to, |b| b.0);
         let margin = self.hit_margin();
-        let mut best: Option<(Who, Vec3, f64)> = None;
-        for (who, b) in w.targets() {
-            if Some(*who) == self.collision_owner() && !self.left_owner {
-                continue;
+        let search_area = self
+            .bounds()
+            .expand_towards(self.velocity)
+            .inflate(Vec3::new(1.0, 1.0, 1.0));
+        let owner = self.collision_owner();
+        let left_owner = self.left_owner;
+        let mut nearest = NearestHit::new();
+        w.visit_targets(|c| {
+            if !left_owner && owner.is_some_and(|o| w.owner_tree_contains(o, c.who)) {
+                return;
             }
-            if let Some(at) = b.inflate(Vec3::new(margin, margin, margin)).clip(from, end) {
-                let d = (at.x - from.x).powi(2) + (at.y - from.y).powi(2) + (at.z - from.z).powi(2);
-                if best.is_none_or(|bb| d < bb.2) {
-                    best = Some((*who, at, d));
-                }
-            }
-        }
-        if !self.left_owner {
-            let owner_box = w
-                .targets()
-                .iter()
-                .find(|(who, _)| Some(*who) == self.collision_owner())
-                .map(|(_, b)| *b);
-            self.left_owner =
-                owner_box.is_none_or(|b| !b.inflate(Vec3::new(1.0, 1.0, 1.0)).contains(from));
-        }
-        if impact && let Some((who, at, _)) = best {
+            nearest.consider(c, search_area, from, end, margin);
+        });
+        let best = nearest.finish();
+        if impact && let Some((who, at)) = best {
             self.position = at;
             return (false, Hit::Entity { who, at });
         }
@@ -1537,14 +1662,19 @@ impl Projectile {
     /// One tick: returns whether to keep the projectile and what it hit.
     pub fn tick(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
         sunrise_threads::work::set_entity(sunrise_threads::work::entity_id(self.kind.id()));
-        self.tick_with(w, true, false)
+        self.tick_with(w, true, false, false)
+    }
+    /// Server step that lets `LlamaSpit.tick` land an entity hit before resuming its motion.
+    pub fn tick_before_hit(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
+        sunrise_threads::work::set_entity(sunrise_threads::work::entity_id(self.kind.id()));
+        self.tick_with(w, true, false, true)
     }
     /// One tick of a server's projectile on its client: [`tick`](Self::tick),
     /// whose bubble columns push it on the client too, so a pearl held in a
     /// stasis chamber hovers between the server's updates instead of sinking
     /// and snapping back.
     pub fn tick_remote(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
-        self.tick_with(w, true, true)
+        self.tick_with(w, true, true, false)
     }
     /// The projectiles whose tick applies the effects of the blocks they moved
     /// through (`applyEffectsFromBlocks`), bubble columns among them:
@@ -1674,13 +1804,14 @@ impl Projectile {
     /// canceled (`ProjectileImpactEvent`). The projectile goes the whole way of its
     /// motion and flies on, with no hit to act on.
     pub fn tick_through(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
-        self.tick_with(w, false, false)
+        self.tick_with(w, false, false, false)
     }
     fn tick_with(
         &mut self,
         w: &impl ProjectileWorld,
         impact: bool,
         client_side: bool,
+        defer_spit_motion: bool,
     ) -> (bool, Hit) {
         // LlamaSpit and ShulkerBullet call Projectile.tick before moving;
         // ThrowableProjectile and AbstractHurtingProjectile call it afterwards.
@@ -1699,7 +1830,7 @@ impl Projectile {
             self.first_tick_bubble_column(w);
         }
         let from = self.position;
-        let mut result = self.tick_inner(w, impact);
+        let mut result = self.tick_inner(w, impact, defer_spit_motion);
         if self.applies_block_effects() {
             self.bubble_columns_along(w, from);
         }
@@ -1770,9 +1901,24 @@ impl Projectile {
     /// its way grow, from nothing for its first two ticks up to 0.3 at its
     /// eighth (`tickCount`, which `age` counts, is raised before the tick).
     fn hit_margin(&self) -> f64 {
-        f64::from(((self.age as i32 - 2) as f32 / 20.0).clamp(0.0, 0.3))
+        compute_margin(self.age as i32)
     }
-    fn tick_inner(&mut self, w: &impl ProjectileWorld, impact: bool) -> (bool, Hit) {
+    /// `LlamaSpit.tick` resumes with the motion saved before `hitTargetOrDeflectSelf`.
+    pub fn finish_spit_motion(&mut self, movement: Vec3) {
+        self.turn_towards_movement();
+        self.velocity = movement.scale(f64::from(0.99_f32));
+        let gravity = self.get_gravity();
+        if gravity != 0.0 {
+            self.velocity = self.velocity.add_vector(Vec3::new(0.0, -gravity, 0.0));
+        }
+        self.position = self.position.add_vector(movement);
+    }
+    fn tick_inner(
+        &mut self,
+        w: &impl ProjectileWorld,
+        impact: bool,
+        defer_spit_motion: bool,
+    ) -> (bool, Hit) {
         // `Entity.setOldPosAndRot` (the previous position and rotation the
         // renderer interpolates from), kept across the `impact` flag's arrival
         // from #6279.
@@ -1810,7 +1956,10 @@ impl Projectile {
                 // ThrowableProjectile: gravity, then inertia. Its drag is a
                 // float in vanilla (0.8F in water, `getAirDrag` 0.99F), so
                 // widens to the double that scales the motion.
-                self.velocity.y -= self.get_gravity();
+                let gravity = self.get_gravity();
+                if gravity != 0.0 {
+                    self.velocity = self.velocity.add_vector(Vec3::new(0.0, -gravity, 0.0));
+                }
                 let inertia = f64::from(if water { 0.8_f32 } else { 0.99_f32 });
                 self.velocity = Vec3::new(
                     self.velocity.x * inertia,
@@ -1819,10 +1968,20 @@ impl Projectile {
                 );
             }
         }
-        // ThrowableProjectile.tick and LlamaSpit.tick turn with this move's
-        // motion, hit or not (a spit's drag and gravity come after).
-        if self.turns_with_update_rotation() {
+        // ThrowableProjectile.tick turns before it moves. LlamaSpit.tick
+        // turns after its hit, when it resumes its motion.
+        if self.turns_with_update_rotation() && self.kind != ProjectileKind::LlamaSpit {
             self.turn_towards_movement();
+        }
+        // LlamaSpit.tick runs super.tick() (checkLeftOwner) before getHitResultOnMoveVector.
+        if self.kind == ProjectileKind::LlamaSpit && !self.left_owner {
+            let swept = self
+                .bounds()
+                .expand_towards(self.velocity)
+                .inflate(Vec3::new(1.0, 1.0, 1.0));
+            self.left_owner = self
+                .collision_owner()
+                .is_none_or(|o| w.outside_owner_collision_range(o, swept));
         }
         let from = self.position;
         let to = Vec3::new(
@@ -1832,31 +1991,22 @@ impl Projectile {
         );
         let block = w.clip(from, to);
         let end = block.map_or(to, |b| b.0);
-        // ProjectileUtil.getEntityHitResult: boxes inflated by `computeMargin` along the path.
+        // ProjectileUtil.getEntityHitResult: uninflated broad phase, inflated exact clip.
         let margin = self.hit_margin();
-        let mut best: Option<(Who, Vec3, f64)> = None;
-        for (who, b) in w.targets() {
-            if Some(*who) == self.collision_owner() && !self.left_owner {
-                continue;
+        let search_area = self
+            .bounds()
+            .expand_towards(self.velocity)
+            .inflate(Vec3::new(1.0, 1.0, 1.0));
+        let owner = self.collision_owner();
+        let left_owner = self.left_owner;
+        let mut nearest = NearestHit::new();
+        w.visit_targets(|c| {
+            if !left_owner && owner.is_some_and(|o| w.owner_tree_contains(o, c.who)) {
+                return;
             }
-            let inflated = b.inflate(Vec3::new(margin, margin, margin));
-            if let Some(at) = inflated.clip(from, end) {
-                let d = (at.x - from.x).powi(2) + (at.y - from.y).powi(2) + (at.z - from.z).powi(2);
-                if best.is_none_or(|bb| d < bb.2) {
-                    best = Some((*who, at, d));
-                }
-            }
-        }
-        if !self.left_owner {
-            // Leave the owner once no target box (the owner's) contains us.
-            let owner_box = w
-                .targets()
-                .iter()
-                .find(|(who, _)| Some(*who) == self.collision_owner())
-                .map(|(_, b)| *b);
-            self.left_owner = owner_box
-                .is_none_or(|b| !b.inflate(Vec3::new(1.0, 1.0, 1.0)).contains(self.position));
-        }
+            nearest.consider(c, search_area, from, end, margin);
+        });
+        let best = nearest.finish();
         // DragonFireball.onHit does nothing for its own owner (`ownedBy`): the
         // selected hit is not replaced by what lies behind it, nothing happens,
         // and the fireball keeps its motion. AbstractHurtingProjectile.tick
@@ -1864,10 +2014,17 @@ impl Projectile {
         // MISS, so it stops there this tick.
         if impact
             && self.kind == ProjectileKind::DragonFireball
-            && let Some((who, at, _)) = best
+            && let Some((who, at)) = best
             && self.owner == Some(who)
         {
             self.position = at;
+            if !self.left_owner {
+                let swept = self
+                    .bounds()
+                    .expand_towards(self.velocity)
+                    .inflate(Vec3::new(1.0, 1.0, 1.0));
+                self.left_owner = owner.is_none_or(|o| w.outside_owner_collision_range(o, swept));
+            }
             self.touching_water = w.in_water(self.bounds());
             let alive = self.position.y >= w.below_world_y() && self.age < 1200;
             return (alive, Hit::None);
@@ -1877,12 +2034,19 @@ impl Projectile {
         let spit = self.kind == ProjectileKind::LlamaSpit;
         let spit_hit = best
             .filter(|_| impact && spit)
-            .map_or(Hit::None, |(who, at, _)| Hit::Entity { who, at });
+            .map_or(Hit::None, |(who, at)| Hit::Entity { who, at });
         if impact
             && !spit
-            && let Some((who, at, _)) = best
+            && let Some((who, at)) = best
         {
             self.position = at;
+            if !self.left_owner {
+                let swept = self
+                    .bounds()
+                    .expand_towards(self.velocity)
+                    .inflate(Vec3::new(1.0, 1.0, 1.0));
+                self.left_owner = owner.is_none_or(|o| w.outside_owner_collision_range(o, swept));
+            }
             return (false, Hit::Entity { who, at });
         }
         if impact
@@ -1890,6 +2054,13 @@ impl Projectile {
             && let Some((at, pos, face)) = block
         {
             self.position = at;
+            if !self.left_owner {
+                let swept = self
+                    .bounds()
+                    .expand_towards(self.velocity)
+                    .inflate(Vec3::new(1.0, 1.0, 1.0));
+                self.left_owner = owner.is_none_or(|o| w.outside_owner_collision_range(o, swept));
+            }
             return (false, Hit::Block { pos, at, face });
         }
         if self.kind == ProjectileKind::LlamaSpit {
@@ -1909,20 +2080,21 @@ impl Projectile {
             if touches {
                 return (false, Hit::None);
             }
-            self.position = to;
-            // LlamaSpit.getAirDrag is 0.99F, widened before it scales motion.
-            let drag = f64::from(0.99_f32);
-            self.velocity = Vec3::new(
-                self.velocity.x * drag,
-                self.velocity.y * drag - self.get_gravity(),
-                self.velocity.z * drag,
-            );
-            return (
-                self.position.y >= w.below_world_y() && self.age < 6000,
-                spit_hit,
-            );
+            if !defer_spit_motion || spit_hit == Hit::None {
+                self.finish_spit_motion(self.velocity);
+            }
+            return (to.y >= w.below_world_y() && self.age < 6000, spit_hit);
         }
         self.position = to;
+        // ThrowableProjectile.tick and AbstractHurtingProjectile.tick call super.tick()
+        // (checkLeftOwner) after setPos(newPosition).
+        if !self.left_owner {
+            let swept = self
+                .bounds()
+                .expand_towards(self.velocity)
+                .inflate(Vec3::new(1.0, 1.0, 1.0));
+            self.left_owner = owner.is_none_or(|o| w.outside_owner_collision_range(o, swept));
+        }
         // `AbstractHurtingProjectile.tick` (fireballs, dragon fireballs, wither
         // skulls and wind charges: `is_hurting` adds the wind charges) eases
         // towards the motion with `ProjectileUtil.rotateTowardsMovement(this,
@@ -1948,20 +2120,33 @@ impl Projectile {
         };
         self.arrow_damage_with_base(base_damage)
     }
-    /// Finish an arrow hit after enchantments transform its base damage, before
-    /// speed scaling, rounding and the projectile's critical random draw.
-    pub fn arrow_damage_with_base(&mut self, base_damage: f64) -> f32 {
-        let ProjectileKind::Arrow { critical, .. } = self.kind else {
-            return 0.0;
-        };
+    /// `AbstractArrow.onHitEntity` pre-pierce damage: `ceil(clamp(pow * base, 0, i32::MAX))`.
+    pub fn arrow_damage_rounded(&self, base_damage: f64) -> i32 {
         let v = self.velocity;
-        let speed = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
-        let mut damage = (speed * base_damage).clamp(0.0, f64::from(i32::MAX)).ceil() as i32;
+        let speed = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt() as f32;
+        (f64::from(speed) * base_damage)
+            .clamp(0.0, f64::from(i32::MAX))
+            .ceil() as i32
+    }
+    /// `AbstractArrow.onHitEntity` critical bonus draw, run after the pierce budget check.
+    pub fn arrow_apply_crit(&mut self, mut damage: i32) -> f32 {
+        let ProjectileKind::Arrow { critical, .. } = self.kind else {
+            return damage as f32;
+        };
         if critical {
             let bonus = self.random.0.next_int_bound(damage / 2 + 2).unwrap_or(0);
             damage = damage.saturating_add(bonus);
         }
         damage as f32
+    }
+    /// Finish an arrow hit after enchantments transform its base damage, before
+    /// speed scaling, rounding and the projectile's critical random draw.
+    pub fn arrow_damage_with_base(&mut self, base_damage: f64) -> f32 {
+        if !matches!(self.kind, ProjectileKind::Arrow { .. }) {
+            return 0.0;
+        }
+        let damage = self.arrow_damage_rounded(base_damage);
+        self.arrow_apply_crit(damage)
     }
     /// the item a thrown potion or a mod's type is drawn as with its model
     /// (`ThrownItemRenderer`): the potion stack itself, or the type's item.

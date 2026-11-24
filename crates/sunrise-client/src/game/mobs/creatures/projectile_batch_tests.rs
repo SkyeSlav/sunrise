@@ -596,7 +596,7 @@ fn an_arrow_lands_before_its_first_shot_event_at_the_backed_off_position() {
         assert_eq!(
             *observed.game_events.lock().unwrap(),
             [
-                ("land", [2.0, 64.5, 0.5]),
+                ("land", [2.5, 64.5, 0.5]),
                 ("shoot", [2.0 - f64::from(0.05_f32), 64.5, 0.5])
             ],
         );

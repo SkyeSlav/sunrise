@@ -8,7 +8,6 @@ use super::{
     dragon::{Breath, FightPlayer, FightWho},
     item_draw::owner_at,
     living_attributes::AttributeWrite,
-    splash_water::thrown_block_hit,
 };
 use mod_api::{EffectApplicable, EffectTickChange, EntityRef, LivingRef, PlayerFood};
 use sunrise_assets::item_model::DisplayContext;
@@ -28,7 +27,7 @@ use sunrise_client::{
 };
 use sunrise_core::nbt::Tag;
 use sunrise_core::{
-    geometry::{Aabb, Axis, Direction, Vec3},
+    geometry::{Aabb, Direction, Vec3},
     random::{LegacyRandom, RandomSource},
 };
 
@@ -82,6 +81,7 @@ pub(super) struct ThrownPotion {
 /// The player (not one of `skip`, the thrower and who rides with them before
 /// it has left them) whose box, grown by `margin` (`ProjectileUtil.computeMargin`),
 /// holds `p` (`Projectile.canHitEntity`).
+#[cfg(test)]
 fn thrown_player_at<'a>(
     players: &'a [(Who, Aabb)],
     skip: &[Who],
@@ -93,6 +93,7 @@ fn thrown_player_at<'a>(
     })
 }
 /// `ProjectileUtil.computeMargin`: how far the pick box is grown at `age`.
+#[cfg(test)]
 fn thrown_margin(age: u32) -> f64 {
     ((f64::from(age) - 2.0) / 20.0).clamp(0.0, 0.3)
 }
@@ -100,6 +101,7 @@ fn thrown_margin(age: u32) -> f64 {
 /// boxes of the thrower's vehicle tree (`owner.getRootVehicle().getSelfAndPassengers()`,
 /// here `ridden`) is within a block of the potion's (0.25 wide) grown by its
 /// motion; true too when there is no thrower (`ridden` empty).
+#[cfg(test)]
 fn thrown_left_owner(ridden: &[Aabb], position: Vec3, velocity: Vec3) -> bool {
     let h = 0.125;
     let reach = Aabb::new(
@@ -1744,228 +1746,185 @@ impl Game<'_> {
             }
         }
     }
-    /// The players a thrown potion can hit (`Projectile.canHitEntity`): the
-    /// host and the guests, but not a spectator or a dead one.
-    fn thrown_player_targets(&self) -> Vec<(Who, Aabb)> {
-        let mut targets = Vec::new();
-        if let Some(p) = self.player_view()
-            && p.alive
-            && !self.spectator()
-        {
-            targets.push((Who::Player, p.bounds));
-        }
-        targets.extend(self.lan_projectile_targets());
-        targets
-    }
-    /// The thrower's vehicle tree as `Projectile` sees it
-    /// (`owner.getRootVehicle().getSelfAndPassengers()`): the players in it (the
-    /// thrower and who shares their vehicle), the mob that is the vehicle, and
-    /// the boxes of all of them. Until the potion has left it, none can be hit
-    /// (`canHitEntity`: `isPassengerOfSameVehicle`) and any one near keeps it
-    /// from leaving (`isOutsideOwnerCollisionRange`).
-    pub(super) fn thrown_ridden(
-        &self,
-        owner: Option<Who>,
-        players: &[(Who, Aabb)],
-    ) -> (Vec<Who>, Option<u32>, Vec<Aabb>) {
-        let Some(owner) = owner else {
-            return (Vec::new(), None, Vec::new());
-        };
-        let vehicle_of = |who: Who| match who {
-            Who::Player => self.riding,
-            Who::Mob(id) => self
-                .lan
-                .as_ref()
-                .and_then(|h| h.hub.guests.iter().find(|g| g.entity_id as u32 == id))
-                .and_then(|g| g.vehicle),
-        };
-        let vehicle = vehicle_of(owner);
-        let mut who = vec![owner];
-        let mut boxes = Vec::new();
-        for (w, b) in players {
-            if *w == owner || (vehicle.is_some() && vehicle_of(*w) == vehicle) {
-                if *w != owner {
-                    who.push(*w);
-                }
-                boxes.push(*b);
-            }
-        }
-        if let Some(v) = vehicle {
-            if let Some(m) = self.mobs.iter().find(|m| m.id == v) {
-                boxes.push(m.bounds());
-            }
-            if let Some(b) = self.boats.iter().find(|b| b.id == v) {
-                boxes.push(b.bounds());
-            }
-        }
-        (who, vehicle, boxes)
-    }
-    /// `ThrowableProjectile.tick` for the potions in flight: the motion, then
-    /// the first block, mob or player the step meets
-    /// (`ProjectileUtil.getHitResultOnMoveVector`), where the potion splashes
-    /// (`Projectile.onHit`). Its thrower is not met until it has left them
-    /// (`Projectile.leftOwner`, checked before the move like `Projectile.tick`),
-    /// nor anything else in their vehicle tree.
+    /// `ThrowableProjectile.tick` for splash/lingering potions and experience bottles in flight:
+    /// exact `ProjectileUtil.getHitResultOnMoveVector` block clip + entity sweep, live target
+    /// visibility across bottles, vehicle-tree owner check after `setPos`, and Breeze deflection.
     fn tick_thrown_potions(&mut self) {
-        let mut thrown = std::mem::take(&mut self.potions.thrown);
-        let players = if thrown.is_empty() {
-            Vec::new()
-        } else {
-            self.thrown_player_targets()
-        };
-        let mut landed = Vec::new();
-        let mut deflected: Vec<u32> = Vec::new();
+        if self.potions.thrown.is_empty() {
+            return;
+        }
+        let thrown = std::mem::take(&mut self.potions.thrown);
+        let mut kept = Vec::with_capacity(thrown.len());
         // ServerLevel.tick: only entities in entity-ticking chunks tick.
         let ticking = self.entity_ticking_area();
-        thrown.retain_mut(|t| {
+        let below_world = self.world.below_world_y();
+        for mut t in thrown {
             if !ticking(t.position.x.floor() as i32, t.position.z.floor() as i32) {
                 t.previous = t.position;
-                return true;
+                kept.push(t);
+                continue;
             }
             t.age += 1;
-            // Projectile.tick: whether it has left its thrower's vehicle tree,
-            // before it moves.
             let owner = self.shooter_who(t.thrower, t.guest);
-            let (ridden, vehicle, boxes) = self.thrown_ridden(owner, &players);
-            if !t.left_owner {
-                t.left_owner = thrown_left_owner(&boxes, t.position, t.velocity);
-            }
-            let skip: &[Who] = if t.left_owner { &[] } else { &ridden };
             t.previous = t.position;
-            self.thrown_potion_motion(t);
-            let next = Vec3::new(
-                t.position.x + t.velocity.x,
-                t.position.y + t.velocity.y,
-                t.position.z + t.velocity.z,
-            );
-            // Hit a block along the step (sampled), a mob, a player, or fell out
-            // of the world.
-            let margin = thrown_margin(t.age);
-            let steps = 4;
-            let mut hit = None;
-            let mut deflect_stop = false;
-            for i in 1..=steps {
-                let f = f64::from(i) / f64::from(steps);
-                let p = Vec3::new(
-                    t.position.x + t.velocity.x * f,
-                    t.position.y + t.velocity.y * f,
-                    t.position.z + t.velocity.z * f,
-                );
-                let state =
-                    self.world
-                        .block(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
-                let mob = self.mobs.iter().find(|m| {
-                    m.alive()
-                        && (t.left_owner || Some(m.id) != vehicle)
-                        && (m.position.x - p.x).abs() < m.kind.width / 2.0 + 0.125
-                        && (m.position.z - p.z).abs() < m.kind.width / 2.0 + 0.125
-                        && p.y >= m.position.y
-                        && p.y <= m.position.y + m.kind.height
-                });
-                // A player (`canHitEntity`: not the thrower before it has left
-                // them), the box grown by the 0.3 pick margin.
-                let player = thrown_player_at(&players, skip, p, margin);
-                if self.res.facts().get(state).full_collision || mob.is_some() || player.is_some() {
-                    // Projectile.hitTargetOrDeflectSelf: a breeze's deflection
-                    // (`Breeze.deflection`) turns the potion back at half
-                    // speed instead of `onHit`, and it flies on.
-                    if let Some(m) = mob
-                        && m.species() == sunrise_client::mobs::Species::Breeze
+            self.thrown_potion_motion(&mut t);
+            let from = t.position;
+            let to = from.add_vector(t.velocity);
+            let bounds_at = |p: Vec3| {
+                Aabb::new(
+                    p.add_vector(Vec3::new(-0.125, 0.0, -0.125)),
+                    p.add_vector(Vec3::new(0.125, 0.25, 0.125)),
+                )
+            };
+            let query = super::creatures::TargetQuery {
+                include_guests: true,
+                ..Default::default()
+            };
+            let (block_clip, entity_hit) = {
+                use sunrise_client::projectiles::{NearestHit, ProjectileWorld, compute_margin};
+                let live = self.live_proj_world(query, &[]);
+                let block_clip = live.clip(from, to);
+                let entity_end = block_clip.map_or(to, |(at, ..)| at);
+                let search_area = bounds_at(from)
+                    .expand_towards(t.velocity)
+                    .inflate(Vec3::new(1.0, 1.0, 1.0));
+                let margin = compute_margin(t.age as i32);
+                let mut best = NearestHit::new();
+                self.visit_projectile_targets(query, &[], |c| {
+                    if !t.left_owner
+                        && let Some(o) = owner
+                        && self.in_same_vehicle_tree(o, c.who)
                     {
-                        if t.last_deflected_by != Some(m.id) {
-                            // ProjectileDeflection.REVERSE.
-                            let _ = t.random.next_float();
-                            t.velocity = Vec3::new(
-                                t.velocity.x * -0.5,
-                                t.velocity.y * -0.5,
-                                t.velocity.z * -0.5,
-                            );
-                            t.last_deflected_by = Some(m.id);
-                            deflected.push(m.id);
-                        }
-                        // ThrowableProjectile.tick: `setPos(hitResult.getLocation())`
-                        // before the deflection, so it does not step on past the
-                        // breeze this tick.
-                        t.position = p;
-                        deflect_stop = true;
-                        break;
+                        return;
                     }
-                    // A block hit has the face it came in by
-                    // (`onHitBlock`); an entity hit has none.
-                    let block = (mob.is_none() && player.is_none())
-                        .then(|| thrown_block_hit(t.position, p, t.velocity));
-                    let at = mob.map(|m| m.position).or_else(|| {
-                        player.map(|(_, b)| {
-                            let c = b.center();
-                            Vec3::new(c.x, b.min(Axis::Y), c.z)
-                        })
-                    });
-                    hit = Some((p, at, block));
-                    break;
-                }
-            }
-            if let Some((p, mob, block)) = hit {
-                landed.push((
-                    t.id,
-                    t.stack.clone(),
-                    p,
-                    mob,
-                    block,
-                    t.age,
-                    t.owner.clone(),
-                    t.guest,
-                    self.entity_silent(t.id),
-                    t.velocity,
-                ));
-                return false;
-            }
-            if deflect_stop {
-                return t.age < 1200 && t.position.y >= self.world.below_world_y();
-            }
-            t.position = next;
-            let bounds = Aabb::new(
-                next.add_vector(Vec3::new(-0.125, 0.0, -0.125)),
-                next.add_vector(Vec3::new(0.125, 0.25, 0.125)),
+                    best.consider(c, search_area, from, entity_end, margin);
+                });
+                (block_clip, best.finish())
+            };
+            let new_pos = entity_hit
+                .map(|(_, at)| at)
+                .or_else(|| block_clip.map(|(at, ..)| at))
+                .unwrap_or(to);
+            t.position = new_pos;
+            self.entity_powder_snow_particles(
+                t.previous,
+                t.position,
+                bounds_at(t.position),
+                t.velocity,
+                false,
             );
-            self.entity_powder_snow_particles(t.previous, next, bounds, t.velocity, false);
-            t.age < 1200 && t.position.y >= self.world.below_world_y()
-        });
-        self.potions.thrown = thrown;
-        for id in deflected {
-            if let Some(index) = self.mobs.iter().position(|m| m.id == id) {
-                self.play_mob_bound_sound(
-                    index,
-                    "minecraft:entity.breeze.deflect",
-                    5,
-                    1.0,
-                    1.0,
-                    false,
+            // ThrowableProjectile.tick calls super.tick() (`checkLeftOwner`) after `setPos`.
+            if !t.left_owner {
+                let swept = bounds_at(t.position)
+                    .expand_towards(t.velocity)
+                    .inflate(Vec3::new(1.0, 1.0, 1.0));
+                t.left_owner = owner.is_none_or(|o| self.outside_owner_collision_range(o, swept));
+            }
+            if let Some((who, hit_at)) = entity_hit {
+                // Projectile.hitTargetOrDeflectSelf: Breeze deflects without splashing.
+                if let Who::Mob(id) = who
+                    && let Some(index) = self.mobs.iter().position(|m| {
+                        m.id == id
+                            && m.alive()
+                            && m.species() == sunrise_client::mobs::Species::Breeze
+                    })
+                {
+                    if t.last_deflected_by != Some(id) {
+                        let _ = t.random.next_float();
+                        t.velocity = t.velocity.scale(-0.5);
+                        t.last_deflected_by = Some(id);
+                        self.play_mob_bound_sound(
+                            index,
+                            "minecraft:entity.breeze.deflect",
+                            5,
+                            1.0,
+                            1.0,
+                            false,
+                        );
+                    }
+                    if t.age < 1200 && t.position.y >= below_world {
+                        kept.push(t);
+                    }
+                    continue;
+                }
+                if let Who::Mob(id) = who {
+                    self.redirect_projectile(id, owner, None, t.guest, None);
+                }
+                let target_pos = match who {
+                    Who::Player => self.player.as_ref().map(|p| p.position),
+                    Who::Mob(id) => self
+                        .mobs
+                        .iter()
+                        .find(|m| m.id == id)
+                        .map(|m| m.position)
+                        .or_else(|| {
+                            self.live_target_bounds(who).map(|b| {
+                                let c = b.center();
+                                Vec3::new(c.x, b.min_position().y, c.z)
+                            })
+                        }),
+                };
+                let thrower = t.owner.is_some().then_some(Who::Player);
+                let silent = self.entity_silent(t.id);
+                let item = t.stack.item.to_string();
+                let potion_owner = PotionOwner {
+                    player: t.owner.is_some(),
+                    name: t.owner,
+                    attacker: None,
+                    guest: t.guest,
+                };
+                self.splash(
+                    &t.stack,
+                    hit_at,
+                    target_pos,
+                    None,
+                    t.age,
+                    &potion_owner,
+                    silent,
+                    t.velocity,
                 );
+                self.projectile_landed_event(t.id, thrower, [hit_at.x, hit_at.y, hit_at.z]);
+                if item != "minecraft:experience_bottle" {
+                    self.native_potion_splash(&item, [hit_at.x, hit_at.y, hit_at.z]);
+                }
+                continue;
+            }
+            if let Some((hit_at, pos, face)) = block_clip {
+                let dir = Direction::approximate_nearest(Vec3::new(
+                    f64::from(face[0]),
+                    f64::from(face[1]),
+                    f64::from(face[2]),
+                ));
+                let thrower = t.owner.is_some().then_some(Who::Player);
+                let silent = self.entity_silent(t.id);
+                let item = t.stack.item.to_string();
+                let potion_owner = PotionOwner {
+                    player: t.owner.is_some(),
+                    name: t.owner,
+                    attacker: None,
+                    guest: t.guest,
+                };
+                self.splash(
+                    &t.stack,
+                    hit_at,
+                    None,
+                    Some((pos, dir)),
+                    t.age,
+                    &potion_owner,
+                    silent,
+                    t.velocity,
+                );
+                self.projectile_block_landed_event(t.id, thrower, pos);
+                if item != "minecraft:experience_bottle" {
+                    self.native_potion_splash(&item, [hit_at.x, hit_at.y, hit_at.z]);
+                }
+                continue;
+            }
+            if t.age < 1200 && t.position.y >= below_world {
+                kept.push(t);
             }
         }
-        for (id, stack, at, mob, block, age, owner, guest, silent, motion) in landed {
-            // Projectile.onHit (super.onHit of AbstractThrownPotion): a block
-            // is heard at its centre, an entity at the hit.
-            let heard = if mob.is_some() {
-                [at.x, at.y, at.z]
-            } else {
-                [at.x.floor() + 0.5, at.y.floor() + 0.5, at.z.floor() + 0.5]
-            };
-            let thrower = owner.is_some().then_some(Who::Player);
-            self.projectile_landed_event(id, thrower, heard);
-            let item = stack.item.to_string();
-            // A potion a dispenser threw has nobody to name.
-            let owner = PotionOwner {
-                player: owner.is_some(),
-                name: owner,
-                attacker: None,
-                guest,
-            };
-            self.splash(&stack, at, mob, block, age, &owner, silent, motion);
-            if item != "minecraft:experience_bottle" {
-                self.native_potion_splash(&item, [at.x, at.y, at.z]);
-            }
-        }
+        self.potions.thrown.splice(0..0, kept);
     }
     /// `AreaEffectCloud.readAdditionalSaveData`: loaded clouds join the same
     /// simulation as lingering potions, with their own timing and potion data.
@@ -2284,7 +2243,7 @@ impl Game<'_> {
             ))
             .fluid
             == sunrise_client::blocks::Fluid::Water;
-        let inertia = if water { 0.8 } else { 0.99 };
+        let inertia = f64::from(if water { 0.8_f32 } else { 0.99_f32 });
         t.velocity = Vec3::new(
             t.velocity.x * inertia,
             (t.velocity.y - gravity) * inertia,

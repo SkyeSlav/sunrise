@@ -405,8 +405,7 @@ fn the_off_walk_movers_fire_too() {
                 "the dragon is an off-walk mover"
             );
             log.lock().unwrap().clear();
-            // Overworld: no fight, so the fight tick runs `aiStep` directly.
-            game.tick_fight();
+            game.tick_dragon();
             let heard = std::mem::take(&mut *log.lock().unwrap());
             assert!(
                 heard.iter().any(|(kind, cause)| {

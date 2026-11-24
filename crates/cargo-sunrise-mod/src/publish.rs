@@ -509,12 +509,14 @@ pub fn run(entry_point: mod_surface::child::ChildEntry, args: &[String]) -> Resu
         format!("{e}: build a regular .smod within the registry's size limit with `cargo sunrise-mod build` and sign it again if needed")
     })?;
     let append = listed.is_some();
-    let check = if append {
-        crate::check::check_reviewed_source
-    } else {
-        crate::check::check
-    };
-    let report = check(&package, kind.clone(), key, signature.as_deref()).map_err(|e| {
+    let report = crate::registry::check_legacy_package(
+        &package,
+        kind.clone(),
+        key,
+        signature.as_deref(),
+        !append,
+    )
+    .map_err(|e| {
         let advice = if append {
             "supply the original signed source file"
         } else {
@@ -768,27 +770,6 @@ pub fn run(entry_point: mod_surface::child::ChildEntry, args: &[String]) -> Resu
         for r in &remaining {
             println!("  - {r}");
         }
-    }
-    if !append {
-        // Prefix the package path so even --out values starting with '-' are positional.
-        // Use single-quoted arguments for the POSIX shell (PowerShell on Windows).
-        let quote = |arg: &str| {
-            let escape = if cfg!(windows) { "''" } else { "'\\''" };
-            format!("'{}'", arg.replace('\'', escape))
-        };
-        let packaged = root.join(&out).join(&file);
-        let signing = match (&o.key, &o.signature) {
-            (Some(key), Some(signature)) => format!(
-                " --key {} --signature {}",
-                quote(key),
-                quote(&signature.to_string_lossy()),
-            ),
-            _ => String::new(),
-        };
-        println!(
-            "\nCheck the new file locally (registry CI checks the whole checkout):\n  cargo sunrise-mod check {}{signing}",
-            quote(&packaged.to_string_lossy()),
-        );
     }
     println!("\nPull request:\n\n{body}");
     Ok(())

@@ -117,6 +117,8 @@ pub(super) struct Boat {
     pub items: Vec<Option<ItemStack>>,
     /// `AbstractBoat.leashData`: who holds its lead (`boat_leads.rs`).
     pub leash: Option<Holder>,
+    /// Entity id of the specific leash knot instance when `leash == Some(Holder::Knot(_))`.
+    pub leash_knot_id: Option<u32>,
     /// The player a `Holder::Player` lead is tied to (their UUID).
     pub leash_player: Option<[i32; 4]>,
     /// A holder read from a save that is not in the world yet.
@@ -292,6 +294,7 @@ impl Boat {
             chest: false,
             items: Vec::new(),
             leash: None,
+            leash_knot_id: None,
             leash_player: None,
             leash_pending: None,
             leash_spin: 0.0,

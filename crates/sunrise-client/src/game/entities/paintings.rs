@@ -262,7 +262,17 @@ impl Game<'_> {
         };
         // BlockAttachedEntity.kill, before dropItem.
         self.entity_killed_event_by(at, source);
-        self.drop_painting(p, at, by_player);
+        let creative = match source {
+            Some(super::commands::Target::Player) => self.creative,
+            Some(super::commands::Target::Guest(conn)) if self.lan_acting == Some(conn) => {
+                self.creative
+            }
+            Some(super::commands::Target::Guest(conn)) => {
+                self.command_guest(conn).is_some_and(|g| g.creative())
+            }
+            _ => by_player && self.creative,
+        };
+        self.drop_painting(p, at, creative);
         true
     }
     /// `BlockAttachedEntity.tick`: a painting whose `survives()` failed is
@@ -293,9 +303,8 @@ impl Game<'_> {
         self.world.modified.insert((p.pos[0] >> 4, p.pos[2] >> 4));
         Some((p, at))
     }
-    /// `Painting.dropItem`: the break sound, then the item unless drops are off
-    /// or the player who broke it has infinite materials.
-    fn drop_painting(&mut self, p: Painting, at: [f64; 3], by_player: bool) {
+    /// `Painting.dropItem`: break sound, then item unless drops off or creative.
+    fn drop_painting(&mut self, p: Painting, at: [f64; 3], creative: bool) {
         if !self
             .ui
             .rules
@@ -305,7 +314,7 @@ impl Game<'_> {
         }
         self.audio
             .play("minecraft:entity.painting.break", Some(at), 1.0, 1.0);
-        if by_player && self.creative {
+        if creative {
             return;
         }
         let stack = ItemStack {

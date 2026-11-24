@@ -889,20 +889,19 @@ impl Game<'_> {
             self.creative,
             false,
             Some(super::commands::Target::Player),
+            "minecraft:player_attack",
+            attacker as u32,
         )
     }
-    /// The end of `ArmorStand.hurtServer` for a source in
-    /// `#can_break_armor_stand` or `#always_kills_armor_stands`, which returns
-    /// true: a creative causing player breaks the stand at once; otherwise the
-    /// first hit (`always_kills` skips it) wobbles it and posts `entity_damage`,
-    /// and a second hit within five ticks breaks it (`brokenByPlayer`). `by` is
-    /// the causing entity the game events are attributed to.
+    /// The end of `ArmorStand.hurtServer` for `#can_break_armor_stand` or `#always_kills_armor_stands`.
     fn break_armor_stand_by_hit(
         &mut self,
         i: usize,
         creative: bool,
         always_kills: bool,
         by: Option<super::commands::Target>,
+        damage_type: &str,
+        causing_id: u32,
     ) -> bool {
         let time = self.world.game_time;
         let at = self.armor_stands[i].position;
@@ -922,8 +921,7 @@ impl Game<'_> {
             return true;
         }
         if time - self.armor_stands[i].last_hit > 5 && !always_kills {
-            // First hit: entity event 32, the wobble and the hit sound, then
-            // gameEvent(ENTITY_DAMAGE, the causing entity).
+            // First hit: entity event 32, the wobble and the hit sound, then entity_damage.
             self.audio
                 .play("minecraft:entity.armor_stand.hit", Some(at), 0.3, 1.0);
             self.stand_game_event("minecraft:entity_damage", at, by);
@@ -944,11 +942,7 @@ impl Game<'_> {
             game.spawn_item(stand, center, [0.0; 3], 10);
             game.audio
                 .play("minecraft:entity.armor_stand.break", Some(at), 1.0, 1.0);
-            game.armor_stand_death_drops(
-                &a,
-                "minecraft:player_attack",
-                game.own_entity_id() as u32,
-            );
+            game.armor_stand_death_drops(&a, damage_type, causing_id);
             for stack in a.equipment.into_iter().flatten() {
                 let r = &mut game.world.random;
                 let v = [
@@ -1179,6 +1173,7 @@ impl Game<'_> {
             // own doPush is empty; only this shove runs.
             self.push_rideable_minecarts(i);
             let id = self.armor_stands[i].id;
+            let prev_fire = self.armor_stands[i].fire_ticks;
             let saved = ["minecraft:on_fire", "minecraft:in_fire"]
                 .map(|damage| self.saved_refuses_damage(id, damage, false));
             let tags = world_items!(self);
@@ -1216,6 +1211,12 @@ impl Game<'_> {
                 },
             ) {
                 dead.push((id, damage_type));
+            }
+            if self.armor_stands[i].fire_ticks > 0
+                && self.armor_stands[i].fire_ticks >= prev_fire
+                && let Some(sunrise_core::nbt::Tag::Compound(map)) = self.persist.raw.get_mut(&id)
+            {
+                map.remove(&"TicksFrozen".into());
             }
             let (id, from, to) = section_step;
             self.entity_section_step(id, [from.x, from.y, from.z], [to.x, to.y, to.z]);
@@ -1484,10 +1485,24 @@ impl Game<'_> {
         damage_type: &str,
         causing: Option<super::commands::Target>,
     ) -> bool {
+        let direct = causing
+            .and_then(|target| self.network_entity_id(target))
+            .unwrap_or(0) as u32;
+        self.hurt_armor_stand(id, damage_type, causing, direct, None)
+    }
+    /// `ArmorStand.hurtServer`: shared damage entry for commands and projectiles.
+    pub(super) fn hurt_armor_stand(
+        &mut self,
+        id: u32,
+        damage_type: &str,
+        causing: Option<super::commands::Target>,
+        direct: u32,
+        position: Option<[f64; 3]>,
+    ) -> bool {
         use super::commands::Target;
-        let Some(i) = self.armor_stands.iter().position(|a| a.id == id) else {
+        if !self.armor_stands.iter().any(|a| a.id == id) {
             return false;
-        };
+        }
         let Some(kind) = self.health_resources.damage.id(damage_type) else {
             return false;
         };
@@ -1510,23 +1525,37 @@ impl Game<'_> {
             Some(Target::Guest(conn)) => self.command_guest(conn).is_some_and(|g| g.creative()),
             _ => false,
         };
-        let invulnerable = self
-            .persist
-            .raw
-            .get(&id)
-            .is_some_and(|tag| sunrise_client::entity_nbt::flag(tag, "Invulnerable"));
-        // Entity.isInvulnerableTo: the flag, then EnchantmentHelper.isImmuneToDamage.
+        let causing_id = causing
+            .and_then(|target| self.network_entity_id(target))
+            .unwrap_or(0) as u32;
+        let invulnerable = self.saved_refuses_damage(id, damage_type, creative);
+        let source = sunrise_client::health::HurtSource {
+            damage_type,
+            causing: causing_id as i32,
+            direct: direct as i32,
+            position,
+        };
+        if super::entity::damage_level_of!(self, self.combat.attack(), no_push, None)
+            .invulnerability_check(
+                sunrise_client::health::Hurting::ArmorStand(id as i32, source),
+                invulnerable,
+            )
+        {
+            return false;
+        }
+        // Re-locate after invulnerability hooks may have removed or moved the stand.
+        let Some(i) = self.armor_stands.iter().position(|a| a.id == id) else {
+            return false;
+        };
         let a = &self.armor_stands[i];
-        if (invulnerable && !creative)
-            || (a.mod_fire_immune && tagged(self, "minecraft:is_fire"))
+        if (a.mod_fire_immune && tagged(self, "minecraft:is_fire"))
             || a.invisible
             || a.marker
             || self.stand_immune_to_damage(i, damage_type, causing)
         {
             return false;
         }
-        // ArmorStand.hurtServer attributes its game events to the source
-        // entity: the player, a LAN guest or the mob.
+        // ArmorStand.hurtServer attributes its game events to the source entity.
         let by = match causing {
             Some(Target::Player | Target::Guest(_) | Target::Mob(_)) => causing,
             _ => None,
@@ -1536,9 +1565,6 @@ impl Game<'_> {
             tagged(self, "minecraft:ignites_armor_stands"),
             tagged(self, "minecraft:burns_armor_stands"),
         );
-        let causing_id = causing
-            .and_then(|target| self.network_entity_id(target))
-            .unwrap_or(0) as u32;
         let (breaks, always_kills) = (
             tagged(self, "minecraft:can_break_armor_stand"),
             tagged(self, "minecraft:always_kills_armor_stands"),
@@ -1554,8 +1580,7 @@ impl Game<'_> {
             if self.armor_stands[i].is_on_fire() {
                 self.cause_stand_damage(i, 0.15, damage_type, causing_id);
             } else {
-                // igniteForSeconds(5.0f): at least 100 ticks, and
-                // Entity.igniteForTicks calls clearFreeze.
+                // igniteForSeconds(5.0f): at least 100 ticks, and clearFreeze.
                 let a = &mut self.armor_stands[i];
                 a.fire_ticks = a.fire_ticks.max(100);
                 if let Some(sunrise_core::nbt::Tag::Compound(map)) = self.persist.raw.get_mut(&id) {
@@ -1582,7 +1607,7 @@ impl Game<'_> {
         if !may_build {
             return false;
         }
-        self.break_armor_stand_by_hit(i, creative, always_kills, by)
+        self.break_armor_stand_by_hit(i, creative, always_kills, by, damage_type, causing_id)
     }
     /// `EnchantmentHelper.isImmuneToDamage` for the stand at `i`: whether an
     /// enchantment on an active equipment slot has a `minecraft:damage_immunity`

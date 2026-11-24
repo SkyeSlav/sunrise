@@ -1062,5 +1062,101 @@
     "path": "crates/sunrise-client/src/game/entities/text_displays/display_parity_tests.rs",
     "reason": "run by tools/test_displays_parity.py",
     "rationale": "Parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_displays_parity.py records the vanilla 26.3 display witness into .local and runs this test against it through SUNRISE_DISPLAY_PARITY_WITNESS, so no recorded vanilla data is committed."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::creatures::projectile_targets_tests::witness_armor_stand_targets",
+    "path": "crates/sunrise-client/src/game/mobs/creatures/projectile_targets_tests.rs",
+    "reason": "run by tools/test_projectile_targets_parity.py",
+    "rationale": "Parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_projectile_targets_parity.py records the vanilla 26.3 projectile witnesses into .local and runs this test against them through SUNRISE_PROJECTILE_WITNESS_DIR, so no recorded vanilla data is committed."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::creatures::projectile_targets_tests::witness_painting_and_cushion_targets",
+    "path": "crates/sunrise-client/src/game/mobs/creatures/projectile_targets_tests.rs",
+    "reason": "run by tools/test_projectile_targets_parity.py",
+    "rationale": "Parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_projectile_targets_parity.py records the vanilla 26.3 projectile witnesses into .local and runs this test against them through SUNRISE_PROJECTILE_WITNESS_DIR, so no recorded vanilla data is committed."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::creatures::projectile_targets_tests::witness_item_frame_targets",
+    "path": "crates/sunrise-client/src/game/mobs/creatures/projectile_targets_tests.rs",
+    "reason": "run by tools/test_projectile_targets_parity.py",
+    "rationale": "Parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_projectile_targets_parity.py records the vanilla 26.3 projectile witnesses into .local and runs this test against them through SUNRISE_PROJECTILE_WITNESS_DIR, so no recorded vanilla data is committed."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::creatures::projectile_targets_tests::witness_leash_knot_targets",
+    "path": "crates/sunrise-client/src/game/mobs/creatures/projectile_targets_tests.rs",
+    "reason": "run by tools/test_projectile_targets_parity.py",
+    "rationale": "Parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_projectile_targets_parity.py records the vanilla 26.3 projectile witnesses into .local and runs this test against them through SUNRISE_PROJECTILE_WITNESS_DIR, so no recorded vanilla data is committed."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::creatures::projectile_targets_tests::witness_falling_block_targets",
+    "path": "crates/sunrise-client/src/game/mobs/creatures/projectile_targets_tests.rs",
+    "reason": "run by tools/test_projectile_targets_parity.py",
+    "rationale": "Parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_projectile_targets_parity.py records the vanilla 26.3 projectile witnesses into .local and runs this test against them through SUNRISE_PROJECTILE_WITNESS_DIR, so no recorded vanilla data is committed."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::fishing::fishing_targets_tests::witness_fishing_bobber_targets",
+    "path": "crates/sunrise-client/src/game/items/fishing_tests/fishing_targets_tests.rs",
+    "reason": "run by tools/test_projectile_targets_parity.py",
+    "rationale": "Parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_projectile_targets_parity.py records the vanilla 26.3 projectile witnesses into .local and runs this test against them through SUNRISE_PROJECTILE_WITNESS_DIR, so no recorded vanilla data is committed."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::creatures::projectiles_120_124_tests::witness_spectator_player_120",
+    "path": "crates/sunrise-client/src/game/mobs/creatures/projectiles_120_124_tests.rs",
+    "reason": "run by tools/test_projectile_targets_parity.py",
+    "rationale": "Parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_projectile_targets_parity.py records the vanilla 26.3 projectile witnesses into .local and runs this test against them through SUNRISE_PROJECTILE_WITNESS_DIR, so no recorded vanilla data is committed."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::creatures::projectiles_120_124_tests::witness_wind_charge_end_crystal_121",
+    "path": "crates/sunrise-client/src/game/mobs/creatures/projectiles_120_124_tests.rs",
+    "reason": "run by tools/test_projectile_targets_parity.py",
+    "rationale": "Parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_projectile_targets_parity.py records the vanilla 26.3 projectile witnesses into .local and runs this test against them through SUNRISE_PROJECTILE_WITNESS_DIR, so no recorded vanilla data is committed."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::creatures::projectiles_120_124_tests::witness_trident_enderman_dodge_122",
+    "path": "crates/sunrise-client/src/game/mobs/creatures/projectiles_120_124_tests.rs",
+    "reason": "run by tools/test_projectile_targets_parity.py",
+    "rationale": "Parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_projectile_targets_parity.py records the vanilla 26.3 projectile witnesses into .local and runs this test against them through SUNRISE_PROJECTILE_WITNESS_DIR, so no recorded vanilla data is committed."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::creatures::projectiles_120_124_tests::witness_piercing_arrow_multihit_123",
+    "path": "crates/sunrise-client/src/game/mobs/creatures/projectiles_120_124_tests.rs",
+    "reason": "run by tools/test_projectile_targets_parity.py",
+    "rationale": "Parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_projectile_targets_parity.py records the vanilla 26.3 projectile witnesses into .local and runs this test against them through SUNRISE_PROJECTILE_WITNESS_DIR, so no recorded vanilla data is committed."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::creatures::projectiles_120_124_tests::witness_firework_rocket_targets_124",
+    "path": "crates/sunrise-client/src/game/mobs/creatures/projectiles_120_124_tests.rs",
+    "reason": "run by tools/test_projectile_targets_parity.py",
+    "rationale": "Parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_projectile_targets_parity.py records the vanilla 26.3 projectile witnesses into .local and runs this test against them through SUNRISE_PROJECTILE_WITNESS_DIR, so no recorded vanilla data is committed."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::creatures::projectiles_120_124_tests::witness_review_round1_regressions",
+    "path": "crates/sunrise-client/src/game/mobs/creatures/projectiles_120_124_tests.rs",
+    "reason": "run by tools/test_projectile_targets_parity.py",
+    "rationale": "Parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_projectile_targets_parity.py records the vanilla 26.3 projectile witnesses into .local and runs this test against them through SUNRISE_PROJECTILE_WITNESS_DIR, so no recorded vanilla data is committed."
   }
 ]

@@ -36,7 +36,9 @@
     "www.apple.com": "a plist DTD",
     "239.255.255.250": "the UPnP (SSDP) multicast group on the local network",
     "sunrise.app": "the macOS app bundle's name",
-    "sunrise.mods.dev": "a translation key"
+    "sunrise.mods.dev": "a translation key",
+    "crates/sunrise-attestation/src/lib.rs github.com": "Fulcio repository and workflow URI prefix matched locally, never contacted",
+    "crates/sunrise-attestation/src/lib.rs token.actions.githubusercontent.com": "OIDC issuer identity matched in a certificate, never contacted"
   },
   "allowed": [
     "crates/cargo-sunrise-mod/src/registry.rs horizon-rust.github.io",

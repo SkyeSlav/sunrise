@@ -312,6 +312,16 @@ impl Game<'_> {
             },
         );
         self.creatures.wind_source = None;
+        // Projectile.onHit posts PROJECTILE_LAND after onHitEntity/onHitBlock (not above top).
+        match hit {
+            Hit::Entity { at, .. } => {
+                self.projectile_landed_event(p.id, p.owner, [at.x, at.y, at.z]);
+            }
+            Hit::Block { pos, face, .. } if face != [0; 3] => {
+                self.projectile_block_landed_event(p.id, p.owner, pos);
+            }
+            _ => {}
+        }
         burst
     }
     /// The boats and minecarts of this tick's projectile pass.
@@ -346,18 +356,12 @@ impl Game<'_> {
     /// were all found first, so the saved charge ticks again now, without the
     /// broken vehicle. Leave publication and handling to the caller.
     pub(super) fn broken_vehicle_retick(&self, mut again: Projectile) -> (Projectile, bool, Hit) {
-        let mut targets = self.projectile_targets();
-        if again.owner != Some(Who::Player) || super::lan_pvp::meets_players(&again.kind) {
-            targets.extend(self.lan_projectile_targets());
-        }
-        let border = Some(self.border.bounds());
+        let include_guests =
+            again.owner != Some(Who::Player) || super::lan_pvp::meets_players(&again.kind);
+        let query = super::creatures::TargetQuery::for_projectile(&again, include_guests);
         let (keep, hit) = {
-            let w = self.mob_world_base(&[]);
-            again.tick(&super::creatures::ProjWorld {
-                w: &w,
-                targets: &targets,
-                border,
-            })
+            let live = self.live_proj_world(query, &[]);
+            again.tick(&live)
         };
         // The first run of this tick already gave these.
         again.take_shoot_event();
@@ -380,19 +384,27 @@ impl Game<'_> {
             // not hit (`AbstractWindCharge.canHitEntity`).
             Who::Mob(id) if id >= super::dragon::SPECIAL => {
                 if id < super::dragon::SPECIAL + 8 {
-                    self.hit_special(
+                    let owner = self.resolved_projectile_owner(p.owner, p.guest);
+                    self.hit_special_full(
                         id,
                         1.0,
-                        p.owner == Some(Who::Player),
+                        owner,
+                        p.guest,
                         sunrise_client::mobs::DamageKind::WindCharge,
-                        Some(p),
+                        Some("minecraft:wind_charge"),
+                        Some(super::dragon::DirectHit::from_projectile(p)),
                     );
                 }
             }
-            // A boat or a minecart (`VehicleEntity.hurtServer`): the point of
-            // damage shakes it, and the fifth one in a row breaks it.
+            // Non-mob pickable target (stand, painting, frame, knot, cushion, vehicle, falling block).
             Who::Mob(id) if !self.mobs.iter().any(|m| m.id == id) => {
-                self.hurt_vehicle(p, id, 1.0);
+                let info = super::creatures::ProjectileHitInfo::from_projectile(
+                    p,
+                    "minecraft:wind_charge",
+                    1.0,
+                    None,
+                );
+                let _ = self.projectile_hurts_non_mob(&info, id);
             }
             Who::Mob(id) => {
                 // AbstractWindCharge.onHitEntity: `damageSources().windCharge`

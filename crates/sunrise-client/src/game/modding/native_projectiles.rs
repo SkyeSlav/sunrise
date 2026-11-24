@@ -4,11 +4,7 @@
 //! projectile whose impact a mod canceled flies the tick again from where it was,
 //! through whatever it hit.
 use super::{
-    Game,
-    commands::Target,
-    creatures::ProjWorld,
-    dragon::{CRYSTAL_IDS, SPECIAL},
-    lan_pvp::meets_players,
+    Game, commands::Target, creatures::TargetQuery, dragon::SPECIAL, lan_pvp::meets_players,
     native_hooks::mob_kind,
 };
 use std::ops::Range;
@@ -218,15 +214,15 @@ impl Game<'_> {
     ) -> bool {
         let owner = self.native_thrower(guest);
         let (entity, entity_kind, block, face, at) = match hit {
-            Hit::Entity {
-                who: Who::Mob(id),
-                at,
-            } => {
-                let (entity, kind) = self.native_impact_entity(id);
+            Hit::Entity { who, at } => {
+                let (entity, kind) = match who {
+                    Who::Mob(id) => self.native_impact_entity(id),
+                    Who::Player => (self.own_entity_id() as u32, "minecraft:player".into()),
+                };
                 (Some(entity), kind, [0; 3], [0; 3], at)
             }
             Hit::Block { pos, face, at } => (None, String::new(), pos, face, at),
-            _ => return false,
+            Hit::None => return false,
         };
         let dimension = self.dim.id();
         let mut canceled = false;
@@ -246,42 +242,27 @@ impl Game<'_> {
     }
 
     /// The entity id a projectile's hit on the reserved or ordinary `id` stands for: a dragon
-    /// part is the dragon, an End crystal its own id. Allocates nothing.
+    /// part is the dragon, every other entity (including End crystals) uses its own id.
     fn native_impact_entity_id(&self, id: u32) -> u32 {
         if id < SPECIAL {
             id
-        } else if id < CRYSTAL_IDS {
-            self.dragon.as_ref().map_or(0, |d| d.id)
         } else {
-            self.crystals
-                .get((id - CRYSTAL_IDS) as usize)
-                .map_or(0, |c| c.id)
+            self.dragon.as_ref().map_or(0, |d| d.id)
         }
     }
 
     /// The entity id and type a projectile's hit on the reserved or ordinary
-    /// `id` stands for: a dragon part is the dragon, an End crystal its own id.
+    /// `id` stands for: a dragon part is the dragon, every other entity uses its own id.
     fn native_impact_entity(&self, id: u32) -> (u32, String) {
         let entity = self.native_impact_entity_id(id);
         if id >= SPECIAL {
-            let kind = if id < CRYSTAL_IDS {
-                "minecraft:ender_dragon"
-            } else {
-                "minecraft:end_crystal"
-            };
-            return (entity, kind.into());
+            return (entity, "minecraft:ender_dragon".into());
+        }
+        if let Some(kind) = self.entity_kind_for_who(Who::Mob(id)) {
+            return (id, kind);
         }
         if let Some(mob) = self.mobs.iter().find(|m| m.id == id) {
             return (id, mob_kind(mob));
-        }
-        if let Some(cart) = self.carts.iter().find(|c| c.id == id) {
-            return (id, cart.kind.id().into());
-        }
-        if let Some(boat) = self.boats.iter().find(|b| b.id == id) {
-            return (id, boat.entity_type_name().into());
-        }
-        if self.lan_guest_entities().iter().any(|&(_, e)| e == id) {
-            return (id, "minecraft:player".into());
         }
         (id, String::new())
     }
@@ -347,7 +328,7 @@ impl Game<'_> {
         self.removal_pending(&target) || self.persist.removals.contains(&target)
     }
 
-    fn native_projectile_impact_canceled(&mut self, p: &Projectile, hit: Hit) -> bool {
+    pub(super) fn native_projectile_impact_canceled(&mut self, p: &Projectile, hit: Hit) -> bool {
         let (entity, entity_kind, block, face, at) = match hit {
             Hit::Block { pos, at, face } => (None, String::new(), pos, face, at),
             Hit::Entity { who, at } => {
@@ -658,21 +639,16 @@ impl Game<'_> {
         if shooter.is_some() {
             p.owner = shooter;
         }
-        let mut targets = self.projectile_targets();
-        if mob_shot || pvp {
-            targets.extend(self.lan_projectile_targets());
-        }
+        let include_guests = mob_shot || pvp;
+        let query = TargetQuery::for_projectile(&p, include_guests);
+        let live = self.live_proj_world(query, &[]);
         let rain = self.arrow_rain();
         let scene = self.arrow_scene(&rain);
         let (keep, _) = if p.arrow.is_some() {
-            sunrise_client::arrows::tick_through(&mut p, &scene, &targets)
+            let mut scratch = sunrise_client::arrows::ArrowHitScratch::new();
+            sunrise_client::arrows::tick_through_live(&mut p, &scene, &live, &mut scratch)
         } else {
-            let w = self.mob_world_base(&[]);
-            p.tick_through(&ProjWorld {
-                w: &w,
-                targets: &targets,
-                border: Some(self.border.bounds()),
-            })
+            p.tick_through(&live)
         };
         if shooter.is_some() {
             p.owner = Some(Who::Player);

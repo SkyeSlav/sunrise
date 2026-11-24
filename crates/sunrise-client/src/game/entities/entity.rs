@@ -194,6 +194,10 @@ pub(super) trait Entity: EntityRules {
     fn is_pickable(&self) -> bool {
         false
     }
+    /// `Entity.canBeHitByProjectile`: alive and pickable.
+    fn can_be_hit_by_projectile(&self) -> bool {
+        self.is_alive() && self.is_pickable()
+    }
     /// `instanceof LivingEntity`.
     fn is_living(&self) -> bool {
         false

@@ -660,16 +660,9 @@ impl Game<'_> {
     pub(super) fn tick_end(&mut self) -> Result<()> {
         self.end.gateway_cooldown = self.end.gateway_cooldown.saturating_sub(1);
         if self.dimension_type().has_ender_dragon_fight {
-            self.tick_fight();
             // The fireballs fly with the other projectiles; the breath
             // clouds tick here, once.
             self.tick_breath();
-        } else {
-            // `/summon ender_dragon` outside the End: no fight, but the dragon flies.
-            self.tick_fight();
-        }
-        if let Some((id, from, to)) = self.dragon.as_ref().map(|d| (d.id, d.previous, d.position)) {
-            self.entity_section_step(id, [from.x, from.y, from.z], [to.x, to.y, to.z]);
         }
         // The spikes' crystals (placed above) join before they light a fire:
         // a mod that cancels one keeps its fire out too.

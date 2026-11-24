@@ -241,6 +241,7 @@ pub(super) struct Parked {
     pub(super) mobs: sunrise_client::join_seq::JoinList<Mob>,
     /// The entity ids of the level's fence knots (`knot_ids`).
     knot_ids: HashMap<[i32; 3], u32>,
+    broken_knots: Vec<[i32; 3]>,
     knots: sunrise_client::join_seq::JoinList<super::leads::Knot>,
     projectiles: sunrise_client::join_seq::JoinList<sunrise_client::projectiles::Projectile, false>,
     dropped: sunrise_client::join_seq::JoinList<ItemEntity>,
@@ -941,6 +942,7 @@ impl Game<'_> {
             hoppers: HashMap::new(),
             mobs: Default::default(),
             knot_ids: HashMap::new(),
+            broken_knots: Vec::new(),
             knots: Default::default(),
             projectiles: Default::default(),
             dropped: Default::default(),
@@ -1142,6 +1144,7 @@ impl Game<'_> {
         swap(&mut self.hoppers, &mut p.hoppers);
         swap(&mut self.mobs, &mut p.mobs);
         swap(&mut self.knot_ids, &mut p.knot_ids);
+        swap(&mut self.broken_knots, &mut p.broken_knots);
         swap(&mut self.resident_entities.knots, &mut p.knots);
         swap(&mut self.resident_entities.general, &mut p.general);
         swap(&mut self.creatures.projectiles, &mut p.projectiles);

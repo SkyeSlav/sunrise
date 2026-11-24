@@ -31,8 +31,8 @@ const COMMANDS: &[Command] = &[
     Command {
         name: "check",
         everyday: true,
-        usage: "check [--uses] [--with <path>]… | check <file> [--kind <kind>] [--key <public key> --signature <file.minisig>] [--json]",
-        summary: "Checks the mod in this folder, including native Rust code with the same libraries as build, or a file as the registry would. Repeat --with for local libraries; --uses lists what the mod uses of its pinned build.",
+        usage: "check [--uses] [--with <path>]… | check <file> [--kind <kind>] [--attestation <bundle>] [--repository <id>] [--json]",
+        summary: "Checks the mod in this folder, including native Rust code with the same libraries as build, or validates a release file. A .smod must have its .sigstore.json bundle beside it unless --attestation names another path. --repository requires the attestation to name that GitHub repository ID. Repeat --with for local libraries; --uses lists what the mod uses of its pinned build.",
     },
     Command {
         name: "update",

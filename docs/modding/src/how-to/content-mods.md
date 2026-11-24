@@ -12,7 +12,7 @@ cargo sunrise-mod new my-mod        # a content mod: manifest, one block with it
 cd my-mod
 cargo sunrise-mod run               # build my-mod.smod, then start the game with it turned on
 cargo sunrise-mod build             # only build: target/sunrise-mod/my_mod.smod
-cargo sunrise-mod check target/sunrise-mod/my_mod.smod   # the registry's checks; --json for JSON
+cargo sunrise-mod check             # validate the project before release
 ```
 
 - `new <path> [--name "Name"]` writes the content template. `--template native` writes
@@ -62,9 +62,8 @@ cargo sunrise-mod check target/sunrise-mod/my_mod.smod   # the registry's checks
   It also checks for blockstates on blocks with `render_shape` set to `MODEL` and warns about missing local loot
   tables, item definitions or English names, or registry content on a client-only package. Reference diagnostics name
   the source file, the relevant field or member index, and the ID.
-- `check <file>` runs what the registry runs: the file's size and SHA-256, its manifest and content, and a signature
-  with `--key <public key> --signature <file>.minisig`. It reads `.smod`, `.spack`, resource pack `.zip`
-  and `.sshader` files.
+- `check <file>` reads `.smod`, `.spack`, resource pack `.zip` and `.sshader` files. A `.smod` also
+  needs its [release attestation](../reference/sdk/05-commands.md#check-a-released-package).
 - `registry build|review|check|list|release|releases|page` supports the registry repository's CI
   ([the registry index](../reference/registry-index.md)). `registry releases --out releases.json` discovers stable
   release tags and commits. The workflow verifies the signed SDK separately.

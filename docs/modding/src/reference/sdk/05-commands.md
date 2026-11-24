@@ -17,10 +17,27 @@ folder.
 | `sign <file> [--key <path>] [--no-password]` or `sign <file> --key-env` | Writes the detached `<file>.minisig`, without overwriting an existing signature. Uses the current mod’s per-user signing key by default. For CI, `--key-env` reads `SUNRISE_MOD_SIGNING_KEY` and optional `SUNRISE_MOD_SIGNING_PASSPHRASE` with no prompt; see [Signing](../../how-to/publish.md#signing). |
 | `run [--resources <folder>] [--jars <dir>] [--with <path>]… [-- <game args>]` | For a native mod, builds, stages the game with the mod and its libraries in `target/sunrise-mod/run/` and starts it. |
 | `check [--uses] [--with <path>]…` | Checks the package rules and each [render pipeline shader](../../how-to/client/render-pipelines.md). For a native mod it then type-checks through the same SDK route and with the same libraries as `build`, without packaging or linking mod binaries, and reports what the project uses of its pinned build. `--uses` lists each item with the line that brought it in, and how the mod builds each struct it builds with a literal. |
+| [`check <file.smod>`](#check-a-released-package) `[--attestation <bundle>] [--repository <id>] [--json]` | Checks the package and verifies its GitHub artifact attestation offline. |
 | `hooks <text> [--all]` | Searches the pinned build's hooks offline, by id, doc and their NeoForge, Fabric and Paper names; every word must match. `--all` searches every record. Matches in the id come first, then in a counterpart, then in the doc. |
 | `sdk diff <build> <build>` | What changed in the surface from the first build to the second, [classified](02-surface.md#what-a-change-is), with the second build's change notes (why, and what a mod does now) under the changes they name: the notes of the changes since the SDK published before it. It reads only the builds' small files, so it works for builds whose compiled files are pruned. |
 | `fits [<file.smod>] [--build <build>]…` | Whether the mod, or a package, fits the current Nightly or each build named: one line per build, `made for`, `fits`, or `does not fit` with the changed items. |
 | `update [--sunrise <build>]` | Moves the pin to the current Nightly (or the build named). Reports API uses that would break before moving the pin. |
+
+## Check a released package
+
+```sh
+cargo sunrise-mod check my_mod-0.1.0.smod
+```
+
+Keep `my_mod-0.1.0.smod.sigstore.json` beside the downloaded package, or pass `--attestation <path>`.
+`check` validates the package without running its code. It verifies the signed SHA-256 and requires the
+signing workflow to be `sunrise-org/sunrise-mods/.github/workflows/release.yml` at a
+`refs/tags/release-v*` ref. An unsigned `.smod` fails this check; to check a local project before release,
+run `cargo sunrise-mod check` without a file from that project's folder.
+
+The report shows the GitHub repository name and numeric ID, the signing workflow ref, and the source
+commit. Use `--repository <id>` to require a known numeric repository ID, even if that repository was
+renamed. With `--json`, the verified claims are in `report.attestation`.
 
 ## `build` for a native mod
 

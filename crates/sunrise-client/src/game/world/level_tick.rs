@@ -38,6 +38,11 @@ impl Game<'_> {
             // What the blocks spawned (a dispensed minecart, a lit TNT, a
             // placed boat) joins before the entities tick.
             span("mods_joins_flush", || self.native_joins_flush(false, 0));
+            if self.dimension_type().has_ender_dragon_fight {
+                // ServerLevel.tick runs the fight before visiting the entity tick list.
+                span("tick_dragon_fight", || self.tick_fight());
+                span("mods_joins_flush", || self.native_joins_flush(false, 0));
+            }
             span("lan_mark_synced", || self.lan_mark_synced());
             // `EntityTickList.forEach`: what joined before the entity pass
             // (function summons, dropped or dispensed items) ticks in it;
@@ -76,6 +81,7 @@ impl Game<'_> {
             sunrise_client::spans::time("tick_maps", || self.tick_maps());
             self.tick_lodestone_compasses();
             sunrise_client::spans::time("tick_bolts", || self.tick_bolts());
+            self.ordered_before(ordered_tick::Batch::Fishing)?;
             sunrise_client::spans::time("tick_fishing", || self.tick_fishing());
             self.ordered_before(ordered_tick::Batch::Tridents)?;
             sunrise_client::spans::time("tick_tridents", || self.tick_tridents());

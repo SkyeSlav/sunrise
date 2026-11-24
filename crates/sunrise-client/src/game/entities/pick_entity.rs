@@ -62,7 +62,7 @@ impl Game<'_> {
         }
         let hit = self.pick_entity_hit_unified()?;
         let is_synthetic_dragon_part =
-            (super::dragon::SPECIAL..super::dragon::CRYSTAL_IDS).contains(&hit.id);
+            (super::dragon::SPECIAL..super::dragon::SPECIAL + 8).contains(&hit.id);
         let id = hit.id as i32;
         let pickable = !self.interactions.contains_key(&id)
             && !is_synthetic_dragon_part

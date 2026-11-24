@@ -11,6 +11,7 @@ mod tests;
 
 mod releases;
 use sunrise_mod_package::index::{
+    Kind,
     registry::{self, Sources},
     resolve::uninstallable_versions,
 };
@@ -36,6 +37,26 @@ fn binary_checks(sdk_data: Option<&Path>) -> Option<registry::builds::Checks<'_>
 
 fn lines(errors: Vec<String>) -> String {
     format!("{} problem(s):\n  {}", errors.len(), errors.join("\n  "))
+}
+
+/// The v1 registry and `publish` still validate their existing Minisign entries.
+pub(crate) fn check_legacy_package(
+    path: &Path,
+    kind: Kind,
+    key: Option<&str>,
+    signature: Option<&str>,
+    require_uses: bool,
+) -> Result<crate::check::Report, String> {
+    let mut report = crate::check::inspect(path, kind, require_uses)?;
+    match (key, signature) {
+        (Some(key), Some(signature)) => {
+            sunrise_mod_package::index::verify_signature(key, signature, path)?;
+            report.signed = true;
+        }
+        (None, None) => {}
+        _ => return Err("--key and --signature go together".into()),
+    }
+    Ok(report)
 }
 
 pub fn main(args: &[String]) -> Result<(), String> {
@@ -305,11 +326,12 @@ pub fn main(args: &[String]) -> Result<(), String> {
                             .iter()
                             .filter(|v| submitted.contains(v.sha256.as_str()))
                         {
-                            match crate::check::check(
+                            match check_legacy_package(
                                 &files.join(&v.sha256),
                                 e.kind.clone(),
                                 e.key.as_deref(),
                                 v.signature.as_deref(),
+                                true,
                             ) {
                                 Ok(report) if json => reports.push(serde_json::json!({
                                     "project": e.id, "version": v.version, "file": v.file,
@@ -402,11 +424,12 @@ pub fn main(args: &[String]) -> Result<(), String> {
             let cache = registry::Cache::read(Path::new(checkout), id)?;
             let entry = entry.resolved(&cache.page);
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            crate::check::check(
+            check_legacy_package(
                 path,
                 entry.kind.clone(),
                 entry.key.as_deref(),
                 signature.as_deref(),
+                true,
             )?;
             let version = registry::release_version(
                 &entry,

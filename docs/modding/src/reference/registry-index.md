@@ -445,14 +445,9 @@ against `3.1.0`, and `0.0.2` does not warn against `0.0.1`. Loosen the requireme
 version. If the game's lock is unavailable, review notes that it skipped
 the comparison. A different pin in the mod's own lockfile does not trigger a warning.
 
-Check a package on its own with:
-
-```sh
-cargo sunrise-mod check my_mod.smod
-```
-
-Use `--key` and `--signature` to check its signature. The command validates package
-metadata and contents without running your mod’s code.
+To check a GitHub-attested release package on its own, use
+[`cargo sunrise-mod check <file.smod>`](sdk/05-commands.md#check-a-released-package).
+The command validates package metadata and contents without running the mod's code.
 
 ## Native dependency tools
 

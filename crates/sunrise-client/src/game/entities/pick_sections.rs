@@ -378,18 +378,11 @@ impl PickSectionStorage {
                 knot_position(k.fence),
             );
         }
-        for (i, c) in game.crystals.iter().enumerate() {
-            let id = if c.id != 0 {
-                c.id
-            } else if game.remote.is_none() {
-                crate::game::dragon::CRYSTAL_IDS + i as u32
-            } else {
-                continue;
-            };
+        for c in game.crystals.iter().filter(|c| c.id != 0) {
             consider(
                 c.join.get(),
                 PickKind::Crystal,
-                id,
+                c.id,
                 [c.position.x, c.position.y, c.position.z],
             );
         }
@@ -676,19 +669,11 @@ impl Game<'_> {
                 .iter()
                 .find(|k| k.id == id)
                 .map(|k| knot_position(k.fence)),
-            PickKind::Crystal => {
-                if self.remote.is_none() && id >= crate::game::dragon::CRYSTAL_IDS {
-                    self.crystals
-                        .get((id - crate::game::dragon::CRYSTAL_IDS) as usize)
-                        .filter(|c| c.id == 0)
-                        .map(|c| [c.position.x, c.position.y, c.position.z])
-                } else {
-                    self.crystals
-                        .iter()
-                        .find(|c| c.id == id)
-                        .map(|c| [c.position.x, c.position.y, c.position.z])
-                }
-            }
+            PickKind::Crystal => self
+                .crystals
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| [c.position.x, c.position.y, c.position.z]),
         }
     }
 
@@ -788,16 +773,11 @@ impl Game<'_> {
                 .iter()
                 .find(|k| k.id == id)
                 .map(|k| (k.id, knot_bounds(k.fence), 0.0)),
-            PickKind::Crystal => {
-                let crystal = if self.remote.is_none() && id >= crate::game::dragon::CRYSTAL_IDS {
-                    self.crystals
-                        .get((id - crate::game::dragon::CRYSTAL_IDS) as usize)
-                        .filter(|c| c.id == 0)
-                } else {
-                    self.crystals.iter().find(|c| c.id == id)
-                }?;
-                Some((id, crystal.bounds(), 0.0))
-            }
+            PickKind::Crystal => self
+                .crystals
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| (c.id, c.bounds(), 0.0)),
         }
     }
 

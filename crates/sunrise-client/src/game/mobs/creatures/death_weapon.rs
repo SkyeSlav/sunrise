@@ -102,19 +102,16 @@ impl Game<'_> {
         self.settle_creaking_hurt(id);
         hurt
     }
-    /// What an arrow or a thrown trident hits an entity of type `victim`
-    /// for (`AbstractArrow.onHitEntity`, `ThrownTrident.onHitEntity`): a
-    /// trident's 8 through `EnchantmentHelper.modifyDamage` of the trident
-    /// (Impaling's `minecraft:damage` on `#sensitive_to_impaling`).
-    pub(in crate::game) fn shot_damage(
+    /// Evaluate weapon `minecraft:damage` modifier for `shot` without drawing crit RNG.
+    pub(in crate::game) fn shot_damage_base(
         &mut self,
-        shot: &mut Projectile,
+        shot: &Projectile,
         victim: Option<&str>,
         who: Who,
-    ) -> f32 {
+    ) -> f64 {
         let trident = matches!(shot.kind, ProjectileKind::Trident);
-        let base = match shot.kind {
-            ProjectileKind::Arrow { base_damage, .. } => base_damage as f32,
+        let base_f64 = match shot.kind {
+            ProjectileKind::Arrow { base_damage, .. } => base_damage,
             _ => 8.0,
         };
         let weapon = shot.arrow.as_ref().and_then(|a| {
@@ -125,11 +122,7 @@ impl Game<'_> {
             }
         });
         let Some(weapon) = weapon else {
-            return if trident {
-                base
-            } else {
-                shot.arrow_damage() + shot.bonus.damage
-            };
+            return base_f64;
         };
         let attacker_kind = match shot.owner {
             Some(Who::Player) => Some("minecraft:player".to_owned()),
@@ -170,22 +163,33 @@ impl Game<'_> {
             Who::Player => player,
             Who::Mob(id) => id,
         };
-        let victim =
-            if (crate::game::dragon::SPECIAL..crate::game::dragon::CRYSTAL_IDS).contains(&victim) {
-                self.dragon.as_ref().map_or(victim, |dragon| dragon.id)
-            } else if victim >= crate::game::dragon::CRYSTAL_IDS {
-                self.crystals
-                    .get((victim - crate::game::dragon::CRYSTAL_IDS) as usize)
-                    .map_or(victim, |crystal| crystal.id)
-            } else {
-                victim
-            };
-        let enchanted =
-            self.evaluate_weapon_damage(weapon, attacker.map(|id| (id, victim)), ctx, base);
-        if trident {
-            enchanted
+        let victim = if victim >= crate::game::dragon::SPECIAL {
+            self.dragon.as_ref().map_or(victim, |dragon| dragon.id)
         } else {
-            shot.arrow_damage_with_base(f64::from(enchanted)) + shot.bonus.damage
+            victim
+        };
+        f64::from(self.evaluate_weapon_damage(
+            weapon,
+            attacker.map(|id| (id, victim)),
+            ctx,
+            base_f64 as f32,
+        ))
+    }
+    /// What an arrow or a thrown trident hits an entity of type `victim`
+    /// for (`AbstractArrow.onHitEntity`, `ThrownTrident.onHitEntity`): a
+    /// trident's 8 through `EnchantmentHelper.modifyDamage` of the trident
+    /// (Impaling's `minecraft:damage` on `#sensitive_to_impaling`).
+    pub(in crate::game) fn shot_damage(
+        &mut self,
+        shot: &mut Projectile,
+        victim: Option<&str>,
+        who: Who,
+    ) -> f32 {
+        let base = self.shot_damage_base(shot, victim, who);
+        if matches!(shot.kind, ProjectileKind::Trident) {
+            base as f32
+        } else {
+            shot.arrow_damage_with_base(base) + shot.bonus.damage
         }
     }
     pub(super) fn drop_death_loot(
