@@ -206,6 +206,10 @@ impl<R> ResourceHandler<R> for Capability<dyn ResourceHandler<R>> {
         self.handler.is_valid(host, index, resource)
     }
 
+    fn backing(&self, host: &mut dyn ServerHost, index: usize) -> Option<StorageSlot> {
+        self.handler.backing(host, index)
+    }
+
     fn insert_at(
         &self,
         host: &mut dyn ServerHost,
