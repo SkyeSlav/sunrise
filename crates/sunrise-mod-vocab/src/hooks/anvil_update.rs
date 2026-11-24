@@ -5,9 +5,15 @@ pub trait Hooks {
     /// `player` (UUID) and `player_entity_id` (`AnvilUpdateEvent`, matching
     /// NeoForge `AnvilMenu.createResult` / `CommonHooks.onAnvilUpdate`), live
     /// on every `createResult` with no answer cache: `inputs` lends the
-    /// stacks, rename text and vanilla result; `edits` starts with `Keep` and
-    /// vanilla's costs. Set an output or edit the costs without changing the
-    /// inputs. Cancellation clears the result and both costs. An invalid
+    /// stacks, rename text and `vanilla_result` (its `output` and costs, and the
+    /// `uncapped_output` and `unclamped_xp_cost` vanilla computed before its
+    /// 40-level drop and rename-only clamp); `edits` starts with `Keep`,
+    /// vanilla's costs and `too_expensive` (vanilla's test: a cost of 40 or
+    /// more without infinite materials). Set an output or edit the costs
+    /// without changing the inputs. `too_expensive` decides the server's drop
+    /// of the result and the client's "Too Expensive!" label; taking stays
+    /// decided by `AnvilMenu.mayPickup`, with no 40 check.
+    /// Cancellation clears the result and both costs. An invalid
     /// replacement output is logged and ignored (keeping vanilla's output while
     /// still applying the cost edits). `edits.xp_cost` stays signed during
     /// listener dispatch and clamps to `0` when applied (`AnvilMenu.setCost`).
@@ -21,7 +27,7 @@ pub trait Hooks {
         out = "cancel",
         neoforge = "AnvilUpdateEvent",
         cancellable = true,
-        version = 3
+        version = 4
     )]
     fn anvil_update(
         player: u128,

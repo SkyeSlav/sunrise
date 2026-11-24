@@ -375,7 +375,7 @@ impl Game<'_> {
                     let cost = s.anvil.cost;
                     if cost > 0 {
                         let mut color = argb(-8323296);
-                        let line = if cost >= 40 && !self.creative {
+                        let line = if s.anvil.too_expensive {
                             color = argb(-40864);
                             Some(self.translate_with_fallback(
                                 "container.repair.expensive",

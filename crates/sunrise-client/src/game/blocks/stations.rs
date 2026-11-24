@@ -975,6 +975,9 @@ impl Game<'_> {
         s.anvil.cost = menu.data[0];
         s.anvil.repair_item_count_cost = menu.anvil.repair_count;
         s.anvil.only_renaming = menu.anvil.only_renaming;
+        s.anvil.uncapped_result = menu.anvil.uncapped_result.clone();
+        s.anvil.unclamped_cost = menu.anvil.unclamped_cost;
+        s.anvil.too_expensive = menu.anvil.too_expensive;
         s.anvil.result = s.result.clone();
         if s.inputs[0] == s.anvil_last {
             return;
@@ -1013,6 +1016,9 @@ impl Game<'_> {
                 s.anvil.cost = menu.data[0];
                 s.anvil.repair_item_count_cost = menu.anvil.repair_count;
                 s.anvil.only_renaming = menu.anvil.only_renaming;
+                s.anvil.uncapped_result = menu.anvil.uncapped_result.clone();
+                s.anvil.unclamped_cost = menu.anvil.unclamped_cost;
+                s.anvil.too_expensive = menu.anvil.too_expensive;
                 s.anvil.result = s.result.clone();
                 self.station_after_input();
             }
@@ -2889,7 +2895,8 @@ mod tests {
                 let item = event.inputs.left.item();
                 match event.inputs.name {
                     Some("same") => {
-                        event.edits.output = StackResult::Set(event.inputs.vanilla_output.cloned());
+                        event.edits.output =
+                            StackResult::Set(event.inputs.vanilla_result.output.cloned());
                     }
                     Some("replace") => {
                         event.edits.output = StackResult::Set(Some(ApiStack::of(item)));
@@ -2918,6 +2925,7 @@ mod tests {
                     cost: 1,
                     repair_item_count_cost: 1,
                     only_renaming: true,
+                    ..Default::default()
                 };
                 for (name, output, only_renaming) in [
                     ("keep", Some(2), true),
@@ -2934,6 +2942,7 @@ mod tests {
                             cost: 0,
                             repair_item_count_cost: 0,
                             only_renaming,
+                            ..Default::default()
                         },
                         "{name}",
                     );
@@ -2947,12 +2956,64 @@ mod tests {
                         cost: 0,
                         repair_item_count_cost: 4,
                         only_renaming: true,
+                        ..Default::default()
                     },
                     "invalid",
                 );
                 station.anvil = vanilla.clone();
                 game.update_anvil_answer(&mut station, "cancel");
                 assert_eq!(station.anvil, AnvilResult::default(), "cancel");
+            });
+        });
+    }
+
+    /// A 45-level result vanilla dropped: the listener reads `uncapped_output` and restores it
+    /// with `too_expensive = false`; without that the server's drop stands.
+    #[test]
+    #[ignore = "daily"]
+    fn anvil_update_restores_an_uncapped_result_with_too_expensive_false() {
+        use super::{AnvilResult, ItemStack, Kind, Station};
+        use mod_api::{AnvilUpdateEvent, Flow, Hooks, HostSide, ModEntry, StackResult};
+
+        struct Listener;
+        #[mod_api::__subscriptions]
+        impl Hooks for Listener {
+            fn anvil_update(&self, _: HostSide<'_>, event: &mut AnvilUpdateEvent<'_>) -> Flow {
+                let inputs = event.inputs;
+                let vanilla = &inputs.vanilla_result;
+                assert!(vanilla.output.is_none());
+                assert!(vanilla.uncapped_output.is_some());
+                assert_eq!((vanilla.xp_cost, vanilla.unclamped_xp_cost), (45, 45));
+                assert!(event.edits.too_expensive);
+                if inputs.name == Some("restore") {
+                    event.edits.output = StackResult::Set(vanilla.uncapped_output.cloned());
+                    event.edits.too_expensive = false;
+                }
+                Flow::Continue
+            }
+        }
+
+        let mods = vec![ModEntry::new("listener", Box::new(Listener))].into();
+        mod_platform::testing::with_mods(mods, || {
+            super::super::native_entity_refs::tests::with_game(|game| {
+                let mut station = Station::new(Kind::Anvil, [0; 3]);
+                let sword = ItemStack::new("minecraft:iron_sword", 1);
+                station.inputs[0] = Some(sword.clone());
+                let dropped = AnvilResult {
+                    cost: 45,
+                    unclamped_cost: 45,
+                    uncapped_result: Some(sword.clone()),
+                    too_expensive: true,
+                    ..Default::default()
+                };
+                station.anvil = dropped.clone();
+                game.update_anvil_answer(&mut station, "keep");
+                assert_eq!(station.anvil, dropped, "the drop stands");
+                station.anvil = dropped.clone();
+                game.update_anvil_answer(&mut station, "restore");
+                assert_eq!(station.anvil.result, Some(sword));
+                assert_eq!(station.anvil.cost, 45);
+                assert!(!station.anvil.too_expensive);
             });
         });
     }

@@ -589,15 +589,14 @@ pub fn anvil_result(
     };
     let mut out = (price > 0).then_some(result);
     let mut only_renaming = false;
+    let unclamped_cost = cost;
     if naming_cost == price && naming_cost > 0 {
         if cost >= 40 {
             cost = 39;
         }
         only_renaming = true;
     }
-    if cost >= 40 && !creative {
-        out = None;
-    }
+    let too_expensive = cost >= 40 && !creative;
     if let Some(r) = out.as_mut() {
         let mut base = r
             .repair_cost()
@@ -613,11 +612,16 @@ pub fn anvil_result(
         r.set_crafting_enchantments(enchantments);
         r.tidy();
     }
+    // The drop comes after the stack is finished, so that a listener restoring `uncapped_result`
+    // gets what vanilla would have kept.
     AnvilResult {
-        result: out,
+        result: if too_expensive { None } else { out.clone() },
         cost,
         repair_item_count_cost,
         only_renaming,
+        uncapped_result: out,
+        unclamped_cost,
+        too_expensive,
     }
 }
 
@@ -1732,6 +1736,65 @@ mod tests {
             5
         );
         assert_eq!(r.cost, 5);
+    }
+
+    /// `createResult` drops a result costing 40 levels or more unless the player has infinite
+    /// materials, and keeps the stack it made as `uncapped_result`.
+    #[test]
+    fn anvil_keeps_the_uncapped_result_of_a_too_expensive_merge() {
+        let e = sample();
+        let items = sample_items();
+        let mut s = sword(&[("minecraft:sharpness", 2)]);
+        s.data_mut().repair_cost = 42;
+        let book = book(&[("minecraft:sharpness", 2)]);
+        let r = anvil_result(
+            &e,
+            &items,
+            Some(&s),
+            Some(&book),
+            None,
+            "Diamond Sword",
+            false,
+        );
+        assert_eq!((r.cost, r.unclamped_cost), (45, 45));
+        assert!(r.too_expensive);
+        assert!(r.result.is_none());
+        let uncapped = r.uncapped_result.expect("the stack before the drop");
+        assert_eq!(uncapped.enchantment_level("minecraft:sharpness"), 3);
+        assert_eq!(uncapped.repair_cost(), 85);
+        let r = anvil_result(
+            &e,
+            &items,
+            Some(&s),
+            Some(&book),
+            None,
+            "Diamond Sword",
+            true,
+        );
+        assert!(!r.too_expensive);
+        assert_eq!(r.result, r.uncapped_result);
+    }
+
+    /// A rename that costs 40 or more is clamped to 39 and kept; the cost before the clamp is
+    /// read as `unclamped_cost`.
+    #[test]
+    fn anvil_rename_only_reports_the_cost_before_the_clamp() {
+        let e = sample();
+        let items = sample_items();
+        let mut s = sword(&[]);
+        s.data_mut().repair_cost = 49;
+        let r = anvil_result(
+            &e,
+            &items,
+            Some(&s),
+            None,
+            Some("Excalibur"),
+            "Diamond Sword",
+            false,
+        );
+        assert_eq!((r.cost, r.unclamped_cost), (39, 50));
+        assert!(r.only_renaming && !r.too_expensive);
+        assert!(r.result.is_some());
     }
 
     #[test]

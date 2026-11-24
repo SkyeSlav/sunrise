@@ -1,0 +1,18 @@
+ids = [
+    "hook:anvil_update",
+    "type:item::menu::AnvilUpdateInputs",
+    "type:item::menu::AnvilUpdateInputs.vanilla_output",
+    "type:item::menu::AnvilUpdateInputs.vanilla_xp_cost",
+    "type:item::menu::AnvilUpdateInputs.vanilla_material_cost",
+    "type:item::menu::AnvilUpdateInputs.vanilla_result",
+    "type:item::menu::AnvilVanillaResult",
+    "type:item::menu::AnvilVanillaResult.output",
+    "type:item::menu::AnvilVanillaResult.xp_cost",
+    "type:item::menu::AnvilVanillaResult.material_cost",
+    "type:item::menu::AnvilVanillaResult.uncapped_output",
+    "type:item::menu::AnvilVanillaResult.unclamped_xp_cost",
+    "type:item::menu::AnvilUpdateEdits",
+    "type:item::menu::AnvilUpdateEdits.too_expensive",
+]
+why = "`anvil_update`'s inputs follow `AnvilUpdateEvent`'s names: vanilla's answer moves into `inputs.vanilla_result` (`output`, `xp_cost`, `material_cost`), which also lends two values `AnvilMenu.createResult` computes on the way: `uncapped_output`, the stack before it drops the result for costing 40 levels or more, and `unclamped_xp_cost`, the cost before the rename-only clamp to 39. `edits` gains `too_expensive`, seeded from vanilla's test (cost of 40 or more and no infinite materials); it decides whether the server keeps a result and whether the anvil screen draws \"Too Expensive!\". Taking the result is still decided by `AnvilMenu.mayPickup`, which has no 40 check. `anvil_update` is version 4."
+migrate = "Rebuild against the current SDK. Replace `event.inputs.vanilla_output`, `.vanilla_xp_cost` and `.vanilla_material_cost` with `event.inputs.vanilla_result.output`, `.xp_cost` and `.material_cost`; code that builds an `AnvilUpdateInputs` or `AnvilUpdateEdits` literal adds `vanilla_result: AnvilVanillaResult { .. }` and `too_expensive`. To let a result cost 40 levels or more, set `event.edits.output = StackResult::Set(event.inputs.vanilla_result.uncapped_output.cloned())` and `event.edits.too_expensive = false`; to refuse one, set `too_expensive = true`."

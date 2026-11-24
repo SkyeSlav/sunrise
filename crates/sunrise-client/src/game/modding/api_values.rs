@@ -1241,7 +1241,9 @@ impl super::Game<'_> {
         inputs: crate::menu::AnvilUpdateInputs<'_>,
         result: &mut crate::stations::AnvilResult,
     ) {
-        use mod_api::item::menu::{AnvilUpdateEdits, AnvilUpdateInputs, StackResult};
+        use mod_api::item::menu::{
+            AnvilUpdateEdits, AnvilUpdateInputs, AnvilVanillaResult, StackResult,
+        };
 
         let Ok(left) = inputs.left.try_into_api() else {
             return;
@@ -1252,18 +1254,26 @@ impl super::Game<'_> {
         let Ok(vanilla_output) = result.result.try_into_api() else {
             return;
         };
+        let Ok(uncapped_output) = result.uncapped_result.try_into_api() else {
+            return;
+        };
         let inputs = AnvilUpdateInputs {
             left: &left,
             right: right.as_ref(),
             name: inputs.name,
-            vanilla_output: vanilla_output.as_ref(),
-            vanilla_xp_cost: result.cost,
-            vanilla_material_cost: i32::try_from(result.repair_item_count_cost).unwrap_or(i32::MAX),
+            vanilla_result: AnvilVanillaResult {
+                output: vanilla_output.as_ref(),
+                xp_cost: result.cost,
+                material_cost: i32::try_from(result.repair_item_count_cost).unwrap_or(i32::MAX),
+                uncapped_output: uncapped_output.as_ref(),
+                unclamped_xp_cost: result.unclamped_cost,
+            },
         };
         let mut edits = AnvilUpdateEdits {
             output: StackResult::Keep,
-            xp_cost: inputs.vanilla_xp_cost,
-            material_cost: inputs.vanilla_material_cost,
+            xp_cost: inputs.vanilla_result.xp_cost,
+            material_cost: inputs.vanilla_result.material_cost,
+            too_expensive: result.too_expensive,
         };
         let mut cancel = false;
         self.native_anvil_update(player, entity, pos, &inputs, &mut edits, &mut cancel);
@@ -1289,6 +1299,12 @@ impl super::Game<'_> {
         }
         result.cost = edits.xp_cost.max(0);
         result.repair_item_count_cost = edits.material_cost.max(0) as u32;
+        // `too_expensive` decides whether a result exists, as vanilla's drop does; taking it is
+        // `AnvilMenu.mayPickup`'s, with no 40 check.
+        result.too_expensive = edits.too_expensive;
+        if edits.too_expensive {
+            result.result = None;
+        }
     }
     pub(in crate::game) fn api_grindstone_place(
         &mut self,

@@ -331,14 +331,14 @@ After the anvil calculates a result with a left input, `anvil_update` fires live
 sides for each result calculation (with no answer cache), including a take consuming material
 while its left input is still present. On the server the take has already charged the player
 at that point. The hook lends `event.inputs`: the left and optional right stacks,
-the optional rename text and vanilla's output and costs. Read those values without cloning;
+the optional rename text and `vanilla_result`: vanilla's output and costs, plus `uncapped_output` (the stack before vanilla dropped it for costing 40 levels or more) and `unclamped_xp_cost` (the cost before the rename-only clamp to 39). Read those values without cloning;
 they don't change as listeners edit `event.edits`. Leave `edits.output` at
 `StackResult::Keep` to use vanilla's output, use `StackResult::Set(Some(stack))` to replace
 it, or use `StackResult::Set(None)` to clear it. To read the current answer, match on
-`&event.edits.output`: use `event.inputs.vanilla_output` for `Keep` and `stack.as_ref()` for
+`&event.edits.output`: use `event.inputs.vanilla_result.output` for `Keep` and `stack.as_ref()` for
 `Set(stack)`. The level and material costs start at vanilla's values (`xp_cost` stays signed
 across listeners and clamps to `0` when applied, matching NeoForge `AnvilMenu.setCost`).
-Changing only the costs doesn't revalidate vanilla's stack. Cancellation clears the output
+Changing only the costs doesn't revalidate vanilla's stack. `edits.too_expensive` starts at vanilla's test (a cost of 40 or more without infinite materials): the server keeps no result while it is `true`, and the anvil screen draws "Too Expensive!" for it. To allow such a result, set `edits.output` to `uncapped_output` and `too_expensive` to `false`; taking it is still decided by the player's levels and a positive cost. Cancellation clears the output
 and both costs; an invalid replacement output is logged and ignored, keeping vanilla's
 output while still applying the cost edits.
 

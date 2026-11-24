@@ -271,15 +271,35 @@ pub struct AnvilUpdateInputs<'a> {
     pub right: Option<&'a ItemStack>,
     /// The rename box's text, `None` if the client sent none.
     pub name: Option<&'a str>,
-    /// The result calculated by vanilla, if any.
-    pub vanilla_output: Option<&'a ItemStack>,
-    /// The level cost calculated by vanilla.
-    pub vanilla_xp_cost: i32,
-    /// The number of material items vanilla would charge from the right slot.
-    pub vanilla_material_cost: i32,
+    /// What vanilla's `createResult` calculated.
+    pub vanilla_result: AnvilVanillaResult<'a>,
 }
 
-/// The shared answer to `anvil_update`. It starts at `Keep` and vanilla's costs.
+/// What `AnvilMenu.createResult` calculated, before any listener: the answer `anvil_update`
+/// starts from, with the two intermediate values vanilla computes on the way to it.
+#[derive(Clone, Debug, PartialEq)]
+// exhaustive: the game builds it with a literal; mods only read it
+// no wire: borrows the converted stack for the hook call.
+pub struct AnvilVanillaResult<'a> {
+    /// The result vanilla kept, if any. `None` when there is no result or vanilla dropped it for
+    /// costing 40 levels or more.
+    pub output: Option<&'a ItemStack>,
+    /// The level cost vanilla set (`AnvilMenu.cost`), after the rename-only clamp to 39.
+    pub xp_cost: i32,
+    /// The number of material items vanilla would charge from the right slot.
+    pub material_cost: i32,
+    /// The stack `createResult` made before it dropped the result for costing 40 levels or more,
+    /// with the repair cost and enchantments it would have set. It equals `output` when nothing
+    /// was dropped, and is `None` when there was nothing to make. Read it to restore the result
+    /// by setting `edits.output` to it and `edits.too_expensive` to `false`.
+    pub uncapped_output: Option<&'a ItemStack>,
+    /// The level cost before the rename-only clamp to 39 (`createResult` clamps a rename that
+    /// costs 40 or more). It equals `xp_cost` when no clamp ran.
+    pub unclamped_xp_cost: i32,
+}
+
+/// The shared answer to `anvil_update`. It starts at `Keep`, vanilla's costs and vanilla's
+/// too-expensive test.
 /// The game applies the final edits after dispatch; cancellation leaves no output
 /// and zero costs, while an invalid replacement output is logged and ignored
 /// (keeping vanilla's output).
@@ -298,6 +318,14 @@ pub struct AnvilUpdateEdits {
     /// Units consumed from the right slot. Negative values clamp to zero;
     /// zero or a value exceeding the stack consumes all of it on take.
     pub material_cost: i32,
+    /// Whether the anvil refuses the result as too expensive. It starts at vanilla's test (a
+    /// cost of 40 levels or more for a player without infinite materials). On the server a
+    /// `true` leaves no result, as vanilla's drop does; on the client a `true` makes the screen
+    /// draw "Too Expensive!" in place of the cost. Taking the result stays decided by
+    /// `AnvilMenu.mayPickup` (enough levels and a positive cost), which has no 40 check, so
+    /// `false` with a restored output lets a player with the levels take it. A server-only mod
+    /// that restores a result leaves a client without the mod showing vanilla's label.
+    pub too_expensive: bool,
 }
 /// The inputs and vanilla result of `GrindstoneMenu.createResult`, borrowed for
 /// the `grindstone_place` callback. Edits by earlier listeners do not change these values.

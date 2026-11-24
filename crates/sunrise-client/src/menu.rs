@@ -408,6 +408,13 @@ pub struct Anvil {
     pub repair_count: u32,
     /// `onlyRenaming`.
     pub only_renaming: bool,
+    /// The stack `createResult` made before the `cost >= 40` drop (`anvil_update`'s
+    /// `uncapped_output`).
+    pub uncapped_result: Option<ItemStack>,
+    /// The cost before the rename-only clamp to 39 (`unclamped_xp_cost`).
+    pub unclamped_cost: i32,
+    /// Vanilla's `cost >= 40 && !hasInfiniteMaterials`, as `anvil_update` left it.
+    pub too_expensive: bool,
     /// An `AnvilScreen` listens: a client predicting a click with the screen open, whose
     /// `slotChanged` hears each new input (`slotsChanged`'s `broadcastChanges`).
     pub screen: bool,
@@ -1278,6 +1285,9 @@ impl Menu {
         );
         // onlyRenaming is reset, repairItemCountCost only where an input is.
         self.state.anvil.only_renaming = out.only_renaming;
+        self.state.anvil.uncapped_result = out.uncapped_result;
+        self.state.anvil.unclamped_cost = out.unclamped_cost;
+        self.state.anvil.too_expensive = out.too_expensive;
         if self.state.containers[MAIN][0].is_some() {
             self.state.anvil.repair_count = out.repair_item_count_cost;
         }
@@ -1293,6 +1303,9 @@ impl Menu {
             cost: self.state.data[0],
             repair_item_count_cost: self.state.anvil.repair_count,
             only_renaming: self.state.anvil.only_renaming,
+            uncapped_result: self.state.anvil.uncapped_result.clone(),
+            unclamped_cost: self.state.anvil.unclamped_cost,
+            too_expensive: self.state.anvil.too_expensive,
         }
     }
 
@@ -1324,6 +1337,7 @@ impl Menu {
     pub fn anvil_updated(&mut self, state: crate::stations::AnvilResult) {
         self.touch();
         self.state.anvil.only_renaming = state.only_renaming;
+        self.state.anvil.too_expensive = state.too_expensive;
         self.state.anvil.repair_count = state.repair_item_count_cost;
         self.state.data[0] = state.cost;
         self.state.containers[RESULT][0] = state.result;

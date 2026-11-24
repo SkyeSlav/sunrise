@@ -288,7 +288,7 @@ fn block_entity_additions_collect_in_order_and_quiet_dispatch_preserves_input() 
 /// cancel stops later mods.
 #[test]
 fn an_anvil_update_is_changed_in_turn_and_cancel_stops_later_mods() {
-    use mod_api::item::menu::{AnvilUpdateEdits, AnvilUpdateInputs};
+    use mod_api::item::menu::{AnvilUpdateEdits, AnvilUpdateInputs, AnvilVanillaResult};
     use mod_api::{AnvilUpdateEvent, Flow, Host, HostSide, ItemStack, ServerHost, StackResult};
     fn key(id: &str) -> mod_api::ItemKey {
         mod_api::__private::item_key(id).unwrap()
@@ -325,10 +325,10 @@ fn an_anvil_update_is_changed_in_turn_and_cancel_stops_later_mods() {
     #[mod_api::__subscriptions]
     impl Hooks for Discount {
         fn anvil_update(&self, _: HostSide<'_>, event: &mut AnvilUpdateEvent<'_>) -> Flow {
-            assert_eq!(event.inputs.vanilla_xp_cost, 3);
-            assert_eq!(event.inputs.vanilla_material_cost, 0);
+            assert_eq!(event.inputs.vanilla_result.xp_cost, 3);
+            assert_eq!(event.inputs.vanilla_result.material_cost, 0);
             assert_eq!(
-                event.inputs.vanilla_output.unwrap().item(),
+                event.inputs.vanilla_result.output.unwrap().item(),
                 key("minecraft:iron_sword")
             );
             event.edits.xp_cost -= 1;
@@ -362,14 +362,19 @@ fn an_anvil_update_is_changed_in_turn_and_cancel_stops_later_mods() {
                 left: &left,
                 right: right.as_ref(),
                 name,
-                vanilla_output: Some(&vanilla_output),
-                vanilla_xp_cost: 3,
-                vanilla_material_cost: 0,
+                vanilla_result: AnvilVanillaResult {
+                    output: Some(&vanilla_output),
+                    xp_cost: 3,
+                    material_cost: 0,
+                    uncapped_output: Some(&vanilla_output),
+                    unclamped_xp_cost: 3,
+                },
             };
             let mut edits = AnvilUpdateEdits {
                 output: StackResult::Keep,
-                xp_cost: inputs.vanilla_xp_cost,
-                material_cost: inputs.vanilla_material_cost,
+                xp_cost: inputs.vanilla_result.xp_cost,
+                material_cost: inputs.vanilla_result.material_cost,
+                too_expensive: false,
             };
             let mut cancel = false;
             mod_api::dispatch_anvil_update(
