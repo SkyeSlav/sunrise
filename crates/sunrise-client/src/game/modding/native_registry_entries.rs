@@ -330,7 +330,8 @@ impl Game<'_> {
         tag: &str,
     ) -> Option<Vec<Identifier>> {
         let registry = normalized(registry);
-        self.registry_entries(&registry)?;
+        self.visit_registry_entries(&registry, &mut |_| ControlFlow::Break(()))
+            .ok()?;
         let tag = normalized(tag);
         if let Some(set) = self.registry_datapacks(&registry)
             && let Some(members) = set.tag_members(&registry, &tag)
