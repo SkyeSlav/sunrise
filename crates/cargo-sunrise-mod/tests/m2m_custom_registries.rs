@@ -129,7 +129,12 @@ impl Hooks for Boiler {
             tag_ok = entries_ok && in_tag_ok;
         });
 
-        println!("m2m_custom_registries reg_ok={reg_ok} tag_ok={tag_ok}");
+        let recipe_ok = host
+            .recipes_of_type("minecraft:crafting")
+            .iter()
+            .any(|recipe| recipe.id == "boiler:steam_stick");
+
+        println!("m2m_custom_registries reg_ok={reg_ok} tag_ok={tag_ok} recipe_ok={recipe_ok}");
         std::process::exit(0);
     }
 }
@@ -285,6 +290,10 @@ fn two_separately_built_mods_share_custom_static_registry_and_tags() {
         &boiler.join("data/boiler/tags/chemlib/gas/hot.json"),
         r#"{"values":["boiler:steam"]}"#,
     );
+    write_file(
+        &boiler.join("data/boiler/recipe/steam_stick.json"),
+        r#"{"type":"minecraft:crafting_shapeless","ingredients":["minecraft:flint"],"result":{"id":"minecraft:stick"},"neoforge:conditions":[{"type":"neoforge:registered","registry":"chemlib:gas","value":"boiler:steam"}]}"#,
+    );
 
     let stage = |name: &str, extra_args: &[&str]| -> (PathBuf, String) {
         let run = boiler.join("target/sunrise-mod/run");
@@ -341,11 +350,12 @@ fn two_separately_built_mods_share_custom_static_registry_and_tags() {
         .find(|l| l.starts_with("m2m_custom_registries "))
         .unwrap_or_else(|| panic!("missing marker in Run 1:\n{out_both}"));
     assert_eq!(
-        line_both, "m2m_custom_registries reg_ok=true tag_ok=true",
+        line_both, "m2m_custom_registries reg_ok=true tag_ok=true recipe_ok=true",
         "Run 1 (chemlib + boiler) failed: {line_both}"
     );
 
-    // Run 2: boiler built alone (optional chemlib absent) -> loads cleanly with zero errors.
+    // Run 2: boiler built alone (optional chemlib absent) -> loads cleanly with zero errors
+    // and the neoforge:registered recipe is absent.
     let (alone_app, alone_prog) = stage("alone", &[]);
     let out_alone = run_game(&root, "alone", &profile, &alone_app, &alone_prog);
     let line_alone = out_alone
@@ -353,7 +363,7 @@ fn two_separately_built_mods_share_custom_static_registry_and_tags() {
         .find(|l| l.starts_with("m2m_custom_registries "))
         .unwrap_or_else(|| panic!("missing marker in Run 2:\n{out_alone}"));
     assert_eq!(
-        line_alone, "m2m_custom_registries reg_ok=false tag_ok=false",
+        line_alone, "m2m_custom_registries reg_ok=false tag_ok=false recipe_ok=false",
         "Run 2 (boiler alone) failed: {line_alone}"
     );
 }
