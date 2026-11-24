@@ -23,6 +23,20 @@ use mod_api::WorldEpoch;
 pub trait GoalHost {
     /// The handles' epoch: a handle of an earlier world refuses.
     fn epoch(&self) -> Option<WorldEpoch>;
+    /// Whether `id` is temporarily hidden from entity resolution (`Game::held_out`).
+    fn is_held_out(&self, _id: u32) -> bool {
+        false
+    }
+    /// Whether `entity` names a fake player in the owning game (refused by all
+    /// mob target setters).
+    fn is_fake_player(&self, _entity: mod_api::EntityRef) -> bool {
+        false
+    }
+    /// Whether `entity` names a player that cannot be bound in this level (a
+    /// fake player, or a player in another level).
+    fn is_unbindable_player(&self, _entity: mod_api::EntityRef) -> bool {
+        false
+    }
     /// Whether a merchant lent to this tick remains available to server hooks.
     fn merchant_is_live(&self, mob: &Mob) -> bool;
     /// Read the current offers, including a guest's more recent trade session.

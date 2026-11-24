@@ -218,15 +218,14 @@ pub trait MobsBackendMut {
     /// Side: server.
     /// `GoalSelector.addGoal(priority, goal)` on a mob's goal selector.
     /// Refuses a stale or unavailable mob, a client, and the dragon (it
-    /// keeps no selector); a goal the mob's vanilla class does not hold (a
-    /// `PathfinderMob` goal for a bat, ghast or phantom, `BreedGoal` or
-    /// `FollowParentGoal` for a mob that is no animal); and non-finite
-    /// numbers, negative speeds and distances, a probability outside
-    /// 0..=1, a negative interval, and an unknown species id (in `prey`,
-    /// `what` or `only`) or empty `items`. The target selector's kinds
-    /// (`nearest_target`, `hurt_by_target`) go in through
-    /// `add_target_goal`; both selectors take them, as vanilla's two
-    /// selectors do.
+    /// keeps no selector); a goal the mob's vanilla class or navigation does
+    /// not hold (a `PathfinderMob` goal for a bat, ghast or phantom,
+    /// `BreedGoal` or `FollowParentGoal` for a mob that is no animal,
+    /// `FollowMobGoal` for water or amphibious navigation); non-finite
+    /// numbers; and an unknown species id (in `prey`, `what` or `only`).
+    /// The target selector's kinds (`nearest_target`, `hurt_by_target`) go
+    /// in through `add_target_goal`; both selectors take them, as vanilla's
+    /// two selectors do.
     fn mob_add_goal(&mut self, mob: MobRef, priority: i32, goal: &GoalSpec) -> bool;
     /// Side: server.
     /// `GoalSelector.addGoal` on the mob's target selector. The same rules
@@ -246,10 +245,11 @@ pub trait MobsBackendMut {
     fn mob_remove_target_goal(&mut self, mob: MobRef, id: &str) -> Option<usize>;
     /// Side: server.
     /// `PathNavigation.moveTo(x, y, z, speed)`: true if a path was started.
-    /// Refuses a stale or unavailable mob, a client, non-finite arguments,
-    /// and coordinates too large for safe block arithmetic. As in vanilla,
-    /// the mob's own goals may replace the path next tick. False for the
-    /// dragon, which flies by its phase and keeps no navigation.
+    /// Refuses a stale or unavailable mob, a client, and non-finite arguments.
+    /// Finite coordinates outside the `i32` block range saturate on floor
+    /// without panicking. As in vanilla, the mob's own goals may replace the
+    /// path next tick. False for the dragon, which flies by its phase and keeps
+    /// no navigation.
     fn mob_move_to(&mut self, mob: MobRef, at: [f64; 3], speed: f64) -> bool;
     /// `PathNavigation.moveTo(Path, speed)`: follow a path the mod computed.
     /// Each [`PathNode`] is floored to its block, and the engine classifies
@@ -278,7 +278,7 @@ pub trait MobsBackendMut {
     fn mob_move_to_path(
         &mut self,
         mob: MobRef,
-        nodes: Vec<PathNode>,
+        nodes: &[PathNode],
         speed: f64,
     ) -> Result<(), MoveToPathError>;
     /// Side: server.
@@ -331,9 +331,11 @@ pub trait MobsBackendMut {
     /// does not update their brain memory. A fox, an enderman or a
     /// zombified piglin stores the target with its own `setTarget` side
     /// effects (`Mob::set_target`).
-    /// Invalid targets are refused (false, mob unchanged); vanilla instead
-    /// stores `asValidTarget(target)`, clearing the target when it is invalid.
-    /// False also means a stale handle, client, or an unavailable mob/player.
+    /// Live targets that fail `Mob.asValidTarget` normalize to `None` before
+    /// `living_change_target` fires, clearing the target unless canceled or
+    /// redirected. Returns `false` (mob unchanged) for a stale handle, client,
+    /// unavailable mob/player, fake player, cross-dimension player, canceled
+    /// event, or unbindable listener redirect.
     fn mob_set_target(&mut self, mob: MobRef, target: Option<LivingRef>) -> bool;
     /// Side: server.
     /// `Mob.setAggressive`. False for an unavailable mob.

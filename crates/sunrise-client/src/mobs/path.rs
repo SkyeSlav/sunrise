@@ -218,14 +218,16 @@ impl Node {
     }
     fn distance(&self, x: i32, y: i32, z: i32) -> f32 {
         let (dx, dy, dz) = (
-            (x - self.x) as f32,
-            (y - self.y) as f32,
-            (z - self.z) as f32,
+            (i64::from(x) - i64::from(self.x)) as f32,
+            (i64::from(y) - i64::from(self.y)) as f32,
+            (i64::from(z) - i64::from(self.z)) as f32,
         );
         (dx * dx + dy * dy + dz * dz).sqrt()
     }
     fn manhattan(&self, x: i32, y: i32, z: i32) -> f32 {
-        ((x - self.x).abs() + (y - self.y).abs() + (z - self.z).abs()) as f32
+        ((i64::from(x) - i64::from(self.x)).abs()
+            + (i64::from(y) - i64::from(self.y)).abs()
+            + (i64::from(z) - i64::from(self.z)).abs()) as f32
     }
 }
 
@@ -260,7 +262,9 @@ pub struct PathNode {
 impl Path {
     fn new(nodes: Vec<PathNode>, target: [i32; 3], reached: bool) -> Self {
         let dist_to_target = nodes.last().map_or(f32::MAX, |n| {
-            ((n.x - target[0]).abs() + (n.y - target[1]).abs() + (n.z - target[2]).abs()) as f32
+            ((i64::from(n.x) - i64::from(target[0])).abs()
+                + (i64::from(n.y) - i64::from(target[1])).abs()
+                + (i64::from(n.z) - i64::from(target[2])).abs()) as f32
         });
         Self {
             nodes,

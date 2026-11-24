@@ -278,7 +278,7 @@ impl<'a> GoalContext<'a> {
     /// mob's own that creates a path replaces this one next tick. The mob this
     /// goal runs on is always there, so the refusals are `NotFinite` and
     /// `Empty`, the same [`MoveToPathError`] the handle answers.
-    pub fn move_to_path(&mut self, path: Vec<PathNode>, speed: f64) -> Result<(), MoveToPathError> {
+    pub fn move_to_path(&mut self, path: &[PathNode], speed: f64) -> Result<(), MoveToPathError> {
         self.inner.move_to_path(path, speed)
     }
     /// `getNavigation().stop()`.
@@ -289,10 +289,12 @@ impl<'a> GoalContext<'a> {
     pub fn look_at(&mut self, at: [f64; 3]) {
         self.inner.look_at(at)
     }
-    /// `setTarget`; `None` clears it. The target resolves through the tick's
-    /// view: a mob, or the player the tick sees. False when the target cannot
-    /// be stored — the mob's brain owns its target, as the write handle's own
-    /// rules refuse — and then the mob's target is unchanged.
+    /// `setTarget`; `None` clears it. Normalizes an invalid live target through
+    /// `Mob.asValidTarget` to `None` before firing `living_change_target`, and
+    /// clears the target when the event is not canceled or redirected. Returns
+    /// `false` (target unchanged) when the mob's brain owns its target, the
+    /// target handle is stale, unavailable or a fake player, the event is
+    /// canceled, or a listener redirects to an unbindable handle.
     pub fn set_target(&mut self, target: Option<LivingRef>) -> bool {
         self.inner.set_target(target)
     }
@@ -335,7 +337,7 @@ pub trait GoalCxBackend {
     /// `GoalContext::move_to`.
     fn move_to(&mut self, at: [f64; 3], speed: f64) -> bool;
     /// `GoalContext::move_to_path`.
-    fn move_to_path(&mut self, path: Vec<PathNode>, speed: f64) -> Result<(), MoveToPathError>;
+    fn move_to_path(&mut self, path: &[PathNode], speed: f64) -> Result<(), MoveToPathError>;
     /// `GoalContext::stop_navigation`.
     fn stop_navigation(&mut self);
     /// `GoalContext::look_at`.

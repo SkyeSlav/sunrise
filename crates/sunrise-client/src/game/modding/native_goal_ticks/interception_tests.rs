@@ -68,10 +68,16 @@ fn installed_native_listener_intercepts_ai_setter_and_preserves_species_effects(
                 .unwrap()
                 .clone();
             let target = Mob::new(9010, kind, Vec3::new(2.0, 64.0, 0.0), 0.0);
-            let seen = [target.seen(None, game.items())];
+            let live = mobs::LiveOthers {
+                before: std::slice::from_ref(&target),
+                between: &[],
+                after: &[],
+                vehicle: None,
+            };
             let epoch = game.native_lifecycle.epoch().unwrap();
             let replacement = LivingRef::new(EntityRef::new(epoch, target.id));
-            let world = game.mob_world_base(&seen);
+            let mut world = game.mob_world_base(&[]);
+            world.live_mobs = Some(&live);
             assert!(world.mob_hooks.is_some());
             assert!(world.goal_host.is_some());
 

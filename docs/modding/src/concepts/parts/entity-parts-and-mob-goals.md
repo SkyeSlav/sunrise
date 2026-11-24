@@ -72,13 +72,11 @@ object is per mob, built fresh at every construction, and its state is never sav
 memory across loads keeps it in attachments. The goal wrapper and read view are created only where a mod goal runs.
 
 A `Goal` reads and writes through its `GoalContext`: `mob()` is a fresh handle of the mob it runs on,
-`host()` the tick's read view, `random()` the mob's own random (`mob.getRandom()`, so a mod's draws
-keep the mob's stream in shape). The read view answers the ticking mob itself directly, the player the
-tick sees, and every other entity from the tick's snapshot — a `getEntities` of the moment the mob
-list was taken out — so a read the snapshot does not carry (a mob's gear or effects, its species id)
-answers `None`, and the handle docs mark the reads that carry the snapshot rule. Writes apply to the
-mob itself through the engine's own paths: `move_to(pos, speed)` and `stop_navigation()`
-(`PathNavigation`), `move_to_path(Vec<PathNode>, speed)` to follow a path the mod computed.
+`host()` the tick's live read view, `random()` the mob's own random (`mob.getRandom()`, so a mod's draws
+keep the mob's stream in shape). The read view answers the ticking mob and peer mobs from the tick's
+disjoint live mob loan, and players, the dragon, and non-mob entities directly from the owning game host.
+Writes apply to the mob itself through the engine's own paths: `move_to(pos, speed)` and
+`stop_navigation()` (`PathNavigation`), `move_to_path(&[PathNode], speed)` to follow a path the mod computed.
 It returns `Result<(), MoveToPathError>`: `NotFinite` for a non-finite speed or coordinate,
 `Unavailable` when no navigable mob is available, and `Empty` when no node remains after trimming.
 `NotFinite` and `Unavailable` preserve navigation; `Empty` leaves no path in progress.

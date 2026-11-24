@@ -178,20 +178,27 @@ fn tick_goals_as(
     let mut test_level = sunrise_client::health::TestLevel::new(0);
     let mut level = test_level.level();
     let mut events = Vec::new();
-    {
+    mobs.with_one_and_rest(index, |m, before, after| {
+        let live = sunrise_client::mobs::LiveOthers {
+            before,
+            between: &[],
+            after,
+            vehicle: None,
+        };
         let mut w = game.mob_world_base(&snapshot);
         w.others_index = Some(&index_by_id);
+        w.live_mobs = Some(&live);
         w.player = player;
         w.player_identity = identity;
-        let mut selector = std::mem::take(&mut mobs[index].ai.goals);
+        let mut selector = std::mem::take(&mut m.ai.goals);
         let mut cx = Cx {
             w: &w,
             level: &mut level,
             events: &mut events,
         };
-        selector.tick(&mut mobs[index], &mut cx);
-        mobs[index].ai.goals = selector;
-    }
+        selector.tick(m, &mut cx);
+        m.ai.goals = selector;
+    });
     game.mobs
         .restore(mobs, sunrise_client::join_seq::RestoreOrder::SurvivorsFirst);
 }
@@ -778,29 +785,47 @@ fn set_target_refuses_what_the_write_handle_refuses() {
         game.mobs[0].ai.targets.clear();
         attach_parts(game, 0);
         for id in [91, 92, 93] {
+            if id != 91 {
+                // Re-arm a valid target before checking that an invalid live
+                // target normalizes to None and clears it (vanilla `Mob.setTarget`).
+                *TARGET.lock().unwrap() = Some(game.entity(91).unwrap());
+                tick_goals(game, 0);
+                assert_eq!(game.mobs[0].ai.target, Some(Who::Mob(91)));
+            }
             *TARGET.lock().unwrap() = Some(game.entity(id).unwrap());
             tick_goals(game, 0);
-            // The write handle's valid-target rules, over the tick's facts:
-            // a zombie stores, a creeper (`IronGolem.canAttack`) and a ghast
-            // (`asValidTarget`) refuse.
+            // Live targets normalize through `Mob.asValidTarget`: a zombie
+            // stores; a creeper (`IronGolem.canAttack`) and a ghast
+            // (`asValidTarget`) normalize to None and clear the target.
             assert_eq!(
                 ANSWERS.lock().unwrap().last().copied(),
-                Some(id == 91),
-                "target {id}"
+                Some(true),
+                "live target {id} runs setTarget"
             );
             if id == 91 {
                 assert_eq!(game.mobs[0].ai.target, Some(Who::Mob(91)));
             } else {
-                assert_ne!(
-                    game.mobs[0].ai.target,
-                    Some(Who::Mob(id)),
-                    "a refused target does not store"
+                assert_eq!(
+                    game.mobs[0].ai.target, None,
+                    "invalid live target {id} clears stored target"
                 );
             }
         }
+        // A stale handle refuses before the event and leaves the target intact.
+        *TARGET.lock().unwrap() = Some(game.entity(91).unwrap());
+        tick_goals(game, 0);
+        assert_eq!(game.mobs[0].ai.target, Some(Who::Mob(91)));
+        let stale = EntityRef::new(
+            mod_api::WorldEpoch::new(game.entity(91).unwrap().epoch().get() + 1),
+            91,
+        );
+        *TARGET.lock().unwrap() = Some(stale);
+        tick_goals(game, 0);
+        assert_eq!(ANSWERS.lock().unwrap().last().copied(), Some(false));
+        assert_eq!(game.mobs[0].ai.target, Some(Who::Mob(91)));
         // The player the tick sees, through the same rule set: a fighting
-        // difficulty stores her, Peaceful refuses, and a golem a player
-        // built never targets a player.
+        // difficulty stores her, Peaceful and a player-built golem normalize
+        // to None and clear the stored target.
         let epoch = game.entity(91).unwrap().epoch();
         let player = EntityRef::new(epoch, 5000);
         *TARGET.lock().unwrap() = Some(player);
@@ -816,21 +841,23 @@ fn set_target_refuses_what_the_write_handle_refuses() {
         tick_goals_as(game, 0, Some(view.clone()), Some(([1, 2, 3, 4], 5000)));
         assert_eq!(
             ANSWERS.lock().unwrap().last().copied(),
-            Some(false),
-            "Peaceful refuses a player target"
+            Some(true),
+            "Peaceful normalizes a player target to None and clears"
         );
+        assert_eq!(game.mobs[0].ai.target, None);
         game.world.health_rules.difficulty = sunrise_world::food::Difficulty::Normal;
+        tick_goals_as(game, 0, Some(view.clone()), Some(([1, 2, 3, 4], 5000)));
+        assert_eq!(game.mobs[0].ai.target, Some(Who::Player));
         game.mobs[0].extra.player_created = true;
         tick_goals_as(game, 0, Some(view), Some(([1, 2, 3, 4], 5000)));
         assert_eq!(
             ANSWERS.lock().unwrap().last().copied(),
-            Some(false),
-            "a player-built golem never targets a player"
+            Some(true),
+            "a player-built golem normalizes a player target to None and clears"
         );
         assert_eq!(
-            game.mobs[0].ai.target,
-            Some(Who::Player),
-            "a refused player target does not replace the stored one"
+            game.mobs[0].ai.target, None,
+            "an invalid player target clears the stored target"
         );
     });
 }

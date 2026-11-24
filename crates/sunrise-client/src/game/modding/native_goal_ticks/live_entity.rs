@@ -162,14 +162,12 @@ impl GoalCx<'_, '_> {
         self.entity_mob(entity).map(|_| false)
     }
 
-    /// Goal visitors need an actual mob body, not a snapshot.
+    /// Goal visitors need an actual mob body, not a synthetic player view.
     pub(super) fn live_entity_for_read(&self, entity: EntityRef) -> Result<&Mob, EntityReadError> {
         match self.resolve(entity) {
             Some(Resolved::Own) => Ok(self.m),
             Some(Resolved::Live(mob)) => Ok(mob),
-            Some(Resolved::Player | Resolved::Seen(_) | Resolved::Dragon(_)) => {
-                Err(EntityReadError::Unavailable)
-            }
+            Some(Resolved::SyntheticPlayer) => Err(EntityReadError::Unavailable),
             Some(Resolved::Unavailable) | None => Err(EntityReadError::Stale),
         }
     }

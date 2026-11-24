@@ -292,14 +292,14 @@ impl Mob {
         };
         let solid = |p: [i32; 3]| shape.contains_y(p[1]) && w.solid(p[0], p[1], p[2]);
         if air(p) {
-            let mut q = [p[0], (p[1] - 1).min(max_y), p[2]];
+            let mut q = [p[0], p[1].saturating_sub(1).min(max_y), p[2]];
             while q[1] >= min_y && air(q) {
                 q[1] -= 1;
             }
             if q[1] >= min_y {
                 return [q[0], q[1] + 1, q[2]];
             }
-            q[1] = (p[1] + 1).max(min_y);
+            q[1] = p[1].saturating_add(1).max(min_y);
             while q[1] <= max_y && air(q) {
                 q[1] += 1;
             }
@@ -308,7 +308,7 @@ impl Mob {
         if !solid(p) {
             return p;
         }
-        let mut q = [p[0], p[1] + 1, p[2]];
+        let mut q = [p[0], p[1].saturating_add(1), p[2]];
         while q[1] <= max_y && solid(q) {
             q[1] += 1;
         }
@@ -422,9 +422,14 @@ impl Mob {
     /// the stuck check drops it and no search is run in its place (vanilla
     /// would re-search to the previous target; this is the stricter rule the
     /// issue asks for). The per-node timeout drops it as it drops any path.
-    pub fn nav_move_to_supplied(&mut self, w: &MobWorld, nodes: &[[f64; 3]], speed: f64) -> bool {
+    pub fn nav_move_to_supplied(
+        &mut self,
+        w: &MobWorld,
+        nodes: impl IntoIterator<Item = [f64; 3]>,
+        speed: f64,
+    ) -> bool {
         let nodes: Vec<PathNode> = nodes
-            .iter()
+            .into_iter()
             .map(|at| PathNode {
                 x: at[0].floor() as i32,
                 y: at[1].floor() as i32,

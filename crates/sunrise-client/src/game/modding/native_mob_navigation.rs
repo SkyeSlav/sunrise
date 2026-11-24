@@ -3,14 +3,12 @@ use super::{Game, commands::Target};
 use mod_api::{MobRef, MoveToPathError, PathType};
 
 /// The numbers a mod hands a mob's navigation (`moveTo(x, y, z, speed)`): a
-/// finite speed, and finite coordinates small enough for the pathfinder's
-/// block arithmetic. The mob handles' boundary, shared with a goal tick's own
-/// `move_to` (#1077) — one check, not a copy per caller.
+/// finite speed and finite coordinates. Coordinates outside the `i32` block
+/// range saturate on floor without overflowing. The mob handles' boundary,
+/// shared with a goal tick's own `move_to` (#1077) — one check, not a copy
+/// per caller.
 pub(super) fn navigation_move_accepts(at: [f64; 3], speed: f64) -> bool {
-    speed.is_finite()
-        && at
-            .iter()
-            .all(|v| v.is_finite() && v.abs() <= 2_000_000_000.0)
+    speed.is_finite() && at.iter().all(|v| v.is_finite())
 }
 
 /// The coordinates a mod hands a mob's look control (`setLookAt(x, y, z)`):
@@ -55,10 +53,9 @@ pub(super) fn supplied_path_refusal(followed: bool) -> Result<(), MoveToPathErro
 
 impl Game<'_> {
     /// `PathNavigation.moveTo(x, y, z, speed)`: true if a path was started.
-    /// Refuses a stale or unavailable mob, a client, non-finite arguments,
-    /// and coordinates too large for safe block arithmetic. As in vanilla,
-    /// the mob's own goals may replace the path next tick. False for the
-    /// dragon, which flies by its phase and keeps no navigation.
+    /// Refuses a stale or unavailable mob, a client, and non-finite arguments.
+    /// As in vanilla, the mob's own goals may replace the path next tick.
+    /// False for the dragon, which flies by its phase and keeps no navigation.
     pub(super) fn mob_move_to(&mut self, mob: MobRef, at: [f64; 3], speed: f64) -> bool {
         if !navigation_move_accepts(at, speed) {
             return false;
@@ -94,10 +91,10 @@ impl Game<'_> {
     pub(super) fn mob_move_to_path(
         &mut self,
         mob: MobRef,
-        nodes: Vec<mod_api::PathNode>,
+        nodes: &[mod_api::PathNode],
         speed: f64,
     ) -> Result<(), MoveToPathError> {
-        if !supplied_path_accepts(&nodes, speed) {
+        if !supplied_path_accepts(nodes, speed) {
             return Err(MoveToPathError::NotFinite);
         }
         let Some(Target::Mob(id)) = self.native_entity_target(mob.entity()) else {
@@ -106,14 +103,17 @@ impl Game<'_> {
         let Some(index) = self.mobs.iter().position(|m| m.id == id) else {
             return Err(MoveToPathError::Unavailable);
         };
-        let nodes: Vec<[f64; 3]> = nodes.iter().map(|n| [n.x, n.y, n.z]).collect();
         // The pathfinder reads terrain only. Take the mob list so its selected
         // mob can be mutably borrowed alongside the shared MobWorld, as the
         // mob tick does. No mod hook fires during classification.
         let mut mobs = self.mobs.lift();
         #[cfg(test)]
         super::entity::taken_pass_tests::after_take(self);
-        let followed = mobs[index].nav_move_to_supplied(&self.mob_world_base(&[]), &nodes, speed);
+        let followed = mobs[index].nav_move_to_supplied(
+            &self.mob_world_base(&[]),
+            nodes.iter().map(|n| [n.x, n.y, n.z]),
+            speed,
+        );
         self.mobs
             .restore(mobs, sunrise_client::join_seq::RestoreOrder::SurvivorsFirst);
         supplied_path_refusal(followed)
@@ -386,6 +386,9 @@ mod tests {
             let bottom = f64::from(game.world.bottom_y());
             compare_extreme(game, 2_000_000_000.0, top);
             compare_extreme(game, -2_000_000_000.0, bottom);
+            compare_extreme(game, 1.0e300, top);
+            compare_extreme(game, -1.0e300, bottom);
+            assert!(!mob.move_to(game, [1.0e300, 65.0, -1.0e300], 1.0));
             game.world.shape =
                 sunrise_client::chunk::LevelShape::new(0, 128, 128, true, false).unwrap();
             assert_eq!(game.world.shape.max_y(), 128);
@@ -454,16 +457,16 @@ mod tests {
             let mob = game.mob(entity).unwrap();
             let node = |x: f64, y: f64, z: f64| PathNode { x, y, z };
             assert_eq!(
-                mob.move_to_path(game, vec![node(f64::NAN, 65.0, 3.5)], 1.0),
+                mob.move_to_path(game, &[node(f64::NAN, 65.0, 3.5)], 1.0),
                 Err(MoveToPathError::NotFinite)
             );
             assert_eq!(
-                mob.move_to_path(game, Vec::new(), 1.0),
+                mob.move_to_path(game, &[], 1.0),
                 Err(MoveToPathError::Empty),
                 "an empty path has no node left to follow"
             );
             assert_eq!(
-                mob.move_to_path(game, vec![node(3.5, 65.0, 3.5), node(4.5, 65.0, 3.5)], 1.0),
+                mob.move_to_path(game, &[node(3.5, 65.0, 3.5), node(4.5, 65.0, 3.5)], 1.0),
                 Ok(()),
                 "a path the navigation took answers Ok"
             );
@@ -473,7 +476,7 @@ mod tests {
                 99,
             ));
             assert_eq!(
-                stale.move_to_path(game, vec![node(3.5, 65.0, 3.5)], 1.0),
+                stale.move_to_path(game, &[node(3.5, 65.0, 3.5)], 1.0),
                 Err(MoveToPathError::Unavailable)
             );
         });

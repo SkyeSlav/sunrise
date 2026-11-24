@@ -119,11 +119,20 @@ fn with_mob_world(
         .iter()
         .map(|m| creatures::seen(m, game.level.player_uuid, game.items()))
         .collect();
-    let mut w = game.mob_world_base(&snapshot);
-    w.goal_host = Some(&*game);
     let mut test_level = sunrise_client::health::TestLevel::new(0);
     let mut level = test_level.level();
-    drive(&mut mobs[0], &w, &mut level);
+    mobs.with_one_and_rest(0, |m, before, after| {
+        let live = mobs::LiveOthers {
+            before,
+            between: &[],
+            after,
+            vehicle: None,
+        };
+        let mut w = game.mob_world_base(&snapshot);
+        w.goal_host = Some(&*game);
+        w.live_mobs = Some(&live);
+        drive(m, &w, &mut level);
+    });
     game.mobs.restore(mobs, RestoreOrder::SurvivorsFirst);
 }
 
@@ -412,11 +421,20 @@ fn with_villager_tick(
         .iter()
         .map(|m| creatures::seen(m, game.level.player_uuid, game.items()))
         .collect();
-    let mut w = game.mob_world_base(&snapshot);
-    w.goal_host = Some(&*game);
     let mut events = Vec::new();
     let index = mobs.iter().position(|m| m.id == id).unwrap();
-    f(&mut mobs[index], &w, level, &mut events);
+    mobs.with_one_and_rest(index, |m, before, after| {
+        let live = mobs::LiveOthers {
+            before,
+            between: &[],
+            after,
+            vehicle: None,
+        };
+        let mut w = game.mob_world_base(&snapshot);
+        w.goal_host = Some(&*game);
+        w.live_mobs = Some(&live);
+        f(m, &w, level, &mut events);
+    });
     game.mobs.restore(mobs, RestoreOrder::SurvivorsFirst);
 }
 

@@ -229,17 +229,34 @@ fn scoped_host_resolves_other_real_players_from_the_game() {
         carried.extra.mount = Some(13);
         fixture_resident_column(&mut game.world, (0, 0));
         game.mobs.push(carried);
+        // Select guest 12 with a PlayerView too: BOTH the selected real player
+        // and the other guest stay in Game and delegate every read straight to
+        // `self.host` rather than being intercepted by a partial PlayerView.
+        let selected_view = game
+            .lan_guest_views()
+            .into_iter()
+            .find(|(conn, _)| *conn == 12)
+            .map(|(_, view)| view);
         let mut world = game.mob_world_base(&[]);
         world.goal_host = Some(game);
         world.live_mobs = Some(&live);
-        // Deliberately select only one guest: the other remains a real live
-        // player and must resolve through the underlying game host.
+        world.player = selected_view;
         world.player_identity = Some(([0, 0, 0, 12], 12));
         let context = GoalCx {
             m: &mut actor,
             w: &world,
             host: game,
         };
+        let selected_player = context.lookup_player(12).expect("selected guest is online");
+        let selected_living = context.lookup_living(selected_player.entity()).unwrap();
+        assert!(
+            selected_living.health(&context).is_some(),
+            "selected real player reads live health from Game"
+        );
+        assert!(
+            selected_player.entity().rotation(&context).is_some(),
+            "selected real player reads live rotation from Game"
+        );
         let player = context.lookup_player(13).expect("other guest is online");
         assert_eq!(player.entity().id(), 13);
         assert_eq!(context.lookup_entity(13), Some(player.entity()));

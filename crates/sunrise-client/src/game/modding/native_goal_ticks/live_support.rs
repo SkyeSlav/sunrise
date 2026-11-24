@@ -23,10 +23,13 @@ impl GoalCx<'_, '_> {
                 Some(Resolved::Own) if !self.m.removed => Some(Some(&*self.m)),
                 Some(Resolved::Live(mob)) if !mob.removed => Some(Some(mob)),
                 Some(
-                    Resolved::Seen(_) | Resolved::Own | Resolved::Live(_) | Resolved::Unavailable,
+                    Resolved::SyntheticPlayer
+                    | Resolved::Own
+                    | Resolved::Live(_)
+                    | Resolved::Unavailable,
                 ) => None,
-                _ if self.is_game_entity(handle) => Some(None),
-                _ => None,
+                None if self.is_game_entity(handle) => Some(None),
+                None => None,
             }
         };
         self.w.goal_host?.entities_team_damage_allowed(

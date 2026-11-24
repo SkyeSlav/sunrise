@@ -104,7 +104,7 @@ pub(crate) use goal_clone;
 
 /// Goal.reducedTickDelay
 pub fn reduced(ticks: i32) -> i32 {
-    (ticks + 1) / 2
+    ((i64::from(ticks) + 1) / 2) as i32
 }
 fn adjusted(every_tick: bool, ticks: i32) -> i32 {
     if every_tick { ticks } else { reduced(ticks) }
@@ -942,10 +942,74 @@ impl Mob {
     pub fn refuses_set_target(&self) -> bool {
         super::ai::brain_target(self).is_some()
     }
-    /// Apply an AI target change after listeners have had a chance to alter it.
+    /// `Mob.asValidTarget` for an engine `Who` inside a mob tick, preferring
+    /// the live disjoint loan over the tick snapshot.
+    pub fn valid_who(&self, w: &MobWorld, who: Who) -> bool {
+        match who {
+            Who::Mob(id) => {
+                if id == self.id {
+                    self.valid_target(
+                        w,
+                        &TargetFacts::Mob {
+                            id: self.id,
+                            species: self.species(),
+                            alive: self.alive(),
+                            invulnerable: self.invulnerable_flag,
+                            baby: self.is_baby(),
+                        },
+                    )
+                } else if let Some(mob) = w.live_mobs.and_then(|mobs| mobs.find(id)) {
+                    !mob.removed
+                        && self.valid_target(
+                            w,
+                            &TargetFacts::Mob {
+                                id: mob.id,
+                                species: mob.species(),
+                                alive: mob.alive(),
+                                invulnerable: mob.invulnerable_flag,
+                                baby: mob.is_baby(),
+                            },
+                        )
+                } else if let Some(seen) = w.seen(id) {
+                    !seen.removed
+                        && self.valid_target(
+                            w,
+                            &TargetFacts::Mob {
+                                id: seen.id,
+                                species: seen.species,
+                                alive: seen.alive,
+                                invulnerable: seen.invulnerable,
+                                baby: seen.baby,
+                            },
+                        )
+                } else {
+                    false
+                }
+            }
+            Who::Player => w.selected_player().is_some_and(|p| {
+                self.valid_target(
+                    w,
+                    &TargetFacts::Player {
+                        alive: p.alive,
+                        invulnerable: p.invulnerable,
+                        creative: p.creative,
+                        spectator: p.spectator,
+                        uuid: p.uuid,
+                    },
+                )
+            }),
+        }
+    }
+    /// Apply an AI target change after `Mob.asValidTarget` normalization and
+    /// `LivingChangeTargetEvent`.
     pub fn set_ai_target(&mut self, w: &MobWorld, target: Option<Who>) -> super::TargetChange {
         let is_brain = super::ai::brain_target(self).is_some();
-        let change = w.change_target(self, is_brain, target);
+        let normalized = if is_brain {
+            target
+        } else {
+            target.filter(|&who| self.valid_who(w, who))
+        };
+        let change = w.change_target(self, is_brain, normalized);
         if let super::TargetChange::Set(target) = change {
             self.set_target(target);
         }
@@ -1192,7 +1256,9 @@ impl Goal for Panic {
             return false;
         }
         let range = self.water_range.or((m.fire_ticks > 0).then_some(5));
-        if let Some(range) = range {
+        if let Some(range) = range
+            && range >= 0
+        {
             let (bx, by, bz) = (
                 m.position.x.floor() as i32,
                 m.position.y.floor() as i32,
@@ -1212,15 +1278,20 @@ impl Goal for Panic {
             };
             if empty {
                 // findBlocksInBoxByManhattanDistance(pos, range, 1) for water.
-                let mut best: Option<([i32; 3], i32)> = None;
+                let mut best: Option<([i32; 3], i64)> = None;
                 for dy in -1i32..=1 {
                     for dx in -range..=range {
                         for dz in -range..=range {
-                            let d = dx.abs() + dy.abs() + dz.abs();
-                            if cx.w.fluid(bx + dx, by + dy, bz + dz) == crate::blocks::Fluid::Water
+                            let (Some(x), Some(y), Some(z)) =
+                                (bx.checked_add(dx), by.checked_add(dy), bz.checked_add(dz))
+                            else {
+                                continue;
+                            };
+                            let d = i64::from(dx).abs() + i64::from(dy).abs() + i64::from(dz).abs();
+                            if cx.w.fluid(x, y, z) == crate::blocks::Fluid::Water
                                 && best.is_none_or(|b| d < b.1)
                             {
-                                best = Some(([bx + dx, by + dy, bz + dz], d));
+                                best = Some(([x, y, z], d));
                             }
                         }
                     }

@@ -270,9 +270,9 @@ impl mod_api::Hooks for PassProbe {
 
 /// NoAI still drops motion below 0.003 during its real turn. The observers
 /// bracket that turn, so a frozen initial snapshot or an all-post-turn view
-/// cannot satisfy both assertions. The existing lifted-pass spawn fixture
-/// inserts a real mob after the pass has taken its snapshot and storage;
-/// observations still go through the actual scoped hook on both passes.
+/// cannot satisfy both assertions. `mob_despawn` runs with the mob list
+/// restored on the owning `Game` host, so a mob already added to the level
+/// resolves live while waiting until the next pass for its own turn.
 #[test]
 #[ignore = "daily"]
 fn scoped_despawn_view_tracks_peer_turns_and_defers_mid_pass_spawns() {
@@ -302,8 +302,6 @@ fn scoped_despawn_view_tracks_peer_turns_and_defers_mid_pass_spawns() {
                     spawned.no_gravity = true;
                     spawned.ground.on_ground = true;
                     game.mobs.push(spawned);
-                    // The ordinary host can already read the spawn buffer.
-                    // Only the scoped view must keep it outside this pass.
                     let entity = game.entity(74).expect("spawn has a resident handle");
                     assert!(game.mob(entity).is_some());
                     assert_eq!(entity.position(game), Some([10.0, 80.0, 0.5]));
@@ -316,20 +314,20 @@ fn scoped_despawn_view_tracks_peer_turns_and_defers_mid_pass_spawns() {
                     PassObservation {
                         actor: 71,
                         peer_velocity: Some([0.001, 0.0, 0.0]),
-                        spawned_position: None,
-                        spawned_handles: [false; 3],
+                        spawned_position: Some([10.0, 80.0, 0.5]),
+                        spawned_handles: [true; 3],
                     },
                     PassObservation {
                         actor: 72,
                         peer_velocity: Some([0.001, 0.0, 0.0]),
-                        spawned_position: None,
-                        spawned_handles: [false; 3],
+                        spawned_position: Some([10.0, 80.0, 0.5]),
+                        spawned_handles: [true; 3],
                     },
                     PassObservation {
                         actor: 73,
                         peer_velocity: Some([0.0, 0.0, 0.0]),
-                        spawned_position: None,
-                        spawned_handles: [false; 3],
+                        spawned_position: Some([10.0, 80.0, 0.5]),
+                        spawned_handles: [true; 3],
                     },
                 ]
             );

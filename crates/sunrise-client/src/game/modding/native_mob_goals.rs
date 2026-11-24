@@ -51,15 +51,14 @@ fn pathfinder(species: Species) -> bool {
 impl Game<'_> {
     /// `GoalSelector.addGoal(priority, goal)` on a mob's goal selector.
     /// Refuses a stale or unavailable mob, a client, and the dragon (it
-    /// keeps no selector); a goal the mob's vanilla class does not hold (a
-    /// `PathfinderMob` goal for a bat, ghast or phantom, `BreedGoal` or
-    /// `FollowParentGoal` for a mob that is no animal); and non-finite
-    /// numbers, negative speeds and distances, a probability outside
-    /// 0..=1, a negative interval, and an unknown species id (in `prey`,
-    /// `what` or `only`) or empty `items`. The target selector's kinds
-    /// (`nearest_target`, `hurt_by_target`) go in through
-    /// `add_target_goal`; both selectors take them, as vanilla's two
-    /// selectors do.
+    /// keeps no selector); a goal the mob's vanilla class or navigation does
+    /// not hold (a `PathfinderMob` goal for a bat, ghast or phantom,
+    /// `BreedGoal` or `FollowParentGoal` for a mob that is no animal,
+    /// `FollowMobGoal` for water or amphibious navigation); non-finite
+    /// numbers; and an unknown species id (in `prey`, `what` or `only`).
+    /// The target selector's kinds (`nearest_target`, `hurt_by_target`) go
+    /// in through `add_target_goal`; both selectors take them, as vanilla's
+    /// two selectors do.
     pub(super) fn mob_add_goal(&mut self, mob: MobRef, priority: i32, goal: &GoalSpec) -> bool {
         let Some(Target::Mob(id)) = self.native_entity_target(mob.entity()) else {
             return false;
@@ -203,23 +202,35 @@ impl Game<'_> {
                 &self.damage_hooks,
             )
             .with_mob_uuids(&self.persist.uuids);
-            let m = &mut mobs[index];
-            let mut selector = if targets {
-                std::mem::take(&mut m.ai.targets)
-            } else {
-                std::mem::take(&mut m.ai.goals)
-            };
-            let mut cx = Cx {
-                w: &w,
-                level: &mut level,
-                events: &mut events,
-            };
-            let removed = selector.remove_all(|g| goal_id(g.name()) == id, m, &mut cx);
-            if targets {
-                mobs[index].ai.targets = selector;
-            } else {
-                mobs[index].ai.goals = selector;
-            }
+            let removed = mobs
+                .with_one_and_rest(index, |m, before, after| {
+                    let live = mobs::LiveOthers {
+                        before,
+                        between: &[],
+                        after,
+                        vehicle: None,
+                    };
+                    let mut scoped = w.clone();
+                    scoped.live_mobs = Some(&live);
+                    let mut selector = if targets {
+                        std::mem::take(&mut m.ai.targets)
+                    } else {
+                        std::mem::take(&mut m.ai.goals)
+                    };
+                    let mut cx = Cx {
+                        w: &scoped,
+                        level: &mut level,
+                        events: &mut events,
+                    };
+                    let removed = selector.remove_all(|g| goal_id(g.name()) == id, m, &mut cx);
+                    if targets {
+                        m.ai.targets = selector;
+                    } else {
+                        m.ai.goals = selector;
+                    }
+                    removed
+                })
+                .expect("mob index is present");
             mobs::apply_brain_events(&mut mobs, &mut level, &mut events, 0, &w.teams);
             removed
         };
@@ -272,7 +283,7 @@ impl Game<'_> {
             GoalSpec::Float => Some(Box::new(Float)),
             GoalSpec::ClimbOnTopOfPowderSnow => Some(Box::new(ClimbOnTopOfPowderSnow)),
             GoalSpec::Panic { speed, water_range } => {
-                if !speed.is_finite() || *speed < 0.0 || water_range.is_some_and(|r| r < 0) {
+                if !speed.is_finite() {
                     return None;
                 }
                 let mut g = Panic::new(*speed);
@@ -286,11 +297,7 @@ impl Game<'_> {
                 swim,
                 flying,
             } => {
-                if !speed.is_finite()
-                    || *speed < 0.0
-                    || *interval < 0
-                    || water_avoiding.is_some_and(|p| !p.is_finite() || !(0.0..=1.0).contains(&p))
-                {
+                if !speed.is_finite() || water_avoiding.is_some_and(|p| !p.is_finite()) {
                     return None;
                 }
                 let mut g = Stroll::new(*speed);
@@ -307,11 +314,7 @@ impl Game<'_> {
                 mobs,
                 only,
             } => {
-                if !range.is_finite()
-                    || *range < 0.0
-                    || !probability.is_finite()
-                    || !(0.0..=1.0).contains(probability)
-                {
+                if !range.is_finite() || !probability.is_finite() {
                     return None;
                 }
                 let only = match only {
@@ -333,7 +336,7 @@ impl Game<'_> {
                 speed,
                 follow_unseen,
             } => {
-                if !speed.is_finite() || *speed < 0.0 {
+                if !speed.is_finite() {
                     return None;
                 }
                 Some(Box::new(MeleeAttack::new(*speed, *follow_unseen)))
@@ -350,13 +353,7 @@ impl Game<'_> {
                 walk,
                 sprint,
             } => {
-                if !max_dist.is_finite()
-                    || *max_dist < 0.0
-                    || !walk.is_finite()
-                    || *walk < 0.0
-                    || !sprint.is_finite()
-                    || *sprint < 0.0
-                {
+                if !max_dist.is_finite() || !walk.is_finite() || !sprint.is_finite() {
                     return None;
                 }
                 let what = match what {
@@ -371,39 +368,33 @@ impl Game<'_> {
                 items,
                 can_scare,
             } => {
-                if !speed.is_finite() || *speed < 0.0 || items.is_empty() {
+                if !speed.is_finite() {
                     return None;
                 }
                 let items: Vec<String> = items.iter().map(|id| namespaced(id)).collect::<Vec<_>>();
                 Some(Box::new(Tempt::new(*speed, items.into(), *can_scare)))
             }
             GoalSpec::Breed { speed } => {
-                if !speed.is_finite() || *speed < 0.0 {
+                if !speed.is_finite() {
                     return None;
                 }
                 Some(Box::new(Breed::new(*speed)))
             }
             GoalSpec::FollowParent { speed } => {
-                if !speed.is_finite() || *speed < 0.0 {
+                if !speed.is_finite() {
                     return None;
                 }
                 Some(Box::new(FollowParent::new(*speed)))
             }
             GoalSpec::FollowMob { speed, stop, area } => {
-                if !speed.is_finite()
-                    || *speed < 0.0
-                    || !stop.is_finite()
-                    || *stop < 0.0
-                    || !area.is_finite()
-                    || *area < 0.0
-                {
+                if !speed.is_finite() || !stop.is_finite() || !area.is_finite() {
                     return None;
                 }
                 Some(Box::new(FollowMob::new(*speed, *stop, *area)))
             }
             GoalSpec::RestrictSun => Some(Box::new(RestrictSun)),
             GoalSpec::FleeSun { speed } => {
-                if !speed.is_finite() || *speed < 0.0 {
+                if !speed.is_finite() {
                     return None;
                 }
                 Some(Box::new(FleeSun::new(*speed)))
@@ -417,9 +408,6 @@ impl Game<'_> {
                 must_reach,
                 interval,
             } => {
-                if *interval < 0 {
-                    return None;
-                }
                 let prey = match prey {
                     MobFilter::Player => Prey::Player,
                     MobFilter::Species(ids) => Prey::Species(self.species_list(ids)?),
@@ -427,7 +415,7 @@ impl Game<'_> {
                 };
                 let mut g = NearestTarget::new(prey, *must_see);
                 g.must_reach = *must_reach;
-                g.interval = *interval;
+                g.interval = mobs::goals::reduced(*interval);
                 Some(Box::new(g))
             }
             GoalSpec::HurtByTarget { alert } => {
@@ -440,11 +428,8 @@ impl Game<'_> {
     }
 
     /// Every species id of a filter, all of them known; None when one is
-    /// not. Bare ids read as `minecraft:`'s.
+    /// not. Bare ids read as `minecraft:`'s. An empty list is accepted.
     fn species_list(&self, ids: &[String]) -> Option<Vec<Species>> {
-        if ids.is_empty() {
-            return None;
-        }
         ids.iter().map(|id| self.species_of(id)).collect()
     }
 
@@ -829,6 +814,55 @@ mod tests {
             assert!(slime.add_goal(game, 4, &GoalSpec::Float));
             assert!(!zombie.add_goal(game, 4, &GoalSpec::Breed { speed: 1.0 }));
             assert!(cow.add_goal(game, 4, &GoalSpec::Breed { speed: 1.0 }));
+            assert!(zombie.add_goal(
+                game,
+                4,
+                &GoalSpec::Panic {
+                    speed: -1.0,
+                    water_range: Some(i32::MIN),
+                }
+            ));
+            assert!(zombie.add_goal(
+                game,
+                4,
+                &GoalSpec::Stroll {
+                    speed: -0.5,
+                    interval: i32::MAX,
+                    water_avoiding: Some(2.0),
+                    swim: false,
+                    flying: false,
+                }
+            ));
+            assert!(zombie.add_goal(
+                game,
+                4,
+                &GoalSpec::LookAtPlayer {
+                    range: -1.0,
+                    probability: -0.5,
+                    only_horizontal: false,
+                    mobs: false,
+                    only: None,
+                }
+            ));
+            assert!(zombie.add_goal(
+                game,
+                4,
+                &GoalSpec::Tempt {
+                    speed: 1.0,
+                    items: Vec::new(),
+                    can_scare: false,
+                }
+            ));
+            assert!(zombie.add_target_goal(
+                game,
+                3,
+                &GoalSpec::NearestTarget {
+                    prey: MobFilter::Species(Vec::new()),
+                    must_see: true,
+                    must_reach: false,
+                    interval: -5,
+                }
+            ));
             assert!(!zombie.add_target_goal(
                 game,
                 3,

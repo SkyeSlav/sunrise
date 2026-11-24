@@ -758,8 +758,11 @@ fn tick_with<R>(
             owner = vehicle;
         }
     }
-    // The fast path has no live mob list, so resumed Creaking cramming would drop every pinned peer.
+    // The fast path has no live mob list, so resumed Creaking cramming, mod
+    // goals/behaviors (`goal_host`), and target-change listeners take the
+    // disjoint live loan instead.
     if mobs[index].species() != Species::Creaking
+        && w.goal_host.is_none()
         && !mod_api::__private::listened(mod_api::HookId::LivingChangeTarget)
     {
         if owner == index {

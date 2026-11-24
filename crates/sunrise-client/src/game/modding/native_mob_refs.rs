@@ -333,15 +333,17 @@ impl Game<'_> {
     }
 
     /// `Mob.setTarget`; None clears it. Only mobs and players whose binding
-    /// can be stored in the current level are supported; armor stands are
-    /// refused. The dragon stores a mob or a player, which its flight ignores
-    /// and its save does not keep (vanilla keeps no target either). Brain-backed mobs refuse writes: vanilla's setter
-    /// does not update their brain memory (#934). A fox, an enderman or a
-    /// zombified piglin stores the target with its own `setTarget` side
-    /// effects (`Mob::set_target`).
-    /// Invalid targets are refused (false, mob unchanged); vanilla instead
-    /// stores `asValidTarget(target)`, clearing the target when it is invalid.
-    /// False also means a stale handle, client, or an unavailable mob/player.
+    /// can be stored in the current level are supported. The dragon stores a
+    /// mob or a player, which its flight ignores and its save does not keep
+    /// (vanilla keeps no target either). Brain-backed mobs refuse writes:
+    /// vanilla's setter does not update their brain memory (#934). A fox, an
+    /// enderman or a zombified piglin stores the target with its own
+    /// `setTarget` side effects (`Mob::set_target`).
+    /// Live targets that fail `Mob.asValidTarget` normalize to `None` before
+    /// `living_change_target` fires, clearing the target unless canceled or
+    /// redirected. False means a stale handle, client, unavailable mob/player,
+    /// fake player, cross-dimension player, canceled event, or unbindable
+    /// redirect.
     pub(super) fn mob_set_target(&mut self, mob: MobRef, target: Option<LivingRef>) -> bool {
         let Some(Target::Mob(id)) = self.native_entity_target(mob.entity()) else {
             return self.native_dragon_set_target(mob.entity(), target);
@@ -352,28 +354,24 @@ impl Game<'_> {
         if mob_state.refuses_set_target() {
             return false;
         }
-        if let Some(target) = target {
-            let Some(target_kind) = self.native_entity_target(target.entity()) else {
-                return false;
-            };
-            if !self.native_mob_valid_target(mob_state, target_kind) {
-                return false;
+        let candidate = match target {
+            None => None,
+            Some(target) => {
+                let Some(target_kind) = self.native_entity_target(target.entity()) else {
+                    return false;
+                };
+                if matches!(target_kind, Target::Player | Target::Guest(_))
+                    && !self.native_mob_can_bind_player(target_kind)
+                {
+                    return false;
+                }
+                self.native_mob_valid_target(mob_state, target_kind)
+                    .then_some(target)
             }
-        }
-        let Some(target) = self.native_mob_target_event(mob, target, false) else {
+        };
+        let Some(target) = self.native_mob_target_event(mob, candidate, false) else {
             return false;
         };
-        if let Some(target) = target {
-            let Some(kind) = self.native_entity_target(target.entity()) else {
-                return false;
-            };
-            let Some(state) = self.mobs.iter().find(|m| m.id == id) else {
-                return false;
-            };
-            if !self.native_mob_valid_target(state, kind) {
-                return false;
-            }
-        }
         let Some(who) = self.native_mob_bind_target(id, target) else {
             return false;
         };
@@ -382,6 +380,27 @@ impl Game<'_> {
         };
         mob.set_target(who);
         true
+    }
+
+    /// Whether a player target can be bound in the current level (real, non-fake
+    /// player in this dimension with a `lan` slot).
+    fn native_mob_can_bind_player(&self, target: Target) -> bool {
+        match target {
+            Target::Guest(conn) if self.lan_acting_uuid.is_none() => {
+                self.native_player_facts(target).is_some()
+                    && self
+                        .lan
+                        .as_ref()
+                        .and_then(|host| host.hub.guest(conn))
+                        .is_some_and(|guest| guest.dimension == self.dim.id())
+            }
+            Target::Player => {
+                self.native_player_facts(target).is_some()
+                    && self.lan_acting.is_some()
+                    && self.lan.is_some()
+            }
+            _ => false,
+        }
     }
 
     /// Dispatch a mod-initiated change while the mob remains in the game.
@@ -853,7 +872,16 @@ mod tests {
     #[ignore = "daily"]
     fn redirected_fake_target_is_refused_with_the_original_target_intact() {
         use std::sync::{Arc, Mutex};
-        struct Redirect(Arc<Mutex<Option<LivingRef>>>);
+        #[derive(Clone, Copy)]
+        enum Action {
+            Cancel,
+            Replace(Option<LivingRef>),
+            Pass,
+        }
+        struct Redirect {
+            action: Arc<Mutex<Action>>,
+            seen_originals: Arc<Mutex<Vec<Option<LivingRef>>>>,
+        }
         #[mod_api::__subscriptions]
         impl mod_api::Hooks for Redirect {
             fn living_change_target(
@@ -862,14 +890,28 @@ mod tests {
                 event: &mut mod_api::LivingChangeTargetEvent<'_>,
             ) -> mod_api::Flow {
                 assert!(event.mob.living().health(host).is_some());
-                *event.new_target = *self.0.lock().unwrap();
-                mod_api::Flow::Continue
+                self.seen_originals
+                    .lock()
+                    .unwrap()
+                    .push(event.original_target);
+                match *self.action.lock().unwrap() {
+                    Action::Cancel => mod_api::Flow::Cancel,
+                    Action::Replace(target) => {
+                        *event.new_target = target;
+                        mod_api::Flow::Continue
+                    }
+                    Action::Pass => mod_api::Flow::Continue,
+                }
             }
         }
-        let redirect = Arc::new(Mutex::new(None));
+        let action = Arc::new(Mutex::new(Action::Pass));
+        let seen_originals = Arc::new(Mutex::new(Vec::new()));
         let mods = vec![mod_api::ModEntry::new(
             "target-test",
-            Box::new(Redirect(redirect.clone())),
+            Box::new(Redirect {
+                action: action.clone(),
+                seen_originals: seen_originals.clone(),
+            }),
         )]
         .into();
         mod_platform::testing::with_mods(mods, || {
@@ -877,7 +919,7 @@ mod tests {
                 super::super::native_item_places::tests::open_to_lan(game);
                 let level = game.level(game.dim.id()).unwrap();
                 let fake = game.fake_player(level, 1234, "fake").unwrap();
-                *redirect.lock().unwrap() = Some(LivingRef::new(fake.entity()));
+                *action.lock().unwrap() = Action::Replace(Some(LivingRef::new(fake.entity())));
                 let mob = add_mob(game, 12, "minecraft:zombie");
                 let existing = add_mob(game, 13, "minecraft:sheep");
                 game.mobs[0].ai.target = Some(Who::Mob(13));
@@ -886,6 +928,36 @@ mod tests {
                     game.mobs[0].ai.target,
                     Some(Who::Mob(existing.entity().id()))
                 );
+
+                // Invalid live target (creeper -> goat) normalizes through
+                // `asValidTarget` to `None` BEFORE firing `living_change_target`.
+                let creeper = add_mob(game, 14, "minecraft:creeper");
+                let goat = add_mob(game, 15, "minecraft:goat");
+                let backup = add_mob(game, 16, "minecraft:zombie");
+                *action.lock().unwrap() = Action::Pass;
+                assert!(creeper.set_target(game, Some(existing.living())));
+                seen_originals.lock().unwrap().clear();
+
+                // Cancel retains the previous target.
+                *action.lock().unwrap() = Action::Cancel;
+                assert!(!creeper.set_target(game, Some(goat.living())));
+                assert_eq!(seen_originals.lock().unwrap().as_slice(), &[None]);
+                assert_eq!(creeper.target(game), Some(existing.living()));
+
+                // Redirect replaces the normalized `None` candidate.
+                *action.lock().unwrap() = Action::Replace(Some(backup.living()));
+                assert!(creeper.set_target(game, Some(goat.living())));
+                assert_eq!(seen_originals.lock().unwrap().as_slice(), &[None, None]);
+                assert_eq!(creeper.target(game), Some(backup.living()));
+
+                // Unmodified `None` clears the stored target.
+                *action.lock().unwrap() = Action::Pass;
+                assert!(creeper.set_target(game, Some(goat.living())));
+                assert_eq!(
+                    seen_originals.lock().unwrap().as_slice(),
+                    &[None, None, None]
+                );
+                assert_eq!(creeper.target(game), None);
             })
         });
     }
@@ -1347,9 +1419,11 @@ mod tests {
                     .guests
                     .update(0, |guest| guest.game_mode = value);
             }
-            assert!(!mob.set_target(game, Some(player)));
+            // Creative player fails `asValidTarget`, normalizing to `None` and
+            // clearing the mob's target as vanilla `Mob.setTarget` does.
+            assert!(mob.set_target(game, Some(player)));
             assert_eq!(mob.target(game), None);
-            assert_eq!(game.mobs[0].ai.target, Some(Who::Player));
+            assert_eq!(game.mobs[0].ai.target, None);
             {
                 let value = 0;
                 game.lan
@@ -1359,6 +1433,8 @@ mod tests {
                     .guests
                     .update(0, |guest| guest.game_mode = value);
             }
+            assert!(mob.set_target(game, Some(player)));
+            assert_eq!(game.mobs[0].ai.target, Some(Who::Player));
             {
                 let value = "minecraft:the_nether".into();
                 game.lan
@@ -1650,8 +1726,12 @@ mod tests {
             let creeper = game.mob(game.entity(17).unwrap()).unwrap();
             let goat = game.living(game.entity(18).unwrap()).unwrap();
             assert!(creeper.set_target(game, Some(other)));
-            assert!(!creeper.set_target(game, Some(goat)));
-            assert_eq!(creeper.target(game), Some(other));
+            assert!(creeper.set_target(game, Some(goat)));
+            assert_eq!(
+                creeper.target(game),
+                None,
+                "invalid live target normalizes to None and clears"
+            );
             assert!(game.mob(stand.entity()).is_none());
             assert_eq!(mob.living().entity(), entity);
             assert_eq!(game.mob_is_aggressive(mob), Some(false));
@@ -1662,7 +1742,9 @@ mod tests {
             assert_eq!(game.mob_persistence_required(mob), Some(true));
             assert!(mob.set_target(game, Some(other)));
             assert_eq!(mob.target(game), Some(other));
-            assert!(!game.mob_set_target(mob, Some(stand)));
+            assert!(game.mob_set_target(mob, Some(stand)));
+            assert_eq!(game.mob_target(mob), None);
+            assert!(mob.set_target(game, Some(other)));
             assert_eq!(game.mob_target(mob), Some(other));
             let stale = MobRef::new(EntityRef::new(
                 WorldEpoch::new(entity.epoch().get() + 1),

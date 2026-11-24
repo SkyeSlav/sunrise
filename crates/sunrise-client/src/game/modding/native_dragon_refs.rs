@@ -94,9 +94,28 @@ impl Game<'_> {
             .then(|| self.living(target))?
     }
 
-    /// `Mob.setTarget` for the dragon; None clears it. An invalid target is
-    /// refused (false, unchanged) where vanilla stores None. False too for a
-    /// stale handle or a target that is not a mob or a player.
+    /// Whether a player target can be bound by the dragon in the current level
+    /// (real, non-fake player in this dimension).
+    fn native_dragon_can_bind_player(&self, target: Target) -> bool {
+        match target {
+            Target::Guest(conn) if self.lan_acting_uuid.is_none() => {
+                self.native_player_facts(target).is_some()
+                    && self
+                        .lan
+                        .as_ref()
+                        .and_then(|host| host.hub.guest(conn))
+                        .is_some_and(|guest| guest.dimension == self.dim.id())
+            }
+            Target::Player => self.native_player_facts(target).is_some(),
+            _ => false,
+        }
+    }
+
+    /// `Mob.setTarget` for the dragon; None clears it. Live targets that fail
+    /// `EnderDragon.canAttack` / `Mob.asValidTarget` normalize to `None` before
+    /// `living_change_target` fires, clearing the target unless canceled or
+    /// redirected. False for a stale handle, fake player, cross-dimension
+    /// player, canceled event, or unbindable redirect.
     pub(super) fn native_dragon_set_target(
         &mut self,
         entity: EntityRef,
@@ -105,23 +124,36 @@ impl Game<'_> {
         if self.native_dragon(entity).is_none() {
             return false;
         }
-        if let Some(target) = target
-            && !self
-                .native_entity_target(target.entity())
-                .is_some_and(|t| self.native_dragon_valid_target(t))
-        {
-            return false;
-        }
-        let Some(target) = self.native_mob_target_event(MobRef::new(entity), target, false) else {
+        let candidate = match target {
+            None => None,
+            Some(target) => {
+                let Some(target_kind) = self.native_entity_target(target.entity()) else {
+                    return false;
+                };
+                if matches!(target_kind, Target::Player | Target::Guest(_))
+                    && !self.native_dragon_can_bind_player(target_kind)
+                {
+                    return false;
+                }
+                self.native_dragon_valid_target(target_kind)
+                    .then_some(target)
+            }
+        };
+        let Some(target) = self.native_mob_target_event(MobRef::new(entity), candidate, false)
+        else {
             return false;
         };
         let id = match target {
             None => None,
             Some(target) => {
-                let valid = self
-                    .native_entity_target(target.entity())
-                    .is_some_and(|t| self.native_dragon_valid_target(t));
-                if !valid {
+                let bindable = match self.native_entity_target(target.entity()) {
+                    Some(Target::Mob(id)) => self.mobs.iter().any(|m| m.id == id && !m.removed),
+                    Some(t @ (Target::Player | Target::Guest(_))) => {
+                        self.native_dragon_can_bind_player(t)
+                    }
+                    _ => false,
+                };
+                if !bindable {
                     return false;
                 }
                 Some(target.entity().id())
@@ -235,16 +267,23 @@ mod tests {
                 assert_eq!(Dragon::from_nbt(&tag, 0).unwrap().persistent, want);
             }
 
-            // A target a mod set: valid mobs only, and it goes stale.
+            // A target a mod set: invalid live targets normalize to None and
+            // clear the stored target, matching vanilla `Mob.setTarget`.
             let zombie = game.living(game.entity(12).unwrap()).unwrap();
             let shield = game.living(game.entity(13).unwrap()).unwrap();
             let stand = game.living(game.entity(14).unwrap()).unwrap();
             assert_eq!(mob.target(game), None);
             assert!(mob.set_target(game, Some(zombie)));
             assert_eq!(mob.target(game), Some(zombie));
-            assert!(!mob.set_target(game, Some(shield)));
-            assert!(!mob.set_target(game, Some(stand)));
-            assert!(!mob.set_target(game, Some(dragon.mob().living())));
+            assert!(mob.set_target(game, Some(shield)));
+            assert_eq!(mob.target(game), None);
+            assert!(mob.set_target(game, Some(zombie)));
+            assert!(mob.set_target(game, Some(stand)));
+            assert_eq!(mob.target(game), None);
+            assert!(mob.set_target(game, Some(zombie)));
+            assert!(mob.set_target(game, Some(dragon.mob().living())));
+            assert_eq!(mob.target(game), None);
+            assert!(mob.set_target(game, Some(zombie)));
             assert_eq!(mob.target(game), Some(zombie));
             game.mobs[0].invulnerable_flag = true;
             assert_eq!(mob.target(game), None);
@@ -407,7 +446,8 @@ mod tests {
             assert!(mob.set_target(game, Some(living)));
             game.player.as_mut().unwrap().invulnerable = true;
             assert_eq!(mob.target(game), None);
-            assert!(!mob.set_target(game, Some(living)));
+            assert!(mob.set_target(game, Some(living)));
+            assert_eq!(game.dragon.as_ref().unwrap().target, None);
         });
     }
 

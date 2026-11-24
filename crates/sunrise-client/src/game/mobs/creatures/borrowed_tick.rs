@@ -213,6 +213,8 @@ impl Game<'_> {
         // The turn of the mob whose own Pre was just told (a type a mod named): it resumes
         // there with its checks done.
         let mut told_at: Option<usize> = None;
+        // The turn of the mob whose `mob_despawn` hook just ran while the rows were restored.
+        let mut despawned_at: Option<usize> = None;
         // Whether a mob still in the lifted list has left the pass (`keep` false) since the list
         // was last given back: a told-alone yield then takes it out before the call.
         let mut gone_rows = false;
@@ -237,6 +239,13 @@ impl Game<'_> {
             // stop there, restore the list, tell it while the live rows are readable, and resume.
             let mut tell_pre: Option<(u32, std::sync::Arc<sunrise_client::mobs::MobType>, usize)> =
                 None;
+            // `MobDespawnEvent` runs with the mob list restored so listeners read the owning host.
+            let mut tell_despawn: Option<(
+                u32,
+                std::sync::Arc<sunrise_client::mobs::MobType>,
+                [f64; 3],
+                usize,
+            )> = None;
             let mut views_dirty = false;
             {
                 let ticking = self.entity_ticking_area();
@@ -409,49 +418,21 @@ impl Game<'_> {
                     // a mannequin is no `Mob` and never checks despawning.
                     if !checked
                         && !retried
+                        && despawned_at != Some(cursor)
                         && mod_api::__private::listened(mod_api::HookId::MobDespawn)
                         && !matches!(
                             m.species(),
                             sunrise_client::mobs::Species::Wither
                                 | sunrise_client::mobs::Species::Mannequin
                         )
-                        && let Some(epoch) = self.native_lifecycle.epoch()
                     {
-                        let (id, kind, at) = (
+                        tell_despawn = Some((
                             m.id,
                             std::sync::Arc::clone(&m.kind),
                             [m.position.x, m.position.y, m.position.z],
-                        );
-                        let mut result = mod_api::Despawn::default();
-                        let outcome =
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                // The handle resolves through the tick's own view:
-                                // the game has lent its mob list to this pass (#795).
-                                let world = MobWorld {
-                                    others: snapshot.as_slice(),
-                                    others_grid: Some(&grid),
-                                    others_index: Some(&index),
-                                    others_villagers: Some(&villager_slots),
-                                    others_solid: Some(&solid_slots),
-                                    live_mobs: None,
-                                    ..base.clone()
-                                };
-                                self.native_mob_despawn_in_tick(
-                                    m,
-                                    &world,
-                                    self.dim.id(),
-                                    mod_api::MobRef::new(mod_api::EntityRef::new(epoch, id)),
-                                    &kind.id,
-                                    at,
-                                    &mut result,
-                                );
-                            }));
-                        m.despawn = result;
-                        if let Err(payload) = outcome {
-                            m.despawn = mod_api::Despawn::default();
-                            dispatch_panic = Some(payload);
-                            break;
-                        }
+                            i,
+                        ));
+                        break;
                     }
                     // ServerLevel.tick: every listed entity checks despawning, but
                     // only those within the simulation distance as well tick. The
@@ -983,6 +964,7 @@ impl Game<'_> {
                 && section_hint.is_none()
                 && stand_cut.is_none()
                 && lid_push.is_none()
+                && tell_despawn.is_none()
                 && tell_pre.is_none()
                 && tell_post.is_none()
                 && pending_effects.is_empty()
@@ -1188,6 +1170,23 @@ impl Game<'_> {
                 if !stinging && let Some((id, kind)) = &tell_post {
                     self.native_tick_post_one(round, *id, &kind.id);
                 }
+                if let Some((id, kind, at, index)) = &tell_despawn
+                    && let Some(epoch) = self.native_lifecycle.epoch()
+                {
+                    let mut result = mod_api::Despawn::default();
+                    crate::game::native_hooks::NativeHookHost { host: self }.native_mob_despawn(
+                        self.dim.id(),
+                        mod_api::MobRef::new(mod_api::EntityRef::new(epoch, *id)),
+                        &kind.id,
+                        *at,
+                        &mut result,
+                    );
+                    if let Some(i) =
+                        super::super::native_ticks::place(&self.mobs, *index, |m| m.id == *id)
+                    {
+                        self.mobs[i].despawn = result;
+                    }
+                }
                 // Let through, it checks its sleep as a mob told with its family does.
                 if let Some((id, kind, at)) = &tell_pre
                     && self.native_tick_pre_one(round, *id, &kind.id)
@@ -1206,6 +1205,9 @@ impl Game<'_> {
                 );
             }
             let unchanged = same_rows && !views_dirty && restored == Some(self.mobs.stamp());
+            if tell_despawn.is_some() {
+                despawned_at = Some(cursor);
+            }
             if tell_pre.is_some() {
                 told_at = Some(cursor);
             }
