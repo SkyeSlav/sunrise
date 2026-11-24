@@ -543,6 +543,9 @@ mod entity_sections;
 mod entity_sizes;
 #[path = "game/entities/entity_sounds.rs"]
 mod entity_sounds;
+#[cfg(test)]
+#[path = "game/entities/entity_tick_families_tests.rs"]
+mod entity_tick_families_tests;
 #[path = "game/modding/entity_type_rows.rs"]
 mod entity_type_rows;
 #[path = "game/items/equip_answers.rs"]
@@ -679,9 +682,6 @@ mod hand;
 #[cfg(test)]
 #[path = "game/items/hand_part_tests.rs"]
 mod hand_part_tests;
-#[cfg(test)]
-#[path = "game/entities/entity_tick_families_tests.rs"]
-mod entity_tick_families_tests;
 #[cfg(test)]
 #[path = "game/entities/hanging_refind_tests.rs"]
 mod hanging_refind_tests;
