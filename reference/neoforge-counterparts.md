@@ -6,7 +6,7 @@ The book build renders it directly from those declarations; there is no generate
 A key names the event class (`PlayerEvent.Clone`) or runtime callback (`IPayloadHandler.handle`);
 notes about cancelling or the event bus belong in the hook's `///` doc, not in the key.
 
-766 hooks: 460 name a counterpart, 302 say they have none.
+767 hooks: 461 name a counterpart, 302 say they have none.
 This is a declaration reference, not an independent verification of every mapping. Registration events and the
 callbacks they register are different moments: packet receipt names `IPayloadHandler.handle`, and per-draw item
 decoration names `IItemDecorator.render`, not their registration events. A `none` explains why no event or method
@@ -198,6 +198,7 @@ matches that hook's runtime contract.
 | `item_consumption_teleport` | server | `EntityTeleportEvent.ItemConsumption` |
 | `item_crafted` | server | `PlayerEvent.ItemCraftedEvent` |
 | `item_decorations` | client | `IItemDecorator.render` |
+| `item_destroyed` | server | `IItemExtension.onDestroyed` |
 | `item_expire` | server | `ItemExpireEvent` |
 | `item_fished` | server | `ItemFishedEvent` |
 | `item_model_property` | client | `RegisterConditionalItemModelPropertyEvent` |

@@ -1163,7 +1163,7 @@ handle, an entity the client doesn't track and a level it doesn't show:
   and `bounding_box` are its own, `level` is the dragon's, and it is no living entity, mob or dragon handle; it
   stops resolving when its dragon does, and removing one is refused.
 - `entity.nbt(host)` and `merge_nbt(host, compound)` read and change its data as `/data get` and `/data merge entity`
-  do (merging works on mobs, dropped items, armor stands and item frames; never on players, as in vanilla);
+  do (merging reloads mobs, dropped items, armor stands, item frames, arrows, spectral arrows and tridents; never players);
   `tags`, `add_tag`, `remove_tag` work as `/tag` does, and `name` is its name as plain text.
   `set_custom_name(host, Some(text))` names it and `None` takes the name away (`Entity.setCustomName`);
   `custom_name_visible` and `set_custom_name_visible` read and change whether the name shows at any distance. Both
@@ -1649,7 +1649,7 @@ stock client shows as a chest (`generic_9x1` to `generic_9x6`); nothing is insta
 - A display menu's default click moves nothing. `MenuPart::menu_clicked` v3 runs on parts registered for the
   menu type. It shares one transaction with the default click unless the part handles the click and returns
   `Flow::Cancel`. An override or refusal sends the committed menu, cursor and any omitted swap target.
-- `menu_closed` v2 names the player and window and passes any opening hand and detached owned slot values.
+- `menu_closed` v3 names the player and window and passes any opening hand and detached owned slot values.
 - A trade on these menus leaves the offered stacks in their owners' inventories until both sides are settled. Then,
   in one `host.transaction`, each offered inventory index is checked to still hold exactly what was offered, taken
   out of the player's [`ENTITY_ITEMS`](../concepts/capabilities/entity-items.md) handler and put into the other's with `insert`
@@ -1737,7 +1737,7 @@ mods and again on each `/reload`, so a reload captures fresh settings. A LAN or 
 current one, so its Tab list and chat names, and the clicks of its players, see it too.
 
 `item_stacked_on_other(host, event, result, canceled)` is NeoForge's `ItemStackedOnOtherEvent` plus vanilla's `Item.overrideStackedOnOther` / `Item.overrideOtherStackedOnMe` on `ItemPart`, fired inside a pickup click on
-the authoritative side only (the server: single player's server thread, a LAN host and its guests, a dedicated server) with the game's `Host` and the click frozen in `event` (`event.direction` distinguishes `Event`, `CarriedOnOther`, and `OtherStackedOnMe` in vanilla `AbstractContainerMenu.tryItemClickBehaviourOverride` order); see its hook documentation. `player_name_format(context, username,
+the authoritative side only (the server: single player's server thread, a LAN host and its guests, a dedicated server) with the game's `Host` and the click frozen in `event` (`event.direction` distinguishes `Event`, `CarriedOnOther`, and `OtherStackedOnMe` in vanilla `AbstractContainerMenu.tryItemClickBehaviourOverride` order); see its hook documentation. `item_destroyed(host, stack, item, damage_type, drops)` is `IItemExtension.onDestroyed` (`ItemStack.onDestroyed`) on `ItemPart`, fired on the server inside a transaction with the original intact stack before built-in components are cleared and before the destroyed dropped item entity is discarded, returning validated drop stacks to spawn at the entity's position. `player_name_format(context, username,
 displayname)` and `player_tab_list_name_format(context, player, name, display_name)` format a player's name for chat and
 commands (both sides) and for the Tab list (server). The name hooks are contract version `2`: a mod written for `1` takes the
 context as a new first argument of the `Hooks` method, and reads the side from it instead of `event.side`.
@@ -1820,7 +1820,7 @@ mod mixin or use it replaces in its design or PR.
 - [A block's items](#a-blocks-items) are available to server mods through the item capability and
   `move_resources`, so a pipe or machine can move items transactionally.
 
-- What a server mod needs for a public server's screens: `native_sidebar(uuid, sidebar)` shows one
+- What a server mod needs for a public server's screens: `player.set_sidebar(host, sidebar)` shows one
   player a sidebar of up to 15 lines (a text, and one where the score would be) that only their client holds (the
   server's scoreboard never sees it; a mod sends it again when they rejoin), or takes it away with `None`;
   `player.tab_list(host, header, footer)` sets the lines over and under their Tab list; `native_tick_stats()` reads the
@@ -3968,15 +3968,18 @@ the server named it. An integrated world's own chunks have the server's
 ## Client chunk unload
 
 `client_chunk_unload(dimension, chunk)` runs on a client of a server once
-for each column that leaves the client level, while its blocks and block
-entities are still readable, just before they are freed. Every route a column
-leaves by tells it: the server's `ForgetLevelChunk` packet, the view centre
-moving away, the view radius shrinking, and the client level going (a dimension
-change, a respawn into another level, leaving the server). A column that is
-already gone is not told again. NeoForge tells only the forget packet
-(`ClientChunkCache.drop`); Sunrise tells every route, so a listener never keeps
-state for a column the client no longer holds. `dimension` is the level the
-column belonged to: on a dimension change, the old one.
+for each column whose data leaves the client level, while its blocks and block
+entities are still readable, just before they are freed. Every route that frees
+a column tells it: the server's `ForgetLevelChunk` packet, a newer column
+taking the slot of one that is out of view, the view radius shrinking, and the
+client level going (a dimension change, a respawn into another level, leaving
+the server). The view centre moving away tells nothing: as in
+`ClientChunkCache`, the column stays in its slot out of view, and it is shown
+again untold when it is back in view, with no `client_chunk_load`. A column
+that is already gone is not told again. NeoForge tells only the forget packet
+(`ClientChunkCache.drop`); Sunrise tells every route that frees a column, so a
+listener never keeps state for a column the client no longer holds. `dimension`
+is the level the column belonged to: on a dimension change, the old one.
 
 ## Decoded client packets
 
