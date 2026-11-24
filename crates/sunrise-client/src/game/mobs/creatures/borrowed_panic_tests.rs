@@ -198,15 +198,19 @@ impl mod_api::BlockPart for HealthyLanding {
 }
 #[mod_api::sunrise_part]
 impl mod_api::EntityPart for GoalPart {
-    fn register_goals(&self, goals: &mut mod_api::GoalRegistrar<'_>) {
-        goals.add_target_goal(
+    fn register_goals(
+        &self,
+        _host: &mut dyn mod_api::ServerHost,
+        event: &mut mod_api::RegisterGoalsEvent<'_, '_>,
+    ) {
+        event.goals.add_target_goal(
             0,
             GoalSpec {
                 probe: self.0.clone(),
                 target: true,
             },
         );
-        goals.add_goal(
+        event.goals.add_goal(
             0,
             GoalSpec {
                 probe: self.0.clone(),
@@ -239,26 +243,13 @@ impl mod_api::Hooks for Hooks {
             self.probe.outputs.lock().unwrap().push(OutputNotice::Egg);
         }
     }
-    fn entity_tick_listened(
-        &self,
-        _: mod_api::HostSide<'_>,
-        event: &mut mod_api::EntityTickListenedEvent,
-    ) {
-        if self.panics {
-            event.listened = true;
-        }
-    }
     fn entity_tick_post(
         &self,
         _: mod_api::HostSide<'_>,
         event: &mut mod_api::EntityTickPostEvent<'_>,
     ) {
         if self.panics {
-            self.probe
-                .posts
-                .lock()
-                .unwrap()
-                .extend_from_slice(event.entities);
+            self.probe.posts.lock().unwrap().push(event.entity);
         }
     }
     fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
@@ -484,7 +475,7 @@ fn prime_hook(mob: &mut Mob, family: Family) {
     }
 }
 
-fn fixture_mob(game: &Game<'_>, id: u32, family: Family, output: Output) -> Mob {
+fn fixture_mob(game: &mut Game<'_>, id: u32, family: Family, output: Output) -> Mob {
     let kind = game
         .res
         .mob_types()
@@ -500,6 +491,7 @@ fn fixture_mob(game: &Game<'_>, id: u32, family: Family, output: Output) -> Mob 
         .unwrap()
         .clone();
     let mut mob = Mob::new(id, kind, Vec3::new(f64::from(id - 70), 80.0, 0.5), 0.0);
+    game.flush_unjoined_mob_parts(&mut mob);
     mob.no_ai = true;
     if output == Output::Push && id == 70 {
         mob.position.x = 1.2;
@@ -724,9 +716,15 @@ fn run_fixture(family: Family, output: Output, dim: Dim) {
                 "first callback entry"
             );
             if let Some(payload) = &unwind {
+                let posts = std::mem::take(&mut *probe.posts.lock().unwrap());
                 assert!(
-                    probe.posts.lock().unwrap().is_empty(),
-                    "aborted tick fired Post"
+                    !posts.contains(&72),
+                    "aborted tick fired Post for the panicking mob"
+                );
+                assert_eq!(
+                    posts,
+                    [71],
+                    "earlier completed mob fired its per-entity Post before the panic"
                 );
                 let token = payload
                     .downcast_ref::<PanicToken>()
@@ -865,8 +863,9 @@ fn run_fixture(family: Family, output: Output, dim: Dim) {
                     );
                 }
                 game.tick_creature_entities().unwrap();
-                assert!(
-                    !probe.posts.lock().unwrap().is_empty(),
+                assert_eq!(
+                    probe.posts.lock().unwrap().as_slice(),
+                    ids,
                     "real post listener never ran on retry"
                 );
                 table.end_tick().unwrap();
@@ -1086,27 +1085,13 @@ impl mod_api::Hooks for Consumer {
         self.probe.eggs.lock().unwrap().push(event.entity);
     }
 
-    fn entity_tick_listened(
-        &self,
-        _: mod_api::HostSide<'_>,
-        event: &mut mod_api::EntityTickListenedEvent,
-    ) {
-        if self.panics {
-            event.listened = true;
-        }
-    }
-
     fn entity_tick_post(
         &self,
         _: mod_api::HostSide<'_>,
         event: &mut mod_api::EntityTickPostEvent<'_>,
     ) {
         if self.panics {
-            self.probe
-                .posts
-                .lock()
-                .unwrap()
-                .extend_from_slice(event.entities);
+            self.probe.posts.lock().unwrap().push(event.entity);
         }
     }
 }

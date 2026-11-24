@@ -11,8 +11,7 @@ pub trait LevelWorldgenBackend {
     /// The result follows vanilla's sampled spiral and vertical order; it is not a search
     /// through edited biome cells. Does not load resident chunks or switch parked levels.
     /// None for no match, a stale/unavailable level, an unavailable generator, a negative
-    /// radius, nonpositive sampling steps, or a potential sample count above
-    /// [`BiomeSearch::MAX_SAMPLES`] (see [`BiomeSearch::new`] for the work formula).
+    /// radius, or nonpositive sampling steps.
     /// Positive vertical steps larger than the build height sample only the clamped origin.
     fn level_find_closest_biome(
         &self,
@@ -30,8 +29,8 @@ pub trait LevelWorldgenBackend {
     /// them, without loading or generating chunks or switching parked levels.
     /// None for no start, a structure that does not generate in this level,
     /// a world without structures, a stale level, a client, a negative radius,
-    /// one above [`StructureSearch::MAX_RADIUS`], and an origin outside the
-    /// world's 30,000,000-block bound.
+    /// or an origin outside vanilla's `Level.isInWorldBoundsHorizontal` bound
+    /// (`-30_000_000..30_000_000`).
     fn level_find_nearest_structure(
         &self,
         level: LevelRef,

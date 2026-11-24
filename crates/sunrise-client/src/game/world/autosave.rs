@@ -26,10 +26,32 @@ impl Game<'_> {
         autosave_interval(rate)
     }
 
-    /// `MinecraftServer.onTickRateChanged`: mods hear of it, then a rate that
+    /// `ServerTickRateManager.setTickRate`: set the rate, run the hook and autosave
+    /// adjustment, then send the current ticking state to clients.
+    pub(in crate::game) fn set_tick_rate(&mut self, rate: f32) -> bool {
+        if !self.is_logical_server() || !rate.is_finite() {
+            let mod_id = mod_api::content::crash::current_native_mod().unwrap_or("unknown");
+            log::warn!(
+                "mod {mod_id}: set_tick_rate refused {rate}: requires a finite rate on the logical server"
+            );
+            return false;
+        }
+        self.clock.set_rate(rate);
+        self.on_tick_rate_changed();
+        // A listener can retune the clock, so send its state after the notification.
+        if let Some(host) = &mut self.lan {
+            host.hub
+                .send_ticking_state(self.clock.rate(), self.clock.frozen());
+        }
+        true
+    }
+
+    /// `MinecraftServer.onTickRateChanged`: server mods hear of it, then a rate that
     /// asks for a shorter wait than the one already running shortens it.
     pub(super) fn on_tick_rate_changed(&mut self) {
-        self.native_server_tick_rate_changed();
+        if self.is_logical_server() {
+            self.native_server_tick_rate_changed();
+        }
         let interval = self.next_autosave_interval();
         if interval < self.ticks_until_autosave {
             self.ticks_until_autosave = interval;

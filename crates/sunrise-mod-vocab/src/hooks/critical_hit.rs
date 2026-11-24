@@ -1,5 +1,4 @@
 //! The `critical_hit` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0192
 
 pub trait Hooks {
     /// NeoForge's `CriticalHitEvent`: a player's melee hit on a living

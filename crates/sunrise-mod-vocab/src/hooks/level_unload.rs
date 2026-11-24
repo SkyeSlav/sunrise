@@ -1,5 +1,4 @@
 //! The `level_unload` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0139
 
 pub trait Hooks {
     /// `dimension`'s level closed (NeoForge's `LevelEvent.Unload`, posted after

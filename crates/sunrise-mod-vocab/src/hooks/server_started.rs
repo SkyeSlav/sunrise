@@ -1,5 +1,4 @@
 //! The `server_started` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0006
 
 pub trait Hooks {
     /// The server has opened its worlds and is about to run its tick loop

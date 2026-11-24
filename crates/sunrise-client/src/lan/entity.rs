@@ -5,7 +5,11 @@
 //! movement, motion, metadata and equipment packets that bring them up to
 //! date at the entity type's update interval (`tracking`); each client's
 //! `Tracker` is the set of entities it has been paired with.
-use super::tracking;
+use super::{data::SyncData, guest, hub::Hub, tracking};
+use crate::{
+    items::Items,
+    text_display::resident::{DisplayContents, DisplayState},
+};
 use std::sync::Arc;
 use sunrise_mod_runtime::attachments::{AttachmentSyncInput, Holder as AttachmentHolder};
 use sunrise_protocol::{
@@ -70,6 +74,8 @@ pub struct EntityState {
     pub data: i32,
     /// SynchedEntityData entries that differ from the defaults.
     pub meta: Vec<(u8, i32, Value)>,
+    /// Typed display state, projected only when constructing metadata packets.
+    pub display: Option<DisplayTracking>,
     /// Entries marked dirty even if their values have not changed.
     pub forced_meta: [u64; 4],
     /// The defaults of entries `meta` leaves out while they are at them,
@@ -144,6 +150,7 @@ impl EntityState {
         self.minecart_steps = None;
         self.data = 0;
         self.meta.clear();
+        self.display = None;
         self.forced_meta = [0; 4];
         self.defaults.clear();
         self.equipment.clear();
@@ -162,6 +169,89 @@ impl EntityState {
         self.watching = false;
         self.hidden = None;
         self.general = None;
+    }
+}
+
+/// A display's resident fields shared with the tracker, plus the registries
+/// required by the item-stack stream codec. This is not pre-encoded metadata.
+#[derive(Clone)]
+pub struct DisplayTracking {
+    state: Arc<DisplayState>,
+    item_codecs: Option<(Arc<SyncData>, Arc<Items>)>,
+}
+
+impl DisplayTracking {
+    pub fn new(state: &Arc<DisplayState>, hub: Option<&Hub>) -> Self {
+        Self {
+            state: state.clone(),
+            item_codecs: hub
+                .filter(|_| matches!(state.contents, DisplayContents::Item { .. }))
+                .map(|hub| (hub.sync.clone(), hub.encoder.items.clone())),
+        }
+    }
+
+    /// What this pass could actually send: without item codecs, a nonempty
+    /// item display's stack stays unsent so the next pass with codecs sends it.
+    fn sent(&self) -> Self {
+        if self.item_codecs.is_none()
+            && let DisplayContents::Item {
+                stack: Some(_),
+                context,
+            } = &self.state.contents
+        {
+            let mut state = (*self.state).clone();
+            state.contents = DisplayContents::Item {
+                stack: None,
+                context: *context,
+            };
+            return Self {
+                state: Arc::new(state),
+                item_codecs: None,
+            };
+        }
+        self.clone()
+    }
+
+    fn append_metadata(
+        &self,
+        before: Option<&Self>,
+        force_start: bool,
+        out: &mut Vec<(u8, i32, Value)>,
+    ) {
+        self.state.append_metadata(
+            before.map(|old| old.state.as_ref()),
+            force_start,
+            |stack| {
+                let (sync, items) = self.item_codecs.as_ref()?;
+                let item_id = |name: &str| {
+                    sync.builtin
+                        .get("minecraft:item")
+                        .and_then(|items| items.id(name))
+                        .unwrap_or(0)
+                };
+                Some(guest::resident_stack(stack, &item_id, sync, items, &|_| ()))
+            },
+            out,
+        );
+    }
+}
+
+impl std::fmt::Debug for DisplayTracking {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.state, f)
+    }
+}
+
+impl PartialEq for DisplayTracking {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.state, &other.state)
+            && match (&self.item_codecs, &other.item_codecs) {
+                (Some((sync, items)), Some((other_sync, other_items))) => {
+                    Arc::ptr_eq(sync, other_sync) && Arc::ptr_eq(items, other_items)
+                }
+                (None, None) => true,
+                _ => false,
+            }
     }
 }
 
@@ -202,6 +292,20 @@ impl States {
     }
     pub fn as_mut_slice(&mut self) -> &mut [EntityState] {
         &mut self.list[..self.len]
+    }
+    /// Keep only the states `keep` accepts, preserving their order and the
+    /// pooled backing allocations.
+    pub fn retain(&mut self, mut keep: impl FnMut(&EntityState) -> bool) {
+        let mut write = 0;
+        for read in 0..self.len {
+            if keep(&self.list[read]) {
+                if write != read {
+                    self.list.swap(write, read);
+                }
+                write += 1;
+            }
+        }
+        self.len = write;
     }
 }
 
@@ -317,6 +421,7 @@ struct ServerEntity {
     ticks_since_step: i32,
     /// trackedDataValues: the entity data the clients hold.
     meta: Vec<(u8, i32, Value)>,
+    display: Option<DisplayTracking>,
     equipment: Vec<(u8, Option<Stack>)>,
     /// The attribute instances the clients hold.
     attributes: Vec<AttributeSnapshot>,
@@ -452,6 +557,7 @@ impl ServerEntity {
             tracked_steps: Vec::new(),
             ticks_since_step: -1,
             meta: e.meta.clone(),
+            display: e.display.as_ref().map(DisplayTracking::sent),
             equipment: e.equipment.clone(),
             attributes: e.attributes.clone(),
             was_on_ground: e.on_ground,
@@ -518,10 +624,14 @@ impl ServerEntity {
                 }
             }
         }
-        if !self.meta.is_empty() {
+        let mut values = self.meta.clone();
+        if let Some(display) = &self.display {
+            display.append_metadata(None, false, &mut values);
+        }
+        if !values.is_empty() {
             out.push(play::Clientbound::SetEntityData(SetEntityData {
                 id: e.id,
-                values: self.meta.clone(),
+                values,
             }));
         }
         // getSyncableAttributes: the instances as they are now.
@@ -609,7 +719,7 @@ impl ServerEntity {
                 .map_or(0, |n| (n + 1) * self.interval);
         }
         // SynchedEntityData.isDirty: once for every client.
-        let dirty = e.meta != self.meta || e.forced_meta != [0; 4];
+        let dirty = e.meta != self.meta || e.display != self.display || e.forced_meta != [0; 4];
         let due = self.interval != 0 && self.tick.is_multiple_of(self.interval);
         if due || dirty || e.needs_sync {
             let rotation = (pack_degrees(e.pitch), pack_degrees(e.yaw));
@@ -859,6 +969,12 @@ impl ServerEntity {
                     }
                 }
             }
+            let force_start = e.forced_meta[0] & (1 << 8) != 0;
+            if let Some(display) = &e.display
+                && (e.display != self.display || force_start)
+            {
+                display.append_metadata(self.display.as_ref(), force_start, &mut changed);
+            }
             if !changed.is_empty() {
                 out.push(play::Clientbound::SetEntityData(SetEntityData {
                     id: e.id,
@@ -866,6 +982,7 @@ impl ServerEntity {
                 }));
             }
             self.meta.clone_from(&e.meta);
+            self.display = e.display.as_ref().map(DisplayTracking::sent);
         }
         if e.attributes != self.attributes {
             let changed = changed_attributes(&e.attributes, &self.attributes);
@@ -2238,6 +2355,7 @@ mod tests {
             minecart_steps: None,
             data: 0,
             meta: Vec::new(),
+            display: None,
             forced_meta: [0; 4],
             defaults: Vec::new(),
             equipment: Vec::new(),
@@ -2428,7 +2546,12 @@ mod tests {
     fn forced_default_is_sent_on_each_write_but_equal_unforced_is_not() {
         let mut display = state(0.0);
         display.kind = "minecraft:block_display".into();
-        display.defaults.push((8, serializer::INT, Value::Int(0)));
+        display.display = Some(DisplayTracking::new(
+            &Arc::new(DisplayState::new(DisplayContents::Block(
+                sunrise_world::registry::BlockStateId(0),
+            ))),
+            None,
+        ));
         let mut tracker = added(&display);
         for _ in 0..2 {
             display.forced_meta[0] = 1 << 8;
@@ -2443,6 +2566,103 @@ mod tests {
                     .any(|p| matches!(p, play::Clientbound::SetEntityData(_)))
             );
         }
+    }
+
+    #[test]
+    fn tracking_display_pairs_from_typed_fields_and_sends_a_return_to_default() {
+        use crate::{
+            text::Text,
+            text_display::resident::{DisplayComponent, DisplayText},
+        };
+        use mod_api::Billboard;
+        use sunrise_core::nbt::Tag;
+
+        let mut row = state(0.0);
+        row.kind = "minecraft:text_display".into();
+        let mut display = Arc::new(DisplayState::new(DisplayContents::Text(DisplayText {
+            component: Arc::new(DisplayComponent::from_text(&Text::literal("live"))),
+            line_width: 60,
+            ..Default::default()
+        })));
+        Arc::make_mut(&mut display).billboard = Billboard::Vertical;
+        row.display = Some(DisplayTracking::new(&display, None));
+        let mut tracker = added(&row);
+        let mut pairing = Vec::new();
+        assert!(tracker.pairing(&row, Kind::Type(100), &Riding::default(), &mut pairing));
+        assert!(pairing.iter().any(|packet| matches!(packet,
+            play::Clientbound::SetEntityData(data) if data.values == [
+                (15, serializer::BYTE, Value::Byte(1)),
+                (23, serializer::COMPONENT, Value::Text(Tag::String("live".into()))),
+                (24, serializer::INT, Value::Int(60)),
+            ]
+        )));
+        Arc::make_mut(&mut display).contents = DisplayContents::Text(DisplayText::default());
+        row.display = Some(DisplayTracking::new(&display, None));
+        assert!(
+            changes(&mut tracker, &row)
+                .iter()
+                .any(|packet| matches!(packet,
+                    play::Clientbound::SetEntityData(data) if data.values == [
+                        (23, serializer::COMPONENT, Value::Text(Tag::String("".into()))),
+                        (24, serializer::INT, Value::Int(200)),
+                    ]
+                ))
+        );
+        assert!(
+            !changes(&mut tracker, &row)
+                .iter()
+                .any(|packet| matches!(packet, play::Clientbound::SetEntityData(_)))
+        );
+    }
+
+    #[test]
+    fn item_display_without_codecs_sends_its_stack_once_codecs_are_available() {
+        use crate::items::ItemStack;
+        use mod_api::ItemDisplayContext;
+
+        let display = Arc::new(DisplayState::new(DisplayContents::Item {
+            stack: Some(Arc::new(ItemStack::new("minecraft:diamond", 3))),
+            context: ItemDisplayContext::Head,
+        }));
+        let mut row = state(0.0);
+        row.kind = "minecraft:item_display".into();
+        row.display = Some(DisplayTracking::new(&display, None));
+        let mut tracker = added(&row);
+        let mut pairing = Vec::new();
+        assert!(tracker.pairing(&row, Kind::Type(100), &Riding::default(), &mut pairing));
+        assert!(pairing.iter().any(|packet| matches!(packet,
+            play::Clientbound::SetEntityData(data)
+                if data.values == [(24, serializer::BYTE, Value::Byte(5))]
+        )));
+        // A later pass with codecs must still emit metadata id 23 for the stack.
+        let mut sync = SyncData::empty();
+        sync.builtin.registries.insert(
+            "minecraft:item".to_string(),
+            sunrise_protocol::registry::Ids::from_names(vec![
+                "minecraft:air".to_string(),
+                "minecraft:diamond".to_string(),
+            ]),
+        );
+        row.display = Some(DisplayTracking {
+            state: display,
+            item_codecs: Some((Arc::new(sync), Arc::new(Items::default()))),
+        });
+        assert!(
+            changes(&mut tracker, &row)
+                .iter()
+                .any(|packet| matches!(packet,
+                    play::Clientbound::SetEntityData(data) if data.values == [(
+                        23,
+                        serializer::ITEM_STACK,
+                        Value::Item(Some(Stack::new(1, 3))),
+                    )]
+                ))
+        );
+        assert!(
+            !changes(&mut tracker, &row)
+                .iter()
+                .any(|packet| matches!(packet, play::Clientbound::SetEntityData(_)))
+        );
     }
 
     #[test]

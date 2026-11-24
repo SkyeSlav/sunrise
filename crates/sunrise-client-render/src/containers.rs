@@ -869,7 +869,7 @@ impl BlockEntity {
     /// An individual slot write claims just that slot from a mod's saved payload.
     pub fn slot_mut(&mut self, slot: usize) -> Option<&mut Option<ItemStack>> {
         match self {
-            Self::Mod(m) => m.item_slot_mut(slot),
+            Self::Mod(m) => Some(m.item_slot_mut(slot)),
             other => other.slots_mut().get_mut(slot),
         }
     }
@@ -877,8 +877,8 @@ impl BlockEntity {
     pub fn replace_slots(&mut self, slots: &[Option<ItemStack>]) {
         if let Self::Mod(m) = self {
             for (slot, stack) in slots.iter().enumerate() {
-                if m.items[slot] != *stack {
-                    *m.item_slot_mut(slot).unwrap() = stack.clone();
+                if m.items.get(slot).and_then(Option::as_ref) != stack.as_ref() {
+                    *m.item_slot_mut(slot) = stack.clone();
                 }
             }
         } else {

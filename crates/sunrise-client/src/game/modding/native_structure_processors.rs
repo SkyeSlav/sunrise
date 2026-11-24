@@ -121,9 +121,9 @@ impl ProcessorDecodeContext for Decoding<'_> {
         config: &sunrise_core::nbt::Tag,
     ) -> Result<StructureProcessorRef, StructureError> {
         let value = sunrise_core::json_nbt::tag_to_json(config)
-            .map_err(|e| StructureError(e.to_string()))?;
+            .map_err(|e| StructureError::new(std::io::Error::other(e.to_string())))?;
         let processor = Processor::decode(&value, self.resources, self.bindings)
-            .map_err(|e| StructureError(e.to_string()))?;
+            .map_err(|e| StructureError::new(std::io::Error::other(e.to_string())))?;
         Ok(processor_ref(Arc::new(processor)))
     }
     fn processor_list(
@@ -131,9 +131,9 @@ impl ProcessorDecodeContext for Decoding<'_> {
         config: &sunrise_core::nbt::Tag,
     ) -> Result<StructureProcessorListRef, StructureError> {
         let value = sunrise_core::json_nbt::tag_to_json(config)
-            .map_err(|e| StructureError(e.to_string()))?;
+            .map_err(|e| StructureError::new(std::io::Error::other(e.to_string())))?;
         let list = ProcessorList::decode_value(&value, self.resources, self.bindings)
-            .map_err(|e| StructureError(e.to_string()))?;
+            .map_err(|e| StructureError::new(std::io::Error::other(e.to_string())))?;
         Ok(processor_list_ref(Arc::new(list)))
     }
 }
@@ -217,16 +217,17 @@ impl<C: ModProcessorContext + ?Sized> ProcessorContext for ProcessView<'_, C> {
         original: &StructureBlockInfo,
         current: StructureBlockInfo,
     ) -> Result<Option<StructureBlockInfo>, StructureError> {
-        let processor = engine_processor(processor)
-            .ok_or_else(|| StructureError("invalid structure processor handle".into()))?;
+        let processor = engine_processor(processor).ok_or_else(|| {
+            StructureError::new(std::io::Error::other("invalid structure processor handle"))
+        })?;
         let original = engine_block_info(self.worker, original.clone())
-            .map_err(|e| StructureError(e.to_string()))?;
-        let current =
-            engine_block_info(self.worker, current).map_err(|e| StructureError(e.to_string()))?;
+            .map_err(|e| StructureError::new(std::io::Error::other(e.to_string())))?;
+        let current = engine_block_info(self.worker, current)
+            .map_err(|e| StructureError::new(std::io::Error::other(e.to_string())))?;
         let out = self
             .inner
             .apply_processor(&processor, &original, current)
-            .map_err(|e| StructureError(e.to_string()))?;
+            .map_err(|e| StructureError::new(std::io::Error::other(e.to_string())))?;
         Ok(out.as_ref().map(|info| api_block_info(self.worker, info)))
     }
     fn apply_processor_list(
@@ -235,16 +236,19 @@ impl<C: ModProcessorContext + ?Sized> ProcessorContext for ProcessView<'_, C> {
         original: &StructureBlockInfo,
         current: StructureBlockInfo,
     ) -> Result<Option<StructureBlockInfo>, StructureError> {
-        let list = engine_processor_list(list)
-            .ok_or_else(|| StructureError("invalid structure processor list handle".into()))?;
+        let list = engine_processor_list(list).ok_or_else(|| {
+            StructureError::new(std::io::Error::other(
+                "invalid structure processor list handle",
+            ))
+        })?;
         let original = engine_block_info(self.worker, original.clone())
-            .map_err(|e| StructureError(e.to_string()))?;
-        let current =
-            engine_block_info(self.worker, current).map_err(|e| StructureError(e.to_string()))?;
+            .map_err(|e| StructureError::new(std::io::Error::other(e.to_string())))?;
+        let current = engine_block_info(self.worker, current)
+            .map_err(|e| StructureError::new(std::io::Error::other(e.to_string())))?;
         let out = self
             .inner
             .apply_processor_list(&list, &original, current)
-            .map_err(|e| StructureError(e.to_string()))?;
+            .map_err(|e| StructureError::new(std::io::Error::other(e.to_string())))?;
         Ok(out.as_ref().map(|info| api_block_info(self.worker, info)))
     }
 }
@@ -275,7 +279,10 @@ impl ModStructureProcessorType for ProcessorType {
             bindings,
             worker,
         };
-        let inner = self.inner.decode(&context, &config).map_err(|e| e.0)?;
+        let inner = self
+            .inner
+            .decode(&context, &config)
+            .map_err(|e| e.to_string())?;
         Ok(Arc::new(ModProcessor { inner }))
     }
 }
@@ -302,7 +309,7 @@ impl ModStructureProcessor for ModProcessor {
         let out = self
             .inner
             .process_block(&mut view, &original, current)
-            .map_err(|e| PlacementQueryError::Failed(e.0))?;
+            .map_err(|e| PlacementQueryError::Failed(e.to_string()))?;
         out.map(|info| engine_block_info(worker, info)).transpose()
     }
     fn finalize_processing(
@@ -327,7 +334,7 @@ impl ModStructureProcessor for ModProcessor {
         let out = self
             .inner
             .finalize_processing(&mut view, &original, processed)
-            .map_err(|e| PlacementQueryError::Failed(e.0))?;
+            .map_err(|e| PlacementQueryError::Failed(e.to_string()))?;
         out.into_iter()
             .map(|info| engine_block_info(worker, info))
             .collect()

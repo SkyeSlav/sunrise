@@ -515,8 +515,7 @@ impl Game<'_> {
                 }
                 self.drop_boat_leashes(&held_boats);
                 self.lead_game_event("minecraft:shear", at);
-                self.audio
-                    .play("minecraft:item.shears.snip", Some(at), 1.0, 1.0);
+                self.play_audio("minecraft:item.shears.snip", Some(at), 1.0, 1.0);
                 self.damage_held_tool();
                 return true;
             }

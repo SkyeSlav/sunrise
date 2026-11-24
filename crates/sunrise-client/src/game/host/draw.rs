@@ -366,12 +366,11 @@ impl BlockEntityDrawContext for GameBlockEntityDrawContext<'_, '_> {
         self.game
             .native_draw_cube(&mut *self.surface, from, to, faces, tint)
     }
-    fn block(&mut self, block: BlockKey, properties: &[(&str, &str)]) -> bool {
-        let Some(block) = mod_api::__private::block_key_id(block) else {
+    fn block(&mut self, state: BlockState) -> bool {
+        let Ok(id) = state.try_into_engine(&()) else {
             return false;
         };
-        self.game
-            .native_draw_block(&mut *self.surface, block, properties)
+        self.game.native_draw_block(&mut *self.surface, id)
     }
     fn item(
         &mut self,
@@ -416,7 +415,7 @@ impl BlockEntityDrawContext for GameBlockEntityDrawContext<'_, '_> {
         &mut self,
         model: ModelRef,
         options: TerrainModelOptions<'_>,
-    ) -> Result<(), TerrainModelError> {
+    ) -> Result<(), ModelError> {
         self.game
             .native_draw_terrain_model(&mut *self.surface, model, options)
     }
@@ -428,12 +427,7 @@ impl BlockEntityDrawContext for GameBlockEntityDrawContext<'_, '_> {
         self.game
             .native_draw_model_part(&mut *self.surface, part, sprite, tint)
     }
-    fn fluid_box(
-        &mut self,
-        stack: &FluidStack,
-        bounds: [f32; 6],
-        options: FluidBoxOptions,
-    ) -> Result<(), FluidBoxError> {
+    fn fluid_box(&mut self, stack: &FluidStack, bounds: [f32; 6], options: FluidBoxOptions) {
         self.game
             .native_draw_fluid_box(&mut *self.surface, stack, bounds, options)
     }
@@ -521,6 +515,30 @@ impl WorldDrawContext for GameWorldDrawContext<'_, '_> {
     ) -> Result<(), InstanceError> {
         self.game
             .native_world_draw_model_instances(&mut *self.surface, model, instances)
+    }
+    fn set_pack_uniform(&mut self, name: &str, value: PackUniformValue) -> bool {
+        let Some((static_name, ty)) = sunrise_client::mod_pipelines::lookup_pack_uniform(name)
+        else {
+            return false;
+        };
+        if ty != value.ty() {
+            return false;
+        }
+        self.surface.set_pack_uniform(static_name, value);
+        true
+    }
+    fn pack_override_state(
+        &self,
+        pipeline: RenderPipelineRef,
+    ) -> Result<PackOverrideState, RenderPipelineError> {
+        let slot = self.game.pack.render.mod_pipelines.slot(pipeline)?;
+        Ok(self
+            .game
+            .renderer
+            .as_ref()
+            .map_or(PackOverrideState::NoPack, |renderer| {
+                renderer.pack_override_state(slot as usize)
+            }))
     }
 }
 /// The only mod surface that appends CPU geometry for named passes.

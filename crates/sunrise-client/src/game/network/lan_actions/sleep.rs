@@ -171,7 +171,7 @@ impl Game<'_> {
     /// of those have slept 100 ticks.
     pub(in crate::game) fn sleep_counts(&self) -> (i64, i64, i64) {
         let (mut active, mut sleeping, mut deep) = (0i64, 0i64, 0i64);
-        let mut count = |in_bed: bool, timer: u32| {
+        let mut count = |in_bed: bool, timer: i32| {
             active += 1;
             if in_bed {
                 sleeping += 1;

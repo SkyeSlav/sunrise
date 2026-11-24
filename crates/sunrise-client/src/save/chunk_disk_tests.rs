@@ -653,11 +653,13 @@ fn a_biome_admission_refusal_keeps_the_rest_of_the_batch_writable() {
     let names = (0..u16::MAX)
         .map(|i| format!("test:biome_{i}"))
         .collect::<Vec<_>>();
-    let exhausted = biomes.with_packs(
-        names
-            .iter()
-            .map(|name| (name.as_str(), &serde_json::Value::Null)),
-    );
+    let exhausted = biomes
+        .with_packs(
+            names
+                .iter()
+                .map(|name| (name.as_str(), &serde_json::Value::Null)),
+        )
+        .unwrap();
     assert_eq!(exhausted.saved_id("absent:last"), u16::MAX);
     exhausted.saved_id("absent:overflow");
     assert!(exhausted.ensure_saveable().is_err());

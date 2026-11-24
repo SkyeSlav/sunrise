@@ -210,6 +210,7 @@ pub struct Renderer {
     /// Screen effects: alpha-blended, then vignette (`dst * (1 - src)`)
     /// pipelines, each for every sampling (index `blend * 4 + sampling`).
     pub(crate) screen_pipelines: [wgpu::RenderPipeline; 16],
+    pub(crate) screen_page_groups: Vec<Option<wgpu::BindGroup>>,
     pub(crate) screen_buffer: wgpu::Buffer,
     pub(crate) screen_capacity: u64,
     pub(crate) entity_group: wgpu::BindGroup,
@@ -482,16 +483,20 @@ pub struct Renderer {
     pub(crate) shared_material_maps: [Option<wgpu::Texture>; 2],
     /// The pack's terrain program reads flat draws' vertices (`pack_terrain_inputs`).
     pub(crate) pack_terrain_flat: bool,
-    /// Vertex shaders read the section arena's pages (`flat::pages_readable`): a pack's terrain
+    /// Vertex shaders read the section arena's pages (`flat::pages_readable`, and
+    /// `pack_post::Gpu::vertex_reads`): a pack's terrain
     /// program can read its quad's corners there in per-section draws too (`pack_terrain_draws`).
     pub(crate) terrain_pages: bool,
     /// The pack's terrain programs read their pages in per-section draws: decided as
     /// `pack_terrain_inputs` last took them, from `pack_terrain_bindings`.
     pub(crate) pack_terrain_pages: bool,
+    /// The pack's terrain programs read the normal stream in per-section draws that read no
+    /// pages: decided as `pack_terrain_inputs` last took them, from `pack_terrain_bindings`.
+    pub(crate) pack_terrain_normals: bool,
     /// What the pack being loaded binds in its terrain programs' vertex stage
     /// (`set_pack_terrain_bindings`).
     pub(crate) pack_terrain_bindings: pack_atlas::TerrainBindings,
-    /// The section arena's pages are storage too (`arena_storage`, `follow_arena_storage`).
+    /// The section arena's pages are storage too (`arena_storage`, `follow_arena_layout`).
     pub(crate) arena_storage: bool,
     /// OptiFine/Iris separate ambient occlusion: pass vertex alpha to hz_Color.a.
     pub separate_ao: bool,

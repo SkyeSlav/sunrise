@@ -97,62 +97,61 @@ impl RuleTestDecodeContext for RuleDecoding<'_> {
             .state_with(self.scope.bindings().registry(), block, properties)
     }
     fn block_states(&self, block: &str) -> Result<Vec<BlockState>, StructureError> {
-        let id = sunrise_world::worldgen::tags::identifier(block)
-            .map_err(|e| StructureError(format!("invalid block id {block}: {e}")))?;
-        let states = self
-            .scope
-            .bindings()
-            .block_states(&id)
-            .ok_or_else(|| StructureError(format!("unknown block {id}")))?;
+        let id = sunrise_world::worldgen::tags::identifier(block).map_err(|e| {
+            StructureError::new(std::io::Error::other(format!(
+                "invalid block id {block}: {e}"
+            )))
+        })?;
+        let states = self.scope.bindings().block_states(&id).ok_or_else(|| {
+            StructureError::new(std::io::Error::other(format!("unknown block {id}")))
+        })?;
         states
             .iter()
             .map(|&s| {
-                self.worker
-                    .index
-                    .to_api(s)
-                    .map_err(|e| StructureError(format!("block {id}: {e:?}")))
+                self.worker.index.to_api(s).map_err(|e| {
+                    StructureError::new(std::io::Error::other(format!("block {id}: {e:?}")))
+                })
             })
             .collect()
     }
     fn decode_block_state(&self, config: &Tag) -> Result<BlockState, StructureError> {
         let value = sunrise_core::json_nbt::tag_to_json(config)
-            .map_err(|e| StructureError(e.to_string()))?;
+            .map_err(|e| StructureError::new(std::io::Error::other(e.to_string())))?;
         let state = self
             .scope
             .bindings()
             .decode_block_state(&value.to_string())
-            .map_err(|e| StructureError(e.to_string()))?;
-        self.worker
-            .index
-            .to_api(state)
-            .map_err(|e| StructureError(format!("invalid block state: {e:?}")))
+            .map_err(|e| StructureError::new(std::io::Error::other(e.to_string())))?;
+        self.worker.index.to_api(state).map_err(|e| {
+            StructureError::new(std::io::Error::other(format!("invalid block state: {e:?}")))
+        })
     }
     fn block_tag(&self, tag: &str) -> Result<Vec<BlockState>, StructureError> {
         let raw = tag.strip_prefix('#').unwrap_or(tag);
-        let id = sunrise_world::worldgen::tags::identifier(raw)
-            .map_err(|e| StructureError(format!("invalid block tag {tag}: {e}")))?;
-        let states = self
-            .scope
-            .bindings()
-            .tag_states(&id)
-            .ok_or_else(|| StructureError(format!("unknown block tag {id}")))?;
+        let id = sunrise_world::worldgen::tags::identifier(raw).map_err(|e| {
+            StructureError::new(std::io::Error::other(format!(
+                "invalid block tag {tag}: {e}"
+            )))
+        })?;
+        let states = self.scope.bindings().tag_states(&id).ok_or_else(|| {
+            StructureError::new(std::io::Error::other(format!("unknown block tag {id}")))
+        })?;
         states
             .iter()
             .map(|&s| {
-                self.worker
-                    .index
-                    .to_api(s)
-                    .map_err(|e| StructureError(format!("block tag {id}: {e:?}")))
+                self.worker.index.to_api(s).map_err(|e| {
+                    StructureError::new(std::io::Error::other(format!("block tag {id}: {e:?}")))
+                })
             })
             .collect()
     }
     fn rule_test(&self, config: &Tag) -> Result<RuleTestRef, StructureError> {
         let value = sunrise_core::json_nbt::tag_to_json(config)
-            .map_err(|e| StructureError(e.to_string()))?;
+            .map_err(|e| StructureError::new(std::io::Error::other(e.to_string())))?;
         let rule = self
             .scope
             .decode_rule_test(&value.to_string())
-            .map_err(|e| StructureError(e.to_string()))?;
+            .map_err(|e| StructureError::new(std::io::Error::other(e.to_string())))?;
         let mod_rule = rule.as_mod().and_then(|inner| {
             let inner: &dyn Any = &**inner;
             inner.downcast_ref::<ModRule>().map(|r| r.inner.clone())
@@ -183,7 +182,7 @@ impl ModRuleTestType for RuleTypeAdapter {
             .map_err(|payload| {
                 format_panic("rule test", self.mod_id, &self.type_id, "decode", payload)
             })?
-            .map_err(|e| e.0)?;
+            .map_err(|e| e.to_string())?;
         Ok(Arc::new(ModRule {
             mod_id: self.mod_id,
             type_id: self.type_id.clone(),
@@ -252,14 +251,12 @@ impl RuleTestContext for RuleView<'_> {
         pos: [i32; 3],
         random: &mut dyn RandomSource,
     ) -> Result<bool, StructureError> {
-        let engine_rule = engine_rule_test(rule)
-            .ok_or_else(|| StructureError("invalid rule test handle".into()))?;
-        let engine_state = self
-            .rule
-            .worker
-            .index
-            .to_engine(state)
-            .map_err(|e| StructureError(format!("invalid block state: {e:?}")))?;
+        let engine_rule = engine_rule_test(rule).ok_or_else(|| {
+            StructureError::new(std::io::Error::other("invalid rule test handle"))
+        })?;
+        let engine_state = self.rule.worker.index.to_engine(state).map_err(|e| {
+            StructureError::new(std::io::Error::other(format!("invalid block state: {e:?}")))
+        })?;
         match self
             .inner
             .test_rule(&engine_rule, engine_state, pos, random)
@@ -270,7 +267,7 @@ impl RuleTestContext for RuleView<'_> {
                 if slot.is_none() {
                     *slot = Some(err.clone());
                 }
-                Err(StructureError(err))
+                Err(StructureError::new(std::io::Error::other(err)))
             }
         }
     }
@@ -315,11 +312,11 @@ struct PosRuleDecoding<'a> {
 impl PosRuleTestDecodeContext for PosRuleDecoding<'_> {
     fn pos_rule_test(&self, config: &Tag) -> Result<PosRuleTestRef, StructureError> {
         let value = sunrise_core::json_nbt::tag_to_json(config)
-            .map_err(|e| StructureError(e.to_string()))?;
+            .map_err(|e| StructureError::new(std::io::Error::other(e.to_string())))?;
         let rule = self
             .scope
             .decode_pos_rule_test(&value)
-            .map_err(|e| StructureError(e.to_string()))?;
+            .map_err(|e| StructureError::new(std::io::Error::other(e.to_string())))?;
         let mod_rule = match &rule {
             EnginePosRule::Mod(inner) => {
                 let inner: &dyn Any = &**inner;
@@ -357,7 +354,7 @@ impl ModPosRuleTestType for PosRuleTypeAdapter {
                     payload,
                 )
             })?
-            .map_err(|e| e.0)?;
+            .map_err(|e| e.to_string())?;
         Ok(Arc::new(ModPosRule {
             mod_id: self.mod_id,
             type_id: self.type_id.clone(),
@@ -386,8 +383,9 @@ impl PosRuleTestContext for PosRuleView<'_> {
         world_reference: [i32; 3],
         random: &mut dyn RandomSource,
     ) -> Result<bool, StructureError> {
-        let engine_rule = engine_pos_rule_test(rule)
-            .ok_or_else(|| StructureError("invalid position rule test handle".into()))?;
+        let engine_rule = engine_pos_rule_test(rule).ok_or_else(|| {
+            StructureError::new(std::io::Error::other("invalid position rule test handle"))
+        })?;
         match self.inner.test_pos_rule(
             &engine_rule,
             in_template_pos,
@@ -401,7 +399,7 @@ impl PosRuleTestContext for PosRuleView<'_> {
                 if slot.is_none() {
                     *slot = Some(err.clone());
                 }
-                Err(StructureError(err))
+                Err(StructureError::new(std::io::Error::other(err)))
             }
         }
     }

@@ -248,18 +248,11 @@ The four caps limit what mods can ask for, counted per level:
 0 refuses every area of that kind. A request over a cap is refused whole, and the mod is told which cap and
 its value. Areas end when the player leaves.
 
-### Levels a mod opens: `sunrise-max-runtime-levels`
+### Levels a mod opens
 
-A mod can open levels of its own while the server runs ([runtime levels](modding/src/how-to/world/runtime-levels.md)).
-The server keeps at most 64 of them open at once, for all mods together; the 65th request is refused
-with `CapReached`. Set another number under `[properties]` in `server.toml`:
-
-```toml
-[properties]
-sunrise-max-runtime-levels = 128
-```
-
-A level frees its place when its mod unloads or deletes it (a delete also removes its folder from `dimensions/`). After 300 ticks with nobody in it, it leaves memory, as any custom level does, but keeps its place: it opens again when someone enters it.
+A mod can [open levels while the server runs](modding/src/how-to/world/runtime-levels.md). An idle level
+leaves memory and opens again when someone enters it. An explicit unload closes the level but keeps its
+folder; deleting the level also removes its folder from `dimensions/`.
 
 Already have a vanilla server? Run `sunrise-server init` in its folder, or `sunrise-server import
 server.properties` to write `server.toml` from it. The world, `ops.json`, `whitelist.json` and the ban lists

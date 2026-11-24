@@ -1,5 +1,4 @@
 //! The `entities_unload` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0197
 
 pub trait Hooks {
     /// Entities in `chunk` left the active server world and were queued for

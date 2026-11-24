@@ -527,8 +527,7 @@ impl Game<'_> {
                 m.extra.ints[1] = code;
             }
             if let Some(at) = stare_sound {
-                self.audio
-                    .play_unshared("minecraft:entity.enderman.stare", Some(at), 2.5, 1.0);
+                self.play_audio_unshared("minecraft:entity.enderman.stare", Some(at), 2.5, 1.0);
             }
         }
     }

@@ -90,3 +90,41 @@ fn a_true_part_lets_one_shulker_box_fill_a_bundle_and_nest() {
     assert_eq!(into_bundle(&granted, &shulker), (1, 0));
     assert!(shulker_slot_takes(&granted, &shulker));
 }
+
+/// `BundleItem` refuses both click overrides on a stack of several bundles.
+#[test]
+fn a_stack_of_several_bundles_takes_neither_click_override() {
+    let context = crate::test_resources::server_loop_context();
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("data/minecraft/loot_table")).unwrap();
+    std::fs::write(
+        root.path().join("items.json"),
+        r#"{"minecraft:bundle":{"minecraft:bundle_contents":[]},"minecraft:diamond":{}}"#,
+    )
+    .unwrap();
+    let defaults = sunrise_world::item_defaults::read(root.path()).unwrap();
+    let items = Items::catalog(
+        root.path(),
+        &sunrise_world::loot::PackOverlay::NONE,
+        &defaults,
+    )
+    .unwrap();
+    for (count, handled) in [(1, true), (2, false)] {
+        crate::menu::tests::bare_env_in(context, |env| {
+            let env = crate::menu::Env {
+                items: &items,
+                ..*env
+            };
+            // The carried bundle on a slot of diamonds.
+            let mut menu = Menu::new(Kind::Inventory);
+            menu.set_slot(&env, 9, Some(ItemStack::new("minecraft:diamond", 3)));
+            menu.carried = Some(ItemStack::new("minecraft:bundle", count));
+            assert_eq!(menu.carried_bundle_click(&env, 9, true), handled, "{count}");
+            // Diamonds carried onto the bundle in the slot.
+            let mut menu = Menu::new(Kind::Inventory);
+            menu.set_slot(&env, 9, Some(ItemStack::new("minecraft:bundle", count)));
+            menu.carried = Some(ItemStack::new("minecraft:diamond", 3));
+            assert_eq!(menu.clicked_bundle_click(&env, 9, true), handled, "{count}");
+        });
+    }
+}

@@ -105,7 +105,7 @@ pub trait EntityPartState: EntityPart + Sized {
 }
 
 /// Where the entity an [`EntityRef`] names is now, as its Part state checks it
-/// ([`EntitiesHost::entity_residency`]).
+/// ([`EntityRef::residency`]).
 ///
 /// This is a process-local residency snapshot, not a `Wire` type.
 ///
@@ -131,7 +131,7 @@ pub enum EntityResidency {
 
 impl PartStateHolder for EntityRef {
     fn part_state_holder(self, host: &dyn Host) -> Result<Holder, PartStateError> {
-        match host.entity_residency(self) {
+        match self.residency(host) {
             EntityResidency::InPlace => Ok(Holder::Entity(self.id())),
             EntityResidency::Busy => Err(PartStateError::HolderBusy),
             EntityResidency::OtherLevel => Err(PartStateError::OtherLevel),
@@ -259,4 +259,46 @@ impl EntityPartStateDeclaration {
 /// The entity Part state declarations of every mod, in registration order.
 pub fn entity_part_state_declarations() -> &'static [EntityPartStateDeclaration] {
     crate::parts::installed().map_or(&[], |installed| &installed.entity_part_states)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn entity_residency_routes_through_backend_and_defaults_gone_without_one() {
+        struct Bare;
+        impl Host for Bare {}
+        crate::impl_host_areas!(Bare);
+
+        let entity = EntityRef::new(WorldEpoch::new(1), 7);
+        assert_eq!(entity.residency(&Bare), EntityResidency::Gone);
+        assert_eq!(entity.part_state_holder(&Bare), Err(PartStateError::Stale));
+
+        struct WithResidency(EntityResidency);
+        impl Host for WithResidency {
+            fn backend(&self) -> Option<crate::BackendRef<'_>> {
+                Some(crate::BackendRef::of(self))
+            }
+        }
+        crate::impl_host_areas!(WithResidency);
+        impl Backend for WithResidency {}
+        crate::impl_backend_areas!(WithResidency, except(entities));
+        impl crate::prelude::EntitiesBackend for WithResidency {
+            fn entity_residency(&self, _: EntityRef) -> EntityResidency {
+                self.0
+            }
+        }
+
+        for (residency, expected) in [
+            (EntityResidency::InPlace, Ok(Holder::Entity(7))),
+            (EntityResidency::Busy, Err(PartStateError::HolderBusy)),
+            (EntityResidency::OtherLevel, Err(PartStateError::OtherLevel)),
+            (EntityResidency::Gone, Err(PartStateError::Stale)),
+        ] {
+            let host = WithResidency(residency);
+            assert_eq!(entity.residency(&host), residency);
+            assert_eq!(entity.part_state_holder(&host), expected);
+        }
+    }
 }

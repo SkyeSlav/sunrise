@@ -176,42 +176,50 @@ impl RuleTestType for TagBlockOrLiquidType {
         config: &Tag,
     ) -> Result<Arc<dyn RuleTest>, StructureError> {
         if !matches!(config, Tag::Compound(_)) {
-            return Err(StructureError("expected compound config".into()));
+            return Err(StructureError::new(std::io::Error::other(
+                "expected compound config",
+            )));
         }
         let mut matched = Vec::new();
         if let Some(tag) = config.get("tag") {
             let Tag::String(tag) = tag else {
-                return Err(StructureError("field tag: expected string".into()));
+                return Err(StructureError::new(std::io::Error::other(
+                    "field tag: expected string",
+                )));
             };
-            matched.extend(
-                context
-                    .block_tag(&tag.to_string_lossy())
-                    .map_err(|e| StructureError(format!("field tag: {e}")))?,
-            );
+            matched.extend(context.block_tag(&tag.to_string_lossy()).map_err(|e| {
+                StructureError::new(std::io::Error::other(format!("field tag: {e}")))
+            })?);
         }
         if let Some(block) = config.get("extra_block") {
             let Tag::String(block) = block else {
-                return Err(StructureError("field extra_block: expected string".into()));
+                return Err(StructureError::new(std::io::Error::other(
+                    "field extra_block: expected string",
+                )));
             };
             matched.extend(
                 context
                     .block_states(&block.to_string_lossy())
-                    .map_err(|e| StructureError(format!("field extra_block: {e}")))?,
+                    .map_err(|e| {
+                        StructureError::new(std::io::Error::other(format!(
+                            "field extra_block: {e}"
+                        )))
+                    })?,
             );
         }
         if let Some(state_tag) = config.get("exact_state") {
-            let state = context
-                .decode_block_state(state_tag)
-                .map_err(|e| StructureError(format!("field exact_state: {e}")))?;
+            let state = context.decode_block_state(state_tag).map_err(|e| {
+                StructureError::new(std::io::Error::other(format!("field exact_state: {e}")))
+            })?;
             matched.push(state);
         }
         let include_liquid = match config.get("include_liquid") {
             None => false,
             Some(Tag::Byte(b)) => *b != 0,
             Some(_) => {
-                return Err(StructureError(
-                    "field include_liquid: expected boolean".into(),
-                ));
+                return Err(StructureError::new(std::io::Error::other(
+                    "field include_liquid: expected boolean",
+                )));
             }
         };
         Ok(Arc::new(TagBlockOrLiquid {
@@ -254,24 +262,31 @@ impl PosRuleTestType for PieceAndYBandType {
         config: &Tag,
     ) -> Result<Arc<dyn PosRuleTest>, StructureError> {
         if !matches!(config, Tag::Compound(_)) {
-            return Err(StructureError("expected compound config".into()));
+            return Err(StructureError::new(std::io::Error::other(
+                "expected compound config",
+            )));
         }
         let int_field = |key: &str| -> Result<i32, StructureError> {
             match config.get(key) {
                 Some(Tag::Byte(n)) => Ok(i32::from(*n)),
                 Some(Tag::Short(n)) => Ok(i32::from(*n)),
                 Some(Tag::Int(n)) => Ok(*n),
-                Some(Tag::Long(n)) => i32::try_from(*n)
-                    .map_err(|_| StructureError(format!("field {key}: out of i32 range"))),
-                _ => Err(StructureError(format!("field {key}: expected integer"))),
+                Some(Tag::Long(n)) => i32::try_from(*n).map_err(|_| {
+                    StructureError::new(std::io::Error::other(format!(
+                        "field {key}: out of i32 range"
+                    )))
+                }),
+                _ => Err(StructureError::new(std::io::Error::other(format!(
+                    "field {key}: expected integer"
+                )))),
             }
         };
         let min_y = int_field("min_y")?;
         let max_y = int_field("max_y")?;
         if min_y > max_y {
-            return Err(StructureError(format!(
+            return Err(StructureError::new(std::io::Error::other(format!(
                 "field min_y: {min_y} exceeds max_y {max_y}"
-            )));
+            ))));
         }
         let max_template_x = int_field("max_template_x")?;
         Ok(Arc::new(PieceAndYBand {
@@ -464,10 +479,10 @@ impl RuleTestType for InvertRuleType {
     ) -> Result<Arc<dyn RuleTest>, StructureError> {
         let inner = config
             .get("inner")
-            .ok_or_else(|| StructureError("field inner: missing".into()))?;
+            .ok_or_else(|| StructureError::new(std::io::Error::other("field inner: missing")))?;
         let rule = context
             .rule_test(inner)
-            .map_err(|e| StructureError(format!("field inner: {e}")))?;
+            .map_err(|e| StructureError::new(std::io::Error::other(format!("field inner: {e}"))))?;
         Ok(Arc::new(InvertRule(rule)))
     }
 }
@@ -497,10 +512,10 @@ impl PosRuleTestType for InvertPosRuleType {
     ) -> Result<Arc<dyn PosRuleTest>, StructureError> {
         let inner = config
             .get("inner")
-            .ok_or_else(|| StructureError("field inner: missing".into()))?;
+            .ok_or_else(|| StructureError::new(std::io::Error::other("field inner: missing")))?;
         let rule = context
             .pos_rule_test(inner)
-            .map_err(|e| StructureError(format!("field inner: {e}")))?;
+            .map_err(|e| StructureError::new(std::io::Error::other(format!("field inner: {e}"))))?;
         Ok(Arc::new(InvertPosRule(rule)))
     }
 }

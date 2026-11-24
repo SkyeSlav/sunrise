@@ -25,10 +25,12 @@ use super::{
 use crate::{
     enchant::Enchantments,
     items::{ItemStack, Items},
+    living_attributes::EquipmentDeltas,
 };
 use serde_json::Value;
 use std::{borrow::Cow, fs, path::Path, sync::Arc};
 use sunrise_core::{equipment_slot::EquipmentSlot, geometry::Aabb, random::RandomSource};
+use sunrise_world::attributes::entity::Catalog;
 
 /// The two independent decisions of NeoForge's `FinalizeSpawnEvent`.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -1282,6 +1284,22 @@ impl<'a> EquipmentRead<'a> {
         self.base
     }
 
+    /// The active trim, if any, without projecting the stack's component patch.
+    pub fn trim(&self) -> Option<&'a gear::Trim> {
+        self.overlays
+            .and_then(|(gear, index)| gear.trims[index].as_ref())
+            .or_else(|| self.base.data()?.trim.as_ref())
+    }
+
+    /// Vanilla's foil test uses the same enchantments the caller can read from this stack.
+    pub fn has_foil(&self, item_glint: Option<bool>) -> bool {
+        let enchanted = !self.base.enchantments().is_empty()
+            || self
+                .overlays
+                .is_some_and(|(gear, index)| !gear.slots[index].is_empty());
+        self.base.has_foil_with_enchantments(item_glint, enchanted)
+    }
+
     /// The complete stack: still borrowed unless its gear data needs overlaying.
     pub fn project(&self) -> Cow<'a, ItemStack> {
         if self.overlays.is_none() {
@@ -1290,6 +1308,28 @@ impl<'a> EquipmentRead<'a> {
         let mut stack = self.base.clone();
         self.overlay_gear(&mut stack, |_| true);
         Cow::Owned(stack)
+    }
+
+    /// Whether this stack matches `other` (`ItemStack.matches`), including any
+    /// separate gear overlay, without cloning the stack or its components.
+    pub fn matches_stack(&self, other: &ItemStack) -> bool {
+        match self.overlays {
+            None => self.base.matches(other),
+            Some((gear, index)) => self.base.matches_with_overlay(
+                other,
+                &gear.slots[index],
+                gear.trims[index].as_ref(),
+            ),
+        }
+    }
+
+    /// `LivingEntity.equipmentHasChanged` negated, for a possibly empty slot.
+    pub fn matches_previous(now: Option<&Self>, previous: Option<&ItemStack>) -> bool {
+        match (now, previous) {
+            (Some(now), Some(previous)) => now.matches_stack(previous),
+            (None, None) => true,
+            _ => false,
+        }
     }
 
     /// Encode selected extra components with the same gear overlay as a full projection.
@@ -1340,9 +1380,12 @@ impl<'a> EquipmentRead<'a> {
     }
 }
 
-fn stored_equipment<'a>(m: &'a Mob, slot: usize, base: &'a ItemStack) -> Option<EquipmentRead<'a>> {
-    if slot > HEAD || (base.damage == 0 && base.count <= 1 && base.extra.is_none()) {
-        return None;
+/// Borrow one slot as `Mob::equipment_stacks` reads it, without reading the other slots.
+pub fn equipment_slot(m: &Mob, slot: EquipmentSlot) -> Option<EquipmentRead<'_>> {
+    let slot = slot as usize;
+    let base = m.extra.slot_stack(slot)?;
+    if slot > HEAD {
+        return Some(EquipmentRead::resident(base));
     }
     let index = gear_slot(slot);
     let overlays = gear::gear(m)
@@ -1351,27 +1394,101 @@ fn stored_equipment<'a>(m: &'a Mob, slot: usize, base: &'a ItemStack) -> Option<
     Some(EquipmentRead { base, overlays })
 }
 
-/// Borrow one slot as `Mob::equipment_stacks` reads it, without reading the other slots.
-pub fn equipment_slot(m: &Mob, slot: EquipmentSlot) -> Option<EquipmentRead<'_>> {
-    let slot = slot as usize;
-    let base = m.extra.slot_stack(slot)?;
-    Some(stored_equipment(m, slot, base).unwrap_or_else(|| EquipmentRead::resident(base)))
+/// A changed slot at `LivingEntity.collectEquipmentChanges`, still borrowed.
+pub struct EquipmentChange<'a> {
+    pub current: Option<EquipmentRead<'a>>,
+    pub previous: Option<&'a ItemStack>,
+}
+
+pub fn changed_equipment_slot(m: &Mob, slot: EquipmentSlot) -> Option<EquipmentChange<'_>> {
+    let previous = m.extra.live.last_equipment(slot);
+    let current = equipment_slot(m, slot);
+    (!EquipmentRead::matches_previous(current.as_ref(), previous))
+        .then_some(EquipmentChange { current, previous })
+}
+
+/// Detect at the body tick. Return the first changed slot if its callback
+/// needs the owning game; otherwise apply vanilla's changes without yielding.
+pub fn detect_equipment_updates(
+    m: &mut Mob,
+    catalog: &Arc<Catalog>,
+    items: &Items,
+    notify: impl FnOnce() -> bool,
+) -> Option<EquipmentSlot> {
+    if m.extra.equipment.is_empty() && !m.extra.live.has_worn() {
+        return None;
+    }
+    let mut deltas = EquipmentDeltas::default();
+    let mut notify = Some(notify);
+    let mut first = None;
+    for slot in EquipmentSlot::ALL {
+        let Some(change) = changed_equipment_slot(m, slot) else {
+            continue;
+        };
+        if first.is_none() {
+            first = Some(slot);
+            if notify.take().is_some_and(|notify| notify()) {
+                return first;
+            }
+        }
+        deltas.set(slot, change.current.map(|read| read.project().into_owned()));
+    }
+    finish_equipment_tick(m, catalog, items, deltas);
+    None
+}
+
+pub fn equipment_attribute_seed(m: &Mob) -> Vec<sunrise_core::nbt::Tag> {
+    crate::entity_nbt::attribute_entries(m)
+        .into_iter()
+        .map(|(_, entry)| entry)
+        .collect()
+}
+
+/// Settle only the observed deltas, plus slots whose live modifiers changed
+/// early (such as through a listener's equipment write).
+pub fn finish_equipment_tick(
+    m: &mut Mob,
+    catalog: &Arc<Catalog>,
+    items: &Items,
+    deltas: EquipmentDeltas,
+) {
+    super::armor::prepare(m, catalog);
+    if deltas.is_empty() && !m.extra.live.has_pending_equipment() {
+        return;
+    }
+    let mut live = std::mem::take(&mut m.extra.live);
+    if let Err(error) = live.finish_equipment_tick(
+        catalog,
+        &m.kind.id,
+        items,
+        deltas,
+        |slot| equipment_slot(m, slot),
+        || equipment_attribute_seed(m),
+    ) {
+        log::warn!("equipment attributes of {} {}: {error}", m.kind.id, m.id);
+    }
+    m.extra.live = live;
 }
 
 /// The whole stack a mob keeps in `slot` (damage, name, components, count,
 /// enchantments and trim), when it kept more than the item id.
 pub fn stored_stack(m: &Mob, slot: usize) -> Option<ItemStack> {
-    let base = m.extra.slot_stack(slot)?;
-    Some(stored_equipment(m, slot, base)?.project().into_owned())
+    let read = equipment_slot(m, *EquipmentSlot::ALL.get(slot)?)?;
+    let base = read.base();
+    if slot > HEAD || (base.damage == 0 && base.count <= 1 && base.extra.is_none()) {
+        return None;
+    }
+    Some(read.project().into_owned())
 }
 /// What a mob has in `slot` as a stack, including its count, enchantments and trim.
 pub fn item_stack(m: &Mob, slot: usize) -> Option<crate::items::ItemStack> {
     if !matches!(slot, MAINHAND..=HEAD | SADDLE) {
         return None;
     }
-    let base = m.extra.slot_stack(slot)?;
-    if let Some(stored) = stored_equipment(m, slot, base) {
-        return Some(stored.project().into_owned());
+    let read = equipment_slot(m, *EquipmentSlot::ALL.get(slot)?)?;
+    let base = read.base();
+    if slot <= HEAD && (base.damage != 0 || base.count > 1 || base.extra.is_some()) {
+        return Some(read.project().into_owned());
     }
     let mut stack = ItemStack {
         item: base.item.clone(),
@@ -1555,7 +1672,8 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
                 set_age(m, start, None);
             }
             if let Some(a) = g.ageable() {
-                a.size += 1;
+                // AgeableMobGroupData.increaseGroupSizeByOne increments a Java int.
+                a.size = a.size.wrapping_add(1);
             }
         }
         self.mob(m, Some(g))
@@ -3100,6 +3218,29 @@ mod tests {
         assert!(!halloween_date(10, 30));
         assert!(!halloween_date(11, 1));
         assert!(!halloween_date(1, 1));
+    }
+
+    #[test]
+    fn equipment_read_matches_stack_with_and_without_gear_overlays() {
+        let kind = crate::mobs::sensor_scan_tests::kind();
+        let mut m = crate::mobs::Mob::new(1, kind, sunrise_core::geometry::Vec3::ZERO, 0.0);
+        set_item(&mut m, CHEST, "minecraft:iron_chestplate");
+        set_slot_enchantments(&mut m, CHEST, vec![(Arc::from("minecraft:thorns"), 3)]);
+        let trim: gear::Trim = ("minecraft:gold".into(), "minecraft:coast".into());
+        gear::set_trim(&mut m, gear::CHEST, Some(trim));
+        set_slot_damage(&mut m, CHEST, 2);
+
+        let read = equipment_slot(&m, EquipmentSlot::Chest).unwrap();
+        let projected = read.project().into_owned();
+        assert!(read.matches_stack(&projected));
+
+        let mut altered = projected.clone();
+        altered.damage = 3;
+        assert!(!read.matches_stack(&altered));
+
+        let mut unenchanted = ItemStack::new("minecraft:iron_chestplate", 1);
+        unenchanted.damage = 2;
+        assert!(!read.matches_stack(&unenchanted));
     }
 }
 

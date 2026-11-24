@@ -133,7 +133,7 @@ impl Plan {
         })?;
         let mut fetch = cargo("fetch");
         fetch.arg("--locked");
-        super::run(fetch, "Downloading the mods' pinned crates", |_| {})
+        super::run(fetch, "Downloading the mods' pinned crates")
     }
 }
 

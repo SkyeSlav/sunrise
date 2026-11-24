@@ -182,7 +182,14 @@ impl Game<'_> {
         };
         let flags = self.gui.atlas.flags.get(name).copied();
         let sampling = flags.map_or(0, sampling);
-        draw.push(corners, uv, [r.u0, r.v0, r.u1, r.v1], argb, sampling)
+        draw.push_on_atlas(
+            corners,
+            uv,
+            [r.u0, r.v0, r.u1, r.v1],
+            argb,
+            sampling,
+            self.gui.atlas.texture_atlas_page(name),
+        )
     }
     /// `DebugRenderer.refreshRendererList`: replace the active callbacks with newly collected
     /// ones whose entries are on. Runs at start, at login and when the selection changes.
@@ -519,6 +526,8 @@ impl Game<'_> {
         entities: &mut Vec<Vertex>,
         spans: &mut Vec<sunrise_client::gfx::pack_draw::EntitySpan>,
     ) {
+        let capacity = self.entity_quad_capacity();
+        let reserved_quads = self.entity_batch_reserved_quads();
         let mut run_overlay = None;
         let mut materials = self.model_copy_order.borrow_mut();
         let mut mark_span = |start| {
@@ -542,40 +551,40 @@ impl Game<'_> {
             let Some(faces) = self.standalone_geometry.faces(copy.slot) else {
                 continue;
             };
+            let room =
+                sunrise_client::gfx::EntityQuadScope::new(entities, capacity, reserved_quads)
+                    .remaining_quads();
+            if room == 0 {
+                break;
+            }
             let start = entities.len();
             if run_overlay != Some(copy.overlay) {
                 run_overlay = Some(copy.overlay);
                 mark_span(start);
             }
-            let shown = || {
-                faces
-                    .iter()
-                    .filter(|face| !face.hidden_by(copy.hidden_faces))
-            };
-            super::minecarts::emit_model_faces(
-                shown().copied().map(|face| (face, copy.light)),
-                world_geometry::row_major_3x4(copy.transform),
-                true,
-                |index| (index >= 0).then_some(copy.tint & 0xFF_FFFF),
+            submit_opaque_model_copy(
                 entities,
+                capacity,
+                reserved_quads,
+                faces,
+                copy.transform,
+                (DVec3::from(copy.origin) - camera).as_vec3(),
+                copy.light,
+                copy.tint,
+                copy.color,
+                copy.overlay,
+                copy.hidden_faces,
             );
-            let shift = (DVec3::from(copy.origin) - camera).as_vec3();
-            let (quads, _) = entities[start..].as_chunks_mut::<4>();
-            for quad in quads {
-                for vertex in quad.iter_mut() {
-                    vertex.pos = (Vec3::from(vertex.pos) + shift).to_array();
-                    vertex.layer = copy.overlay;
-                    if copy.color != u32::MAX {
-                        vertex.color = terrain_model::multiply_draw_color(vertex.color, copy.color);
-                    }
-                }
-            }
-            super::minecarts::scale_tint_alpha(&mut entities[start..], shown(), copy.tint);
         }
         if !materials.is_empty() {
             mark_span(entities.len());
             let layers = &self.pack.render.sprite_layers;
+            let mut scope =
+                sunrise_client::gfx::EntityQuadScope::new(entities, capacity, reserved_quads);
             for &index in materials.iter() {
+                if !scope.has_room() {
+                    break;
+                }
                 let copy = draw.copy(index as usize);
                 let Some(faces) = self.model_faces(copy.slot) else {
                     continue;
@@ -599,23 +608,77 @@ impl Game<'_> {
                     hidden_faces: copy.hidden_faces,
                     ..Default::default()
                 };
-                terrain_model::draw_model(
-                    faces,
-                    pose,
-                    copy.light,
-                    options,
-                    |name| {
-                        layers
-                            .get(name)
-                            .or_else(|| layers.get(name.strip_prefix("minecraft:")?))
-                            .copied()
-                    },
-                    |vertex| entities.push(vertex),
-                );
+                submit_material_model_copy(&mut scope, faces, pose, copy.light, options, |name| {
+                    layers
+                        .get(name)
+                        .or_else(|| layers.get(name.strip_prefix("minecraft:")?))
+                        .copied()
+                });
             }
         }
         draw.clear_copies();
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn submit_opaque_model_copy(
+    entities: &mut Vec<Vertex>,
+    capacity: sunrise_client::gfx::EntityQuadCapacity,
+    reserved_quads: usize,
+    faces: &[super::minecarts::PreparedModelFace],
+    transform: [f32; 12],
+    shift: Vec3,
+    light: u32,
+    tint: u32,
+    color: u32,
+    overlay: u32,
+    hidden_faces: u8,
+) {
+    let room = sunrise_client::gfx::EntityQuadScope::new(entities, capacity, reserved_quads)
+        .remaining_quads();
+    if room == 0 {
+        return;
+    }
+    let start = entities.len();
+    let shown = || {
+        faces
+            .iter()
+            .filter(|face| !face.hidden_by(hidden_faces))
+            .take(room)
+    };
+    super::minecarts::emit_model_faces(
+        shown().copied().map(|face| (face, light)),
+        world_geometry::row_major_3x4(transform),
+        true,
+        |index| (index >= 0).then_some(tint & 0xFF_FFFF),
+        entities,
+    );
+    let (quads, _) = entities[start..].as_chunks_mut::<4>();
+    for quad in quads {
+        for vertex in quad.iter_mut() {
+            vertex.pos = (Vec3::from(vertex.pos) + shift).to_array();
+            vertex.layer = overlay;
+            if color != u32::MAX {
+                vertex.color = terrain_model::multiply_draw_color(vertex.color, color);
+            }
+        }
+    }
+    super::minecarts::scale_tint_alpha(&mut entities[start..], shown(), tint);
+    sunrise_client::gfx::EntityQuadScope::new(entities, capacity, reserved_quads)
+        .retain_valid_since(start);
+}
+
+fn submit_material_model_copy(
+    scope: &mut sunrise_client::gfx::EntityQuadScope<'_>,
+    faces: &[sunrise_client::models::catalog::BakedFace],
+    pose: Mat4,
+    light: u32,
+    options: terrain_model::NativeModelRenderOptions<'_>,
+    sprite_layer: impl Fn(&str) -> Option<u32>,
+) {
+    terrain_model::draw_model(faces, pose, light, options, sprite_layer, |quad| {
+        scope.submit_quad(quad)
+    });
 }
 #[cfg(test)]
 mod tests {
@@ -876,7 +939,8 @@ mod tests {
             let group = game.create_group(model, 8).unwrap();
             let near = ModelInstance::at([0.0; 3], 0xFF80_C040);
             let far = ModelInstance::at([40.0, 0.0, 0.0], 0xFFFF_FFFF);
-            group.write(game, 0, &[far, near]).unwrap();
+            let setup: &dyn mod_api::ClientSetupContext = game;
+            group.write(setup, 0, &[far, near]).unwrap();
             assert_eq!(group.write(game, 8, &[near]), Err(GroupError::OutOfRange));
             let mut bad = near;
             bad.light.block = 16;
@@ -902,17 +966,19 @@ mod tests {
                         part: None,
                     },
                 );
-                assert_eq!(group.write(game, 0, &[near]), Err(GroupError::Stale));
-                assert_eq!(group.set_len(game, 0), Err(GroupError::Stale));
+                // Handles are not gated on the TLS caller mod name: another mod holding the
+                // live handle can update, validate, and submit it.
+                group.write(game, 0, &[far, near]).unwrap();
+                group.set_len(game, 2).unwrap();
                 assert_eq!(
                     group.set_group_transform(game, [f32::NAN; 12]),
-                    Err(GroupError::Stale)
+                    Err(GroupError::NonFinite)
                 );
-                assert_eq!(group.destroy(game), Err(GroupError::Stale));
-                assert_eq!(
-                    context(game, &mut draw).draw_instance_group(group),
-                    Err(GroupError::Stale)
-                );
+                draw.reset([0.0; 3], Mat4::IDENTITY, [0.0; 2]);
+                context(game, &mut draw).draw_instance_group(group).unwrap();
+                game.resolve_submitted_groups(&mut draw);
+                assert_eq!(game.prepared_model_draws.borrow().len(), 1);
+                game.prepared_model_draws.borrow_mut().clear();
             }
             let invalid_only = vec![ModelInstance::at([f64::NAN; 3], 0); 4];
             context(game, &mut draw)
@@ -953,7 +1019,7 @@ mod tests {
             context(game, &mut draw).draw_instance_group(group).unwrap();
             context(game, &mut draw).draw_instance_group(group).unwrap();
             game.resolve_submitted_groups(&mut draw);
-            assert_eq!(expected, render(game));
+            assert_eq!(game.prepared_model_draws.borrow().len(), 2);
             draw.reset([0.0; 3], Mat4::IDENTITY, [0.0; 2]);
             game.prepared_model_draws.borrow_mut().clear();
             context(game, &mut draw).draw_instance_group(group).unwrap();
@@ -1095,11 +1161,18 @@ mod tests {
                 "reload error: {:?}",
                 game.ui.options.resource_error
             );
-            assert_eq!(fresh.set_len(game, 1), Err(GroupError::Stale));
+            let reload: &dyn mod_api::ClientReloadHost = game;
+            assert_eq!(fresh.set_len(reload, 1), Err(GroupError::Stale));
             let after_reload: Vec<_> = (0..4)
-                .map(|_| game.create_group(grass(game), 16_384).unwrap())
+                .map(|_| {
+                    reload
+                        .instance_groups()
+                        .create_group(grass(game), 16_384)
+                        .unwrap()
+                })
                 .collect();
             assert_ne!(fresh, after_reload[0]);
+            after_reload[0].write(reload, 0, &[near]).unwrap();
             game.native_lifecycle_world_closed();
             assert_eq!(after_reload[0].destroy(game), Err(GroupError::Stale));
             assert_ne!(after_reload[0], game.create_group(grass(game), 1).unwrap());
@@ -1203,10 +1276,19 @@ mod tests {
                 game.commit_model_instances(&mut draw, camera, &mut actual);
                 assert_eq!(
                     actual.len(),
-                    expected.len(),
-                    "duplicate group draw must be ignored"
+                    expected.len() * 2,
+                    "repeated group draws in one view submit explicitly"
                 );
-                assert_eq!(pixels(game, &actual), expected_pixels, "CPU route {route}");
+                assert_eq!(
+                    pixels(game, &actual[..expected.len()]),
+                    expected_pixels,
+                    "CPU route {route}"
+                );
+                assert_eq!(
+                    pixels(game, &actual[expected.len()..]),
+                    expected_pixels,
+                    "CPU route {route} second submission"
+                );
                 replacement.write(game, 0, &[copy]).unwrap();
                 replacement.set_len(game, 0).unwrap();
                 draw.reset(camera.to_array(), Mat4::IDENTITY, [0.0; 2]);
@@ -1243,7 +1325,9 @@ mod tests {
                         part: None,
                     },
                 );
-                assert_eq!(released.set_len(game, 1), Err(GroupError::Stale));
+                // Another mod holding the handle can access it while the owner stays enabled;
+                // disabling the owner retires it below.
+                released.set_len(game, 1).unwrap();
                 game.create_group(model, 1).unwrap()
             };
             game.settings.mods.disabled.insert("group-owner".into());
@@ -1622,6 +1706,7 @@ mod tests {
             partial_tick: 0.0,
             yaw: 0.0,
             pitch: 0.0,
+            roll: 0.0,
             fov_degrees: 70.0,
             near: 0.05,
             far: 128.0,
@@ -2114,6 +2199,7 @@ mod tests {
                 partial_tick: 0.25,
                 yaw: 33.5,
                 pitch: -12.0,
+                roll: 0.0,
                 fov_degrees: 85.0,
                 near: 0.05,
                 far: 256.0,
@@ -2280,6 +2366,168 @@ mod tests {
             assert_eq!(game.prepared_model_draws.borrow()[0].cpu_vertices, 4);
         });
     }
+
+    #[test]
+    fn shared_device_quad_capacity_bounds_fluid_terrain_models_and_cpu_model_copies() {
+        use mod_api::{FluidBoxOptions, FluidStack, TerrainModelOptions};
+        use sunrise_assets::{
+            bake::{RenderType, bake_flat_face},
+            model::{Direction, Material},
+        };
+        use sunrise_client::{
+            block_entity_render::diffuse_lights,
+            gfx::{EntityQuadCapacity, EntityQuadScope},
+            models::catalog::BakedFace,
+        };
+
+        let make_baked = || {
+            let mut quad = bake_flat_face(
+                [0.0; 3],
+                [16.0; 3],
+                [0.0, 0.0, 16.0, 16.0],
+                Direction::South,
+                Material {
+                    sprite: "test:casing".into(),
+                    force_translucent: false,
+                },
+                -1,
+            )
+            .unwrap();
+            quad.render_type = Some(RenderType::Cutout);
+            BakedFace::new(quad, 7, true, false, None)
+        };
+        let sample = make_baked();
+        let prepared_face = super::super::minecarts::PreparedModelFace::new(
+            &sample.quad,
+            sunrise_client::hud::Rect {
+                u0: 0.0,
+                v0: 0.0,
+                u1: 1.0,
+                v1: 1.0,
+                w: 16,
+                h: 16,
+            },
+        );
+
+        // Small device-derived capacity: 7 total quads, with 2 already reserved by other streams
+        // in the same combined batch => 5 quads of budget shared across all draw paths.
+        let capacity =
+            EntityQuadCapacity::from_max_buffer_size(EntityQuadCapacity::VERTEX_QUAD_BYTES * 7);
+        let reserved = 2usize;
+
+        // 1) Terrain model submits 1 quad into `entities`.
+        let mut draw = super::super::native_block_entity_draw::BlockEntityDraw::posed(
+            0.0,
+            0,
+            0xF0F0,
+            [0; 3],
+            Mat4::IDENTITY,
+            diffuse_lights(false),
+            Vec::new(),
+        )
+        .with_quad_budget(capacity, reserved);
+        super::super::native_terrain_model::draw_terrain_model(
+            &mut draw,
+            &[make_baked()],
+            |_| Some(7),
+            TerrainModelOptions::default(),
+        );
+        let mut entities = draw.into_vertices();
+        assert_eq!(entities.len(), 4, "1 terrain model quad admitted");
+
+        // 2) Opaque CPU model copy adds 1 quad through the same device-derived capacity.
+        submit_opaque_model_copy(
+            &mut entities,
+            capacity,
+            reserved,
+            &[prepared_face],
+            rows(Mat4::IDENTITY),
+            Vec3::ZERO,
+            0xF0F0,
+            0xFFFF_FFFF,
+            u32::MAX,
+            0,
+            0,
+        );
+        assert_eq!(entities.len(), 8, "1 opaque CPU model copy quad admitted");
+
+        // 3) Material CPU model copy adds 2 quads through EntityQuadScope.
+        {
+            let mut scope = EntityQuadScope::new(&mut entities, capacity, reserved);
+            submit_material_model_copy(
+                &mut scope,
+                &[make_baked(), make_baked()],
+                Mat4::IDENTITY,
+                0xF0F0,
+                terrain_model::NativeModelRenderOptions::default(),
+                |_| Some(7),
+            );
+        }
+        assert_eq!(
+            entities.len(),
+            16,
+            "2 material CPU model copy quads admitted"
+        );
+
+        // 4) Fluid box receives the final 1 quad of remaining budget and stops at whole quads.
+        let water = FluidStack::new(mod_api::__private::parts_installation::fluid_key(0), 1000);
+        let look =
+            super::super::native_fluid_render::fluid_box_look("minecraft:water", None, 0, |_| {
+                Some(7)
+            })
+            .unwrap();
+        let mut draw = super::super::native_block_entity_draw::BlockEntityDraw::posed(
+            0.0,
+            0,
+            0xF0F0,
+            [0; 3],
+            Mat4::IDENTITY,
+            diffuse_lights(false),
+            entities,
+        )
+        .with_quad_budget(capacity, reserved);
+        super::super::native_fluid_render::draw_fluid_box(
+            &mut draw,
+            look,
+            &water,
+            [0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            FluidBoxOptions::new(true, 0.0),
+        );
+        let mut entities = draw.into_vertices();
+        assert_eq!(
+            entities.len(),
+            20,
+            "fluid fills the 5th and final quad of budget (7 max - 2 reserved)"
+        );
+
+        // 5) Once at capacity, additional opaque/material CPU model copies add zero vertices.
+        submit_opaque_model_copy(
+            &mut entities,
+            capacity,
+            reserved,
+            &[prepared_face],
+            rows(Mat4::IDENTITY),
+            Vec3::ZERO,
+            0xF0F0,
+            0xFFFF_FFFF,
+            u32::MAX,
+            0,
+            0,
+        );
+        {
+            let mut scope = EntityQuadScope::new(&mut entities, capacity, reserved);
+            submit_material_model_copy(
+                &mut scope,
+                &[make_baked()],
+                Mat4::IDENTITY,
+                0xF0F0,
+                terrain_model::NativeModelRenderOptions::default(),
+                |_| Some(7),
+            );
+        }
+        assert_eq!(entities.len(), 20);
+    }
+
     struct RenderFault {
         panics: bool,
         batch: Mutex<Option<mod_api::PreparedWorldDraw>>,

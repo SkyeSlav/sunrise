@@ -270,8 +270,7 @@ mod custom_bundle_integration_tests {
     use mod_api::{
         BundleConfig, BundleItems, ComponentTypesEvent, Flow, Hooks, Host, HostSide, ITEM_ITEMS,
         ItemDestroyedEvent, ItemPart, ItemPlace, ItemResource, ItemStackedOnOtherEvent, ModEntry,
-        Mods, Registrar, RegistrationContext, StackedOnOtherDirection,
-        item::menu::{ClickedStackResult, StackResult},
+        Mods, Registrar, RegistrationContext, StackedOnOtherDirection, item::menu::ClickAction,
     };
     use std::sync::{
         Arc,
@@ -644,7 +643,7 @@ mod custom_bundle_integration_tests {
         fn item_stacked_on_other(
             &self,
             host: HostSide<'_>,
-            event: &mut ItemStackedOnOtherEvent<'_>,
+            event: &mut ItemStackedOnOtherEvent<'_, '_>,
         ) -> Flow {
             if self.panic_stack.load(Ordering::Relaxed) {
                 panic!("pouch stacking failure");
@@ -653,45 +652,45 @@ mod custom_bundle_integration_tests {
                 HostSide::Server(h) => &**h,
                 HostSide::Client(h) => &**h,
             };
-            match event.event.direction {
+            let primary = event.click.action == ClickAction::Primary;
+            match event.click.direction {
                 StackedOnOtherDirection::CarriedOnOther => {
-                    let Some(carried) = event.event.carried.as_ref() else {
+                    let Some(carried) = event.click.carried().cloned() else {
                         return Flow::Continue;
                     };
-                    if event.event.primary
-                        && let Some(clicked) = event.event.clicked.as_ref()
+                    if primary
+                        && let Some(clicked) = event.click.clicked().cloned()
                         && let Ok(Some((moved, updated))) =
-                            self.config.try_insert(host_ref, carried, clicked)
+                            self.config.try_insert(host_ref, &carried, &clicked)
                         && moved > 0
                     {
-                        event.result.carried = StackResult::Set(Some(updated));
-                        event.result.clicked =
-                            ClickedStackResult::Set(clicked.clone().shrink(moved));
-                        event.result.handled = true;
+                        event.click.set_carried(Some(updated));
+                        event.click.set_clicked(clicked.shrink(moved));
+                        event.click.handled = true;
                         return Flow::Cancel;
                     }
-                    if !event.event.primary
-                        && event.event.clicked.is_none()
+                    if !primary
+                        && event.click.clicked().is_none()
                         && let Ok(Some((Some(out), updated))) =
-                            self.config.extract(host_ref, carried, u32::MAX)
+                            self.config.extract(host_ref, &carried, u32::MAX)
                     {
-                        event.result.carried = StackResult::Set(Some(updated));
-                        event.result.clicked = ClickedStackResult::Set(Some(out));
-                        event.result.handled = true;
+                        event.click.set_carried(Some(updated));
+                        event.click.set_clicked(Some(out));
+                        event.click.handled = true;
                         return Flow::Cancel;
                     }
                 }
                 StackedOnOtherDirection::OtherStackedOnMe => {
-                    if event.event.primary
-                        && let Some(clicked) = event.event.clicked.as_ref()
-                        && let Some(carried) = event.event.carried.as_ref()
+                    if primary
+                        && let Some(clicked) = event.click.clicked().cloned()
+                        && let Some(carried) = event.click.carried().cloned()
                         && let Ok(Some((moved, updated))) =
-                            self.config.try_insert(host_ref, clicked, carried)
+                            self.config.try_insert(host_ref, &clicked, &carried)
                         && moved > 0
                     {
-                        event.result.clicked = ClickedStackResult::Set(Some(updated));
-                        event.result.carried = StackResult::Set(carried.clone().shrink(moved));
-                        event.result.handled = true;
+                        event.click.set_clicked(Some(updated));
+                        event.click.set_carried(carried.shrink(moved));
+                        event.click.handled = true;
                         return Flow::Cancel;
                     }
                 }
@@ -703,10 +702,12 @@ mod custom_bundle_integration_tests {
         fn item_destroyed(
             &self,
             host: &mut dyn mod_api::ServerHost,
-            event: &mut ItemDestroyedEvent<'_>,
+            event: &mut ItemDestroyedEvent<'_, '_>,
         ) {
             if let Ok(Some(inside)) = self.config.slots(host, event.stack) {
-                event.drops.extend(inside);
+                for stack in inside {
+                    event.drops.push(stack).unwrap();
+                }
             }
         }
     }

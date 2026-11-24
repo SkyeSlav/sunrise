@@ -30,7 +30,7 @@ pub(super) fn resolve(
         } else {
             command.arg("--workspace");
         }
-        super::run(command, "Resolving registry dependency pins", |_| {})
+        super::run(command, "Resolving registry dependency pins")
     };
     let read = || {
         let text = super::read_lock(directory)?;
@@ -56,7 +56,6 @@ pub(super) fn resolve(
         Err(error) if seed.packages.is_empty() => return Err(error),
         Err(_) => None,
     };
-    crate::check_cancelled()?;
 
     let work = tempfile::Builder::new()
         .prefix("sunrise-registry-unlock-")
@@ -143,9 +142,7 @@ pub(super) fn resolve(
                 patched = true;
                 fs::write(&manifest_path, constrained.to_string()).map_err(|e| e.to_string())?;
                 fs::write(&lock_path, &unlocked_seed).map_err(|e| e.to_string())?;
-                let constrained_update = update(unlock);
-                crate::check_cancelled()?;
-                match constrained_update {
+                match update(unlock) {
                     Ok(()) => {
                         let (text, constrained) = read()?;
                         if check(&constrained).is_ok() {
@@ -243,7 +240,6 @@ pub(super) fn resolve(
             }
             fs::write(&lock_path, &unlocked_seed).map_err(|e| e.to_string())?;
             if let Err(error) = update(unlock) {
-                crate::check_cancelled()?;
                 return Err(match refusal {
                     // Cargo's report names the stand-in that leaves a release out, not the
                     // release: say which, and keep the chain of what still requires it.

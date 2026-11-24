@@ -58,12 +58,12 @@ impl PlacementModifierDecodeContext for Decoding<'_> {
         &self,
         config: &sunrise_core::nbt::Tag,
     ) -> Result<PlacementModifierRef, FeatureError> {
-        let value =
-            sunrise_core::json_nbt::tag_to_json(config).map_err(|e| FeatureError(e.to_string()))?;
+        let value = sunrise_core::json_nbt::tag_to_json(config)
+            .map_err(|e| FeatureError::new(std::io::Error::other(e.to_string())))?;
         let modifier = self
             .scope
             .decode_modifier(&value.to_string())
-            .map_err(|e| FeatureError(e.to_string()))?;
+            .map_err(|e| FeatureError::new(std::io::Error::other(e.to_string())))?;
         Ok(modifier_ref(Arc::new(modifier)))
     }
 }
@@ -158,14 +158,15 @@ impl PlacementModifierContext for Placing<'_> {
         origin: [i32; 3],
         output: &mut dyn FnMut([i32; 3]) -> Result<(), FeatureError>,
     ) -> Result<(), FeatureError> {
-        let modifier = engine_modifier(modifier)
-            .ok_or_else(|| FeatureError("invalid placement modifier handle".into()))?;
+        let modifier = engine_modifier(modifier).ok_or_else(|| {
+            FeatureError::new(std::io::Error::other("invalid placement modifier handle"))
+        })?;
         let mut refused = None;
         let result = self
             .inner
             .apply_modifier(&modifier, random, origin, &mut |pos| {
                 output(pos).map_err(|e| {
-                    let failed = PlacementQueryError::Failed(e.0.clone());
+                    let failed = PlacementQueryError::Failed(e.to_string());
                     refused = Some(e);
                     failed
                 })
@@ -174,7 +175,7 @@ impl PlacementModifierContext for Placing<'_> {
             (Ok(()), _) => Ok(()),
             (Err(_), Some(refused)) => Err(refused),
             (Err(e), None) => {
-                let message = FeatureError(e.to_string());
+                let message = FeatureError::new(std::io::Error::other(e.to_string()));
                 self.failure = Some(e);
                 Err(message)
             }
@@ -202,7 +203,10 @@ impl ModPlacementModifierType for ModifierType {
             registry,
             worker,
         };
-        let inner = self.inner.decode(&context, &config).map_err(|e| e.0)?;
+        let inner = self
+            .inner
+            .decode(&context, &config)
+            .map_err(|e| e.to_string())?;
         Ok(Arc::new(ModModifier {
             inner,
             index: worker.index.clone(),
@@ -248,7 +252,7 @@ impl ModPlacementModifier for ModModifier {
         let mut refused = None;
         let result = self.inner.modify(&mut placing, random, origin, &mut |pos| {
             output(pos).map_err(|e| {
-                let message = FeatureError(e.to_string());
+                let message = FeatureError::new(std::io::Error::other(e.to_string()));
                 refused = Some(e);
                 message
             })
@@ -257,7 +261,7 @@ impl ModPlacementModifier for ModModifier {
         result.map_err(|e| {
             refused
                 .or(placing.failure)
-                .unwrap_or(PlacementQueryError::Failed(e.0))
+                .unwrap_or(PlacementQueryError::Failed(e.to_string()))
         })
     }
 }

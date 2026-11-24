@@ -580,12 +580,9 @@ fn consume(
         } else if let ConsumeEffect::PlaySound(sound) = effect {
             // Level.playSound at the user's block position, not Entity.playSound:
             // no silence check or random pitch, and effects keep their list order.
-            let block = BlockPos::containing(m.position);
-            events.push(MobEvent::SoundId(
+            events.push(MobEvent::ConsumeSound(
                 sound.clone(),
-                [block.x, block.y, block.z].map(|v| f64::from(v) + 0.5),
-                1.0,
-                1.0,
+                BlockPos::containing(m.position),
             ));
         } else {
             m.apply_consume_effect(effect);
@@ -1862,11 +1859,15 @@ mod consume_tests {
                     let effects: Vec<_> = events
                         .iter()
                         .filter_map(|event| match event {
-                            MobEvent::SoundId(sound, at, volume, pitch)
-                                if sound.starts_with("sunrise:") =>
-                            {
-                                Some((sound.as_str(), *at, *volume, *pitch))
-                            }
+                            MobEvent::ConsumeSound(
+                                crate::items::ConsumeSound::Registered(sound),
+                                at,
+                            ) => Some((
+                                sound.as_str(),
+                                [at.x, at.y, at.z].map(|v| f64::from(v) + 0.5),
+                                1.0,
+                                1.0,
+                            )),
                             _ => None,
                         })
                         .collect();

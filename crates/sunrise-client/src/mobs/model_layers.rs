@@ -95,17 +95,6 @@ pub fn register_into(
     slot: &OnceLock<HashMap<String, LayerDefinition>>,
 ) -> Result<(), RegistrationError> {
     let doc = super::EntityModelDocument::load(vanilla_root).map_err(RegistrationError::Load)?;
-    let vanilla_layers = doc
-        .value()
-        .as_object()
-        .filter(|object| !object.is_empty())
-        .ok_or(RegistrationError::NotNonemptyObject)?;
-    if let Some((id, _)) = vanilla_layers
-        .iter()
-        .find(|(id, part)| !is_layer_id(id) || !part.is_object())
-    {
-        return Err(RegistrationError::InvalidVanillaLayer(id.clone()));
-    }
     let mut order: Vec<&str> = Vec::new();
     let mut staged: HashMap<&str, &Answered<LayerDefinitionRegistration>> = HashMap::new();
     for entry in &layers {
@@ -116,7 +105,7 @@ pub fn register_into(
                 id: id.to_owned(),
             });
         }
-        if vanilla_layers.contains_key(id) {
+        if doc.model(id).is_some() {
             return Err(RegistrationError::VanillaCollision {
                 owner: entry.mod_id,
                 id: id.to_owned(),
@@ -148,7 +137,7 @@ pub fn registered(id: &str) -> Option<&'static LayerDefinition> {
     REGISTERED.get()?.get(id)
 }
 
-fn is_layer_id(id: &str) -> bool {
+pub(super) fn is_layer_id(id: &str) -> bool {
     // ModelLayerLocation.toString uses the fully qualified Identifier (even when either
     // half is empty). Its layer String may contain any characters, including further '#'.
     id.split_once('#')

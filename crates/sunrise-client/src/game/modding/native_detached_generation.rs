@@ -379,8 +379,8 @@ mod tests {
                     .generate_chunk([4, -3], GenerationStage::Biomes)
                     .expect("biomes stage");
                 assert!(!biomes_snap.has_light());
-                let plains = biomes_snap.biome_id("minecraft:plains").unwrap();
-                assert_eq!(biomes_snap.biome(0, 0, 0), Some(plains));
+                let plains = mod_api::BiomeKey::parse("minecraft:plains").unwrap();
+                assert_eq!(biomes_snap.biome(0, 0, 0), Some(&plains));
                 assert!(biomes_snap.section(0).unwrap().is_empty());
 
                 // 2. Noise/Surface/Carvers/Features stages: layers present, unlit (no fake light).
@@ -395,7 +395,7 @@ mod tests {
                     assert_eq!(snap.block_state(0, -64, 0).unwrap().block(), bedrock_key);
                     assert_eq!(snap.block_state(0, -63, 0).unwrap().block(), dirt_key);
                     assert_eq!(snap.block_state(0, -61, 0).unwrap().block(), grass_key);
-                    assert_eq!(snap.biome(0, 0, 0), Some(plains));
+                    assert_eq!(snap.biome(0, 0, 0), Some(&plains));
                 }
 
                 // 3. Light stage: runs Sunrise's real light engine -> has_light() == true and

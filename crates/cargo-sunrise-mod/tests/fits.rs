@@ -95,9 +95,11 @@ fn build_data(build: &str, internals: &[(&str, &str, &str)]) -> Vec<(&'static st
     let functions = format!(
         r#"{{"schema":1,"build":{{"commit":"{build}"}},"crates":{{}},"functions":{{}},"refused":{{}}}}"#
     );
+    let loops = format!(r#"{{"schema":1,"build":{{"commit":"{build}"}},"loops":[]}}"#);
     vec![
         ("internals.json", catalog.to_string().into_bytes()),
         ("functions.json", functions.into_bytes()),
+        ("loops.json", loops.into_bytes()),
     ]
 }
 

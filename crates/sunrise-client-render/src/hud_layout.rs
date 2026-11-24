@@ -935,7 +935,6 @@ impl ResolvedGuiQuad {
         region: Option<[i32; 4]>,
         blend: Blend,
     ) {
-        let start = batch.vertices.len();
         if let Some([sw, sh, u, v]) = region {
             let r = &mut self.rect;
             let [_, _, w, h] = self.dst;
@@ -950,10 +949,23 @@ impl ResolvedGuiQuad {
         let whole_scaling = region.is_none() && !is_mob_effect_sprite(sprite);
         // A whole GUI sprite draws as its `gui.scaling` says (`GuiGraphicsExtractor.blitSprite`).
         let draw = |batch: &mut HudBatch, key: &str, rect: Rect, at: [f32; 4], color: u32| {
+            let start = batch.vertices.len();
             if whole_scaling {
                 crate::ui::draw_whole_sprite(batch, atlas, key, rect, at, color);
             } else {
                 batch.rect_uv(at[0], at[1], at[2], at[3], rect, color);
+            }
+            if blend == Blend::Crosshair {
+                if let Some(page) = atlas.gui_atlas_page(key) {
+                    batch.blend_since(
+                        start,
+                        crate::hud::Blend::AtlasPage(page, crate::hud::AtlasBlend::Invert),
+                    );
+                } else {
+                    batch.invert_since(start);
+                }
+            } else {
+                batch.bind_gui_atlas(start, atlas, key);
             }
         };
         match crate::hud::sprite_modifiers::draws(
@@ -971,15 +983,13 @@ impl ResolvedGuiQuad {
             }
             None => draw(batch, sprite, self.rect, self.dst, abgr(self.color)),
         }
-        if blend == Blend::Crosshair {
-            batch.invert_since(start);
-        }
     }
 
     /// Paint a raw texture cut at `uv` with source size `src` in the texture's `tex` units.
     pub fn paint_blit(
         mut self,
         batch: &mut HudBatch,
+        atlas_page: Option<usize>,
         uv: [f32; 2],
         src: [i32; 2],
         tex: [i32; 2],
@@ -995,11 +1005,22 @@ impl ResolvedGuiQuad {
         r.u0 = u0;
         r.v0 = v0;
         self.paint(batch);
-        match blend {
-            Blend::Textured => {}
-            Blend::Vignette => batch.blend_since(start, crate::hud::Blend::Vignette),
-            Blend::Nausea => batch.blend_since(start, crate::hud::Blend::Additive),
-            Blend::Crosshair => batch.invert_since(start),
+        if let Some(page) = atlas_page {
+            use crate::hud::AtlasBlend;
+            let blend = match blend {
+                Blend::Textured => AtlasBlend::Alpha,
+                Blend::Vignette => AtlasBlend::Vignette,
+                Blend::Nausea => AtlasBlend::Additive,
+                Blend::Crosshair => AtlasBlend::Invert,
+            };
+            batch.blend_since(start, crate::hud::Blend::AtlasPage(page, blend));
+        } else {
+            match blend {
+                Blend::Textured => {}
+                Blend::Vignette => batch.blend_since(start, crate::hud::Blend::Vignette),
+                Blend::Nausea => batch.blend_since(start, crate::hud::Blend::Additive),
+                Blend::Crosshair => batch.invert_since(start),
+            }
         }
     }
 }
@@ -1042,6 +1063,7 @@ pub fn paint_player_face(
     for (uv, src) in crate::tab_list::face_blits(hat, flip) {
         ResolvedGuiQuad { rect, dst, color }.paint_blit(
             batch,
+            atlas.blit_atlas_page(skin),
             uv,
             src,
             crate::tab_list::SKIN_TEX,
@@ -1139,7 +1161,14 @@ fn paint_with<'a>(
                     dst: [*x as f32, *y as f32, *w as f32, *h as f32],
                     color: *color,
                 }
-                .paint_blit(batch, *uv, *src, *tex, *blend);
+                .paint_blit(
+                    batch,
+                    atlas.blit_atlas_page(texture.as_ref()),
+                    *uv,
+                    *src,
+                    *tex,
+                    *blend,
+                );
             }
             GuiDraw::Item {
                 slot,

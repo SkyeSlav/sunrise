@@ -1,5 +1,5 @@
 [workspace]
-exclude = ["crates/sunrise-telemetry-server", "crates/sunrise-mod-registry", "third_party/wgpu-hal", "third_party/naga", "third_party/libmimalloc-sys", "third_party/winit", "tools/fixtures/paper-trace-mod"]
+exclude = ["crates/sunrise-telemetry-server", "crates/sunrise-mod-registry", "third_party/wgpu-hal", "third_party/naga", "third_party/libmimalloc-sys", "third_party/winit", "tools/fixtures/paper-trace-mod", "tools/fixtures/mod-pipeline-bench"]
 members = [
     "crates/sunrise-mod-vocab",
     "crates/sunrise-game-discovery",
@@ -71,11 +71,13 @@ members = [
     "crates/cargo-sunrise-mod",
     "crates/sunrise-port-pack",
     "crates/sunrise-proxy",
+    "crates/sunrise-glsl",
     "crates/sunrise-shaders",
     "crates/sunrise-connected",
     "crates/sunrise-optifine",
     "crates/sunrise-polytone",
     "crates/sunrise-shader-api",
+    "crates/sunrise-mod-pipeline",
     "crates/sunrise-release-sign",
     "crates/sunrise-mod-deps",
     "xtask",
