@@ -312,7 +312,7 @@ pub fn feature_packs(resources: &Path) -> Vec<DataPack> {
                 ),
                 icon: None,
                 required: false,
-                position: crate::packs::Position::Bottom,
+                position: crate::packs::Position::Top,
                 fixed: false,
                 hidden: false,
             });
@@ -1872,6 +1872,25 @@ mod tests {
         );
         assert_eq!(DataPack::builtin(&resources).id, "vanilla");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn feature_packs_select_at_the_top() {
+        let resources =
+            std::env::temp_dir().join(format!("feature-position-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&resources);
+        let feature = resources.join("data/minecraft/datapacks/feature");
+        std::fs::create_dir_all(&feature).unwrap();
+        std::fs::write(
+            feature.join("pack.mcmeta"),
+            r#"{"pack":{"description":"feature"}}"#,
+        )
+        .unwrap();
+        let packs = feature_packs(&resources);
+        let selection = packs[0].selection.as_ref().unwrap();
+        assert!(selection.position == crate::packs::Position::Top);
+        assert!(!selection.required && !selection.fixed);
+        std::fs::remove_dir_all(resources).unwrap();
     }
 
     #[test]
