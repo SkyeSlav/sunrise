@@ -58,7 +58,9 @@ impl LoadConditionsRegistrar for PartRegistrar {
 
 #[cfg(test)]
 mod tests {
-    use crate::{ConditionError, Hooks, LoadCondition, ModEntry, Registrar, RegistrationContext};
+    use crate::{
+        ConditionError, HookId, Hooks, LoadCondition, ModEntry, Registrar, RegistrationContext,
+    };
 
     struct Always;
     impl LoadCondition for Always {
@@ -75,6 +77,9 @@ mod tests {
     fn builtin_neoforge_load_condition_refused_naming_mod() {
         struct BadMod;
         impl Hooks for BadMod {
+            fn subscribed(&self) -> &'static [Option<HookId>] {
+                &[]
+            }
             fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
                 r.register_load_condition("neoforge:mod_loaded", Always);
             }
@@ -92,11 +97,17 @@ mod tests {
         struct ModA;
         struct ModB;
         impl Hooks for ModA {
+            fn subscribed(&self) -> &'static [Option<HookId>] {
+                &[]
+            }
             fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
                 r.register_load_condition("shared:flag", Always);
             }
         }
         impl Hooks for ModB {
+            fn subscribed(&self) -> &'static [Option<HookId>] {
+                &[]
+            }
             fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
                 r.register_load_condition("shared:flag", Always);
             }

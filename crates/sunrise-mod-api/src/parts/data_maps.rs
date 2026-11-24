@@ -181,10 +181,11 @@ impl PartRegistrar {
 #[cfg(test)]
 mod tests {
     use crate::{
-        DataMap, DataMapSync, DatapackField, DatapackFieldKind, DatapackRegistrySync, Hooks,
-        ItemKey, ModEntry, PackageInfo, PackageKind, RawDataMap, Registrar, RegistrationContext,
-        Side, Tag,
+        DataMap, DataMapSync, DatapackField, DatapackFieldKind, DatapackRegistrySync, HookId,
+        Hooks, ItemKey, ModEntry, PackageInfo, PackageKind, RawDataMap, Registrar,
+        RegistrationContext, Side, Tag,
     };
+    use mod_vocab::__private::game::BackendRefOf;
 
     struct FuelMap {
         id: &'static str,
@@ -217,6 +218,9 @@ mod tests {
         struct ModA;
         struct ModB;
         impl Hooks for ModA {
+            fn subscribed(&self) -> &'static [Option<HookId>] {
+                &[]
+            }
             fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
                 r.register_data_map(FuelMap {
                     id: "shared:fuel",
@@ -225,6 +229,9 @@ mod tests {
             }
         }
         impl Hooks for ModB {
+            fn subscribed(&self) -> &'static [Option<HookId>] {
+                &[]
+            }
             fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
                 r.register_data_map(FuelMap {
                     id: "shared:fuel",
@@ -249,6 +256,9 @@ mod tests {
     fn reserved_builtin_data_map_refused_naming_mod() {
         struct Intruder;
         impl Hooks for Intruder {
+            fn subscribed(&self) -> &'static [Option<HookId>] {
+                &[]
+            }
             fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
                 r.register_data_map(FuelMap {
                     id: "neoforge:villager_compostables",
@@ -269,6 +279,9 @@ mod tests {
     fn minecraft_namespace_data_map_is_accepted() {
         struct VanillaNs;
         impl Hooks for VanillaNs {
+            fn subscribed(&self) -> &'static [Option<HookId>] {
+                &[]
+            }
             fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
                 r.register_data_map(FuelMap {
                     id: "minecraft:custom_fuel",
@@ -283,6 +296,9 @@ mod tests {
     fn server_side_package_refuses_required_but_allows_optional_data_map() {
         struct ServerOptional;
         impl Hooks for ServerOptional {
+            fn subscribed(&self) -> &'static [Option<HookId>] {
+                &[]
+            }
             fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
                 r.register_data_map(FuelMap {
                     id: "srv:opt_fuel",
@@ -292,6 +308,9 @@ mod tests {
         }
         struct ServerRequired;
         impl Hooks for ServerRequired {
+            fn subscribed(&self) -> &'static [Option<HookId>] {
+                &[]
+            }
             fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
                 r.register_data_map(FuelMap {
                     id: "srv:req_fuel",
@@ -306,7 +325,7 @@ mod tests {
                 PackageKind::Code,
                 Side::Server,
                 vec!["srv".into()],
-                None,
+                Vec::new(),
             )],
             || {
                 assert!(
@@ -328,6 +347,9 @@ mod tests {
     fn synced_data_map_on_non_synced_world_datapack_registry_is_refused() {
         struct VanillaNonSynced;
         impl Hooks for VanillaNonSynced {
+            fn subscribed(&self) -> &'static [Option<HookId>] {
+                &[]
+            }
             fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
                 r.register_data_map_by_name(
                     RawDataMap::new("minecraft:worldgen/structure", "test:weights")
@@ -348,6 +370,9 @@ mod tests {
 
         struct ModNonSynced;
         impl Hooks for ModNonSynced {
+            fn subscribed(&self) -> &'static [Option<HookId>] {
+                &[]
+            }
             fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
                 r.declare_datapack_registry(
                     "spell",
@@ -377,6 +402,9 @@ mod tests {
     fn synced_data_map_on_reloadable_datapack_registry_is_refused() {
         struct ReloadableSync;
         impl Hooks for ReloadableSync {
+            fn subscribed(&self) -> &'static [Option<HookId>] {
+                &[]
+            }
             fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
                 r.register_data_map_by_name(
                     RawDataMap::new("minecraft:recipe", "test:recipe_meta")
@@ -435,6 +463,9 @@ mod tests {
 
         struct Setup;
         impl Hooks for Setup {
+            fn subscribed(&self) -> &'static [Option<HookId>] {
+                &[]
+            }
             fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
                 r.declare_registry(GASES, RegistryOptions::new());
                 r.declare_registry(OTHER, RegistryOptions::new());
@@ -517,6 +548,9 @@ mod tests {
 
         struct ModA;
         impl Hooks for ModA {
+            fn subscribed(&self) -> &'static [Option<HookId>] {
+                &[]
+            }
             fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
                 r.declare_registry(KEY_A, RegistryOptions::new());
                 r.register_entry(KEY_A, "thread_a:item", RegA);
@@ -524,6 +558,9 @@ mod tests {
         }
         struct ModB;
         impl Hooks for ModB {
+            fn subscribed(&self) -> &'static [Option<HookId>] {
+                &[]
+            }
             fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
                 r.declare_registry(KEY_B, RegistryOptions::new());
                 r.register_entry(KEY_B, "thread_b:item", RegB);
