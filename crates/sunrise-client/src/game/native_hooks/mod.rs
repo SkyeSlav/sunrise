@@ -55,7 +55,7 @@ use mod_api::{
 };
 use mod_api::{
     BlockKey, DebugEntry, DebugRenderer, EffectKey, FrameModel, FrameModelEdit, MapDecorationType,
-    SkullModel, TextureAtlasRegistration,
+    NameTagLine, SkullModel, TextureAtlasRegistration,
 };
 pub(crate) use mod_api::{
     BlockRim, ClientPacket, ClientPayload, ColoredLight, ContainerLootFilled, ExplosionStart,
@@ -519,7 +519,10 @@ mod render_item_in_frame;
 mod render_level_stage;
 mod render_living_post;
 mod render_living_pre;
-mod render_name_tag;
+mod render_name_tag_can_render;
+mod render_name_tag_do_render;
+#[cfg(test)]
+mod render_name_tag_do_render_tests;
 mod render_player_post;
 mod render_player_pre;
 mod render_tooltip_gather_components;

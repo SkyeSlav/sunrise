@@ -956,14 +956,18 @@ impl Text {
     }
     /// Component.getString: the plain characters.
     pub fn plain(&self) -> String {
-        self.rendered
-            .spans
-            .iter()
-            .map(|s| match &s.style.inline_object {
+        let mut out = String::new();
+        self.write_plain(&mut out);
+        out
+    }
+    /// [`Text::plain`] appended to `out`, so a caller reusing one buffer allocates nothing.
+    pub fn write_plain(&self, out: &mut String) {
+        for s in &self.rendered.spans {
+            out.push_str(match &s.style.inline_object {
                 Some(object) if s.text == "\u{fffc}" => object.fallback(),
                 _ => s.text.as_str(),
-            })
-            .collect()
+            });
+        }
     }
     pub fn is_empty(&self) -> bool {
         self.rendered.spans.iter().all(|s| s.text.is_empty())

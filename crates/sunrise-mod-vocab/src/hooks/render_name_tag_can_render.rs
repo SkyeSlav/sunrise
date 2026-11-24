@@ -1,4 +1,4 @@
-//! The `render_name_tag` hooks and helpers: declarations the mod API generator reads (see `hooks/mod.rs`).
+//! The `render_name_tag_can_render` hooks and helpers: declarations the mod API generator reads (see `hooks/mod.rs`).
 
 pub trait Hooks {
     /// Name tag visibility and optional replacement text.
@@ -7,10 +7,10 @@ pub trait Hooks {
         dispatch = "flat",
         side = "client",
         contract = "listen",
-        neoforge = "RenderNameTagEvent",
+        neoforge = "RenderNameTagEvent.CanRender",
         cancellable = false
     )]
-    fn render_name_tag(
+    fn render_name_tag_can_render(
         entity_id: u32,
         kind: &str,
         vanilla_visible: bool,

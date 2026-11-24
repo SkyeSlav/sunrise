@@ -330,18 +330,68 @@ impl Game<'_> {
         let a = f64::from(partial);
         let feet = mob.previous.lerp(mob.position, a);
         let feet = DVec3::new(feet.x, feet.y, feet.z);
+        let pose = mob_pose(feet - camera, render.body_yaw);
+        self.entity_draw(partial, light, feet, pose, out, |draw| hook(&render, draw));
+    }
+    /// Gives `hook` a draw posed by `pose` (camera-relative) for an entity at `origin`, lit by
+    /// `light`, whose geometry is added to `out`.
+    fn entity_draw(
+        &self,
+        partial: f32,
+        light: u32,
+        origin: DVec3,
+        pose: Mat4,
+        out: &mut Vec<Vertex>,
+        hook: impl FnOnce(&mut BlockEntityDraw),
+    ) {
         let mut draw = BlockEntityDraw::posed(
             partial,
             self.world.game_time,
             light,
-            [feet.x, feet.y, feet.z].map(|c| c.floor() as i32),
-            mob_pose(feet - camera, render.body_yaw),
+            [origin.x, origin.y, origin.z].map(|c| c.floor() as i32),
+            pose,
             diffuse_lights(self.nether_lighting()),
             std::mem::take(out),
         )
         .animated(self.animation_time());
-        hook(&render, &mut draw);
+        hook(&mut draw);
         *out = draw.into_vertices();
+    }
+    /// `render_name_tag_do_render` for one line of a name tag (`EntityRenderer.submitNameDisplay`):
+    /// a draw at the entity's render `origin`, not turned, raised by the line's `lift`, as vanilla's
+    /// pose is at `submitNameTag`. True when a listener canceled vanilla's drawing of the line.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::game) fn mod_name_tag_line(
+        &self,
+        entity_id: u32,
+        kind: &str,
+        line: mod_api::NameTagLine,
+        content: &str,
+        origin: DVec3,
+        lift: f64,
+        attachment: DVec3,
+        partial: f32,
+        camera: DVec3,
+        light: u8,
+        out: &mut Vec<Vertex>,
+    ) -> bool {
+        let mut canceled = false;
+        // The entity's light as `packed_light` packs it.
+        let light = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
+        let pose = Mat4::from_translation((origin - camera + DVec3::new(0.0, lift, 0.0)).as_vec3());
+        self.entity_draw(partial, light, origin, pose, out, |draw| {
+            self.native_render_name_tag_do_render(
+                entity_id,
+                kind,
+                line,
+                content,
+                attachment.to_array(),
+                partial,
+                draw,
+                &mut canceled,
+            );
+        });
+        canceled
     }
 }
 

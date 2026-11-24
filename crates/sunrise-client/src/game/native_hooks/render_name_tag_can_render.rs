@@ -3,7 +3,7 @@ use super::*;
 /// The hook points. Each does nothing in Sunrise.
 impl Game<'_> {
     /// Name tag visibility and optional replacement text. API 372.
-    pub(in crate::game) fn native_render_name_tag(
+    pub(in crate::game) fn native_render_name_tag_can_render(
         &self,
         entity_id: u32,
         kind: &str,
@@ -11,6 +11,6 @@ impl Game<'_> {
         visible: &mut bool,
         text: &mut Option<String>,
     ) {
-        self.fire_render_name_tag(entity_id, kind, vanilla_visible, visible, text);
+        self.fire_render_name_tag_can_render(entity_id, kind, vanilla_visible, visible, text);
     }
 }

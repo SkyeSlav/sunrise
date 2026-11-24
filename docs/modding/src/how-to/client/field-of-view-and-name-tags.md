@@ -26,10 +26,10 @@ either.
 
 ## Name tags
 
-`render_name_tag` runs when the game decides whether to show the name tag of a player, mob, armor stand or item
-frame, before the tag is drawn. It is NeoForge's `RenderNameTagEvent`.
+`render_name_tag_can_render` runs when the game decides whether to show the name tag of a player, mob, armor stand, item
+frame or display entity, before the tag is drawn. It is NeoForge's `RenderNameTagEvent.CanRender`.
 
-| `RenderNameTagEvent` field | Meaning |
+| `RenderNameTagCanRenderEvent` field | Meaning |
 | --- | --- |
 | `entity_id`, `kind` | The entity and its type id |
 | `vanilla_visible` | What vanilla decided |
@@ -38,6 +38,22 @@ frame, before the tag is drawn. It is NeoForge's `RenderNameTagEvent`.
 
 Distance and the entity's availability still apply. The local player's own tag is considered only when its camera
 and settings would show it.
+
+`render_name_tag_do_render` then runs before each line of a shown tag is drawn, once a frame: the score line first
+(the below-name score, or a mannequin's description), then the name. It is NeoForge's `RenderNameTagEvent.DoRender`.
+
+| `RenderNameTagDoRenderEvent` field | Meaning |
+| --- | --- |
+| `entity_id`, `kind` | The entity and its type id |
+| `line` | `NameTagLine::Score` or `NameTagLine::Name` |
+| `content` | The line's plain text, borrowed for the call |
+| `attachment` | Where vanilla draws the text, relative to `draw`'s pose; the text sits 0.5 above it, facing the camera |
+| `partial_tick` | The frame's partial tick |
+| `draw` | A draw posed at the entity's render origin, not turned, raised one line for the name when there is a score line |
+| `canceled` | Set it to skip vanilla's drawing of this line only |
+
+What `draw` draws is kept and depth tested with the entity. Canceling the score line leaves the name where it was,
+one line up, as vanilla does. The camera is `host.camera()`. Nothing is asked when no mod listens.
 
 ## Labels in the world
 
