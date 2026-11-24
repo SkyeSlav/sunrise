@@ -82,7 +82,7 @@ impl PoolElementType for StiltedType {
     ) -> Result<Arc<dyn mod_api::PoolElement>, StructureError> {
         let inner_config = config
             .get("inner")
-            .ok_or_else(|| StructureError("no inner element".into()))?
+            .ok_or_else(|| StructureError::new(std::io::Error::other("no inner element")))?
             .clone();
         Ok(Arc::new(Stilted {
             inner: context.element(&inner_config)?,
@@ -104,6 +104,8 @@ fn a_mod_element_wraps_another_through_the_adapter() {
     let bindings = FeatureBlockBindings::new(resources.registry, Default::default()).unwrap();
     let config = serde_json::json!({"element_type": "test:stilted", "inner": link_element()});
     let decoded = ElementType {
+        id: "test:stilted",
+        mod_id: "test",
         inner: Arc::new(StiltedType),
     }
     .decode(&config, resources, &bindings)
@@ -284,22 +286,27 @@ fn a_mod_type_lays_a_chain_out_by_hand_from_a_pool() {
             _: &dyn BlockMetadata,
             _: &Compound,
         ) -> Result<Arc<dyn StructurePiece>, StructureError> {
-            Err(StructureError("the type saves no piece of its own".into()))
+            Err(StructureError::new(std::io::Error::other(
+                "the type saves no piece of its own",
+            )))
         }
     }
     let inputs = link_inputs();
     let mut random = WorldgenRandom::new(LegacyRandom::new(0));
     random.set_large_feature_seed(0, 0, 0);
-    let (_, pieces) =
-        super::super::native_structure_types::Adapter::new("testmod:chain", Arc::new(Chain))
-            .find_generation_point(
-                &mut StubContext,
-                &inputs,
-                ChunkPos::new(0, 0),
-                &Arc::new(Tag::Compound(Compound::new())),
-                &mut random,
-            )
-            .expect("a start from the pool");
+    let (_, pieces) = super::super::native_structure_types::Adapter::new(
+        "testmod:chain",
+        "testmod",
+        Arc::new(Chain),
+    )
+    .find_generation_point(
+        &mut StubContext,
+        &inputs,
+        ChunkPos::new(0, 0),
+        &Arc::new(Tag::Compound(Compound::new())),
+        &mut random,
+    )
+    .expect("a start from the pool");
     let boxes: Vec<BoundingBox> = pieces
         .iter()
         .map(|piece| match piece {
@@ -446,23 +453,28 @@ fn a_mod_type_caps_a_named_piece_with_the_jigsaw_building_blocks() {
             _: &dyn BlockMetadata,
             _: &Compound,
         ) -> Result<Arc<dyn StructurePiece>, StructureError> {
-            Err(StructureError("the type saves no piece of its own".into()))
+            Err(StructureError::new(std::io::Error::other(
+                "the type saves no piece of its own",
+            )))
         }
     }
     let inputs = link_inputs();
     let lay_out = |layout: Layout| -> Vec<BoundingBox> {
         let mut random = WorldgenRandom::new(LegacyRandom::new(0));
         random.set_large_feature_seed(0, 0, 0);
-        let (_, pieces) =
-            super::super::native_structure_types::Adapter::new("testmod:links", Arc::new(layout))
-                .find_generation_point(
-                    &mut StubContext,
-                    &inputs,
-                    ChunkPos::new(0, 0),
-                    &Arc::new(Tag::Compound(Compound::new())),
-                    &mut random,
-                )
-                .expect("a start from the pool");
+        let (_, pieces) = super::super::native_structure_types::Adapter::new(
+            "testmod:links",
+            "testmod",
+            Arc::new(layout),
+        )
+        .find_generation_point(
+            &mut StubContext,
+            &inputs,
+            ChunkPos::new(0, 0),
+            &Arc::new(Tag::Compound(Compound::new())),
+            &mut random,
+        )
+        .expect("a start from the pool");
         pieces
             .iter()
             .map(|piece| match piece {
@@ -502,7 +514,7 @@ fn a_piece_places_configured_and_placed_features() {
             chunk: ChunkPos::new(0, 0),
             reference: [8, 64, 8],
         };
-        let mut context = Placing::new(&mut engine).unwrap();
+        let mut context = Placing::new(&mut engine, "test", "test:type").unwrap();
         assert!(context.place_feature("test:tree", [1, 64, 1]).unwrap());
         assert!(
             context

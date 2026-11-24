@@ -49,11 +49,9 @@ impl Game<'_> {
                     if self.mobs[index].removed {
                         continue;
                     }
-                    let plan = self.prepare_knockback_credit(
-                        self.mobs[index].id as i32,
-                        None,
-                        self.combat.attack(),
-                    );
+                    let mob_id = self.mobs[index].id;
+                    let plan =
+                        self.prepare_knockback_credit(mob_id as i32, None, self.combat.attack());
                     let mut credit = plan.lend(&mut self.last_hurt_by_player);
                     self.mobs[index].damage(
                         crate::game::entity::damage_level_of!(self, &attack, &mut credit, None),

@@ -308,6 +308,7 @@ impl Game<'_> {
                 dimension: self.dim,
                 origin_dimension: self.dim,
                 origin_player: false,
+                native_output: None,
                 level: None,
                 block: Some(pos),
                 cart: None,
@@ -576,7 +577,7 @@ impl Game<'_> {
             .find(|(_, x, y, bw)| ui::hovered(self.cursor, *x, *y, *bw, 20.0))
             .map(|b| b.0);
         if hit.is_some() {
-            self.audio.play_button_click();
+            self.play_audio_button_click();
         }
         match hit {
             Some(Button::Output) => {

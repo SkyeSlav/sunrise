@@ -756,7 +756,9 @@ mod tests {
                 .unwrap();
         let mut worker = terrain.worker();
         let mut region: [Proto; 9] = std::array::from_fn(|i| {
-            terrain.proto(&mut worker, x + i as i32 % 3 - 1, z + i as i32 / 3 - 1)
+            terrain
+                .proto(&mut worker, x + i as i32 % 3 - 1, z + i as i32 / 3 - 1)
+                .unwrap()
         });
         terrain.decorate(&mut worker, &mut region);
         let center = std::mem::replace(&mut region[4], Box::new(()));

@@ -98,7 +98,9 @@ impl PlacementModifierType for BelowSeaWrappedType {
         config: &Tag,
     ) -> Result<Arc<dyn ApiPlacementModifier>, FeatureError> {
         let Some(inner_tag) = config.get("inner") else {
-            return Err(FeatureError("missing inner placement modifier".into()));
+            return Err(FeatureError::new(std::io::Error::other(
+                "missing inner placement modifier",
+            )));
         };
         let inner = context.modifier(inner_tag)?;
         Ok(Arc::new(BelowSeaWrapped { inner }))
@@ -239,7 +241,9 @@ impl PlacementModifierType for OwnRandomType {
         config: &Tag,
     ) -> Result<Arc<dyn ApiPlacementModifier>, FeatureError> {
         let Some(inner_tag) = config.get("inner") else {
-            return Err(FeatureError("missing inner placement modifier".into()));
+            return Err(FeatureError::new(std::io::Error::other(
+                "missing inner placement modifier",
+            )));
         };
         Ok(Arc::new(OwnRandom {
             inner: context.modifier(inner_tag)?,

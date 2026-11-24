@@ -678,8 +678,8 @@ pub fn state_to_nbt(registry: &BlockRegistry, state: BlockStateId) -> Tag {
     }
 }
 /// `BlockState.CODEC` read back: a block name or `{id, properties}` (or the
-/// legacy `{Name, Properties}`). A name the registry knows only as a block
-/// reads as its default state, and one it does not know at all as `None`.
+/// legacy `{Name, Properties}`). Omitted properties take the block's defaults.
+/// A name the registry does not know at all reads as `None`.
 pub fn state_from_nbt(registry: &BlockRegistry, tag: &Tag) -> Option<BlockStateId> {
     let state = match tag.get("Name") {
         Some(Tag::String(name)) => BlockState {
@@ -699,6 +699,7 @@ pub fn state_from_nbt(registry: &BlockRegistry, tag: &Tag) -> Option<BlockStateI
     };
     registry
         .id(&state)
+        .or_else(|| registry.resolve(&state).ok())
         .or_else(|| registry.default_state(&state.name))
 }
 /// `BlockState.isAir`: air, cave air and void air.
@@ -2840,7 +2841,6 @@ pub fn item_entity_to_nbt(
     raw: Option<&Tag>,
     items: &crate::items::Items,
 ) -> Tag {
-    let item = sunrise_items::item_nbt::item_to_nbt(&e.stack, items);
     let base = Base {
         id: "minecraft:item",
         uuid,
@@ -2851,21 +2851,17 @@ pub fn item_entity_to_nbt(
         fall_distance: e.fall_distance,
     };
     let mut tag = base.non_mob_tag(raw);
+    if e.stack.count > 0 && &*e.stack.item != "minecraft:air" {
+        let item = sunrise_items::item_nbt::item_to_nbt(&e.stack, items);
+        put(&mut tag, "Item", item);
+    } else if let Tag::Compound(map) = &mut tag {
+        map.remove(&"Item".into());
+    }
     for (key, value) in [
-        ("Item", item),
         ("Health", Tag::Short(e.health as i16)),
         ("Fire", Tag::Short(e.fire_ticks as i16)),
-        (
-            "Age",
-            Tag::Short(e.age.clamp(i16::MIN as i32, i16::MAX as i32) as i16),
-        ),
-        (
-            "PickupDelay",
-            Tag::Short(
-                e.pickup_delay
-                    .clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16,
-            ),
-        ),
+        ("Age", Tag::Short(e.age as i16)),
+        ("PickupDelay", Tag::Short(e.pickup_delay as i16)),
     ] {
         put(&mut tag, key, value);
     }
@@ -2878,6 +2874,13 @@ pub fn item_entity_to_nbt(
         put(&mut tag, "Owner", Tag::IntArray(target.to_vec()));
     } else if let Tag::Compound(map) = &mut tag {
         map.remove(&"Owner".into());
+    }
+    // NeoForge `ItemEntity.addAdditionalSaveData`: store non-default lifespan
+    // so extended items survive save/load while vanilla items keep exact tags.
+    if e.lifespan != ItemEntity::LIFETIME {
+        put(&mut tag, "Lifespan", Tag::Int(e.lifespan));
+    } else if let Tag::Compound(map) = &mut tag {
+        map.remove(&"Lifespan".into());
     }
     tag
 }
@@ -3031,7 +3034,12 @@ pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemE
         // Entity.load: getDoubleOr, any number widened.
         fall_distance: float(tag.get("fall_distance")).unwrap_or(0.0),
         age: i32::from(short("Age", 0)),
-        pickup_delay: i64::from(short("PickupDelay", 0)),
+        stack_revision: 0,
+        lifespan: tag
+            .get("Lifespan")
+            .and_then(int_value)
+            .unwrap_or(ItemEntity::LIFETIME),
+        pickup_delay: i32::from(short("PickupDelay", 0)),
         bob_offset,
         ticks: 0,
         needs_sync: false,
@@ -3128,7 +3136,11 @@ pub fn orbs_from_nbt(tag: &Tag) -> Vec<ExperienceOrb> {
     let Some(position) = position(tag) else {
         return Vec::new();
     };
-    let count = number(tag.get("Count")).unwrap_or(1).max(1) as u32;
+    // `ExperienceOrb.readAdditionalSaveData`: `input.read("Count", ExtraCodecs.POSITIVE_INT).orElse(1)`.
+    let count = number(tag.get("Count"))
+        .map(|n| n as i32)
+        .filter(|&n| n >= 1)
+        .unwrap_or(1) as u32;
     let orb = ExperienceOrb {
         size_answer: None,
         fire_ticks: number(tag.get("Fire")).unwrap_or(0) as i16 as i32,
@@ -3142,7 +3154,7 @@ pub fn orbs_from_nbt(tag: &Tag) -> Vec<ExperienceOrb> {
         previous: position,
         velocity: motion(tag),
         // `getShortOr("Value", 0)`, unclamped.
-        value: tag.get("Value").and_then(int_value).unwrap_or(0) as i16 as i32,
+        value: number(tag.get("Value")).unwrap_or(0) as i16 as i32,
         // `getShortOr("Age", 0)`: a signed short, unclamped.
         age: tag.get("Age").and_then(int_value).unwrap_or(0) as i16 as i32,
         ground: sunrise_world::ground_support::GroundState::from_ground_flag(flag(tag, "OnGround")),
@@ -4166,6 +4178,9 @@ fn normalize_pitch(pitch: f32) -> f32 {
 pub fn armor_stand_from_nbt(tag: &Tag, id: u32) -> Option<ArmorStand> {
     let rot = rotation(tag);
     let mut a = ArmorStand::new(id, position(tag)?, rot[0]);
+    // Entity.load calls ArmorStand.setYBodyRot, which only sets the old body
+    // and both head angles. Current body rotation starts at zero.
+    a.body_yaw = 0.0;
     a.pitch = normalize_pitch(rot[1]);
     a.enchantment_fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
     // AttributeMap.load makes an instance for each saved attribute.
@@ -5878,10 +5893,22 @@ mod tests {
                 }
             }
         }
-        let mut legacy = item_entity_from_nbt(&fresh, 1, 0.0).unwrap();
-        legacy.pickup_delay = i64::from(u32::MAX);
-        assert!(tick(&mut legacy));
-        assert_eq!(legacy.pickup_delay, i64::from(u32::MAX));
+        // `ItemEntity.addAdditionalSaveData` narrows `age` and `pickupDelay` with `(short)`
+        // rather than clamping to 32767 (which would fabricate infinite delay) and omits
+        // `Item` when empty.
+        let mut wide = item_entity_from_nbt(&fresh, 1, 0.0).unwrap();
+        wide.age = 40000;
+        wide.pickup_delay = 40000;
+        let saved = item_entity_to_nbt(&wide, [1, 2, 3, 4], None, &Default::default());
+        assert_eq!(saved.get("Age"), Some(&Tag::Short(40000_i32 as i16)));
+        assert_eq!(
+            saved.get("PickupDelay"),
+            Some(&Tag::Short(40000_i32 as i16))
+        );
+        wide.stack = ItemStack::new("minecraft:air", 0);
+        let saved_empty =
+            item_entity_to_nbt(&wide, [1, 2, 3, 4], Some(&saved), &Default::default());
+        assert_eq!(saved_empty.get("Item"), None);
     }
 
     #[test]
@@ -6121,6 +6148,40 @@ mod tests {
         cleared.thrower = None;
         let cleared = item_entity_to_nbt(&cleared, [1, 2, 3, 4], Some(&tag), &Default::default());
         assert!(cleared.get("Thrower").is_none());
+    }
+    #[test]
+    fn item_lifespan_nbt_round_trip_omits_default_and_preserves_extended() {
+        let mut e = ItemEntity::new(
+            11,
+            ItemStack::new("minecraft:stone", 1),
+            Vec3::new(0.5, 64.0, 0.5),
+            Vec3::ZERO,
+            0.0,
+        );
+        let default_tag = item_entity_to_nbt(&e, [1, 2, 3, 4], None, &Default::default());
+        assert!(default_tag.get("Lifespan").is_none());
+        let from_default = item_entity_from_nbt(&default_tag, 12, 0.0).unwrap();
+        assert_eq!(from_default.lifespan, ItemEntity::LIFETIME);
+
+        e.lifespan = 12345;
+        let extended_tag = item_entity_to_nbt(&e, [1, 2, 3, 4], None, &Default::default());
+        assert_eq!(extended_tag.get("Lifespan"), Some(&Tag::Int(12345)));
+        let from_extended = item_entity_from_nbt(&extended_tag, 13, 0.0).unwrap();
+        assert_eq!(from_extended.lifespan, 12345);
+
+        e.lifespan = ItemEntity::LIFETIME;
+        let reset_tag =
+            item_entity_to_nbt(&e, [1, 2, 3, 4], Some(&extended_tag), &Default::default());
+        assert!(reset_tag.get("Lifespan").is_none());
+
+        let mut float_tag = extended_tag;
+        put(
+            &mut float_tag,
+            "Lifespan",
+            Tag::Double(1234.9_f64.to_bits()),
+        );
+        let from_float = item_entity_from_nbt(&float_tag, 14, 0.0).unwrap();
+        assert_eq!(from_float.lifespan, 1234);
     }
     #[test]
     fn nbt_numeric_flags_decode_and_save_modeled_values_without_raw() {
@@ -6768,6 +6829,34 @@ mod tests {
             (o.value, o.count) = (value, count);
             let back = orbs_from_nbt(&orb_to_nbt(&o, [0; 4])).remove(0);
             assert_eq!((back.value, back.count), (value, count));
+        }
+    }
+    /// `ExperienceOrb.addAdditionalSaveData` writes `(short) getValue()` and `int count`;
+    /// `readAdditionalSaveData` reads `Value` with `getShortOr(..., 0)` and `Count` with
+    /// `ExtraCodecs.POSITIVE_INT.orElse(1)`.
+    #[test]
+    fn orb_nbt_validates_persisted_value_and_count_representations() {
+        let at = ("Pos", doubles(&[1.0, 2.0, 3.0]));
+        let mut o = orbs_from_nbt(&Tag::compound([at.clone()])).remove(0);
+        for (value, saved) in [(0, 0), (-5, -5), (40_000, -25_536)] {
+            o.value = value;
+            o.count = 2;
+            let tag = orb_to_nbt(&o, [0; 4]);
+            assert_eq!(tag.get("Value"), Some(&Tag::Short(saved)));
+            assert_eq!(orbs_from_nbt(&tag)[0].value, i32::from(saved));
+        }
+        o.value = 7;
+        o.count = i32::MAX as u32;
+        let tag = orb_to_nbt(&o, [0; 4]);
+        assert_eq!(tag.get("Count"), Some(&Tag::Int(i32::MAX)));
+        assert_eq!(orbs_from_nbt(&tag)[0].count, i32::MAX as u32);
+        for bad_count in [
+            Tag::Int(0),
+            Tag::Int(-5),
+            Tag::Long(i64::from(i32::MAX) + 1),
+        ] {
+            let loaded = orbs_from_nbt(&Tag::compound([at.clone(), ("Count", bad_count)]));
+            assert_eq!(loaded[0].count, 1);
         }
     }
     /// `Entity.saveWithoutId` writes `Fire` for every entity and `Entity.load`

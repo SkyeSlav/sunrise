@@ -1,5 +1,4 @@
 //! The `register_commands` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0032
 
 pub trait Hooks {
     /// The commands native mods add to the server's command tree: push each usage with

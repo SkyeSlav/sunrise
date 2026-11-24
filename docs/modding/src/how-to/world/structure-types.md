@@ -8,8 +8,9 @@ Register a `StructureType` in `Hooks::register` to generate structures named by 
 {{#include ../../../examples/src/worldgen.rs:structure}}
 ```
 
-Use an ID in your mod's namespace. A duplicate ID, an ID in another mod's namespace, or an empty
-name stops startup with a message naming your mod.
+A bare name uses your mod's namespace; an explicit valid `namespace:path` keeps its namespace.
+A duplicate ID, a built-in structure type ID, or a malformed or empty name stops startup with a
+message naming your mod.
 
 ## Generating a start
 
@@ -29,7 +30,7 @@ same pieces, even when workers generate neighbouring chunks concurrently.
 | `seed`, `chunk`, `sea_level`, `min_y`, `max_y` | World and chunk coordinates and bounds |
 | `random` | `&mut dyn RandomSource` ([Randomness](../../concepts/randomness.md)) seeded with vanilla's `setLargeFeatureSeed` for the chunk |
 | `base_height`, `base_columns`, `noise_column` | Height and base-column queries |
-| `noise_biome`, `column_has_valid_biome` | Opaque biome identities and the structure's valid-biome test |
+| `noise_biome`, `column_has_valid_biome` | Registered `BiomeKey` identities and the structure's valid-biome test |
 | `metadata` | Borrowed immutable block metadata |
 | `config` | The structure JSON converted to a shared `Arc<Tag>` |
 | `assemble_jigsaw` | Lay out pieces from the data pack's template pools (below) |
@@ -195,31 +196,56 @@ Implement `StructurePiece` (`Debug + Send + Sync`) with these methods:
 | `beardifier` | Optional `Option<PieceBeardifier>`, default `None`: override the terrain box, adjustment and ground-level delta. |
 
 After the start's pieces place, `StructureType::after_place` runs once per chunk with every
-piece's current bounding box. Its default implementation does nothing.
+piece's current bounding box. Its default implementation does nothing. To report a placement or
+loading failure, return `Err(StructureError::new(cause))`. Pass the original error with
+`.map_err(StructureError::new)?` (`BlockStateError` implements `std::error::Error`), or use
+`std::io::Error::other(message)` for a plain message. `std::error::Error::source` exposes the
+original cause; `StructureError` is not a `Wire` value.
 
 Construct an override with `PieceBeardifier::new(bounds, TerrainAdjustment::BeardThin, 2)`.
 The bounds are independent of the placement box; the ground is `bounds.min[1] + ground_level_delta`.
 The rules are `None`, `Bury`, `BeardThin`, `BeardBox` and `Encapsulate`. An answer with
 adjustment `None` disables only that piece. No answer inherits the structure's setting.
 An override works even when the structure's `terrain_adaptation` is `"none"`.
-Pieces are queried once when generated or loaded, and the answer is cached
-on the engine piece; terrain generation never calls the mod for it per chunk.
+Unordered bounds are refused with a warning and add no terrain adjustment.
+Both `bounding_box` and `beardifier` are queried once when a piece is generated or loaded, and
+their answers are cached on the engine piece; terrain generation and chunk placement never call
+the mod for them per chunk.
 
-Use `PieceContext` to work within the chunk:
+Use `PieceContext` to work directly within the chunk:
 
 | Method | Behaviour |
 |---|---|
 | `chunk`, `chunk_box` | Identify the chunk and writable box. |
-| `set_block` | Write a `BlockState`; silently skip positions outside the writable box. |
-| `block`, `height` | Read blocks and heightmap heights. |
+| `set_block` | Write a `BlockState` immediately; positions outside `chunk_box` return `false` silently, and invalid states or world write failures log the position and cause and return `false`. |
+| `block`, `height` | Read current blocks and heightmap heights. |
 | `state`, `state_with` | Resolve a registered `BlockKey` to an API-owned `BlockState`. |
 | `random` | Draw from the piece's `RandomSource`. |
 | `metadata` | Borrow block metadata; `metadata().name(state.block())` returns the canonical name. |
 | `solid_render` | Check whether a state renders as a solid block. |
-| `entity` | Queue saved entity NBT, including its `id`, `Pos` and other fields. |
-| `block_entity` | Place block entity NBT at a position. |
+| `entity` | Queue saved entity NBT, including its `id`, `Pos` and other fields; a world write failure logs the position (when present) and cause without failing the piece. |
+| `block_entity` | Place block entity NBT at a position; a world write failure logs the position and cause without failing the piece. |
 | `place_feature`, `place_placed_feature` | Place a configured feature (as `FeaturePoolElement` does) or a placed feature, by ID, drawing from the piece's random. An ID the data pack lacks answers `Ok(false)`. |
 | `place_element` | Place any pool element in this chunk, drawing from the piece's random. |
+
+## Errors and panics
+
+- **No start.** Returning `None` from `find_generation_point` simply skips that chunk.
+- **Per-operation refusals.** Clipping outside `chunk_box` and unchanged states return `false`
+  quietly on `set_block`; an invalid state or world failure on `set_block`, `entity` or
+  `block_entity` logs the position and cause without failing the piece.
+- **Callback errors (`Err(StructureError)`).** Returning `Err` from `post_process` or
+  `after_place` logs your mod, the structure type, the chunk and the full native cause chain each
+  time and ends only that invocation without undoing completed writes or random draws: later
+  intersecting pieces, `after_place` and later chunks still run. Returning `Err` from `load_piece`
+  logs the same cause chain and omits only that saved piece without disabling later loads.
+- **Panics.** Each operation (`find_generation_point`, `load_piece`, `bounding_box`,
+  `beardifier`, `add_additional_save_data`, `post_process`, `after_place`) is isolated under its
+  own callback owner for that registration. A panic is logged and queued for an error toast naming
+  your mod, keeps completed writes and draws, and disables only that operation for that
+  registration for the session — other operations on the same type and other structure types stay
+  active. A panic in `bounding_box` or `beardifier` skips only that piece; a panic in
+  `add_additional_save_data` discards the partial saved tag.
 
 Entities remain in the generating chunk until it joins the world. Keep the `"sunrise:finalize"`
 byte carried by structure-template entities to request `Mob.finalizeSpawn` with the `STRUCTURE`
@@ -255,8 +281,8 @@ position predicates (`POS_RULE_TEST`) in `Hooks::register` with
 `r.register_rule_test_type("name", MyRuleTestType)` and
 `r.register_pos_rule_test_type("name", MyPosRuleTestType)`.
 
-- Types register under the mod's own namespace and decode once when a processor list or
-  configured feature loads; bind block IDs, block states, block tags and nested tests through
+- A bare type name uses the mod's namespace and an explicit valid `namespace:path` keeps its
+  namespace. Types decode once when a processor list or configured feature loads; bind block IDs, block states, block tags and nested tests through
   `RuleTestDecodeContext` / `PosRuleTestDecodeContext` at load time so `test` does no
   per-block lookups or allocations.
 - Returning `Err(StructureError)` during `decode` (or referencing an unknown type, block or

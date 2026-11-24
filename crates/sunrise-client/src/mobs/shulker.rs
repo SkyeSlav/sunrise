@@ -1009,7 +1009,7 @@ mod tests {
             .unwrap()
     }
 
-    fn modifiers(m: &Mob, catalog: &Arc<Catalog>) -> Vec<Modifier> {
+    fn modifiers<'a>(m: &'a Mob, catalog: &Arc<Catalog>) -> &'a [Modifier] {
         m.extra
             .live
             .modifiers(catalog, &m.kind.id, "minecraft:armor", Vec::new)
@@ -1049,7 +1049,7 @@ mod tests {
             assert!((armor(&m, &catalog) - 27.5).abs() < 1e-12);
             assert_eq!(super::super::armor::values(&m), (27.0, 0.0));
             let covered = modifiers(&m, &catalog)
-                .into_iter()
+                .iter()
                 .find(|m| m.id() == "minecraft:covered")
                 .unwrap();
             assert_eq!(covered.amount(), 20.0);

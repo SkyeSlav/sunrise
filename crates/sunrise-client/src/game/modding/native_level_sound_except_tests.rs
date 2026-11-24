@@ -258,7 +258,8 @@ fn entity_sounds_bound_sounds_particles_and_level_events_defer_inside_transactio
                     )
                     .unwrap(),
                 );
-                game.audio.set_listener(at, 0.0, 0.0);
+                game.audio
+                    .set_listener(at, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]);
                 let end_portal_spawn = "minecraft:block.end_portal.spawn";
                 let portal_plays = |game: &super::Game<'_>| {
                     game.audio.heard.get(end_portal_spawn).copied().unwrap_or(0)
@@ -1062,6 +1063,9 @@ fn committed_effects_leave_unrelated_queues_intact_prevent_sound_recursion_and_k
                     // Part C: Non-player `living_hurt_and_break` inside an aborted transaction mutates the
                     // mob's equipment immediately (unjournaled), so its break event (49 for Head) must
                     // also emit immediately rather than being discarded on rollback.
+                    game.world
+                        .chunks
+                        .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
                     game.lan_entity_events.clear();
                     let zombie_id = game
                         .spawn_mob(
@@ -1394,6 +1398,9 @@ fn sound_listener_transaction_preserves_mixed_play_and_stop_packet_order() {
                     // 4. Non-transactional tick flush (`lan_sounds`): listener's committed transaction
                     // delivers `[sound_anvil, stop_anvil]` before the outer bell sound, but the
                     // raw hit sound appended by the callback belongs to the next flush.
+                    game.world
+                        .chunks
+                        .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
                     let victim = game
                         .spawn_mob(
                             "minecraft:zombie",
@@ -2079,7 +2086,7 @@ fn cross_level_sound_listener_block_writes_journal_by_dimension_on_abort_commit_
                             .flatten()
                             .unwrap();
                         stack.set_count(2).unwrap();
-                        assert_eq!(item.set_stack(game, stack), Ok(true));
+                        assert_eq!(item.set_stack(game, Some(stack)), Ok(true));
                         assert_eq!(item.pickup_delay(game), Some(0));
                         assert_eq!(item.with_stack(game, |stack| stack.count()), Some(2));
                         Err::<(), ()>(())

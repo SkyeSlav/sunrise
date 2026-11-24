@@ -117,6 +117,8 @@ pub struct WorldGeometry {
     /// a stage.
     pipeline_quads: Vec<PipelineVertex>,
     pipeline_runs: Vec<PipelineRun>,
+    /// Per-frame shader-pack uniform values submitted via `WorldDrawContext::set_pack_uniform`.
+    pack_uniforms: Vec<(&'static str, mod_api::PackUniformValue)>,
     /// Geometry submitted in `submit_custom_geometry` and debug renderers before pass stages run.
     custom: StageBuffers,
     /// Order-independent transparency sub-pass primitives (`DepthBounds`, `Transmittance`,
@@ -136,7 +138,6 @@ pub struct WorldGeometry {
     /// `PipelineFrame.time` for this view.
     time: f32,
     copies: Vec<ModelCopy>,
-    groups: std::collections::HashSet<mod_api::InstanceGroupRef>,
     submitted_groups: Vec<mod_api::InstanceGroupRef>,
     model_cut: u32,
     /// The standard pass stage (`0..=6`) lines and quads go to now.
@@ -165,6 +166,7 @@ impl Default for WorldGeometry {
             quads: std::array::from_fn(|_| Vec::with_capacity(CAPACITY as usize * 4)),
             pipeline_quads: Vec::with_capacity(CAPACITY as usize * 4),
             pipeline_runs: Vec::with_capacity(CAPACITY as usize),
+            pack_uniforms: Vec::new(),
             custom: StageBuffers::default(),
             oit_quads: Vec::new(),
             oit_quads_through: Vec::new(),
@@ -175,7 +177,6 @@ impl Default for WorldGeometry {
             label_scratch: Vec::with_capacity(CAPACITY as usize * 4),
             time: 0.0,
             copies: Vec::with_capacity(INSTANCE_CAPACITY as usize),
-            groups: std::collections::HashSet::with_capacity(INSTANCE_CAPACITY as usize),
             submitted_groups: Vec::new(),
             model_cut: 0,
             stage: 0,
@@ -200,6 +201,7 @@ impl WorldGeometry {
         self.quads.iter_mut().for_each(Vec::clear);
         self.pipeline_quads.clear();
         self.pipeline_runs.clear();
+        self.pack_uniforms.clear();
         self.custom.clear();
         self.oit_quads.clear();
         self.oit_quads_through.clear();
@@ -209,7 +211,6 @@ impl WorldGeometry {
         self.label_runs.clear();
         self.clear_copies();
         self.model_cut = 0;
-        self.groups.clear();
         self.submitted_groups.clear();
         self.stage = 0;
         self.stage_ends = [[0; 4]; STAGES - 1];
@@ -428,11 +429,7 @@ impl WorldGeometry {
             }
         }
     }
-    pub fn has_group(&self, group: mod_api::InstanceGroupRef) -> bool {
-        self.groups.contains(&group)
-    }
     pub fn queue_group(&mut self, group: mod_api::InstanceGroupRef) {
-        self.groups.insert(group);
         self.submitted_groups.push(group);
     }
     pub fn drain_submitted_groups(
@@ -625,6 +622,14 @@ impl WorldGeometry {
             }),
         }
     }
+    /// Record a per-frame value for a registered shader-pack uniform without heap allocation.
+    pub fn set_pack_uniform(&mut self, name: &'static str, value: mod_api::PackUniformValue) {
+        if let Some((_, existing)) = self.pack_uniforms.iter_mut().find(|(k, _)| *k == name) {
+            *existing = value;
+        } else {
+            self.pack_uniforms.push((name, value));
+        }
+    }
     /// Borrow the existing renderer's batch, with no copying or frame allocation. The frame's
     /// builder names the pipeline set the queued slots belong to.
     pub fn batch(&self) -> Batch<'_> {
@@ -647,6 +652,7 @@ impl WorldGeometry {
                 runs: &self.pipeline_runs,
                 time: self.time,
             },
+            pack_uniforms: &self.pack_uniforms,
         }
     }
     /// [`Self::batch`] for a frame drawn with the resources that built `pipelines`, the set
@@ -1497,5 +1503,25 @@ mod tests {
         draw.reset([0.0; 3], Mat4::IDENTITY, [0.5, 0.5]);
         draw.sort_labels();
         assert!(draw.labels()[0].is_empty());
+    }
+
+    #[test]
+    fn repeated_empty_or_culled_submissions_do_not_block_visible_draws() {
+        let mut draw = WorldGeometry::default();
+        draw.reset([0.0; 3], Mat4::IDENTITY, [0.0; 2]);
+        let batch = ModelBatch {
+            slot: 3,
+            generation: 9,
+            bounds: [[0.0; 3], [1.0; 3]],
+        };
+        let near = ModelInstance::at([1.0, 2.0, 3.0], 0xFF80_C040);
+        let far = ModelInstance::at([40.0, 0.0, 0.0], 0xFF80_C040);
+        for _ in 0..=INSTANCE_CAPACITY {
+            draw.submit_validated_model(batch, &[], Some(&NearX), |_, _| false);
+            draw.submit_validated_model(batch, &[far], Some(&NearX), |_, _| false);
+        }
+        assert_eq!(draw.copy_count(), 0);
+        draw.submit_validated_model(batch, &[near], Some(&NearX), |_, _| false);
+        assert_eq!(draw.copy_count(), 1);
     }
 }

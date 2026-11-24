@@ -42,22 +42,47 @@ where
 /// A block capability provider, as the registrar keeps it.
 pub type BlockProvider<T> = dyn BlockCapabilityProvider<T>;
 
-pub use super::capabilities::providers_of::{BlockProviderOf, EntityProviderOf, ItemProviderOf};
+/// One retained structure callback, with its owner and session-wide panic state.
+// no wire: native callback and process-local enablement.
+// exhaustive: internal engine registration record in parts::block_entities.
+#[derive(Clone)]
+pub struct RegisteredBlockEntityTransform {
+    /// The mod that registered this transform and its quarantine state.
+    pub owner: crate::callback_owner::CallbackOwner,
+    /// The placement-local block entity transform.
+    pub step: Arc<dyn crate::BlockEntityTransform>,
+}
+
+/// The state-only selection supplied by the owning type builder.
+// no wire: native registration callback.
+// hidden: mods give the selector through the type builder; the engine stores this form.
+#[doc(hidden)]
+pub type BlockEntityTickerSelector =
+    dyn Fn(&dyn crate::BlockMetadata, BlockState, crate::LogicalSide) -> bool + Send + Sync;
+
+/// One retained native selector, dispatched through its registering mod's callback owner.
+// no wire: process-local registration.
+// hidden: the engine's installed selectors.
+// exhaustive: only installation builds it, and the engine reads every field.
+#[doc(hidden)]
+pub struct RegisteredBlockEntityTickerSelector {
+    pub kind: crate::BlockEntityTypeKey,
+    pub owner: crate::callback_owner::CallbackOwner,
+    pub select: Arc<BlockEntityTickerSelector>,
+}
+
+// hidden: the engine reads the installed selectors.
+#[doc(hidden)]
+pub fn block_entity_ticker_selectors() -> &'static [RegisteredBlockEntityTickerSelector] {
+    installed().map_or(&[], |parts| &parts.block_entity_ticker_selectors)
+}
 
 /// Snapshot the callbacks once at registry preparation for worldgen workers.
-pub fn block_entity_transforms()
--> std::collections::HashMap<String, Arc<dyn crate::BlockEntityTransform>> {
+pub fn block_entity_transforms() -> std::collections::HashMap<String, RegisteredBlockEntityTransform>
+{
     installed().map_or_else(Default::default, |table| {
         table.block_entity_transforms.clone()
     })
-}
-
-/// The registered saved-data transform, looked up only during structure placement.
-pub fn block_entity_transform(id: &str) -> Option<&'static dyn crate::BlockEntityTransform> {
-    installed()?
-        .block_entity_transforms
-        .get(id)
-        .map(AsRef::as_ref)
 }
 
 /// Owned declarations of the block entity types mods registered.
@@ -121,8 +146,8 @@ pub fn block_providers<T: ?Sized + 'static>(
 /// A position's providers of one capability ([`block_providers`]).
 // exhaustive: its fields are private, so mods cannot build or destructure it
 pub struct BlockProviders<T: ?Sized + 'static> {
-    entity: &'static [CapabilityPart<BlockProviderOf>],
-    block: &'static [CapabilityPart<BlockProviderOf>],
+    entity: &'static [CapabilityPart<NativeCapabilityProvider>],
+    block: &'static [CapabilityPart<NativeCapabilityProvider>],
     site: BlockCapabilitySite,
     handler: PhantomData<fn() -> Box<T>>,
 }
@@ -208,44 +233,37 @@ impl<T: ?Sized + 'static> BlockProviders<T> {
         after_game: bool,
         mut call: impl FnMut(&dyn BlockCapabilityProvider<T>) -> Option<R>,
     ) -> Answer<R> {
-        let mut cursor = [self.entity, self.block];
-        if after_game {
-            for slice in &mut cursor {
-                *slice = &slice[slice.partition_point(|part| part.before_game)..];
+        let [entity, block] = [self.entity, self.block].map(|slice| {
+            if after_game {
+                &slice[slice.partition_point(|part| part.before_game)..]
+            } else {
+                slice
             }
-        }
+        });
         ask_providers(
             &mut (),
-            || next_merged(&mut cursor),
-            |part, _| {
-                let provider = part.provider.get::<T>()?;
-                crate::callback_owner::call_for_lookup(
-                    part.mod_id,
-                    part.mod_index,
-                    &part.poisoned,
-                    "block capability provider",
-                    "block_capability",
-                    || call(provider.as_ref()),
-                )
-                .flatten()
-            },
+            MergedProviders::new(entity, block),
+            ("block capability provider", "block_capability"),
+            |provider, _| call(provider.get::<Arc<BlockProvider<T>>>()?.as_ref()),
             |_| game,
         )
     }
 }
 
 impl dyn Registrar + '_ {
-    /// Declare a block entity type in a namespace owned by this mod's manifest.
+    /// Declare a block entity type by key. A bare name uses this mod's namespace; an explicit
+    /// valid `namespace:path` is kept. Existing type keys, including vanilla's, cannot be replaced.
     pub fn block_entity_type(&mut self, id: &str) -> crate::BlockEntityTypeBuilder<'_> {
         crate::BlockEntityTypeBuilder {
             id: id.to_owned(),
             registrar: self,
             transform: None,
+            ticker: None,
             blocks: Vec::new(),
         }
     }
-    /// Attach a Part to a native type, including one another mod declares later.
-    /// Vanilla keys are usable for capabilities, but not for native payload Parts.
+    /// Attach a Part to a registered native type, including one another mod declares later.
+    /// Built-in types are usable for capabilities, but not for native payload Parts.
     ///
     /// A type declared by another package takes this package's Part only when its
     /// `[dependencies]` row for the declaring package applies on this installation side and
@@ -334,14 +352,15 @@ fn entity_provider<T: ?Sized + 'static>(
     ) + Send
     + Sync
     + 'static,
-) -> BlockProviderOf {
-    BlockProviderOf::of(Arc::new(
+) -> NativeCapabilityProvider {
+    let provider: Arc<BlockProvider<T>> = Arc::new(
         move |level: &dyn LevelHost, at, state, entity, offer: &mut BlockCapabilityOffer<'_, T>| {
             if let Some(entity) = entity {
                 provider(level, at, state, entity, offer);
             }
         },
-    ))
+    );
+    NativeCapabilityProvider::of::<T, _>(provider)
 }
 
 /// Registrar operations for block entities.
@@ -352,18 +371,29 @@ pub trait BlockEntitiesRegistrar {
         key: crate::BlockEntityTypeKey,
         step: Arc<dyn crate::BlockEntityTransform>,
     );
-    /// Look up a vanilla or another mod's type. The final registry validates it at load.
+    // hidden: the type builder calls it; mods select tickers on the builder.
+    #[doc(hidden)]
+    fn set_block_entity_ticker_selector(
+        &mut self,
+        kind: crate::BlockEntityTypeKey,
+        select: Arc<BlockEntityTickerSelector>,
+    );
+
+    /// Request a type by registry ID. A missing type in the complete registry refuses load.
     fn block_entity_type_key(&mut self, id: &str) -> crate::BlockEntityTypeKey;
 
-    /// Declare block entity type `path` in a namespace owned by this mod's manifest, held by `blocks`
-    /// (a bare name is this mod's); mods usually reach it through `block_entity_type`.
+    /// Declare a new block entity type held by `blocks`. A bare type or block name uses this mod's
+    /// namespace. Explicit keys keep their namespace. Vanilla blocks cannot be reassigned here;
+    /// mods usually reach this through `block_entity_type`.
     fn declare_block_entity_type(
         &mut self,
         path: &str,
         blocks: Vec<String>,
     ) -> crate::BlockEntityTypeKey;
 
-    /// Attach `part`, of kind `kind`, to the mod block entity type `key`.
+    /// Attach `part`, of kind `kind`, to the native block entity type `key`.
+    /// The type is resolved by registry ID; a foreign type requires a dependency on its owner.
+    /// An absent optional dependency skips this Part; other missing types refuse loading.
     fn attach_block_entity_part(
         &mut self,
         key: &crate::BlockEntityTypeKey,
@@ -387,6 +417,6 @@ pub trait BlockEntitiesRegistrar {
         name: &'static str,
         kind: &crate::BlockEntityTypeKey,
         before_game: bool,
-        provider: BlockProviderOf,
+        provider: NativeCapabilityProvider,
     );
 }

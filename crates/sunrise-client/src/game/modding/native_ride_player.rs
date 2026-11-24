@@ -267,6 +267,7 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
+    use crate::game::native_entity_refs::tests::{collect_entity_visit, fixture_resident_column};
     use mod_api::RidePlayerRefusal as Refusal;
     use mod_api::{EntityMountEvent, Flow, Hooks, ServerHost};
     use std::sync::{Arc, Mutex};
@@ -443,6 +444,7 @@ mod tests {
     #[ignore = "daily"]
     fn a_mob_rides_a_guest_sits_on_it_and_the_guest_is_told() {
         super::super::native_entity_refs::tests::with_game(|game| {
+            fixture_resident_column(&mut game.world, (0, 0));
             let pig = game.res.mob_types().get("minecraft:pig").unwrap().clone();
             for id in [80, 81] {
                 game.mobs.push(Mob::new(id, pig.clone(), Vec3::ZERO, 0.0));
@@ -465,7 +467,10 @@ mod tests {
             assert_eq!(game.entity_ride_player(first, player, false), Ok(()));
             assert_eq!(game.mobs[0].extra.mount, Some(player.id()));
             assert_eq!(game.entity_vehicle(first), Some(player));
-            assert_eq!(game.entity_passengers(player), Some(vec![first]));
+            assert_eq!(
+                collect_entity_visit(|visit| game.entity_visit_passengers(player, visit)),
+                Ok(vec![first])
+            );
             assert_eq!(
                 game.entity_ride_player(first, player, false),
                 Err(Refusal::AlreadyRiding)

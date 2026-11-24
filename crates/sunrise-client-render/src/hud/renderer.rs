@@ -2,6 +2,7 @@ use super::*;
 use crate::gfx::hud_coverage::{self, Pipeline};
 
 pub struct HudRenderer {
+    pub(super) atlas_pages: Vec<Option<AtlasPageGpu>>,
     pub(super) pictures: HashMap<u64, (Arc<pictures::Picture>, wgpu::BindGroup)>,
     pub sprite_animations: Vec<(
         AnimatedPlacement,
@@ -39,7 +40,7 @@ pub struct HudRenderer {
     pub zoom: f32,
 }
 impl HudRenderer {
-    pub fn new(
+    pub(crate) fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         view: &wgpu::TextureView,
@@ -47,6 +48,7 @@ impl HudRenderer {
         glint_armor_view: &wgpu::TextureView,
         glint_sampler: &wgpu::Sampler,
         coverage: bool,
+        pages: Vec<Option<UploadedAtlasPage>>,
     ) -> Result<Self> {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Sunrise HUD"),
@@ -131,40 +133,52 @@ impl HudRenderer {
                 },
             ],
         });
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("HUD resources"),
-            layout: &layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(glint_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::Sampler(glint_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::Sampler(&linear_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: wgpu::BindingResource::TextureView(glint_armor_view),
-                },
-            ],
-        });
+        let group_for = |view: &wgpu::TextureView| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("HUD resources"),
+                layout: &layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: uniform.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(glint_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::Sampler(glint_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::Sampler(&linear_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::TextureView(glint_armor_view),
+                    },
+                ],
+            })
+        };
+        let group = group_for(view);
+        let atlas_pages = pages
+            .into_iter()
+            .map(|page| {
+                page.map(|page| AtlasPageGpu {
+                    group: group_for(&page.view),
+                    page,
+                })
+            })
+            .collect();
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("HUD layout"),
             bind_group_layouts: &[Some(&layout)],
@@ -303,6 +317,7 @@ impl HudRenderer {
             mapped_at_creation: false,
         });
         Ok(Self {
+            atlas_pages,
             pictures: HashMap::new(),
             atlas_texture: None,
             sprite_animations: Vec::new(),
@@ -345,7 +360,7 @@ impl HudRenderer {
         &mut self,
         device: &wgpu::Device,
         shader: Option<(
-            &crate::core_shader::CoreProgram,
+            &sunrise_glsl::Translated,
             &[crate::polytone_post::ExpressionUniform],
         )>,
     ) {
@@ -532,13 +547,10 @@ impl HudRenderer {
         } else {
             attachment_count = 1;
         }
-        let runs = batch.runs_in(vertices);
+        let runs: SmallVec<[(std::ops::Range<u32>, Blend); 16]> = batch.runs_in(vertices).collect();
         let mut at = 0;
         while at < runs.len() {
-            let clip = match runs[at].1 {
-                Blend::Depth(clip) | Blend::DepthGlint(clip) => Some(clip),
-                _ => None,
-            };
+            let clip = runs[at].1.scissor();
             let end = if let Some(clip) = clip {
                 // The model's glint shares its pass and depth buffer.
                 at + 1
@@ -600,6 +612,23 @@ impl HudRenderer {
                     let pipeline = match blend {
                         Blend::Picture(id) => {
                             self.draw_picture(&mut pass, *id, range, coverage.is_some());
+                            continue;
+                        }
+                        Blend::AtlasPage(page, blend) => {
+                            let Some(page) = self.atlas_pages.get(*page).and_then(Option::as_ref)
+                            else {
+                                continue;
+                            };
+                            let pipeline = match blend {
+                                AtlasBlend::Alpha => &self.pipeline,
+                                AtlasBlend::Invert => &self.invert_pipeline,
+                                AtlasBlend::Additive => &self.additive_pipeline,
+                                AtlasBlend::Vignette => &self.vignette_pipeline,
+                            };
+                            pass.set_bind_group(0, &page.group, &[]);
+                            pass.set_pipeline(pipeline.get(coverage.is_some()));
+                            pass.draw(range, 0..1);
+                            pass.set_bind_group(0, &self.group, &[]);
                             continue;
                         }
                         Blend::Alpha => &self.pipeline,

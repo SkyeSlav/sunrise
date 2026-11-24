@@ -130,6 +130,9 @@ pub struct GoalSelector {
     /// How many goals start on every tick ([`Goal::starts_every_tick`]): with none, a tick
     /// that only ticks the running goals tries no start.
     brain_starters: usize,
+    /// Bumped whenever the selector is cleared or reset so staged `register_goals`
+    /// applications can detect selector mutations while listeners ran.
+    generation: u64,
 }
 /// Where a goal tick paused for a game-owned move. Public, with [`GoalPause`], [`GoalBreed`], and
 /// [`GoalSelector::tick_until_pause`], because `ai::server_ai_step`, a replaceable function,
@@ -178,6 +181,11 @@ impl GoalSelector {
         self.goals.clear();
         self.brain_starters = 0;
         self.locked = [None; 4];
+        self.generation = self.generation.wrapping_add(1);
+    }
+    /// Generation counter bumped on [`Self::clear`].
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
     pub fn running_names(&self) -> Vec<&'static str> {
         self.goals
@@ -3477,6 +3485,7 @@ mod breeding_variant_tests {
                 parent.extra.egg_time = 1;
                 parent.ai.targets.clear();
                 parent.ai.goals = GoalSelector {
+                    generation: 0,
                     goals: vec![Wrapped {
                         priority: 2,
                         running: true,

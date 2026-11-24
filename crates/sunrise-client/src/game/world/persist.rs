@@ -2,10 +2,11 @@
 //! entities (`entities/*.mca`, per chunk like vanilla's `EntityStorage`) and
 //! scheduled block/fluid ticks (chunk `block_ticks`/`fluid_ticks`).
 #[path = "persist/display.rs"]
-mod display;
+pub(super) mod display;
 pub(super) use sunrise_gameplay::entity_uuids::EntityUuids;
 #[path = "persist/loaded_pass.rs"]
 mod loaded_pass;
+pub(in crate::game) use loaded_pass::StagedEntityTree;
 #[path = "persist/object_memory.rs"]
 mod object_memory;
 #[path = "persist/spawn_tree.rs"]
@@ -231,6 +232,12 @@ pub struct EntityMemory {
     /// Entities of types Sunrise does not simulate, kept per chunk and
     /// written back unchanged.
     unknown: HashMap<(i32, i32), Vec<Tag>>,
+    /// Entity sections loaded before their terrain for a save. They stay owned
+    /// until unload, even when empty, so the next save can clear a departed row.
+    hidden_entity_sections: HashSet<ChunkKey>,
+    /// The columns whose old entity record the last [`Game::prepare_entity_save`] could not read.
+    /// Their records stay untouched and the save as a whole is incomplete.
+    pub(super) unreadable_entity_sections: usize,
     /// The compound of orbs, arrows, falling blocks, tridents, crystals and the
     /// dragon as they were loaded, found again by type and position (one that
     /// has moved since loading is saved afresh); their UUIDs are in `uuids`.
@@ -244,6 +251,10 @@ pub struct EntityMemory {
     pub(super) joins_canceled: u32,
     /// The latest insertion considered for `native_entity_join_level`.
     pub(super) joined_seq: sunrise_client::join_seq::JoinSeq,
+    /// Joins admitted synchronously (`admit_fresh_join`) whose `JoinSeq` is
+    /// still ahead of `joined_seq`: kept independently of `live` so a later
+    /// flush never re-announces an entity that already joined and left.
+    pub(super) admitted_joins: Vec<(sunrise_client::join_seq::JoinSeq, u32)>,
     /// The entities mods were told of and that have not left since: id (in
     /// increasing order), type, and whether the last leave sweep saw it.
     /// Only filled while a mod is loaded.
@@ -513,77 +524,6 @@ fn section_order(tag: &Tag) -> u32 {
 
 fn chunk_of(p: Vec3) -> (i32, i32) {
     ((p.x.floor() as i32) >> 4, (p.z.floor() as i32) >> 4)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct ItemDisplayTransformation {
-    translation: [f32; 3],
-    left_rotation: [f32; 4],
-    scale: [f32; 3],
-    right_rotation: [f32; 4],
-}
-
-impl From<mod_api::Transformation> for ItemDisplayTransformation {
-    fn from(value: mod_api::Transformation) -> Self {
-        Self {
-            translation: value.translation,
-            left_rotation: value.left_rotation,
-            scale: value.scale,
-            right_rotation: value.right_rotation,
-        }
-    }
-}
-
-impl ItemDisplayTransformation {
-    pub(super) fn from_tag(tag: Option<&Tag>) -> Option<Self> {
-        let (translation, left_rotation, scale, right_rotation) = tag
-            .and_then(sunrise_client::text_display::transformation)
-            .unwrap_or((
-                [0.0; 3],
-                [0.0, 0.0, 0.0, 1.0],
-                [1.0; 3],
-                [0.0, 0.0, 0.0, 1.0],
-            ));
-        Some(Self {
-            translation,
-            left_rotation,
-            scale,
-            right_rotation,
-        })
-    }
-
-    pub(super) fn to_tag(self) -> Tag {
-        transformation_tag(
-            self.translation,
-            self.left_rotation,
-            self.scale,
-            self.right_rotation,
-        )
-    }
-}
-
-/// The transformation-only portion of Display.addAdditionalSaveData and the native writer.
-fn transformation_tag(
-    translation: [f32; 3],
-    left_rotation: [f32; 4],
-    scale: [f32; 3],
-    right_rotation: [f32; 4],
-) -> Tag {
-    let mut t = sunrise_core::nbt::Compound::new();
-    t.insert(
-        "translation".into(),
-        sunrise_client::save::floats(&translation),
-    );
-    t.insert(
-        "left_rotation".into(),
-        sunrise_client::save::floats(&left_rotation),
-    );
-    t.insert("scale".into(), sunrise_client::save::floats(&scale));
-    t.insert(
-        "right_rotation".into(),
-        sunrise_client::save::floats(&right_rotation),
-    );
-    Tag::Compound(t)
 }
 
 impl Game<'_> {
@@ -1254,7 +1194,10 @@ impl Game<'_> {
     }
 
     /// A saved mob and, under `Passengers`, the mobs riding it.
-    pub(super) fn load_mob(&mut self, tag: Tag, mount: Option<u32>) -> Option<u32> {
+    pub(super) fn load_mob(&mut self, mut tag: Tag, mount: Option<u32>) -> Option<u32> {
+        if !self.retain_feature_eligible_entity_tree(&mut tag) {
+            return None;
+        }
         self.load_mob_transferred(tag, mount, None)
     }
 
@@ -1275,7 +1218,7 @@ impl Game<'_> {
         let mut unknown = Vec::new();
         for rider in riders {
             if self.loads_as_mob_passenger(&rider) {
-                if let Some(id) = self.load_mob(rider, Some(vehicle))
+                if let Some(id) = self.load_mob_transferred(rider, Some(vehicle), None)
                     && let Some(mob) = self.mob_object_mut(vehicle)
                 {
                     mob.extra.rider.get_or_insert(id);
@@ -1429,14 +1372,13 @@ impl Game<'_> {
     /// Read an unsimulated entity without assigning it a new identity; an eye
     /// of ender's `Item` is normalised in `tag`, which is what it saves.
     pub(super) fn other_from_nbt(
+        &self,
         tag: &mut Tag,
         id: u32,
         kind: &str,
     ) -> Option<super::commands::OtherEntity> {
         let mut position = entity_nbt::position(tag)?;
-        let item_transformation = (kind == "minecraft:item_display")
-            .then(|| ItemDisplayTransformation::from_tag(tag.get("transformation")))
-            .flatten();
+        let display = self.read_display_nbt(kind, tag).map(Arc::new);
         let knot_check = (kind == "minecraft:leash_knot").then_some(0);
         if knot_check.is_some() {
             // BlockAttachedEntity.setPos -> LeashFenceKnotEntity.recalculateBoundingBox.
@@ -1456,7 +1398,7 @@ impl Game<'_> {
             position,
             yaw: rotation[0],
             pitch: rotation[1],
-            item_transformation,
+            display,
             interaction,
             knot_check,
             eye: (kind == "minecraft:eye_of_ender").then(|| super::end::SummonedEye::load(tag)),
@@ -1477,7 +1419,10 @@ impl Game<'_> {
         let quarantined = super::general::quarantined_kind(kind).then(|| tag.clone());
         strip_finalize(&mut tag);
         let id = self.next_entity + 1;
-        let other = Self::other_from_nbt(&mut tag, id, kind)?;
+        let other = self.other_from_nbt(&mut tag, id, kind)?;
+        if let Some(display) = &other.display {
+            display::strip_display_nbt(display, &mut tag);
+        }
         let riders = if quarantined.is_none() && Self::other_takes_passengers(kind) {
             self.take_passengers(&mut tag)
         } else {
@@ -1545,13 +1490,6 @@ impl Game<'_> {
             return out.finish();
         }
         if let Tag::Compound(c) = &mut tag {
-            // Display.addAdditionalSaveData omits the transient start delay.
-            if matches!(
-                o.kind.as_str(),
-                "minecraft:block_display" | "minecraft:item_display" | "minecraft:text_display"
-            ) {
-                c.remove(&"start_interpolation".into());
-            }
             if include_id {
                 c.insert("id".into(), Tag::String(o.kind.as_str().into()));
             } else {
@@ -1567,15 +1505,11 @@ impl Game<'_> {
             );
             c.insert("UUID".into(), Tag::IntArray(uuid.to_vec()));
         }
-        let display = matches!(
-            o.kind.as_str(),
-            "minecraft:text_display" | "minecraft:block_display" | "minecraft:item_display"
-        );
-        if display || super::interactions::is_interaction(&o.kind) {
+        if o.display.is_some() || super::interactions::is_interaction(&o.kind) {
             write_static_entity_fields(&mut tag);
         }
-        if display {
-            self.write_display_nbt(o, &mut tag);
+        if let Some(display) = &o.display {
+            self.write_display_nbt(display, &mut tag);
         }
         if let Some(eye) = o.eye
             && let Tag::Compound(c) = &mut tag
@@ -2322,8 +2256,16 @@ impl Game<'_> {
             }
         }
         {
+            // A native discard takes effect before the physical removal sweep.
+            let removed: HashSet<_> = self
+                .persist
+                .removals
+                .iter()
+                .filter_map(|&target| super::native_entities::target_id(target))
+                .collect();
             let entry = self.resident_entities.table.get_mut().section_entry_order();
             for (key, mut tags) in roots {
+                tags.retain(|(id, _, _)| !removed.contains(id));
                 let Some(dest) = out.get_mut(&key) else {
                     continue;
                 };
@@ -2346,19 +2288,136 @@ impl Game<'_> {
         }
         (out.into_iter().collect(), refused)
     }
-    /// Write the entities of every resident chunk (an autosave or quit).
-    /// Without `wait` (the autosave) they are written on the region writer
-    /// meanwhile: `PersistentEntitySectionManager.autoSave` stores them
-    /// without `saveAll`'s flush.
-    pub(super) fn save_entities(&mut self, wait: bool) -> Result<()> {
+    /// Every chunk that currently holds an in-memory savable entity or kept
+    /// unknown record (`PersistentEntitySectionManager.getAllChunksToSave`).
+    fn occupied_entity_chunks(&self) -> HashSet<ChunkKey> {
+        use super::entity::{Entity as _, entity_lists_of, for_each_entity};
+        let mut keys = HashSet::new();
+        let mut include = |id: u32, at: Vec3| {
+            if at.x.is_finite() && at.z.is_finite() && !self.persist.transient.contains(&id) {
+                keys.insert(chunk_of(at));
+            }
+        };
+        for_each_entity!(entity_lists_of!(self), e => {
+            if !e.is_removed() {
+                include(e.id(), e.position());
+            }
+        });
+        if let Some(d) = self.dragon.as_ref() {
+            include(d.id, d.position);
+        }
+        for c in &self.crystals {
+            include(c.id, c.position);
+        }
+        for s in &self.ominous_spawners {
+            include(s.id, Vec3::new(s.position[0], s.position[1], s.position[2]));
+        }
+        for f in &self.item_frames {
+            let (lo, hi) = f.bounds();
+            include(
+                f.id,
+                Vec3::new(
+                    (lo[0] + hi[0]) / 2.0,
+                    (lo[1] + hi[1]) / 2.0,
+                    (lo[2] + hi[2]) / 2.0,
+                ),
+            );
+        }
+        for c in &self.cushions {
+            include(c.id, c.position);
+        }
+        for p in &self.paintings {
+            include(p.id, painting_center(p));
+        }
+        for f in &self.fangs.list {
+            include(f.id, Vec3::new(f.pos[0], f.pos[1], f.pos[2]));
+        }
+        for c in &self.breath_clouds {
+            if c.potion.is_some() {
+                include(c.id, Vec3::new(c.at[0], c.at[1], c.at[2]));
+            }
+        }
+        for o in &self.others {
+            if o.kind.as_str() != "minecraft:leash_knot" {
+                include(o.id, o.position);
+            }
+        }
+        keys.extend(self.persist.unknown.keys().copied());
+        keys
+    }
+    /// `PersistentEntitySectionManager.getAllChunksToSave` / `storeChunkSections`:
+    /// a fresh section with entities must read and admit the old records first.
+    /// Its later saves replace only from the live section, even once empty.
+    pub(super) fn prepare_entity_save(&mut self) -> HashSet<ChunkKey> {
         self.spawn_loaded_entities();
-        let keys: HashSet<(i32, i32)> = self.world.chunks.keys().copied().collect();
+        let mut keys: HashSet<_> = self.world.chunks.keys().copied().collect();
+        keys.extend(self.persist.hidden_entity_sections.iter().copied());
+        let mut failed = HashSet::new();
+        loop {
+            let mut queued = false;
+            for key in self.occupied_entity_chunks() {
+                if keys.contains(&key) || failed.contains(&key) {
+                    continue;
+                }
+                let Ok(tags) = self.save.load_entities(key.0, key.1) else {
+                    failed.insert(key);
+                    continue;
+                };
+                self.persist.hidden_entity_sections.insert(key);
+                keys.insert(key);
+                if !tags.is_empty() {
+                    // Ownership is already set. Queue admission, not a worker
+                    // snapshot which would be ignored for an owned section.
+                    self.world.queue_entity_nbt(key, tags);
+                    queued = true;
+                }
+            }
+            if !queued {
+                self.persist.unreadable_entity_sections = failed.len();
+                return keys;
+            }
+            // Loading entities can itself add or move them to another column.
+            self.spawn_loaded_entities();
+        }
+    }
+
+    /// Save a generated full chunk that finished outside the kept terrain. If the
+    /// level already owns its entity section, file the new generation records
+    /// there rather than letting the terrain writer replace that section.
+    pub(super) fn save_late_full_chunk(&mut self, mut chunk: Chunk) {
+        let key = (chunk.x, chunk.z);
+        let additions = if self.persist.hidden_entity_sections.contains(&key) {
+            std::mem::take(&mut chunk.entities)
+        } else {
+            Vec::new()
+        };
+        self.streaming.save_finished(chunk);
+        if !additions.is_empty() {
+            self.world.queue_entity_nbt(key, additions);
+            if let Err(e) = self.save_entities(false) {
+                log::warn!("Sunrise: failed to save entities: {e}");
+            }
+        }
+    }
+
+    /// Write the authoritative sections, asynchronously without `wait`.
+    pub(super) fn save_entities(&mut self, wait: bool) -> Result<()> {
+        let keys = self.prepare_entity_save();
         let chunks = self.entity_chunks(&keys, false);
         self.prune_entity_memory();
         if wait {
-            self.save.save_entities(chunks)
+            self.save.save_entities(chunks)?;
         } else {
-            self.save.save_entities_later(chunks)
+            self.save.save_entities_later(chunks)?;
+        }
+        self.entity_save_complete()
+    }
+    /// An error when the last entity save left a column's unreadable old record untouched, after
+    /// the unaffected columns were saved.
+    pub(super) fn entity_save_complete(&self) -> Result<()> {
+        match self.persist.unreadable_entity_sections {
+            0 => Ok(()),
+            n => Err(format!("the old entity records of {n} column(s) could not be read").into()),
         }
     }
     /// Complete a removed vehicle's scoreboard callback at logical removal,
@@ -2642,15 +2701,20 @@ impl Game<'_> {
         i: usize,
         keys: &HashSet<ChunkKey>,
     ) -> Option<(ChunkKey, Tag)> {
-        let f = &self.falling[i];
-        if !keys.contains(&chunk_of(f.position)) {
+        let (id, pos) = (self.falling[i].id, self.falling[i].position);
+        if !keys.contains(&chunk_of(pos)) {
             return None;
         }
+        let uuid = if id != 0 {
+            self.uuid_for(id)
+        } else {
+            random_uuid()
+        };
+        let f = &self.falling[i];
         let raw = match &f.saved {
             Some(saved) => Some(saved.1.clone()),
             None => anon_raw(&self.persist, "minecraft:falling_block", f.position),
         };
-        let uuid = saved_uuid(&self.persist, f.id);
         let tag = entity_nbt::falling_block_to_nbt(
             self.state_to_nbt(f.state),
             f.position,
@@ -2669,7 +2733,7 @@ impl Game<'_> {
             // Its simulated fire, not a saved copy's (`with_raw` keeps those).
             fields.insert("Fire".into(), Tag::Short(f.fire_ticks as i16));
         }
-        Some((chunk_of(f.position), tag))
+        Some((chunk_of(pos), tag))
     }
     pub(super) fn save_rocket(
         &mut self,
@@ -3344,7 +3408,7 @@ mod item_display_saved_transform_tests {
         )
         .unwrap();
         game.native_lifecycle
-            .begin_open(mod_api::Authority::IntegratedServer);
+            .begin_open(Some(mod_api::Authority::IntegratedServer));
         game.build_registries();
         game.set_allow_commands(true);
 
@@ -3490,53 +3554,49 @@ mod item_display_saved_transform_tests {
             let clock = game.world.game_time;
             let update = Transformation {
                 translation: [9.0, 8.0, 7.0],
+                left_rotation: [0.0; 4],
                 scale: [2.0; 3],
-                ..Transformation::IDENTITY
+                right_rotation: [0.0, 0.0, 0.0, 2.0],
             };
             let display = game.display(game.entity(id).unwrap()).unwrap();
-            assert!(game.display_set_transformation(display, update));
-            assert!(game.display_set_interpolation_duration(display, 13));
-            assert!(game.display_set_teleport_duration(display, 5));
-            assert!(game.display_set_start_interpolation(display, 0));
-            let raw = game.persist.raw.get_mut(&id).unwrap();
-            assert_eq!(raw.get("interpolation_duration"), Some(&Tag::Int(13)));
-            assert_eq!(raw.get("teleport_duration"), Some(&Tag::Int(5)));
-            assert_eq!(raw.get("start_interpolation"), Some(&Tag::Int(0)));
-            let Tag::Compound(c) = raw else {
-                panic!("compound")
-            };
-            c.insert(
-                "transformation".into(),
-                expected([0.0; 3], [0.0, 0.0, 0.0, 1.0], [1.0; 3]),
-            );
-            assert!(game.display_set_shadow_radius(display, 1.25));
-            let want = expected([9.0, 8.0, 7.0], [0.0, 0.0, 0.0, 1.0], [2.0; 3]);
-            assert_eq!(
-                game.command_target_nbt(Target::Other(id))
-                    .unwrap()
-                    .get("transformation"),
-                Some(&want)
-            );
+            assert!(display.set_transformation(game, update));
+            assert!(display.set_interpolation_duration(game, 13));
+            assert!(display.set_teleport_duration(game, 5));
+            assert!(display.set_start_interpolation(game, 7));
+            assert!(display.set_shadow_radius(game, 1.25));
             let raw = game.persist.raw.remove(&id).unwrap();
+            for field in [
+                "transformation",
+                "interpolation_duration",
+                "teleport_duration",
+                "start_interpolation",
+            ] {
+                assert!(raw.get(field).is_none(), "{field} is resident");
+            }
+            assert_eq!(display.transformation(game), Some(update));
+            assert_eq!(display.interpolation_duration(game), Some(13));
+            assert_eq!(display.teleport_duration(game), Some(5));
+            assert_eq!(display.start_interpolation(game), Some(7));
+
             let fresh = game.command_target_nbt(Target::Other(id)).unwrap();
-            assert_eq!(fresh.get("transformation"), Some(&want));
-            assert_eq!(fresh.get("interpolation_duration"), Some(&Tag::Int(0)));
-            assert_eq!(fresh.get("teleport_duration"), Some(&Tag::Int(0)));
-            assert!(fresh.get("start_interpolation").is_none());
-            game.persist.raw.insert(id, raw);
-            let invalid = Transformation {
-                left_rotation: [0.0; 4],
-                ..update
+            let floats = |values: &[f32]| {
+                Tag::List(
+                    values
+                        .iter()
+                        .map(|value| Tag::Float(value.to_bits()))
+                        .collect(),
+                )
             };
-            let before = game.persist.raw.get(&id).unwrap().clone();
-            assert!(!game.display_set_transformation(display, invalid));
-            assert_eq!(game.persist.raw.get(&id), Some(&before));
-            assert_eq!(
-                game.command_target_nbt(Target::Other(id))
-                    .unwrap()
-                    .get("transformation"),
-                Some(&want)
-            );
+            let want = Tag::compound([
+                ("translation", floats(&[9.0, 8.0, 7.0])),
+                ("left_rotation", floats(&[0.0; 4])),
+                ("scale", floats(&[2.0; 3])),
+                ("right_rotation", floats(&[0.0, 0.0, 0.0, 2.0])),
+            ]);
+            assert_eq!(fresh.get("transformation"), Some(&want));
+            assert_eq!(fresh.get("interpolation_duration"), Some(&Tag::Int(13)));
+            assert_eq!(fresh.get("teleport_duration"), Some(&Tag::Int(5)));
+            assert!(fresh.get("start_interpolation").is_none());
             assert_eq!(game.persist.uuid_of(id), uuid);
             assert_eq!(game.world.game_time, clock);
         });

@@ -23,7 +23,8 @@ pub trait ClientOptionsClientHost {
     /// forced an odd result is raised by one. This read returns the scale the
     /// window applies, never a separate recomputation. Divide
     /// [`Self::window_size`] by this scale, rounding up, for the GUI-scaled
-    /// width and height (`Window.getGuiScaledWidth/Height`).
+    /// width and height (`Window.getGuiScaledWidth/Height`); draw callbacks
+    /// read their GUI dimensions from [`DrawContext::size`].
     fn gui_scale(&self) -> Option<u32>;
     /// Side: client.
     /// The window's width and height in framebuffer pixels (`Window.getWidth`

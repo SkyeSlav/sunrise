@@ -68,14 +68,14 @@ impl ChunkGenerator for Recorder {
     fn load(&self, x: i32, z: i32) -> Option<Chunk> {
         self.chunks.lock().unwrap().get(&(x, z)).cloned()
     }
-    fn proto(&self, _: &mut (), x: i32, z: i32) -> Proto {
+    fn proto(&self, _: &mut (), x: i32, z: i32) -> std::result::Result<Proto, String> {
         let saved = self.protos.lock().unwrap().get(&(x, z)).cloned();
-        Box::new(saved.unwrap_or(Recorded {
+        Ok(Box::new(saved.unwrap_or(Recorded {
             x,
             z,
             decorated: false,
             writes: Vec::new(),
-        }))
+        })))
     }
     fn decorates(&self) -> bool {
         true
@@ -408,7 +408,7 @@ fn saved_proto_chunks_restore_exactly() {
     let mut worker = generator.worker();
     let keys: Vec<(i32, i32)> = (0..9).map(|i| (3 + i % 3 - 1, 7 + i / 3 - 1)).collect();
     let mut region: [Proto; 9] =
-        std::array::from_fn(|i| generator.proto(&mut worker, keys[i].0, keys[i].1));
+        std::array::from_fn(|i| generator.proto(&mut worker, keys[i].0, keys[i].1).unwrap());
     generator.decorate(&mut worker, &mut region);
     assert!(generator.is_decorated(&region[4]));
     generator.save_protos(&region.iter().collect::<Vec<_>>());
@@ -429,7 +429,7 @@ fn saved_proto_chunks_restore_exactly() {
     save.flush().unwrap();
     let mut restored: [Proto; 9] = std::array::from_fn(|i| {
         let (x, z) = keys[i];
-        generator.proto(&mut worker, x, z)
+        generator.proto(&mut worker, x, z).unwrap()
     });
     // Decoration mutates the checked-out region after the unknown key is restored.
     generator.decorate(&mut worker, &mut region);
@@ -559,7 +559,7 @@ fn saved_proto_block_entities_keep_their_id() {
     // loot table and no type.
     let keys: Vec<(i32, i32)> = (0..9).map(|i| (43 + i % 3 - 1, 21 + i / 3 - 1)).collect();
     let mut region: [Proto; 9] =
-        std::array::from_fn(|i| generator.proto(&mut worker, keys[i].0, keys[i].1));
+        std::array::from_fn(|i| generator.proto(&mut worker, keys[i].0, keys[i].1).unwrap());
     generator.decorate(&mut worker, &mut region);
     generator.save_protos(&region.iter().collect::<Vec<_>>());
     save.flush().unwrap();
@@ -602,8 +602,8 @@ fn persistent_forwards_the_block_entities_decoration_made_in_a_final_chunk() {
     impl ChunkGenerator for Marked {
         type Worker = ();
         fn worker(&self) {}
-        fn proto(&self, _: &mut (), _: i32, _: i32) -> Proto {
-            Box::new(())
+        fn proto(&self, _: &mut (), _: i32, _: i32) -> std::result::Result<Proto, String> {
+            Ok(Box::new(()))
         }
         fn finish(&self, _: Proto) -> Chunk {
             Chunk::empty(0, 0)

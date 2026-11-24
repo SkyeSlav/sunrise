@@ -76,10 +76,10 @@ impl Hooks for Observer {
         event: &mut EntityJoinLevelEvent<'_>,
     ) -> Flow {
         let mut heard = HEARD.lock().unwrap();
-        heard.joined.push(event.entity);
-        heard.order.push((true, event.entity));
+        heard.joined.push(event.subject.id());
+        heard.order.push((true, event.subject.id()));
         if event.loaded_from_disk {
-            heard.from_disk.push(event.entity);
+            heard.from_disk.push(event.subject.id());
         }
         drop(heard);
         let pending = PENDING.lock().unwrap().take();
@@ -93,18 +93,17 @@ impl Hooks for Observer {
         }
         let answers = {
             let mut on_join = ON_JOIN.lock().unwrap();
-            (on_join.0 == Some(event.entity)).then(|| on_join.0.take())
+            (on_join.0 == Some(event.subject.id())).then(|| on_join.0.take())
         };
         if answers.is_some() {
             let removes = ON_JOIN.lock().unwrap().2.take();
+            let level = host.level("minecraft:overworld").unwrap();
             if let Some(entity) = removes {
                 host.transaction(|host, _| {
-                    let spawned = host.summon(
-                        "minecraft:overworld",
-                        "minecraft:pig",
-                        [1.5, 70.0, 1.5],
-                        Default::default(),
-                    );
+                    let spawned = level
+                        .summon(host, "minecraft:pig", [1.5, 70.0, 1.5], Default::default())
+                        .unwrap()
+                        .map(EntityRef::id);
                     ON_JOIN.lock().unwrap().1.extend(spawned);
                     entity.remove(host, RemovalReason::Discarded);
                     *PENDING.lock().unwrap() = Some(entity);
@@ -112,12 +111,10 @@ impl Hooks for Observer {
                 })
                 .unwrap();
             } else {
-                let spawned = host.summon(
-                    "minecraft:overworld",
-                    "minecraft:pig",
-                    [1.5, 70.0, 1.5],
-                    Default::default(),
-                );
+                let spawned = level
+                    .summon(host, "minecraft:pig", [1.5, 70.0, 1.5], Default::default())
+                    .unwrap()
+                    .map(EntityRef::id);
                 ON_JOIN.lock().unwrap().1.extend(spawned);
             }
         }
@@ -189,8 +186,10 @@ fn summon(game: &mut Game<'_>, kind: &str, nbt: &str) -> Option<u32> {
     let (Tag::Compound(nbt), _) = parse_snbt(nbt).unwrap() else {
         panic!("not a compound");
     };
-    let dimension = game.dim.id();
-    game.summon(dimension, kind, [1.5, 70.0, 1.5], nbt)
+    let level = game.level(game.dim.id()).unwrap();
+    game.level_summon(level, kind, [1.5, 70.0, 1.5], nbt)
+        .unwrap()
+        .map(EntityRef::id)
 }
 
 /// Takes what the observer heard so far.
@@ -725,18 +724,19 @@ fn exhausted_ids_refuse_every_mod_spawn() {
         ("summon", |game, _| {
             summon(game, "minecraft:pig", "{}").is_some()
         }),
-        ("spawn_falling_block", |game, _| {
+        ("level_spawn_falling_block", |game, f| {
             let sand = (game.pack.assets.registry)
                 .default_state("minecraft:sand")
                 .unwrap();
-            let dimension = game.dim.id();
-            game.spawn_falling_block(
-                dimension,
+            game.level_spawn_falling_block(
+                f.level,
                 sand,
                 [1.5, 72.0, 1.5],
                 [0.0; 3],
                 Default::default(),
             )
+            .unwrap()
+            .is_some()
         }),
         ("entity_spawn_at_location", |game, f| {
             let stack = ItemStack::new("minecraft:stone", 1);
@@ -791,10 +791,11 @@ fn exhausted_ids_refuse_every_mod_spawn() {
             game.player_drop_stack(player, stack, false).is_none()
         }),
         ("spawn_projectile_from_rotation", |game, f| {
+            // An egg: the observer keeps snowballs out, and a refused join gives no handle.
             let owner = game.living(f.mob).unwrap();
-            let snowball = mod_api::Identifier::parse("minecraft:snowball").unwrap();
-            let stack = ItemStack::new("minecraft:snowball", 1);
-            (game.spawn_projectile_from_rotation(owner, &snowball, &stack, 0.0, 1.5, 1.0)).is_some()
+            let egg = mod_api::Identifier::parse("minecraft:egg").unwrap();
+            let stack = ItemStack::new("minecraft:egg", 1);
+            (game.spawn_projectile_from_rotation(owner, &egg, &stack, 0.0, 1.5, 1.0)).is_some()
         }),
     ];
     with_observer(NAME, |game| {

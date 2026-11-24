@@ -93,7 +93,7 @@ pub enum ChunkDiskFailureKind {
 /// A disk callback's shared Host. It has no live backend and is never a
 /// `ServerHost`: live handle methods refuse, and world writes do not compile.
 /// Registry and settings reads use the frozen resource generation retained by
-/// the snapshot. Neither getter reads files. The inherited
+/// the disk worker. Neither getter reads files. The inherited
 /// [`ConfigHost::setting`](prelude::ConfigHost::setting) still returns an owned `Option<String>`.
 pub trait ChunkDiskHost: Host {
     /// Borrow the captured world, dimension, chunk, representation and phase.
@@ -101,6 +101,9 @@ pub trait ChunkDiskHost: Host {
     /// Borrows registry names in ID order for the lifetime of the host borrow,
     /// or returns `None` if the registry is unavailable in the captured generation.
     fn registry(&self, name: &str) -> Option<&[String]>;
+    /// Borrows a captured setting for the lifetime of the host borrow,
+    /// or returns `None` if it was not captured in this generation.
+    fn setting(&self, mod_id: &str, key: &str) -> Option<&str>;
 }
 
 // no wire: a borrowed snapshot-only Host.
@@ -111,12 +114,13 @@ pub trait ChunkDiskHost: Host {
 pub struct OwningChunkDisk<'a> {
     job: &'a ChunkDiskContext,
     resources: &'a dyn WorldgenHost,
+    config_root: std::sync::Arc<std::path::Path>,
     upgrade_nbt: fn(NbtDataType, i32, Compound) -> Result<Compound, NbtUpgradeError>,
 }
 
 impl<'a> OwningChunkDisk<'a> {
     /// Bind immutable resource reads and the engine's standalone data fixer to the captured job.
-    fn new(
+    pub fn new(
         job: &'a ChunkDiskContext,
         resources: &'a dyn WorldgenHost,
         upgrade_nbt: fn(NbtDataType, i32, Compound) -> Result<Compound, NbtUpgradeError>,
@@ -124,6 +128,7 @@ impl<'a> OwningChunkDisk<'a> {
         Self {
             job,
             resources,
+            config_root: crate::world::phase::RegistrationData::resolved_config_dir(),
             upgrade_nbt,
         }
     }
@@ -142,9 +147,6 @@ impl prelude::DatafixHost for OwningChunkDisk<'_> {
     }
 }
 impl prelude::LevelsHost for OwningChunkDisk<'_> {
-    fn lit_block_name(&self, _: [i32; 3]) -> Option<crate::BlockKey> {
-        None
-    }
     fn is_loaded(&self, id: &str) -> bool {
         // Installed membership, as `LevelsHost` promises, not the startup-enabled `mods()` view.
         crate::__private::loaded_mods().get(id).is_some()
@@ -154,8 +156,8 @@ impl prelude::LevelsHost for OwningChunkDisk<'_> {
     }
 }
 impl prelude::ConfigHost for OwningChunkDisk<'_> {
-    fn setting(&self, mod_id: &str, key: &str) -> Option<String> {
-        self.resources.setting(mod_id, key).map(str::to_owned)
+    fn config_dir(&self) -> &std::path::Path {
+        &self.config_root
     }
 }
 impl ChunkDiskHost for OwningChunkDisk<'_> {
@@ -164,6 +166,9 @@ impl ChunkDiskHost for OwningChunkDisk<'_> {
     }
     fn registry(&self, name: &str) -> Option<&[String]> {
         self.resources.registry(name)
+    }
+    fn setting(&self, mod_id: &str, key: &str) -> Option<&str> {
+        self.resources.setting(mod_id, key)
     }
 }
 

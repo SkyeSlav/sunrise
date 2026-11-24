@@ -89,6 +89,15 @@ impl SpawnTree {
         self.0[0].uuid
     }
 
+    /// The spawner changes only the root before admitting the finished tree.
+    pub(in crate::game) fn root_mob_mut(&mut self) -> Option<(&mut Mob, &mut Tag)> {
+        let root = &mut self.0[0];
+        match &mut root.node {
+            Node::Mob(mob) => Some((mob, &mut root.tag)),
+            Node::General(..) => None,
+        }
+    }
+
     /// `ServerLevel.tryAddFreshEntityWithPassengers`: compare the whole tree
     /// to the UUIDs already loaded before this attempt. Then offer every node
     /// in `Entity.getSelfAndPassengers` order to `addEntityUuid`, so only the

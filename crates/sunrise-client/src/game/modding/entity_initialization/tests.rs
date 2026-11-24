@@ -1,7 +1,7 @@
 use super::*;
 use crate::game::{
     Dim,
-    native_entity_refs::tests::{with_client_game, with_game},
+    native_entity_refs::tests::{fixture_resident_column, with_client_game, with_game},
 };
 use mod_api::{AttachmentDescriptor, AttachmentKey, EntityConstructingEvent, Hooks, HostSide};
 use std::sync::{Arc, Mutex};
@@ -175,6 +175,7 @@ fn borrowed_spawn_first_read_and_dimension_transfer_keep_one_initialization() {
                 .clone()
                 .expect("Listener registered");
             game.options.dedicated = Some(Vec::new());
+            fixture_resident_column(&mut game.world, (0, 0));
             // A borrowed simulation pass can insert without running Game's spawn helper.
             let kind = game.res.mob_types().get("minecraft:cow").unwrap().clone();
             let id = game.take_entity_id();
@@ -202,6 +203,7 @@ fn borrowed_spawn_first_read_and_dimension_transfer_keep_one_initialization() {
             game.mobs.retain(|mob| mob.id != id);
             game.detach_entity(id);
             game.enter_level(Dim::Nether).unwrap();
+            fixture_resident_column(&mut game.world, (0, 0));
             let moved = game.load_mob_transferred(saved, None, Some(state)).unwrap();
             assert_eq!(game.persist.uuid_of(moved), Some(uuid));
             assert_eq!(
@@ -517,6 +519,232 @@ const SAVED_RAW: sunrise_mod_runtime::attachments::AttachmentType<i32> =
     };
 type Kinds = Arc<Mutex<Vec<(Holder, String)>>>;
 
+#[test]
+#[ignore = "daily"]
+fn player_construction_precedes_disk_load_and_clone() {
+    use crate::game::{
+        native_entity_refs::tests::{run_fresh_cases, run_with_game_stack},
+        native_guest_turn_tests::with_guests,
+    };
+    use mod_api::{
+        HostTransaction, PlayerCloneEvent, PlayerLoadFromFileEvent, PlayerRespawnedEvent,
+        ServerHost,
+    };
+    use sunrise_client::{lan::playerdata, save::write_dat};
+    use sunrise_mod_runtime::attachments::ATTACHMENTS_KEY;
+
+    const PLAYER: Holder = Holder::Player(12);
+    const FLAG: &str = "SUNRISE_PLAYER_CONSTRUCTION_CASE";
+    if run_fresh_cases(
+        "game::entity_initialization::tests::player_construction_precedes_disk_load_and_clone",
+        FLAG,
+        &["death", "credits"],
+    ) {
+        return;
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum Notice {
+        Constructed,
+        Loaded,
+        Cloned { was_death: bool },
+        Respawned { end_conquered: bool },
+    }
+    struct Lifecycle {
+        notices: Arc<Mutex<Vec<Notice>>>,
+        value: KeySlot,
+        saved: KeySlot,
+        copied: KeySlot,
+    }
+    #[mod_api::__subscriptions]
+    impl Hooks for Lifecycle {
+        fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+            let value = r
+                .register_attachment_type(AttachmentDescriptor::new("constructing:value", || 0i32))
+                .unwrap();
+            let saved = r
+                .register_attachment_type(
+                    AttachmentDescriptor::new("constructing:saved", || 0i32)
+                        .serialize(mod_api::AttachmentCodec { encode, decode }),
+                )
+                .unwrap();
+            let copied = r
+                .register_attachment_type(
+                    AttachmentDescriptor::new("constructing:copied", || 0i32)
+                        .serialize(mod_api::AttachmentCodec { encode, decode })
+                        .copy_on_death(),
+                )
+                .unwrap();
+            *self.value.lock().unwrap() = Some(value);
+            *self.saved.lock().unwrap() = Some(saved);
+            *self.copied.lock().unwrap() = Some(copied);
+        }
+
+        fn entity_constructing(&self, host: HostSide<'_>, event: &mut EntityConstructingEvent) {
+            let HostSide::Server(host) = host else {
+                return;
+            };
+            if event.holder != PLAYER {
+                return;
+            }
+            assert_eq!(event.kind, "minecraft:player");
+            if self.notices.lock().unwrap().last() == Some(&Notice::Loaded) {
+                // The old row has been removed; constructor storage doesn't lend its body.
+                assert!(host.player(12).is_none());
+            }
+            let value = self.value.lock().unwrap().clone().unwrap();
+            let saved = self.saved.lock().unwrap().clone().unwrap();
+            let copied = self.copied.lock().unwrap().clone().unwrap();
+            assert_eq!(value.has(host, PLAYER), Ok(false));
+            assert_eq!(saved.has(host, PLAYER), Ok(false));
+            assert_eq!(copied.has(host, PLAYER), Ok(false));
+            // The unplaced player's constructor still uses the ordinary attachment journal.
+            let aborted: Result<(), mod_api::TransactionError<()>> = host.transaction(|host, _| {
+                value.set(host, PLAYER, 99).unwrap();
+                Err(())
+            });
+            assert_eq!(aborted, Err(mod_api::TransactionError::Aborted(())));
+            assert_eq!(value.has(host, PLAYER), Ok(false));
+            value.set(host, PLAYER, 41).unwrap();
+            saved.set(host, PLAYER, 42).unwrap();
+            copied.set(host, PLAYER, 43).unwrap();
+            self.notices.lock().unwrap().push(Notice::Constructed);
+        }
+
+        fn player_load_from_file(
+            &self,
+            _: &mut dyn ServerHost,
+            event: &mut PlayerLoadFromFileEvent<'_>,
+        ) {
+            assert_eq!(event.player, 12);
+            self.notices.lock().unwrap().push(Notice::Loaded);
+        }
+
+        fn player_clone(&self, host: &mut dyn ServerHost, event: &mut PlayerCloneEvent<'_>) {
+            assert_eq!(event.player, 12);
+            let value = self.value.lock().unwrap().clone().unwrap();
+            let saved = self.saved.lock().unwrap().clone().unwrap();
+            let copied = self.copied.lock().unwrap().clone().unwrap();
+            assert_eq!(event.original.attachment(&value, Clone::clone), Ok(91));
+            assert_eq!(event.original.attachment(&saved, Clone::clone), Ok(7));
+            assert_eq!(value.get(host, PLAYER, Clone::clone), Ok(41));
+            assert_eq!(
+                saved.with_decoded(host, PLAYER, |v| v.copied()),
+                Ok(event.was_death.then_some(42))
+            );
+            assert_eq!(
+                saved.get(host, PLAYER, Clone::clone),
+                Ok(if event.was_death { 42 } else { 7 })
+            );
+            assert_eq!(copied.get(host, PLAYER, Clone::clone), Ok(8));
+            self.notices.lock().unwrap().push(Notice::Cloned {
+                was_death: event.was_death,
+            });
+        }
+
+        fn player_respawned(&self, _: &mut dyn ServerHost, event: &mut PlayerRespawnedEvent<'_>) {
+            assert_eq!(event.player, 12);
+            self.notices.lock().unwrap().push(Notice::Respawned {
+                end_conquered: event.end_conquered,
+            });
+        }
+    }
+
+    let notices = Arc::new(Mutex::new(Vec::new()));
+    let value_slot = KeySlot::default();
+    let saved_slot = KeySlot::default();
+    let copied_slot = KeySlot::default();
+    let mods = vec![mod_api::ModEntry::new(
+        "constructing",
+        Box::new(Lifecycle {
+            notices: notices.clone(),
+            value: value_slot.clone(),
+            saved: saved_slot.clone(),
+            copied: copied_slot.clone(),
+        }),
+    )]
+    .into();
+    let death = std::env::var(FLAG).unwrap() == "death";
+    run_with_game_stack(move || {
+        mod_platform::testing::with_mods(mods, || {
+            with_guests(|game| {
+                let value = value_slot.lock().unwrap().clone().unwrap();
+                let saved_key = saved_slot.lock().unwrap().clone().unwrap();
+                let copied_key = copied_slot.lock().unwrap().clone().unwrap();
+                game.options.dedicated = Some(Vec::new());
+                game.world_root = game.save.root.clone();
+                let mut saved = sunrise_mod_runtime::attachments::Attachments::default();
+                let saved_raw = sunrise_mod_runtime::attachments::AttachmentType {
+                    namespace: "constructing",
+                    name: "saved",
+                    default: || 0i32,
+                    codec: Some(mod_api::AttachmentCodec { encode, decode }),
+                    copy_on_death: false,
+                    sync_codec: None,
+                };
+                let copied_raw = sunrise_mod_runtime::attachments::AttachmentType {
+                    namespace: "constructing",
+                    name: "copied",
+                    default: || 0i32,
+                    codec: Some(mod_api::AttachmentCodec { encode, decode }),
+                    copy_on_death: true,
+                    sync_codec: None,
+                };
+                saved_raw.set(&mut saved, Holder::Level, 7).unwrap();
+                copied_raw.set(&mut saved, Holder::Level, 8).unwrap();
+                playerdata::directory(&game.world_root);
+                write_dat(
+                    &playerdata::path(&game.world_root, 12),
+                    Tag::compound([
+                        (ATTACHMENTS_KEY, Tag::Compound(saved.try_to_nbt().unwrap())),
+                        ("XpLevel", Tag::Int(19)),
+                    ]),
+                )
+                .unwrap();
+                game.lan
+                    .as_mut()
+                    .unwrap()
+                    .hub
+                    .update_guest(12, |guest| guest.placed = false);
+                game.lan_guest_joined(12, &[], [0.5, 64.0, 0.5], None);
+                assert_eq!(
+                    notices.lock().unwrap().as_slice(),
+                    &[Notice::Constructed, Notice::Loaded]
+                );
+                assert_eq!(game.command_guest(12).unwrap().xp_level, 19);
+                assert_eq!(saved_key.get(game, PLAYER, Clone::clone), Ok(7));
+                assert_eq!(copied_key.get(game, PLAYER, Clone::clone), Ok(8));
+                assert_eq!(value.get(game, PLAYER, Clone::clone), Ok(41));
+                value.set(game, PLAYER, 91).unwrap();
+
+                let source = if death { Dim::Overworld } else { Dim::End };
+                game.enter_level(source).unwrap();
+                let host = game.lan.as_mut().unwrap();
+                host.hub.update_guest(12, |guest| {
+                    guest.dimension = source.id().to_owned();
+                    guest.spawn = Some([3.5, 64.0, 5.5]);
+                    guest.dead = death;
+                });
+                host.hub.update_guest(12, |guest| guest.won_game = !death);
+                game.guest_respawn(12);
+                assert_eq!(
+                    notices.lock().unwrap().as_slice(),
+                    &[
+                        Notice::Constructed,
+                        Notice::Loaded,
+                        Notice::Constructed,
+                        Notice::Cloned { was_death: death },
+                        Notice::Respawned {
+                            end_conquered: !death
+                        },
+                    ]
+                );
+                assert_eq!(value.get(game, PLAYER, Clone::clone), Ok(41));
+            });
+        })
+    });
+}
+
 struct Saving {
     kinds: Kinds,
     value: KeySlot,
@@ -732,6 +960,7 @@ fn mob_constructor_first_store_binds_only_the_resident_lifetime() {
                 .clone()
                 .expect("Listener registered");
             game.options.dedicated = Some(Vec::new());
+            fixture_resident_column(&mut game.world, (0, 0));
             game.native_level_opened(Dim::Overworld);
             let id = game
                 .spawn_mob_spawned(
@@ -867,6 +1096,7 @@ fn dragon_part_constructor_first_read_indexes_payload_and_same_id_replacement_re
                 .clone()
                 .expect("Listener registered");
             game.options.dedicated = Some(Vec::new());
+            fixture_resident_column(&mut game.world, (0, 0));
             game.native_level_opened(Dim::Overworld);
             game.spawn_remote_dragon(420, [1.0, 80.0, 1.0], 0.0);
             let holder = Holder::Entity(421);

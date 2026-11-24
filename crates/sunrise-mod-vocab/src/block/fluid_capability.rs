@@ -1,6 +1,7 @@
 //! The fluid capability (arismoko/horizon#41 §7): [`FLUIDS`], as NeoForge 26.3's
 //! `Capabilities.Fluid.BLOCK`, a [`ResourceHandler`] of [`FluidResource`]s as
 //! [`ITEMS`](crate::ITEMS) is of items. Amounts are millibuckets: a bucket is 1000.
+use super::block_states::HostBlockStates;
 use super::item_place::ItemCapabilityDefault;
 use crate::__private::ingredient_parser::WalkedIngredient;
 use crate::Components;
@@ -338,14 +339,13 @@ impl ResourceHandler<FluidResource> for GameFluids {
 /// one, so from a stack of more than one the changed item splits off. The game answers it for
 /// the buckets it registers (NeoForge's `BucketResourceHandler`), vanilla's and a mod world fluid's
 /// generated one: one tank of a bucket, filled and drained whole, holding what
-/// [`bucket_fluid`](crate::prelude::TagsHost::bucket_fluid) answers, an empty bucket taking any
-/// plain fluid whose [`fluid_bucket`](crate::prelude::TagsHost::fluid_bucket) names an item, and
-/// turning into it.
+/// [`ItemKey::bucket_fluid`] answers, an empty bucket taking any plain fluid whose
+/// [`FluidKey::bucket`] names an item, and turning into it.
 pub const ITEM_FLUIDS: ItemCapabilityKey<dyn ResourceHandler<FluidResource>> = ItemCapabilityKey {
     name: "sunrise:item_fluids",
     default: Some(ItemCapabilityDefault::Item(|host, place, item| {
         let empty = host.item_key(&BUCKET_IDS[0])?;
-        if item != empty && host.bucket_fluid(item).is_none() {
+        if item != empty && item.bucket_fluid(&host.block_states()).is_none() {
             return None;
         }
         Some(Box::new(GameBucket {
@@ -384,7 +384,7 @@ impl GameBucket {
     /// What the bucket here holds: none for an empty one, or where no bucket is now.
     fn held(&self, host: &mut dyn ServerHost) -> Option<FluidKey> {
         let item = self.place.with_stack(host, |stack| stack.item())?;
-        host.bucket_fluid(item)
+        item.bucket_fluid(&host.block_states())
     }
     /// The bucket holding `fluid` (`Fluid.getBucket`); none for a fluid with components or
     /// no bucket.
@@ -392,9 +392,7 @@ impl GameBucket {
         if fluid.0.has_components() {
             return None;
         }
-        host.fluid_bucket(crate::content::registry_keys::fluid_id(
-            fluid.fluid().key()?,
-        )?)
+        fluid.fluid().key()?.bucket(&host.block_states())
     }
     /// One bucket here exchanged for `bucket`: `BUCKET` when that goes through, else 0.
     fn exchange(

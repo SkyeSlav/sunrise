@@ -118,12 +118,38 @@ pub mod tests {
     #[test]
     pub(crate) fn invalid_and_duplicate_fluid_declarations_are_refused() {
         let mut registrar = super::PartRegistrar::new("maker");
-        registrar.declare_fluid("wrong:namespace");
+        let sentinel = mod_vocab::__private::parts_installation::fluid_key(u32::MAX);
+        assert_ne!(registrar.declare_fluid("other:chocolate"), sentinel);
+        assert_ne!(registrar.declare_fluid("minecraft:honey"), sentinel);
+        assert_ne!(registrar.declare_fluid("chocolate"), sentinel);
+        assert_ne!(
+            registrar.declare_world_fluid("other:oil", crate::WorldFluid::default()),
+            sentinel
+        );
+        assert_eq!(registrar.declare_fluid("Bad Name"), sentinel);
+        assert_eq!(registrar.declare_fluid("minecraft:water"), sentinel);
+        assert_eq!(registrar.declare_fluid("minecraft:flowing_lava"), sentinel);
+        assert_eq!(
+            registrar.declare_world_fluid("minecraft:water", crate::WorldFluid::default()),
+            sentinel
+        );
         registrar.declare_fluid("chocolate");
-        registrar.declare_fluid("chocolate");
-        assert_eq!(registrar.refused.len(), 2);
+        assert_eq!(
+            registrar.registry_keys.borrow().declared_fluids["other:chocolate"],
+            "maker"
+        );
+        assert_eq!(
+            registrar.registry_keys.borrow().declared_fluids["minecraft:honey"],
+            "maker"
+        );
+        assert_eq!(registrar.world_fluids[0].0, "maker");
+        assert_eq!(registrar.world_fluids[0].1.0, "other:oil");
+        assert_eq!(registrar.refused.len(), 5, "{:?}", registrar.refused);
         assert!(registrar.refused[0].contains("maker"));
-        assert!(registrar.refused[1].contains("maker:chocolate"));
+        assert!(registrar.refused[1].contains("minecraft:water"));
+        assert!(registrar.refused[2].contains("minecraft:flowing_lava"));
+        assert!(registrar.refused[3].contains("minecraft:water"));
+        assert!(registrar.refused[4].contains("maker:chocolate"));
     }
 
     #[test]
@@ -738,8 +764,21 @@ pub mod tests {
     }
 }
 
+/// Built-in fluids (`BuiltInRegistries.FLUID`), which no mod can replace.
+const VANILLA_FLUIDS: [&str; 5] = [
+    "minecraft:empty",
+    "minecraft:water",
+    "minecraft:flowing_water",
+    "minecraft:lava",
+    "minecraft:flowing_lava",
+];
+
 impl PartRegistrar {
-    // Only callers that have resolved ownership may insert a declaration.
+    fn is_builtin_fluid(&self, id: &str) -> bool {
+        VANILLA_FLUIDS.contains(&id) || self.has_builtin_entry("minecraft:fluid", id)
+    }
+
+    // Only callers that have validated the key may insert a declaration.
     fn insert_declared_fluid(&mut self, id: String) -> crate::FluidKey {
         let previous = self
             .registry_keys
@@ -773,18 +812,23 @@ impl FluidsRegistrar for PartRegistrar {
     }
 
     fn declare_fluid(&mut self, path: &str) -> crate::FluidKey {
-        let id = match self.owned_declaration_id(path) {
+        let id = match self.declaration_id(path) {
             Ok(id) => id,
             Err(reason) => {
                 self.refused.push(reason);
                 return mod_vocab::__private::parts_installation::fluid_key(u32::MAX);
             }
         };
+        if self.is_builtin_fluid(&id) {
+            self.refused
+                .push(format!("mod {} declared built-in fluid {id}", self.mod_id));
+            return mod_vocab::__private::parts_installation::fluid_key(u32::MAX);
+        }
         self.insert_declared_fluid(id)
     }
 
     fn declare_world_fluid(&mut self, path: &str, mut fluid: crate::WorldFluid) -> crate::FluidKey {
-        let id = match self.owned_declaration_id(path) {
+        let id = match self.declaration_id(path) {
             Ok(id) => id,
             Err(reason) => {
                 self.refused.push(reason);
@@ -823,6 +867,16 @@ impl FluidsRegistrar for PartRegistrar {
         };
         fluid.flowing = Some(flowing.clone());
         fluid.bucket_item = bucket_item;
+        if [id.as_str(), flowing.as_str()]
+            .iter()
+            .any(|candidate| self.is_builtin_fluid(candidate))
+        {
+            self.refused.push(format!(
+                "mod {} declared built-in world fluid {id}",
+                self.mod_id
+            ));
+            return mod_vocab::__private::parts_installation::fluid_key(u32::MAX);
+        }
         if flowing == id
             || [id.as_str(), flowing.as_str()].iter().any(|id| {
                 self.registry_keys
@@ -855,7 +909,23 @@ impl FluidsRegistrar for PartRegistrar {
     }
 
     fn fluid_interaction(&mut self, interaction: crate::FluidInteraction) {
-        self.fluid_interactions.push(interaction);
+        self.fluid_interactions
+            .push(mod_vocab::__private::RegisteredFluidInteraction::Declared(
+                interaction,
+            ));
+    }
+
+    fn fluid_interaction_handler(
+        &mut self,
+        source: crate::FluidKey,
+        handler: Arc<dyn crate::FluidInteractionHandler>,
+    ) {
+        self.fluid_interactions
+            .push(mod_vocab::__private::RegisteredFluidInteraction::Handler {
+                owner: mod_vocab::__private::game::CallbackOwner::for_mod(self.mod_id),
+                source,
+                handler,
+            });
     }
 
     fn attach_fluid_part(&mut self, fluid: &str, kind: &'static str, part: Arc<dyn FluidPart>) {

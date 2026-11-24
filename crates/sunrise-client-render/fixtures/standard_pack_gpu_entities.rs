@@ -215,6 +215,7 @@ impl FrameHooks for WorldStageProbe {
         Batch {
             lines_through: &lines[..1],
             lines: &lines[1..],
+            stage_ends: [[0, 0, 1, 1]; client::gfx::world_primitives::STAGES - 1],
             ..Default::default()
         }
     }
@@ -393,12 +394,13 @@ fn fixture(window: Arc<Window>, out: &Path) -> Result<(), Box<dyn std::error::Er
         &[],
         &[],
         (&white, 16, 16),
+        None,
         (&zero, 1, 1),
         (&zero, 1, 1),
         (&zero, 1),
         Arc::new(client::gfx::panorama::Faces::colour([0, 0, 0, 255])),
         None,
-        None,
+        sunrise_client_render::gfx::RendererDevice::New,
         GraphicsApi::Vulkan,
         false,
         (true, true),
@@ -594,14 +596,12 @@ fn fixture(window: Arc<Window>, out: &Path) -> Result<(), Box<dyn std::error::Er
         !hooks.stages.contains(&Stage::AfterSky),
         "a dimension with no skybox has no sky stage"
     );
-    assert!(
-        !hooks.stages.contains(&Stage::AfterOpaqueBlocks),
-        "the pack owns terrain"
-    );
     assert!(hooks.stages.contains(&Stage::AfterTranslucentParticles));
     assert!(hooks.stages.ends_with(&[
+        Stage::AfterOpaqueBlocks,
         Stage::AfterOpaqueFeatures,
         Stage::AfterTranslucentFeatures,
+        Stage::AfterTranslucentBlocks,
         Stage::AfterLevel
     ]));
     assert_eq!(hooks.prepared_after_sky, Some(false));
@@ -708,11 +708,13 @@ fn fixture(window: Arc<Window>, out: &Path) -> Result<(), Box<dyn std::error::Er
     assert!(
         classic.stages.ends_with(&[
             Stage::AfterSky,
+            Stage::AfterOpaqueBlocks,
             Stage::AfterOpaqueFeatures,
             Stage::AfterTranslucentFeatures,
+            Stage::AfterTranslucentBlocks,
             Stage::AfterLevel
         ]),
-        "the pack sky follows the engine world stages and precedes the end of the pack world: {:?}",
+        "the pack sky, block, and feature stages follow the engine world stages and precede AfterLevel: {:?}",
         classic.stages
     );
     assert_eq!(
@@ -745,8 +747,10 @@ fn fixture(window: Arc<Window>, out: &Path) -> Result<(), Box<dyn std::error::Er
         if boss_world_fog {
             assert!(end.stages.ends_with(&[
                 Stage::AfterSky,
+                Stage::AfterOpaqueBlocks,
                 Stage::AfterOpaqueFeatures,
                 Stage::AfterTranslucentFeatures,
+                Stage::AfterTranslucentBlocks,
                 Stage::AfterLevel
             ]));
         } else {
@@ -868,8 +872,10 @@ fn fixture(window: Arc<Window>, out: &Path) -> Result<(), Box<dyn std::error::Er
     );
     assert!(celestial_hooks.stages.ends_with(&[
         Stage::AfterSky,
+        Stage::AfterOpaqueBlocks,
         Stage::AfterOpaqueFeatures,
         Stage::AfterTranslucentFeatures,
+        Stage::AfterTranslucentBlocks,
         Stage::AfterLevel,
     ]));
     frame.celestial = &[];
@@ -1023,12 +1029,14 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         camera: glam::DVec3::new(0.5, 100.0, 0.5),
         yaw: 0.0,
         pitch: 10.0,
+        roll: 0.0,
         fov_degrees: 85.0,
         cull_fov_degrees: 85.0,
         eye: glam::DVec3::new(0.5, 100.0, 0.5),
         eye_rotation: [0.0, 10.0],
         first_person: true,
         bob: glam::Mat4::IDENTITY,
+        view_transform: glam::Mat4::IDENTITY,
         spin: glam::Mat4::IDENTITY,
         sky: client::environment::Sky::default(),
         shadow_scene_revision: (0, 0),

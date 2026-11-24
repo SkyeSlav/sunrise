@@ -1,7 +1,7 @@
 //! Argument types (Brigadier's and Minecraft's `ArgumentType`s): parsing with
 //! the vanilla error messages and completion suggestions.
 use super::{CmdResult, CommandError, Context, Reader, SuggestionsBuilder};
-use std::{fmt, sync::Arc};
+use std::{borrow::Cow, fmt, ops::Deref, sync::Arc};
 use sunrise_client_core::text::Text;
 
 pub use sunrise_client_core::registries::{
@@ -31,19 +31,6 @@ pub enum CustomArgumentKind {
     Long { min: i64, max: i64 },
 }
 
-/// One completion a registered custom argument offers.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CustomSuggestion {
-    /// The text that replaces the typed prefix, or the part of it `replace_start` sends the
-    /// replacement from.
-    pub text: String,
-    /// An optional explanation shown beside the completion.
-    pub tooltip: Option<String>,
-    /// The byte offset into the prefix where the replacement starts; `None` replaces the whole
-    /// prefix. A mod uses it to complete one token inside a greedy text argument.
-    pub replace_start: Option<usize>,
-}
-
 /// One argument a command's dispatcher parsed before the one being completed: its name from the
 /// usage and the text the input covers for it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -54,13 +41,16 @@ pub struct ParsedArgument {
     pub text: String,
 }
 
-/// The most candidates a reply keeps for one argument (`ServerSuggestionProvider.limitSuggestionCount`),
-/// counted after the engine's own matching and bounds checks.
-pub const MAX_PROVIDER_SUGGESTIONS: usize = 1000;
-/// The longest completion text, in UTF-16 code units (STRING_UTF8's limit).
+/// The longest completion text in `ClientboundCommandSuggestionsPacket`, in UTF-16 code units
+/// (vanilla `ByteBufCodecs.STRING_UTF8` limit).
 pub const MAX_SUGGESTION_TEXT: usize = 32767;
-/// The longest tooltip, in bytes of Java modified UTF-8 (the NBT string limit).
+/// The longest literal NBT tooltip in `ClientboundCommandSuggestionsPacket`, in bytes of Java
+/// modified UTF-8 (vanilla NBT `TAG_String` u16 length limit).
 pub const MAX_SUGGESTION_TOOLTIP: usize = 65535;
+
+/// The most candidates a reply keeps for one argument (`ServerSuggestionProvider.limitSuggestionCount`),
+/// counted after the engine drops what it cannot offer.
+pub const MAX_PROVIDER_SUGGESTIONS: usize = 1000;
 
 /// A mod's registered argument type, as the dispatcher parses and completes it.
 ///
@@ -71,10 +61,8 @@ pub struct CustomArgument {
     id: Arc<str>,
     kind: CustomArgumentKind,
     parse: Arc<dyn Fn(&str) -> Result<String, Text> + Send + Sync>,
-    suggest: Arc<dyn Fn(&Registries, &str) -> Vec<CustomSuggestion> + Send + Sync>,
-    provider: Option<
-        Arc<dyn Fn(&Registries, &str, &[ParsedArgument]) -> Vec<CustomSuggestion> + Send + Sync>,
-    >,
+    suggest:
+        Arc<dyn Fn(&Registries, &str, &[ParsedArgument]) -> Vec<crate::Suggestion> + Send + Sync>,
 }
 
 impl fmt::Debug for CustomArgument {
@@ -82,46 +70,30 @@ impl fmt::Debug for CustomArgument {
         f.debug_struct("CustomArgument")
             .field("id", &self.id)
             .field("kind", &self.kind)
-            .field("provider", &self.provider.is_some())
             .finish()
     }
 }
 
 impl CustomArgument {
     /// A custom argument type `id` (such as `mymod:machine`) that reads a [`CustomArgumentKind`],
-    /// validates it with `parse` and completes it with `suggest`, which also sees the registries
-    /// the request is for (the sender and their permission).
+    /// validates it with `parse` and completes it with `suggest`, which sees the registries
+    /// (including the sender and their permission), the typed prefix, and the prior parsed
+    /// arguments.
     pub fn new(
         id: impl Into<Arc<str>>,
         kind: CustomArgumentKind,
         parse: impl Fn(&str) -> Result<String, Text> + Send + Sync + 'static,
-        suggest: impl Fn(&Registries, &str) -> Vec<CustomSuggestion> + Send + Sync + 'static,
+        suggest: impl Fn(&Registries, &str, &[ParsedArgument]) -> Vec<crate::Suggestion>
+        + Send
+        + Sync
+        + 'static,
     ) -> Self {
         Self {
             id: id.into(),
             kind,
             parse: Arc::new(parse),
             suggest: Arc::new(suggest),
-            provider: None,
         }
-    }
-    /// The same type, with a suggestion provider the type declares: the dispatcher asks it, with
-    /// the typed prefix, the arguments parsed before it and the registries carrying the sender,
-    /// instead of `suggest`.
-    pub fn with_provider(
-        mut self,
-        provider: impl Fn(&Registries, &str, &[ParsedArgument]) -> Vec<CustomSuggestion>
-        + Send
-        + Sync
-        + 'static,
-    ) -> Self {
-        self.provider = Some(Arc::new(provider));
-        self
-    }
-    /// Whether the type declares a suggestion provider: its arguments are answered by that
-    /// provider alone, and no completion listener may add to, replace or erase the answer.
-    pub(crate) fn declares_provider(&self) -> bool {
-        self.provider.is_some()
     }
     /// The registered type's namespaced id.
     pub fn id(&self) -> &str {
@@ -154,6 +126,59 @@ impl Resource {
             Resource::Clock => "minecraft:world_clock",
             Resource::Timeline => "minecraft:timeline",
         }
+    }
+}
+
+/// A Brigadier resource argument's registry name. Built-in names can borrow static strings;
+/// names parsed from command descriptors are owned by the argument, not interned globally.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RegistryId(Cow<'static, str>);
+
+impl RegistryId {
+    /// Borrow a known registry name without allocating or validating it.
+    pub const fn from_static(id: &'static str) -> Self {
+        Self(Cow::Borrowed(id))
+    }
+
+    /// Parse a fully qualified `namespace:path` registry name, with neither part empty.
+    /// The character sets and the `..` namespace refusal follow vanilla's `Identifier`.
+    pub fn parse(name: &str) -> Option<Self> {
+        let (namespace, path) = name.split_once(':')?;
+        let valid = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b);
+        if namespace.is_empty()
+            || path.is_empty()
+            || namespace == ".."
+            || !namespace.bytes().all(valid)
+            || !path.bytes().all(|b| valid(b) || b == b'/')
+        {
+            return None;
+        }
+        Some(Self(Cow::Owned(name.to_owned())))
+    }
+
+    /// The qualified registry name as text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Deref for RegistryId {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_str()
+    }
+}
+
+impl AsRef<str> for RegistryId {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl fmt::Display for RegistryId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -203,13 +228,13 @@ pub enum ArgType {
     /// answers from the mods' own suggestions.
     Identifier,
     /// ResourceArgument over a registry (the element must exist).
-    Res(&'static str),
+    Res(RegistryId),
     /// ResourceKeyArgument (checked when the command runs).
-    ResKey(&'static str),
+    ResKey(RegistryId),
     /// ResourceOrTagArgument (elements and tags must exist).
-    ResOrTag(&'static str),
+    ResOrTag(RegistryId),
     /// ResourceOrTagKeyArgument.
-    ResOrTagKey(&'static str),
+    ResOrTagKey(RegistryId),
     /// StringRepresentableArgument-like: one of the names, with the error key.
     StrEnum(&'static [&'static str], &'static str),
     /// HexColorArgument.
@@ -275,9 +300,9 @@ pub enum ArgType {
     /// SlotSourceArgument: a slot range name, or a slot source id or inline value.
     SlotSource,
     /// ResourceOrIdArgument over a registry: an id or an inline SNBT value.
-    ResourceOrId(&'static str),
+    ResourceOrId(RegistryId),
     /// ResourceSelectorArgument: a `*`/`?` pattern over a registry's ids.
-    ResourceSelector(&'static str),
+    ResourceSelector(RegistryId),
     /// A registered argument type: the mod's parser and suggestions.
     Custom(CustomArgument),
 }
@@ -659,42 +684,47 @@ fn modified_utf8_len(text: &str) -> usize {
         .sum()
 }
 
-/// SharedSuggestionProvider.suggest for a mod's answer: the engine keeps the candidates that
-/// match the typed text (at its start, or after each `.`, `_` or `/`) within the protocol's text
-/// bounds and the reply's count. A candidate past a bound is dropped by name in the diagnostics
-/// and the others stay; nothing here panics.
-///
-/// For a [`CustomArgumentKind::Quotable`] argument the match compares phrase content: the typed
-/// text and each candidate without an opening quote, a closing one or their `\` escapes, so `Get`,
-/// `"Get` and `'Get` all keep `"Getting Started"`. The provider still sees the raw typed text, and
-/// each kept candidate is inserted as written over the same range.
-fn add_provider_suggestions(
+/// A mod's completions for custom argument `id` (typed so far: `prefix`, which starts at
+/// `builder.start`) as the builder's suggestions. Each keeps its own byte range inside the
+/// prefix, tooltip and numeric sort value. One whose range is out of bounds or splits a
+/// character, that equals the text it replaces, repeats an earlier text and tooltip pair, or is
+/// past the packet's text bounds (`ClientboundCommandSuggestionsPacket`: 32,767 UTF-16 code units
+/// of text, 65,535 bytes of modified UTF-8 of tooltip) is dropped alone and reported; the others
+/// stay. The reply keeps at most [`MAX_PROVIDER_SUGGESTIONS`] of them. Nothing here panics.
+fn add_custom_suggestions(
     builder: &mut SuggestionsBuilder,
-    candidates: Vec<CustomSuggestion>,
-    quotable: bool,
+    id: &str,
+    prefix: &str,
+    candidates: Vec<crate::Suggestion>,
 ) {
-    let content = |text: &str| match quotable {
-        true => phrase_content(text),
-        false => text.to_owned(),
-    };
-    let (count, lower) = (
-        candidates.len(),
-        content(builder.remaining()).to_lowercase(),
-    );
-    // The cap counts what the reply keeps, not what the provider answered: a candidate that does
-    // not match the typed text, equals it (the builder adds nothing for it), repeats an earlier
-    // text and tooltip pair, or is past a bound, spends none of it, so a long list of those
-    // before the useful ones still completes.
-    let typed = builder.remaining();
+    let count = candidates.len();
     let mut seen = std::collections::HashSet::new();
     let mut kept = 0;
     for candidate in candidates {
         if kept == MAX_PROVIDER_SUGGESTIONS {
             break;
         }
-        if candidate.text == typed
-            || !matches_sub_str(&lower, &content(&candidate.text).to_lowercase())
-            || !seen.insert((candidate.text.clone(), candidate.tooltip.clone()))
+        let (start, end) = candidate.range;
+        if start > end
+            || end > prefix.len()
+            || !prefix.is_char_boundary(start)
+            || !prefix.is_char_boundary(end)
+        {
+            eprintln!(
+                "custom command argument `{id}` returned suggestion `{}` with invalid range \
+                 {:?} for {}-byte prefix; skipped",
+                candidate.text,
+                candidate.range,
+                prefix.len()
+            );
+            continue;
+        }
+        if candidate.text == prefix[start..end]
+            || !seen.insert((
+                candidate.range,
+                candidate.text.clone(),
+                candidate.tooltip.clone(),
+            ))
         {
             continue;
         }
@@ -705,48 +735,26 @@ fn add_provider_suggestions(
             || tooltip > MAX_SUGGESTION_TOOLTIP
         {
             eprintln!(
-                "mod command argument provider suggestion `{}` is past the protocol's text \
+                "custom command argument `{id}` suggestion `{}` is past the protocol's text \
                  limit; dropped",
                 candidate.text
             );
             continue;
         }
-        match candidate.tooltip {
-            Some(tooltip) => builder.suggest_tooltip(candidate.text, tooltip),
-            None => builder.suggest(candidate.text),
-        }
+        builder.out.push(crate::Suggestion {
+            range: (builder.start + start, builder.start + end),
+            text: candidate.text,
+            tooltip: candidate.tooltip,
+            int_value: candidate.int_value,
+        });
         kept += 1;
     }
     if count > MAX_PROVIDER_SUGGESTIONS {
         eprintln!(
-            "mod command argument provider answered {count} suggestions; at most \
+            "custom command argument `{id}` answered {count} suggestions; at most \
              {MAX_PROVIDER_SUGGESTIONS} are kept"
         );
     }
-}
-/// The content of a quotable phrase as typed so far, or of a whole one: without its opening
-/// `"` or `'`, without the matching closing quote, and with `\"` / `\'` / `\\` decoded as
-/// `StringReader.readStringUntil` decodes them. A word, or a phrase still being typed (no closing
-/// quote, perhaps ending in a lone `\`), keeps what it has.
-fn phrase_content(text: &str) -> String {
-    let Some(quote) = text.chars().next().filter(|&c| c == '"' || c == '\'') else {
-        return text.to_owned();
-    };
-    let mut out = String::new();
-    let mut escaped = false;
-    for c in text[1..].chars() {
-        if escaped {
-            out.push(c);
-            escaped = false;
-        } else if c == '\\' {
-            escaped = true;
-        } else if c == quote {
-            break;
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
 /// SharedSuggestionProvider.filterResources (no prefix).
 pub fn resource_matches(contents: &str, id: &str) -> bool {
@@ -1447,7 +1455,7 @@ impl ArgType {
             }
             ArgType::Res(registry) => {
                 let id = read_identifier(reader)?;
-                if !reg.ids(registry).contains(&id) {
+                if !reg.ids(registry.as_str()).contains(&id) {
                     return Err(CommandError::tr_at(
                         "argument.resource.not_found",
                         &[&id, registry],
@@ -1469,7 +1477,7 @@ impl ArgType {
                             return Err(e);
                         }
                     };
-                    if !key_only && !reg.tags(registry).contains(&id) {
+                    if !key_only && !reg.tags(registry.as_str()).contains(&id) {
                         let e = CommandError::tr_at(
                             "argument.resource_tag.not_found",
                             &[&id, registry],
@@ -1481,7 +1489,7 @@ impl ArgType {
                     Arg::Resource(format!("#{id}"))
                 } else {
                     let id = read_identifier(reader)?;
-                    if !key_only && !reg.ids(registry).contains(&id) {
+                    if !key_only && !reg.ids(registry.as_str()).contains(&id) {
                         return Err(CommandError::tr_at(
                             "argument.resource.not_found",
                             &[&id, registry],
@@ -1513,7 +1521,7 @@ impl ArgType {
                 } else {
                     format!("minecraft:{raw}")
                 };
-                if select_resources(reg.ids(registry), &pattern).is_empty() {
+                if select_resources(reg.ids(registry.as_str()), &pattern).is_empty() {
                     return Err(CommandError::tr_at(
                         "argument.resource_selector.not_found",
                         &[&pattern, registry],
@@ -1868,7 +1876,7 @@ impl ArgType {
                 }
             }
             ArgType::ResourceOrId(registry) => {
-                super::codec::resource_or_id(reader, reg, registry)?;
+                super::codec::resource_or_id(reader, reg, registry.as_str())?;
                 Arg::Resource(reader.string[start..reader.cursor].to_owned())
             }
             ArgType::NbtPath => {
@@ -1961,20 +1969,20 @@ impl ArgType {
             ArgType::Resource(kind) => suggest_resources(builder, reg.ids(kind.registry()), ""),
             ArgType::Res(registry) | ArgType::ResKey(registry) => {
                 // RecipeCommand filters its keys to learnable recipes.
-                if *registry == "minecraft:recipe" && !reg.learnable_recipes.is_empty() {
+                if registry.as_str() == "minecraft:recipe" && !reg.learnable_recipes.is_empty() {
                     suggest_resources(builder, &reg.learnable_recipes, "")
                 } else {
-                    suggest_resources(builder, reg.ids(registry), "")
+                    suggest_resources(builder, reg.ids(registry.as_str()), "")
                 }
             }
             ArgType::ResOrTag(registry) | ArgType::ResOrTagKey(registry) => {
-                suggest_resources(builder, reg.tags(registry), "#");
-                suggest_resources(builder, reg.ids(registry), "");
+                suggest_resources(builder, reg.tags(registry.as_str()), "#");
+                suggest_resources(builder, reg.ids(registry.as_str()), "");
             }
             ArgType::StrEnum(values, _) => builder.suggest_matching(values.iter().copied()),
             ArgType::HexColor => builder.suggest_matching(["F00", "FF0000"]),
             ArgType::ResourceSelector(registry) => {
-                suggest_resources(builder, reg.ids(registry), "")
+                suggest_resources(builder, reg.ids(registry.as_str()), "")
             }
             ArgType::GameProfile => {
                 let players = reg.players.clone();
@@ -2096,46 +2104,21 @@ impl ArgType {
                 builder.add(sub);
                 suggest_resources(builder, reg.ids("minecraft:slot_source"), "");
             }
-            ArgType::ResourceOrId(registry) => suggest_resources(builder, reg.ids(registry), ""),
+            ArgType::ResourceOrId(registry) => {
+                suggest_resources(builder, reg.ids(registry.as_str()), "")
+            }
             ArgType::TeamColor => {
                 builder.suggest_matching(sunrise_client_core::scoreboard::team_colors())
             }
             ArgType::Anchor => builder.suggest_matching(["eyes", "feet"]),
             ArgType::Component | ArgType::Style | ArgType::NbtTag => super::snbt::suggest(builder),
             ArgType::Swizzle | ArgType::Message | ArgType::Nbt => {}
-            ArgType::Custom(custom) => match &custom.provider {
-                Some(provider) => {
-                    let prefix = builder.remaining().to_owned();
-                    let arguments = parsed_arguments(context, builder.input, builder.start);
-                    let candidates = provider(reg, &prefix, &arguments);
-                    let quotable = custom.kind == CustomArgumentKind::Quotable;
-                    add_provider_suggestions(builder, candidates, quotable);
-                }
-                None => {
-                    let prefix = builder.remaining().to_owned();
-                    for suggestion in (custom.suggest)(reg, &prefix) {
-                        // A suggestion may replace only the tail of the text argument, from its
-                        // offset: a completion for the token a greedy text is typing. One that
-                        // starts past the typed text or inside a character is left out rather than
-                        // panicking where the chat applies it (the game refuses it by name first).
-                        let start = match suggestion.replace_start {
-                            Some(offset)
-                                if offset <= prefix.len() && prefix.is_char_boundary(offset) =>
-                            {
-                                builder.start + offset
-                            }
-                            Some(_) => continue,
-                            None => builder.start,
-                        };
-                        match suggestion.tooltip {
-                            Some(tooltip) => {
-                                builder.suggest_at_tooltip(start, suggestion.text, tooltip)
-                            }
-                            None => builder.suggest_at(start, suggestion.text),
-                        }
-                    }
-                }
-            },
+            ArgType::Custom(custom) => {
+                let prefix = builder.input[builder.start..].to_owned();
+                let arguments = parsed_arguments(context, builder.input, builder.start);
+                let candidates = (custom.suggest)(reg, &prefix, &arguments);
+                add_custom_suggestions(builder, &custom.id, &prefix, candidates);
+            }
             _ => {}
         }
     }

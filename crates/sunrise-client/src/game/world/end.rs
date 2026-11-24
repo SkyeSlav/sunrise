@@ -395,8 +395,7 @@ impl Game<'_> {
             false
         });
         for at in shattered {
-            self.audio
-                .play("minecraft:entity.ender_eye.death", Some(at), 1.0, 1.0);
+            self.play_audio("minecraft:entity.ender_eye.death", Some(at), 1.0, 1.0);
             self.level_event_at(2003, at.map(|v| v.floor() as i32), 0);
         }
     }
@@ -675,7 +674,7 @@ impl Game<'_> {
                 flash.x_angle,
                 flash.y_angle,
             );
-            self.audio.play_instance_after(instance, 30);
+            self.play_audio_instance_after(instance, 30);
         }
     }
 
@@ -1418,8 +1417,7 @@ impl Game<'_> {
         });
         let r = self.world.random.next_float();
         let pitch = 0.33 + r * (0.5 - 0.33);
-        self.audio
-            .play("minecraft:entity.ender_eye.launch", Some(at), 1.0, pitch);
+        self.play_audio("minecraft:entity.ender_eye.launch", Some(at), 1.0, pitch);
         // CriteriaTriggers.USED_ENDER_EYE, against the feature's block.
         let (dx, dz) = (
             at[0] - f64::from(nearest.x * 16),
@@ -1448,8 +1446,7 @@ impl Game<'_> {
                 return true;
             }
             let at = eye.position.to_array();
-            self.audio
-                .play("minecraft:entity.ender_eye.death", Some(at), 1.0, 1.0);
+            self.play_audio("minecraft:entity.ender_eye.death", Some(at), 1.0, 1.0);
             if eye.survive {
                 // new ItemEntity(level, x, y, z, item): random spread, 0.2 up.
                 let vx = self.world.random.next_double() * 0.2 - 0.1;

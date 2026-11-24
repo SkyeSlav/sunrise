@@ -414,6 +414,8 @@ pub struct PlayerMotion {
     pub piston: sunrise_world::piston_movement::PistonMovement,
     pub yaw: f32,
     pub head_yaw: f32,
+    /// The server player's `LivingEntity.yBodyRot`, carried with its body on guest turns.
+    pub body_yaw: f32,
     pub jumping: bool,
     pub no_jump_delay: i32,
     pub jump_trigger_time: i32,
@@ -588,6 +590,13 @@ impl PlayerMotion {
                 .push(MotionEvent::FallDistanceReset(self.position));
         }
         self.fall_distance = 0.0;
+    }
+
+    /// `Entity.setDeltaMovement`: keep only finite values.
+    pub(crate) fn set_velocity(&mut self, velocity: Vec3) {
+        if velocity.is_finite() {
+            self.velocity = velocity;
+        }
     }
 
     /// `ServerGamePacketListenerImpl.handleMovePlayer`: the movement the client
@@ -1522,6 +1531,7 @@ impl MotionWorld<'_, '_, '_> {
         let (history, fall_distance, steps) = (p.history.clone(), p.fall_distance, p.steps);
         let events = p.events.len();
         p.drop_tiny_velocity();
+        let velocity = p.velocity;
         p.server_copy = true;
         let travelled = self.player_travel(Vec3::ZERO);
         let p = &mut *self.player;
@@ -1536,7 +1546,16 @@ impl MotionWorld<'_, '_, '_> {
             .unwrap_or_default();
         p.events.truncate(events);
         p.events.extend(kept);
-        travelled
+        // A travel the world cannot solve (a swept box past the collision scan's domain) publishes
+        // none of its partial work: the velocity it was handed stands as it was and the client is
+        // corrected to the server's own position and velocity.
+        travelled.or_else(|_| {
+            p.set_velocity(velocity);
+            Ok(ServerTravel::Replace {
+                position,
+                on_ground: ground.on_ground,
+            })
+        })
     }
     /// `LivingEntity.checkAutoSpinAttack`: the first living entity in the
     /// box swept this tick takes the hit and ends the spin, bouncing the
@@ -2292,7 +2311,7 @@ impl EntityMoveWorld for MotionWorld<'_, '_, '_> {
         Ok(self.player.velocity)
     }
     fn set_velocity(&mut self, value: Vec3) -> Result<()> {
-        self.player.velocity = value;
+        self.player.set_velocity(value);
         Ok(())
     }
     fn back_off_edge(&mut self, movement: Vec3, mover: MoverType) -> Result<Vec3> {
@@ -2776,7 +2795,7 @@ impl RestitutionWorld for MotionWorld<'_, '_, '_> {
         self.player.sync_position = true;
     }
     fn set_velocity(&mut self, value: Vec3) -> Result<()> {
-        self.player.velocity = value;
+        self.player.set_velocity(value);
         Ok(())
     }
 }
@@ -2786,7 +2805,7 @@ impl LivingMotionWorld for MotionWorld<'_, '_, '_> {
         self.player.velocity
     }
     fn set_velocity(&mut self, v: Vec3) -> Result<()> {
-        self.player.velocity = v;
+        self.player.set_velocity(v);
         Ok(())
     }
     fn adjust_jump_power(&mut self, mut power: f32) -> f32 {
@@ -2992,7 +3011,7 @@ pub fn block_jump_factor_at(
     )
 }
 /// `Entity.getOnPos(float)` with the world's bound fence and wall tags.
-pub(crate) fn block_support_at(
+pub fn block_support_at(
     world: &World,
     properties: Option<&BoundMovementProperties>,
     position: Vec3,
@@ -6444,7 +6463,7 @@ mod tests {
         }
     }
 
-    /// The player's fluid heights, which `entity_fluid_heights` reads: lava sources at x 20 and
+    /// The player's fluid heights, which `EntityRef::visit_fluid_heights` reads: lava sources at x 20 and
     /// water sources at x 21, y 4..=5 (each surface at 5 + 8/9). Standing at y 4 the player is
     /// that surface less 4 deep in each fluid it touches, from its own bottom, as a mob is
     /// (`mobs::living::fluid_heights`): lava, water, both where they meet (a tie), or neither.

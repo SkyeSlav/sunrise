@@ -3,7 +3,7 @@ use crate::game::{
     native_entity_refs::tests::run_fresh_cases,
     native_projectiles::impact_probe::{Action, with_probe},
 };
-use mod_api::{Flow, HearsProjectileImpactsEvent, Hooks, ProjectileImpactEvent, ServerHost};
+use mod_api::{Flow, Hooks, ProjectileImpactEvent, ServerHost};
 use std::sync::{Arc, Mutex, atomic::Ordering};
 use sunrise_client::{chunk::Chunk, join_seq::JoinSeq};
 use sunrise_mod_runtime::attachments::{
@@ -68,24 +68,18 @@ impl Hooks for CancelImpacts {
             let mut observed = self.0.lock().unwrap();
             if !observed.buffered {
                 // Shoot events fire after settlement while the tick batch is taken.
-                let _ = host.summon(
-                    event.dimension,
-                    "minecraft:snowball",
-                    [9.5, 70.0, 0.5],
-                    Default::default(),
-                );
+                if let Some(level) = host.level(event.dimension) {
+                    let _ = level.summon(
+                        host,
+                        "minecraft:snowball",
+                        [9.5, 70.0, 0.5],
+                        Default::default(),
+                    );
+                }
                 observed.buffered = true;
             }
         }
         Flow::Continue
-    }
-
-    fn hears_projectile_impacts(
-        &self,
-        _: &dyn mod_api::Host,
-        event: &mut HearsProjectileImpactsEvent,
-    ) {
-        event.hears = true;
     }
 
     fn projectile_impact(
@@ -97,12 +91,14 @@ impl Hooks for CancelImpacts {
         observed.impacts.push(event.projectile);
         if !observed.spawned {
             // The projectile is installed even though summon has no projectile return target.
-            let _ = host.summon(
-                event.dimension,
-                "minecraft:snowball",
-                [8.5, 70.0, 0.5],
-                Default::default(),
-            );
+            if let Some(level) = host.level(event.dimension) {
+                let _ = level.summon(
+                    host,
+                    "minecraft:snowball",
+                    [8.5, 70.0, 0.5],
+                    Default::default(),
+                );
+            }
             observed.spawned = true;
         }
         if observed.remove == Some(event.projectile) {
@@ -737,6 +733,111 @@ fn wind_charges_retrace_only_after_gameplay_breaks_a_vehicle() {
     });
 }
 
+/// A subscriber that was off when the tick began and is turned on by a section callback during
+/// it hears the flights that follow: the live loop asks `native_hears_impacts` at each flight,
+/// not once for the family.
+#[test]
+#[ignore = "daily"]
+fn a_subscriber_enabled_by_a_section_callback_hears_the_flights_after_it() {
+    struct Counter(Arc<Mutex<Vec<u32>>>);
+    #[mod_api::__subscriptions]
+    impl Hooks for Counter {
+        fn projectile_impact(
+            &self,
+            _: &mut dyn ServerHost,
+            event: &mut ProjectileImpactEvent<'_>,
+        ) -> Flow {
+            self.0.lock().unwrap().push(event.projectile);
+            Flow::Continue
+        }
+    }
+    struct Trigger(Arc<std::sync::atomic::AtomicUsize>);
+    #[mod_api::__subscriptions]
+    impl Hooks for Trigger {
+        fn entity_entering_section(
+            &self,
+            _: mod_api::HostSide<'_>,
+            _: &mut mod_api::EntityEnteringSectionEvent,
+        ) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            mod_api::__private::set_mod_enabled("reenabled-counter", true);
+        }
+    }
+    if run_fresh_cases(
+        "game::creatures::projectile_batch_tests::a_subscriber_enabled_by_a_section_callback_hears_the_flights_after_it",
+        "SUNRISE_PROJECTILE_REENABLE_CASE",
+        &["off"],
+    ) {
+        return;
+    }
+    let crossings = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let heard: Arc<Mutex<Vec<u32>>> = Arc::default();
+    let mods: mod_api::Mods = vec![
+        mod_api::ModEntry::new("reenabled-counter", Box::new(Counter(heard.clone()))),
+        mod_api::ModEntry::new("section-trigger", Box::new(Trigger(crossings.clone()))),
+    ]
+    .into();
+    mod_platform::testing::with_mods(mods, || {
+        super::super::native_entity_refs::tests::with_game(|game| {
+            game.options.dedicated = Some(Vec::new());
+            for chunk in [(0, 0), (1, 0)] {
+                game.world
+                    .chunks
+                    .insert(chunk, Arc::new(Chunk::empty(chunk.0, chunk.1)));
+                game.block_ticks
+                    .add_empty_chunk(sunrise_core::position::ChunkPos::new(chunk.0, chunk.1))
+                    .unwrap();
+            }
+            game.build_registries();
+            game.set_allow_commands(true);
+            assert!(game.run_command("forceload add 0 0"));
+            assert!(game.run_command("forceload add 16 0"));
+            game.player = Some(
+                sunrise_client::motion::PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 8.5))
+                    .unwrap(),
+            );
+            crate::game::native_entity_refs::tests::bind_local_player(game, 7, 7);
+            game.next_entity = 100;
+            assert!(mod_api::__private::set_mod_enabled(
+                "reenabled-counter",
+                false
+            ));
+            let stone = game
+                .pack
+                .assets
+                .registry
+                .default_state("minecraft:stone")
+                .unwrap();
+            // Arrow 71 flies across into the next section (the trigger's callback turns the counter
+            // on); arrow 72 lands on a wall in the first section.
+            game.world.set(2, 64, 0, stone).unwrap();
+            for (id, start) in [(71, 14.5), (72, 0.5)] {
+                let mut arrow = Projectile::new(
+                    ProjectileKind::Arrow {
+                        base_damage: 2.0,
+                        critical: false,
+                        effect: None,
+                    },
+                    Vec3::new(start, 64.5, 0.5),
+                    None,
+                );
+                arrow.id = id;
+                arrow.velocity = Vec3::new(3.0, 0.0, 0.0);
+                game.creatures.projectiles.push(arrow);
+            }
+            game.native_joins_skip();
+            game.tick_projectiles().unwrap();
+        });
+    });
+    assert!(
+        crossings.load(Ordering::SeqCst) > 0,
+        "a section callback ran"
+    );
+    // The counter was off when the tick began and the callback switched it on: it hears the
+    // flight after the callback, and only that one.
+    assert_eq!(*heard.lock().unwrap(), [72]);
+}
+
 #[derive(Default)]
 struct WindContinuationObserved {
     launches: Mutex<Vec<u32>>,
@@ -746,38 +847,32 @@ struct WindContinuationObserved {
 
 struct WindContinuationObserver {
     spawn_on_shoot: bool,
-    watch_breeze_each: bool,
     observed: Arc<WindContinuationObserved>,
 }
 
 #[mod_api::__subscriptions]
 impl Hooks for WindContinuationObserver {
-    fn entity_tick_listened(
-        &self,
-        _: mod_api::HostSide<'_>,
-        event: &mut mod_api::EntityTickListenedEvent,
-    ) {
-        event.listened = true;
-    }
-
     fn entity_tick_post(
         &self,
         _: mod_api::HostSide<'_>,
         event: &mut mod_api::EntityTickPostEvent<'_>,
     ) {
-        self.observed
-            .alone_ticks
-            .lock()
-            .unwrap()
-            .extend_from_slice(event.entities);
+        self.observed.alone_ticks.lock().unwrap().push(event.entity);
     }
 
-    fn projectile_launch(
+    fn entity_join_level(
         &self,
-        _: &mut dyn ServerHost,
-        event: &mut mod_api::ProjectileLaunchEvent<'_>,
-    ) {
-        self.observed.launches.lock().unwrap().push(event.entity);
+        host: &mut dyn ServerHost,
+        event: &mut mod_api::EntityJoinLevelEvent<'_>,
+    ) -> Flow {
+        if host.projectile(event.subject).is_some() {
+            self.observed
+                .launches
+                .lock()
+                .unwrap()
+                .push(event.subject.id());
+        }
+        Flow::Continue
     }
 
     fn vanilla_game_event(
@@ -789,22 +884,18 @@ impl Hooks for WindContinuationObserver {
             let mut buffered = self.observed.buffered.lock().unwrap();
             if !*buffered {
                 // Spawn into the lifted buffer so SpawnsFirst restores it ahead of survivors.
-                let _ = host.summon(
-                    event.dimension,
-                    "minecraft:snowball",
-                    [12.5, -55.0, 8.5],
-                    Default::default(),
-                );
+                if let Some(level) = host.level(event.dimension) {
+                    let _ = level.summon(
+                        host,
+                        "minecraft:snowball",
+                        [12.5, -55.0, 8.5],
+                        Default::default(),
+                    );
+                }
                 *buffered = true;
             }
         }
         Flow::Continue
-    }
-
-    fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
-        if self.watch_breeze_each {
-            r.entity_tick_each("minecraft:breeze_wind_charge");
-        }
     }
 }
 
@@ -918,7 +1009,6 @@ pub(in crate::game) fn run_continuing_wind_charge_keeps_tick_order_and_skips_rel
         "wind-continuation-observer",
         Box::new(WindContinuationObserver {
             spawn_on_shoot: case == "mixed-batch",
-            watch_breeze_each: case != "reversed",
             observed: observed.clone(),
         }),
     )]
@@ -1004,7 +1094,7 @@ pub(in crate::game) fn run_continuing_wind_charge_keeps_tick_order_and_skips_rel
             if case != "reversed" {
                 assert!(
                     observed.alone_ticks.lock().unwrap().contains(&85),
-                    "w6 must run through the batched entity_tick_each pass"
+                    "w6 must fire entity_tick_post on its own tick"
                 );
             }
             if case == "ctrl4" {

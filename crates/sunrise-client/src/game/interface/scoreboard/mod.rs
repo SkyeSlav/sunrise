@@ -145,10 +145,13 @@ impl Game<'_> {
         if root.is_none() && dim == super::Dim::Overworld {
             root = save::read_dat(&self.world_root.join("data/minecraft/world_border.dat"));
         }
-        root.as_ref()
-            .and_then(|root| root.get("data"))
-            .map(sunrise_client::worldborder::WorldBorder::unpack)
-            .unwrap_or_default()
+        if let Some(data) = root.as_ref().and_then(|root| root.get("data")) {
+            match sunrise_client::worldborder::WorldBorder::unpack(data) {
+                Ok(border) => return border,
+                Err(error) => log::warn!("invalid saved world border in {}: {error}", dim.id()),
+            }
+        }
+        sunrise_client::worldborder::WorldBorder::default()
     }
     /// Save the border of the level in place (`SavedData`, one per level).
     pub(super) fn save_border(&self) {
@@ -1053,12 +1056,10 @@ impl Game<'_> {
             return;
         }
         // The faces of the players the list shows.
-        let faces: std::collections::HashSet<u128> = self
-            .tab_list
-            .displayed_ids(&players, &self.score.board)
-            .iter()
-            .copied()
-            .collect();
+        let faces: std::collections::HashSet<u128> =
+            tab_list::sorted_players(&players, &self.score.board)
+                .map(|player| player.uuid)
+                .collect();
         for p in players.iter_mut().filter(|p| faces.contains(&p.uuid)) {
             p.skin = self.face_skin(p.uuid, &p.skin);
         }
@@ -1171,7 +1172,7 @@ impl Env for GameEnv<'_, '_> {
         }
     }
     fn source(&mut self) -> Option<(Holder, bool)> {
-        let entity = match self.g.command_source {
+        let entity = match &self.g.command_source {
             Some(s) => s.entity,
             None => Some(Target::Player),
         }?;

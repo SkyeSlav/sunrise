@@ -425,11 +425,13 @@ impl Game<'_> {
                         .then(|| level.rewrite_placement_context(stack, context, placer))
                         .flatten()
                 })?;
-            let placed = b.place_resolved_block(&mut dry, &mut ticks, decision, stack_state)?;
+            let placed = b.apply_placement(&mut dry, &mut ticks, decision, stack_state)?;
+            b.placement_set_placed_by(&mut dry, &mut ticks, &placed);
             let pos = placed.context.pos;
             let primary = dry.changed.remove_entry(&pos);
             Some(DryPlace {
                 pos,
+                sound_state: placed.state,
                 matches_candidate: placed.matches_candidate,
                 changes: primary.into_iter().chain(dry.changed).collect(),
             })
