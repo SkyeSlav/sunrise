@@ -235,6 +235,8 @@ impl Game<'_> {
         };
         let inventory_x = self.native_screen_inventory_x().unwrap_or(8.0);
         match i {
+            // A mod screen's committed move of a player slot, else the grid below.
+            0..36 if let Some(p) = self.native_screen_player_slot(i) => p,
             0..9 => (inventory_x + i as f32 * 18.0, 142.0 + shift),
             9..36 => (
                 inventory_x + ((i - 9) % 9) as f32 * 18.0,

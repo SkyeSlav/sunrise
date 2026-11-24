@@ -40,26 +40,35 @@ pub trait ScreensClientHost {
     /// screen open.
     fn screen_hovered_stack(&self) -> Option<ItemStack>;
     /// Side: client.
-    /// Where the shown mod menu screen for `menu` puts backing slot `slot` from the next
+    /// Where the shown mod menu screen for `menu` puts menu slot `slot` from the next
     /// frame (`Slot.x`, `Slot.y` in GUI pixels from the screen's top left, the item's top left
-    /// corner): where `set_screen_slot` last put it, else where the screen declared it. None
-    /// for an inactive/hidden slot, another menu type's screen, or no shown mod screen.
+    /// corner): where `set_screen_slot` last put it, else where the screen declared it. `slot`
+    /// ranges over `0..(container_len + player_slots)` as `set_screen_slot` documents. None
+    /// for an inactive/hidden slot, a slot the menu does not have, another menu type's screen,
+    /// or no shown mod screen.
     fn screen_slot(&self, menu: &str, slot: usize) -> Option<[f32; 2]>;
     /// Side: client.
-    /// Moves container slot `slot` of the open screen of mod menu type `menu` to `pos`, or
+    /// Moves menu slot `slot` of the open screen of mod menu type `menu` to `pos`, or
     /// deactivates/hides it with None, as a Java screen that lays its slots out again sets
     /// `Slot.x`/`Slot.y` or toggles `Slot.isActive()` (Tinkers' station layouts). `slot`
-    /// indexes `MenuScreenLayout::slots` (including slots declared `None` at open, which start
-    /// inactive and may be activated later with `Some([x, y])`). From the next frame the slot is
-    /// a vanilla slot at that position: the hovered slot (the 18 by 18 box around it), its
-    /// highlight, its contents, its empty-slot icon and the recipe book's ghost items; a hidden
-    /// one is none of these. A position outside the image is allowed. The change lasts for this
-    /// opening; a replacement starts from the declared layout, even if it reuses the same window
-    /// id. Any mod may read, move, activate or hide slots of the open screen for `menu`.
-    /// This is client-only: a locally hidden slot keeps its item and a shift-click may still
-    /// fill it. It takes `&self`, so a screen callback may call it every frame; repeating a
-    /// slot's current place changes nothing and costs no layout work. Each
-    /// [`ScreenSlotRefusal`] leaves the layout unchanged.
+    /// ranges over `0..(container_len + player_slots)`, in menu order
+    /// (`AbstractContainerMenu.addStandardInventorySlots`): `0..container_len` indexes
+    /// `MenuScreenLayout::slots` (including slots declared `None` at open, which start
+    /// inactive and may be activated later with `Some([x, y])`), and the `player_slots` the
+    /// menu declared (`MenuScreenOpen::player_slots`) follow: the main inventory's three rows,
+    /// then the hotbar. A player slot starts at the screen's `inventory_x`/`inventory_y` grid.
+    /// From the next frame the slot is a vanilla slot at that position: the hovered slot (the
+    /// 18 by 18 box around it), its highlight, its contents, its empty-slot icon and the
+    /// recipe book's ghost items; a hidden one is none of these, and is neither a drag target
+    /// nor swapped by a number key. A position outside the image is allowed. The change lasts for this
+    /// opening: closing the screen and opening it again (or a replacement, even one that reuses
+    /// the same window id) starts every container and player slot from its declared place,
+    /// shown. Any mod may read, move, activate or hide slots of the open screen for `menu`.
+    /// This is client-only and the server never consults it: a locally hidden slot keeps its
+    /// item and a shift-click from another slot may still fill it, which is the menu's own
+    /// quick-move answer; nothing on the client filters that. It takes `&self`, so a screen
+    /// callback may call it every frame; repeating a slot's current place changes nothing and
+    /// costs no layout work. Each [`ScreenSlotRefusal`] leaves the layout unchanged.
     fn set_screen_slot(
         &self,
         menu: &str,
