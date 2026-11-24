@@ -77,8 +77,7 @@ macro_rules! game_side {
                 .map_or($s.level.enabled_features.as_arc(), |remote| {
                     &remote.features
                 }),
-            items: $s.res.items(),
-            tag_items: if $s.options.execution_role.is_client() {
+            items: if $s.options.execution_role.is_client() {
                 $s.remote.as_ref().and_then(|remote| remote.tags.as_ref())
             } else {
                 $s.session_lock.is_some().then(|| $s.res.items())
@@ -92,14 +91,11 @@ fn pack_files(world_tables: &Option<WorldTables>) -> sunrise_world::loot::PackOv
         Some(t) => sunrise_world::loot::PackOverlay {
             conditions: &t.conditions,
             files: &t.files,
-            priority_layers: &t.priority_layers,
         },
         None => sunrise_world::loot::PackOverlay::NONE,
     }
 }
 include!(concat!(env!("OUT_DIR"), "/game_modules.rs"));
-pub use hot_paths::{HotPathsMods, note_hot_paths_listener_call};
-
 mod host;
 mod native_hooks;
 use event_loop::EventLoopCtl;
@@ -744,7 +740,6 @@ struct WorldTables {
     /// The pack files the tables were built from (a native mod's among
     /// them), for the advancement tree reload and the loot data.
     files: Vec<(String, Vec<Vec<u8>>)>,
-    priority_layers: Vec<sunrise_world::loot::RecipePriorityLayer>,
     items: Arc<Items>,
     /// Registry definitions stay frozen at world open, even when tags reload.
     packed_registries: Arc<sunrise_client::lan::data::PackRegistryDefinitions>,
@@ -4089,14 +4084,7 @@ impl Game<'_> {
                     pos,
                     state,
                     kind: "push_entities_up",
-                } => {
-                    self.push_entities_up(
-                        pos,
-                        state,
-                        self.world.block(pos.x, pos.y, pos.z),
-                        |_| true,
-                    );
-                }
+                } => self.push_entities_up(pos, state),
                 LevelEvent::GrowTree { .. }
                 | LevelEvent::PlaceFeature { .. }
                 | LevelEvent::BlockEvent { .. } => {}

@@ -111,7 +111,7 @@ impl BlockEntityPart for Part {
                 .expect("the second block's items");
             let tx = host.transaction_current().expect("inside the action");
             assert_eq!(
-                items.insert_at(host, &tx, 0, &ItemResource::of(&stone(1)), 4),
+                items.insert(host, &tx, 0, &ItemResource::of(&stone(1)), 4),
                 4
             );
             event.stack.as_mut().unwrap().set_count(6).unwrap();
@@ -646,7 +646,7 @@ fn depot_container(game: &mut crate::game::Game<'_>) {
 #[test]
 #[ignore = "daily"]
 fn a_code_opened_menus_button_reaches_a_blocks_menu_button_only_for_its_menu_type() {
-    let depot_menu = [(DEPOT_MENU.into(), 9, 0, Vec::new(), Vec::new(), None, None)];
+    let depot_menu = [(DEPOT_MENU.into(), 9, 0, Vec::new(), None, None)];
     sunrise_client::containers::with_mod_menu_types(depot_menu, || {
         with_mod(|| {
             with_guests(|game| {

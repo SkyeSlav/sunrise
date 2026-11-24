@@ -863,7 +863,7 @@ fn piston_push_reaction_position_state_opens_ticks_and_saves() {
                         &game.options.resources,
                         &sunrise_world::loot::PackOverlay {
                             files: &files,
-                            ..sunrise_world::loot::PackOverlay::default()
+                            ..sunrise_world::loot::PackOverlay::NONE
                         },
                         game.res.item_defaults(),
                     )

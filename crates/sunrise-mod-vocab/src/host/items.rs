@@ -301,10 +301,9 @@ pub trait ItemsBackend {
     /// Side: server.
     /// How many of `stack` slot `slot` of those `at`'s side reaches holds when empty, as
     /// NeoForge's `isValid` and `getCapacityAsLong` answer: none where it may not go in (a
-    /// furnace's output, `canPlaceItem`), else the slot's limit for it. `None` asks for the
-    /// general slot limit before item-specific rules.
+    /// furnace's output, `canPlaceItem`), else the slot's limit for it.
     #[access(WorldOnly)]
-    fn container_capacity(&self, at: BlockSide, slot: usize, stack: Option<&ItemStack>) -> u32;
+    fn container_capacity(&self, at: BlockSide, slot: usize, stack: &ItemStack) -> u32;
     /// Side: server.
     /// How much of `resource` the slots `at`'s side reaches hold in all: [`STORAGE`]'s
     /// amount for a container or composter port, in one pass. None where the total does

@@ -718,16 +718,9 @@ impl TryIntoEngine for mod_api::ItemCost {
     type Engine = sunrise_client::merchant::ItemCost;
     type Error = StackWriteError;
     fn try_into_engine(&self, items: &Items) -> Result<Self::Engine, Self::Error> {
-        // ItemCost's codec uses a positive Java int, not the normal stack's count limit.
-        let maximum = i32::MAX as u32;
-        if self.stack.count() > maximum {
-            return Err(StackWriteError::CountExceeded { maximum });
-        }
-        let stack = self.stack.try_into_engine_preserving_count(items)?;
-        if &*stack.item == "minecraft:air" {
-            return Err(StackWriteError::EmptyEngineStack);
-        }
-        Ok(Self::Engine { stack })
+        Ok(Self::Engine {
+            stack: self.stack.try_into_engine(items)?,
+        })
     }
 }
 impl TryIntoApi for sunrise_client::merchant::MerchantOffer {
@@ -749,54 +742,21 @@ impl TryIntoApi for sunrise_client::merchant::MerchantOffer {
         Ok(offer)
     }
 }
-#[derive(Debug)]
-pub(super) enum OfferWriteError {
-    NonFinitePrice,
-    Stack(StackWriteError),
-}
-
-impl From<StackWriteError> for OfferWriteError {
-    fn from(error: StackWriteError) -> Self {
-        Self::Stack(error)
-    }
-}
-
-/// A collect answer and a MerchantRef write admit offers through the same check. All i32
-/// fields fit `MerchantOffer.CODEC`; their arithmetic follows Java wrapping in the engine.
-pub(super) fn checked_merchant_offer(
-    offer: &mod_api::MerchantOffer,
-    items: &Items,
-) -> Result<sunrise_client::merchant::MerchantOffer, OfferWriteError> {
-    if !offer.price_multiplier.is_finite() {
-        return Err(OfferWriteError::NonFinitePrice);
-    }
-    let result = offer.result.try_into_engine(items)?;
-    if &*result.item == "minecraft:air" {
-        return Err(StackWriteError::EmptyEngineStack.into());
-    }
-    Ok(sunrise_client::merchant::MerchantOffer {
-        base_cost_a: offer.base_cost_a.try_into_engine(items)?,
-        cost_b: offer.cost_b.try_into_engine(items)?,
-        result,
-        uses: offer.uses,
-        max_uses: offer.max_uses,
-        reward_exp: offer.reward_exp,
-        special_price_diff: offer.special_price_diff,
-        demand: offer.demand,
-        price_multiplier: offer.price_multiplier,
-        xp: offer.xp,
-    })
-}
-
 impl TryIntoEngine for mod_api::MerchantOffer {
     type Engine = sunrise_client::merchant::MerchantOffer;
     type Error = StackWriteError;
     fn try_into_engine(&self, items: &Items) -> Result<Self::Engine, Self::Error> {
-        checked_merchant_offer(self, items).map_err(|error| match error {
-            // MerchantRef's existing write API returns StackWriteError; the decision coordinator
-            // uses the typed offer refusal directly.
-            OfferWriteError::NonFinitePrice => StackWriteError::InvalidMaximum,
-            OfferWriteError::Stack(error) => error,
+        Ok(Self::Engine {
+            base_cost_a: self.base_cost_a.try_into_engine(items)?,
+            cost_b: self.cost_b.try_into_engine(items)?,
+            result: self.result.try_into_engine(items)?,
+            uses: self.uses,
+            max_uses: self.max_uses,
+            reward_exp: self.reward_exp,
+            special_price_diff: self.special_price_diff,
+            demand: self.demand,
+            price_multiplier: self.price_multiplier,
+            xp: self.xp,
         })
     }
 }

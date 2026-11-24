@@ -14,6 +14,7 @@ pub struct NativeClientHooks {
     pub menu_still_valid_listens: fn(&str) -> bool,
     pub living_heal: fn(&LoopContext, u32, &mut f32, &mut bool),
     pub living_breathe_heard: fn() -> bool,
+    pub farmland_trample: fn(&LoopContext, u32, [i32; 3], u32, f64, &mut bool),
     pub has_mods: fn() -> bool,
     pub player_name_format: fn(&LoopContext, &crate::text::Text, &mut crate::text::Text),
     pub player_tab_list_name_format: fn(&LoopContext, u128, &str, &mut Option<crate::text::Text>),
@@ -140,6 +141,19 @@ pub(crate) fn living_breathe_heard() -> bool {
     HOOKS
         .get()
         .is_some_and(|hooks| (hooks.living_breathe_heard)())
+}
+
+pub(crate) fn farmland_trample(
+    context: &LoopContext,
+    entity: u32,
+    pos: [i32; 3],
+    state: u32,
+    distance: f64,
+    cancel: &mut bool,
+) {
+    if let Some(hooks) = HOOKS.get() {
+        (hooks.farmland_trample)(context, entity, pos, state, distance, cancel);
+    }
 }
 
 pub(crate) fn has_mods() -> bool {

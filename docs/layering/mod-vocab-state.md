@@ -67,7 +67,7 @@ OUT_DIR file checked by the generator before writing it.
 | `parts/shared.rs::WORLDGEN_PARTS` | `RwLock<(u64,Option<Arc<Parts>>)>` | Parts lookup table | Part table the server published for world generation, with its generation, replaced at world open and /reload. |
 | `parts/shared.rs::WORLDGEN_TABLE` | `RefCell<Option<(u64,Option<Arc<Parts>>)>>` | Parts lookup table | Per-thread handle on the published worldgen Part table and its generation. |
 | `parts/shared.rs::requested_keys::EMPTY` | `LazyLock<sunrise_mod_runtime::registry_keys::Requests>` | immutable cache | Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one. |
-| `runtime.rs::LISTENER_SERIAL` | `std::cell::Cell<(u64,u64)>` | dispatch table | Independent per-thread counts of listener entries and trapped listeners. Scoped engine leases compare the entry count; owning decide/fire/apply actions compare the trap count to decide whether to abort tentative Host writes. |
+| `runtime.rs::LISTENER_SERIAL` | `std::cell::Cell<u64>` | dispatch table | Thread-wide count of all listeners entered, bumped by the dispatch loop; scoped engine leases (pending children) compare it so a lease never outlives one listener. |
 | `runtime.rs::MODS` | `OnceLock<Installed>` | dispatch table | Dependency-ordered hook routing and its per-mod enabled bits remain engine-owned. |
 | `runtime.rs::MODS_SWITCHED` | `std::sync::atomic::AtomicU64` | dispatch table | Counts changes to the per-mod enabled bits it sits beside; read through the host's capability provider table, never by a guest's own copy. |
 | `runtime.rs::TEST_MODS` | `std::cell::Cell<Option<&'staticInstalled>>` | dispatch table | Thread-local dispatch inventory for isolated engine tests. |

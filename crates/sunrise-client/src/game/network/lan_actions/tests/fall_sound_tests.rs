@@ -24,12 +24,7 @@ fn run(distance: f64, expected: usize) {
             landing.position = [1.5, 64.0, 1.5];
             landing.loaded = true;
             landing.moves_from_ground = false;
-            landing.moves.push(sunrise_client::lan::guest::GuestMove {
-                position: landing.position,
-                delta: [0.0, -distance, 0.0],
-                on_ground: true,
-                sneaking: false,
-            });
+            landing.moves.push(([0.0, -distance, 0.0], true));
             let mut motion = PlayerMotion::new(game.motion, Vec3::new(1.5, 64.0, 1.5)).unwrap();
             // The replayed downward move accumulates the fall distance.
             motion.fall_distance = 0.0;

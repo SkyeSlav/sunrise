@@ -797,7 +797,7 @@ impl HealthResources {
             root,
             &sunrise_world::loot::PackOverlay {
                 conditions,
-                ..sunrise_world::loot::PackOverlay::default()
+                ..sunrise_world::loot::PackOverlay::NONE
             },
         )?;
         for name in ["minecraft:fall", "minecraft:stalagmite", "minecraft:starve"] {

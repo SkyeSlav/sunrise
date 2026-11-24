@@ -156,7 +156,7 @@ mod tests {
         use super::super::super::native_entity_refs::tests::with_game;
         use mod_api::{
             BlockUpdateFlags, ENERGY, ENTITY_ENERGY, ENTITY_FLUIDS, Holder, move_energy,
-            resource_util::move_resources,
+            move_resources,
         };
         use mod_platform::__private::part_tests::{ROBOT_FLUID, game_thread};
         use sunrise_client::chunk::Chunk;
@@ -238,20 +238,13 @@ mod tests {
             let tank = stand.capability(host, &ENTITY_FLUIDS, None).unwrap();
             let from = other.capability(host, &ENTITY_FLUIDS, None).unwrap();
             assert_eq!(
-                host.transaction(|host, tx| move_resources(
-                    host,
-                    &from,
-                    &tank,
-                    |_| true,
-                    100,
-                    Some(tx)
-                )),
+                host.transaction(|host, tx| move_resources(host, &from, &tank, |_| true, 100, tx)),
                 Ok(100)
             );
             assert_eq!((from.amount(host, 0), tank.amount(host, 0)), (500, 100));
             let abort: Result<(), ()> = host.transaction(|host, tx| {
                 assert_eq!(
-                    move_resources(host, &from, &tank, |_| true, 100, Some(tx)),
+                    move_resources(host, &from, &tank, |_| true, 100, tx),
                     Ok(100)
                 );
                 Err(())

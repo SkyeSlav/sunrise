@@ -1244,69 +1244,6 @@ fn a_tuple_field_read_by_position_is_used_and_judged() {
 }
 
 #[test]
-fn a_position_read_on_a_value_not_tied_to_the_struct_names_no_field() {
-    // The mod names `Pos`, so its fields would count on any read of theirs.
-    let source = r#"
-use mod_api::Pos;
-pub fn origin(_: Pos) {}
-pub struct Mine(pub (i32, i32));
-impl Mine {
-    fn x(&self) -> i32 { self.0 .1 }
-}
-fn pairs(mut v: Vec<(i32, i32)>) -> i32 {
-    v.dedup_by(|a, b| a.0 == b.0);
-    let first = v[0];
-    let mine = Mine(first);
-    mine.x() + first.1 + v.iter().map(|p| p.0).sum::<i32>() + make().1
-}
-fn make() -> Pos { todo!() }
-"#;
-    let uses = scan_on(wider(), source);
-    let found = ids(&uses);
-    assert!(found.contains(&"type:Pos"));
-    assert!(!found.contains(&"type:Pos.0"));
-    assert!(!found.contains(&"type:Pos.1"));
-}
-
-#[test]
-fn a_position_read_tied_to_the_struct_names_its_field() {
-    let field = |source: &str, id: &str| ids(&scan_on(wider(), source)).contains(&id);
-    // A typed binding, through a reference.
-    assert!(field(
-        "fn f(p: &Pos) { let q: &mut Pos = todo!(); q.1 = p.1; }",
-        "type:Pos.1"
-    ));
-    assert!(field("fn f(p: (&Pos)) -> i32 { p.0 }", "type:Pos.0"));
-    // A `for` binding shadows the outer parameter only in the loop body.
-    assert!(field("fn f(p: Pos) { for p in 0..p.0 {} }", "type:Pos.0"));
-    assert!(!field(
-        "fn f(p: Pos) { for p in [(1, 2)] { let _ = p.0; } }",
-        "type:Pos.0"
-    ));
-    // A binding of a constructor, and a constructor's own field.
-    assert!(field(
-        "fn f() -> i32 { let p = Pos(1, 2); p.1 }",
-        "type:Pos.1"
-    ));
-    assert!(field("fn f() -> i32 { Pos(1, 2).1 }", "type:Pos.1"));
-    // `self` in a method of an impl for it.
-    assert!(field(
-        "trait Tr { fn f(&self) -> i32; } impl Tr for Pos { fn f(&self) -> i32 { self.1 } }",
-        "type:Pos.1"
-    ));
-    // A pattern's positions before its `..`.
-    assert!(field(
-        "fn f(p: Pos) { let Pos(_, y, ..) = p; }",
-        "type:Pos.1"
-    ));
-    // An untyped binding shadows a typed one.
-    assert!(!field(
-        "fn f(p: Pos) -> i32 { let p = (p, 1); p.1 }",
-        "type:Pos.1"
-    ));
-}
-
-#[test]
 fn full_builds_by_another_name_are_full() {
     let built = |source: &str, id: &str| entry(&scan_on(wider(), source), id).built;
     let full = Some(Built::Full);

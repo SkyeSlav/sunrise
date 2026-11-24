@@ -2381,7 +2381,30 @@ impl EntityMoveWorld for MotionWorld<'_, '_, '_> {
         state: BlockStateId,
         position: BlockPos,
     ) -> Result<()> {
-        self.before_fall_check(dy, grounded, state, position);
+        // LivingEntity.aiStep: Slow Falling and Levitation reset the fall
+        // distance every tick, so landing under either does not hurt.
+        if self.player.status.slow_falling || self.player.status.levitation.is_some() {
+            self.player.fall_distance = 0.0;
+        }
+        // LivingEntity.checkFallDamage: a landing runs onChangedBlock.
+        if grounded && self.player.fall_distance > 0.0 {
+            self.player.location_effects.landed = true;
+        }
+        if self.player.spawn_extra_particles_on_fall && grounded && self.player.fall_distance > 0.0
+        {
+            self.player.events.push(MotionEvent::SmashLanding {
+                state,
+                position,
+                fall_distance: self.player.fall_distance,
+            });
+            self.player.spawn_extra_particles_on_fall = false;
+        }
+        self.player.events.push(MotionEvent::Landing {
+            dy,
+            grounded,
+            state,
+            position,
+        });
         sunrise_world::living_landing::check_living_fall_damage(self, dy, grounded, state, position)
     }
     fn removed(&mut self) -> Result<bool> {
@@ -2431,59 +2454,6 @@ impl EntityMoveWorld for MotionWorld<'_, '_, '_> {
 }
 // The player's footsteps and swim sounds. Flapping and the step game event
 // are not bound here (the sculk listeners track the player's steps themselves).
-impl MotionWorld<'_, '_, '_> {
-    pub fn check_guest_fall_damage(
-        &mut self,
-        dy: f64,
-        grounded: bool,
-        state: BlockStateId,
-        position: BlockPos,
-    ) -> Result<Option<sunrise_world::block_landing::FarmlandTrample>> {
-        self.before_fall_check(dy, grounded, state, position);
-        sunrise_world::living_landing::check_living_fall_damage_until(
-            self,
-            dy,
-            grounded,
-            state,
-            position,
-            |world, state, position, distance| world.block_fall(state, position, distance, true),
-        )
-    }
-
-    fn before_fall_check(
-        &mut self,
-        dy: f64,
-        grounded: bool,
-        state: BlockStateId,
-        position: BlockPos,
-    ) {
-        // LivingEntity.aiStep: Slow Falling and Levitation reset the fall
-        // distance every tick, so landing under either does not hurt.
-        if self.player.status.slow_falling || self.player.status.levitation.is_some() {
-            self.player.fall_distance = 0.0;
-        }
-        // LivingEntity.checkFallDamage: a landing runs onChangedBlock.
-        if grounded && self.player.fall_distance > 0.0 {
-            self.player.location_effects.landed = true;
-        }
-        if self.player.spawn_extra_particles_on_fall && grounded && self.player.fall_distance > 0.0
-        {
-            self.player.events.push(MotionEvent::SmashLanding {
-                state,
-                position,
-                fall_distance: self.player.fall_distance,
-            });
-            self.player.spawn_extra_particles_on_fall = false;
-        }
-        self.player.events.push(MotionEvent::Landing {
-            dy,
-            grounded,
-            state,
-            position,
-        });
-    }
-}
-
 impl MovementEmissionWorld for MotionWorld<'_, '_, '_> {
     type Error = Box<dyn std::error::Error>;
     type State = BlockStateId;

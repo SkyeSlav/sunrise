@@ -609,12 +609,10 @@ impl Game<'_> {
             .and_then(|g| g.menu.as_ref().map(|m| m.window))
             .into_iter()
             .collect();
-        // These windows stay in the host even while GuestPlay is out on a guest turn.
-        if let Some(menus) = host.menus.get(&conn) {
-            windows.extend(menus.crafting.table.as_ref().map(|t| t.0));
-            windows.extend(menus.station.as_ref().map(|s| s.window));
-        }
         if let Some(p) = host.play.get(&conn) {
+            let menus = host.menus.get(&conn);
+            windows.extend(menus.and_then(|m| m.crafting.table.as_ref()).map(|t| t.0));
+            windows.extend(menus.and_then(|m| m.station.as_ref()).map(|s| s.window));
             windows.extend(p.lectern.as_ref().map(|l| l.window));
             windows.extend(p.merchant.as_ref().map(|m| m.window));
             windows.extend(p.mount_window.as_ref().map(|m| m.window));

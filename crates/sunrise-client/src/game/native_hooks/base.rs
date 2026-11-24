@@ -2289,35 +2289,23 @@ impl Game<'_> {
     ) {
         self.fire_player_trade(player, name, entity_id);
     }
-    /// Non-cancellable collect for one villager or wandering-trader take. True when a
-    /// validated answer changed the offer; observing alone leaves the input untouched.
+    /// A server player traded with a villager or a wandering trader
+    /// (NeoForge's `TradeWithVillagerEvent`, at vanilla's
+    /// `MerchantResultSlot.onTake` once the offer is taken): `merchant` is
+    /// the trader's entity id and `kind` its type (`minecraft:villager`,
+    /// `minecraft:wandering_trader`), `offer` the trade as it is after this
+    /// one (its `uses` counted, `result` what the player got). Once per
+    /// trade, so a shift-click that trades several times is heard for each,
+    /// after the trade's statistic and `villager_trade` trigger. Listen
+    /// only: the trade is made. The player's state is swapped in
+    /// (`native_acting_player`).
     pub(in crate::game) fn native_trade_with_villager(
         &mut self,
         merchant: u32,
         kind: &str,
         offer: &mut MerchantOffer,
-    ) -> Result<bool, crate::game::transactions::decision::InvalidReason> {
-        use crate::game::api_values::{OfferWriteError, TryIntoApi, checked_merchant_offer};
-        use crate::game::transactions::decision::InvalidReason;
-        if !mod_api::__private::listened(mod_api::HookId::TradeWithVillager) {
-            return Ok(false);
-        }
-        let original = offer.try_into_api().map_err(|_| InvalidReason::Plan)?;
-        let mut answer = original.clone();
-        mod_api::dispatch_trade_with_villager(self, merchant, kind, &mut answer);
-        if answer == original
-            && answer.price_multiplier.to_bits() == original.price_multiplier.to_bits()
-        {
-            return Ok(false);
-        }
-        *offer = checked_merchant_offer(&answer, self.items()).map_err(|reason| {
-            log::warn!("trade_with_villager: invalid offer answer: {reason:?}");
-            match reason {
-                OfferWriteError::NonFinitePrice => InvalidReason::Numeric,
-                OfferWriteError::Stack(_) => InvalidReason::Plan,
-            }
-        })?;
-        Ok(true)
+    ) {
+        self.fire_trade_with_villager(merchant, kind, offer);
     }
     /// A server player's shield was disabled by a blocked melee hit. The
     /// shield cooldown is set immediately after this call. Helpers looking up

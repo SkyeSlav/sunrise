@@ -26,7 +26,6 @@ pub(super) fn overlay_key(overlay: &sunrise_world::loot::PackOverlay) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     overlay.files.hash(&mut hasher);
-    overlay.priority_layers.hash(&mut hasher);
     overlay.conditions.hash(&mut hasher);
     hasher.finish()
 }

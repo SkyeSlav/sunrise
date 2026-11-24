@@ -65,11 +65,7 @@ fn class_tags_dispatch_and_failed_preparation_preserve_installed_snapshot() {
         }
     }
     struct Level;
-    impl LevelHost for Level {
-        fn block_entity_data(&self, _: mod_api::BlockEntityRef) -> Option<mod_api::Compound> {
-            None
-        }
-    }
+    impl LevelHost for Level {}
     impl mod_api::LevelRandomHost for Level {}
     let calls = Arc::new(AtomicUsize::new(0));
     let mods: Mods = vec![ModEntry::new("demo", Box::new(Listener(calls.clone())))].into();

@@ -225,7 +225,7 @@ fn a_mod_blocks_menu_of_a_vanilla_type_gets_the_types_screen_on_both_sides() {
 #[ignore = "daily"]
 fn a_mod_menu_opened_without_a_block_gets_its_types_screen() {
     sunrise_client::containers::with_mod_menu_types(
-        [(PACK.into(), 9, 0, Vec::new(), Vec::new(), None, None)],
+        [(PACK.into(), 9, 0, Vec::new(), None, None)],
         || {
             with_listener(|game, seen| {
                 let key = (i32::MIN, 0, 0);

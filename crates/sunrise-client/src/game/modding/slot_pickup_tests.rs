@@ -101,7 +101,6 @@ fn pot_type() -> &'static ModMenuType {
         slots: SLOTS,
         data_slots: 0,
         results: vec![RESULT],
-        inputs: Vec::new(),
         crafting: None,
         links: None,
     }))

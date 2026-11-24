@@ -482,7 +482,7 @@ mod condition_tests {
             root.path(),
             &sunrise_world::loot::PackOverlay {
                 files: &files,
-                ..sunrise_world::loot::PackOverlay::default()
+                ..sunrise_world::loot::PackOverlay::NONE
             },
             "spell",
             |id| id == "test:fire",

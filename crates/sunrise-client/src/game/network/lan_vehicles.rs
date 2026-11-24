@@ -636,40 +636,13 @@ impl Game<'_> {
                     Some(&self.pack.block_registries),
                     &self.damage_hooks,
                 );
-                m.client_moved_fall(&w, &mut level, delta, p.on_ground, &mut events)
+                m.client_moved_fall(&w, &mut level, delta, p.on_ground, &mut events);
             }));
             lent.give_back(&mut self.world);
-            let trample = outcome.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-            let (id, join) = (m.id, m.join);
-            self.mobs[i] = m;
-            if let Some(trample) = trample {
-                self.trample_farmland(id, false, trample);
-                if let Some(i) = self
-                    .mobs
-                    .iter()
-                    .position(|mob| mob.id == id && mob.join == join && !mob.removed)
-                {
-                    let mut m = self.mobs[i].clone();
-                    let mut lent = sunrise_client::health::LentLevel::take(&mut self.world);
-                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        let w = self.mob_world_base(&[]);
-                        let mut level = sunrise_client::health::DamageLevel::lent(
-                            &self.world,
-                            self.pack.assets.registry,
-                            &mut lent,
-                            Some(self.items()),
-                            Some(&self.pack.block_registries),
-                            &self.damage_hooks,
-                        );
-                        m.finish_trample_fall(&w, &mut level, &mut events, trample);
-                    }));
-                    lent.give_back(&mut self.world);
-                    if let Err(panic) = outcome {
-                        std::panic::resume_unwind(panic);
-                    }
-                    self.mobs[i] = m;
-                }
+            if let Err(panic) = outcome {
+                std::panic::resume_unwind(panic);
             }
+            self.mobs[i] = m;
             // propagateFallToPassengers reaches the guests through `host`: it is out
             // of `self.lan` while their packet is handled.
             let falls: Vec<(u32, f64, f32)> = events

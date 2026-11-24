@@ -4459,10 +4459,9 @@ impl Mob {
         w: &MobWorld,
         level: &mut DamageLevel<'_>,
         events: &mut Vec<MobEvent>,
-        trample: &mut Option<ai::MobTrample>,
     ) -> ai::TickProgress {
         self.prepare_tick();
-        neutral_anger::tick_until_consumption(self, w, level, events, trample)
+        neutral_anger::tick_until_consumption(self, w, level, events)
     }
     fn prepare_tick(&mut self) {
         self.track_section();

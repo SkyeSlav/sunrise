@@ -60,7 +60,7 @@ registration-time coverage; the item provider's dynamic slot callback is never i
 and accepts an empty slot or a stack with the same item and components. Missing entries are
 unrestricted. In world insertion, a `BlockEntityPart::can_place_item` answer replaces this rule
 when it returns `Some`. The default `ITEMS` handler's `capacity` remains a limit, not a promise of
-admission; `insert_at` applies the rule. See [Block entity containers](../how-to/content-mods.md#block-entity-containers)
+admission; `insert` applies the rule. See [Block entity containers](../how-to/content-mods.md#block-entity-containers)
 for the distinction from menu slots.
 The three block-storage declarations accept mod blocks only, not `minecraft` blocks; use
 `block_capability` to expose storage on a vanilla block. The first enabled declaration for a block
@@ -104,43 +104,20 @@ Each method receives the host; the handler holds no borrow of the game.
 |---|---|
 | `size` | Number of indices, numbered from 0. |
 | `resource` | Resource at an index, or `None`. |
-| `amount` / `amount_int` | Amount held at an index; `amount_int` caps it at `i32::MAX`. |
-| `capacity` / `capacity_int` | Limit for `Some(&resource)`, or the general limit for `None`. An unknown general limit is `u32::MAX`; `capacity_int` caps the answer at `i32::MAX`. This is not free space or permission to insert. |
-| `is_valid` | Whether the resource is allowed at an index. The default checks for nonzero capacity; override it for separate acceptance rules and enforce those rules in `insert_at`. |
-| `insert_at` / `extract_at` | Move up to the requested amount at one index, using a `&Transaction`. Return the actual amount moved. Insertion can refuse even with nonzero capacity. |
-| `insert` / `extract` | Let the handler choose where to move the resource. The default visits indices in order. Prefer these unless you need to target a specific index. They return `Result<u32, Overanswered>`. |
+| `amount` | Amount held at an index. |
+| `capacity` | `u32` limit for a specified resource, independent of the index's current contents. This is neither free space nor permission to insert. |
+| `is_valid` | Whether the resource is allowed at an index. The default checks for nonzero capacity; override it for separate acceptance rules and enforce those rules in `insert`. |
+| `insert` / `extract` | Insert or extract up to the requested amount at an index, using a `&Transaction`; return the amount moved. Insertion can refuse even with nonzero capacity. |
 
 Keep handler state in transaction-managed storage such as block entity slots, saved compounds or
 attachments. Your handler can look up and call a neighbour's capability through the host.
 
-Use `resource_util::move_resources(host, &from, &to, filter, max, Some(tx))` to transfer matching
-resources, up to `max`, in source index order. The helper probes an extraction and rolls the probe
-back before asking the destination to insert. A step commits only if the source can then extract
-exactly what went in. An overanswer rolls back the entire helper call, even if you handle the error
-and commit the enclosing transaction. Use `Some(tx)` for the current transaction or `None` to open a
-root transaction; a token for a different transaction, or `None` while one is open, moves nothing.
-Pass capability references to keep their provider names in `Overanswered` errors. For a handler
-you compose directly, pass it as `&dyn ResourceHandler<R>`; the helper does not infer a provider.
-
-`move_resources_stacking` tops up matching destination indices before filling empty ones.
-`move_first` and `move_first_stacking` move only the first resource the destination accepts,
-including more of the same resource from later source indices, and return which and how much.
-
-`index_of`, `contains`, `is_empty`, `is_full` and `is_valid` query the whole handler. `is_full`
-uses general capacity at empty indices, so an empty, zero-capacity index is already full.
-`comparator_signal` averages the fill over all indices: empty and zero-capacity indices contribute
-zero and overfilled indices contribute at most one. `insert_stacking` tops up matching indices
-before filling empty ones; an overanswer rolls it back and returns `Overanswered`. `extract_first`
-takes the first extractable resource matching a filter. `find_extractable_resource` probes each
-candidate with its full int amount in a separate transaction that always rolls back. These three
-helpers also require the current transaction token, or `None` when opening a root.
-
-Compose handlers from the same module: `CombinedResourceHandler` assigns indices in order and fixes
-its size at construction; `RangedResourceHandler::of` and `of_single_index` return `None` for
-out-of-bounds selections, including empty ranges. Use `EmptyResourceHandler::default()` to refuse
-everything, `InfiniteResourceHandler::new(resource)` for an endless supply of one resource, or
-`VoidingResourceHandler::default()` to discard what comes in. To delegate to another handler unchanged, forward its trait methods as in
-`RangedResourceHandler`'s API example.
+Use `move_resources(host, &from, &to, filter, max, tx)` to transfer matching resources, up to `max`,
+from source indices in order into any destination index that accepts them. Each transfer uses a nested
+transaction: rejected items stay in the source, and partial acceptance is retried with the accepted
+amount. The result is `Result<u32, Overanswered>`. If a handler reports more than requested, its transfer
+is undone and `Overanswered` identifies the provider in `owner`. Propagate the error from your
+`host.transaction` closure to abort the whole operation.
 
 There is no `simulate` parameter. To try an operation without keeping its changes, run it in a
 transaction and return `Err` to abort. See [Transactions](transactions.md).

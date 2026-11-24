@@ -4064,30 +4064,23 @@ impl Game<'_> {
         };
         let message = self.expand_selectors(&raw);
         let name = self.source_display_name();
+        // A player's command whose output is captured (a function, `execute …
+        // run say`, the command harness) gets the announcement with that
+        // output, in order; everyone else gets the broadcast.
+        let captured_for = self.chat_capture.as_ref().and(self.lan_acting);
         let line = match id {
             "say" => {
-                // A visible copy for the acting player goes with their captured output, in order.
-                let captured_for = self.chat_capture.as_ref().and(self.lan_acting);
-                let capture_say = self
-                    .lan_broadcast_source_say(&name, &message, captured_for)
-                    .ok_or_else(|| err("command.failed", &[]))?;
-                let line = Text::translate("chat.type.announcement", &[name, message]);
-                if self.lan.is_some() && self.is_dedicated_server() {
-                    self.lan_log_event(sunrise_client::lan::hub::HostEvent::Chat {
-                        line: line.plain(),
-                        secure: false,
-                    });
+                // SayCommand broadcasts independently of the command source's feedback.
+                if let Some(host) = &self.lan {
+                    use sunrise_client::lan::data::component_nbt;
+                    host.hub.broadcast_source_chat(
+                        "say_command",
+                        component_nbt(&name.component()),
+                        component_nbt(&message.component()),
+                        captured_for,
+                    );
                 }
-                if self.lan.is_some()
-                    && let Some(capture) = self.chat_capture.as_mut()
-                {
-                    if capture_say {
-                        capture.push(line);
-                    }
-                } else {
-                    self.player_message(line);
-                }
-                return Ok(1);
+                Text::translate("chat.type.announcement", &[name, message])
             }
             "me" => Text::translate("chat.type.emote", &[name, message]),
             _ => {
@@ -4108,6 +4101,27 @@ impl Game<'_> {
                 .italic()
             }
         };
+        if id == "say" {
+            if self.lan.is_some() && self.is_dedicated_server() {
+                self.lan_log_event(sunrise_client::lan::hub::HostEvent::Chat {
+                    line: line.plain(),
+                    secure: false,
+                });
+            }
+            if self.lan.is_some() && self.chat_capture.is_some() {
+                // The broadcast skipped the acting player: their copy goes with
+                // the captured output. Without one (the console), the broadcast
+                // reached everyone and the console logged it above.
+                if captured_for.is_some()
+                    && let Some(capture) = self.chat_capture.as_mut()
+                {
+                    capture.push(line);
+                }
+                return Ok(1);
+            }
+            self.player_message(line);
+            return Ok(1);
+        }
         if let Some(capture) = self.chat_capture.as_mut() {
             capture.push(line.clone());
         }

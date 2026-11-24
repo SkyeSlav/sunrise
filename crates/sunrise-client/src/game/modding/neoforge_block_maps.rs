@@ -40,7 +40,6 @@ impl Game<'_> {
             let overlay = sunrise_world::loot::PackOverlay {
                 conditions: &tables.conditions,
                 files: &tables.files,
-                ..sunrise_world::loot::PackOverlay::default()
             };
             let table = &self.res.behaviours().table;
             let rank = |block: &str| {
@@ -87,7 +86,7 @@ mod tests {
         ];
         let overlay = sunrise_world::loot::PackOverlay {
             files: &files,
-            ..sunrise_world::loot::PackOverlay::default()
+            ..sunrise_world::loot::PackOverlay::NONE
         };
         let ids = ["minecraft:stone", "test:tin", "test:waxed_tin"].map(String::from);
         let items = sunrise_client::items::Items::empty();

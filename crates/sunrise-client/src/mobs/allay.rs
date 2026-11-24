@@ -499,17 +499,16 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
 /// `Allay.travel`: `travelFlying(input, getSpeed())` — the airborne speed is
 /// the one the move control set this tick, and no gravity applies, so an
 /// allay never falls under its own travel.
-pub(super) fn travel(
+pub fn travel(
     m: &mut Mob,
     w: &MobWorld,
     level: &mut DamageLevel<'_>,
     input: Vec3,
     events: &mut Vec<MobEvent>,
-    pause: bool,
-) -> Result<bool, super::living::TravelTrample> {
+) -> bool {
     let speed = m.ai.speed;
-    m.travel_flying_speeds(w, level, input, events, 0.02, 0.02, speed, pause)?;
-    Ok(true)
+    m.travel_flying_speeds(w, level, input, events, 0.02, 0.02, speed);
+    true
 }
 /// `Allay.aiStep` / `tick`: pause the Brain's memory clocks, not passive work.
 pub fn ai_step(m: &mut Mob, w: &MobWorld) {

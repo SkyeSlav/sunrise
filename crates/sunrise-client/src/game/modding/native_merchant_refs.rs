@@ -17,6 +17,22 @@ fn registry_index(id: &str, names: &[&str]) -> Option<u8> {
 }
 
 impl Game<'_> {
+    /// An item stack a trade can hold: a nonempty stack of an item the game
+    /// has (a client would otherwise be sent air for it).
+    fn merchant_real(&self, stack: &sunrise_client::items::ItemStack) -> bool {
+        stack.count > 0
+            && &*stack.item != "minecraft:air"
+            && self.items().get(&stack.item).is_some()
+    }
+
+    fn merchant_valid_offer(&self, offer: &MerchantOffer) -> bool {
+        self.merchant_real(&offer.base_cost_a.stack)
+            && offer
+                .cost_b
+                .as_ref()
+                .is_none_or(|b| self.merchant_real(&b.stack))
+            && self.merchant_real(&offer.result)
+    }
     fn native_merchant_index(&self, merchant: MerchantRef) -> Option<usize> {
         let Target::Mob(id) = self.native_entity_target(merchant.entity())? else {
             return None;
@@ -109,11 +125,10 @@ impl Game<'_> {
             });
             return sent && done;
         }
-        if self.mobs[index].extra.flag2 {
+        let mob = &mut self.mobs[index];
+        if mob.extra.flag2 {
             return false;
         }
-        self.journal_merchant_mob(id);
-        let mob = &mut self.mobs[index];
         let trader = mob.extra.trade.get_or_insert_with(|| {
             Box::new(Trader {
                 unset: true,
@@ -155,6 +170,9 @@ impl Game<'_> {
         let Some(mob) = self.native_merchant_index(merchant) else {
             return false;
         };
+        if !self.merchant_valid_offer(&offer) {
+            return false;
+        }
         self.merchant_write(mob, |offers, _, _| {
             let Some(slot) = offers.get_mut(index as usize) else {
                 return false;
@@ -176,6 +194,9 @@ impl Game<'_> {
         let Some(mob) = self.native_merchant_index(merchant) else {
             return false;
         };
+        if !self.merchant_valid_offer(&offer) {
+            return false;
+        }
         if self.lan_trade_conn(self.mobs[mob].id).is_none() && !self.mobs[mob].extra.flag2 {
             self.ensure_offers(mob);
         }
@@ -244,7 +265,6 @@ impl Game<'_> {
         {
             return false;
         }
-        self.journal_merchant_mob(id);
         let table = self.stations().professions.clone();
         villager::set_profession(&mut self.mobs[index], &table, profession);
         true
@@ -297,7 +317,6 @@ impl Game<'_> {
         } else if self.mobs[index].extra.flag2 {
             return false;
         }
-        self.journal_merchant_mob(id);
         self.mobs[index].extra.variant = kind;
         true
     }

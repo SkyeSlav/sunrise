@@ -1987,7 +1987,7 @@ mod tests {
         let off = Tree::shared(&data, &sunrise_world::loot::PackOverlay::NONE);
         let on_overlay = sunrise_world::loot::PackOverlay {
             conditions: &enabled,
-            ..sunrise_world::loot::PackOverlay::default()
+            ..sunrise_world::loot::PackOverlay::NONE
         };
         let on = Tree::shared(&data, &on_overlay);
         assert!(off.get("demo:entry").is_none());

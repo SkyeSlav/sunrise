@@ -8,8 +8,6 @@
 //! keep-alive schedule on their own so a long tick never times a client out.
 mod configuration_tasks;
 mod payloads;
-#[path = "transaction_packets.rs"]
-pub mod transaction_packets;
 use super::config_payloads::ConfigIo;
 use super::{
     Body, Joined, NetEvent, Out, Shared,
@@ -524,16 +522,10 @@ impl PlayerSender {
         if matches!(self.to, To::Disabled) {
             return;
         }
-        let Err(body) = transaction_packets::capture(self, body) else {
-            return;
-        };
         if !self.reserve_queued(io_pool::charge(body.retained())) {
             self.close();
             return;
         }
-        self.publish_reserved(body);
-    }
-    fn publish_reserved(&self, body: Body) {
         if HOLDING.get() {
             self.held().push(body);
         } else {
@@ -565,7 +557,7 @@ impl PlayerSender {
         if matches!(self.to, To::Disabled) {
             return;
         }
-        if !HOLDING.get() || transaction_packets::active() {
+        if !HOLDING.get() {
             bodies
                 .into_iter()
                 .for_each(|body| self.send_body(body.into()));

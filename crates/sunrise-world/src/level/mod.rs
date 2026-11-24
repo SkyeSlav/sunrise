@@ -845,6 +845,15 @@ pub trait LevelAccess: BlockEntityNeighbors {
         _answer: &mut Option<Option<BlockStateId>>,
     ) {
     }
+    /// `BlockItem.updatePlacementContext`: replace or refuse the item context.
+    /// None retains the vanilla item rewrite, including scaffolding's walk.
+    fn placement_context(
+        &self,
+        _item: &str,
+        _context: &PlacementContext,
+    ) -> Option<Option<PlacementContext>> {
+        None
+    }
     /// `BlockItem.mustSurvive`: None retains the item's vanilla requirement.
     fn must_survive(&self, _item: &str) -> Option<bool> {
         None

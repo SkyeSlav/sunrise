@@ -65,7 +65,6 @@ fn a_mod_menu_part_decides_whether_its_menu_stays_open() {
         slots: 27,
         data_slots: 0,
         results: Vec::new(),
-        inputs: Vec::new(),
         crafting: None,
         links: None,
     }));
@@ -285,7 +284,7 @@ fn a_blockless_mod_menu_closes_when_its_part_answers_false() {
         crate::game::api_values::install_parts(&mods).unwrap();
         let _callbacks = scoped_dispatch();
         sunrise_client::containers::with_mod_menu_types(
-            [(MENU.into(), 9, 0, Vec::new(), Vec::new(), None, None)],
+            [(MENU.into(), 9, 0, Vec::new(), None, None)],
             || {
                 super::super::native_guest_turn_tests::with_guests(|game| {
                     // A screen position is not a vehicle key, even at this reserved Y.

@@ -41,11 +41,10 @@ or `Some((id, kind))` to forward the caller's entity. The queried state need not
 query or a query beyond the nesting bound, and a read error for a stale or unavailable level
 or an unknown state.
 
-Inside `BlockPart::friction`, match `LevelSide` to borrow the read-only level. Use
-`view.block_entity(pos)` to get a resident block entity's handle, then
-`view.block_entity_data(handle)` to read its saved data without identity or position metadata.
-On the client this reads the local copy, not unsynced server data; synchronize any data that
-friction needs on both sides. For a block that takes its material's friction, pass that
+Inside `BlockPart::friction`, match `LevelSide` to borrow the read-only level. The view can read
+states, fluids and light, including neighboring blocks, but cannot read block-entity handles or
+unsynced server data. If a block's friction depends on its block entity, use the mod's own
+synchronized state on both sides. For a block that takes its material's friction, pass that
 material to `view.friction(pos, material, event.entity)` at the **same position** and keep the
 original coefficient if the query returns `None`. Use the same rule on both sides, including
 client prediction and replay.

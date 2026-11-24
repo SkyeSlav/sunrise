@@ -9,13 +9,7 @@
 //!   through the supertraits of called traits too ([`Surface::reach`]): a sub-host trait's method
 //!   called on `&mut dyn ServerHost` counts once `ServerHost` does;
 //! - a name written after `X::`, where `X` owns a member of that name, is that member only
-//!   (`TextHover::Item` is the variant, not a type `Item`);
-//! - a tuple struct's field (`X.0`) counts only where the parser ties the read to `X`: `X(..).0`,
-//!   `v.0` where `v` is bound by `let v: X`, `let v = X(..)` or a parameter `v: X` (through `&`
-//!   and `&mut`), `self.0` in a method of an impl for `X`, and each position a pattern
-//!   `X(a, b, ..)` lists before its `..`. A position read anywhere else (on a tuple, a closure's
-//!   untyped argument, another field, a method's result, in a macro body) counts for no struct;
-//!   the compile against the target build judges it.
+//!   (`TextHover::Item` is the variant, not a type `Item`).
 //!
 //! For each struct the source names it also records how the mod builds it, read with a Rust
 //! parser ([`crate::syntax`]): [`Built::Full`] where a struct literal or call lists its fields
@@ -1634,11 +1628,6 @@ impl<'s, 't> Walk<'_, '_, 's, 't> {
             let Token::Ident(written_name) = token else {
                 continue;
             };
-            // A field's position (`v.0`) names no struct by itself: [`Walk::tuple_fields`]
-            // counts the reads the parser ties to one.
-            if written_name.starts_with(|c: char| c.is_ascii_digit()) {
-                continue;
-            }
             let place = (path, *line);
             let start = file.path_starts[at];
             let (name, unqualified) = match *written_name {
@@ -1737,51 +1726,6 @@ impl<'s, 't> Walk<'_, '_, 's, 't> {
                     }
                 };
                 found.build(id, place, full, build.brace);
-            }
-        }
-    }
-
-    /// Every tuple struct field the parser ties a read to ([`syntax::TupleField`]), with the
-    /// struct's name read as for a build: `Self` through the impl it stands in, an unqualified
-    /// name the mod's own type defines nothing of the API's, and a variant (`Shape::Pos(a, ..)`)
-    /// is no struct.
-    fn tuple_fields(&mut self) {
-        let Walk {
-            resolver,
-            found,
-            index,
-            path,
-        } = self;
-        let (index, path) = (*index, *path);
-        let files = resolver.files;
-        let file = &files[index];
-        for field in &file.syntax.tuple_fields {
-            let place = (path, field.line);
-            let (name, unqualified) = match &field.path[..] {
-                ["Self"] => match resolver.impl_at(index, field.byte) {
-                    Some(Some(target)) => (*target.last().unwrap_or(&"Self"), target.len() == 1),
-                    _ => continue,
-                },
-                [.., last] => (*last, field.path.len() == 1 && !field.rooted),
-                [] => continue,
-            };
-            resolver.lookup(name);
-            let resolver: &Resolver<'_, 's, 't> = resolver;
-            let resolved = &resolver.memo[name];
-            if (unqualified && !resolved.aliased && resolver.own_in(index, name))
-                || (!resolved.aliased && resolver.is_member(&field.path, field.rooted))
-            {
-                continue;
-            }
-            let api = resolver.index;
-            for id in &resolved.ids {
-                if api.kind(id) != Some(TypeKind::TupleStruct) {
-                    continue;
-                }
-                let member = format!("{id}.{}", field.position);
-                if let Some((member, _)) = api.hashes.get_key_value(member.as_str()) {
-                    found.name(member, place);
-                }
             }
         }
     }
@@ -2087,7 +2031,6 @@ pub(crate) fn uses<'t>(
         };
         walk.names();
         walk.builds();
-        walk.tuple_fields();
         walk.paths();
     }
     let Found {

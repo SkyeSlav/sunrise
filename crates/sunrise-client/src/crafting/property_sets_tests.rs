@@ -83,8 +83,11 @@ fn custom_sets_survive_dispatch_and_sync_but_new_foreign_keys_do_not() {
                     "minecraft:diamond".into(),
                 ]),
             );
-            let (bytes, _) =
-                crate::lan::recipes::update_recipes(&Default::default(), &sync, &resolved);
+            let bytes = crate::lan::recipes::update_recipes(
+                &Default::default(),
+                &sync,
+                &resolved.property_additions,
+            );
             let packet = UpdateRecipes::read(&mut Reader::new(&bytes)).unwrap();
             assert_eq!(
                 packet

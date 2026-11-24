@@ -165,7 +165,6 @@ pub trait LevelBlocksBackendMut {
     ) -> Result<bool, LevelWriteError>;
     /// Side: server.
     /// Remove a block in place (`Level.removeBlock`), preserving its fluid.
-    /// In a Host transaction the removal is tentative and its effects wait for commit.
     #[access(WorldOnly)]
     fn level_remove_block(&mut self, level: LevelRef, pos: [i32; 3], moved: bool) -> bool;
     /// Side: server.
@@ -174,8 +173,8 @@ pub trait LevelBlocksBackendMut {
     /// stacks without spawning their item entities; otherwise return an empty list after
     /// spawning them. The one level drop path runs loot, block-drop hooks and experience
     /// once, in vanilla's random order. `drop` false suppresses resources entirely.
-    /// `Ok(None)` means nothing broke: air, a refused write, a stale handle, a client, an
-    /// unloaded/out-of-height position, a parked level, or an open Host transaction.
+    /// None means nothing broke: air, a refused write, a stale handle, a client, an
+    /// unloaded/out-of-height position, or a parked level.
     #[access(WorldOnly)]
     fn level_destroy_block(
         &mut self,

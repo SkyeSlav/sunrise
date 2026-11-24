@@ -313,7 +313,6 @@ mod condition_tests {
         let overlay = sunrise_world::loot::PackOverlay {
             files: &files,
             conditions: &conditions,
-            ..sunrise_world::loot::PackOverlay::default()
         };
         let expected = BTreeMap::from([
             ("minecraft:stick".to_owned(), 2),
@@ -356,7 +355,7 @@ mod condition_tests {
         )];
         let overlay = sunrise_world::loot::PackOverlay {
             files: &files,
-            ..sunrise_world::loot::PackOverlay::default()
+            ..sunrise_world::loot::PackOverlay::NONE
         };
         let (values, applied) = load(
             "test:fuel",

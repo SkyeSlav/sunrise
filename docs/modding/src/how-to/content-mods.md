@@ -1026,21 +1026,14 @@ A mod menu type (vanilla's `MenuType`) is declared in `data/<id>/sunrise/menu/<n
 from (`results`, as a furnace's result slot):
 
 ```json
-{ "slots": 9, "data_slots": 2, "results": [7, 8], "inputs": [0, 1] }
+{ "slots": 9, "data_slots": 2, "results": [7, 8] }
 ```
-
-The optional menu `inputs` list marks machine feeds, including fuel, as `Input`
-in [`MenuRef::slot_kinds`](../concepts/capabilities/menu-slots.md). Indices start at zero and
-must be unique and below `slots`; they cannot overlap `results`, the crafting grid,
-or its result slot. Both linked and unlinked slots can be inputs. Omit the list (or
-use `[]`) to leave ordinary slots as `Storage`. The role does not change which items
-a slot accepts or how clicks and item transfers work.
 
 It is the menu type `<id>:<name>`, with its network id after vanilla's. A mod block's container opens it when its
 `menu` names it with as many slots ([native mods](native-mods.md), `r.block_container(&block, container)`). The menu holds
 its slots, then the player's 36. A shift-click from the inventory goes to the first slots with room, never a result
 slot, and one on the container goes to the inventory, as a chest's does. `results` fence players only: hoppers follow the
-block entity container's faces and insertion rules, not the menu's `inputs` list. The data slots are the block entity's `data`
+container's faces and `inputs`, so leave result slots out of `inputs`. The data slots are the block entity's `data`
 (16-bit on the network, as vanilla's), all sent when it opens, then each change. A Sunrise client shows it through the
 mod's own screen (`screen`); without one it closes again. `player.open_mod_menu` can open the same type without a
 block, and a registered recipe-book screen applies to either opening. Clients join a server only with the same mods' menu

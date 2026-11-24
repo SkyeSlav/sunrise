@@ -76,7 +76,7 @@ fn internal_slots_preserve_automation_limits_and_nested_transactions() {
                 let level = entity.level(host).unwrap();
                 let external = level.capability(host, &ITEMS, [1, 64, 1], None).unwrap();
                 assert_eq!(
-                    external.insert_at(host, tx, 1, &ItemResource::of(&diamond), 1),
+                    external.insert(host, tx, 1, &ItemResource::of(&diamond), 1),
                     0
                 );
             });
@@ -107,10 +107,6 @@ fn internal_slots_preserve_automation_limits_and_nested_transactions() {
             assert_eq!(aborted, Err(()));
             assert_eq!(get(game, 0), Ok(Some(dirt.clone())));
             assert_eq!(get(game, 1), Ok(None));
-            assert!(
-                game.world.modified.is_empty(),
-                "aborted writes need no save"
-            );
             commit(game, |host, tx| {
                 assert_eq!(
                     set(
@@ -131,8 +127,13 @@ fn internal_slots_preserve_automation_limits_and_nested_transactions() {
             );
             assert_eq!(get(game, 1), Ok(Some(diamond.clone())));
             assert!(
-                game.world.modified.contains(&(0, 0)),
-                "committed internal slot writes require a save"
+                game.world.modified.is_empty(),
+                "raw mod slot writes are silent"
+            );
+            assert!(entity.set_changed(game).unwrap());
+            assert!(
+                !game.world.modified.is_empty(),
+                "explicit notification marks the chunk"
             );
             let BlockEntity::Mod(holder) = game.world.block_entities.get(&pos).unwrap() else {
                 panic!()
@@ -296,22 +297,22 @@ fn container_moves_roll_back_slots_and_saved_data_in_any_order() {
                 )
             };
             commit(game, |host, tx| {
-                assert_eq!(items.insert_at(host, tx, 0, &dirt, 10), 10)
+                assert_eq!(items.insert(host, tx, 0, &dirt, 10), 10)
             });
             let before = saved(game);
             // Slot writes, then a whole-entity write, then slots again, through nested
             // transactions that commit into one that aborts.
             let aborted: Result<(), ()> = (game as &mut dyn ServerHost).transaction(|host, tx| {
-                assert_eq!(items.extract_at(host, tx, 0, &dirt, 4), 4);
-                assert_eq!(items.insert_at(host, tx, 3, &dirt, 7), 7);
+                assert_eq!(items.extract(host, tx, 0, &dirt, 4), 4);
+                assert_eq!(items.insert(host, tx, 3, &dirt, 7), 7);
                 host.transaction(|host, child| {
-                    assert_eq!(items.insert_at(host, child, 0, &dirt, 50), 50);
+                    assert_eq!(items.insert(host, child, 0, &dirt, 50), 50);
                     assert_eq!(entity.set_data_slots(host, vec![7]), Ok(true));
-                    assert_eq!(items.extract_at(host, child, 3, &dirt, 2), 2);
+                    assert_eq!(items.extract(host, child, 3, &dirt, 2), 2);
                     Ok::<_, ()>(())
                 })?;
                 host.transaction(|host, child| {
-                    assert_eq!(items.insert_at(host, child, 8, &dirt, 1), 1);
+                    assert_eq!(items.insert(host, child, 8, &dirt, 1), 1);
                     Err::<(), ()>(())
                 })
                 .unwrap_err();
@@ -327,9 +328,9 @@ fn container_moves_roll_back_slots_and_saved_data_in_any_order() {
             );
             // The same writes committed stay.
             commit(game, |host, tx| {
-                assert_eq!(items.extract_at(host, tx, 0, &dirt, 4), 4);
+                assert_eq!(items.extract(host, tx, 0, &dirt, 4), 4);
                 assert_eq!(entity.set_data_slots(host, vec![9]), Ok(true));
-                assert_eq!(items.insert_at(host, tx, 5, &dirt, 3), 3);
+                assert_eq!(items.insert(host, tx, 5, &dirt, 3), 3);
             });
             let (slots, nbt, data) = saved(game);
             assert_eq!(slots[0].as_ref().map(|s| s.count), Some(6));
@@ -381,9 +382,9 @@ fn a_container_move_keeps_one_slot_not_the_entity() {
                     (game as &mut dyn ServerHost)
                         .transaction(|host, tx| {
                             let moved = if put {
-                                items.insert_at(host, tx, 0, &dirt(), 1)
+                                items.insert(host, tx, 0, &dirt(), 1)
                             } else {
-                                items.extract_at(host, tx, 0, &dirt(), 1)
+                                items.extract(host, tx, 0, &dirt(), 1)
                             };
                             assert_eq!(moved, 1);
                             Ok::<_, ()>(())
@@ -413,7 +414,7 @@ fn a_container_move_keeps_one_slot_not_the_entity() {
             let hopper = level.capability(game, &ITEMS, [3, 64, 1], None).unwrap();
             let root = game.transaction_open();
             (game as &mut dyn ServerHost)
-                .transaction(|host, tx| Ok::<_, ()>(hopper.insert_at(host, tx, 0, &dirt(), 1)))
+                .transaction(|host, tx| Ok::<_, ()>(hopper.insert(host, tx, 0, &dirt(), 1)))
                 .unwrap();
             assert_eq!(game.journal_kept(), (1, 0));
             game.transaction_close(&root, false);
@@ -434,7 +435,7 @@ fn a_child_whole_capture_keeps_its_older_slot_entries() {
             let items = level.capability(game, &ITEMS, [1, 64, 1], None).unwrap();
             let insert = |host: &mut dyn ServerHost, slot: usize, n: u32| {
                 host.transaction(|host, tx| {
-                    assert_eq!(items.insert_at(host, tx, slot, &dirt(), n), n);
+                    assert_eq!(items.insert(host, tx, slot, &dirt(), n), n);
                     Ok::<_, ()>(())
                 })
                 .unwrap()
@@ -528,7 +529,7 @@ fn an_insert_past_a_short_mod_list_rolls_back_its_length() {
             let items = level.capability(game, &ITEMS, [1, 64, 1], None).unwrap();
             let before = holder_state(game);
             let aborted: Result<(), ()> = (game as &mut dyn ServerHost).transaction(|host, tx| {
-                assert_eq!(items.insert_at(host, tx, 5, &dirt(), 7), 7);
+                assert_eq!(items.insert(host, tx, 5, &dirt(), 7), 7);
                 Err(())
             });
             assert!(aborted.is_err());
@@ -591,14 +592,14 @@ fn each_slot_journalled_container_aborts_to_its_exact_stacks() {
                 let aborted: Result<(), ()> =
                     (game as &mut dyn ServerHost).transaction(|host, _| {
                         host.transaction(|host, tx| {
-                            assert_eq!(items.extract_at(host, tx, 0, &stone, 10), 10);
-                            assert_eq!(items.insert_at(host, tx, 1, &dirt(), 5), 5);
+                            assert_eq!(items.extract(host, tx, 0, &stone, 10), 10);
+                            assert_eq!(items.insert(host, tx, 1, &dirt(), 5), 5);
                             Ok::<_, ()>(())
                         })
                         .unwrap();
                         host.transaction(|host, tx| {
-                            assert_eq!(items.extract_at(host, tx, 2, &dirt(), 3), 3);
-                            assert_eq!(items.insert_at(host, tx, 0, &stone, 4), 4);
+                            assert_eq!(items.extract(host, tx, 2, &dirt(), 3), 3);
+                            assert_eq!(items.insert(host, tx, 0, &stone, 4), 4);
                             Ok::<_, ()>(())
                         })
                         .unwrap();
@@ -644,7 +645,7 @@ fn a_kept_slot_goes_back_only_into_the_block_entity_it_came_from() {
                     (game as &mut dyn ServerHost).transaction(|host, tx| {
                         // Takes from the chest's full slot 0: the slot kept is its 64 stone, which
                         // an abort must not write into whatever replaced the chest.
-                        assert_eq!(items.extract_at(host, tx, 0, &stone, 10), 10);
+                        assert_eq!(items.extract(host, tx, 0, &stone, 10), 10);
                         let state = host.block_state_id(block).unwrap();
                         assert!(
                             level
@@ -691,12 +692,12 @@ fn timing_container_moves_beside_saved_data() {
                 commit(game, |host, _| {
                     for _ in 0..500 {
                         host.transaction(|host, tx| {
-                            assert_eq!(items.insert_at(host, tx, 0, &dirt(), 1), 1);
+                            assert_eq!(items.insert(host, tx, 0, &dirt(), 1), 1);
                             Ok::<_, ()>(())
                         })
                         .unwrap();
                         host.transaction(|host, tx| {
-                            assert_eq!(items.extract_at(host, tx, 0, &dirt(), 1), 1);
+                            assert_eq!(items.extract(host, tx, 0, &dirt(), 1), 1);
                             Ok::<_, ()>(())
                         })
                         .unwrap();
@@ -1060,15 +1061,8 @@ fn timing_storage_against_items_across_barrel_cells() {
                     moves += 1;
                     let abort = moves.is_multiple_of(10);
                     let result = (game as &mut dyn ServerHost).transaction(|host, tx| {
-                        let n = mod_api::resource_util::move_resources(
-                            host,
-                            &below,
-                            &above,
-                            |_| true,
-                            8,
-                            Some(tx),
-                        )
-                        .map_err(|_| 0u32)?;
+                        let n = mod_api::move_resources(host, &below, &above, |_| true, 8, tx)
+                            .map_err(|_| 0u32)?;
                         if abort && n > 0 { Err(n) } else { Ok(n) }
                     });
                     moved += result.unwrap_or(0);

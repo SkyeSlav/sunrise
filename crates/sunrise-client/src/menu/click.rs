@@ -216,9 +216,15 @@ impl Menu {
                     return Err(OUT_OF_BOUNDS);
                 }
                 let s = slot_index as usize;
-                let mut clicked = self.quick_move_step(env, s, None);
+                if !self.may_pickup(env, s) {
+                    return Ok(());
+                }
+                let mut clicked = self.quick_move(env, s);
                 while let Some(c) = &clicked {
-                    clicked = self.quick_move_step(env, s, Some(c));
+                    if !self.slot(s).is_some_and(|now| same_item(now, c)) {
+                        break;
+                    }
+                    clicked = self.quick_move(env, s);
                 }
             } else {
                 if slot_index < 0 {
@@ -261,10 +267,19 @@ impl Menu {
             } else {
                 self.slot(s).map_or(0, |c| c.count)
             };
-            let mut taken = self.throw_step(env, s, amount, None);
+            let mut taken = self.safe_take(env, s, amount, u32::MAX);
+            if let Some(t) = &taken {
+                self.drop_stack(t, env.items);
+            }
             if button == 1 {
                 while let Some(t) = &taken {
-                    taken = self.throw_step(env, s, amount, Some(t));
+                    if !self.slot(s).is_some_and(|now| same_item(now, t)) {
+                        break;
+                    }
+                    taken = self.safe_take(env, s, amount, u32::MAX);
+                    if let Some(t) = &taken {
+                        self.drop_stack(t, env.items);
+                    }
                 }
             }
         } else if input == Input::PickupAll && slot_index >= 0 {
@@ -483,73 +498,6 @@ impl Menu {
                 }
             }
             (None, None) => {}
-        }
-    }
-
-    fn quick_move_step(
-        &mut self,
-        env: &Env,
-        slot: usize,
-        previous: Option<&ItemStack>,
-    ) -> Option<ItemStack> {
-        let allowed = match previous {
-            None => self.may_pickup(env, slot),
-            Some(previous) => self.slot(slot).is_some_and(|now| same_item(now, previous)),
-        };
-        allowed.then(|| self.quick_move(env, slot)).flatten()
-    }
-
-    fn throw_step(
-        &mut self,
-        env: &Env,
-        slot: usize,
-        amount: u32,
-        previous: Option<&ItemStack>,
-    ) -> Option<ItemStack> {
-        if previous
-            .is_some_and(|previous| !self.slot(slot).is_some_and(|now| same_item(now, previous)))
-        {
-            return None;
-        }
-        let taken = self.safe_take(env, slot, amount, u32::MAX)?;
-        self.drop_stack(&taken, env.items);
-        Some(taken)
-    }
-
-    /// One iteration of a merchant result click, so the authority can finish each actual
-    /// trade and publish its offer back to this menu before deciding the next iteration.
-    /// Only quick-move and throw-all may repeat; each continuation checks the result item.
-    pub fn merchant_result_step(
-        &mut self,
-        env: &Env,
-        button: i32,
-        input: Input,
-        previous: Option<&ItemStack>,
-        throw_amount: u32,
-    ) -> Option<ItemStack> {
-        if self.quick_crafting() {
-            self.reset_quick_craft();
-            return None;
-        }
-        match input {
-            Input::QuickMove if (0..=1).contains(&button) => {
-                self.planned(Asked::default(), |menu| {
-                    menu.quick_move_step(env, 2, previous)
-                })
-                .0
-            }
-            Input::Throw if self.carried.is_none() => {
-                let taken = self
-                    .planned(Asked::default(), |menu| {
-                        menu.throw_step(env, 2, throw_amount, previous)
-                    })
-                    .0;
-                taken.filter(|_| button == 1)
-            }
-            _ => {
-                let _ = self.click(env, 2, button, input);
-                None
-            }
         }
     }
 

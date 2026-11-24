@@ -503,10 +503,6 @@ def bounded_record(record, remaining):
 PUBLIC_WINDOW = (2, 12)
 PUBLIC_CHARS = 120
 
-# A subprocess compiler failure can appear in a test panic. Its bounded error codes are
-# diagnostic categories; the text, paths and source excerpts are still private payloads.
-RUSTC_ERROR = re.compile(r"^error\[(E[0-9]{4})\]:")
-
 
 def public_text(text, path, line):
     """`text` when it is provably the checkout's own source: it occurs verbatim in the tracked source around the
@@ -552,10 +548,6 @@ def failure_diagnostics(output):
     context = []
     aborts = []
     panic_reason_pending = False
-    thread_name = None
-    # Collect compiler codes only after a panic that already exposed a tracked message.
-    compiler_codes = {}
-    pending_codes = None
     # The tracked (path, line) of the current panic, and whether its `left:`/`right:` operand lines may follow.
     where = None
     operands_pending = False
@@ -579,13 +571,8 @@ def failure_diagnostics(output):
                                               "; fatal thread unknown, see the last started tests below")
             if abort not in aborts:
                 aborts.append(abort)
-        panic = PANIC.match(line)
-        if RESULT.match(line) or SUMMARY.match(line) or TARGET.match(line) or panic:
+        if RESULT.match(line) or SUMMARY.match(line) or TARGET.match(line):
             panic_reason_pending = operands_pending = False
-            pending_codes = None
-        if pending_codes is not None and len(pending_codes) < 3 and (code := RUSTC_ERROR.match(line)):
-            if code[1] not in pending_codes:
-                pending_codes.append(code[1])
         if operands_pending and (operand := re.match(r"^\s*(left|right): (.*)$", line)):
             shown = public_text(operand[2], *where)
             context.append(f"  {operand[1]}: {shown}" if shown else
@@ -617,8 +604,6 @@ def failure_diagnostics(output):
                 message = line.strip()
             if shown := (public_text(message, *where) if message else None):
                 context.append(f"  panic reason: {reason}; message: {shown}")
-                if context is contexts.get(thread_name):
-                    pending_codes = compiler_codes[thread_name] = []
             else:
                 context.append(f"  panic reason: {reason}; {withheld_text}")
             if where and (statement := assertion_source(*where)):
@@ -629,16 +614,15 @@ def failure_diagnostics(output):
         if found := RESULT.match(line):
             if found[2] == "FAILED":
                 failures.append(found[1])
-        if panic:
+        if found := PANIC.match(line):
             context = []
-            thread_name = panic[1]
-            if thread_name not in contexts:
+            if found[1] not in contexts:
                 if len(contexts) < DIAGNOSTIC_CONTEXTS:
-                    contexts[thread_name] = context
+                    contexts[found[1]] = context
                 else:
                     skipped_contexts += 1
                     continue
-            location = re.fullmatch(r"(.+\.rs):(\d+):(\d+)", panic[2])
+            location = re.fullmatch(r"(.+\.rs):(\d+):(\d+)", found[2])
             path = location[1] if location else ""
             if any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in path):
                 path = ""
@@ -673,9 +657,6 @@ def failure_diagnostics(output):
                 context.append("  panic location withheld (not a bounded tracked Rust location)")
             context.append("  panic reason missing from captured output")
             panic_reason_pending = True
-    for name, codes in compiler_codes.items():
-        if codes:
-            contexts[name].append(f"  compiler: rustc {', '.join(codes)} (diagnostic text withheld)")
     remaining = _active_budget if _active_budget is not None else [FAILURE_TOTAL_BYTES]
     # What killed the process comes first: a test that libtest reported FAILED ran to its end, so it is never
     # the one that took the process down.

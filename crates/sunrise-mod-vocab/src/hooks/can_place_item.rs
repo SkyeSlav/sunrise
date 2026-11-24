@@ -23,6 +23,7 @@ pub trait Hooks {
         out = "allowed",
         scope = "block_entity",
         key = "entity",
+        non_exhaustive = true,
         neoforge = "none (vanilla Container.canPlaceItem; the item capability wraps this decision)"
     )]
     fn can_place_item();

@@ -59,9 +59,6 @@ pub fn check_path(name: &str) -> Result<(), String> {
     Err(error)
 }
 
-/// The single resource location NeoForge's `RecipePriorityManager` reads in pack order.
-pub const RECIPE_PRIORITIES_PATH: &str = "data/neoforge/recipe_priorities.json";
-
 /// The shared resource namespace fence for folders and native archives.
 pub(crate) fn check_namespace(name: &str, manifest: &Manifest) -> Result<(), String> {
     let mut parts = name.splitn(3, '/');
@@ -103,14 +100,11 @@ pub(crate) fn check_namespace(name: &str, manifest: &Manifest) -> Result<(), Str
             ));
         }
     }
-    let allowed = owned
-        || (top == "data" && shared && rest.starts_with("tags/"))
-        || atlas
-        || extension
-        || name == RECIPE_PRIORITIES_PATH;
+    let allowed =
+        owned || (top == "data" && shared && rest.starts_with("tags/")) || atlas || extension;
     if !allowed {
         return Err(format!(
-            "{name}: a mod adds files in its own namespaces ({top}/{id}/ and those listed in namespaces), to vanilla and convention (c) tags, to vanilla's atlases, or to declared shared resource paths"
+            "{name}: a mod adds files in its own namespaces ({top}/{id}/ and those listed in namespaces), to vanilla and convention (c) tags, or to vanilla's atlases"
         ));
     }
 
@@ -989,10 +983,6 @@ pub struct MenuType {
     /// slots a player takes from but never puts into, each below `slots`.
     #[serde(default)]
     pub results: Vec<u16>,
-    /// Zero-based machine input slots, disjoint from results and crafting slots.
-    /// This is a client layout role, not an item acceptance or transfer rule.
-    #[serde(default)]
-    pub inputs: Vec<u16>,
     /// a crafting grid over some of the slots, which crafts as vanilla's
     /// crafting table does (`CraftingMenu`).
     #[serde(default)]
@@ -1659,19 +1649,6 @@ impl Content {
                     return Err(format!("{name}: result {r} is listed twice"));
                 }
             }
-            for &input in &file.inputs {
-                if input >= file.slots {
-                    return Err(format!(
-                        "{name}: input {input} is past the last slot, {}",
-                        file.slots - 1
-                    ));
-                }
-                if !seen.insert(input) {
-                    return Err(format!(
-                        "{name}: input {input} is listed twice or is a result"
-                    ));
-                }
-            }
             if let Some(c) = file.crafting {
                 let end = u32::from(c.grid) + u32::from(c.size) * u32::from(c.size);
                 if !matches!(c.size, 2 | 3) {
@@ -1686,15 +1663,14 @@ impl Content {
                 if (u32::from(c.grid)..end).contains(&u32::from(c.result)) {
                     return Err(format!("{name}: the crafting result is in its grid"));
                 }
-                let is_crafting_slot =
-                    |&s: &u16| s == c.result || (u32::from(c.grid)..end).contains(&u32::from(s));
-                if file.results.iter().any(is_crafting_slot) {
+                if file
+                    .results
+                    .iter()
+                    .any(|&r| r == c.result || (u32::from(c.grid)..end).contains(&u32::from(r)))
+                {
                     return Err(format!(
                         "{name}: results lists a crafting slot (the result is take-only already)"
                     ));
-                }
-                if file.inputs.iter().any(is_crafting_slot) {
-                    return Err(format!("{name}: inputs lists a crafting slot"));
                 }
             }
             if let Some(l) = file.links {
@@ -2668,38 +2644,30 @@ capabilities = ["registries"]
     }
 
     #[test]
-    fn menu_types_take_slots_data_slots_and_roles() {
+    fn menu_types_take_slots_data_slots_and_results() {
         let files: &[(&str, &[u8])] = &[
             (
                 "data/ruby/sunrise/menu/press.json",
-                br#"{"slots": 9, "data_slots": 2, "results": [7, 8], "inputs": [0, 6]}"#,
+                br#"{"slots": 9, "data_slots": 2, "results": [7, 8]}"#,
             ),
             ("data/ruby/sunrise/menu/bag.json", br#"{"slots": 4}"#),
             (
                 "data/ruby/sunrise/menu/station.json",
-                br#"{"slots": 16, "results": [11], "inputs": [15], "crafting": {"grid": 1, "result": 0}, "links": {"from": 12, "count": 4}}"#,
+                br#"{"slots": 16, "results": [11], "crafting": {"grid": 1, "result": 0}, "links": {"from": 12, "count": 4}}"#,
             ),
         ];
         let content = smod("menus", MANIFEST_TEXT, files).unwrap();
         let menus: Vec<_> = content
             .menu_types
             .iter()
-            .map(|m| {
-                (
-                    m.id.as_str(),
-                    m.slots,
-                    m.data_slots,
-                    m.results.as_slice(),
-                    m.inputs.as_slice(),
-                )
-            })
+            .map(|m| (m.id.as_str(), m.slots, m.data_slots, m.results.clone()))
             .collect();
         assert_eq!(
             menus,
             [
-                ("ruby:bag", 4, 0, &[][..], &[][..]),
-                ("ruby:press", 9, 2, &[7, 8][..], &[0, 6][..]),
-                ("ruby:station", 16, 0, &[11][..], &[15][..])
+                ("ruby:bag", 4, 0, vec![]),
+                ("ruby:press", 9, 2, vec![7, 8]),
+                ("ruby:station", 16, 0, vec![11])
             ]
         );
         let links: Vec<_> = content.menu_types.iter().map(|m| m.links).collect();
@@ -2799,29 +2767,6 @@ capabilities = ["registries"]
             let files: &[(&str, &[u8])] = &[("data/ruby/sunrise/menu/a.json", file.as_bytes())];
             let e = smod(case, MANIFEST_TEXT, files).unwrap_err();
             assert!(e.contains(why), "{case}: {e}");
-        }
-    }
-
-    #[test]
-    fn menu_types_reject_invalid_inputs() {
-        for (case, file) in [
-            ("input-past", r#"{"slots": 3, "inputs": [3]}"#),
-            ("input-twice", r#"{"slots": 3, "inputs": [1, 1]}"#),
-            (
-                "input-result",
-                r#"{"slots": 3, "inputs": [1], "results": [1]}"#,
-            ),
-            (
-                "input-grid",
-                r#"{"slots": 6, "inputs": [2], "crafting": {"grid": 1, "size": 2, "result": 0}}"#,
-            ),
-            (
-                "input-craft-result",
-                r#"{"slots": 6, "inputs": [0], "crafting": {"grid": 1, "size": 2, "result": 0}}"#,
-            ),
-        ] {
-            let files: &[(&str, &[u8])] = &[("data/ruby/sunrise/menu/a.json", file.as_bytes())];
-            assert!(smod(case, MANIFEST_TEXT, files).is_err(), "{case}");
         }
     }
 
@@ -3823,30 +3768,6 @@ capabilities = ["registries"]
         );
         let e = tab(r#"{"title": "Gems", "icon": "ruby", "items": []}"#).unwrap_err();
         assert!(e.contains("item ids"), "{e}");
-    }
-
-    #[test]
-    fn two_packages_can_supply_the_merged_recipe_priorities_but_not_neighbouring_files() {
-        let other_manifest = MANIFEST_TEXT.replace("ruby", "sapphire");
-        for (name, manifest) in [("ruby", MANIFEST_TEXT), ("sapphire", &other_manifest)] {
-            let content = smod(name, manifest, &[(RECIPE_PRIORITIES_PATH, b"{}")]).unwrap();
-            assert!(
-                content
-                    .files
-                    .iter()
-                    .any(|path| path == RECIPE_PRIORITIES_PATH)
-            );
-        }
-        for path in [
-            "data/neoforge/recipe/unowned.json",
-            "data/neoforge/other.json",
-            "data/c/recipe_priorities.json",
-            "data/minecraft/recipe_priorities.json",
-        ] {
-            let error =
-                smod("nonshared-priority-path", MANIFEST_TEXT, &[(path, b"{}")]).unwrap_err();
-            assert!(error.contains(path), "{error}");
-        }
     }
 
     #[test]

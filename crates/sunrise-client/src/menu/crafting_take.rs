@@ -58,10 +58,8 @@ impl Menu {
                     vec![self.state.containers[MAIN][0].clone()],
                 ));
             }
-            if self.remove(env, 0, 1).is_some() && self.state.stone.server_buttons.is_none() {
-                // A LAN server's slotsChanged already rechecked and refilled its result.
-                let recipe = self.stone_recipe(env, self.state.data[0]);
-                self.stone_setup_result(env, recipe);
+            if self.remove(env, 0, 1).is_some() {
+                self.stone_setup_result(env, self.state.data[0]);
             }
             self.take_sound("minecraft:ui.stonecutter.take_result");
             return;

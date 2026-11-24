@@ -143,6 +143,8 @@ pub struct Hook {
     pub call: Vec<(String, String)>,
     /// Admission policy for the mutable stack-list output; placement owns trimming.
     pub stack_count: Option<StackCount>,
+    /// Keep construction and exhaustive patterns of the event inside the vocabulary crate.
+    pub non_exhaustive: bool,
     /// Rebuild a listener event from its original inputs for every subscriber.
     pub event_per_listener: bool,
 }
@@ -268,6 +270,8 @@ struct HookEntry {
     #[serde(default)]
     call: Vec<(String, String)>,
     stack_count: Option<StackCount>,
+    #[serde(default)]
+    non_exhaustive: bool,
     #[serde(default)]
     event_per_listener: bool,
     inert: Option<String>,
@@ -412,6 +416,7 @@ impl Hook {
             cancellable: entry.cancellable,
             call: entry.call,
             stack_count: entry.stack_count,
+            non_exhaustive: entry.non_exhaustive,
             event_per_listener: entry.event_per_listener,
         })
     }
@@ -855,6 +860,7 @@ impl Hook {
             cancellable: None,
             call: Vec::new(),
             stack_count: None,
+            non_exhaustive: false,
             event_per_listener: false,
         }
     }

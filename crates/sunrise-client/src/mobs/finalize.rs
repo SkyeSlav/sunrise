@@ -468,15 +468,6 @@ pub enum Op {
     AddMultipliedBase,
     AddMultipliedTotal,
 }
-impl From<Op> for sunrise_world::attributes::Operation {
-    fn from(op: Op) -> Self {
-        match op {
-            Op::AddValue => Self::AddValue,
-            Op::AddMultipliedBase => Self::AddMultipliedBase,
-            Op::AddMultipliedTotal => Self::AddMultipliedTotal,
-        }
-    }
-}
 /// A permanent attribute modifier (`AttributeModifier`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Modifier {
@@ -636,110 +627,7 @@ fn effect_modifier_id(name: &str) -> String {
         _ => format!("minecraft:effect.{name}"),
     }
 }
-/// One effect mutation's before-order in the legacy and live modifier seed stores.
-/// A clear is one batch: restore all of its rows together, not at stale indices.
-pub struct EffectModifierUndo {
-    keys: Vec<(Attr, String)>,
-    permanent: Vec<Modifier>,
-    transient: Vec<Modifier>,
-    live: crate::living_attributes::TransientModifiers,
-}
-
-impl EffectModifierUndo {
-    pub fn keep_explicit_write(&mut self, attribute: &str, id: &str) {
-        self.keys
-            .retain(|(attr, key)| attr.id() != attribute || key != id);
-        let unaffected = |row: &Modifier| row.attr.id() != attribute || row.id != id;
-        self.permanent.retain(unaffected);
-        self.transient.retain(unaffected);
-        self.live.forget(attribute, id);
-    }
-
-    pub fn restore(self, mob: &mut Mob) {
-        if self.keys.is_empty() {
-            return;
-        }
-        let Self {
-            keys,
-            permanent,
-            transient,
-            live,
-        } = self;
-        let owns = |row: &Modifier| {
-            keys.iter()
-                .any(|(attr, id)| *attr == row.attr && *id == row.id)
-        };
-        let same_key = |a: &Modifier, b: &Modifier| a.attr == b.attr && a.id == b.id;
-        let mut changed = false;
-        if let Some(attrs) = mob.extra.attributes.as_mut() {
-            use crate::living_attributes::restore_modifier_order;
-            changed |= restore_modifier_order(
-                &mut attrs.modifiers,
-                permanent,
-                owns,
-                same_key,
-                Modifier::eq,
-            );
-            changed |= restore_modifier_order(
-                &mut attrs.transient,
-                transient,
-                owns,
-                same_key,
-                Modifier::eq,
-            );
-        }
-        changed |= mob
-            .extra
-            .live
-            .restore_transient_modifiers(live, |attribute, id| {
-                keys.iter()
-                    .any(|(attr, key)| attr.id() == attribute && key == id)
-            });
-        if changed {
-            mob.extra.live.invalidate();
-            for attr in Attr::ALL {
-                if keys.iter().any(|(key, _)| *key == attr) {
-                    refresh(mob, attr);
-                }
-            }
-        }
-    }
-}
-
 impl Mob {
-    /// The modifier rows one effect write (or one bulk clear of the given effects) can replace.
-    pub fn effect_modifier_undo(
-        &self,
-        effects: impl Iterator<Item = &'static str>,
-    ) -> Option<EffectModifierUndo> {
-        let keys: Vec<_> = effects
-            .flat_map(|effect| {
-                let name = effect.trim_start_matches("minecraft:");
-                Attr::ALL
-                    .into_iter()
-                    .filter(move |&attr| {
-                        effect_modifier(name, 0, attr).is_some()
-                            && default_value(self, attr).is_some()
-                    })
-                    .map(move |attr| (attr, effect_modifier_id(name)))
-            })
-            .collect();
-        if keys.is_empty() {
-            return None;
-        }
-        let attrs = self.extra.attributes.as_deref();
-        Some(EffectModifierUndo {
-            keys,
-            permanent: attrs
-                .map(|attrs| attrs.modifiers.clone())
-                .unwrap_or_default(),
-            transient: attrs
-                .map(|attrs| attrs.transient.clone())
-                .unwrap_or_default(),
-            live: self.extra.live.transient_modifiers(),
-        })
-    }
-
     /// The one place a mob's effect attribute modifiers change (#478). They
     /// are permanent modifiers in the attribute store, so they are saved and
     /// synced as any other, and a read derives nothing from the effect list.
@@ -950,7 +838,12 @@ pub fn add_transient_modifier(m: &mut Mob, a: Attr, id: &str, amount: f64, op: O
     });
     // The live map is built from the saved record, so it keeps the modifier
     // itself for the next build.
-    let modifier = sunrise_world::attributes::Modifier::new(id, amount, op.into()).ok();
+    let operation = match op {
+        Op::AddValue => sunrise_world::attributes::Operation::AddValue,
+        Op::AddMultipliedBase => sunrise_world::attributes::Operation::AddMultipliedBase,
+        Op::AddMultipliedTotal => sunrise_world::attributes::Operation::AddMultipliedTotal,
+    };
+    let modifier = sunrise_world::attributes::Modifier::new(id, amount, operation).ok();
     m.extra.live.keep_transient(a.id(), id, modifier);
     m.extra.live.invalidate();
     refresh(m, a);

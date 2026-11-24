@@ -480,9 +480,6 @@ impl Game<'_> {
         if !self.native_level_write_position(level, pos)? {
             return Ok(false);
         }
-        if let Some(mut host) = super::journal_level_write::JournalLevelWrite::new(self, level) {
-            return Ok(host.write_block(pos, state, flags.bits()));
-        }
         Ok(self.native_set_block(level.dimension_id(), pos, state, flags.bits()))
     }
     /// `Block.updateFromNeighbourShapes` for `state` at `pos`, nothing written: the state
@@ -512,9 +509,6 @@ impl Game<'_> {
     ) -> bool {
         if !self.native_level_write_allowed(level, pos) || self.dim.key() != level.dimension() {
             return false;
-        }
-        if let Some(mut host) = super::journal_level_write::JournalLevelWrite::new(self, level) {
-            return mod_api::LevelWriteHost::remove_block(&mut host, pos, moved);
         }
         let changed =
             self.with_level(|_, level, ticks| level.remove_block_write(ticks, pos, moved));
@@ -579,11 +573,7 @@ impl Game<'_> {
         tool: Option<&ItemStack>,
         collect: bool,
     ) -> Option<Vec<ItemStack>> {
-        // Loot and break effects cannot be rolled back by the level journal.
-        if self.transaction_current().is_some()
-            || !self.native_level_write_allowed(level, pos)
-            || self.dim.key() != level.dimension()
-        {
+        if !self.native_level_write_allowed(level, pos) || self.dim.key() != level.dimension() {
             return None;
         }
         let at = sunrise_core::position::BlockPos::new(pos[0], pos[1], pos[2]);

@@ -15,7 +15,6 @@
 //! correction a veto sends is not heard either.
 
 use super::{HostEvent, Hub};
-use crate::lan::guest::GuestMove;
 
 /// How many ticks a report may stay pending, the tick it was held at the first of them: it can be
 /// ruled on up to the 20th tick, and the 21st finds it out of time, dropped with the correction and
@@ -154,12 +153,7 @@ impl Hub {
                     yaw: g.yaw,
                 });
             }
-            g.moves.push(GuestMove {
-                position: g.position,
-                delta: moved,
-                on_ground,
-                sneaking: g.sneaking,
-            });
+            g.moves.push((moved, on_ground));
             g.known_movement = moved;
             g.yaw = yaw;
             g.pitch = pitch.clamp(-90.0, 90.0);

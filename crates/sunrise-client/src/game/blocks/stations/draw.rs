@@ -527,7 +527,7 @@ impl Game<'_> {
                                     i,
                                     ItemStack {
                                         count: 1,
-                                        ..self.station_recipes().stonecutting[s.stone.recipes[i]]
+                                        ..self.stations().recipes.stonecutting[s.stone.recipes[i]]
                                             .result
                                             .clone()
                                     },

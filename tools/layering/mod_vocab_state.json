@@ -160,9 +160,9 @@
     "reason": "Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one."
   },
   "runtime.rs::LISTENER_SERIAL": {
-    "type": "std::cell::Cell<(u64,u64)>",
+    "type": "std::cell::Cell<u64>",
     "category": "dispatch table",
-    "reason": "Independent per-thread counts of listener entries and trapped listeners. Scoped engine leases compare the entry count; owning decide/fire/apply actions compare the trap count to decide whether to abort tentative Host writes."
+    "reason": "Thread-wide count of all listeners entered, bumped by the dispatch loop; scoped engine leases (pending children) compare it so a lease never outlives one listener."
   },
   "runtime.rs::MODS": {
     "type": "OnceLock<Installed>",

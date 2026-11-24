@@ -2,7 +2,6 @@
 //! the parts of them commands use: `.mcfunction` functions (with macros and
 //! line continuation), function tags and predicates.
 use crate::resource_source::ResourceSource;
-use sunrise_world::loot::RecipePriorityLayer;
 mod slot_sources;
 use crate::zip::Zip;
 use std::{
@@ -723,8 +722,6 @@ pub struct DataStore {
     /// `<kind-dir>/<ns>:<path>`, each id's files in pack order. The tables
     /// merge them over what they read from the resource root.
     pub files: BTreeMap<String, Vec<Vec<u8>>>,
-    /// All copies of the recipe-priority resource in pack order, with their original source.
-    pub priority_layers: Vec<RecipePriorityLayer>,
     /// Failed reads of the highest-priority resources, keyed like `files`.
     pub file_errors: BTreeMap<String, String>,
     /// Functions that failed to parse (id, message), for logging.
@@ -846,49 +843,14 @@ pub fn registry_files(
     Ok(files)
 }
 
-/// Read the singleton at NeoForge's resource location. An absent file is not a layer;
-/// I/O errors on a supplied file retain the identity used by the recipe loader's warning.
-pub fn read_recipe_priority_layer(
-    pack: &str,
-    source: &ResourceSource,
-) -> Option<RecipePriorityLayer> {
-    let path = sunrise_mod_package::content::RECIPE_PRIORITIES_PATH;
-    let contents = match source.read(path) {
-        Ok(bytes) => Ok(bytes),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound && !source.contains(path) => {
-            return None;
-        }
-        Err(error) => Err(error.to_string()),
-    };
-    Some(RecipePriorityLayer {
-        pack: pack.to_owned(),
-        path,
-        contents,
-    })
-}
-
 impl DataStore {
     pub fn load(packs: &[&DataPack]) -> Self {
         let mut s = Self::default();
         for pack in packs {
-            let builtin = pack.id == "vanilla";
-            // The prepared root supplies the baseline to the recipe loader directly.
-            if !builtin {
-                let sources = pack.source().named_sources();
-                if sources.is_empty() {
-                    s.priority_layers
-                        .extend(read_recipe_priority_layer(&pack.id, pack.source()));
-                } else {
-                    s.priority_layers.extend(
-                        sources
-                            .iter()
-                            .filter_map(|(id, source)| read_recipe_priority_layer(id, source)),
-                    );
-                }
-            }
             // `tags` walks the whole tags tree, so a `tags/function` file is
             // listed by both kinds: handle every file once.
             let mut seen = std::collections::BTreeSet::new();
+            let builtin = pack.id == "vanilla";
             for f in pack.list_kinds(&[
                 "advancement",
                 "banner_pattern",
@@ -1357,56 +1319,6 @@ pub fn worldgen_overrides_over(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-
-    #[test]
-    fn neoforge_recipe_priorities_keep_pack_order_and_read_errors() {
-        use sunrise_mod_package::content::RECIPE_PRIORITIES_PATH;
-        let root =
-            std::env::temp_dir().join(format!("sunrise-priority-packs-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        for pack in ["a", "b", "c", "other_namespace"] {
-            let dir = root.join(format!("datapacks/{pack}"));
-            fs::create_dir_all(dir.join("data/neoforge")).unwrap();
-            fs::write(
-                dir.join("pack.mcmeta"),
-                r#"{"pack":{"description":"","pack_format":15}}"#,
-            )
-            .unwrap();
-            let path = dir.join(RECIPE_PRIORITIES_PATH);
-            match pack {
-                "a" => fs::write(path, br#"{"entries":{"test:b":5}}"#).unwrap(),
-                "b" => fs::create_dir(path).unwrap(), // The path exists but cannot be read as a file.
-                "c" => fs::write(path, br#"{"replace":true}"#).unwrap(),
-                _ => {
-                    fs::create_dir_all(dir.join("data/test")).unwrap();
-                    fs::write(dir.join("data/test/recipe_priorities.json"), b"{").unwrap();
-                }
-            }
-        }
-        let packs = discover(&root);
-        let store = DataStore::load(&packs.iter().collect::<Vec<_>>());
-        let layers = store.priority_layers;
-        assert_eq!(
-            layers
-                .iter()
-                .map(|layer| layer.pack.as_str())
-                .collect::<Vec<_>>(),
-            ["file/a", "file/b", "file/c"]
-        );
-        assert!(
-            layers
-                .iter()
-                .all(|layer| layer.path == RECIPE_PRIORITIES_PATH)
-        );
-        assert_eq!(
-            layers[0].contents.as_ref().unwrap(),
-            br#"{"entries":{"test:b":5}}"#
-        );
-        assert!(layers[1].contents.is_err());
-        assert_eq!(layers[2].contents.as_ref().unwrap(), br#"{"replace":true}"#);
-        let _ = fs::remove_dir_all(&root);
-    }
 
     #[test]
     fn a_pack_level_outside_the_worlds_folder_is_not_a_level() {

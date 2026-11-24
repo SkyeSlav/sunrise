@@ -9,8 +9,7 @@ fn run_of_a_native_mod_without_resources_says_how_to_make_them_before_building()
     let _ = std::fs::remove_dir_all(&dir);
     // A native mod's folder, made by hand: the resources are asked for before anything is fetched or built.
     let project = dir.join("machine");
-    std::fs::create_dir_all(project.join("src")).unwrap();
-    std::fs::write(project.join("src/lib.rs"), "").unwrap();
+    std::fs::create_dir_all(&project).unwrap();
     std::fs::write(
         project.join("Cargo.toml"),
         "[package]\nname = 'machine'\nversion = '0.1.0'\n",

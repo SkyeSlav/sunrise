@@ -25,14 +25,6 @@ impl Game<'_> {
         self.refresh_infiniburn();
         self.refresh_creative_search_tags();
         self.install_remote_tags();
-        if self.recipe_ui.server_stations.is_some()
-            && tags
-                .registries
-                .iter()
-                .any(|tags| tags.registry == "minecraft:item")
-        {
-            self.refresh_remote_stonecutter();
-        }
     }
 
     pub(super) fn refresh_creative_search_tags(&mut self) {

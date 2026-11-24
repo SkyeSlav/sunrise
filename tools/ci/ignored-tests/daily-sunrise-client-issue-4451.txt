@@ -717,8 +717,7 @@ sunrise-client game::general::save_load_tests::unknown_minecraft_kind_keeps_its_
 sunrise-client game::general::save_load_tests::unknown_rider_type_hands_the_tree_back lib daily resources
 sunrise-client game::general::tick_tests::a_canceled_passenger_still_follows_and_his_passengers_tick lib daily resources
 sunrise-client game::general::tick_tests::a_canceled_vehicle_pre_still_ticks_its_passengers lib daily resources
-sunrise-client game::general::tick_tests::a_discarded_riders_passenger_ticks_at_its_later_root_slot lib daily resources
-sunrise-client game::general::tick_tests::a_discarded_riders_passenger_waits_if_its_root_slot_passed lib daily resources
+sunrise-client game::general::tick_tests::a_listener_discarded_rider_stops_its_subtree lib daily resources
 sunrise-client game::general::tick_tests::a_listener_discarded_row_gets_no_callback lib daily resources
 sunrise-client game::general::tick_tests::a_listener_dismounted_rider_walks_as_a_root_after lib daily resources
 sunrise-client game::general::tick_tests::a_panicking_row_rolls_back_and_the_next_tick_proceeds lib daily resources
@@ -727,8 +726,8 @@ sunrise-client game::general::tick_tests::a_reloaded_row_reenters_ticking_behind
 sunrise-client game::general::tick_tests::a_reloaded_row_resumes_the_counter_and_refuses_its_old_handle lib daily resources
 sunrise-client game::general::tick_tests::a_removed_last_rider_leaves_no_stale_index_link lib daily resources
 sunrise-client game::general::tick_tests::a_removed_only_rider_leaves_no_stale_index_link lib daily resources
-sunrise-client game::general::tick_tests::a_riders_removal_in_canceled_pre_leaves_its_passengers_later_root_tick lib daily resources
-sunrise-client game::general::tick_tests::a_riders_removal_in_pre_leaves_its_passengers_later_root_tick lib daily resources
+sunrise-client game::general::tick_tests::a_rider_removed_in_its_own_canceled_pre_walks_no_descendants lib daily resources
+sunrise-client game::general::tick_tests::a_rider_removed_in_its_own_pre_walks_no_descendants lib daily resources
 sunrise-client game::general::tick_tests::a_row_discarded_from_an_earlier_pre_ticks_nothing lib daily resources
 sunrise-client game::general::tick_tests::a_row_joined_during_the_tick_span_ticks_the_next_phase lib daily resources
 sunrise-client game::general::tick_tests::counter_advances_one_per_tick lib daily resources

@@ -2090,18 +2090,9 @@ impl Game<'_> {
         let game_master = ctx.can_use_game_master_blocks;
         let stack_state =
             |state| crate::game::block_items::item_block_state(registry, state, stack, game_master);
-        let has_part =
-            mod_api::__private::item_listens(mod_api::HookId::PlacementContext, &stack.item);
-        let placer = (has_part && by_player)
-            .then(|| self.placement_placer())
-            .flatten();
-        let Some((decision, preview)) = self.with_level(|b, level, ticks| {
-            b.decide_placement(level, ticks, ctx, stack_state, |level, context| {
-                has_part
-                    .then(|| level.rewrite_placement_context(stack, context, placer))
-                    .flatten()
-            })
-        }) else {
+        let Some((decision, preview)) =
+            self.with_level(|b, level, ticks| b.decide_placement(level, ticks, ctx, stack_state))
+        else {
             return Ok(None);
         };
         let veto = mod_api::__private::listened(mod_api::HookId::EntityPlace);

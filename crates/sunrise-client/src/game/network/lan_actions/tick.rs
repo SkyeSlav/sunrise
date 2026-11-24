@@ -15,7 +15,6 @@ impl Game<'_> {
         let Some(host) = self.lan.as_mut() else {
             return;
         };
-        host.hub.sync_initial_health_data();
         Self::sync_hub_mod_flags(&mut host.hub);
         let turns: Vec<_> = host
             .hub

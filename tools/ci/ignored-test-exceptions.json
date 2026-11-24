@@ -718,21 +718,5 @@
     "path": "crates/sunrise-client/src/game/blocks/tests/block_entity_items_tests.rs",
     "reason": "run through tools/test_block_entity_item_geometry_parity.py",
     "rationale": "Parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_block_entity_item_geometry_parity.py writes the cases and the vanilla oracle's answers and sets SUNRISE_BLOCK_ENTITY_ITEM_CASES/_OUT, without which the test panics, so it cannot run as a prepared-resource daily test."
-  },
-  {
-    "package": "cargo-sunrise-mod",
-    "target": "test:build_errors",
-    "test": "a_failed_native_build_names_the_authors_file_and_not_the_cache_copy",
-    "path": "crates/cargo-sunrise-mod/tests/build_errors.rs",
-    "reason": "book-quickstart.yml: the run's own SDK",
-    "rationale": "Builds a starter native mod that `cargo sunrise-mod new` pins to the Nightly, so it needs the daily run's own SDK as that Nightly (SUNRISE_SDK_BASE, with SUNRISE_SDK_TRUSTED_KEY): against the published one it would test that SDK and fail whenever main's tool reads a newer SDK format. book-quickstart.yml assembles that SDK and runs it there by exact name with --ignored; its manual row is in tools/ci/ignored-tests/manual-cargo-sunrise-mod.txt."
-  },
-  {
-    "package": "cargo-sunrise-mod",
-    "target": "test:build_errors",
-    "test": "a_failed_registry_build_names_the_authors_file_and_a_good_one_still_builds",
-    "path": "crates/cargo-sunrise-mod/tests/build_errors.rs",
-    "reason": "book-quickstart.yml: the run's own SDK",
-    "rationale": "Builds a starter native mod that `cargo sunrise-mod new` pins to the Nightly, so it needs the daily run's own SDK as that Nightly (SUNRISE_SDK_BASE, with SUNRISE_SDK_TRUSTED_KEY): against the published one it would test that SDK and fail whenever main's tool reads a newer SDK format. book-quickstart.yml assembles that SDK and runs it there by exact name with --ignored; its manual row is in tools/ci/ignored-tests/manual-cargo-sunrise-mod.txt."
   }
 ]

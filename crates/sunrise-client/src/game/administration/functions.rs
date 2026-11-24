@@ -123,12 +123,6 @@ pub(super) fn pack_stack(
     }
 }
 
-pub(super) struct OverlayFiles {
-    pub(super) files: Vec<(String, Vec<Vec<u8>>)>,
-    pub(super) read_errors: std::collections::BTreeMap<String, String>,
-    pub(super) priority_layers: Vec<sunrise_world::loot::RecipePriorityLayer>,
-}
-
 /// The files the content tables load from: the world's enabled packs
 /// with what native mods contribute for this load
 /// (`native_data_pack_files`) below them. `PackOverlay::top` is a path's last
@@ -139,7 +133,10 @@ pub(super) struct OverlayFiles {
 pub(super) fn overlay_files(
     stack: &PackStack,
     contributed: Vec<(String, Vec<u8>)>,
-) -> OverlayFiles {
+) -> (
+    Vec<(String, Vec<Vec<u8>>)>,
+    std::collections::BTreeMap<String, String>,
+) {
     // Passive content replaces prepared data, native contributions sit over
     // it, and the world's selected packs retain the highest priority.
     let mut store = DataStore::load(&[&stack.content]);
@@ -160,12 +157,7 @@ pub(super) fn overlay_files(
         store.files.entry(path).or_default().extend(versions);
     }
     store.file_errors.extend(world.file_errors);
-    store.priority_layers.extend(world.priority_layers);
-    OverlayFiles {
-        files: store.files.into_iter().collect(),
-        read_errors: store.file_errors,
-        priority_layers: store.priority_layers,
-    }
+    (store.files.into_iter().collect(), store.file_errors)
 }
 
 impl FnState {
@@ -2972,10 +2964,8 @@ mod tests {
                 &[],
                 &[],
             );
-            let OverlayFiles {
-                files, read_errors, ..
-            } = overlay_files(&stack, Vec::new());
-            assert!(read_errors.is_empty());
+            let (files, errors) = overlay_files(&stack, Vec::new());
+            assert!(errors.is_empty());
             let (_, versions) = files.iter().find(|(id, _)| id == "recipe/x:r").unwrap();
             let last = versions.last().unwrap();
             assert_eq!(
@@ -3038,7 +3028,7 @@ mod tests {
             &[],
             &[],
         );
-        let OverlayFiles { files, .. } = overlay_files(
+        let (files, _) = overlay_files(
             &stack,
             vec![
                 ("tags/pkg:item/both".to_owned(), tag("pkg:from_mod")),
@@ -3077,7 +3067,7 @@ mod tests {
             ["pkg:only_mod"]
         );
         // The next load asks again: the new contribution, not the first's.
-        let OverlayFiles { files, .. } = overlay_files(
+        let (files, _) = overlay_files(
             &stack,
             vec![("tags/pkg:item/mod_only".to_owned(), tag("pkg:second_load"))],
         );
@@ -3088,7 +3078,7 @@ mod tests {
             ["pkg:second_load"]
         );
         // A file that isn't JSON is skipped alone, not the whole load.
-        let OverlayFiles { files, .. } = overlay_files(
+        let (files, _) = overlay_files(
             &stack,
             vec![
                 ("tags/pkg:item/mod_only".to_owned(), b"{not json".to_vec()),

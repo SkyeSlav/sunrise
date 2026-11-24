@@ -649,11 +649,7 @@ mod lookup_context_tests {
     #[test]
     fn unsubscribed_scoped_dispatch_never_looks_up_parts() {
         struct Level;
-        impl crate::LevelHost for Level {
-            fn block_entity_data(&self, _: crate::BlockEntityRef) -> Option<crate::Compound> {
-                None
-            }
-        }
+        impl crate::LevelHost for Level {}
         struct Hook;
         #[mod_api::__subscriptions]
         impl crate::Hooks for Hook {}

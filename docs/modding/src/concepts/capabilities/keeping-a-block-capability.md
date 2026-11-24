@@ -18,11 +18,9 @@ keeps is bounded by the number of caches you make.
 ## Polling it
 
 ```rust,ignore
-use mod_api::resource_util::move_resources;
-
 // Each tick, inside a transaction `tx`, with `own` your own handler.
 if let Some(items) = west.get(host) {
-    move_resources(host, items, own, |_| true, 8, Some(tx))?;
+    move_resources(host, items, own, |_| true, 8, tx)?;
 }
 ```
 

@@ -469,6 +469,17 @@ impl sunrise_world::level::LevelAccess for DryLevel<'_> {
                 may,
             )
     }
+    fn placement_context(
+        &self,
+        item: &str,
+        context: &sunrise_world::level::PlacementContext,
+    ) -> Option<Option<sunrise_world::level::PlacementContext>> {
+        if self.asks_mods {
+            self.base.placement_context(item, context)
+        } else {
+            None
+        }
+    }
     fn must_survive(&self, item: &str) -> Option<bool> {
         if self.asks_mods {
             self.base.must_survive(item)

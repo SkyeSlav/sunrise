@@ -818,10 +818,6 @@ impl mod_api::LevelRandomHost for super::GameLevel<'_> {
 }
 
 impl mod_api::LevelHost for super::native_hooks::HitLevel<'_> {
-    fn block_entity_data(&self, _: mod_api::BlockEntityRef) -> Option<mod_api::Compound> {
-        None
-    }
-
     fn block_state_id(&self, name: &str) -> Option<mod_api::BlockState> {
         super::native_block_states::parse(self.0.block_registries()?, self.0.registry(), name)?
             .try_into_api()

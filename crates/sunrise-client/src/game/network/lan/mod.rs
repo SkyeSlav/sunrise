@@ -5096,7 +5096,6 @@ mod sources_tests {
             overlay_key(&PackOverlay {
                 conditions: &sunrise_world::conditions::LoadConditions::vanilla(),
                 files,
-                ..PackOverlay::default()
             })
         };
         assert_eq!(key(&files), key(&files.clone()));

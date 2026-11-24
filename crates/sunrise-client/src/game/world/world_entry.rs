@@ -200,14 +200,6 @@ impl Game<'_> {
             None => self.synced_recipes().unwrap_or_else(|| self.res.recipes()),
         }
     }
-    /// The station recipes menus and screens use: a client of a server numbers and draws its
-    /// stonecutter buttons by the list the server sent, else the world's own.
-    pub(super) fn station_recipes(&self) -> &sunrise_client::stations::StationRecipes {
-        self.recipe_ui
-            .server_stations
-            .as_ref()
-            .unwrap_or(&self.stations().recipes)
-    }
     pub(super) fn stations(&self) -> &sunrise_client::stations::StationData {
         match &self.world_tables {
             Some(t) => &t.stations,
@@ -244,11 +236,7 @@ impl Game<'_> {
         let mut contributed = Vec::new();
         self.native_data_pack_files(&mut contributed);
         let modifier_files = global_loot_modifiers::contributed(&contributed);
-        let functions::OverlayFiles {
-            files,
-            read_errors,
-            priority_layers,
-        } = functions::overlay_files(
+        let (files, read_errors) = functions::overlay_files(
             stack,
             contributed
                 .into_iter()
@@ -260,7 +248,6 @@ impl Game<'_> {
         let overlay = sunrise_world::loot::PackOverlay {
             conditions: &conditions,
             files: &files,
-            ..sunrise_world::loot::PackOverlay::default()
         };
         let mut data_map_types = Vec::new();
         self.native_data_map_types(&mut data_map_types);
@@ -286,14 +273,12 @@ impl Game<'_> {
         let tag_files = sunrise_world::loot::PackOverlay {
             conditions: &conditions,
             files: &files,
-            ..sunrise_world::loot::PackOverlay::default()
         };
         // The other tables read from here on see this load's bound tags (`neoforge:tag_empty`).
         let conditions = conditions.with_tags(items.bound_tags());
         let overlay = sunrise_world::loot::PackOverlay {
             conditions: &conditions,
             files: &files,
-            priority_layers: &priority_layers,
         };
         let packed_registry_definitions =
             if let Some(tables) = self.world_tables.as_ref().filter(|_| reload) {
@@ -524,7 +509,6 @@ impl Game<'_> {
                 conditions,
                 suffocation,
                 files,
-                priority_layers,
                 items: Arc::new(items),
                 packed_registries: packed_registry_definitions,
                 loot,
@@ -637,7 +621,6 @@ impl Game<'_> {
             wire,
             datapack_registries,
         } = prepared;
-        self.close_stonecutters_for_reload();
         lan::sync::forget_server_sources();
         if let Some(tables) = &tables
             && let Some(sources) = &tables.reload_sources
@@ -645,7 +628,6 @@ impl Game<'_> {
             let overlay = sunrise_world::loot::PackOverlay {
                 conditions: &tables.conditions,
                 files: &tables.files,
-                priority_layers: &tables.priority_layers,
             };
             lan::sync::install_server_sources(
                 &self.options.resources,

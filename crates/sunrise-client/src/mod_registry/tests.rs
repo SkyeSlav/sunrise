@@ -250,60 +250,6 @@ fn an_unrecognized_managed_entry_is_not_replaced() {
 }
 
 #[test]
-fn several_entries_of_the_project_are_refused_before_download() {
-    let bytes = ruby("1.1");
-    let index = registry("1.1", &bytes, "file:///ruby.smod");
-    let home = scratch("duplicate-entries");
-    fs::create_dir_all(home.join("sunrise-mods")).unwrap();
-    fs::write(home.join("sunrise-mods/ruby.smod"), ruby("1.0")).unwrap();
-    let row = |title: &str| {
-        serde_json::json!({ "source": "sunrise", "project": "ruby", "title": title,
-            "version": "1.0", "file": "sunrise-mods/ruby.smod" })
-    };
-    let manifest =
-        serde_json::json!({ "entries": [row("Ruby"), row("Ruby, renamed later")] }).to_string();
-    fs::write(home.join(MANIFEST), &manifest).unwrap();
-    assert!(
-        install(&index, &home, "ruby", &|_, _| {
-            panic!("an ambiguous manifest must be refused before download")
-        })
-        .is_err()
-    );
-    assert_eq!(fs::read_to_string(home.join(MANIFEST)).unwrap(), manifest);
-    assert_eq!(
-        fs::read(home.join("sunrise-mods/ruby.smod")).unwrap(),
-        ruby("1.0")
-    );
-    assert!(!home.join(".mod-browser.pending.json").try_exists().unwrap());
-    fs::remove_dir_all(home).unwrap();
-}
-
-#[test]
-fn a_same_version_install_refuses_another_projects_aliased_claim() {
-    let bytes = ruby("1.0");
-    let index = registry("1.0", &bytes, "file:///ruby.smod");
-    let home = scratch("same-version-competing-claim");
-    let target = home.join("sunrise-mods/ruby.smod");
-    fs::create_dir_all(home.join("sunrise-mods")).unwrap();
-    fs::write(&target, &bytes).unwrap();
-    let manifest = serde_json::json!({ "entries": [
-        {"source": "sunrise", "project": "ruby", "version": "1.0", "file": "sunrise-mods/ruby.smod"},
-        {"source": "sunrise", "project": "gem", "title": "Gem", "file": "./sunrise-mods//ruby.smod"}
-    ] }).to_string();
-    fs::write(home.join(MANIFEST), &manifest).unwrap();
-
-    let error = install(&index, &home, "ruby", &|_, _| {
-        panic!("a competing file claim must be refused before download")
-    })
-    .unwrap_err();
-    assert!(error.contains("belongs to Gem"), "{error}");
-    assert_eq!(fs::read_to_string(home.join(MANIFEST)).unwrap(), manifest);
-    assert_eq!(fs::read(target).unwrap(), bytes);
-    assert!(!home.join(".mod-browser.pending.json").try_exists().unwrap());
-    fs::remove_dir_all(home).unwrap();
-}
-
-#[test]
 fn an_unreadable_manifest_is_not_treated_as_an_empty_installation() {
     let bytes = ruby("1.0");
     let index = registry("1.0", &bytes, "file:///ruby.smod");

@@ -82,9 +82,6 @@ pub(super) struct RecipeUi {
     custom: mod_screen::ModRecipeUi,
     /// The last authoritative property-set and stonecutter generation.
     pub(super) server_properties: crate::recipe_book::ServerRecipeProperties,
-    /// The station tables of a client of a server: the window's own, their stonecutter list the
-    /// one the server sent, in its order (`station_recipes`). None on a server and until one sent.
-    pub(super) server_stations: Option<sunrise_client::stations::StationRecipes>,
     book: Option<Book>,
     tab: Option<Tab>,
     pub(super) search: Option<EditBox>,
@@ -446,7 +443,7 @@ impl Game<'_> {
                 recipes: self.recipes(),
                 brewing: &self.stations().brewing,
                 banners: &self.stations().banners,
-                station_recipes: self.station_recipes(),
+                station_recipes: &self.stations().recipes,
                 enchantments: &self.stations().enchantments,
                 names: &self.pack.names,
                 trade: None,

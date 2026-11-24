@@ -161,13 +161,6 @@ jobs:
           mkdir -p "$QS_SCRATCH/sdk-base/nightly"
           cp "$QS_SCRATCH/sdk-base/sdk-$commit/sdk.json" "$QS_SCRATCH/sdk-base/nightly/sdk.json"
           echo "SUNRISE_SDK_BASE=$QS_SCRATCH/sdk-base" >> "$GITHUB_ENV"
-      # Build-error tests that build a starter mod: against this run's SDK, the one this commit's tool reads.
-      - name: The tool's build-error tests on this run's SDK
-        if: inputs.own_sdk
-        run: >-
-          cargo test --locked -p cargo-sunrise-mod --test build_errors --
-          --ignored --exact a_failed_native_build_names_the_authors_file_and_not_the_cache_copy
-          a_failed_registry_build_names_the_authors_file_and_a_good_one_still_builds
       - name: The start pages run with the mod tool alone
         run: python3 tools/book_quickstart.py --tool "${CARGO_TARGET_DIR:-target}/debug/cargo-sunrise-mod"
       - name: Clean private scratch

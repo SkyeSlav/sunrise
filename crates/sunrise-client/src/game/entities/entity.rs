@@ -1313,32 +1313,24 @@ fn push_draw_run(runs: &mut Vec<DrawRun>, handle: EntityHandle) {
     }
 }
 
-/// The entities of `lists`' drawn families as runs in the order they joined the level. Lists
-/// the walk refuses (see [`JoinOrderError`]) are taken list by list from `storage_order`, as the
-/// state digest takes them, and nothing the walk had built stays.
-fn draw_runs<H: Iterator<Item = EntityHandle>>(
-    lists: EntityLists<'_>,
-    storage_order: impl FnOnce() -> H,
-    runs: &mut Vec<DrawRun>,
-) {
+/// The entities of `lists`' drawn families as runs in the order they joined the level.
+fn draw_runs(lists: EntityLists<'_>, runs: &mut Vec<DrawRun>) -> Result<(), JoinOrderError> {
     runs.clear();
-    if lists
-        .walk_in_join_order(|handle, _| push_draw_run(runs, handle))
-        .is_err()
-    {
-        runs.clear();
-        for handle in storage_order() {
-            push_draw_run(runs, handle);
-        }
-    }
+    lists.walk_in_join_order(|handle, _| push_draw_run(runs, handle))
 }
 
 impl Game<'_> {
     /// The entities of the families `entity_geometry` draws in one ordered pass, as runs in the
     /// order they joined the level (`EntityLookup.byId`, which
-    /// `LevelExtractor.extractVisibleEntities` follows), whatever their family.
+    /// `LevelExtractor.extractVisibleEntities` follows), whatever their family. Lists the walk
+    /// refuses (see [`JoinOrderError`]) are taken list by list, as the state digest takes them.
     pub(super) fn ordered_draw_runs(&self, runs: &mut Vec<DrawRun>) {
-        draw_runs(entity_lists_of!(self), || self.entity_handles(), runs);
+        if draw_runs(entity_lists_of!(self), runs).is_err() {
+            runs.clear();
+            for handle in self.entity_handles() {
+                push_draw_run(runs, handle);
+            }
+        }
     }
 }
 
@@ -3135,24 +3127,9 @@ mod join_order_tests {
         assert_ne!(joined[0], EntityHandle::ArmorStand(0));
     }
 
-    /// Every entity, each list in turn: what `Game::entity_handles` gives for these lists.
-    fn storage_order(lists: &Lists) -> impl Iterator<Item = EntityHandle> + use<> {
-        let counts = (
-            lists.boats.len(),
-            lists.stands.len(),
-            lists.rockets.len(),
-            lists.tridents.len(),
-        );
-        (0..counts.0)
-            .map(EntityHandle::Boat)
-            .chain((0..counts.1).map(EntityHandle::ArmorStand))
-            .chain((0..counts.2).map(EntityHandle::Rocket))
-            .chain((0..counts.3).map(EntityHandle::Trident))
-    }
-
     fn runs(lists: &Lists) -> Vec<(DrawFamily, std::ops::Range<usize>)> {
         let mut runs = Vec::new();
-        super::draw_runs(lists.view(), || storage_order(lists), &mut runs);
+        super::draw_runs(lists.view(), &mut runs).unwrap();
         runs.into_iter().map(|r| (r.family, r.range)).collect()
     }
 
@@ -3218,33 +3195,28 @@ mod join_order_tests {
         );
     }
 
-    /// Lists the walk refuses are drawn list by list, and the runs the walk had built before it
-    /// stopped are gone: a late entity that never joined sends the whole pass to storage order.
+    /// The list-by-list fallback (`Game::entity_handles`: each list in turn) makes one run per
+    /// family list, and the two lists of one family never merge.
     #[test]
-    fn lists_the_walk_refuses_are_drawn_list_by_list_with_nothing_kept() {
-        let (mut lists, _) = mixed();
-        lists.stands.push(ArmorStand::new(9, at(), 0.0));
-        lists.stands[2].join = sunrise_client::join_seq::JoinSeq::UNJOINED;
-        assert!(lists.walk().is_err());
+    fn list_by_list_handles_make_one_run_per_family() {
+        let mut runs = Vec::new();
+        for handle in [
+            EntityHandle::Boat(0),
+            EntityHandle::Boat(1),
+            EntityHandle::ArmorStand(0),
+            EntityHandle::ArmorStand(1),
+            EntityHandle::Trident(0),
+        ] {
+            super::push_draw_run(&mut runs, handle);
+        }
         assert_eq!(
-            runs(&lists),
+            runs.into_iter()
+                .map(|r| (r.family, r.range))
+                .collect::<Vec<_>>(),
             [
-                (DrawFamily::Boat, 0..1),
-                (DrawFamily::ArmorStand, 0..3),
-                (DrawFamily::Rocket, 0..2),
-                (DrawFamily::Trident, 0..2),
-            ]
-        );
-        // A list out of join order is refused the same way.
-        let (mut lists, _) = mixed();
-        lists.tridents.swap(0, 1);
-        assert_eq!(
-            runs(&lists),
-            [
-                (DrawFamily::Boat, 0..1),
+                (DrawFamily::Boat, 0..2),
                 (DrawFamily::ArmorStand, 0..2),
-                (DrawFamily::Rocket, 0..2),
-                (DrawFamily::Trident, 0..2),
+                (DrawFamily::Trident, 0..1),
             ]
         );
     }

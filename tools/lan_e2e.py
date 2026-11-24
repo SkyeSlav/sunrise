@@ -2292,8 +2292,8 @@ def check_stonecutter(host, guest, out):
     # StonecutterMenu.quickMoveStack: stone has recipes, so it goes to the input.
     guest.raw('click-slot', hotbar_slot(guest, 'minecraft:stone'), 'shift')
     guest.wait(10)
-    results = guest.raw('menu')['info']['recipe_results']
-    index = results.index('minecraft:stone_slab')
+    recipes = guest.raw('menu')['info']['recipes']
+    index = recipes.index('minecraft:stone_slab_from_stone_stonecutting')
     # StonecutterScreen's recipe grid: four columns of 16x18 cells from (52, 14).
     guest.raw('click-gui', 52 + index % 4 * 16 + 8, 14 + index // 4 * 18 + 9)
     guest.wait(10)

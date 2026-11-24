@@ -21,7 +21,16 @@ use sunrise_world::registry::BlockStateId;
 impl Game<'_> {
     fn native_block_entity_target(&self, entity: BlockEntityRef) -> Option<(&World, &BlockEntity)> {
         let world = self.native_level_read_world(entity.fields().level)?;
-        Some((world, resident_block_entity(world, entity)?))
+        let fields = entity.fields();
+        if world.block_entities.generation(&(
+            fields.position[0],
+            fields.position[1],
+            fields.position[2],
+        )) != Some(fields.generation)
+        {
+            return None;
+        }
+        Some((world, loaded_block_entity(world, fields.position)?))
     }
 
     /// Find a block entity in a loaded chunk of an open level, or on a client in
@@ -139,8 +148,10 @@ impl Game<'_> {
     /// The data saved without identity or position metadata
     /// (`BlockEntity.saveWithoutMetadata`).
     pub(super) fn block_entity_data(&self, entity: BlockEntityRef) -> Option<Compound> {
-        let world = self.native_level_read_world(entity.fields().level)?;
-        world_block_entity_data(world, self.pack.assets.registry, self.res.items(), entity)
+        let (world, block_entity) = self.native_block_entity_target(entity)?;
+        let [x, y, z] = entity.fields().position;
+        let block = &self.pack.assets.registry.state(world.block(x, y, z))?.name;
+        save_without_metadata(world, (x, y, z), block_entity, block, self.res.items())
     }
 
     /// The vanilla lock's item predicate, if present on a loaded block entity.
@@ -249,8 +260,8 @@ impl Game<'_> {
         Ok(true)
     }
 
-    /// Sizes a mod block entity's transient menu data using the same silent
-    /// write and journal as scalar data-slot writes.
+    /// Sizes a mod block entity's menu data explicitly, using the same write
+    /// target, journal and Changed notice as scalar data-slot writes.
     pub(super) fn block_entity_set_data_slots(
         &mut self,
         entity: BlockEntityRef,
@@ -370,13 +381,12 @@ impl Game<'_> {
             self.edit_mod_block_entity(key, |block_entity| {
                 *block_entity.item_slot_mut(index).unwrap() = stack;
             });
-        } else {
-            self.write_mod_block_entity(key, |block_entity| {
-                block_entity.items.resize(slots, None);
-                *block_entity.item_slot_mut(index).unwrap() = stack;
-            });
+            return Ok(true);
         }
-        self.journal_chunk_save((key.0 >> 4, key.2 >> 4));
+        self.write_mod_block_entity(key, |block_entity| {
+            block_entity.items.resize(slots, None);
+            *block_entity.item_slot_mut(index).unwrap() = stack;
+        });
         Ok(true)
     }
 
@@ -861,28 +871,6 @@ pub(super) fn world_block_entity(
     Some(mod_api::__private::game::block_entity_ref(
         level, pos, generation,
     ))
-}
-
-/// Read a resident entity's saved data after the caller has resolved its level to `world`.
-pub(super) fn world_block_entity_data(
-    world: &World,
-    registry: &sunrise_world::registry::BlockRegistry,
-    items: &crate::items::Items,
-    entity: BlockEntityRef,
-) -> Option<Compound> {
-    let block_entity = resident_block_entity(world, entity)?;
-    let [x, y, z] = entity.fields().position;
-    let block = &registry.state(world.block(x, y, z))?.name;
-    save_without_metadata(world, (x, y, z), block_entity, block, items)
-}
-
-fn resident_block_entity(world: &World, entity: BlockEntityRef) -> Option<&BlockEntity> {
-    let fields = entity.fields();
-    let [x, y, z] = fields.position;
-    if world.block_entities.generation(&(x, y, z)) != Some(fields.generation) {
-        return None;
-    }
-    loaded_block_entity(world, fields.position)
 }
 
 fn loaded_block_entity(world: &World, [x, y, z]: [i32; 3]) -> Option<&BlockEntity> {

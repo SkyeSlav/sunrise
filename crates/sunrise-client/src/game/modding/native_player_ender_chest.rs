@@ -89,9 +89,6 @@ impl Game<'_> {
             .filter(|g| g.participates_online() && !g.dead)
             .ok_or(OpenMenuError::PlayerUnavailable)?
             .conn;
-        if self.merchant_click_in_progress(conn) {
-            return Ok(false);
-        }
         let title = component_nbt(&title.component());
         if self.lan_guest_swaps.contains(&conn) {
             self.lan_ender_menus.push((conn, title));

@@ -130,6 +130,9 @@ pub(crate) fn install() {
                 }
             },
             living_breathe_heard: || false,
+            farmland_trample: |context, _, _, _, _, cancel| {
+                *cancel = context.setting("rules_mod", "stack").is_some();
+            },
             has_mods: || false,
             player_name_format: |context, _, displayname| {
                 if let Some(value) = context.setting("rules_mod", "stack") {

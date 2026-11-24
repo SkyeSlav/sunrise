@@ -372,14 +372,6 @@ impl Station {
         self.start = 0;
         self.scroll = 0.0;
     }
-    /// Clear state tied to the previous `UpdateRecipes` table.
-    pub(in crate::game) fn reset_stonecutter_generation(&mut self) {
-        self.stone = Default::default();
-        self.selected = None;
-        self.result = None;
-        self.scrolling = false;
-        self.stonecutter_changed();
-    }
     /// `StonecutterScreen.isScrollBarActive`.
     fn stonecutter_scrolls(&self) -> bool {
         self.inputs[0].is_some() && self.stone.recipes.len() > 12
@@ -2123,15 +2115,14 @@ impl Game<'_> {
                 _ => serde_json::Value::Null,
             };
         };
-        let recipes = &self.station_recipes().stonecutting;
+        let recipes = &self.stations().recipes.stonecutting;
         serde_json::json!({
             "costs": s.offers.costs,
             "clues": s.offers.clues.iter().map(|c| c.as_ref().map(|(e, l)| format!("{e} {l}"))).collect::<Vec<_>>(),
             "bookcases": s.bookcases,
             "anvil_cost": s.anvil.cost,
             "result": s.result.as_ref().map(|r| format!("{} x{}", r.item, r.count)),
-            "recipes": s.stone.recipes.iter().map(|&i| &recipes[i].id).collect::<Vec<_>>(),
-            "recipe_results": s.stone.recipes.iter().map(|&i| recipes[i].result.item.as_ref()).collect::<Vec<_>>(),
+            "recipes": s.stone.recipes.iter().map(|&i| recipes[i].id.clone()).collect::<Vec<_>>(),
             "selected": s.selected,
         })
     }

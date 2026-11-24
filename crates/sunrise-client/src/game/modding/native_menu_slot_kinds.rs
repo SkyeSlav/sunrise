@@ -87,9 +87,8 @@ fn layout_kinds(
                     }
                 }
                 "minecraft:furnace" | "minecraft:blast_furnace" | "minecraft:smoker" => {
-                    if slot == 2 { Result } else { Input }
+                    if slot == 2 { Result } else { Storage }
                 }
-                "minecraft:brewing_stand" => Input,
                 "minecraft:crafter_3x3" => CraftingGrid,
                 "minecraft:generic_9x1"
                 | "minecraft:generic_9x2"
@@ -99,7 +98,8 @@ fn layout_kinds(
                 | "minecraft:generic_9x6"
                 | "minecraft:generic_3x3"
                 | "minecraft:shulker_box"
-                | "minecraft:hopper" => Storage,
+                | "minecraft:hopper"
+                | "minecraft:brewing_stand" => Storage,
                 m if m.starts_with("sunrise:mount") => {
                     if slot < 2 {
                         Equipment
@@ -110,11 +110,6 @@ fn layout_kinds(
                 _ => Other,
             }
         };
-    }
-    if let Some(content) = content {
-        for &slot in &content.inputs {
-            kinds[slot] = Input;
-        }
     }
     kinds
 }
@@ -196,11 +191,7 @@ mod tests {
                     CraftingGrid,
                 ],
             ),
-            ("minecraft:furnace", vec![Input, Input, Result]),
-            ("minecraft:blast_furnace", vec![Input, Input, Result]),
-            ("minecraft:smoker", vec![Input, Input, Result]),
-            ("minecraft:brewing_stand", vec![Input; 5]),
-            ("minecraft:hopper", vec![Storage; 5]),
+            ("minecraft:furnace", vec![Storage, Storage, Result]),
             (
                 "minecraft:generic_9x3",
                 vec![
@@ -236,10 +227,9 @@ mod tests {
         use sunrise_client::containers::{ModCrafting, ModLinks};
         let content = ModMenuType {
             id: "test:roles",
-            slots: 9,
+            slots: 8,
             data_slots: 0,
             results: vec![7],
-            inputs: vec![5, 8],
             crafting: Some(ModCrafting {
                 grid: 0,
                 size: 2,
@@ -253,14 +243,19 @@ mod tests {
             CraftingGrid,
             CraftingGrid,
             Result,
-            Input,
+            Storage,
             Storage,
             Result,
-            Input,
         ];
         expected.extend(PLAYER);
         assert_eq!(
-            layout_kinds("test:roles", 45, Some(&content), |_| None),
+            layout_kinds("test:roles", 44, Some(&content), |s| Some(if s < 8 {
+                300 + s
+            } else if s < 35 {
+                s + 1
+            } else {
+                s - 35
+            })),
             expected
         );
     }

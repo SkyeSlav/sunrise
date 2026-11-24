@@ -85,7 +85,7 @@ impl Game<'_> {
     /// hazards (drowning, lava, fire blocks, suffocation, the void), and
     /// regeneration and the food tick (ServerPlayer.doTick). Their hurt
     /// sounds are heard at the guest.
-    pub(in crate::game) fn guest_server_tick(&mut self, conn: u32, body: bool) {
+    pub(super) fn guest_server_tick(&mut self, conn: u32, body: bool) {
         // The last move's fall stands in for the server's delta movement.
         let Some(host) = self.lan.as_mut() else {
             return;
@@ -93,7 +93,7 @@ impl Game<'_> {
         let fell = host
             .hub
             .guest(conn)
-            .and_then(|g| g.moves.last().map(|m| m.delta[1]))
+            .and_then(|g| g.moves.last().map(|m| m.0[1]))
             .unwrap_or(0.0);
         self.guest_glide_tick(conn, fell);
         let Some((moves, from_ground)) = self.lan.as_mut().and_then(|host| {
@@ -110,11 +110,11 @@ impl Game<'_> {
             return;
         };
         let g = self.lan.as_ref().unwrap().hub.guest(conn).unwrap();
-        let id = g.entity_id as u32;
+        // Each move the player sent put it somewhere (`handleMovePlayer`'s `setPos`).
+        let (id, end) = (g.entity_id as u32, g.position);
+        self.entity_section_walked(id, end, moves.iter().map(|m| m.0));
+        let g = self.lan.as_ref().unwrap().hub.guest(conn).unwrap();
         if g.spectator() {
-            // Spectators skip the movement replay and only file its position writes.
-            self.entity_section_walked(id, g.position, moves.iter().map(|m| m.delta));
-            let g = self.lan.as_ref().unwrap().hub.guest(conn).unwrap();
             // ServerPlayer.doTick runs the player's whole tick for a spectator
             // too, unless its box touches an unloaded chunk
             // (`touchingUnloadedChunk`, `guest_body_ticks`): its effects
@@ -188,28 +188,30 @@ impl Game<'_> {
             if w.player.flying && !riding {
                 w.player.fall_distance = 0.0;
             }
+            let travelled: Vec<[f64; 3]> = moves.iter().map(|m| m.0).collect();
             // The tick's whole movement, for the delta movement a glide's wall
             // hit reads (`handleMovePlayer` gives the server copy the client's
             // own movement).
-            let vector = |[x, y, z]: [f64; 3]| Vec3::new(x, y, z);
-            let tick_movement = moves.iter().fold(Vec3::ZERO, |sum, accepted| {
-                sum.add_vector(vector(accepted.delta))
+            let tick_movement = travelled.iter().fold(Vec3::ZERO, |sum, d| {
+                sum.add_vector(Vec3::new(d[0], d[1], d[2]))
             });
-            // Entity.move's movementThisTick, using the actual accepted endpoints.
+            // Entity.move's movementThisTick: each move, from where the
+            // tick's first one started.
             let end = w.player.position;
-            let start = moves.first().map_or(end, |first| {
-                vector(first.position).subtract(vector(first.delta))
-            });
+            let start = travelled
+                .iter()
+                .fold(end, |p, d| p.subtract(Vec3::new(d[0], d[1], d[2])));
             w.player.history.clear();
             let mut from = start;
-            for accepted in &moves {
-                let to = vector(accepted.position);
+            for d in &travelled {
+                let delta = Vec3::new(d[0], d[1], d[2]);
+                let to = from.add_vector(delta);
                 w.player
                     .history
                     .add(sunrise_world::entity_move::MovementRecord {
                         from,
                         to,
-                        original: Some(vector(accepted.delta)),
+                        original: Some(delta),
                     });
                 from = to;
             }
@@ -217,67 +219,27 @@ impl Game<'_> {
             // Where the first move that went up ended, if one did, and whether the player
             // was alive then: the hazards below may kill it later in this tick.
             let mut rose = None;
-            let mut latest = end;
-            let mut from = start;
-            let mut replay = moves.iter().peekable();
-            while let Some(accepted) = replay.next() {
-                let movement = vector(accepted.delta);
-                let at = vector(accepted.position);
-                w.player.position = at;
-                w.player.shift_key_down = accepted.sneaking;
-                // File this accepted setPos before its landing or a later move.
-                // In particular, an intervening trample lift can cross a section too.
-                if crate::game::entity_sections::crossed(from.components(), at.components()) {
-                    let mut collected = std::mem::take(&mut w.player.events);
-                    game.entity_section_step(id, from.components(), at.components());
-                    let Some(player) = game.player.as_mut().filter(|p| p.entity_id as u32 == id)
-                    else {
-                        return (collected, None);
-                    };
-                    collected.append(&mut player.events);
-                    player.events = collected;
-                    side = game_side!(game);
-                    w = motion_world!(game, side, player);
-                }
-                let landed = (|| -> sunrise_client::Result<_> {
-                    w.set_on_ground_with_movement(accepted.on_ground, false, movement)?;
+            let mut at = start;
+            for (moved, on_ground) in moves {
+                let movement = Vec3::new(moved[0], moved[1], moved[2]);
+                at = at.add_vector(movement);
+                let landed = (|| -> sunrise_client::Result<()> {
+                    w.set_on_ground_with_movement(on_ground, false, movement)?;
                     let pos = w.legacy_on_position()?;
                     let state = w.block_state(pos)?;
-                    w.check_guest_fall_damage(movement.y, accepted.on_ground, state, pos)
-                })();
-                let Ok(landed) = landed else { break };
-                if let Some(trample) = landed {
-                    let mut collected = std::mem::take(&mut w.player.events);
-                    game.trample_farmland(id, true, trample);
-                    let Some(player) = game.player.as_mut().filter(|p| p.entity_id as u32 == id)
-                    else {
-                        return (collected, None);
-                    };
-                    collected.append(&mut player.events);
-                    player.events = collected;
-                    side = game_side!(game);
-                    w = motion_world!(game, side, player);
-                    if w.finish_trample_fall(trample).is_err() {
-                        break;
+                    w.check_fall_damage(moved[1], on_ground, state, pos)?;
+                    // handlePlayerPositionChange: a move that goes up ends the fall
+                    // (`resetFallDistance`), after that move's own fall check.
+                    if moved[1] > 0.0 {
+                        w.player.fall_distance = 0.0;
+                        rose.get_or_insert((at, !w.player.health.dead_or_dying()));
                     }
-                }
-                // handlePlayerPositionChange: an upward move resets the fall distance
-                // after the landing, and its advancement reads the post-landing health.
-                from = w.player.position;
-                if movement.y > 0.0 {
-                    w.player.fall_distance = 0.0;
-                    rose.get_or_insert((at, !w.player.health.dead_or_dying()));
-                }
-                // Preserve a lift on the final accepted move, but do not overwrite a
-                // position set after that report or rewind if the drain stopped early.
-                if replay.peek().is_none() && at == end {
-                    latest = w.player.position;
-                }
-                if w.check_movement_statistics(movement).is_err() {
+                    w.check_movement_statistics(movement)
+                })();
+                if landed.is_err() {
                     break;
                 }
             }
-            w.player.position = latest;
             // A ServerPlayer travels on the server too
             // (MoveSimulationType.AUTHORITATIVE_SIDE_AND_SERVER), so every tick
             // on a ladder or vine LivingEntity.handleOnClimbable resets its fall
@@ -360,8 +322,8 @@ impl Game<'_> {
             }
             // ServerGamePacketListenerImpl.handleMovePlayer:
             // Player.checkMovementStatistics for each move.
-            for accepted in moves {
-                game.movement_stats(vector(accepted.delta));
+            for d in travelled {
+                game.movement_stats(Vec3::new(d[0], d[1], d[2]));
             }
             // LivingEntity.baseTick: a new block position runs the worn
             // enchantments' location_changed effects (frost walker).
@@ -536,7 +498,6 @@ impl Game<'_> {
                         Some(conn),
                     );
                 }
-                // Farmland a mod listens to: asked and applied as the landing guest.
                 MotionEvent::Fall(event) => {
                     let player = self
                         .lan

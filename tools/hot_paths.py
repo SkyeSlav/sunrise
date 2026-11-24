@@ -62,12 +62,10 @@ def scratch_env(root, **extra):
     return lab.game_env(SUNRISE_TELEMETRY_URL='off', SUNRISE_WORKER_THREADS='2', **homes, **extra)
 
 
-# Each compiled-in native mod has its own package beside the executable, as in a normal native build.
+# The native mod built into sunrise-hot-paths-game: its package beside the executable, as the launcher leaves one.
 LISTENER = 'hot_paths_listener'
-FANOUT_COUNTS = (1, 10, 100, 1000)
-FANOUT_HOOKS = ('entity_tick', 'server_started')
-LISTENER_MANIFEST = f"""id = '{{mod_id}}'
-name = '{{mod_id}}'
+LISTENER_MANIFEST = f"""id = '{LISTENER}'
+name = '{LISTENER}'
 version = '1.0.0'
 api = '0.2'
 side = 'both'
@@ -79,14 +77,13 @@ mixins = '{'b' * 40}'
 """
 
 
-def install(game, folder, fanout_count):
-    """Copy the benchmark executable and write its matching native mod packages."""
-    for mod_id in [LISTENER, *(f'hot_paths_fanout_{i}' for i in range(fanout_count))]:
-        package = folder / 'sunrise-native-mods' / mod_id
-        (package / 'src').mkdir(parents=True)
-        (package / 'sunrise-mod.toml').write_text(LISTENER_MANIFEST.format(mod_id=mod_id))
-        (package / 'Cargo.toml').write_text(f"[package]\nname = '{mod_id}'\nversion = '1.0.0'\n")
-        (package / 'src/lib.rs').write_text('// Built into the executable.\n')
+def install(game, folder):
+    """Copy the benchmark's executable into `folder` with the listener mod's package beside it."""
+    package = folder / 'sunrise-native-mods' / LISTENER
+    (package / 'src').mkdir(parents=True)
+    (package / 'sunrise-mod.toml').write_text(LISTENER_MANIFEST)
+    (package / 'Cargo.toml').write_text(f"[package]\nname = '{LISTENER}'\nversion = '1.0.0'\n")
+    (package / 'src/lib.rs').write_text('// Built into the executable.\n')
     return shutil.copy2(game, folder / 'sunrise-client')
 
 
@@ -105,8 +102,9 @@ def run_game(game, resources, work, mods, only, prefix=()):
     """One process of the benchmark; returns its lines by workload name."""
     work.mkdir(parents=True)
     out = work / 'workloads.jsonl'
-    env = scratch_env(work, SUNRISE_HOT_PATHS=str(out), SUNRISE_HOT_PATHS_MODS=mods,
-                      SUNRISE_HOT_PATHS_ONLY=only)
+    env = scratch_env(work, SUNRISE_HOT_PATHS=str(out), SUNRISE_HOT_PATHS_MODS=mods)
+    if only:
+        env['SUNRISE_HOT_PATHS_ONLY'] = only
     game_dir = work / 'game'
     game_dir.mkdir()
     command = [*prefix, str(game), '--resources', str(resources), '--game-dir', str(game_dir)]
@@ -195,44 +193,28 @@ def measure(args):
     valgrind = shutil.which(args.valgrind)
     samples = {}  # (workload, metric) -> per-operation values
     checksums, operations, notes = {}, {}, []
-    modes = {'none': set(), 'native': set()}
-    only = args.only if args.only is not None else os.environ.get('SUNRISE_HOT_PATHS_ONLY', '')
-    prefixes = tuple(only.split(','))
-    max_fanout = 0
-    for count in FANOUT_COUNTS:
-        names = {f'mod.hook.fanout.{hook}.{count}' for hook in FANOUT_HOOKS}
-        selected = {name for name in names if name.startswith(prefixes)}
-        if selected:
-            max_fanout = count
-            modes[f'fanout-{count}'] = selected
     with tempfile.TemporaryDirectory(prefix='hot-paths-', dir=args.work) as work:
         work = Path(work).resolve()
-        game = install(game, work, max_fanout)
+        game = install(game, work)
 
         def take(rows, mods, sample):
-            missing = modes[mods] - rows.keys()
-            if missing:
-                raise SystemExit(f'{mods}/{sample} did not measure: {", ".join(sorted(missing))}')
             for name, row in rows.items():
                 operations[name] = row['operations']
                 seen = checksums.setdefault(name, row['checksum'])
                 if seen != row['checksum']:
                     notes.append(f'{name}: sample {mods}/{sample} did different work (checksum differs)')
 
-        for mods in modes:
+        for mods in ('none', 'native'):
             for sample in range(args.wall_samples):
-                rows = run_game(game, resources, work / f'wall-{mods}-{sample}', mods, only)
+                rows = run_game(game, resources, work / f'wall-{mods}-{sample}', mods, args.only)
                 take(rows, mods, sample)
                 for name, row in rows.items():
                     samples.setdefault((name, 'wall_ns'), []).append(row['wall_ns'] / row['operations'])
             if not valgrind:
                 continue
             for sample in range(args.count_samples):
-                counted, rows = callgrind(valgrind, game, resources, work / f'count-{mods}-{sample}', mods, only)
+                counted, rows = callgrind(valgrind, game, resources, work / f'count-{mods}-{sample}', mods, args.only)
                 take(rows, mods, f'callgrind-{sample}')
-                missing = modes[mods] - counted.keys()
-                if missing:
-                    raise SystemExit(f'{mods}/callgrind-{sample} did not count: {", ".join(sorted(missing))}')
                 for name, (instructions, allocations) in counted.items():
                     samples.setdefault((name, 'instructions'), []).append(instructions / rows[name]['operations'])
                     samples.setdefault((name, 'allocations'), []).append(allocations / rows[name]['operations'])

@@ -15,7 +15,7 @@
 //! longer than [`MAX_STORAGE_PAGE`] entries, whatever a caller asks.
 //!
 //! **When not to use it.** A pipe that moves a few items a tick between small containers is
-//! cheaper on `ITEMS` and [`move_resources`](crate::resource_util::move_resources), slot by slot: in the
+//! cheaper on `ITEMS` and [`move_resources`](crate::move_resources), slot by slot: in the
 //! measurements behind this API, 256 pipes moving 8 items a tick each cost 2.8 ms a tick that
 //! way against 3.7 ms through `STORAGE`. `STORAGE` pays off for bulk stores, large moves, and
 //! networks that sleep while idle.
@@ -61,9 +61,7 @@ impl From<(crate::Identifier, String)> for StorageError {
 
 impl From<crate::Overanswered> for StorageError {
     fn from(error: crate::Overanswered) -> Self {
-        Self::Overanswered {
-            owner: error.owner.unwrap_or_else(|| "unknown provider".into()),
-        }
+        Self::Overanswered { owner: error.owner }
     }
 }
 
@@ -300,7 +298,7 @@ impl Slots {
             }
             if pick(host, index) {
                 let ask = (*left).min(u32::MAX as u64) as u32;
-                *left -= self.0.insert_at(host, tx, index, resource, ask).min(ask) as u64;
+                *left -= self.0.insert(host, tx, index, resource, ask).min(ask) as u64;
             }
         }
     }
@@ -332,11 +330,11 @@ impl ItemStorage for Slots {
             let here = match self.0.resource(host, index) {
                 Some(held) if held == *resource => self
                     .0
-                    .capacity(host, index, Some(resource))
+                    .capacity(host, index, resource)
                     .saturating_sub(self.0.amount(host, index)),
                 Some(_) => 0,
                 None if self.0.is_valid(host, index, resource) => {
-                    self.0.capacity(host, index, Some(resource))
+                    self.0.capacity(host, index, resource)
                 }
                 None => 0,
             };
@@ -376,7 +374,7 @@ impl ItemStorage for Slots {
             }
             if self.holds(host, index, resource) {
                 let ask = left.min(u32::MAX as u64) as u32;
-                left -= self.0.extract_at(host, tx, index, resource, ask).min(ask) as u64;
+                left -= self.0.extract(host, tx, index, resource, ask).min(ask) as u64;
             }
         }
         amount - left
@@ -402,10 +400,11 @@ impl ItemStorage for Slots {
 }
 
 /// Moves up to `max` of `resource` out of `from` into `to`, in transaction `tx`: how much moved.
-/// Extract from `from` first, then offer the extracted amount to `to` in the same journal. If
-/// `to` takes only part, roll back and retry once with that amount. A handler that answers more
-/// than it was asked rolls back the move with [`StorageError::Overanswered`]. If `from` has none
-/// or `to` has no room, neither is asked to transfer anything.
+/// As one step of [`move_resources`](crate::move_resources): all or nothing in a transaction of
+/// its own, a move `to` takes only part of tried again with that part, and a handler answering
+/// more than it was asked ending it with [`StorageError::Overanswered`]. Four handler calls
+/// whether one item moves or a million, and only the two questions when `from` has none or `to`
+/// has no room.
 pub fn transfer(
     host: &mut dyn ServerHost,
     from: &Capability<dyn ItemStorage>,
@@ -430,7 +429,7 @@ pub fn transfer(
         },
         want,
         |host, tx, want| from.extract(host, tx, resource, want),
-        |host, tx, out| Ok(to.insert(host, tx, resource, out)),
+        |host, tx, out| to.insert(host, tx, resource, out),
     )?)
 }
 

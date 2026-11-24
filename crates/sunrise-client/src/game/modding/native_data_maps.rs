@@ -623,7 +623,7 @@ mod tests {
             &[ty("mymod:fuel", "minecraft:item")],
             &sunrise_world::loot::PackOverlay {
                 files,
-                ..sunrise_world::loot::PackOverlay::default()
+                ..sunrise_world::loot::PackOverlay::NONE
             },
             &registries,
         )
@@ -710,7 +710,7 @@ mod tests {
             &[ty("test:weight", "minecraft:entity_type")],
             &sunrise_world::loot::PackOverlay {
                 files: &f,
-                ..sunrise_world::loot::PackOverlay::default()
+                ..sunrise_world::loot::PackOverlay::NONE
             },
             &registries,
         );
@@ -947,7 +947,7 @@ mod tests {
             &[ty("mymod:hardness", "minecraft:block")],
             &sunrise_world::loot::PackOverlay {
                 files: &f,
-                ..sunrise_world::loot::PackOverlay::default()
+                ..sunrise_world::loot::PackOverlay::NONE
             },
             &registries,
         );

@@ -1691,22 +1691,6 @@ impl Game<'_> {
         out
     }
 
-    /// A console or RCON announcement, logged without adding to the source's command output.
-    pub(super) fn dedicated_console_say(&mut self, message: String) {
-        let name = if self.rcon_source { "Rcon" } else { "Server" };
-        let Some(hidden) = self.chat_hidden_from(|_| (0, name, message.as_str())) else {
-            return;
-        };
-        let held = self.rcon_source.then(|| CAPTURE.take());
-        log("INFO", &format!("[Not Secure] [{name}] {message}"));
-        if let Some(held) = held {
-            CAPTURE.set(held);
-        }
-        if let Some(host) = &self.lan {
-            host.hub.console_say(name, &message, &hidden);
-        }
-    }
-
     /// DedicatedServer.handleConsoleInputs: one console line, run as the
     /// server (permission level 4). The dedicated-only commands are here;
     /// everything else goes to the game's dispatcher.
@@ -2053,7 +2037,22 @@ impl Game<'_> {
                     ],
                 ));
             }
-            "say" if !rest.is_empty() => self.dedicated_console_say(rest.join(" ")),
+            "say" if !rest.is_empty() => {
+                // SayCommand from the console: an unsigned system chat
+                // message of type say_command, logged as not secure.
+                let message = rest.join(" ");
+                // An RCON client's `say` is `[Rcon] message`, and its reply stays empty: the line is
+                // the console's own log, not a message to the source.
+                let name = if self.rcon_source { "Rcon" } else { "Server" };
+                let held = self.rcon_source.then(|| CAPTURE.take());
+                log("INFO", &format!("[Not Secure] [{name}] {message}"));
+                if let Some(held) = held {
+                    CAPTURE.set(held);
+                }
+                if let Some(h) = &self.lan {
+                    h.hub.say(name, &message);
+                }
+            }
             _ => {
                 // The game's dispatcher, captured for the console.
                 self.chat_capture = Some(Vec::new());

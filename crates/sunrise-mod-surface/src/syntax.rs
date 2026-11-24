@@ -33,22 +33,6 @@ pub(crate) struct Build<'t> {
     pub byte: usize,
 }
 
-/// A tuple struct's field read by its position where the parser can tie the read to the
-/// struct's path ([`Reader::tie`]): `X(..).0`, `v.0` where `v` is bound by `let v: X`,
-/// `let v = X(..)` or a parameter `v: X` (through `&` and `&mut`), `self.0` in a method (path
-/// `Self`), and each position a pattern `X(a, b, ..)` lists before its `..`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct TupleField<'t> {
-    /// The struct's path, as names.
-    pub path: Vec<&'t str>,
-    /// Written with a leading `::`.
-    pub rooted: bool,
-    pub position: u32,
-    pub line: usize,
-    /// The byte where the read is.
-    pub byte: usize,
-}
-
 /// An `impl` block: the bytes of its body, and the path of the type it is for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Impl<'t> {
@@ -62,7 +46,6 @@ pub(crate) struct Impl<'t> {
 #[derive(Debug, Default)]
 pub(crate) struct Syntax<'t> {
     pub builds: Vec<Build<'t>>,
-    pub tuple_fields: Vec<TupleField<'t>>,
     /// Every path written in code, attributes included, `use` trees left out: its names.
     pub paths: Vec<Vec<&'t str>>,
     pub impls: Vec<Impl<'t>>,
@@ -101,26 +84,9 @@ fn conditional(attrs: &[syn::Attribute]) -> bool {
         .any(|a| a.path().is_ident("cfg") || a.path().is_ident("cfg_attr"))
 }
 
-/// The path a type is through `&`, `&mut`, parentheses and invisible groups, with whether it
-/// is written with a leading `::`; `None` for any other type.
-fn type_path<'t>(reader: &Reader<'t>, ty: &syn::Type) -> Option<Tie<'t>> {
-    match ty {
-        syn::Type::Reference(r) => type_path(reader, &r.elem),
-        syn::Type::Paren(t) => type_path(reader, &t.elem),
-        syn::Type::Group(t) => type_path(reader, &t.elem),
-        _ => plain_path(ty).map(|path| (reader.names(path), path.leading_colon.is_some())),
-    }
-}
-
-/// A struct's path as names, and whether it is written with a leading `::`.
-type Tie<'t> = (Vec<&'t str>, bool);
-
 struct Reader<'t> {
     text: &'t str,
     out: Syntax<'t>,
-    /// The names bound in the function being read, innermost last, each with the struct path
-    /// it is tied to when the binding says it.
-    bindings: Vec<(&'t str, Option<Tie<'t>>)>,
 }
 
 impl<'t> Reader<'t> {
@@ -142,92 +108,6 @@ impl<'t> Reader<'t> {
             let target = self.name(&last.ident);
             self.out.type_aliases.push((alias, target, item));
         }
-    }
-
-    /// Binds every name `pat` binds, tied to no struct.
-    fn bind_untied(&mut self, pat: &syn::Pat) {
-        struct Names<'r, 't>(&'r mut Reader<'t>);
-        impl<'a> Visit<'a> for Names<'_, '_> {
-            fn visit_pat_ident(&mut self, p: &'a syn::PatIdent) {
-                let name = self.0.name(&p.ident);
-                self.0.bindings.push((name, None));
-                visit::visit_pat_ident(self, p);
-            }
-        }
-        Names(self).visit_pat(pat);
-    }
-
-    /// Binds a parameter or a `let` pattern: a name with a type is tied to the type's path.
-    fn bind(&mut self, pat: &syn::Pat, tie: Option<Tie<'t>>) {
-        match (pat, tie) {
-            (syn::Pat::Type(typed), _) => {
-                let tie = type_path(self, &typed.ty);
-                self.bind(&typed.pat, tie);
-            }
-            (syn::Pat::Ident(p), tie) if p.subpat.is_none() => {
-                let name = self.name(&p.ident);
-                self.bindings.push((name, tie));
-            }
-            (pat, _) => self.bind_untied(pat),
-        }
-    }
-
-    /// The struct a value is tied to: a tuple struct's constructor call, a name bound with its
-    /// type, `self` in a method. Anything else (a tuple, a field, a method's result, a closure's
-    /// untyped argument) is tied to none.
-    fn tie(&self, expr: &syn::Expr) -> Option<Tie<'t>> {
-        match expr {
-            syn::Expr::Paren(e) => self.tie(&e.expr),
-            syn::Expr::Group(e) => self.tie(&e.expr),
-            syn::Expr::Call(call) => match &*call.func {
-                syn::Expr::Path(p) if p.qself.is_none() => {
-                    Some((self.names(&p.path), p.path.leading_colon.is_some()))
-                }
-                _ => None,
-            },
-            syn::Expr::Path(p) if p.qself.is_none() => {
-                let ident = p.path.get_ident()?;
-                let name = self.name(ident);
-                self.bindings
-                    .iter()
-                    .rev()
-                    .find(|(bound, _)| *bound == name)
-                    .and_then(|(_, tie)| tie.clone())
-            }
-            _ => None,
-        }
-    }
-
-    fn tuple_field(&mut self, (path, rooted): Tie<'t>, position: u32, at: proc_macro2::Span) {
-        self.out.tuple_fields.push(TupleField {
-            path,
-            rooted,
-            position,
-            line: at.start().line,
-            byte: at.byte_range().start,
-        });
-    }
-
-    /// Reads a function with only its own parameters bound.
-    fn function(&mut self, sig: &syn::Signature, read: impl FnOnce(&mut Self)) {
-        let outer = std::mem::take(&mut self.bindings);
-        for input in &sig.inputs {
-            match input {
-                syn::FnArg::Receiver(r) => {
-                    let tie = match r.colon_token {
-                        None => Some((vec!["Self"], false)),
-                        Some(_) => type_path(self, &r.ty),
-                    };
-                    self.bindings.push(("self", tie));
-                }
-                syn::FnArg::Typed(t) => {
-                    let tie = type_path(self, &t.ty);
-                    self.bind(&t.pat, tie);
-                }
-            }
-        }
-        read(self);
-        self.bindings = outer;
     }
 
     fn build(&mut self, path: &syn::Path, how: How, brace: bool) {
@@ -283,116 +163,7 @@ impl<'a, 't> Visit<'a> for Reader<'t> {
         if !p.elems.iter().any(|e| matches!(e, syn::Pat::Rest(_))) {
             self.build(&p.path, How::Full, false);
         }
-        // The positions before a `..` are known; those after it count from an end the scan
-        // does not know.
-        if let Some(first) = p.path.segments.first() {
-            let tie = (self.names(&p.path), p.path.leading_colon.is_some());
-            let at = first.ident.span();
-            let listed = p
-                .elems
-                .iter()
-                .take_while(|e| !matches!(e, syn::Pat::Rest(_)));
-            for (position, _) in (0..).zip(listed) {
-                self.tuple_field(tie.clone(), position, at);
-            }
-        }
         visit::visit_pat_tuple_struct(self, p);
-    }
-
-    fn visit_expr_field(&mut self, e: &'a syn::ExprField) {
-        if let syn::Member::Unnamed(index) = &e.member
-            && let Some(tie) = self.tie(&e.base)
-        {
-            self.tuple_field(tie, index.index, index.span);
-        }
-        visit::visit_expr_field(self, e);
-    }
-
-    fn visit_item_fn(&mut self, i: &'a syn::ItemFn) {
-        self.function(&i.sig, |this| visit::visit_item_fn(this, i));
-    }
-
-    fn visit_impl_item_fn(&mut self, i: &'a syn::ImplItemFn) {
-        self.function(&i.sig, |this| visit::visit_impl_item_fn(this, i));
-    }
-
-    fn visit_trait_item_fn(&mut self, i: &'a syn::TraitItemFn) {
-        self.function(&i.sig, |this| visit::visit_trait_item_fn(this, i));
-    }
-
-    fn visit_block(&mut self, b: &'a syn::Block) {
-        let outer = self.bindings.len();
-        visit::visit_block(self, b);
-        self.bindings.truncate(outer);
-    }
-
-    fn visit_local(&mut self, l: &'a syn::Local) {
-        // The value is read before the pattern binds: `let v = v.0;`.
-        for attr in &l.attrs {
-            self.visit_attribute(attr);
-        }
-        if let Some(init) = &l.init {
-            self.visit_local_init(init);
-        }
-        self.visit_pat(&l.pat);
-        let tie = l.init.as_ref().and_then(|init| self.tie(&init.expr));
-        self.bind(&l.pat, tie);
-    }
-
-    fn visit_expr_closure(&mut self, e: &'a syn::ExprClosure) {
-        let outer = self.bindings.len();
-        for input in &e.inputs {
-            self.bind(input, None);
-        }
-        visit::visit_expr_closure(self, e);
-        self.bindings.truncate(outer);
-    }
-
-    fn visit_arm(&mut self, a: &'a syn::Arm) {
-        let outer = self.bindings.len();
-        self.bind_untied(&a.pat);
-        visit::visit_arm(self, a);
-        self.bindings.truncate(outer);
-    }
-
-    fn visit_expr_for_loop(&mut self, e: &'a syn::ExprForLoop) {
-        let outer = self.bindings.len();
-        for attr in &e.attrs {
-            self.visit_attribute(attr);
-        }
-        if let Some(label) = &e.label {
-            self.visit_label(label);
-        }
-        self.visit_pat(&e.pat);
-        self.visit_expr(&e.expr);
-        self.bind_untied(&e.pat);
-        self.visit_block(&e.body);
-        self.bindings.truncate(outer);
-    }
-
-    fn visit_expr_let(&mut self, e: &'a syn::ExprLet) {
-        visit::visit_expr_let(self, e);
-        self.bind_untied(&e.pat);
-    }
-
-    fn visit_expr_if(&mut self, e: &'a syn::ExprIf) {
-        // What `if let` binds holds in its first branch only.
-        let outer = self.bindings.len();
-        for attr in &e.attrs {
-            self.visit_attribute(attr);
-        }
-        self.visit_expr(&e.cond);
-        self.visit_block(&e.then_branch);
-        self.bindings.truncate(outer);
-        if let Some((_, otherwise)) = &e.else_branch {
-            self.visit_expr(otherwise);
-        }
-    }
-
-    fn visit_expr_while(&mut self, e: &'a syn::ExprWhile) {
-        let outer = self.bindings.len();
-        visit::visit_expr_while(self, e);
-        self.bindings.truncate(outer);
     }
 
     fn visit_pat_ident(&mut self, p: &'a syn::PatIdent) {
@@ -726,7 +497,6 @@ pub(crate) fn parse(text: &str) -> Result<Syntax<'_>, Unread> {
             let mut reader = Reader {
                 text,
                 out: Syntax::default(),
-                bindings: Vec::new(),
             };
             for item in &file.items {
                 let defined = match item {

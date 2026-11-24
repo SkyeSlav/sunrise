@@ -1662,7 +1662,7 @@ pub mod tests {
             &root,
             &sunrise_world::loot::PackOverlay {
                 files: &files,
-                ..sunrise_world::loot::PackOverlay::default()
+                ..sunrise_world::loot::PackOverlay::NONE
             },
             &defaults,
         )
@@ -1862,7 +1862,7 @@ pub mod tests {
         )];
         let overlay = sunrise_world::loot::PackOverlay {
             files: &files,
-            ..sunrise_world::loot::PackOverlay::default()
+            ..sunrise_world::loot::PackOverlay::NONE
         };
         let loaded = Enchantments::load_with(&root, &overlay, &defaults).unwrap();
         assert_eq!(
@@ -1875,7 +1875,7 @@ pub mod tests {
         )];
         let overlay = sunrise_world::loot::PackOverlay {
             files: &files,
-            ..sunrise_world::loot::PackOverlay::default()
+            ..sunrise_world::loot::PackOverlay::NONE
         };
         assert!(
             Enchantments::load_with(&root, &overlay, &defaults)

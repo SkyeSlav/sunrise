@@ -114,8 +114,8 @@ impl BlockPart for Observed {
         );
         assert_eq!(
             host.transaction(|host, tx| {
-                assert_eq!(source.insert_at(host, tx, 0, &sticks, 2), 2);
-                assert_eq!(other.insert_at(host, tx, 0, &sticks, 3), 3);
+                assert_eq!(source.insert(host, tx, 0, &sticks, 2), 2);
+                assert_eq!(other.insert(host, tx, 0, &sticks, 3), 3);
                 Ok::<_, ()>(())
             }),
             Ok(())
@@ -216,17 +216,17 @@ fn explicit_notices_observe_tentative_writes_and_survive_abort() {
             changes.0.lock().unwrap().clear();
             assert_eq!(
                 game.transaction(|host, tx| {
-                    assert_eq!(items.insert_at(host, tx, 0, &sticks, 2), 2);
+                    assert_eq!(items.insert(host, tx, 0, &sticks, 2), 2);
                     assert!(
                         host.transaction(|host, inner| {
-                            assert_eq!(items.insert_at(host, inner, 0, &sticks, 7), 7);
+                            assert_eq!(items.insert(host, inner, 0, &sticks, 7), 7);
                             Err::<(), ()>(())
                         })
                         .is_err()
                     );
                     assert_eq!(items.amount(host, 0), 2);
                     host.transaction(|host, inner| {
-                        assert_eq!(items.insert_at(host, inner, 0, &sticks, 3), 3);
+                        assert_eq!(items.insert(host, inner, 0, &sticks, 3), 3);
                         Ok::<_, ()>(())
                     })?;
                     assert!(changes.0.lock().unwrap().is_empty());
@@ -245,7 +245,7 @@ fn explicit_notices_observe_tentative_writes_and_survive_abort() {
             game.world.block_log = Some(Vec::new());
             assert!(
                 game.transaction(|host, tx| {
-                    assert_eq!(items.insert_at(host, tx, 0, &sticks, 4), 4);
+                    assert_eq!(items.insert(host, tx, 0, &sticks, 4), 4);
                     for _ in 0..2 {
                         assert!(entity.set_changed(host).unwrap());
                     }
@@ -416,8 +416,8 @@ fn a_double_container_notifies_each_backing_block_once() {
             changes.0.lock().unwrap().clear();
             assert_eq!(
                 game.transaction(|host, tx| {
-                    assert_eq!(items.insert_at(host, tx, 0, &sticks, 3), 3);
-                    assert_eq!(items.insert_at(host, tx, 27, &sticks, 2), 2);
+                    assert_eq!(items.insert(host, tx, 0, &sticks, 3), 3);
+                    assert_eq!(items.insert(host, tx, 27, &sticks, 2), 2);
                     Ok::<_, ()>(())
                 }),
                 Ok(())
@@ -576,12 +576,12 @@ fn notices_come_in_first_write_order_once_each_whatever_the_journal_keeps() {
             );
             changes.0.lock().unwrap().clear();
             let committed = game.transaction(|host, tx| {
-                assert_eq!(first.insert_at(host, tx, 0, &sticks, 2), 2);
+                assert_eq!(first.insert(host, tx, 0, &sticks, 2), 2);
                 host.transaction(|host, inner| {
-                    assert_eq!(second.insert_at(host, inner, 3, &sticks, 5), 5);
+                    assert_eq!(second.insert(host, inner, 3, &sticks, 5), 5);
                     Ok::<_, ()>(())
                 })?;
-                assert_eq!(first.insert_at(host, tx, 1, &sticks, 1), 1);
+                assert_eq!(first.insert(host, tx, 1, &sticks, 1), 1);
                 assert!(
                     changes.0.lock().unwrap().is_empty(),
                     "nothing told before the commit"
@@ -630,7 +630,7 @@ fn a_mod_reads_the_open_transaction_its_depth_and_the_root_commits_phase() {
                     assert_eq!(host.transaction_depth(inner), Some(1));
                     assert_eq!(host.transaction_current().as_ref(), Some(inner));
                     let current = host.transaction_current().unwrap();
-                    assert_eq!(items.insert_at(host, &current, 0, &sticks, 4), 4);
+                    assert_eq!(items.insert(host, &current, 0, &sticks, 4), 4);
                     Ok::<_, ()>(())
                 })?;
                 assert_eq!(items.amount(host, 0), 4);
@@ -646,7 +646,7 @@ fn a_mod_reads_the_open_transaction_its_depth_and_the_root_commits_phase() {
             // The notice of a committed write runs while the root closes.
             LIFECYCLES.lock().unwrap().clear();
             let committed = host.transaction(|host, tx| {
-                assert_eq!(items.insert_at(host, tx, 0, &sticks, 2), 2);
+                assert_eq!(items.insert(host, tx, 0, &sticks, 2), 2);
                 assert!(entity.set_changed(host).unwrap());
                 Ok::<_, ()>(())
             });
@@ -685,7 +685,7 @@ fn a_notice_that_opens_a_transaction_keeps_the_root_closing_phase() {
             LIFECYCLES.lock().unwrap().clear();
             let host: &mut dyn ServerHost = game;
             let committed = host.transaction(|host, tx| {
-                assert_eq!(items.insert_at(host, tx, 0, &sticks, 1), 1);
+                assert_eq!(items.insert(host, tx, 0, &sticks, 1), 1);
                 Ok::<_, ()>(())
             });
             assert_eq!(committed, Ok(()));
@@ -710,58 +710,27 @@ fn a_panicking_root_commit_notice_leaves_the_phase_none() {
             let pos = [0, 64, 0];
             place(game, level, pos, "minecraft:chest");
             let items = level.capability(game, &ITEMS, pos, None).unwrap();
-            let stick = mod_api::ItemStack::new(
-                mod_api::__private::item_key("minecraft:stick").unwrap(),
-                1,
-            )
-            .unwrap();
-            let sticks = ItemResource::of(&stick);
-
-            // The raw write must save even though an earlier notice for a different
-            // chunk panics during commit. No chest notice can dirty this chunk for it.
-            let chunk = (1, 0);
-            let depot_pos = [16, 64, 0];
-            game.world
-                .chunks
-                .insert(chunk, Arc::new(Chunk::empty(chunk.0, chunk.1)));
-            place(game, level, depot_pos, DEPOT);
-            let depot = game.block_entity(level, depot_pos).unwrap();
-            let state = game.world.block(depot_pos[0], depot_pos[1], depot_pos[2]);
-            game.world.block_entities.set_mod_containers(
-                [(
-                    state.0,
-                    Arc::new(sunrise_client::containers::ModContainer {
-                        slots: 1,
-                        ..Default::default()
-                    }),
-                )]
-                .into_iter()
-                .collect(),
+            let sticks = ItemResource::of(
+                &mod_api::ItemStack::new(
+                    mod_api::__private::item_key("minecraft:stick").unwrap(),
+                    1,
+                )
+                .unwrap(),
             );
-            game.world.modified.clear();
             let host: &mut dyn ServerHost = game;
             let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 host.transaction(|host, tx| {
-                    assert_eq!(items.insert_at(host, tx, 0, &sticks, 1), 1);
-                    assert_eq!(
-                        depot.set_item_slot(host, tx, 0, Some(stick.clone())),
-                        Ok(true)
-                    );
+                    assert_eq!(items.insert(host, tx, 0, &sticks, 1), 1);
                     Ok::<_, ()>(())
                 })
             }));
-            assert_eq!(
-                caught.unwrap_err().downcast_ref::<&str>(),
-                Some(&"contents notice panic probe")
-            );
+            assert!(caught.is_err());
             assert_eq!(host.transaction_lifecycle(), TransactionLifecycle::None);
-            assert_eq!(depot.item_slot(host, 0), Ok(Some(stick)));
             let next = host.transaction(|host, _| {
                 assert_eq!(host.transaction_lifecycle(), TransactionLifecycle::Open);
                 Ok::<_, ()>(())
             });
             assert_eq!(next, Ok(()));
-            assert!(game.world.modified.contains(&chunk));
         },
     );
 }
@@ -843,11 +812,11 @@ fn bookshelf_abort_restores_items_flags_and_last_slot_but_keeps_issued_effects()
                 let aborted: Result<(), ()> = game.transaction(|host, tx| {
                     match operation {
                         "insert" => {
-                            assert_eq!(items.insert_at(host, tx, 2, &book, 1), 1);
+                            assert_eq!(items.insert(host, tx, 2, &book, 1), 1);
                             assert!(entity.set_changed(host).unwrap());
                         }
                         "extract" => {
-                            assert_eq!(items.extract_at(host, tx, 2, &book, 1), 1);
+                            assert_eq!(items.extract(host, tx, 2, &book, 1), 1);
                             assert!(entity.set_changed(host).unwrap());
                         }
                         _ => {

@@ -495,12 +495,12 @@ fn a_listener_discarded_row_gets_no_callback() {
     });
 }
 
-/// A discarded rider is skipped in `tickPassenger`, but `Entity.setRemoved`
-/// dismounts its passenger. `ServerLevel.tick` reads the live mount at the
-/// former passenger's own later slot, so it ticks after the vehicle's subtree.
+/// A rider a listener discarded from its vehicle's callback does not tick,
+/// and neither does the rider's own subtree: the edge is re-checked at the
+/// parent's callback (`tickPassenger`'s `getVehicle` gate).
 #[test]
 #[ignore = "daily"]
-fn a_discarded_riders_passenger_ticks_at_its_later_root_slot() {
+fn a_listener_discarded_rider_stops_its_subtree() {
     with_counter(|game, l| {
         let grandchild = record_at("mymod:robot", [8, 8, 8, 8], [0.5, 64.0, 0.5], Vec::new());
         let rider = record_at(
@@ -514,33 +514,7 @@ fn a_discarded_riders_passenger_ticks_at_its_later_root_slot() {
         let ids = row_ids(game);
         *l.action.lock().unwrap() = OnTick::Remove(ids[1]);
         tick(game);
-        assert_eq!(*l.trace.lock().unwrap(), [root, ids[3], ids[2]]);
-    });
-}
-
-/// `EntityTickList` does not revisit a slot already passed while mounted.
-#[test]
-#[ignore = "daily"]
-fn a_discarded_riders_passenger_waits_if_its_root_slot_passed() {
-    with_counter(|game, l| {
-        let grandchild = seeded_row(game, [8, 8, 8, 8], 0);
-        let rider = record_at("mymod:robot", [9, 9, 9, 9], [0.5, 64.0, 0.5], Vec::new());
-        let sibling = record_at("mymod:robot", [7, 7, 7, 7], [0.5, 64.0, 0.5], Vec::new());
-        let root = spawn_tree(game, [1, 2, 3, 4], [0.5, 64.0, 0.5], vec![rider, sibling]);
-        let ids = row_ids(game);
-        let rider = game.entity(ids[2]).unwrap();
-        game.entity(grandchild)
-            .unwrap()
-            .start_riding(game, rider, true)
-            .unwrap();
-        *l.action.lock().unwrap() = OnTick::Remove(rider.id());
-
-        tick(game);
         assert_eq!(*l.trace.lock().unwrap(), [root, ids[3]]);
-
-        l.trace.lock().unwrap().clear();
-        tick(game);
-        assert_eq!(*l.trace.lock().unwrap(), [grandchild, root, ids[3]]);
     });
 }
 
@@ -796,11 +770,13 @@ fn a_canceled_passenger_still_follows_and_his_passengers_tick() {
     });
 }
 
-/// A rider removed in its own Pre gets no tick or Post. Its dismounted
-/// passenger still gets its own tick pair at its later root slot.
+/// A rider removed in its own Pre — the removal the liveness re-check
+/// exists for: it neither ticks nor walks its descendants, however its Pre
+/// ended. A stack of three covers the depth: the middle rider's own Pre
+/// discards it, and the bottom row hears nothing at all.
 #[test]
 #[ignore = "daily"]
-fn a_riders_removal_in_pre_leaves_its_passengers_later_root_tick() {
+fn a_rider_removed_in_its_own_pre_walks_no_descendants() {
     with_counter(|game, l| {
         let bottom = record_at("mymod:robot", [8, 8, 8, 8], [0.5, 64.0, 0.5], Vec::new());
         let middle = record_at("mymod:robot", [9, 9, 9, 9], [0.5, 64.0, 0.5], vec![bottom]);
@@ -820,22 +796,22 @@ fn a_riders_removal_in_pre_leaves_its_passengers_later_root_tick() {
                 (root, "tick"),
                 (root, "post"),
                 (ids[1], "pre"),
-                (ids[2], "pre"),
-                (ids[2], "tick"),
-                (ids[2], "post"),
-            ]
+            ],
+            "the removed rider neither ticks nor walks its descendants"
         );
         assert_eq!(counter(game, ids[1]), 1);
-        assert_eq!(counter(game, ids[2]), 2);
+        assert_eq!(counter(game, ids[2]), 1, "the descendant did not tick");
         assert_eq!(counter(game, root), 2);
     });
 }
 
-/// The liveness check still applies when the rider cancels Pre as it is
-/// removed. Its former passenger ticks at its own slot, not in that branch.
+/// The same removal with the Pre also canceled: the liveness re-check runs
+/// after a canceled Pre too — the cancel skips the rider's tick and Post,
+/// not the check — so a rider that removed itself in its canceled Pre
+/// walks no descendants, and a live one keeps the ruling's follow.
 #[test]
 #[ignore = "daily"]
-fn a_riders_removal_in_canceled_pre_leaves_its_passengers_later_root_tick() {
+fn a_rider_removed_in_its_own_canceled_pre_walks_no_descendants() {
     with_counter(|game, l| {
         let bottom = record_at("mymod:robot", [8, 8, 8, 8], [0.5, 64.0, 0.5], Vec::new());
         let middle = record_at("mymod:robot", [9, 9, 9, 9], [0.5, 64.0, 0.5], vec![bottom]);
@@ -857,12 +833,9 @@ fn a_riders_removal_in_canceled_pre_leaves_its_passengers_later_root_tick() {
                 (root, "tick"),
                 (root, "post"),
                 (ids[1], "pre"),
-                (ids[2], "pre"),
-                (ids[2], "tick"),
-                (ids[2], "post"),
             ]
         );
-        assert_eq!(counter(game, ids[2]), 2);
+        assert_eq!(counter(game, ids[2]), 1, "the descendant did not tick");
         assert_eq!(counter(game, root), 2);
         l.cancel_on.store(0, std::sync::atomic::Ordering::Relaxed);
     });

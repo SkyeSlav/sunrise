@@ -20,7 +20,6 @@ use sunrise_client::{
 const SHIFT: f32 = -50.0;
 const GREY: u32 = 0xFF40_4040;
 
-#[derive(Clone)]
 pub(super) struct MerchantState {
     /// The merchant's side of the menu: offers, experience, level, the
     /// selection hint and active offer (`sunrise_client::merchant::Session`).
@@ -92,15 +91,13 @@ pub(super) fn inventory_slot(i: usize) -> (f32, f32) {
 /// `ExplorationMapFunction` in the game world: the nearest structure of the
 /// tag through the generator's `/locate`, a new map centred on it with its
 /// target decoration.
-pub(super) type MadeMaps = Vec<(i32, [i32; 3], u8, String)>;
-
 #[derive(Clone)]
 pub(super) struct GameMaps<'a> {
     pub(super) terrain: Option<std::sync::Arc<sunrise_client::vanillagen::VanillaTerrain>>,
     /// Structure tag -> its structures.
     pub(super) structure_tag: &'a dyn Fn(&str) -> Vec<String>,
     /// Maps made, for the caller to register: (map id, centre x, z, scale, target).
-    pub(super) made: std::cell::RefCell<MadeMaps>,
+    pub(super) made: std::cell::RefCell<Vec<(i32, [i32; 3], u8, String)>>,
     pub(super) next_id: std::cell::Cell<i32>,
 }
 impl merchant::MapMaker for GameMaps<'_> {
@@ -223,7 +220,6 @@ impl Game<'_> {
         let Some(sequence) = self.stations().trades.sequence(set) else {
             return Vec::new();
         };
-        self.journal_trade_sequences();
         let mut random = self.rand_sequences.lend(&sequence, self.level.seed);
         let next_map = self.peek_map_id();
         let tag = |t: &str| self.structure_tag(t);
@@ -267,7 +263,6 @@ impl Game<'_> {
             .as_ref()
             .is_none_or(|t| t.unset);
         if unset {
-            self.journal_merchant_mob(self.mobs[index].id);
             let m = &self.mobs[index];
             let variant = format!(
                 "minecraft:{}",
@@ -537,9 +532,6 @@ impl Game<'_> {
         let events = std::mem::take(&mut session.events);
         let mut traded = Vec::new();
         let (villager, origin) = (session.villager, session.origin);
-        if let Some(id) = mob {
-            self.journal_merchant_mob(id);
-        }
         if let Some(m) = mob.and_then(|id| self.mobs.iter_mut().find(|m| m.id == id)) {
             m.random = session.random.clone();
             m.ambient_timer = session.ambient_sound_time;
@@ -551,14 +543,11 @@ impl Game<'_> {
             match e {
                 merchant::Event::OffersRefreshed => {}
                 merchant::Event::Orb(v) => {
-                    self.merchant_orb([origin[0], origin[1] + 0.5, origin[2]], v as u32)
+                    self.add_orb([origin[0], origin[1] + 0.5, origin[2]], v as u32)
                 }
                 merchant::Event::LevelUp(_) => {
-                    if let Some(id) = mob {
-                        let _ =
-                            self.mutate_mob_effects(id, Some("minecraft:regeneration"), |mob| {
-                                mob.add_effect("minecraft:regeneration", 200, 0)
-                            });
+                    if let Some(m) = mob.and_then(|id| self.mobs.iter_mut().find(|m| m.id == id)) {
+                        m.add_effect("minecraft:regeneration", 200, 0);
                     }
                 }
                 merchant::Event::TradeUpdated(yes, pitch) => {
@@ -568,7 +557,7 @@ impl Game<'_> {
                         (false, true) => "minecraft:entity.wandering_trader.yes",
                         (false, false) => "minecraft:entity.wandering_trader.no",
                     };
-                    self.merchant_sound(sound, origin, pitch);
+                    self.audio.play(sound, Some(origin), 1.0, pitch);
                 }
                 merchant::Event::Traded(index, _offer) => {
                     traded.push(index);
@@ -579,7 +568,7 @@ impl Game<'_> {
                     } else {
                         "minecraft:entity.wandering_trader.yes"
                     };
-                    self.merchant_sound(sound, origin, 1.0);
+                    self.audio.play(sound, Some(origin), 1.0, 1.0);
                 }
             }
         }
@@ -596,41 +585,25 @@ impl Game<'_> {
         offers: &mut [MerchantOffer],
         traded: &[usize],
     ) {
+        if !traded.is_empty()
+            && let Some(id) = mob
+        {
+            self.villager_trade_pending(id);
+        }
         for index in traded {
             let Some(offer) = offers.get_mut(*index) else {
                 continue;
             };
-            self.record_merchant_trade(mob, &offer.result);
-            // TradeWithVillagerEvent: on the server, in the player's turn.
-            if let (Some(id), Some(_)) = (mob, self.lan_acting)
-                && let Some(kind) = self
-                    .mobs
-                    .iter()
-                    .find(|m| m.id == id)
-                    .map(super::native_hooks::mob_kind)
-            {
-                let _ = self.native_trade_with_villager(id, &kind, offer);
+            self.award_custom_stat("traded_with_villager", 1);
+            let merchant = mob.and_then(|id| self.mobs.iter().find(|m| m.id == id));
+            let kind = merchant.map(super::native_hooks::mob_kind);
+            let villager = merchant.map(|m| self.mob_entity(m));
+            if let Some(villager) = villager {
+                self.trigger_trade(&villager, &offer.result);
             }
-        }
-    }
-
-    /// The completed trade's criterion and statistic, before its collect hook.
-    pub(super) fn record_merchant_trade(
-        &mut self,
-        mob: Option<u32>,
-        result: &sunrise_client::items::ItemStack,
-    ) {
-        self.award_custom_stat("traded_with_villager", 1);
-        if let Some(id) = mob {
-            self.journal_merchant_mob(id);
-            self.villager_trade_pending(id);
-            if let Some(villager) = self
-                .mobs
-                .iter()
-                .find(|m| m.id == id)
-                .map(|m| self.mob_entity(m))
-            {
-                self.trigger_trade(&villager, result);
+            // TradeWithVillagerEvent: on the server, in the player's turn.
+            if let (Some(id), Some(kind), Some(_)) = (mob, kind, self.lan_acting) {
+                self.native_trade_with_villager(id, &kind, offer);
             }
         }
     }

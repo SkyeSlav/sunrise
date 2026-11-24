@@ -28,7 +28,6 @@ fn unknown_conditions_report_each_winning_recipe_and_refuse_the_load() {
         &PackOverlay {
             files: &files,
             conditions: &conditions,
-            ..PackOverlay::default()
         },
     );
     std::fs::remove_dir_all(root).unwrap();
@@ -61,8 +60,8 @@ fn a_recipe_keeps_an_ingredients_conditions_as_data() {
     std::fs::write(dir.join("tin.json"), recipe.to_string()).unwrap();
     let conditions = sunrise_world::conditions::LoadConditions::new([]);
     let overlay = PackOverlay {
+        files: &[],
         conditions: &conditions,
-        ..PackOverlay::default()
     };
     let loaded = sources(&root, &overlay).expect("no diagnostic refuses the load");
     std::fs::remove_dir_all(&root).unwrap();
@@ -110,8 +109,8 @@ fn filters_and_readers_see_the_decoded_type() {
     .unwrap();
     let conditions = sunrise_world::conditions::LoadConditions::new([]);
     let overlay = PackOverlay {
+        files: &[],
         conditions: &conditions,
-        ..PackOverlay::default()
     };
     let loaded = sources(&root, &overlay).expect("the load is not refused");
     std::fs::remove_dir_all(&root).unwrap();

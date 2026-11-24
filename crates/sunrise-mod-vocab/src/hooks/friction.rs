@@ -40,6 +40,7 @@ replay agree."#]
         key = "state",
         host = "level",
         version = 2,
+        non_exhaustive = true,
         event_per_listener = true,
         target = "sunrise_client::game::native_hooks::friction::FrictionView<'_>::native_friction",
         neoforge = "IBlockExtension.getFriction"

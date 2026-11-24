@@ -90,12 +90,10 @@ hook is asked once for each placed receiver, the sender included, before any of 
 `sender`, `sender_name`, the `message` players see and the `recipient`. Set `hidden` and that one receiver is sent
 nothing, no chat index and no pending acknowledgement; the others still get the line signed as it was sent, so its
 signature verifies for them. It covers a player's chat after `server_chat` let it through and `/say` and `/me`, signed
-or not. For a non-player `/say` source, such as the console or a command block, `sender` is the nil UUID (`0`) and
-`sender_name` is the source's display name. Whispers (`/msg`) are not public and are not asked. It is not a second
-`server_chat`: that hook is heard once for a typed line and cancels it for everyone, while this one is per receiver
-and also covers `/say` and `/me`. With no listener nothing is asked or allocated. A `/say` requested inside
-`chat_recipient` fails instead of reentering the hook or sending an unchecked line. The server's log keeps every
-broadcast line, hidden or not.
+or not; whispers (`/msg`) are not public and are not asked. It is not a second `server_chat`: that hook is heard once
+for a typed line and cancels it for everyone, while this one is per receiver and also covers `/say` and `/me`. With no
+listener nothing is asked or allocated. The
+server's log keeps every line, hidden or not.
 
 `player.respawn(host)` presses the Respawn button for a dead player, as their client's does (`PERFORM_RESPAWN`): they
 are placed at their respawn point or the world spawn and `player_respawned` is heard. Call it outside every player's

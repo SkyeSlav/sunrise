@@ -39,7 +39,7 @@ The journal covers writes through capability handlers to these storages:
 | Hopper | Cooldown |
 | Cauldron | Block state |
 | Composter | Block state and composter-local random stream; fill feedback, game events and maturation scheduling wait for outer commit |
-| World block set, removal, and fluid pickup and placement | Block state, and a block entity the new block removes |
+| World fluid pickup and placement | Block state, and a block entity the new block removes |
 | Player | Inventory slots, armour, offhand, body, saddle, cursor, ender chest and persistent data, for host and guest players |
 | Entity inventory | Chest or hopper minecart, chest boat, chested donkey, mule or llama inventory |
 | Item entity | Stack; an emptied entity remains until the outermost commit removes it |
@@ -56,12 +56,7 @@ game event the same way: they play only at the outermost commit and are dropped 
 unlike `trigger_sound_and_game_event`, which acts at once. The `block_drops` listeners of a
 replaced block see it as it was, and a cancelled drop keeps the replacement.
 
-`LevelRef::set_block` and `LevelRef::remove_block` expose the tentative block state
-right away; block updates and replacement effects wait for the outermost commit.
-`LevelRef::destroy_block` returns `Ok(None)` while a transaction is open, before
-running loot, experience or break effects.
-
-Other direct writes are not journaled: direct item-entity stack writes,
+Direct writes are not journaled: direct item-entity stack writes,
 `LivingRef::set_equipment`, and the armor-stand `slot_set` paths take
 effect immediately, even inside a transaction. Equipment sounds and equip/unequip
 events from `LivingRef::set_equipment` also happen immediately. An abort does not

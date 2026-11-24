@@ -56,7 +56,7 @@ Two consequences a reviewer should keep in mind:
 | `living_breathe` | `hooks/living_breathe.rs` | `breathing.rs` `AirStep` | server, listen | decided air step, hook fired with the owning host, answer applied to the decided air | typed decision |
 | `living_drown` | `hooks/living_drown.rs:25` | `breathing.rs:71` | server, cancel | query + write-back + cancel | typed decision |
 | `living_fall` | `hooks/living_fall.rs:16` | `landing.rs:45` | both, cancel | value transform + cancel | typed decision |
-| `farmland_trample` | `hooks/farmland_trample.rs` | `block_landing.rs` `fall_on_until_trample` | server, cancel | pause only on an actual trample; fire with the owning host, re-check, lift and write, then resume the fall | typed decision |
+| `farmland_trample` | `hooks/farmland_trample.rs:15` | `landing.rs:31` | server, cancel | cancel notice | typed decision |
 | `ender_entity_teleport` | `hooks/ender_entity_teleport.rs:16` | `mobs/enderman.rs:79` | server, cancel | target write-back + cancel | typed decision |
 | `ingredient` | `hooks/ingredient.rs:32` | `crafting/native_hooks.rs:14` | both, collect, data load | collect (`Vec<String>`) | read-only fire |
 | `ingredient_test` | `hooks/ingredient_test.rs:18` | `crafting/native_hooks.rs:56` | both, listen | pure boolean query at craft time | read-only fire |

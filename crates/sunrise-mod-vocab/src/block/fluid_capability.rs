@@ -261,17 +261,12 @@ impl ResourceHandler<FluidResource> for GameFluids {
             .and_then(|backend| backend.fluid_tank(self.0, index))
             .map_or(0, |held| held.amount)
     }
-    fn capacity(
-        &self,
-        host: &mut dyn ServerHost,
-        index: usize,
-        resource: Option<&FluidResource>,
-    ) -> u32 {
+    fn capacity(&self, host: &mut dyn ServerHost, index: usize, resource: &FluidResource) -> u32 {
         crate::backend_of(host).map_or(0, |backend| {
-            backend.fluid_tank_capacity(self.0, index, resource.map(|r| r.to_stack(1)).as_ref())
+            backend.fluid_tank_capacity(self.0, index, &resource.to_stack(1))
         })
     }
-    fn insert_at(
+    fn insert(
         &self,
         host: &mut dyn ServerHost,
         tx: &Transaction,
@@ -285,7 +280,7 @@ impl ResourceHandler<FluidResource> for GameFluids {
         let rest = backend.fluid_tank_insert(self.0, index, resource.to_stack(amount), tx);
         amount - rest.map_or(0, |rest| rest.amount.min(amount))
     }
-    fn extract_at(
+    fn extract(
         &self,
         host: &mut dyn ServerHost,
         tx: &Transaction,
@@ -403,19 +398,13 @@ impl ResourceHandler<FluidResource> for GameBucket {
             None => 0,
         }
     }
-    fn capacity(
-        &self,
-        _: &mut dyn ServerHost,
-        index: usize,
-        resource: Option<&FluidResource>,
-    ) -> u32 {
-        if index == 0 && resource.is_none_or(|fluid| self.bucket_of(fluid).is_some()) {
-            BUCKET
-        } else {
-            0
+    fn capacity(&self, _: &mut dyn ServerHost, index: usize, resource: &FluidResource) -> u32 {
+        match self.bucket_of(resource) {
+            Some(_) if index == 0 => BUCKET,
+            _ => 0,
         }
     }
-    fn insert_at(
+    fn insert(
         &self,
         host: &mut dyn ServerHost,
         tx: &Transaction,
@@ -432,7 +421,7 @@ impl ResourceHandler<FluidResource> for GameBucket {
             _ => 0,
         }
     }
-    fn extract_at(
+    fn extract(
         &self,
         host: &mut dyn ServerHost,
         tx: &Transaction,

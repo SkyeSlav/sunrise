@@ -173,7 +173,7 @@ methods!(
 );
 
 // no wire: the load event borrows its registrar and has no invocation data representation.
-/// The load-time payload registration event, built by the game through the current [`Registrar`].
+/// The load-time payload registration event, reached from the current Registrar.
 #[non_exhaustive]
 pub struct RegisterPayloadHandlersEvent<'a> {
     registrar: &'a mut dyn Registrar,
@@ -187,7 +187,6 @@ impl RegisterPayloadHandlersEvent<'_> {
 
 // no wire: the load event borrows its registrar; handler callbacks cross separately.
 /// Assign client handlers to already declared clientbound payloads before freeze.
-/// The game builds this event through the current [`Registrar`].
 #[non_exhaustive]
 pub struct RegisterClientPayloadHandlersEvent<'a> {
     registrar: &'a mut dyn Registrar,

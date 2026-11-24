@@ -57,9 +57,8 @@ insertion; it enforces automation policy. Vanilla containers are unavailable her
 
 Indices use the current container's declared count. Lazy slots read empty; saved
 excess slots are neither exposed nor truncated. `None` clears, identical values
-return `Ok(false)`. A committed change marks the chunk unsaved without notifying
-comparators or neighbours. Call `set_changed` explicitly to notify. Nested abort
-restores ordinary before-images, including committed-child writes. Invalid
+return `Ok(false)`. Writes and restores are silent: issue `set_changed` explicitly when needed.
+Nested abort restores ordinary before-images, including committed-child writes. Invalid
 indices, unknown/air/zero-count stacks and counts above the registered or
 component-overridden maximum return `BlockEntityItemError`, never a partial write
 or silent count clamp. A stale handle refuses a replacement rather than accessing

@@ -1797,7 +1797,6 @@ impl Game<'_> {
         let outer = self.command_source.replace(server);
         let filter = std::mem::replace(&mut self.native_command_filter, true);
         let outer_exec = std::mem::take(&mut self.exec);
-        let outer_results = self.cmds.results.take();
         let outer_capture = capture.then(|| self.chat_capture.replace(Vec::new()));
         let ok = self.as_console(|g| g.run_command(line));
         let lines = match outer_capture {
@@ -1807,7 +1806,6 @@ impl Game<'_> {
             None => Vec::new(),
         };
         self.exec = outer_exec;
-        self.cmds.results = outer_results;
         self.native_command_filter = filter;
         self.command_source = outer;
         (ok, lines)

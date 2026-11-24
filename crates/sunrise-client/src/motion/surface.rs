@@ -20,13 +20,6 @@ pub trait SideLevel {
     fn tag_items(&self) -> Option<&crate::items::Items>;
     /// The resident block entity at `pos` of `world`, as a handle of this side's level.
     fn block_entity(&self, world: &World, pos: BlockPos) -> Option<mod_api::BlockEntityRef>;
-    /// Saved data for a resident handle of this side's level; never loads chunks or loot.
-    fn block_entity_data(
-        &self,
-        world: &World,
-        registry: &BlockRegistry,
-        entity: mod_api::BlockEntityRef,
-    ) -> Option<mod_api::Compound>;
 }
 
 /// The level data of a side with no weather, features, tags or block entities. Only for tests and
@@ -45,14 +38,6 @@ pub fn dry_side() -> &'static dyn SideLevel {
             None
         }
         fn block_entity(&self, _: &World, _: BlockPos) -> Option<mod_api::BlockEntityRef> {
-            None
-        }
-        fn block_entity_data(
-            &self,
-            _: &World,
-            _: &BlockRegistry,
-            _: mod_api::BlockEntityRef,
-        ) -> Option<mod_api::Compound> {
             None
         }
     }

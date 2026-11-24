@@ -31,8 +31,8 @@ UsedTotemTrigger.TriggerInstance.usedTotem	skip:data		criterion factory
 UsedTotemTrigger.TriggerInstance.matches	port	crates/sunrise-client/src/game/interface/advancements/mod.rs::Game::trigger_item	fired from totem.rs
 UsingItemTrigger.TriggerInstance.lookingAt	skip:data		criterion factory
 UsingItemTrigger.TriggerInstance.matches	port	crates/sunrise-client/src/game/interface/advancements/mod.rs::Game::trigger_using_item	item and looking-at predicates
-Camera.createProjectionMatrixForCulling	port	crates/sunrise-client-render/src/gfx/view.rs::Renderer::camera_frustum	gap: minor: the max(FOV, option FOV) rule is not in this fn
-Camera.prepareCullFrustum	port	crates/sunrise-client-render/src/gfx/view.rs::Renderer::camera_frustum	gap: minor: no captured frustum (F3+U kill and capture)
+Camera.createProjectionMatrixForCulling	port	crates/sunrise-client-render/src/gfx.rs::Renderer::camera_frustum	gap: minor: the max(FOV, option FOV) rule is not in this fn
+Camera.prepareCullFrustum	port	crates/sunrise-client-render/src/gfx.rs::Renderer::camera_frustum	gap: minor: no captured frustum (F3+U kill and capture)
 Camera.setPosition	inline	crates/sunrise-client-render/src/camera.rs::Camera::align_with_entity	the position is stored there
 Camera.getViewRotationMatrix	port	crates/sunrise-client-render/src/camera.rs::view_matrix
 Camera.NearPlane.getPointOnPlane	inline	crates/sunrise-client/src/game/items/fishing.rs::Game::fishing_line	only the fishing line's anchor uses it

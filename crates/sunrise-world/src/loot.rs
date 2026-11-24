@@ -51,14 +51,6 @@ use {
     sunrise_core::nbt::{Compound, Tag},
 };
 
-/// One pack's copy of the recipe priorities, before JSON or conditions are decoded.
-#[derive(Debug, PartialEq, Eq, Hash)]
-pub struct RecipePriorityLayer {
-    pub pack: String,
-    pub path: &'static str,
-    pub contents: Result<Vec<u8>, String>,
-}
-
 /// Raw files a world's data packs add over the game's own data, by
 /// `<kind>/<ns>:<path>` (a `recipe/minecraft:stick` key names the file
 /// `data/minecraft/recipe/stick.json`), each id's files in pack order.
@@ -70,15 +62,12 @@ pub struct PackOverlay<'a> {
     /// Immutable enabled package IDs for this owning server data load.
     pub conditions: &'a crate::conditions::LoadConditions,
     pub files: &'a [(String, Vec<Vec<u8>>)],
-    /// Recipe-priority layers, lowest pack first. Kept separately from path winners.
-    pub priority_layers: &'a [RecipePriorityLayer],
 }
 impl PackOverlay<'static> {
     /// No packs: the tables are the resource root's alone.
     pub const NONE: Self = Self {
         files: &[],
         conditions: &crate::conditions::LoadConditions::vanilla(),
-        priority_layers: &[],
     };
 }
 impl Default for PackOverlay<'_> {
@@ -92,7 +81,7 @@ impl<'a> PackOverlay<'a> {
     pub const fn new(files: &'a [(String, Vec<Vec<u8>>)]) -> Self {
         Self {
             files,
-            ..PackOverlay::NONE
+            conditions: PackOverlay::NONE.conditions,
         }
     }
     /// The overlay's files under `<kind>/`, with the prefix stripped.
@@ -2280,12 +2269,11 @@ mod namespace_tests {
         let enabled = crate::conditions::LoadConditions::new(["package_id"]);
         let off = PackOverlay {
             files: &files,
-            ..PackOverlay::default()
+            ..PackOverlay::NONE
         };
         let on = PackOverlay {
             files: &files,
             conditions: &enabled,
-            ..PackOverlay::default()
         };
         let absent = shared_tables(&root, &off).unwrap();
         assert!(!absent.contains_key("demo:base"));
@@ -2977,6 +2965,7 @@ mod namespace_tests {
     #[test]
     fn tag_kind_yields_tag_loader_ids_for_content_id_keys() {
         let overlay = PackOverlay {
+            conditions: &crate::conditions::LoadConditions::vanilla(),
             files: &[
                 (
                     "tags/minecraft:item/food".to_owned(),
@@ -2987,7 +2976,6 @@ mod namespace_tests {
                     vec![br#"{"values": ["minecraft:infinity"]}"#.to_vec()],
                 ),
             ],
-            ..PackOverlay::default()
         };
         let item: Vec<_> = overlay.tag_kind("item").map(|(id, _)| id).collect();
         assert_eq!(item, ["minecraft:food"]);
@@ -3011,6 +2999,7 @@ mod namespace_tests {
         )
         .unwrap();
         let overlay = PackOverlay {
+            conditions: &crate::conditions::LoadConditions::vanilla(),
             files: &[(
                 "tags/minecraft:item/food".to_owned(),
                 vec![
@@ -3018,7 +3007,6 @@ mod namespace_tests {
                     br#"{"replace": true, "values": ["minecraft:apple"]}"#.to_vec(),
                 ],
             )],
-            ..PackOverlay::default()
         };
         let defaults = crate::item_defaults::read(&root).unwrap();
         let data = LootData::load(&root, &overlay, &defaults).unwrap();

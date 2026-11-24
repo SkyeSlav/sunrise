@@ -3747,13 +3747,12 @@ mod tests {
         }
         let off = PackOverlay {
             files: &files,
-            ..PackOverlay::default()
+            ..PackOverlay::NONE
         };
         let enabled = sunrise_world::conditions::LoadConditions::new(["provider"]);
         let on = PackOverlay {
             files: &files,
             conditions: &enabled,
-            ..PackOverlay::default()
         };
         for kind in ["jukebox_song", "instrument", "enchantment"] {
             assert!(data_files(&root, kind, &off).is_empty());
@@ -3796,8 +3795,8 @@ mod tests {
         fs::write(dir.join("horn.json"), file.to_string()).unwrap();
         let conditions = sunrise_world::conditions::LoadConditions::new([]);
         let overlay = PackOverlay {
+            files: &[],
             conditions: &conditions,
-            ..PackOverlay::default()
         };
         let loaded = data_files(&root, "instrument", &overlay);
         fs::remove_dir_all(&root).unwrap();

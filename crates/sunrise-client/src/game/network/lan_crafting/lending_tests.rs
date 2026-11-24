@@ -90,7 +90,6 @@ fn setup(game: &mut Game<'_>) -> &'static ModMenuType {
         slots: 37,
         data_slots: 0,
         results: vec![],
-        inputs: Vec::new(),
         links: Some(ModLinks {
             from: 10,
             count: 27,

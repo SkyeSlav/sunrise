@@ -1634,7 +1634,6 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         &mut self,
         input: &PlaceContext,
         stack_state: impl Fn(BlockStateId) -> (BlockStateId, BlockStateId),
-        rewrite: impl FnOnce(&L, &PlacementContext) -> Option<Option<PlacementContext>>,
     ) -> Option<ResolvedPlacement> {
         let b = self.b;
         let binding = b.item_binding(&input.item).cloned()?;
@@ -1654,36 +1653,30 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         if !ctx.replace_clicked {
             ctx.pos = rel(input.clicked_pos, input.face);
         }
-        let rewritten = match rewrite(self.level, &ctx) {
-            Some(Some(replacement)) => {
-                ctx = replacement;
-                true
-            }
-            Some(None) => return None,
-            None => {
-                // The default keeps BlockPlaceContext.canPlace before the item's rewrite.
-                if !ctx.replace_clicked && !self.can_be_replaced(self.state(ctx.pos), &ctx) {
-                    return None;
-                }
-                if binding.kind == ItemKind::Scaffolding {
-                    ctx = self.scaffolding_update_context(&ctx, binding.block)?;
-                }
-                false
-            }
-        };
-        if !self.is_in_valid_bounds(ctx.pos) {
-            if rewritten {
-                log::warn!(
-                    "placement_context: refused {}: destination {:?} is out of bounds",
-                    input.item,
-                    ctx.pos
-                );
-            }
+        if !ctx.replace_clicked && !self.can_be_replaced(self.state(ctx.pos), &ctx) {
             return None;
         }
+        match self.level.placement_context(&input.item, &ctx) {
+            Some(Some(replacement)) => {
+                ctx = replacement;
+                if !self.is_in_valid_bounds(ctx.pos) {
+                    log::warn!(
+                        "placement_context: refused {}: destination {:?} is out of bounds",
+                        input.item,
+                        ctx.pos
+                    );
+                    return None;
+                }
+            }
+            Some(None) => return None,
+            None if binding.kind == ItemKind::Scaffolding => {
+                ctx = self.scaffolding_update_context(&ctx, binding.block)?;
+            }
+            None => {}
+        }
         if (binding.game_master && !input.can_use_game_master_blocks)
+            || !self.is_in_valid_bounds(ctx.pos)
             || !self.level.is_loaded(ctx.pos)
-            || (rewritten && !self.can_be_replaced(self.state(ctx.pos), &ctx))
         {
             return None;
         }
@@ -1919,18 +1912,8 @@ impl Behaviours {
         ctx: &PlaceContext,
         stack_state: impl Fn(BlockStateId) -> (BlockStateId, BlockStateId),
     ) -> Option<AppliedPlacement> {
-        let (decision, _) = self.decide_placement(level, ticks, ctx, &stack_state, |_, _| None)?;
-        self.place_resolved_block(level, ticks, decision, stack_state)
-    }
-    /// Finish a resolved placement in a level that does not apply game-owned item data.
-    pub fn place_resolved_block<L: LevelAccess + ?Sized>(
-        &self,
-        level: &mut L,
-        ticks: &mut Ticks,
-        decision: ResolvedPlacement,
-        stack_state: impl Fn(BlockStateId) -> (BlockStateId, BlockStateId),
-    ) -> Option<AppliedPlacement> {
         let mut sim = self.sim(level, ticks);
+        let decision = sim.placement(ctx, &stack_state)?;
         let mut placed = sim.apply_placement(decision, stack_state)?;
         if placed.matches_candidate {
             sim.set_placed_by(placed.context.pos, placed.state);
@@ -1940,19 +1923,14 @@ impl Behaviours {
         Some(placed)
     }
     /// Freeze a decision and the writes it proposes before a caller asks for a veto.
-    /// `rewrite` can supply an item Part's replacement or refusal before state selection.
-    /// `None` keeps vanilla's original admission and `updatePlacementContext`.
     pub fn decide_placement<L: LevelAccess + ?Sized>(
         &self,
         level: &mut L,
         ticks: &mut Ticks,
         ctx: &PlaceContext,
         stack_state: impl Fn(BlockStateId) -> (BlockStateId, BlockStateId),
-        rewrite: impl FnOnce(&L, &PlacementContext) -> Option<Option<PlacementContext>>,
     ) -> Option<(ResolvedPlacement, PlacementPreview)> {
-        let decision = self
-            .sim(level, ticks)
-            .placement(ctx, stack_state, rewrite)?;
+        let decision = self.sim(level, ticks).placement(ctx, stack_state)?;
         let preview = decision.preview;
         Some((decision, preview))
     }
@@ -2020,7 +1998,7 @@ impl Behaviours {
         ticks: &mut Ticks,
         ctx: &PlaceContext,
     ) -> Option<PlacementPreview> {
-        self.decide_placement(level, ticks, ctx, |state| (state, state), |_, _| None)
+        self.decide_placement(level, ticks, ctx, |state| (state, state))
             .map(|(_, preview)| preview)
     }
     /// `getStateForPlacement` of `block` for `ctx` without placing anything

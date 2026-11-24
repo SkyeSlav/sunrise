@@ -378,12 +378,7 @@ player's open block menu before its own grid transfer, on the same thread.
 `slot_count` entries. It describes the client's layout and content declaration,
 not the server's backing or acceptance rules. `Player(index)` uses hotbar 0–8,
 main 9–35, armour 36–39 (feet to head), off hand 40. Container equipment is
-`Equipment`. General storage, including unmarked linked slots, is `Storage`.
-Furnaces, blast furnaces, and smokers report the ingredient and fuel slots as `Input`
-and the output as `Result`. Brewing stands report the bottle, ingredient, and fuel
-slots as `Input`. Content menus report `Input` for the slots listed in their
-[menu type's `inputs`](../../how-to/content-mods.md#menu-types), even when those slots
-are linked. Workstations without a classified layout (anvil, enchanting table, loom,
+`Equipment`; linked storage is `Storage`. Workstations without a classified layout (anvil, enchanting table, loom,
 and similar types) return `Other` for every slot, including player slots. A game menu with no known client slot count returns `None`, as do
 stale or foreign handles, missing content types, and calls without an open menu
 or outside a world. Creative returns the underlying inventory menu's 46 slots,

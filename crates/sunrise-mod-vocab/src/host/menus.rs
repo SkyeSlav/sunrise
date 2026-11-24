@@ -130,9 +130,8 @@ pub trait MenusClientBackend {
     fn menu_slot_boxes(&self, menu: MenuRef) -> Option<Vec<Option<[f32; 4]>>>;
     /// Side: client.
     /// Slot roles from the client layout and content menu declaration, in menu order.
-    /// The length equals `slot_count`. Machine inputs (including fuel and brewing
-    /// bottle slots) are `Input`; unknown roles are `Other`. Roles describe neither
-    /// server backing nor rules for accepting items. Returns `None` outside
+    /// The length equals `slot_count`. Unknown roles are `Other`; these describe
+    /// neither server backing nor rules for accepting items. Returns `None` outside
     /// a world, without an open menu, for stale/foreign menus or missing content types.
     /// Game types with no known slot count return `None`; workstations without
     /// classified layouts give all `Other` when their count is known. Creative returns the underlying inventory menu, not tab wrappers:
