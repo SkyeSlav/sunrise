@@ -10,9 +10,13 @@ use crate::{
     ui,
 };
 use serde_json::Value;
-use std::{collections::BTreeSet, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 use sunrise_assets::item_model::{DisplayContext, ItemEnv};
 use sunrise_core::nbt::Tag;
+use sunrise_world::worldgen::overrides::{FLAT_PRESET_TAGS, FLAT_PRESETS, WorldgenOverrides};
 
 /// DimensionType.Y_SIZE: the most blocks a flat generator takes.
 const Y_SIZE: i32 = 4064;
@@ -259,9 +263,13 @@ impl State {
     pub fn settings(&self) -> &FlatSettings {
         &self.settings
     }
-    pub(super) fn new(root: &Path, current: Option<FlatSettings>) -> Self {
+    pub(super) fn new(
+        root: &Path,
+        current: Option<FlatSettings>,
+        overrides: &WorldgenOverrides,
+    ) -> Self {
         let settings = current.unwrap_or_default();
-        let (presets, blocks, biomes) = load(root);
+        let (presets, blocks, biomes) = load(root, overrides);
         Self {
             page: Page::Layers,
             share: settings.to_share(),
@@ -332,22 +340,43 @@ impl State {
     }
 }
 
-/// `<root>/data/<namespace>/worldgen/flat_level_generator_preset/<path>.json`,
-/// in the order of the `visible` tag, plus the block and biome ids the share
-/// text is checked against.
-fn load(root: &Path) -> (Vec<Preset>, BTreeSet<String>, BTreeSet<String>) {
+/// The flat presets of the `visible` tag (`FlatLevelGeneratorPresetTags`), in its order: the
+/// resource root's `data/<namespace>/worldgen/flat_level_generator_preset/<path>.json` and
+/// tag files with the selected packs' (`overrides`) over them, plus the block and biome ids
+/// the share text is checked against.
+fn load(
+    root: &Path,
+    overrides: &WorldgenOverrides,
+) -> (Vec<Preset>, BTreeSet<String>, BTreeSet<String>) {
     let mut presets = Vec::new();
     let kind = "worldgen/flat_level_generator_preset";
-    let preset_path = |id: &str| {
+    let in_packs: BTreeMap<&str, &str> = overrides.entries(FLAT_PRESETS).collect();
+    let preset_text = |id: &str| -> Option<String> {
+        if let Some(json) = in_packs.get(id) {
+            return Some((*json).to_owned());
+        }
         let (namespace, path) = id.split_once(':')?;
         let name = format!("data/{namespace}/{kind}/{path}.json");
-        sunrise_assets::resource_source::stays_inside(&name).then(|| root.join(name))
+        if !sunrise_assets::resource_source::stays_inside(&name) {
+            return None;
+        }
+        std::fs::read_to_string(root.join(name)).ok()
     };
+    let tag_files: Vec<(String, Vec<Vec<u8>>)> = overrides
+        .tags(FLAT_PRESET_TAGS)
+        .filter_map(|(id, _, json)| {
+            let (namespace, path) = id.split_once(':')?;
+            Some((
+                format!("tags/{namespace}:{kind}/{path}"),
+                vec![json.as_bytes().to_vec()],
+            ))
+        })
+        .collect();
     let tags = sunrise_world::tag_layers::load(
         root,
         kind,
-        &sunrise_world::loot::PackOverlay::NONE,
-        |id| preset_path(id).is_some_and(|file| file.is_file()),
+        &sunrise_world::loot::PackOverlay::new(&tag_files),
+        |id| preset_text(id).is_some(),
     )
     .unwrap_or_else(|error| {
         log::warn!("Sunrise: flat preset tags unavailable: {error}");
@@ -355,10 +384,7 @@ fn load(root: &Path) -> (Vec<Preset>, BTreeSet<String>, BTreeSet<String>) {
     });
     if let Some(ids) = tags.get("minecraft:visible") {
         for id in ids {
-            let Some(path) = preset_path(id) else {
-                continue;
-            };
-            let Ok(text) = std::fs::read_to_string(path) else {
+            let Some(text) = preset_text(id) else {
                 continue;
             };
             let Ok(value) = serde_json::from_str::<Value>(&text) else {
@@ -378,7 +404,8 @@ fn load(root: &Path) -> (Vec<Preset>, BTreeSet<String>, BTreeSet<String>) {
         }
     }
     let blocks = registry_ids(root, "minecraft:block");
-    let biomes = json_keys(&root.join("worldgen/biomes.json"));
+    let mut biomes = json_keys(&root.join("worldgen/biomes.json"));
+    biomes.extend(overrides.entries("biomes").map(|(id, _)| id.to_owned()));
     (presets, blocks, biomes)
 }
 fn preset_settings(value: &Value) -> Option<FlatSettings> {
@@ -1114,7 +1141,7 @@ mod tests {
     /// (`Entry.select`), so stepping through the list keeps what was typed there.
     #[test]
     fn only_a_press_puts_a_preset_in_the_share_box() {
-        let mut state = State::new(Path::new("missing"), None);
+        let mut state = State::new(Path::new("missing"), None, &WorldgenOverrides::default());
         let mut settings = FlatSettings::default();
         settings.layers.clear();
         let share = settings.to_share();
