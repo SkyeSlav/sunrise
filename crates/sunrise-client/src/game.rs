@@ -680,6 +680,9 @@ mod hand;
 #[path = "game/items/hand_part_tests.rs"]
 mod hand_part_tests;
 #[cfg(test)]
+#[path = "game/entities/entity_tick_families_tests.rs"]
+mod entity_tick_families_tests;
+#[cfg(test)]
 #[path = "game/entities/hanging_refind_tests.rs"]
 mod hanging_refind_tests;
 #[path = "game/runtime/headless.rs"]

@@ -1042,7 +1042,13 @@ impl Game<'_> {
         // `isPassengerOfSameVehicle` leaves those riders out.
         let mut obstacles: Option<sunrise_client::entities::ObstacleGrid> = None;
         let mut nearby = Vec::new();
+        let mut round = self.native_tick_round();
+        // The stand whose turn just ended: it hears its Post before the next one's Pre.
+        let mut told = None;
         for join in joins {
+            if let Some(id) = told.take() {
+                self.native_tick_post_one(&round, id, TYPE_ID);
+            }
             let Some(i) = self.armor_stands.locate(join) else {
                 continue;
             };
@@ -1052,6 +1058,15 @@ impl Game<'_> {
                 self.armor_stands[i].previous_yaw = self.armor_stands[i].yaw;
                 continue;
             }
+            let id = self.armor_stands[i].id;
+            if !self.native_tick_pre_one(&mut round, id, TYPE_ID) {
+                continue;
+            }
+            // The Pre's listener may have removed stands.
+            let Some(i) = self.armor_stands.locate(join) else {
+                continue;
+            };
+            told = Some(id);
             let target_dead = self.armor_stands[i]
                 .last_hurt_mob
                 .is_some_and(|(id, _)| !self.last_hurt_target_alive(id));
@@ -1329,6 +1344,9 @@ impl Game<'_> {
             if a.impulse_grace > 0 {
                 a.impulse_grace -= 1;
             }
+        }
+        if let Some(id) = told {
+            self.native_tick_post_one(&round, id, TYPE_ID);
         }
         for (id, bubbles) in drowned {
             let Some((at, v)) = self.armor_stands.iter().find(|a| a.id == id).map(|a| {

@@ -334,14 +334,33 @@ impl Game<'_> {
     pub(super) fn tick_paintings(&mut self) {
         // ServerLevel.tick: only entities in entity-ticking chunks tick.
         let ticking = self.entity_ticking_area();
+        let mut round = self.native_tick_round();
+        // The painting whose tick just ended: it hears its Post before the next one's Pre.
+        let mut told = None;
         let mut i = 0;
         while i < self.paintings.len() {
+            if let Some(id) = told.take() {
+                self.native_tick_post_one(&round, id, "minecraft:painting");
+            }
             let (lo, hi) = self.paintings[i].bounds();
             let centre = [0, 2].map(|k| ((lo[k] + hi[k]) / 2.0).floor() as i32);
             if !ticking(centre[0], centre[1]) {
                 i += 1;
                 continue;
             }
+            let id = self.paintings[i].id;
+            if !self.native_tick_pre_one(&mut round, id, "minecraft:painting") {
+                i += 1;
+                continue;
+            }
+            // The Pre's listener may have removed paintings.
+            if self.paintings.get(i).is_none_or(|p| p.id != id) {
+                let Some(now) = self.paintings.iter().position(|p| p.id == id) else {
+                    continue;
+                };
+                i = now;
+            }
+            told = Some(id);
             // `Entity.tickCount` is raised before the rest of the tick, and is not saved.
             self.paintings[i].ticks = self.paintings[i].ticks.saturating_add(1);
             self.paintings[i].check_interval += 1;
@@ -353,6 +372,9 @@ impl Game<'_> {
                 }
             }
             i += 1;
+        }
+        if let Some(id) = told {
+            self.native_tick_post_one(&round, id, "minecraft:painting");
         }
     }
     /// PaintingRenderer: the variant on the front, the back texture behind and
