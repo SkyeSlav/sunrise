@@ -868,6 +868,7 @@ impl Game<'_> {
                     &self.options.resources,
                     biomes,
                     &self.level.enabled_features,
+                    self.level.data_packs.as_ref(),
                     &self.pack.additional_data,
                 )
                 .0
