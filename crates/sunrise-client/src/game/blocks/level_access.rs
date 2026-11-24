@@ -239,6 +239,33 @@ impl LevelAccess for GameLevel<'_> {
             self.native_fluid_rules(call)
         })
     }
+    fn fluid_passage(
+        &self,
+        fluid: &'static str,
+        from: BlockPos,
+        from_state: BlockStateId,
+        direction: Direction,
+        to: BlockPos,
+        to_state: BlockStateId,
+    ) -> bool {
+        if !self.native_authoritative
+            || !mod_api::__private::listened(mod_api::HookId::FluidPassage)
+        {
+            return true;
+        }
+        let mut passes = true;
+        self.native_fluid_passage(
+            self.dimension,
+            fluid,
+            from,
+            from_state,
+            direction,
+            to,
+            to_state,
+            &mut passes,
+        );
+        passes
+    }
     fn allow_block_ignite(&self, pos: BlockPos, cause: &'static str) -> bool {
         self.block_ignite_allowed(pos, cause)
     }

@@ -56,6 +56,8 @@ pub(crate) struct TestLevel {
     pub block_events_ready: bool,
     /// Positions that refuse fluids, fire and piston moves, as a land claim would.
     pub guarded: HashSet<BlockPos>,
+    /// The steps `fluid_passage` closes: a fluid at the position may not flow toward the direction.
+    pub closed_passage: HashSet<(BlockPos, Direction)>,
     /// What `adjust_signal` answers at a position: the weak and direct signal,
     /// and the only direction they go in, if any.
     pub signals: HashMap<BlockPos, (i32, i32, Option<Direction>)>,
@@ -136,6 +138,7 @@ impl TestLevel {
             tick_ready: true,
             block_events_ready: true,
             guarded: HashSet::new(),
+            closed_passage: HashSet::new(),
             fire_asks: Default::default(),
             source_asks: Default::default(),
             lava_asks: Default::default(),
@@ -303,6 +306,17 @@ impl LevelAccess for TestLevel {
     }
     fn allow_spread(&self, _kind: Spread, _from: BlockPos, to: BlockPos) -> bool {
         !self.guarded.contains(&to)
+    }
+    fn fluid_passage(
+        &self,
+        _fluid: &'static str,
+        from: BlockPos,
+        _from_state: BlockStateId,
+        direction: Direction,
+        _to: BlockPos,
+        _to_state: BlockStateId,
+    ) -> bool {
+        !self.closed_passage.contains(&(from, direction))
     }
     fn allow_piston_move(
         &self,

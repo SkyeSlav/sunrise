@@ -187,6 +187,13 @@ What depends on a position is on `LevelRef`, not in this service: `fluid_tick_de
 `fluid_height`, `fluid_height_for_camera` and `fluid_can_be_replaced_with(host, pos, fluid, direction)`.
 `fluid_tick(server, pos)` runs a fluid's flow step immediately; `schedule_fluid_tick` queues one.
 
+`fluid_passage` closes one side of a cell to a flowing fluid. It is asked on the server wherever a fluid decides
+where to go: the step down, the choice of sides and every step of the search for the way down, so a closed side
+changes which sides the fluid picks and not only whether one cell fills. It is asked only after the game's own
+answer was yes, so it can close a side and never open a wall; the answer is not kept, and it reschedules no fluid tick
+(the neighbour updates of the block change that moved your answer already do). `fluid_rules` changes how a mod's fluid
+flows everywhere it is; `fluid_passage` answers for one step of one position, for any fluid.
+
 `FluidState::matches(constraints)` is a pure local check of carried vanilla fields. Unknown properties
 or noncanonical serialized values return false. A falling source remains a source; a flowing state
 of level 8 remains flowing. Empty constraints match any state. Validate separately for indexed errors.

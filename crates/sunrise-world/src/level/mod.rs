@@ -534,6 +534,23 @@ pub trait LevelAccess: BlockEntityNeighbors {
     ) -> crate::fluid::ModFluidRules {
         registered
     }
+    /// Whether `fluid` (`water`, `lava` or a mod fluid's id) may flow from `from` one step toward
+    /// `direction`, into `to`, where `FlowingFluid.canMaybePassThrough` is asked: the downward
+    /// step of `spread`, `getSpread`'s side choice and every step of the slope search. Asked only
+    /// after the game's own answer was true, so it can close a side and never open a wall; its
+    /// answer is not cached. The default leaves the side open.
+    #[allow(clippy::too_many_arguments)]
+    fn fluid_passage(
+        &self,
+        _fluid: &'static str,
+        _from: BlockPos,
+        _from_state: BlockStateId,
+        _direction: Direction,
+        _to: BlockPos,
+        _to_state: BlockStateId,
+    ) -> bool {
+        true
+    }
     fn allow_block_ignite(&self, _pos: BlockPos, _cause: &'static str) -> bool {
         true
     }

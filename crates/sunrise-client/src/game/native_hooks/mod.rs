@@ -302,6 +302,7 @@ mod fire_odds;
 mod fishing_medium;
 mod flip_frame;
 mod fluid_draw;
+mod fluid_passage;
 mod fluid_place_block;
 mod fluid_rules;
 mod fluid_tick;

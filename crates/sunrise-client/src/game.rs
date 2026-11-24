@@ -609,6 +609,9 @@ mod fishing;
 mod fluid_interaction_tests;
 #[path = "game/modding/fluid_interactions.rs"]
 mod fluid_interactions;
+#[cfg(test)]
+#[path = "game/interface/fluid_passage_tests.rs"]
+mod fluid_passage_tests;
 #[path = "game/interface/focused_text_field.rs"]
 mod focused_text_field;
 #[path = "game/interface/fov.rs"]
