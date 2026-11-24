@@ -95,3 +95,80 @@ impl Game<'_> {
             .ids = ids;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use sunrise_client::environment::TimelineTable;
+    use sunrise_world::environment_timeline::Timeline;
+
+    #[test]
+    fn pack_timeline_markers_bind_to_their_clocks_and_appear_in_time_commands() {
+        let day = Timeline::parse(&serde_json::json!({
+            "clock": "minecraft:overworld",
+            "period_ticks": 24000,
+            "time_markers": {
+                "minecraft:noon": 6000,
+                "minecraft:night": {"ticks": 13000, "show_in_commands": true}
+            }
+        }))
+        .unwrap();
+        let festival = Timeline::parse(&serde_json::json!({
+            "clock": "minecraft:overworld",
+            "period_ticks": 24000,
+            "time_markers": {
+                "demo:festival_start": {"ticks": 3000, "show_in_commands": true}
+            }
+        }))
+        .unwrap();
+        let lunar = Timeline::parse(&serde_json::json!({
+            "clock": "demo:moon",
+            "period_ticks": 12000,
+            "time_markers": {
+                "demo:eclipse": {"ticks": 6000, "show_in_commands": true}
+            }
+        }))
+        .unwrap();
+        let table = TimelineTable {
+            timelines: BTreeMap::from([
+                ("minecraft:day".into(), Arc::new(day)),
+                ("demo:festival".into(), Arc::new(festival)),
+                ("demo:lunar".into(), Arc::new(lunar)),
+            ]),
+            tags: BTreeMap::new(),
+        };
+        let (timelines, markers) = timelines_and_markers(&table);
+        assert_eq!(
+            timelines.get("demo:festival"),
+            Some(&("minecraft:overworld".to_owned(), Some(24000)))
+        );
+        assert_eq!(
+            timelines.get("demo:lunar"),
+            Some(&("demo:moon".to_owned(), Some(12000)))
+        );
+        assert_eq!(
+            markers
+                .get(&("minecraft:overworld".into(), "demo:festival_start".into()))
+                .map(|m| (m.ticks, m.period, m.show)),
+            Some((3000, Some(24000), true))
+        );
+        assert_eq!(
+            markers
+                .get(&("demo:moon".into(), "demo:eclipse".into()))
+                .map(|m| (m.ticks, m.period, m.show)),
+            Some((6000, Some(12000), true))
+        );
+        let mut command_markers: Vec<String> = markers
+            .iter()
+            .filter(|(_, m)| m.show)
+            .map(|((_, marker), _)| marker.clone())
+            .collect();
+        command_markers.sort();
+        command_markers.dedup();
+        assert_eq!(
+            command_markers,
+            vec!["demo:eclipse", "demo:festival_start", "minecraft:night"]
+        );
+    }
+}

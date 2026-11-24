@@ -1762,6 +1762,56 @@ mod tests {
         Environment::set_level_attributes(Vec::new(), TimelineTable::default());
     }
 
+    /// Built-in vanilla levels (`minecraft:overworld`, not only mod- or pack-added levels)
+    /// read timelines from the world table published through `set_level_attributes`.
+    #[test]
+    fn a_vanilla_level_reads_world_timelines_through_set_level_attributes() {
+        let _turn = LEVEL_TABLE.lock().unwrap_or_else(|e| e.into_inner());
+        use sunrise_assets::resource_source::Resource;
+        let source = ResourceSource::indexed(std::collections::BTreeMap::from([
+            (
+                "data/minecraft/dimension_type/overworld.json".into(),
+                Resource::bytes(
+                    br##"{"timelines":"#minecraft:in_overworld","attributes":{"minecraft:gameplay/sky_light_level":15.0}}"##.to_vec(),
+                ),
+            ),
+            (
+                "data/minecraft/tags/timeline/in_overworld.json".into(),
+                Resource::bytes(br#"{"values":["minecraft:day"]}"#.to_vec()),
+            ),
+            (
+                "data/minecraft/timeline/day.json".into(),
+                Resource::bytes(
+                    br#"{"clock":"minecraft:overworld","period_ticks":24000,"tracks":{"minecraft:gameplay/sky_light_level":{"keyframes":[{"ticks":0,"value":15.0}]}}}"#.to_vec(),
+                ),
+            ),
+        ]));
+        let base = Environment::load(&source).unwrap();
+        assert_eq!(sky_darken(&base, 6000, 0.0, 0.0), 0);
+
+        let overridden = Timeline::parse(&serde_json::json!({
+            "clock": "minecraft:overworld",
+            "period_ticks": 24000,
+            "tracks": {
+                "minecraft:gameplay/sky_light_level": {
+                    "keyframes": [{"ticks": 0, "value": 5.0}]
+                }
+            }
+        }))
+        .unwrap();
+        let table = TimelineTable {
+            timelines: BTreeMap::from([("minecraft:day".into(), Arc::new(overridden))]),
+            tags: BTreeMap::from([(
+                "minecraft:in_overworld".into(),
+                vec!["minecraft:day".into()],
+            )]),
+        };
+        Environment::set_level_attributes(vec![("minecraft:overworld".into(), Json::Null)], table);
+        let world_overworld = Environment::for_level("minecraft:overworld", &base);
+        assert_eq!(sky_darken(world_overworld, 6000, 0.0, 0.0), 10);
+        Environment::set_level_attributes(Vec::new(), TimelineTable::default());
+    }
+
     #[test]
     fn biome_id_colormaps_read_the_column_their_mapper_gives_the_biome() {
         // Left to right: red, green, transparent, blue.
