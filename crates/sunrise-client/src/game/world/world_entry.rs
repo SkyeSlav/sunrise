@@ -728,6 +728,25 @@ impl Game<'_> {
                 biomes.table.registered_keys().iter().cloned(),
             ));
         drop(registries);
+        // Vanilla reads tags of these registries too: `LootTable.LIST_CODEC` (advancement
+        // rewards, the loot table trigger) and `Recipe.LIST_CODEC` (the recipe triggers).
+        pack_tags.insert(
+            "loot_table",
+            loot.registry_tags("loot_table")
+                .into_iter()
+                .flatten()
+                .map(|(tag, members)| (tag.clone(), members.iter().cloned().collect()))
+                .collect(),
+        );
+        pack_tags.insert(
+            "recipe",
+            sunrise_world::tag_layers::load(root, "recipe", &overlay, |id| {
+                stations.recipe_index.contains(id)
+            })?
+            .into_iter()
+            .map(|(tag, members)| (tag, members.into_iter().collect()))
+            .collect(),
+        );
         // The API's key order is live state as well: do not change it for a
         // candidate refused by the condition readers.
         api_values::resolve_enchantment_registry(&items)?;
