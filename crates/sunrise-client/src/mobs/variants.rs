@@ -1560,3 +1560,7 @@ fn decode_prepared_sound_holder(field: &str, raw: &Value) -> Result<(String, Tag
 #[cfg(test)]
 #[path = "wolf_variant_tests.rs"]
 mod wolf_variant_tests;
+
+#[cfg(test)]
+#[path = "farm_variant_tests.rs"]
+mod farm_variant_tests;
