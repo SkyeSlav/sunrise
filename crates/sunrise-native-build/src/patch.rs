@@ -210,22 +210,27 @@ pub fn build(
     }))
 }
 
-/// The SDK libraries a patch crate compiles against: the game crate and the facade crates.
+/// The crates a patch crate links: the game crate and the facade crates.
+fn sdk_extern_names(sdk: &Identity) -> impl Iterator<Item = &str> {
+    std::iter::once("sunrise_client").chain(
+        sdk.facade_crates()
+            .filter(|krate| *krate != "sunrise_client"),
+    )
+}
+
+/// The SDK libraries a patch crate compiles against: [`sdk_extern_names`], with their files.
 pub fn sdk_externs(game: &Path, sdk: &Identity) -> Result<Vec<(String, PathBuf)>, String> {
     let deps = game.join("deps");
-    let mut externs = vec![(
-        "sunrise_client".to_owned(),
-        super::prebuilt::library(&deps, "sunrise_client")?,
-    )];
-    for krate in sdk.facade_crates() {
-        if krate != "sunrise_client" {
-            externs.push((
-                krate.to_owned(),
-                super::prebuilt::facade_library(&deps, krate, sdk)?,
-            ));
-        }
-    }
-    Ok(externs)
+    sdk_extern_names(sdk)
+        .map(|krate| {
+            let library = if krate == "sunrise_client" {
+                super::prebuilt::library(&deps, krate)?
+            } else {
+                super::prebuilt::facade_library(&deps, krate, sdk)?
+            };
+            Ok((krate.to_owned(), library))
+        })
+        .collect()
 }
 
 impl Prepared<'_> {
@@ -450,6 +455,7 @@ pub fn prepare<'a>(
     // The generator refuses targets the staged game cannot replace.
     let mut extras = extras(&bundles)?;
     extras.loops = loops;
+    extras.linked = sdk_extern_names(sdk).map(str::to_owned).collect();
     let generated = api_gen::patch::generate(&source, CRATE, &targets, &extras, &index);
     let refusals: Vec<String> = match &generated {
         Ok(_) => Vec::new(),
