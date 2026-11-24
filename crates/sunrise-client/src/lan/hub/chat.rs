@@ -514,13 +514,14 @@ impl Hub {
 
     /// `ChatType.bind`'s lookup: a `ChatType` key's entry in the world's registry, by the
     /// network id the clients were sent (`SyncData::id`, the order of the sync), so a pack's
-    /// replacement of the entry is the one they decorate with.
+    /// replacement of the entry is the one they decorate with. A key the registry lacks is an
+    /// error, as `getOrThrow`: the world's table always holds vanilla's chat types.
     pub fn chat_type_id(&self, name: &str) -> RegistryRef<ChatType> {
-        RegistryRef::new(
-            self.sync
-                .id("minecraft:chat_type", &format!("minecraft:{name}"))
-                .map_or(0, |id| id as u32),
-        )
+        let id = self
+            .sync
+            .id("minecraft:chat_type", &format!("minecraft:{name}"))
+            .unwrap_or_else(|| panic!("minecraft:{name} is not in the chat_type registry"));
+        RegistryRef::new(id as u32)
     }
 }
 
