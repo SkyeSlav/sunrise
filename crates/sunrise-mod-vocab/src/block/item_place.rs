@@ -13,7 +13,7 @@ use crate::item::item_stack::{component_edits::edit_item_components, read_stack_
 use crate::{
     BundleItems, Capability, Direction, ENTITY_ITEMS, EquipmentSlot, Hand, ITEMS,
     ItemComponentEditor, ItemKey, ItemResource, ItemStack, ItemStackView, LevelRef, MenuRef,
-    MenuSlotBacking, Overanswered, ResourceHandler, ServerHost, StackWriteError,
+    MenuSlotBacking, Overanswered, ResourceHandler, ServerHost, StackWriteError, StorageSlot,
     TransactionContext, TransactionError, backend_mut_of, backend_of,
 };
 use std::{
@@ -566,6 +566,37 @@ pub(crate) fn warn_broken(owner: Option<&'static str>, at: &dyn Debug) {
 }
 
 impl ItemPlace {
+    /// The block container slot this place is, if it is one: [`StorageSlot`], the same value
+    /// whichever side, half of a double chest or block of a multiblock reached it. A
+    /// [`BlockEntity`](Self::BlockEntity) place asks its [`ITEMS`] handler
+    /// ([`ResourceHandler::backing`]); a [`MenuSlot`](Self::MenuSlot) place is the slot its menu
+    /// shows when that is a block entity's ([`MenuSlotBacking::BlockEntity`]). [`Strict`](Self::Strict)
+    /// and [`OneByOne`](Self::OneByOne) are the place inside. Every other place, and a handler
+    /// that gives no backing, is `None`.
+    pub fn backing(&self, host: &mut dyn ServerHost) -> Option<StorageSlot> {
+        let mut place = self;
+        while let Self::Strict(inner) | Self::OneByOne(inner) = place {
+            place = inner;
+        }
+        match place {
+            Self::BlockEntity {
+                level,
+                pos,
+                side,
+                slot,
+            } => level
+                .capability(host, &ITEMS, *pos, *side)?
+                .backing(host, *slot),
+            Self::MenuSlot { menu, slot } => match menu.slot_backing(host, *slot) {
+                Some(MenuSlotBacking::BlockEntity { level, pos, slot }) => {
+                    Some(StorageSlot { level, pos, slot })
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Lend the stack here to `read` and return its result, or return `None` without calling it
     /// if the place is empty or unavailable. Use [`ItemStackView::project`] to inspect components
     /// or retain an owned stack. Native reads never load chunks or initialize a player; reading a

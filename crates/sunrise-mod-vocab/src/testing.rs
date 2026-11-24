@@ -844,6 +844,14 @@ impl crate::prelude::ItemsBackend for FakeHost {
         let items = self.level.standing(at.level, at.pos)?.items.as_ref()?;
         items.slots.get(slot)?.clone()
     }
+    fn container_slot_backing(&self, at: BlockSide, slot: usize) -> Option<crate::StorageSlot> {
+        let items = self.level.standing(at.level, at.pos)?.items.as_ref()?;
+        (slot < items.slots.len()).then_some(crate::StorageSlot {
+            level: at.level,
+            pos: at.pos,
+            slot,
+        })
+    }
     fn container_capacity(&self, at: BlockSide, slot: usize, stack: Option<&ItemStack>) -> u32 {
         let items = self
             .level

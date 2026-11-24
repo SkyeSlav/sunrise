@@ -267,6 +267,16 @@ pub trait ItemsBackend {
     /// The stack in slot `slot` of those `at`'s side reaches (`container_size`).
     fn container_stack(&self, at: BlockSide, slot: usize) -> Option<ItemStack>;
     /// Side: server.
+    /// The backing slot of slot `slot` of those `at`'s side reaches (`container_size`):
+    /// `WorldlyContainer.getSlotsForFace` picks the slot and `ChestBlock.getContainer` joins a
+    /// double chest's halves, and each slot reports the half or block entity that owns it
+    /// (matching `View::locate`, `CompoundContainer` and `MenuRef::slot_backing`), with that
+    /// block entity's own unsided slot index. A furnace's sides that reach one slot report the
+    /// same `StorageSlot`. A composter has no backing container: vanilla builds one per access
+    /// (`ComposterBlock.getContainer`), so it returns `None` on every face. `None` as well where
+    /// `container_size` is `None` or `slot` is past it.
+    fn container_slot_backing(&self, at: BlockSide, slot: usize) -> Option<StorageSlot>;
+    /// Side: server.
     /// How many of `stack` slot `slot` of those `at`'s side reaches holds when empty, as
     /// NeoForge's `isValid` and `getCapacityAsLong` answer: none where it may not go in (a
     /// furnace's output, `canPlaceItem`), else the slot's limit for it. `None` asks for the

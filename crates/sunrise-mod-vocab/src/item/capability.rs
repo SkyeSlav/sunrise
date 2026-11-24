@@ -6,7 +6,7 @@
 //! attachments).
 use crate::{
     Answer, BlockEntityRef, BlockEntityTypeKey, BlockProviders, BlockState, Direction,
-    ItemResource, LevelHost, LevelRef, Overanswered, ResourceHandler, ServerHost,
+    ItemResource, LevelHost, LevelRef, Overanswered, ResourceHandler, ServerHost, StorageSlot,
     TransactionContext, TransactionError, backend_mut_of, backend_of,
 };
 use std::{fmt::Debug, marker::PhantomData, ops::Deref};
@@ -413,6 +413,9 @@ impl ResourceHandler<ItemResource> for GameItems {
         backend_of(&*host).map_or(0, |backend| {
             backend.container_capacity(self.0, index, resource.map(ItemResource::as_stack))
         })
+    }
+    fn backing(&self, host: &mut dyn ServerHost, index: usize) -> Option<StorageSlot> {
+        backend_of(&*host)?.container_slot_backing(self.0, index)
     }
     fn insert_at(
         &self,
