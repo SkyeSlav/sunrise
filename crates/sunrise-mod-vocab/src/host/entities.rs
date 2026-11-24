@@ -109,12 +109,6 @@ pub trait EntitiesBackendMut {
         orb: ExperienceOrbRef,
         age: i32,
     ) -> Result<(), ExperienceOrbWriteError>;
-}
-/// The handles' writes of the `entities` area, implemented by the game and reached through [`BackendMut`].
-// hidden: a handle's backend, reached through `Backend`; mods call the handle, never this trait
-#[doc(hidden)]
-#[sunrise_mod_api_macros::host_area]
-pub trait EntitiesBackendMut {
     /// Side: server.
     /// Lend the entity's own random (`Entity.getRandom`) to `draw`. Run no callback when the
     /// handle is stale, the entity is not in the level in place, or its kind has no random of

@@ -160,40 +160,50 @@ impl EntityRef {
     pub fn epoch(self) -> WorldEpoch {
         self.epoch
     }
-    /// Use the entity's live `Entity.getRandom` stream for `draw`. The hit leaves the
-    /// draws in the stream in listener order. Returns `None` without running `draw`
-    /// if this hit does not lend the entity.
-    pub fn with_random<T>(
-        self,
-        hit: &mut dyn HitHost,
-        draw: impl FnOnce(&mut dyn crate::RandomSource) -> T,
-    ) -> Option<T> {
-        crate::world::random::with_random_draw(draw, |draw| hit.lend_entity_random(self, draw))
-    }
-    /// Borrow the entity's own random (`Entity.getRandom`, the entity's `random` field) for `draw`
-    /// only: `entity.with_random(host, |rng| rng.next_float())`. The closure cannot keep or reseed
-    /// the stream. Draws advance the entity's one live stream directly, so they interleave with
-    /// the game's own draws from it in vanilla's order: the entity's next draw after the closure
-    /// sees the value after the last one `draw` took. This is the random vanilla's entity-scoped
-    /// chances use (`player.getRandom().nextFloat()` in the anvil's wear roll, a hit sound's
-    /// pitch); the level's stream is [`LevelRef::with_random`].
+    /// Borrow the entity's own live random stream (`Entity.getRandom`, the entity's `random`
+    /// field) for `draw` only: `entity.with_random(host, |rng| rng.next_float())`. Works with
+    /// both `&mut dyn ServerHost` and `&mut dyn HitHost`. The closure cannot keep or reseed the
+    /// stream. Draws advance the entity's one live stream directly, so they interleave with the
+    /// game's own draws from it in vanilla's order.
     ///
-    /// Returns `None` without calling `draw` if the host lacks server authority, the handle is
-    /// stale, the entity is not in the level in place, or its kind has no random of its own in
-    /// the engine yet. A mob and a player (a guest parked while the server ticks another
-    /// player's turn included) have one. An armor stand does not (#4826), so it answers `None`,
-    /// and so does every other kind the engine keeps no random for.
+    /// On a [`ServerHost`], returns `None` without calling `draw` if the host lacks server
+    /// authority, the handle is stale, the entity is not in the level in place, or its kind has
+    /// no random of its own in the engine yet (e.g. an armor stand, #4826). On a [`HitHost`],
+    /// returns `None` without running `draw` if the hit does not lend the entity.
     ///
     /// Matching vanilla `Entity.getRandom()`, draws are not rolled back if `draw` panics and
-    /// unwinds, or if an enclosing transaction aborts. A hit hook's host is a
-    /// [`HitHost`], not a `ServerHost`: there, draw with [`Self::next_float`] and its siblings.
+    /// unwinds, or if an enclosing transaction aborts.
     pub fn with_random<T>(
         self,
-        host: &mut dyn ServerHost,
+        host: &mut (impl EntityRandomHost + ?Sized),
         draw: impl FnOnce(&mut dyn RandomSource) -> T,
     ) -> Option<T> {
-        let backend = crate::backend::backend_mut_of(host)?;
-        crate::world::random::with_random_draw(draw, |draw| backend.with_entity_random(self, draw))
+        crate::world::random::with_random_draw(draw, |draw| {
+            host.lend_entity_random_host(self, draw)
+        })
+    }
+}
+
+/// Hosts that can lend an entity's own random stream to [`EntityRef::with_random`].
+///
+/// Implemented for `dyn ServerHost` and `dyn HitHost`.
+// hidden: sealed receiver adapter for EntityRef::with_random across ServerHost and HitHost
+#[doc(hidden)]
+pub trait EntityRandomHost {
+    fn lend_entity_random_host(&mut self, entity: EntityRef, draw: crate::RandomDraw<'_>);
+}
+
+impl EntityRandomHost for dyn HitHost + '_ {
+    fn lend_entity_random_host(&mut self, entity: EntityRef, draw: crate::RandomDraw<'_>) {
+        self.lend_entity_random(entity, draw);
+    }
+}
+
+impl EntityRandomHost for dyn ServerHost + '_ {
+    fn lend_entity_random_host(&mut self, entity: EntityRef, draw: crate::RandomDraw<'_>) {
+        if let Some(backend) = crate::backend::backend_mut_of(self) {
+            backend.with_entity_random(entity, draw);
+        }
     }
 }
 
