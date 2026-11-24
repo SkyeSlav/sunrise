@@ -7,9 +7,9 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::{Arc, Mutex},
 };
-use sunrise_core::nbt::Tag;
+use sunrise_core::{nbt::Tag, vanilla_bytes::Writer};
 use sunrise_protocol::{
-    buf::{Reader, Writer},
+    buf::Reader,
     packets::{configuration as cfg, play},
 };
 
