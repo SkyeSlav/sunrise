@@ -2,7 +2,7 @@
 use super::Game;
 use mod_api::__private::game::{
     CallbackOwner, DatapackCandidateBuilder, datapack_entry_id, datapack_registry_directory,
-    decode_datapack_entry, valid_namespaced,
+    decode_datapack_entry, decode_datapack_entry_with_decoder, valid_namespaced,
 };
 use mod_api::{
     DatapackCandidate, DatapackDecodeError, DatapackLoadReason, DatapackRegistryDeclaration,
@@ -86,12 +86,23 @@ impl Game<'_> {
     }
 
     /// Stage the enabled packs’ actual winners before readers use their holders.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn stage_datapack_registries(
+        &self,
         stack: &super::functions::PackStack,
         root: &Path,
         overlay: &PackOverlay<'_>,
         view: &mut RegistryView,
-    ) -> Result<Option<DatapackCandidate>, String> {
+        items: &sunrise_client::items::Items,
+        tag_files: &PackOverlay<'_>,
+        biomes: &sunrise_client::biome::Biomes,
+    ) -> Result<
+        Option<(
+            DatapackCandidate,
+            Option<super::native_datapack_values::DatapackVanillaValues>,
+        )>,
+        String,
+    > {
         let declarations = mod_api::__private::datapack_registry_declarations();
         if declarations.is_empty() {
             return Ok(None);
@@ -105,7 +116,36 @@ impl Game<'_> {
             .collect();
         let files = sunrise_client::datapack::registry_files(&packs, &keys)
             .map_err(|error| format_datapack_error(&error))?;
-        admit_datapack_registries(root, overlay, view, declarations, &files).map(Some)
+        if !mod_api::__private::declarations_use_vanilla_values(declarations) {
+            return admit_datapack_registries(root, overlay, view, declarations, &files)
+                .map(|candidate| Some((candidate, None)));
+        }
+        let biome_tags =
+            sunrise_client::items::load_tags(root, "worldgen/biome", tag_files).unwrap_or_default();
+        let live_features = self.res.behaviours().live_features();
+        let catalog = live_features
+            .as_ref()
+            .and_then(|features| features.state_provider_catalog());
+        let biome_names = biomes.registry_order();
+        let mut decoder = super::native_datapack_values::VanillaValueTableBuilder::new(
+            self.pack.assets.registry,
+            self.res.behaviours(),
+            &items.block_tags,
+            &items.fluid_tags,
+            &biome_names,
+            &biome_tags,
+            catalog,
+        )
+        .map_err(|error| format!("datapack vanilla value decoder: {error}"))?;
+        let candidate = admit_datapack_registries_with_decoder(
+            root,
+            overlay,
+            view,
+            declarations,
+            &files,
+            Some(&mut decoder),
+        )?;
+        Ok(Some((candidate, Some(decoder.finish()))))
     }
 }
 
@@ -144,6 +184,17 @@ fn admit_datapack_registries(
     view: &mut RegistryView,
     declarations: &[DatapackRegistryDeclaration],
     files: &RegistryFiles,
+) -> Result<DatapackCandidate, String> {
+    admit_datapack_registries_with_decoder(root, overlay, view, declarations, files, None)
+}
+
+fn admit_datapack_registries_with_decoder(
+    root: &Path,
+    overlay: &PackOverlay<'_>,
+    view: &mut RegistryView,
+    declarations: &[DatapackRegistryDeclaration],
+    files: &RegistryFiles,
+    mut decoder: Option<&mut dyn mod_api::__private::VanillaValueDecoder>,
 ) -> Result<DatapackCandidate, String> {
     use DatapackLoadReason::{Decode, InvalidEntryId, NotUtf8};
     let base = overlay.conditions;
@@ -231,9 +282,13 @@ fn admit_datapack_registries(
                         return true;
                     }
                     Ok(ConditionProgress::Complete(false)) => return false,
-                    Ok(ConditionProgress::Complete(true)) => {
-                        decode_datapack_entry(declaration, text).map_err(Decode)
+                    Ok(ConditionProgress::Complete(true)) => match decoder.as_deref_mut() {
+                        Some(decoder) => {
+                            decode_datapack_entry_with_decoder(declaration, text, decoder)
+                        }
+                        None => decode_datapack_entry(declaration, text),
                     }
+                    .map_err(Decode),
                     Err(error) => Err(malformed(error)),
                 };
                 match decoded {

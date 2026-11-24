@@ -24,6 +24,8 @@ use inventory::{
 };
 mod level_format;
 mod raw_ingress;
+#[cfg(test)]
+pub(in crate::game) use raw_ingress::PacketError;
 mod recipe_properties;
 mod use_item;
 
@@ -545,6 +547,9 @@ pub(super) struct Remote {
         sunrise_client::custom_registry_net::SyncedCustomRegistries,
     pub(in crate::game) client_data_maps: crate::game::native_data_maps::DataMaps,
     pub(in crate::game) client_data_maps_received: bool,
+    /// Decoded vanilla codec values for [`Self::datapacks`], swapped on join and reload.
+    pub(in crate::game) datapack_vanilla_values:
+        Option<Arc<crate::game::native_datapack_values::DatapackVanillaValues>>,
     /// The constructor's level is visible by name during Load, before Minecraft.setLevel.
     pub(super) constructing_level: Option<ConstructingClientLevel>,
     /// `ClientPacketListener.levelLoadTracker`: the loading screen after a login
@@ -1227,9 +1232,22 @@ impl Game<'_> {
                 self.receive_cauldron_use(&p.data)?;
             }
             // The server's next generation of mod registries: all of it or the connection.
+            // Follows vanilla `ClientCommonPacketListenerImpl.onPacketError`: an invalid
+            // snapshot or vanilla-value decode disconnects cleanly without replacing live state.
             C::CustomPayload(p) if p.channel == sunrise_client::datapack_net::CHANNEL => {
-                if let Some(remote) = &mut self.remote {
-                    remote.datapacks.accept_chunk(&p.data)?;
+                let decoded = if let Some(remote) = &mut self.remote {
+                    remote.datapacks.decode_chunk(&p.data).map_err(|error| {
+                        log::warn!("Sunrise: invalid datapack snapshot payload: {error}");
+                        raw_ingress::PacketError("Invalid datapack registry snapshot.")
+                    })?
+                } else {
+                    None
+                };
+                if let Some(set) = decoded {
+                    self.install_client_datapack_set(&set).map_err(|error| {
+                        log::warn!("Sunrise: invalid datapack vanilla value: {error}");
+                        raw_ingress::PacketError("Invalid datapack vanilla value.")
+                    })?;
                 }
             }
             C::CustomPayload(p) if p.channel == sunrise_client::data_map_net::SYNC_CHANNEL => {
