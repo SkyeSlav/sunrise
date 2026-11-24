@@ -1,5 +1,4 @@
 //! The `player_save_to_file` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0260
 
 pub trait Hooks {
     /// A player was saved to the world's store (NeoForge's

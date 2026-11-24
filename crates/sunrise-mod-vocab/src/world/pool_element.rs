@@ -509,6 +509,7 @@ impl ElementPlacement {
 /// A registered API behaviour; the game builds its engine adapter at startup.
 pub(crate) struct PoolElementTypeInfo {
     pub(crate) id: Box<str>,
+    pub(crate) mod_id: &'static str,
     pub(crate) ty: Arc<dyn PoolElementType>,
 }
 
@@ -516,10 +517,10 @@ pub(crate) struct PoolElementTypeInfo {
 /// boundary.
 // hidden: the game's startup adapter reads the registered behaviours; mods declare them through the registrar.
 #[doc(hidden)]
-pub fn pool_element_type_declarations() -> Vec<(String, Arc<dyn PoolElementType>)> {
+pub fn pool_element_type_declarations() -> Vec<(String, &'static str, Arc<dyn PoolElementType>)> {
     crate::parts::installed_pool_element_type_list()
         .iter()
-        .map(|info| (info.id.to_string(), info.ty.clone()))
+        .map(|info| (info.id.to_string(), info.mod_id, info.ty.clone()))
         .collect()
 }
 

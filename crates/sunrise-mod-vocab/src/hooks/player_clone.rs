@@ -1,5 +1,4 @@
 //! The `player_clone` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0248
 
 pub trait Hooks {
     /// A player's data was copied to their new player (NeoForge's

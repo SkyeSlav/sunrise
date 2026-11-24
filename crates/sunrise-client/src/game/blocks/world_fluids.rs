@@ -234,17 +234,21 @@ impl Game<'_> {
         if !self.current_transaction_is_here() || !self.level_in_place(level) {
             return Ok(false);
         }
-        let Some(id) = mod_api::__private::fluid_id(fluid) else {
+        if mod_api::__private::fluid_id(fluid).is_none() {
             return Ok(false);
-        };
+        }
+        let tables = super::native_block_tables::BlockTables::of(self);
+        let sound = match pickup {
+            true => tables.fluid_pickup_sound(fluid),
+            false => tables.fluid_empty_sound(fluid),
+        }
+        .ok()
+        .flatten();
         self.after_commit(After::FluidEffects(Box::new(FluidEffects {
             level,
             pos,
             // A tank-only fluid that names a bucket has its sounds too.
-            sound: match pickup {
-                true => self.fluid_pickup_sound(id),
-                false => self.fluid_empty_sound(id),
-            },
+            sound,
             pickup,
             player,
         })));

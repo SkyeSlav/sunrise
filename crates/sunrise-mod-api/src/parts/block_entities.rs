@@ -28,11 +28,6 @@ impl PartRegistrar {
                     let dependency = dependencies.kind(part.mod_id, dependency_id);
                     match dependency {
                         Some(crate::DependencyKind::Optional) if absent => {
-                            log::debug!(
-                                "mod {} skipped {} on block entity type {id}: optional dependency {dependency_id} is absent",
-                                part.mod_id,
-                                part.type_name
-                            );
                             // Its type key asked for a type that, with the dependency absent,
                             // nobody declares: the request is not a load error, unless this mod
                             // also keyed a capability provider on the type, which still needs it.
@@ -53,7 +48,7 @@ impl PartRegistrar {
                             part.mod_id, part.type_name
                         )),
                         _ => self.refused.push(format!(
-                            "mod {} attached {} to undeclared native block entity type {id}",
+                            "mod {} attached {} to unknown native block entity type {id}",
                             part.mod_id, part.type_name
                         )),
                     }
@@ -222,20 +217,58 @@ pub mod tests {
         #[mod_api::__subscriptions]
         impl crate::Hooks for Invalid {
             fn register(&self, r: &mut dyn Registrar, _: &crate::RegistrationContext) {
-                for path in ["", "other:press", "Uppercase", "has space"] {
+                for path in ["", "Uppercase", "has space", "minecraft:furnace"] {
                     r.block_entity_type(path).build();
                 }
             }
         }
-        let errors = install_parts(
-            &[ModEntry::new("test", Box::new(Invalid))],
-            &crate::parts::tests::rule_schema(),
-            |_| false,
-        )
-        .unwrap_err();
-        assert_eq!(errors.len(), 4);
-        assert!(errors.iter().all(|error| error.contains("mod test")
-            && (error.contains("invalid identifier") || error.contains("unowned namespace"))));
+        let data = mod_vocab::__private::RegistrationData::new(
+            [(
+                "minecraft:block_entity_type".into(),
+                vec!["minecraft:furnace".into()],
+            )]
+            .into(),
+            Default::default(),
+            crate::InstanceDirectory::from_path(std::path::Path::new("unused")).unwrap(),
+            crate::RuntimeEnvironment::new(
+                crate::Dist::Client,
+                "26.3".into(),
+                "test".into(),
+                false,
+            ),
+        );
+        crate::load_state::with_test_registration_data(data, || {
+            let errors = install_parts(
+                &[ModEntry::new("test", Box::new(Invalid))],
+                &crate::parts::tests::rule_schema(),
+                |_| false,
+            )
+            .unwrap_err();
+            assert_eq!(errors.len(), 4, "{errors:?}");
+            assert!(errors[..3].iter().all(|error| {
+                error.contains("mod test") && error.contains("invalid identifier")
+            }));
+            assert!(errors[3].contains("mod test"));
+            assert!(errors[3].contains("minecraft:furnace"));
+
+            // Transform ownership tracks the declaring mod rather than the key's namespace.
+            let mut r = PartRegistrar::new("declarer");
+            let key = (&mut r as &mut dyn Registrar)
+                .block_entity_type("other:press")
+                .transform(|_: &mut Compound, _: StructureTransform| Ok(()))
+                .build();
+            assert!(r.refused.is_empty(), "{:?}", r.refused);
+            assert!(r.block_entity_transforms.contains_key("other:press"));
+            r.mod_id = "other";
+            r.set_block_entity_transform(
+                key,
+                Arc::new(|_: &mut Compound, _: StructureTransform| Ok::<_, TransformRefusal>(())),
+            );
+            assert_eq!(
+                r.refused,
+                ["transform requires an owned block entity declaration"]
+            );
+        });
     }
 
     /// The block entity of type `doubler:press_entity`, held by block `test:press`.
@@ -249,9 +282,6 @@ pub mod tests {
     }
     #[mod_api::sunrise_part]
     impl BlockEntityPart for Press {
-        fn block_entity_ticks(&self, _: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
-            event.ticks = true;
-        }
         fn block_entity_tick(&self, _: &mut BlockEntityTickEvent<'_>) {
             PRESS_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
@@ -306,26 +336,40 @@ pub mod tests {
                         value.cloned()
                     })
             {
-                event.drops.push(Some(crate::parts::items::tests::stack(
-                    "minecraft:gold_ingot",
-                    count,
-                    0,
-                )));
+                event
+                    .effects
+                    .drop_slot(Some(crate::parts::items::tests::stack(
+                        "minecraft:gold_ingot",
+                        count,
+                        0,
+                    )))
+                    .unwrap();
             }
         }
     }
 
     #[test]
     pub(crate) fn a_vanilla_type_refuses_a_native_payload_part_at_registration() {
-        let mut r = super::PartRegistrar::new("test");
-        let kind = r.block_entity_type_key("minecraft:chest");
-        assert_eq!(
-            (&mut r as &mut dyn Registrar).block_entity_part(&kind, Press),
-            Err(BlockEntityPartError::VanillaType { kind }),
+        super::super::shared::tests::with_builtin_part_registry(
+            "minecraft:block_entity_type",
+            "minecraft:chest",
+            || {
+                let mut r = super::PartRegistrar::new("test");
+                let kind = r.block_entity_type_key("minecraft:chest");
+                assert_eq!(
+                    (&mut r as &mut dyn Registrar).block_entity_part(&kind, Press),
+                    Err(BlockEntityPartError::VanillaType { kind }),
+                );
+                let invalid = r.block_entity_type_key("Bad Id");
+                assert_eq!(
+                    (&mut r as &mut dyn Registrar).block_entity_part(&invalid, Press),
+                    Err(BlockEntityPartError::InvalidKey { kind: invalid }),
+                );
+                assert!(r.parts.block_entity_kinds.is_empty());
+                assert!(r.parts.blocks.is_empty());
+                assert!(r.parts.block_entities.is_empty());
+            },
         );
-        assert!(r.parts.block_entity_kinds.is_empty());
-        assert!(r.parts.blocks.is_empty());
-        assert!(r.parts.block_entities.is_empty());
     }
 
     #[test]
@@ -524,7 +568,7 @@ pub mod tests {
             assert_eq!(
                 refused,
                 [format!(
-                    "mod b attached {} to undeclared native block entity type owner:press",
+                    "mod b attached {} to unknown native block entity type owner:press",
                     type_name::<FromB>()
                 )]
             );
@@ -882,14 +926,6 @@ pub mod tests {
     #[test]
     pub(crate) fn a_block_entity_part_answers_by_block_and_by_entity_type() {
         game_thread();
-        let ticks = |block| {
-            let mut ticks = false;
-            dispatch_block_entity_ticks(&NoHost, block, &mut ticks);
-            ticks
-        };
-        // The ticker is asked by block: the type id is not a block.
-        assert!(ticks("test:press"));
-        assert!(!ticks("doubler:press_entity"));
         mod_vocab::__private::resolve_block_entity_types(
             [
                 "doubler:press_entity",
@@ -920,6 +956,14 @@ pub mod tests {
                 unreachable!()
             }
         }
+        assert!(mod_vocab::__private::block_entity_type_listens(
+            HookId::BlockEntityTick,
+            "doubler:press_entity"
+        ));
+        assert!(!mod_vocab::__private::block_entity_type_listens(
+            HookId::BlockEntityTick,
+            "test:press"
+        ));
         let tick = |kind: &str| {
             let kind = mod_vocab::__private::block_entity_type_key(kind).unwrap();
             dispatch_block_entity_tick(kind, BlockEntityScope::new(&mut Unused));
@@ -928,7 +972,7 @@ pub mod tests {
         // The tick is asked by the entity's type, which differs from its block's id.
         assert_eq!(tick("doubler:press_entity"), 1);
         assert_eq!(tick("test:press"), 0);
-        // The view distance is asked by block, as the ticker is.
+        // The view distance is asked by block, unlike the ticker.
         let distance = |block| {
             let mut distance = 64.0;
             dispatch_block_entity_view_distance(&NoHost, block, &mut distance);
@@ -955,13 +999,43 @@ impl BlockEntitiesRegistrar for PartRegistrar {
         if let Some(id) = id.filter(|id| {
             self.block_entity_types
                 .iter()
-                .any(|(_, decl)| decl.id == *id)
-                && self.owned_declaration_id(id).is_ok()
+                .any(|(owner, decl)| *owner == self.mod_id && decl.id == *id)
         }) {
-            self.block_entity_transforms.insert(id, step);
+            self.block_entity_transforms.insert(
+                id,
+                mod_vocab::__private::RegisteredBlockEntityTransform {
+                    owner: mod_vocab::__private::game::CallbackOwner::for_mod(self.mod_id),
+                    step,
+                },
+            );
         } else {
             self.refused
                 .push("transform requires an owned block entity declaration".into());
+        }
+    }
+
+    fn set_block_entity_ticker_selector(
+        &mut self,
+        kind: crate::BlockEntityTypeKey,
+        select: Arc<mod_vocab::__private::BlockEntityTickerSelector>,
+    ) {
+        let keys = self.registry_keys.borrow();
+        let slot = mod_vocab::__private::parts_installation::block_entity_type_key_slot(kind);
+        if keys.block_entity_types.id(slot).is_some_and(|id| {
+            self.block_entity_types
+                .iter()
+                .any(|(owner, decl)| *owner == self.mod_id && decl.id == id)
+        }) {
+            self.block_entity_ticker_selectors.push(
+                mod_vocab::__private::RegisteredBlockEntityTickerSelector {
+                    kind,
+                    owner: mod_vocab::__private::game::CallbackOwner::for_mod(self.mod_id),
+                    select,
+                },
+            );
+        } else {
+            self.refused
+                .push("ticker selector requires an owned block entity declaration".into());
         }
     }
 
@@ -985,13 +1059,20 @@ impl BlockEntitiesRegistrar for PartRegistrar {
         path: &str,
         blocks: Vec<String>,
     ) -> crate::BlockEntityTypeKey {
-        let id = match self.owned_declaration_id(path) {
+        let id = match self.declaration_id(path) {
             Ok(id) => id,
             Err(reason) => {
                 self.refused.push(reason);
                 return mod_vocab::__private::parts_installation::block_entity_type_key(u32::MAX);
             }
         };
+        if self.has_builtin_entry("minecraft:block_entity_type", &id) {
+            self.refused.push(format!(
+                "mod {} declared built-in block entity type {id}",
+                self.mod_id
+            ));
+            return mod_vocab::__private::parts_installation::block_entity_type_key(u32::MAX);
+        }
         let key = self.block_entity_type_key(&id);
         let blocks = blocks
             .iter()
@@ -1015,9 +1096,11 @@ impl BlockEntitiesRegistrar for PartRegistrar {
             .borrow()
             .block_entity_types
             .id(mod_vocab::__private::parts_installation::block_entity_type_key_slot(*key))
-            .map(str::to_owned)
-            .unwrap_or_default();
-        if id.starts_with("minecraft:") {
+            .map(str::to_owned);
+        let Some(id) = id else {
+            return Err(crate::BlockEntityPartError::InvalidKey { kind: *key });
+        };
+        if self.has_builtin_entry("minecraft:block_entity_type", &id) {
             return Err(crate::BlockEntityPartError::VanillaType { kind: *key });
         }
         if self.attach_known(|p| &mut p.block_entity_kinds, kind, &id, part) {
@@ -1047,19 +1130,13 @@ impl BlockEntitiesRegistrar for PartRegistrar {
         name: &'static str,
         kind: &crate::BlockEntityTypeKey,
         before_game: bool,
-        provider: BlockProviderOf,
+        provider: NativeCapabilityProvider,
     ) {
         self.capability(
-            |p| &mut p.capabilities,
-            Some(|p| &p.block_capabilities),
             name,
-            ProviderTarget::BlockEntity(kind),
+            ProviderTarget::BlockEntity(*kind),
             before_game,
-            {
-                let handler =
-                    mod_vocab::__private::parts_installation::block_provider_handler(&provider);
-                (provider, handler)
-            },
+            provider,
         );
     }
 }

@@ -442,6 +442,10 @@ pub(in crate::game) struct Dragon {
     pub yaw: f32,
     pub pitch: f32,
     pub previous_yaw: f32,
+    /// LivingEntity.yBodyRot, distinct from the flight and part yaw.
+    pub body_yaw: f32,
+    head_yaw: f32,
+    body_rotation: sunrise_client::mobs::control::BodyRotation,
     yaw_accel: f32,
     pub health: f32,
     pub hurt_time: i32,
@@ -493,7 +497,7 @@ pub(in crate::game) struct Dragon {
     strafe_request: Option<FightWho>,
     /// `Mob.isNoAi` (`NoAI`): it flaps in place, with no phase or flight.
     pub(super) no_ai: bool,
-    random: LegacyRandom,
+    pub(super) random: LegacyRandom,
 }
 /// A player in the fight: the window's own player, or a guest by
 /// connection (a LAN or server player).
@@ -699,6 +703,9 @@ impl Dragon {
             yaw,
             pitch: 0.0,
             previous_yaw: yaw,
+            body_yaw: yaw,
+            head_yaw: yaw,
+            body_rotation: Default::default(),
             yaw_accel: 0.0,
             health: MAX_HEALTH,
             hurt_time: 0,
@@ -2089,13 +2096,6 @@ impl Game<'_> {
             // Mob.playHurtSound: the ambient sound clock starts again.
             d.ambient_time = -AMBIENT_INTERVAL;
             let at = [d.position.x, d.position.y, d.position.z];
-            let pitch = 0.8 + self.world.random.next_float() * 0.3;
-            self.audio
-                .play("minecraft:entity.ender_dragon.hurt", Some(at), 5.0, pitch);
-            if kind == DamageKind::Thorns {
-                self.audio
-                    .play("minecraft:enchant.thorns.hit", Some(at), 1.0, 1.0);
-            }
             if let Some(s) = source {
                 d.last_source = Some((
                     s.damage_type,
@@ -2104,6 +2104,11 @@ impl Game<'_> {
                 ));
             } else {
                 d.last_source = Some(("minecraft:generic", None, None));
+            }
+            let pitch = 0.8 + self.world.random.next_float() * 0.3;
+            self.play_audio("minecraft:entity.ender_dragon.hurt", Some(at), 5.0, pitch);
+            if kind == DamageKind::Thorns {
+                self.play_audio("minecraft:enchant.thorns.hit", Some(at), 1.0, 1.0);
             }
         }
         hurt
@@ -2744,8 +2749,24 @@ impl Game<'_> {
             [look[0] / norm, look[1] / norm, look[2] / norm]
         }
     }
-    /// `EnderDragon.aiStep` (and `tickDeath`) for the dragon's own entity tick.
+    /// The inherited LivingEntity.tick runs Mob.tickHeadTurn after aiStep.
     pub(super) fn tick_dragon(&mut self) {
+        self.dragon_ai_step();
+        if let Some(d) = self.dragon.as_mut() {
+            let (dx, dz) = (d.position.x - d.previous.x, d.position.z - d.previous.z);
+            // EnderDragon inherits Mob.getMaxHeadYRot (75 degrees).
+            d.body_rotation.tick(
+                dx * dx + dz * dz,
+                d.yaw,
+                &mut d.body_yaw,
+                &mut d.head_yaw,
+                75.0,
+            );
+        }
+    }
+
+    /// `EnderDragon.aiStep` (and `tickDeath`) for the dragon's own entity tick.
+    fn dragon_ai_step(&mut self) {
         // updateDragon runs when the fight dragon ticks or dies, but not with NoAI.
         let ticks = self.dragon.as_ref().is_some_and(|d| !d.alive() || !d.no_ai);
         if ticks && self.is_fight_dragon() {
@@ -2753,7 +2774,11 @@ impl Game<'_> {
         }
         // Entity.baseTick: the saved invulnerability window counts down
         // (#916), before the dragon's own borrow of the game.
-        if let Some(id) = self.dragon.as_ref().map(|d| d.id) {
+        if let Some(dragon) = self.dragon.as_ref() {
+            let id = dragon.id;
+            if !dragon.equipment.is_empty() {
+                self.tick_equipment_enchantments(super::commands::Target::Dragon(id), id);
+            }
             self.tick_saved_invulnerable_time(id);
         }
         let target_dead = self
@@ -2790,7 +2815,7 @@ impl Game<'_> {
             // LivingEntity.getVoicePitch, from the dragon's own random.
             let r = &mut d.random;
             let pitch = (r.next_float() - r.next_float()) * 0.2 + 1.0;
-            self.audio.play(
+            self.play_audio(
                 "minecraft:entity.ender_dragon.ambient",
                 Some(at),
                 5.0,
@@ -2815,8 +2840,7 @@ impl Game<'_> {
         let at = [d.position.x, d.position.y, d.position.z];
         if flap_was <= -0.3 && flap_now >= -0.3 {
             let pitch = 0.8 + self.world.random.next_float() * 0.3;
-            self.audio
-                .play("minecraft:entity.ender_dragon.flap", Some(at), 5.0, pitch);
+            self.play_audio("minecraft:entity.ender_dragon.flap", Some(at), 5.0, pitch);
         }
         let d = self.dragon.as_mut().expect("dragon");
         if !d.phase.sitting() {
@@ -2824,8 +2848,7 @@ impl Game<'_> {
             if d.growl < 0 {
                 d.growl = 200 + d.random.next_int_bound(200).unwrap_or(0);
                 let pitch = 0.8 + self.world.random.next_float() * 0.3;
-                self.audio
-                    .play("minecraft:entity.ender_dragon.growl", Some(at), 2.5, pitch);
+                self.play_audio("minecraft:entity.ender_dragon.growl", Some(at), 2.5, pitch);
             }
         }
         // checkCrystals: heal 1 every 10 ticks from the nearest crystal, found
@@ -2925,6 +2948,8 @@ impl Game<'_> {
                 d.velocity.z * slide,
             );
         }
+        // EnderDragon.aiStep assigns the body's angle after flight, before placing parts.
+        d.body_yaw = d.yaw;
         self.place_dragon_parts();
         self.dragon_contacts();
         // The chunks the dragon passes through re-save their entity lists.
@@ -3107,7 +3132,7 @@ impl Game<'_> {
                         self.mob_post_attack(
                             id,
                             Some(sunrise_client::mobs::Who::Mob(frame.dragon_id)),
-                            Some("minecraft:ender_dragon"),
+                            None,
                             Some("minecraft:mob_attack"),
                         );
                     }
@@ -3187,7 +3212,7 @@ impl Game<'_> {
             }
         };
         let n = normalize(normalize(dir));
-        self.audio.play(
+        self.play_audio(
             "minecraft:entity.ender_dragon.shoot",
             Some([at.x, at.y, at.z]),
             10.0,
@@ -3201,7 +3226,7 @@ impl Game<'_> {
         );
         p.acceleration = 0.1;
         p.velocity = Vec3::new(n.x * 0.1, n.y * 0.1, n.z * 0.1);
-        self.add_projectile(p);
+        self.add_fresh_projectile(p);
     }
     /// `DragonFireball.onHit` where it burst (`next`): the dragon's breath
     /// cloud and level event 2006, as the fireballs of the dragon's own list
@@ -3325,6 +3350,7 @@ impl Game<'_> {
                     c.at[2] + f64::from(a.sin() * d),
                 ];
                 self.particles.add_with(
+                    None,
                     &ParticleOptions::simple(ParticleType::DragonBreath),
                     at,
                     [0.0, 0.0, 0.0],
@@ -3422,30 +3448,6 @@ impl Game<'_> {
             self.thorns(id);
         }
     }
-    /// `DamageEntity.apply`: the dragon's own random, including when the
-    /// wearer's mob source cannot take health from it.
-    pub(super) fn dragon_effect_random(&mut self, id: u32) -> Option<f32> {
-        self.dragon
-            .as_mut()
-            .filter(|d| d.id == id)
-            .map(|d| d.random.next_float())
-    }
-    /// `EnderDragon.hurtServer`: Thorns hits the body part, so damage is
-    /// quartered plus at most one, with the player as its causing entity.
-    pub(super) fn dragon_thorns(&mut self, attacker: u32, min: f32, max: f32) {
-        let Some(d) = self.dragon.as_mut().filter(|d| d.id == attacker) else {
-            return;
-        };
-        let damage = d.random.next_float() * (max - min) + min;
-        self.hurt_dragon(
-            2,
-            damage,
-            true,
-            Some(self.acting_player()),
-            DamageKind::Thorns,
-        );
-    }
-    /// Damage from the dragon, which is its causing entity
     /// (`DamageSources.mobAttack(dragon)`, `indirectMagic(cloud, dragon)`): the
     /// death message names it, or the cloud once the dragon is gone.
     fn dragon_hurts_player(&mut self, damage_type: &str, amount: f32) {
@@ -4252,6 +4254,7 @@ impl Game<'_> {
             minecart_steps: None,
             data: 0,
             meta,
+            display: None,
             forced_meta: [0; 4],
             // Back at their defaults the values leave `meta`, and the clients
             // still hold the old ones.
@@ -4500,7 +4503,7 @@ impl Game<'_> {
     /// `LevelEvent 3001`: the dragon's growl over the island.
     fn respawn_growl(&mut self) {
         let pitch = 0.8 + self.world.random.next_float() * 0.3;
-        self.audio.play(
+        self.play_audio(
             "minecraft:entity.ender_dragon.growl",
             Some([0.5, 128.5, 0.5]),
             64.0,
@@ -4695,6 +4698,9 @@ impl Game<'_> {
         let yaw = self.world.random.next_float() * 360.0;
         let seed = random_source::unique_seed();
         let mut dragon = Dragon::new(Vec3::new(0.0, 128.0, 0.0), yaw, seed);
+        // The fight's snapTo sets only the view yaw, not the new living angles.
+        dragon.body_yaw = 0.0;
+        dragon.head_yaw = 0.0;
         dragon.join = sunrise_client::join_seq::JoinSeq::next();
         dragon.id = self.next_entity + 1;
         dragon.phase = Phase::Holding {
@@ -4873,7 +4879,7 @@ impl Game<'_> {
         };
         let at = [d.position.x, d.position.y, d.position.z];
         let pitch = (d.random.next_float() - d.random.next_float()) * 0.2 + 1.0;
-        self.audio.play(
+        self.play_audio(
             "minecraft:entity.ender_dragon.ambient",
             Some(at),
             5.0,
@@ -5087,8 +5093,7 @@ impl Game<'_> {
                 }
             }
             if let Some((at, pitch)) = growl {
-                self.audio
-                    .play("minecraft:entity.ender_dragon.growl", Some(at), 2.5, pitch);
+                self.play_audio("minecraft:entity.ender_dragon.growl", Some(at), 2.5, pitch);
             }
             let Some(d) = self.dragon.as_mut() else {
                 return;
@@ -5118,8 +5123,7 @@ impl Game<'_> {
         let at = [d.position.x, d.position.y, d.position.z];
         if flap_was <= -0.3 && flap_now >= -0.3 {
             let pitch = 0.8 + self.world.random.next_float() * 0.3;
-            self.audio
-                .play("minecraft:entity.ender_dragon.flap", Some(at), 5.0, pitch);
+            self.play_audio("minecraft:entity.ender_dragon.flap", Some(at), 5.0, pitch);
         }
         let d = self.dragon.as_mut().expect("dragon");
         if !d.phase.sitting() {
@@ -5127,8 +5131,7 @@ impl Game<'_> {
             if d.growl < 0 {
                 d.growl = 200 + d.random.next_int_bound(200).unwrap_or(0);
                 let pitch = 0.8 + self.world.random.next_float() * 0.3;
-                self.audio
-                    .play("minecraft:entity.ender_dragon.growl", Some(at), 2.5, pitch);
+                self.play_audio("minecraft:entity.ender_dragon.growl", Some(at), 2.5, pitch);
             }
         }
         // checkCrystals' search runs on a client too (the healing beam).
@@ -5207,8 +5210,7 @@ impl Game<'_> {
             );
         }
         if let Some(pitch) = growl {
-            self.audio
-                .play("minecraft:entity.ender_dragon.growl", Some(at), 2.5, pitch);
+            self.play_audio("minecraft:entity.ender_dragon.growl", Some(at), 2.5, pitch);
         }
     }
 }
@@ -5398,7 +5400,7 @@ pub(in crate::game) mod tests {
                 self.joins
                     .lock()
                     .unwrap()
-                    .push((event.entity, event.loaded_from_disk));
+                    .push((event.subject.id(), event.loaded_from_disk));
                 if self.cancel.load(Ordering::Relaxed) {
                     Flow::Cancel
                 } else {
@@ -6423,7 +6425,7 @@ pub(in crate::game) mod tests {
                 )),
             );
             game.dragon.replace(d);
-            game.tick_equipment_attributes();
+            game.refresh_stand_and_dragon_equipment_attributes();
             let resistance = f64::from(0.1_f32);
             assert_eq!(game.dragon_knockback_resistance(), resistance);
             let from = Vec3::new(3.0, 70.0, 4.0);
@@ -6832,6 +6834,28 @@ pub(in crate::game) mod tests {
         // Past 1.0 or NaN, `Math.acos` is NaN and the gate refuses, as vanilla's does.
         assert!(strafe_angle(f32::from_bits(0x3f80_0001)).is_nan());
         assert!(strafe_angle(f32::NAN).is_nan());
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_stationary_no_ai_dragon_runs_its_living_body_turn() {
+        super::super::native_entity_refs::tests::with_game(|game| {
+            game.create_new_dragon();
+            let dragon = game.dragon.as_mut().unwrap();
+            assert_ne!(dragon.yaw, 0.0);
+            assert_eq!((dragon.body_yaw, dragon.head_yaw), (0.0, 0.0));
+            dragon.yaw = 35.0;
+            dragon.no_ai = true;
+            dragon.head_yaw = 90.0;
+            let id = dragon.id;
+            let entity = game.entity(id).unwrap();
+            assert_eq!(entity.set_body_yaw(game, 0.0), Ok(true));
+            game.tick_dragon();
+            // The changed head is 90 degrees off the raw body. With a 75
+            // degree limit the controller turns the body by 15, not the view.
+            assert_eq!(entity.body_yaw(game), Some(15.0));
+            assert_eq!(game.dragon.as_ref().unwrap().yaw, 35.0);
+        });
     }
 
     #[test]

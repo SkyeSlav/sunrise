@@ -57,11 +57,13 @@ fire on title or connect screens.
 stage. Both pass kinds draw prepared engine lines and quads in call order. `RenderLevelStage`
 and `OitStage` are process-local selectors, not `Wire` values.
 
-Stages that do not run on the active route are not synthesized. Classic packs can replace engine
-terrain, water, and weather passes. If a pack owns feature drawing, the feature stages follow
-its opaque and translucent groups after world import, at the pack's before- or after-deferred
-position. These stages are available when the pack's world color buffer can blend the prepared
-engine lines and quads; there is no earlier substitute on an incompatible target.
+Stages that do not run on the active route are not synthesized. When a classic shader pack owns
+terrain, water, features, or weather and exposes a float-blendable world color buffer
+(`colortex0`), `AfterOpaqueBlocks`, `AfterOpaqueFeatures`, `AfterTranslucentFeatures`,
+`AfterTranslucentBlocks`, and `AfterWeather` fire at the pack's own passes (before or after
+deferred according to the pack's feature schedule) against the pack's color and depth targets.
+On an incompatible (integer or unblendable) `colortex0`, those pack-owned stages are omitted
+rather than firing early on a mismatched target.
 
 A panic disables that mod's listener for this hook for the session, with an error log and toast.
 Draws already accepted are not rolled back."#]

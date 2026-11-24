@@ -48,7 +48,7 @@ fn pipeline_fragment(input: PipelineInput) -> vec4<f32> {
 `frame.viewport` is the world picture's size in pixels. Colours follow the
 mod render colour rule: the function reads and returns linear
 light, 1.0 is paper white, more is brighter, and alpha is coverage. A file that declares its own
-bindings or entry points is refused, and so is one over 20,000 expressions or 64 texture reads, or
+bindings or entry points is refused, and so is one
 that SPIR-V, MSL or HLSL translation refuses (the refusal names the backend), or one over 131,072
 bytes or with an expression chaining more than 200 binary operators, member accesses or indexings
 (`a + b + c + ...`: split it with `let`), which would overflow the parser's stack. A refusal with a
@@ -76,11 +76,10 @@ pipeline quads draw after the plain quads and lines, in submission order."#]
         side = "client",
         contract = "collect",
         out = "pipelines",
-        registration_append = "register",
-        collect_validator = "crate::client::render_pipeline::validate_render_pipelines",
+        registration_append = "attributed",
         context = "registration",
         neoforge = "RegisterRenderPipelinesEvent",
-        version = 3
+        version = 4
     )]
     fn register_render_pipelines(pipelines: &mut Vec<mod_api::RenderPipeline>);
 }

@@ -41,7 +41,7 @@ pub(in crate::game) fn run_discarded_mob_leaves_selectors_and_saves_while_frozen
     )
     .unwrap();
     game.native_lifecycle
-        .begin_open(mod_api::Authority::IntegratedServer);
+        .begin_open(Some(mod_api::Authority::IntegratedServer));
     game.world = World::new(game.res.facts().air, 1);
     game.world
         .chunks
@@ -230,7 +230,7 @@ struct FallenMod;
 #[mod_api::__subscriptions]
 impl mod_api::Hooks for FallenMod {
     fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
-        r.register_entity_selector("fallen", Fallen);
+        r.register_entity_selector("fallen", Fallen).unwrap();
     }
 }
 
@@ -242,7 +242,7 @@ fn dead_guest_leaves_at_e_but_reaches_a_registered_selector() {
         Box::new(FallenMod),
     )]
     .into();
-    crate::game::api_values::install_parts(&mods).unwrap();
+    mod_api::testing::rebuild_parts(|| crate::game::api_values::install_parts(&mods)).unwrap();
     mod_platform::testing::with_mods(mods, || {
         crate::game::native_guest_turn_tests::with_guests(|game| {
             game.build_registries();

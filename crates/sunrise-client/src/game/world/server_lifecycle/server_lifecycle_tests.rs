@@ -6,7 +6,8 @@ use crate::game::{
 };
 use mod_api::{
     __private::{HookPanicReport, take_hook_panics},
-    Hooks, ModEntry, ServerHost,
+    ConfigEvent, ConfigKind, ConfigSnapshot, ConfigSpec, Hooks, ModEntry, Registrar,
+    RegistrationContext, ServerHost,
 };
 use mod_platform::testing::with_mods;
 use std::sync::{
@@ -82,7 +83,7 @@ fn integrated_stop_finishes_after_an_unencodable_record() {
             game.session_lock = Some(SessionLock::acquire(root.path()).unwrap());
             game.world_adopted = true;
             game.native_lifecycle
-                .begin_open(mod_api::Authority::IntegratedServer);
+                .begin_open(Some(mod_api::Authority::IntegratedServer));
             game.native_lifecycle.world_open_ready().unwrap();
             game.save_game().unwrap();
             assert_eq!(*events.lock().unwrap(), ["level saved", "world saved"]);
@@ -190,13 +191,24 @@ fn every_started_server_stops_and_saves_even_when_startup_or_ticks_fail() {
     );
     #[mod_api::__subscriptions]
     impl Hooks for Log {
-        fn register_configs(
-            &self,
-            _: &dyn mod_api::ConfigContext,
-            e: &mut mod_api::RegisterConfigsEvent<'_>,
-        ) {
-            e.configs
-                .push(mod_api::Config::new("log", mod_api::ConfigKind::Server, ""));
+        fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
+            let log = self.0.clone();
+            let panic_on_unload = self.1.config_unloading;
+            r.register_config(
+                ConfigSpec::new(ConfigKind::Server, ""),
+                Some(Arc::new(
+                    move |event: ConfigEvent<'_>, _: &ConfigSnapshot| {
+                        if matches!(event, ConfigEvent::Unloading(_)) {
+                            log.lock().unwrap().push("config-unloading".into());
+                            if panic_on_unload {
+                                panic!("config unloading listener");
+                            }
+                        }
+                        Ok(())
+                    },
+                )),
+            )
+            .unwrap();
         }
         fn server_about_to_start(
             &self,
@@ -221,16 +233,6 @@ fn every_started_server_stops_and_saves_even_when_startup_or_ticks_fail() {
             self.0.lock().unwrap().push("stopping".into());
             if self.1.stopping {
                 panic!("stopping listener");
-            }
-        }
-        fn config_unloading(
-            &self,
-            _: &mut dyn ServerHost,
-            _: &mut mod_api::ConfigUnloadingEvent<'_>,
-        ) {
-            self.0.lock().unwrap().push("config-unloading".into());
-            if self.1.config_unloading {
-                panic!("config unloading listener");
             }
         }
         fn level_save(&self, _: &mut dyn ServerHost, e: &mut mod_api::LevelSaveEvent<'_>) {
@@ -294,6 +296,10 @@ fn every_started_server_stops_and_saves_even_when_startup_or_ticks_fail() {
             "config-unloading-panic",
             "config-unloading-logout-panic",
         ] {
+            let prepare_error = case == "dedicated-prepare-error";
+            if prepare_error && !dedicated {
+                continue;
+            }
             let log = Arc::new(Mutex::new(Vec::new()));
             let stopped_probe = Arc::new(Mutex::new(None));
             let config_panic = case.starts_with("config-unloading");
@@ -344,6 +350,12 @@ fn every_started_server_stops_and_saves_even_when_startup_or_ticks_fail() {
                         if matches!(case, "unopened" | "bind-failed-init" | "locked-unadopted") {
                             // A failed open must not overwrite an existing, unreadable save.
                             std::fs::write(root.join("level.dat"), b"unadopted save").unwrap();
+                        }
+                        if config_panic || prepare_error {
+                            let config = root.join("serverconfig");
+                            std::fs::create_dir_all(&config).unwrap();
+                            std::fs::write(config.join("log-server.toml"), "fixture = true\n")
+                                .unwrap();
                         }
                         if config_panic {
                             game.level.name = "previous save".into();
@@ -471,6 +483,10 @@ fn every_started_server_stops_and_saves_even_when_startup_or_ticks_fail() {
                                 .collect::<Vec<_>>(),
                             "{dedicated} {case}"
                         );
+                        if prepare_error {
+                            let error = result.as_ref().unwrap_err().to_string();
+                            assert!(error.contains("its level data does not read"), "{error}");
+                        }
                         let expected: &[&str] = match case {
                             "bind-failed-init" => &["stopped"],
                             "unopened" => &["about-to-start", "stopped", "config-unloading"],
@@ -858,13 +874,12 @@ fn datapack_dimensions_open_prepare_save_and_close_in_creation_order() {
                         .lock()
                         .unwrap()
                         .push(format!("load:{}", e.dimension));
-                    self.listed_at_load.lock().unwrap().push(
-                        host.levels()
-                            .list_levels()
-                            .into_iter()
-                            .map(|level| level.dimension_id().to_owned())
-                            .collect(),
-                    );
+                    let mut levels = Vec::new();
+                    let _ = host.levels().visit_levels(&mut |level| {
+                        levels.push(level.dimension_id().to_owned());
+                        std::ops::ControlFlow::Continue(())
+                    });
+                    self.listed_at_load.lock().unwrap().push(levels);
                 }
                 fn create_spawn_position(
                     &self,
@@ -965,13 +980,12 @@ fn datapack_dimensions_open_prepare_save_and_close_in_creation_order() {
                         assert_eq!(game.level.world_spawn, Some([32, 73, 16]));
                         // Switching the active level must not put it first in saves or close.
                         game.enter_level(Dim::Nether).unwrap();
-                        assert_eq!(
-                            game.native_list_levels()
-                                .into_iter()
-                                .map(|level| level.dimension_id())
-                                .collect::<Vec<_>>(),
-                            order
-                        );
+                        let mut visited = Vec::new();
+                        let _ = game.native_visit_levels(&mut |level| {
+                            visited.push(level.dimension_id());
+                            std::ops::ControlFlow::Continue(())
+                        });
+                        assert_eq!(visited, order);
                         let listed = listed_at_load.lock().unwrap();
                         assert_eq!(listed.len(), order.len());
                         for (i, levels) in listed.iter().enumerate() {

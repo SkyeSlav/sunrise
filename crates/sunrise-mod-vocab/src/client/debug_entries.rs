@@ -17,7 +17,7 @@ pub struct DebugEntry {
 }
 
 impl DebugEntry {
-    /// Declare a text entry under a `<namespace>:<path>` identifier such as `mymod:tick_cost`.
+    /// Declare a text entry under an unused `<namespace>:<path>` such as `mymod:tick_cost`.
     /// The client retains `lines` for the session and calls it as the registering mod only
     /// while the entry is visible. Append lines to the supplied vector; legacy colour codes (§)
     /// work. Appending nothing leaves the group unchanged. `group` is a vanilla group or one of

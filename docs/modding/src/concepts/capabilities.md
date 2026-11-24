@@ -65,6 +65,12 @@ storage so a failed transfer can restore it.
 | `insert_at`, `extract_at` | Move up to the requested amount at one index using the current transaction. |
 | `insert`, `extract` | Let the handler choose the index; the default walks indices in order. |
 
+For the game's `ITEMS` handler, `amount` reads the resident stack's count without copying the stack or
+encoding its components; `resource` still returns an owned, count-free `ItemResource` with the item's
+components. A restricted level hook reads the same resident slot through
+[`LevelHost::with_container_stack`](hooks-and-the-host.md#level-hosts) without asking registered
+capability providers.
+
 Use `resource_util::move_resources` rather than moving the two sides independently. It probes
 extraction and rolls it back before insertion, then commits a step only if the source can give
 exactly what the destination accepted. An overanswer rolls back the whole helper call, even if

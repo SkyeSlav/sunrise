@@ -46,7 +46,7 @@ impl Game<'_> {
             };
             let pitch =
                 sunrise_client::items::fire_starter_pitch(is_fire_charge, &mut self.world.random);
-            self.audio.play(sound, Some(at), 1.0, pitch);
+            self.play_audio(sound, Some(at), 1.0, pitch);
             if is_fire_charge && !self.creative {
                 self.with_hand(hand, Game::consume_held);
             }
@@ -69,7 +69,7 @@ impl Game<'_> {
                 f64::from(target[1]) + 0.5,
                 f64::from(target[2]) + 0.5,
             ];
-            self.audio.play(sound, Some(target_at), 1.0, pitch);
+            self.play_audio(sound, Some(target_at), 1.0, pitch);
             if is_fire_charge && !self.creative {
                 self.with_hand(hand, Game::consume_held);
             }

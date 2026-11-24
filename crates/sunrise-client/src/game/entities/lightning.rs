@@ -707,13 +707,13 @@ impl Game<'_> {
                             )
                         })
                     };
-                    self.audio.play(
+                    self.play_audio(
                         "minecraft:entity.lightning_bolt.thunder",
                         Some(at),
                         10000.0,
                         thunder_pitch,
                     );
-                    self.audio.play(
+                    self.play_audio(
                         "minecraft:entity.lightning_bolt.impact",
                         Some(at),
                         2.0,
@@ -1031,8 +1031,7 @@ impl Game<'_> {
                     if !state.converted.contains(&m.id) {
                         state.converted.push(m.id);
                         m.extra.variant = 1 - m.extra.variant.min(1);
-                        self.audio
-                            .play("minecraft:entity.mooshroom.convert", Some(at), 2.0, 1.0);
+                        self.play_audio("minecraft:entity.mooshroom.convert", Some(at), 2.0, 1.0);
                     }
                     continue;
                 }
@@ -1401,6 +1400,7 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn conversion_post_reads_original_and_lightning_outcome() {
+        use super::super::native_entity_refs::tests::{fixture_resident_column, with_game};
         use mod_api::{
             EntityJoinLevelEvent, EquipmentSlot, Flow, Hooks, LivingConversionPostEvent,
             LivingConversionPreEvent,
@@ -1502,7 +1502,9 @@ mod tests {
             }),
         )]);
         install(mods);
-        super::super::native_entity_refs::tests::with_game(|game| {
+        with_game(|game| {
+            fixture_resident_column(&mut game.world, (0, 0));
+            fixture_resident_column(&mut game.world, (6, 6));
             let piglin_type = game
                 .res
                 .mob_types()
@@ -1574,7 +1576,8 @@ mod tests {
                         .unwrap()
                     );
                 } else {
-                    assert!(game.shear_entity((x, 64, 0)).unwrap());
+                    let shears = sunrise_client::items::ItemStack::new("minecraft:shears", 1);
+                    assert!(game.shear_entity((x, 64, 0), &shears).unwrap());
                 }
             }
             assert_eq!(pre.load(Ordering::SeqCst), 4);

@@ -653,11 +653,11 @@ fn retained_effects_rebind_on_reconfiguration_and_refusals_do_not_block_clicks()
                 Slot::read(&mut Reader::new(&wire.data).with_names(mapping)).unwrap()
             };
             let old = configure(false);
-            game.set_registries(old.clone());
+            game.set_registries(old.clone()).unwrap();
             let retained = game.to_stack(&receive(protection(2, vec![1, 5, 7]), &old));
             assert!(retained.as_ref().unwrap().wire_patch().is_some());
             let new = configure(true);
-            game.set_registries(new.clone());
+            game.set_registries(new.clone()).unwrap();
             let sent = game.to_network(&retained).unwrap();
             assert_eq!(
                 sent.component(component::DEATH_PROTECTION),

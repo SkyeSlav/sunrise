@@ -25,14 +25,6 @@ impl AttachmentTypesRegistrar for PartRegistrar {
             {
                 return Err(format!("already declared by package {}", existing.owner()));
             }
-            if record.namespace() == "minecraft" || !owns_namespace(self.mod_id, record.namespace())
-            {
-                return Err(format!(
-                    "namespace belongs to package {}, not {}",
-                    record.namespace(),
-                    self.mod_id
-                ));
-            }
             self.attachment_types
                 .entry(record.namespace())
                 .or_default()
@@ -172,42 +164,59 @@ mod tests {
     }
 
     #[test]
-    fn owned_alias_keeps_its_attachment_id_and_the_declaring_owner() {
+    fn non_mod_namespace_attachment_declaration_records_declaring_owner() {
         let mut registrar = PartRegistrar::new("b");
+        let key = reg(&mut registrar)
+            .register_attachment_type(crate::AttachmentDescriptor::new("a:mana", || 5u32))
+            .unwrap();
+        assert_eq!(key.id(), "a:mana");
+        assert_eq!(key.owner(), "b");
+        assert_eq!(registrar.attachment_types["a"]["mana"].owner(), "b");
+        assert!(!registrar.attachment_types["a"]["mana"].is_synced());
+        registrar.mod_id = "c";
         assert_eq!(
-            reg(&mut registrar)
-                .register_attachment_type(crate::AttachmentDescriptor::new("shared:mana", || 5u32)),
-            Err(
-                "package b attachment shared:mana: namespace belongs to package shared, not b"
-                    .into()
+            reg(&mut registrar).register_attachment_type(
+                crate::AttachmentDescriptor::new("a:mana", || 5u32).sync(u32_codec())
+            ),
+            Err("package c attachment a:mana: already declared by package b".into())
+        );
+    }
+
+    #[test]
+    fn server_synced_attachment_under_foreign_namespace_is_attributed_to_declarer() {
+        crate::load_state::with_test_package_inventory(
+            vec![
+                package("a", crate::Side::Both),
+                package("b", crate::Side::Server),
+            ],
+            || {
+                let mut bad = PartRegistrar::new("b");
+                reg(&mut bad)
+                    .register_attachment_type(
+                        crate::AttachmentDescriptor::new("a:mana", || 5u32).sync(u32_codec()),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    super::super::install_registrar(bad, &crate::parts::tests::rule_schema()),
+                    Err(vec![
+                        "package b attachment a:mana: a side = \"server\" package cannot declare a synced attachment"
+                            .into()
+                    ])
+                );
+            },
+        );
+        let mut registrar = PartRegistrar::new("b");
+        reg(&mut registrar)
+            .register_attachment_type(
+                crate::AttachmentDescriptor::new("a:mana", || 5u32).sync(u32_codec()),
             )
+            .unwrap();
+        super::super::install_registrar(registrar, &crate::parts::tests::rule_schema()).unwrap();
+        assert_eq!(
+            crate::__private::client_requirement("b"),
+            Some("declares the synced attachment a:mana".into())
         );
-        let owner = crate::PackageInfo::new(
-            "b".into(),
-            "1".into(),
-            crate::PackageKind::Code,
-            crate::Side::Both,
-            vec!["b".into(), "shared".into()],
-            vec![],
-        );
-        crate::load_state::with_test_package_inventory(vec![owner], || {
-            let mut registrar = PartRegistrar::new("b");
-            let key = reg(&mut registrar)
-                .register_attachment_type(
-                    crate::AttachmentDescriptor::new("shared:mana", || 5u32).sync(u32_codec()),
-                )
-                .unwrap();
-            assert_eq!(key.id(), "shared:mana");
-            assert_eq!(key.owner(), "b");
-            registrar.mod_id = "c";
-            assert_eq!(
-                reg(&mut registrar).register_attachment_type(crate::AttachmentDescriptor::new(
-                    "shared:mana",
-                    || 5u32
-                )),
-                Err("package c attachment shared:mana: already declared by package b".into())
-            );
-        });
+        assert_eq!(crate::__private::client_requirement("a"), None);
     }
 
     #[test]
@@ -627,7 +636,7 @@ mod tests {
     }
 
     #[test]
-    fn served_by_attachment_delegates_and_enforces_supplier_side() {
+    fn attachment_keys_are_independent_of_namespaces_but_enforce_supplier_side() {
         let packages = vec![
             package("host", crate::Side::Both),
             package("other", crate::Side::Both),
@@ -660,10 +669,11 @@ mod tests {
                 .unwrap();
             let errors = super::super::install_registrar(bad, &crate::parts::tests::rule_schema())
                 .unwrap_err();
-            assert_eq!(errors.len(), 1);
-            assert!(
-                errors[0].contains("srv_runes:synced") && errors[0].contains("side = \"server\""),
-                "{errors:?}"
+            assert_eq!(
+                errors,
+                [
+                    r#"package host attachment srv_runes:synced: a side = "server" package (srv_runes) cannot supply a synced attachment"#
+                ]
             );
             assert!(!mod_vocab::__private::parts_installation::parts_installed());
 
@@ -680,43 +690,56 @@ mod tests {
                 ))
                 .unwrap();
             good.mod_id = "other";
-            assert!(
-                reg(&mut good)
-                    .register_attachment_type(crate::AttachmentDescriptor::new(
-                        "runes:other",
-                        || 0u32
-                    ))
-                    .is_err()
-            );
+            reg(&mut good)
+                .register_attachment_type(crate::AttachmentDescriptor::new("runes:other", || 0u32))
+                .unwrap();
+            assert_eq!(good.attachment_types["runes"]["other"].owner(), "other");
+
+            let mut duplicate = PartRegistrar::new("host");
+            reg(&mut duplicate)
+                .register_attachment_type(
+                    crate::AttachmentDescriptor::new("runes:charge", || 0u32).sync(u32_codec()),
+                )
+                .unwrap();
+            duplicate.mod_id = "other";
+            let duplicate_error =
+                "package other attachment runes:charge: already declared by package host";
             assert_eq!(
-                reg(&mut good).register_attachment_type(crate::AttachmentDescriptor::new(
+                reg(&mut duplicate).register_attachment_type(crate::AttachmentDescriptor::new(
                     "runes:charge",
                     || 0u32
                 )),
-                Err(
-                    "package other attachment runes:charge: already declared by package host"
-                        .into()
-                )
+                Err(duplicate_error.into())
             );
-            good.refused.clear();
-            super::super::install_registrar(good, &crate::parts::tests::rule_schema()).unwrap();
             assert_eq!(
-                crate::__private::client_requirement("host"),
-                Some("declares the synced attachment runes:charge".into())
+                super::super::install_registrar(duplicate, &crate::parts::tests::rule_schema()),
+                Err(vec![duplicate_error.into()])
             );
-            let _caller = crate::content::crash::enter_native_mod(crate::content::crash::ModCall {
-                id: "other",
-                hook: "test",
-                part: None,
+
+            crate::testing::with_mods(Vec::new().into(), || {
+                super::super::install_registrar(good, &crate::parts::tests::rule_schema()).unwrap();
+                assert_eq!(
+                    crate::__private::client_requirement("host"),
+                    Some("declares the synced attachment runes:charge".into())
+                );
+                assert_eq!(crate::__private::client_requirement("other"), None);
+                let _caller =
+                    crate::content::crash::enter_native_mod(crate::content::crash::ModCall {
+                        id: "other",
+                        hook: "test",
+                        part: None,
+                    });
+                for (namespace, name, synced) in [
+                    ("runes", "charge", true),
+                    ("srv_runes", "internal", false),
+                    ("runes", "other", false),
+                ] {
+                    assert_eq!(
+                        mod_vocab::__private::validate_attachment_use(namespace, name, synced),
+                        Ok(())
+                    );
+                }
             });
-            assert_eq!(
-                mod_vocab::__private::validate_attachment_use("runes", "charge", true),
-                Ok(())
-            );
-            assert_eq!(
-                mod_vocab::__private::validate_attachment_use("srv_runes", "internal", false),
-                Ok(())
-            );
         });
     }
 }

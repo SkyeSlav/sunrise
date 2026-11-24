@@ -19,18 +19,18 @@ pub trait Hooks {
     /// vanilla predicates directly, bypassing both registration and this hook. Ordinary spawners
     /// with custom spawn rules skip it; trial spawners check their custom rules afterward.
     /// `/summon` and spawn eggs do not check placements.
-    /// `level` (also named by `dimension`) is the level the entity would spawn in. `spawner`
-    /// is `Spawner::Block` or `Spawner::Trial` if a spawner block asked, or `None` otherwise,
-    /// including a spawner minecart. The hook lends a read-only host. Listeners should be
-    /// pure functions of their inputs because the checks run again on replayed ticks.
+    /// `level` (also named by `dimension`) is the level the entity would spawn in. Like NeoForge's
+    /// `SpawnPlacementCheck`, this hook carries no spawner identity — inspect `reason` instead.
+    /// The hook lends a read-only host. Listeners should be pure functions of their inputs
+    /// because the checks run again on replayed ticks.
     ///
     /// Beyond NeoForge: one `SpawnCheck` answers this hook and `mob_spawn_position_check`;
     /// NeoForge gives them separate enums with the same three constants.
     #[notes = r#"## Spawn checks
 
-- **`mob_spawn_placement_check(dimension, kind, reason, pos, default_result, level, spawner, random, result)`** (NeoForge's `MobSpawnEvent.SpawnPlacementCheck`): at `SpawnPlacements.checkSpawnRules`, `default_result` is the effective predicate result, including predicates composed or replaced through `Registrar::register_spawn_placement`. Set `result` to `SpawnCheck::Succeed` or `Fail` to override it, or leave `Default` to keep it. Each listener borrows the same live `random` stream the predicates already drew from. Reassigning the reference is local to that listener; writes through `result` carry to the next listener. Neither the predicate draws nor the listener draws are undone if the result is overridden or the spawn is refused later. The hook runs for natural spawning, chunk-generation packs, reinforcements, and the type check at spawners and trial spawners, including non-mobs. Patrols and village sieges call vanilla predicates directly, so neither registered predicates nor this hook run there. An ordinary spawner with custom rules skips it; trial spawners check their custom rules afterward.
-- **`mob_spawn_position_check(dimension, kind, reason, pos, level, spawner, mob, result)`** (NeoForge's `MobSpawnEvent.PositionCheck`, version 3): `Default` runs `Mob.checkSpawnRules` and `checkSpawnObstruction` as vanilla; `Succeed` and `Fail` skip them and their draws. This fires for natural mobs, chunk-generation packs and ordinary spawners, including spawners with configured entity data. Trial spawners run their obstruction check directly. `mob` (`UnspawnedMobView<'_>`) borrows the actual new or loaded candidate. Read it directly (`kind`, `position`, `equipment`, `attribute_base`, `attribute_value`, `tags`, `custom_name`); there is no editor or `Expired` handle. A refusal drops the candidate; on success, finalization and admission use the same mob. Creating it does not draw from the level's random.
-- Both get the read-only host, `level` (`LevelRef`, the level the mob would join) and `spawner` (`Option<Spawner>`: `Block { pos }` for a spawner block, `None` when no block asked, including a spawner minecart). Placement checks also get `Trial { pos }` for a trial spawner. Both run on replayed ticks, so listeners should be pure functions of their inputs. One `SpawnCheck` serves both (NeoForge's two enums have the same constants)."#]
+- **`mob_spawn_placement_check(dimension, kind, reason, pos, default_result, level, random, result)`** (NeoForge's `MobSpawnEvent.SpawnPlacementCheck`): at `SpawnPlacements.checkSpawnRules`, `default_result` is the effective predicate result, including predicates composed or replaced through `Registrar::register_spawn_placement`. Set `result` to `SpawnCheck::Succeed` or `Fail` to override it, or leave `Default` to keep it. Each listener borrows the same live `random` stream the predicates already drew from. Reassigning the reference is local to that listener; writes through `result` carry to the next listener. Neither the predicate draws nor the listener draws are undone if the result is overridden or the spawn is refused later. The hook runs for natural spawning, chunk-generation packs, reinforcements, and the type check at spawners and trial spawners, including non-mobs. Patrols and village sieges call vanilla predicates directly, so neither registered predicates nor this hook run there. An ordinary spawner with custom rules skips it; trial spawners check their custom rules afterward. Like NeoForge's `SpawnPlacementCheck`, it has no spawner field.
+- **`mob_spawn_position_check(dimension, kind, reason, pos, level, spawner, mob, result)`** (NeoForge's `MobSpawnEvent.PositionCheck`, version 3): `Default` runs `Mob.checkSpawnRules` and `checkSpawnObstruction` as vanilla; `Succeed` and `Fail` skip them and their draws. This fires for natural mobs, chunk-generation packs and `BaseSpawner` ticks (monster spawner blocks and spawner minecarts), including spawners with configured entity data. Trial spawners run their obstruction check directly. `spawner` (`Option<Spawner>`) is `Spawner::Block { pos }` for a monster spawner block, `Spawner::Minecart { entity }` for a spawner minecart, and `None` otherwise (`MobSpawnEvent.PositionCheck.getSpawner`). `mob` (`UnspawnedMobView<'_>`) borrows the actual new or loaded candidate. Read it directly (`kind`, `position`, `equipment`, `attribute_base`, `attribute_value`, `tags`, `custom_name`); there is no editor or `Expired` handle. A refusal drops the candidate; on success, finalization and admission use the same mob. Creating it does not draw from the level's random.
+- Both get the read-only host and `level` (`LevelRef`, the level the entity would join). Both run on replayed ticks, so listeners should be pure functions of their inputs. One `SpawnCheck` serves both (NeoForge's two enums have the same constants)."#]
     #[hook(
         receiver = "read",
         dispatch = "api_carrier",
@@ -40,7 +40,7 @@ pub trait Hooks {
         neoforge = "MobSpawnEvent.SpawnPlacementCheck",
         cancellable = false,
         event_per_listener = true,
-        version = 2
+        version = 3
     )]
     fn mob_spawn_placement_check(
         dimension: &str,
@@ -49,7 +49,6 @@ pub trait Hooks {
         pos: BlockPos,
         default_result: bool,
         level: LevelRef,
-        spawner: Option<Spawner>,
         random: &mut dyn RandomSource,
         result: &mut SpawnCheck,
     );
@@ -57,10 +56,11 @@ pub trait Hooks {
     /// `Default` runs its own spawn rules and obstruction check. `Succeed` and `Fail`
     /// answer instead, skipping those checks. An ordinary spawner with custom rules
     /// checks only obstruction on `Default`. Natural mobs, chunk-generation packs and
-    /// ordinary spawners fire this hook; trial spawners check obstruction directly.
-    /// `spawner` is `Spawner::Block` for a block, otherwise `None`.
-    /// `mob` is a scoped read-only [`UnspawnedMobView`] of the actual new or loaded
-    /// candidate. A refusal drops it. Otherwise the same body goes to finalization
+    /// `BaseSpawner` ticks (monster spawner blocks and spawner minecarts) fire this hook;
+    /// trial spawners check obstruction directly. `spawner` is `Spawner::Block` for a
+    /// monster spawner block, `Spawner::Minecart` for a spawner minecart, and `None`
+    /// otherwise. `mob` is a scoped read-only [`UnspawnedMobView`] of the actual new or
+    /// loaded candidate. A refusal drops it. Otherwise the same body goes to finalization
     /// and admission. Creating it does not draw from the level's random. Server-side.
     #[hook(
         receiver = "read",

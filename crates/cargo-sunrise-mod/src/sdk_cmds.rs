@@ -764,6 +764,8 @@ pub(crate) fn check_mod(
     let sdk = fetch_pinned(root, &native.sunrise)?;
     let surface = surface_of(&sdk)?;
     if release.is_some() {
+        let rust = crate::dev::native_sdk(&crate::dev::cache_dir()?, &native.sunrise)?.rust;
+        crate::dev::check_lock(&rust, root, &native.sunrise)?;
         crate::dev::build(
             root,
             &package,

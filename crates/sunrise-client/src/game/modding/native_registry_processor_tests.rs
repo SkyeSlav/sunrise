@@ -2,7 +2,7 @@
 #![cfg(test)]
 
 use super::native_entity_refs::tests::with_game;
-use std::{path::Path, sync::Arc};
+use std::{ops::ControlFlow, path::Path, sync::Arc};
 
 fn write(path: &Path, bytes: impl AsRef<[u8]>) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -54,8 +54,6 @@ fn generic_processor_and_referencing_pool_accept_block_properties() {
         request.save_root = scratch.path().to_owned();
         game.load_world(request).unwrap();
         let host: &dyn mod_api::Host = game;
-        let accepted = mod_api::Identifier::parse("registry_processor_test:rule").unwrap();
-        let rejected = mod_api::Identifier::parse("registry_processor_test:rejected").unwrap();
         for registry in [
             "minecraft:worldgen/processor_list",
             "minecraft:worldgen/template_pool",
@@ -65,9 +63,16 @@ fn generic_processor_and_referencing_pool_accept_block_properties() {
                     .is_some(),
                 "{registry}"
             );
-            let entries = host.registry_entries(registry).unwrap();
-            assert!(entries.contains(&accepted), "{registry}");
-            assert!(!entries.contains(&rejected), "{registry}");
+            let mut accepted = false;
+            assert_eq!(
+                host.visit_registry_entries(registry, &mut |id| {
+                    accepted |= id == "registry_processor_test:pillar";
+                    assert_ne!(id, "registry_processor_test:rejected", "{registry}");
+                    ControlFlow::Continue(())
+                }),
+                Ok(ControlFlow::Continue(()))
+            );
+            assert!(accepted, "{registry}");
             assert_eq!(
                 host.registry_entry(registry, "registry_processor_test:rejected"),
                 None

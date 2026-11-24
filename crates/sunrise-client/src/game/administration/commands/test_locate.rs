@@ -69,10 +69,7 @@ impl Game<'_> {
             .collect(),
             _ => Vec::new(),
         };
-        // CommandSourceStack.sendSystemMessage: no feedback rule.
-        if !self.command_source.is_some_and(|s| s.silent) {
-            self.system_message(Text::translate("commands.test.locate.started", &[]));
-        }
+        self.command_system_message(Text::translate("commands.test.locate.started", &[]));
         let center = self.test_source_block();
         let source_dim = self.dim;
         // findSelectedTestPositionsAcrossDimensions: every level's test
@@ -183,7 +180,7 @@ impl Game<'_> {
         // `source.getPlayerOrException().pick(10, 1, false)`: the source
         // player's own eyes and view. A connected player's are in place only
         // for the pick; the test is looked up, and the issuer told, here.
-        let target = match self.command_source.map(|s| s.entity) {
+        let target = match self.command_source.as_ref().map(|s| s.entity) {
             Some(Some(super::Target::Guest(conn))) => self
                 .for_player(super::Target::Guest(conn), |g| g.test_pick_block())
                 .ok_or_else(|| err("permissions.requires.player", &[]))?,

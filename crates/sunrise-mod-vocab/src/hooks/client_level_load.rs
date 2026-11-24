@@ -1,5 +1,4 @@
 //! The `client_level_load` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0140
 
 pub trait Hooks {
     /// The client made a new level for `dimension` (NeoForge's

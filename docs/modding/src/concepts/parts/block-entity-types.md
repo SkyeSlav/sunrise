@@ -9,13 +9,14 @@ let press = r.block_entity_type("press")
 r.block_entity_part(&press, Press).expect("native block entity type");
 ```
 
-The builder qualifies the type ID and each bare block name with the registering mod's namespace, so
-`"press"` above is `mymod:press`; the blocks may be declared later in `blocks`. It owns the save ID, wire type
+The builder qualifies a bare type ID and each bare block name with the registering mod's namespace,
+so `"press"` above is `mymod:press`. Explicit identifiers keep their namespaces; the blocks may be
+declared later in `blocks`. The type defines the save ID, wire type
 and valid blocks; `block_entity` returns only initial `Compound` data (or none for an empty compound). It is fired
 inside the write that creates the entity (`LevelChunk.setBlockState`) and receives the read-only level, a `LevelSide`,
 on a server and on a client of one.
-Unknown blocks, duplicate types, overlapping membership and attempts to own a `minecraft:` block are
-refused at load. Refused native block, item or block entity declarations stop startup, as does unreadable
+Unknown blocks, duplicate types (including built-in keys), overlapping membership and attempts
+to reassign an existing vanilla block are refused at load. Refused native block, item or block entity declarations stop startup, as does unreadable
 known-components input; the game does not fall back to vanilla content. An explicitly declared mod
 template block uses its declared type; undeclared template blocks retain their vanilla behavior. Adding mod blocks to vanilla types is not supported by this builder.
 The hooks about the entity (`block_entity_tick`, `block_entity_update_tag`, `pre_remove_side_effects`,
@@ -32,8 +33,9 @@ To read the canonical name, use `kind.id(host)`, which borrows it as `Option<&st
 Use a type ID, not a block ID (`minecraft:shulker_box`, not `minecraft:red_shulker_box`).
 
 Lookup keys may answer capabilities for vanilla and native types. `block_entity_part` accepts only
-native types and returns `BlockEntityPartError::VanillaType { kind }` immediately for a vanilla key. Native
-Parts are expanded after every mod has registered, so a Part can target a type declared later.
+native types and returns `BlockEntityPartError::VanillaType { kind }` for a built-in type, or
+`InvalidKey { kind }` for an invalid key. Native Parts are expanded after every mod has registered,
+so a Part can target a type declared later.
 
 ## Attaching to another package's type
 
@@ -43,7 +45,7 @@ A Part attaches by type id, whoever declared the type: `r.block_entity_type_key(
 installation side and survive instance overrides. Otherwise load is refused by name,
 even when that package is installed:
 `mod b attached <Part> to block entity type owner:press, declared by package owner; declare owner as a dependency`.
-A type that no package declares keeps the refusal `mod b attached <Part> to undeclared native block entity type owner:press`;
+A type that no package declares keeps the refusal `mod b attached <Part> to unknown native block entity type owner:press`;
 when `b` lists the installed package that owns the type's namespace (its id or one of its manifest `namespaces`) as a
 required dependency, the refusal says that dependency does not declare it. If the type's namespace is
 the ID of an absent package, its Part and the associated key request are skipped only when an optional
@@ -59,33 +61,35 @@ A `side = "server"` package whose Part on such a type listens to a client hook i
 client-side Part.
 
 The Part's state (`block_entity_part_with_state`) uses an issued `AttachmentKey<T>` from
-`register_attachment_type`, in a namespace the registering package owns or serves. A dependent
-package can obtain the same key with `attachment_key`; lookup does not declare a new attachment.
-The value is saved in the block entity's attachment compound under the key's `(namespace, name)`.
-When the package is removed, its saved entry remains unread and can be decoded if the package
-returns.
+`register_attachment_type`. A dependent package can obtain the same key with `attachment_key`;
+lookup does not declare a new attachment. The value is saved in the block entity's attachment
+compound under the key's `(namespace, name)`. When the package is removed, its saved entry
+remains unread and can be decoded if the package returns.
 
 ## Removal side effects
 
-`pre_remove_side_effects` runs on the authoritative server while the block entity and its
-attachments are still readable, before removal's neighbor effects. The level host permits
-reads and random draws, not world writes. Flag 256 skips the call and its outputs.
-Contract version 4 includes removal when a menu callback removes the backing block.
-Do not drop those contents manually in the button callback.
+`pre_remove_side_effects` runs on the authoritative server before the retiring block entity
+is removed and its neighbors are notified. `event.entity` lends the outgoing block entity's
+actual data, and its attachments are still readable through the level host. The host permits
+reads and random draws, not world writes. `UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS` (256) skips
+this callback. It also runs when a menu button callback removes its backing block: don't
+manually drop the container contents in the button callback.
 
-The engine applies the answers after the level write, in this order:
+Use `event.effects` to append contributions. The game applies them before finishing
+removal, in this order:
 
-1. Unless `keep_contents` is true, scatter the base container slots.
-2. Scatter `drops`, a list of `Option<ItemStack>` in slot order. `None` consumes the
-   three position draws of an empty `Containers.dropItemStack` slot but spawns nothing.
-3. Create `spawns`, each `(ItemStack, [f64; 3])`, at that exact position with the default
+1. Scatter the base container slots, unless a Part called `effects.set_keep_contents(true)`.
+2. Scatter each `effects.drop_slot(Some(stack))`; `drop_slot(None)` takes the three
+   position draws of an empty `Containers.dropItemStack` slot without spawning anything.
+3. Create each `effects.spawn_item(stack, position)` at that position with the default
    pickup delay (10 ticks), as a lectern or jukebox does.
-4. Award `experience`, each `(u32, [f64; 3])`, through the furnace's experience-orb path.
+4. Apply each `effects.award_experience(amount, position)` via `ExperienceOrb.award`.
 
-Each list accepts at most 1024 entries; positions must be finite. Invalid list sizes or
-positions refuse the outputs. Stack writes use the usual checked item boundary. The same
-fields go to the Part. A part that answers nothing consumes no random draws.
-The optional drops represent empty slots; wrap a filled slot in `Some`.
+Within each group, contributions keep their order. Stacks use the normal checked item
+boundary and positions must be finite. Each call returns its own error: one refusal
+neither consumes a random draw nor loses any valid contribution. A panicking Part loses
+its contributions without changing earlier Parts' effects. A Part that contributes nothing
+doesn't cause any extra removal effects.
 
 ## Part state
 
@@ -217,7 +221,7 @@ use mod_api::{Compound, StructureMirror, StructureRotation, StructureTransform, 
 
 let press = r.block_entity_type("press")
     .blocks(&["mymod:press"])
-    .transform(|data: &Compound, transform: StructureTransform| {
+    .transform(|data: &mut Compound, transform: StructureTransform| {
         let facing = match data.get(&"facing".into()) {
             Some(Tag::String(value)) => value.to_string()
                 .map_err(|_| TransformRefusal::new("invalid facing text"))?,
@@ -240,25 +244,26 @@ let press = r.block_entity_type("press")
             StructureRotation::Counterclockwise90 => 3,
             _ => return Err(TransformRefusal::new("unknown rotation")),
         };
-        let mut result = data.clone();
-        result.insert("facing".into(), Tag::String(directions[(index + turns) % 4].into()));
-        Ok(result)
+        data.insert("facing".into(), Tag::String(directions[(index + turns) % 4].into()));
+        Ok(())
     })
     .build();
 ```
 
-The step runs on the authoritative server during structure-template placement and worldgen,
-possibly on worldgen worker threads. The block state has already been mirrored and rotated; the
-step returns the saved data to store. Mirror applies before rotation. Its only inputs are the data,
-rotation and mirror: it gets no `Host` or world access. Determinism is the mod's obligation, not
-something the engine enforces; any matching `Send + Sync + 'static` closure is accepted. Avoid
-randomness, clocks and mutable external state when calculating the result.
+The step runs on the authoritative server during structure-template placement, possibly on a
+worldgen worker thread. It borrows this placement's working compound after the block state is
+placed and any loot seed is set, before the block entity loads the data. Each placement starts
+from the reusable, unedited template. Mirror applies before rotation. The only inputs are the
+data, rotation and mirror: there is no `Host` or world access. Mods must ensure determinism,
+including when using a `Send + Sync + 'static` closure; avoid randomness, clocks and mutable
+external state when calculating the result.
 
-The engine restores the original `id` and any original `x`, `y`, `z` fields over the result, so a
-payload transform cannot change the saved entity's identity or original coordinates. With no step,
-data is unchanged. A `TransformRefusal` logs the type and position and keeps the original data;
-placement succeeds. Invalid output exceeding standard NBT limits (64 MiB, one million nodes,
-depth 512), or unwinding panics also keep the original data.
+Edit only the payload fields you need to change. The engine preserves the original `id` and any
+original `x`, `y`, `z` fields. `TransformRefusal` logs the mod, block entity type and position each
+time, without disabling the callback. Validate before editing if refusal should leave the data
+unchanged: edits already made are not undone. A panic is logged and sent to the error toast and
+disables that callback for the session; its partial edits likewise are not undone. Limits are
+checked when data is actually serialized, not by the placement callback.
 
 Callbacks are registered at startup and frozen with the block registry snapshot. A data-pack
 `/reload` keeps that registry and its existing callbacks; it does not register replacement code.

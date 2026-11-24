@@ -127,7 +127,7 @@ pub fn load(guest: &mut Guest, world: &Path) -> bool {
     };
     level.read_player(&tag);
     level.player_extra = Some(tag);
-    apply(guest, &level);
+    apply_loaded(guest, &level);
     true
 }
 
@@ -141,14 +141,14 @@ pub fn load(guest: &mut Guest, world: &Path) -> bool {
 /// been in this world before.
 pub fn load_owner(guest: &mut Guest, world: &Path, saved: Option<&Level>) -> bool {
     if let Some(level) = saved.filter(|l| l.singleplayer_file) {
-        apply(guest, level);
+        apply_loaded(guest, level);
         return level.position.is_some();
     }
     if load(guest, world) {
         return true;
     }
     saved.is_some_and(|level| {
-        apply(guest, level);
+        apply_loaded(guest, level);
         level.position.is_some()
     })
 }
@@ -280,8 +280,35 @@ pub fn face_world_spawn(guest: &mut Guest, known: bool, [yaw, pitch]: [f32; 2]) 
     guest.head_yaw = yaw;
 }
 
-/// Give a guest the player state read into `level`.
+fn saved_attachments(level: &Level) -> Option<&sunrise_core::nbt::Compound> {
+    attachment_compound(
+        level
+            .player_extra
+            .as_ref()
+            .and_then(|tag| tag.get(ATTACHMENTS_KEY)),
+    )
+    .ok()
+    .flatten()
+}
+
+/// `Entity.load` overlays entries from disk on the newly constructed player's attachments.
+fn apply_loaded(guest: &mut Guest, level: &Level) {
+    apply_player_fields(guest, level);
+    if let Some(data) = saved_attachments(level) {
+        guest.attachments.read_saved_over(data.clone());
+    }
+}
+
+/// Apply an imported player record, replacing the held player's attachment contents.
 pub fn apply(guest: &mut Guest, level: &Level) {
+    apply_player_fields(guest, level);
+    let attachments = saved_attachments(level).map_or_else(Default::default, |data| {
+        sunrise_mod_runtime::attachments::Attachments::from_nbt(data.clone())
+    });
+    guest.attachments.replace_contents(attachments);
+}
+
+fn apply_player_fields(guest: &mut Guest, level: &Level) {
     if let Some(p) = level.position {
         guest.place(p);
     }
@@ -300,6 +327,7 @@ pub fn apply(guest: &mut Guest, level: &Level) {
     guest.xp_level = level.xp_level;
     guest.xp_progress = level.xp_progress;
     guest.xp_total = level.xp_total;
+    guest.score = level.player_score;
     guest.xp_seed = level.xp_seed;
     guest.effects = crate::effects::PlayerEffects::from_saved(&level.active_effects);
     guest.game_mode = level.mode();
@@ -324,16 +352,6 @@ pub fn apply(guest: &mut Guest, level: &Level) {
         .map(|s| [s[0] + 0.5, s[1], s[2] + 0.5]);
     guest.respawn_elsewhere = level.respawn_elsewhere.clone();
     guest.saved = level.player_extra.clone();
-    let attachments = match attachment_compound(
-        guest
-            .saved
-            .as_ref()
-            .and_then(|tag| tag.get(ATTACHMENTS_KEY)),
-    ) {
-        Ok(Some(data)) => sunrise_mod_runtime::attachments::Attachments::from_nbt(data.clone()),
-        _ => Default::default(),
-    };
-    guest.attachments.replace_contents(attachments);
     guest.seen_credits = level.seen_credits;
     guest.post_effects.clone_from(&level.post_effects);
     guest.last_death = level.last_death.clone();
@@ -635,6 +653,7 @@ pub fn try_store(
     level.xp_level = guest.xp_level;
     level.xp_progress = guest.xp_progress;
     level.xp_total = guest.xp_total;
+    level.player_score = guest.score;
     level.xp_seed = guest.xp_seed;
     level.active_effects = guest.effects.saved();
     level.game_mode = guest.game_mode;
@@ -1882,6 +1901,21 @@ mod tests {
         apply(&mut other, &level);
         assert_eq!(other.abilities.flying_speed, 0.05);
         assert_eq!(other.abilities.walking_speed, 0.1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Speeds a mod stored as supplied, infinity and NaN included, come back as stored.
+    #[test]
+    fn non_finite_ability_speeds_round_trip() {
+        let dir = world("non-finite-speeds");
+        let mut g = guest();
+        g.abilities.flying_speed = f32::INFINITY;
+        g.abilities.walking_speed = f32::NAN;
+        save(&g, &dir, &Default::default());
+        let mut back = guest();
+        assert!(load(&mut back, &dir));
+        assert_eq!(back.abilities.flying_speed, f32::INFINITY);
+        assert!(back.abilities.walking_speed.is_nan());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

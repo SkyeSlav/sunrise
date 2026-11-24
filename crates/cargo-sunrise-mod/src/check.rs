@@ -8,7 +8,6 @@ use sunrise_attestation::{Attested, PUBLIC_GOOD_TRUSTED_ROOT};
 use sunrise_mod_package::Package;
 use sunrise_mod_package::index::{self, Facts, Kind};
 use sunrise_mod_package::manifest::{MANIFEST, MAX_USES};
-use sunrise_shader_api::mod_pipeline;
 
 pub struct Report {
     pub kind: Kind,
@@ -313,7 +312,7 @@ pub fn references(root: &Path, manifest: &sunrise_mod_package::Manifest) -> Resu
 
 /// Composes and validates every render pipeline fragment file in a mod's `files`
 /// (`assets/<namespace>/shaders/pipeline/<path>.wgsl`) with the game's own code
-/// (`sunrise_shader_api::mod_pipeline`), returning how many there are and each refusal as
+/// (`sunrise_mod_pipeline`), returning how many there are and each refusal as
 /// `<file>:<line>:<column>: <message>` (`<file>: <message>` where it has no span), the text the game logs after the pipeline's id. Whether a pipeline is
 /// textured is in the mod's code, which this cannot see: a file that calls `pipeline_texture`
 /// is composed as textured, any other as untextured.
@@ -325,7 +324,7 @@ pub fn pipeline_shaders(files: &BTreeMap<String, Vec<u8>>) -> (usize, Vec<String
         let in_folder = parts.next() == Some("assets")
             && parts.next().is_some()
             && parts.next().is_some_and(|rest| {
-                rest.strip_prefix(mod_pipeline::FOLDER)
+                rest.strip_prefix(sunrise_mod_pipeline::FOLDER)
                     .is_some_and(|rest| rest.starts_with('/') && rest.ends_with(".wgsl"))
             });
         if !in_folder {
@@ -336,7 +335,7 @@ pub fn pipeline_shaders(files: &BTreeMap<String, Vec<u8>>) -> (usize, Vec<String
             .map_err(|e| e.to_string())
             .map_err(|e| vec![format!("{name}: {e}")])
             .and_then(|text| {
-                mod_pipeline::compose_with(name, text, text.contains("pipeline_texture"))
+                sunrise_mod_pipeline::compose_with(name, text, text.contains("pipeline_texture"))
                     .map_err(|problems| problems.iter().map(ToString::to_string).collect())
             });
         if let Err(reasons) = composed {
@@ -505,6 +504,7 @@ mod tests {
         // Test policy on verified claims; the verifier crate exercises real signed bundles.
         let attested = Attested {
             repository_id: 123456,
+            owner_id: 654321,
             repository_name: "author/repo".into(),
             signer_workflow_ref:
                 "sunrise-org/sunrise-mods/.github/workflows/release.yml@refs/tags/release-v1".into(),

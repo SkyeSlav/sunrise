@@ -1,5 +1,4 @@
 //! The `item_decorations` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0100
 
 pub trait Hooks {
     /// Append an item's custom decorations after its default bar, cooldown and count.

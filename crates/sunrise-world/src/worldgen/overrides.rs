@@ -44,11 +44,12 @@ const KINDS: [(&str, &str); 16] = [
     ("worldgen/template_pool", "template_pools"),
 ];
 /// Tag folders the chunk generator reads, and the tag bundle each joins.
-const TAG_KINDS: [(&str, &str); 4] = [
+const TAG_KINDS: [(&str, &str); 5] = [
     ("tags/block", "block_tags"),
     ("tags/fluid", "fluid_tags"),
     ("tags/worldgen/biome", "biome_tags"),
     ("tags/worldgen/carver", "carver_tags"),
+    ("tags/worldgen/placed_feature", "placed_feature_tags"),
 ];
 /// The pack folders the worldgen resolver reads, in walk order.
 pub const PACK_KINDS: [&str; 5] = [
@@ -217,6 +218,9 @@ pub struct WorldgenOverrides {
     templates: BTreeMap<String, sunrise_assets::resource_source::Resource>,
     /// Bundle name → id → the highest pack's JSON text for it (except `DIMENSIONS`).
     entries: BTreeMap<String, BTreeMap<String, String>>,
+    /// The winning file failed a world registry condition, including replaced base entries.
+    omitted_biomes: std::collections::BTreeSet<String>,
+    pub(super) admitted_biome_generation: Option<super::biome::AdmittedBiomeGeneration>,
     /// Winning stems, with `None` for an implicit built-in. `MappedRegistry.entrySet`
     /// traverses hash buckets, not registration or filename order.
     level_stems: HashMap<String, Option<String>>,
@@ -253,7 +257,58 @@ impl WorldgenOverrides {
             && self.level_stems.is_empty()
             && self.tags.is_empty()
             && self.templates.is_empty()
+            && self.omitted_biomes.is_empty()
     }
+    /// Project already admitted biome files into the generator's bundle. A skipped
+    /// winning file must also remove any lower file in the prepared bundle.
+    pub fn set_biome_winners(
+        &mut self,
+        files: BTreeMap<String, String>,
+        omitted: std::collections::BTreeSet<String>,
+    ) {
+        self.entries.remove("biomes");
+        if !files.is_empty() {
+            self.entries.insert("biomes".into(), files);
+        }
+        self.omitted_biomes = omitted;
+    }
+    /// Evaluates each winning registry file's conditions before any generation codec reads
+    /// it (`ResourceManagerRegistryLoadTask.load` through `ConditionalOps`): a file whose
+    /// conditions fail is dropped, an admitted one keeps only its `neoforge:value` payload.
+    /// `allows` gets the file, its registry folder (`worldgen/placed_feature`) and its id.
+    /// Biomes are admitted by their own load.
+    pub fn admit_conditions(&mut self, allows: impl Fn(&Value, &str, &str) -> bool) {
+        for (bundle, entries) in &mut self.entries {
+            let Some((kind, _)) = KINDS
+                .iter()
+                .find(|(kind, name)| name == bundle && *kind != "worldgen/biome")
+            else {
+                continue;
+            };
+            entries.retain(|id, json| {
+                let Ok(value) = serde_json::from_str::<Value>(json) else {
+                    return true;
+                };
+                if value.get("neoforge:conditions").is_none() {
+                    return true;
+                }
+                if !allows(&value, kind, id) {
+                    return false;
+                }
+                *json = crate::conditions::into_payload(value).to_string();
+                true
+            });
+        }
+    }
+    /// The owning world's final, bound biome generation data (after modifiers).
+    pub fn bind_biome_generation(&mut self, generation: super::biome::AdmittedBiomeGeneration) {
+        self.admitted_biome_generation = Some(generation);
+    }
+
+    pub fn has_admitted_biome_generation(&self) -> bool {
+        self.admitted_biome_generation.is_some()
+    }
+
     /// A pack's file for `id` in `bundle`: called for packs from the lowest
     /// to the highest, so the last call for an id wins.
     pub fn set(&mut self, bundle: &str, id: &str, json: String) {
@@ -293,9 +348,13 @@ impl WorldgenOverrides {
         file: &str,
         read: impl FnOnce() -> Option<String>,
     ) -> PackFile {
-        let Some((_, rest)) = file.strip_prefix("data/").and_then(|r| r.split_once('/')) else {
+        let Some((namespace, rest)) = file.strip_prefix("data/").and_then(|r| r.split_once('/'))
+        else {
             return PackFile::Other;
         };
+        if !crate::json_folder::valid_resource_path(namespace, rest) {
+            return PackFile::Other;
+        }
         if let Some((bundle, id)) = KINDS
             .iter()
             .find_map(|(kind, bundle)| Some((bundle, resource_id(file, kind)?)))
@@ -575,6 +634,9 @@ impl WorldgenOverrides {
     ) -> BTreeMap<String, String> {
         for (id, json) in self.entries(bundle) {
             base.insert(id.to_owned(), json.to_owned());
+        }
+        if bundle == "biomes" {
+            base.retain(|id, _| !self.omitted_biomes.contains(id));
         }
         base
     }
@@ -946,5 +1008,35 @@ mod stem_sea_level_tests {
         assert_eq!(stem_sea_level(&flat, &read), None);
         let bad = json!({"generator": {"type": "minecraft:noise", "settings": {"sea_level": "x"}}});
         assert_eq!(stem_sea_level(&bad, &read), None);
+    }
+}
+
+#[cfg(test)]
+mod admit_conditions_tests {
+    use super::WorldgenOverrides;
+    use serde_json::json;
+
+    /// A winning placed feature whose conditions fail never reaches a codec; an admitted one is
+    /// its payload; a file with no conditions is untouched.
+    #[test]
+    fn a_condition_false_registry_file_is_dropped_before_any_codec() {
+        let mut o = WorldgenOverrides::default();
+        let never = json!({"neoforge:conditions":[{"type":"neoforge:never"}],"neoforge:value":{"feature":"a:x","placement":[]}});
+        let always = json!({"neoforge:conditions":[{"type":"neoforge:always"}],"neoforge:value":{"feature":"a:y","placement":[]}});
+        o.set("placed_features", "a:never", never.to_string());
+        o.set("placed_features", "a:always", always.to_string());
+        o.set("placed_features", "a:plain", r#"{"feature":"a:z"}"#.into());
+        o.admit_conditions(|file, kind, _| {
+            kind == "worldgen/placed_feature"
+                && file["neoforge:conditions"][0]["type"] == "neoforge:always"
+        });
+        let left: Vec<_> = o.entries("placed_features").collect();
+        assert_eq!(
+            left,
+            [
+                ("a:always", r#"{"feature":"a:y","placement":[]}"#),
+                ("a:plain", r#"{"feature":"a:z"}"#)
+            ]
+        );
     }
 }

@@ -793,8 +793,7 @@ impl Game<'_> {
         }
         if self.screen_fx.portal == 0.0 {
             let pitch = self.world.random.next_float() * 0.4 + 0.8;
-            self.audio
-                .play("minecraft:block.portal.trigger", None, 0.25, pitch);
+            self.play_audio("minecraft:block.portal.trigger", None, 0.25, pitch);
         }
         true
     }

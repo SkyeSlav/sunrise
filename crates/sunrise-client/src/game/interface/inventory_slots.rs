@@ -151,23 +151,13 @@ impl Game<'_> {
     ) {
         // GuiGraphicsExtractor.itemDecorations, laid out at the origin and
         // moved to (x, y): the damage bar, the cooldown shade and the count.
-        let info = self.items().get(&stack.item);
-        // ItemStack.isBarVisible: isDamaged, which an unbreakable stack never is.
-        let max_damage = if sunrise_client::stations::is_damageable(self.items(), stack) {
-            stack.max_damage(info)
-        } else {
-            0
-        };
+        let items = self.items();
+        let info = items.get(&stack.item);
         let cooldown =
             sunrise_client::cooldowns::group(stack, info.and_then(|i| i.use_cooldown.as_ref()));
         let partial = self.clock.fraction() as f32;
-        // BundleItem overrides the bar with its fullness.
-        let mut bar = if info.is_some_and(|item| item.bundle) {
-            sunrise_client::bundle::Contents::of(self.items(), stack)
-                .and_then(|contents| contents.bar())
-        } else {
-            hud_overlays::damage_bar(stack.effective_damage(info), max_damage)
-        };
+        let mut bar = sunrise_items::properties::stack_bar(items, stack, info)
+            .map(|bar| (bar.width, bar.color));
         // Client-only: a mod may replace or hide the bar vanilla just chose.
         self.native_item_bar(stack, &mut bar);
         let decorations = hud_overlays::ItemDecorations {
