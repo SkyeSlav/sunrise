@@ -1218,11 +1218,11 @@ impl Game<'_> {
             .packs
             .iter()
             .find(|p| p.id == id)
-            .map_or_else(|| "Default data pack".to_owned(), |p| p.description());
+            .map_or_else(|| Text::literal("Default data pack"), |p| p.description());
         let style = text::Style {
-            hover: Some(std::sync::Arc::new(Text::literal(format!(
-                "{id}\n{description}"
-            )))),
+            hover: Some(std::sync::Arc::new(
+                Text::literal(format!("{id}\n")).append(description),
+            )),
             ..style
         };
         let source = if id == "vanilla" {

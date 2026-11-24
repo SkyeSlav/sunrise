@@ -104,16 +104,9 @@ impl DataPack {
         self.source.read(path).ok()
     }
 
-    /// The `description` of `pack.mcmeta`, as text.
-    pub fn description(&self) -> String {
-        let Some(bytes) = self.read("pack.mcmeta") else {
-            return String::new();
-        };
-        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
-        match &v["pack"]["description"] {
-            serde_json::Value::String(s) => s.clone(),
-            other => other["text"].as_str().unwrap_or_default().to_owned(),
-        }
+    /// The `description` of `pack.mcmeta`, as a text component.
+    pub fn description(&self) -> crate::text::Text {
+        crate::packs::component_root(&self.mcmeta()["pack"]["description"]).0
     }
     /// The `features.enabled` flag ids of `pack.mcmeta`
     /// (`FeatureFlagsMetadataSection.CODEC` -> `FeatureFlagRegistry.codec` -> `Identifier.CODEC`):
@@ -2200,7 +2193,7 @@ mod tests {
         let packs = discover(&dir);
         assert_eq!(packs.len(), 1);
         assert_eq!(packs[0].id, "file/mypack");
-        assert_eq!(packs[0].description(), "Hello");
+        assert_eq!(packs[0].description().plain(), "Hello");
         let store = DataStore::load(&[&packs[0]]);
         assert_eq!(store.functions.len(), 2);
         assert!(store.functions.contains_key("mine:sub/b"));
