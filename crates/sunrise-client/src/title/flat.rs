@@ -1125,6 +1125,43 @@ mod tests {
     };
     use crate::item_render::{ItemRenderer, LayerTints};
     use std::path::Path;
+    use sunrise_world::worldgen::overrides::WorldgenOverrides;
+
+    /// A pack's flat preset in the `#minecraft:visible` tag is offered on the preset screen, with
+    /// its own layers and display item, beside the vanilla ones the resource root gives.
+    #[test]
+    fn a_pack_flat_preset_in_the_visible_tag_is_listed() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |path: &str, text: &str| {
+            let path = dir.path().join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        write(
+            "data/test/worldgen/flat_level_generator_preset/flat_islands.json",
+            r#"{"display":"minecraft:sand","settings":{"biome":"minecraft:desert","features":false,"lakes":false,
+            "layers":[{"block":"minecraft:sand","height":3},{"block":"minecraft:water","height":1}]}}"#,
+        );
+        write(
+            "data/minecraft/tags/worldgen/flat_level_generator_preset/visible.json",
+            r#"{"values":["test:flat_islands"]}"#,
+        );
+        let pack = crate::datapack::DataPack::from_source(
+            "file/islands".into(),
+            crate::resource_source::ResourceSource::directory(dir.path().to_path_buf()),
+        );
+        let (overrides, _) = crate::datapack::worldgen_overrides_over(&[], &[&pack]);
+        let state = State::new(Path::new("missing"), None, &overrides);
+        let [preset] = &state.presets[..] else {
+            panic!("{:?}", state.presets);
+        };
+        assert_eq!(preset.id, "test:flat_islands");
+        assert_eq!(preset.display, "minecraft:sand");
+        assert_eq!(preset.settings.biome, "minecraft:desert");
+        assert_eq!(preset.settings.layers.len(), 2);
+        let none = State::new(Path::new("missing"), None, &WorldgenOverrides::default());
+        assert!(none.presets.is_empty());
+    }
 
     /// Vanilla keeps the deleted row's position selected: the layer that slid
     /// into it, or the new last row when the last one was deleted, and nothing
