@@ -381,10 +381,7 @@ impl adv::World for View<'_, '_> {
 pub(in crate::game) struct TagSources<'a> {
     /// The world's packs' tags over the game's own, by registry.
     pub(in crate::game) pack_tags: Option<
-        &'a std::collections::HashMap<
-            &'static str,
-            std::collections::HashMap<String, std::collections::HashSet<String>>,
-        >,
+        &'a std::collections::HashMap<String, std::collections::HashMap<String, Vec<String>>>,
     >,
     pub(in crate::game) items: &'a sunrise_client::items::Items,
     pub(in crate::game) mob_data: &'a sunrise_client::mobs::MobData,
@@ -396,7 +393,7 @@ impl TagSources<'_> {
         // The world's packs' tags over the game's own, as the server's
         // registries bind them (`TagLoader.loadTagsForExistingRegistries`).
         if let Some(tags) = self.pack_tags.and_then(|t| t.get(registry)) {
-            return tags.get(tag).is_some_and(|t| t.contains(id));
+            return tags.get(tag).is_some_and(|t| t.iter().any(|m| m == id));
         }
         match registry {
             "item" => self.items.item_in_tag(tag, id),

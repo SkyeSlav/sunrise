@@ -300,14 +300,21 @@ pub(in crate::game) fn prepare_world_sync_data(
     damage: &sunrise_world::damage_source::Catalog,
     biomes: Option<(Arc<sunrise_client::biome::Biomes>, bool)>,
     items: Arc<Items>,
+    pack_tags: Option<
+        &std::collections::HashMap<String, std::collections::HashMap<String, Vec<String>>>,
+    >,
     packed_registries: Option<Arc<PackRegistryDefinitions>>,
     advancements: Arc<Tree>,
 ) -> std::result::Result<SyncCache, String> {
+    let mut world_tags = WorldTags::new(items.clone(), damage);
+    if let Some(pack_tags) = pack_tags {
+        world_tags = world_tags.with_pack_tags(pack_tags);
+    }
     let mut staged = SyncCache {
         data: SYNC.lock().unwrap_or_else(|e| e.into_inner()).data.clone(),
         biomes,
         packed_registries,
-        world_tags: Some(WorldTags::new(items.clone(), damage)),
+        world_tags: Some(world_tags),
         advancements: Some(advancements),
         ..Default::default()
     };

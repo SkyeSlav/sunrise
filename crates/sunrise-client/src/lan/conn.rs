@@ -1724,10 +1724,25 @@ fn login_and_configure(
             return Ok(None);
         }
     }
+    // Mod-declared sync(true) static custom registries (ConfigurationInitialization:38-41:
+    // skipped on in-process single-player memory connections; LAN guests still sync).
+    if let Some(data) =
+        crate::custom_registry_net::server_payload(brand == "sunrise", c.is_memory())?
+    {
+        for data in crate::custom_registry_net::chunks(&data)? {
+            send(
+                c,
+                cfg::Clientbound::CustomPayload(cfg::CustomPayload {
+                    channel: crate::custom_registry_net::CHANNEL.into(),
+                    data,
+                }),
+            )?;
+        }
+    }
     for packet in sync.registry_packets(known_pack, &shared.config.levels) {
         send(c, cfg::Clientbound::RegistryData(packet))?;
     }
-    send(c, cfg::Clientbound::UpdateTags(sync.tags.clone()))?;
+    send(c, cfg::Clientbound::UpdateTags(sync.tags_for_brand(&brand)))?;
     // addOptionalTasks: the code of conduct task comes first.
     if let Some(text) =
         super::code_of_conduct::pick(&shared.config.code_of_conducts, &info.language)

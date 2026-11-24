@@ -541,6 +541,8 @@ pub(super) struct Remote {
     /// (`native_client_level_load`), to be told dropped once.
     pub(super) heard_level: Option<String>,
     pub(in crate::game) datapacks: sunrise_client::datapack_net::Receiver,
+    pub(in crate::game) custom_registries:
+        sunrise_client::custom_registry_net::SyncedCustomRegistries,
     /// The constructor's level is visible by name during Load, before Minecraft.setLevel.
     pub(super) constructing_level: Option<ConstructingClientLevel>,
     /// `ClientPacketListener.levelLoadTracker`: the loading screen after a login

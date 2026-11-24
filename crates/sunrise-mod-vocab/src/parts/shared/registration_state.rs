@@ -41,6 +41,7 @@ pub(crate) struct Installed {
     pub(crate) biome_regions: Vec<BiomeRegionDeclaration>,
     pub(crate) datapack_registries:
         Vec<crate::world::datapack_registry::DatapackRegistryDeclaration>,
+    pub(crate) custom_registries: crate::world::custom_registries::FrozenCustomRegistries,
     pub(crate) registry_keys: sunrise_mod_runtime::registry_keys::Requests,
     pub(crate) effects: OnceLock<sunrise_mod_runtime::registry_keys::Effects>,
     pub(crate) resolved_block_entity_types: OnceLock<sunrise_mod_runtime::registry_keys::Names>,

@@ -385,11 +385,13 @@ impl Game<'_> {
             Event::Joined {
                 registries,
                 datapacks,
+                custom_registries,
                 name,
                 uuid,
             } => {
                 if let Some(remote) = &mut self.remote {
                     remote.datapacks = datapacks;
+                    remote.custom_registries = custom_registries;
                 }
                 if let Err(error) = self.set_registries(registries) {
                     return self.refuse_remote_input(error);
@@ -468,6 +470,7 @@ impl Game<'_> {
                 // own features again.
                 if let Some(remote) = &mut self.remote {
                     remote.datapacks = Default::default();
+                    remote.custom_registries = Default::default();
                     remote.has_logical_player = false;
                     remote.viewed.clear();
                     remote.far_terrain = None;
@@ -503,6 +506,7 @@ impl Game<'_> {
             Event::Reconfigured {
                 registries,
                 datapacks,
+                custom_registries,
             } => {
                 if let Err(error) = self.set_registries(registries) {
                     return self.refuse_remote_input(error);
@@ -519,6 +523,7 @@ impl Game<'_> {
                 self.clear_waypoints();
                 if let Some(r) = self.remote.as_mut() {
                     r.datapacks = datapacks;
+                    r.custom_registries = custom_registries;
                     r.clear_attachments();
                     r.players.clear();
                     r.tab_players.clear();
@@ -994,6 +999,7 @@ mod tests {
                     Event::Joined {
                         registries: invalid,
                         datapacks: Default::default(),
+                        custom_registries: Default::default(),
                         uuid: 1,
                         name: "Alex".into(),
                     },
@@ -1024,6 +1030,7 @@ mod tests {
                     Event::Joined {
                         registries: valid,
                         datapacks: Default::default(),
+                        custom_registries: Default::default(),
                         uuid: 2,
                         name: "Steve".into(),
                     },
@@ -1048,6 +1055,7 @@ mod tests {
                     Event::Reconfigured {
                         registries: invalid,
                         datapacks: Default::default(),
+                        custom_registries: Default::default(),
                     },
                     Event::Packet(Box::new(login_packet())),
                 ],

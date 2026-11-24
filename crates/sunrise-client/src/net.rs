@@ -119,6 +119,7 @@ pub enum Event {
     Joined {
         registries: Arc<Dynamic>,
         datapacks: crate::datapack_net::Receiver,
+        custom_registries: crate::custom_registry_net::SyncedCustomRegistries,
         uuid: u128,
         name: String,
     },
@@ -146,6 +147,7 @@ pub enum Event {
     Reconfigured {
         registries: Arc<Dynamic>,
         datapacks: crate::datapack_net::Receiver,
+        custom_registries: crate::custom_registry_net::SyncedCustomRegistries,
     },
     /// ClientboundResourcePackPushPacket, in configuration or in play.
     PackPush(cfg::ResourcePackPush),
@@ -260,15 +262,20 @@ impl Event {
             Self::Joined {
                 registries,
                 datapacks,
+                custom_registries,
                 name,
                 ..
             } => dynamic(registries)
                 .saturating_add(datapacks.owned_heap_bytes())
+                .saturating_add(custom_registries.owned_heap_bytes())
                 .saturating_add(name.capacity()),
             Self::Reconfigured {
                 registries,
                 datapacks,
-            } => dynamic(registries).saturating_add(datapacks.owned_heap_bytes()),
+                custom_registries,
+            } => dynamic(registries)
+                .saturating_add(datapacks.owned_heap_bytes())
+                .saturating_add(custom_registries.owned_heap_bytes()),
             Self::Packet(packet) | Self::ObservePacket(packet) => {
                 size_of::<play::Clientbound>() + packet.owned_heap_bytes()
             }
@@ -1491,7 +1498,7 @@ fn run(
         writer.attach_droppable(queue.clone());
     }
     *shared_writer.lock().unwrap() = Some(writer);
-    let (registries, datapacks) = configure(
+    let (registries, datapacks, custom_registries) = configure(
         &mut reader,
         shared_writer,
         configuring,
@@ -1505,6 +1512,7 @@ fn run(
     send.send_wait(Event::Joined {
         registries: registries.clone(),
         datapacks,
+        custom_registries,
         uuid: profile.uuid,
         name: profile.name,
     })
@@ -1986,7 +1994,7 @@ fn receive_play(
                     .recv()
                     .map_err(|_| Reason::plain("Disconnected"))?
                     .map_err(|error| connection_lost(error, lang))?;
-                let (snapshot, datapacks) = configure(
+                let (snapshot, datapacks, custom_registries) = configure(
                     reader,
                     shared_writer,
                     configuring,
@@ -2001,6 +2009,7 @@ fn receive_play(
                 send.send_wait(Event::Reconfigured {
                     registries: registries.clone(),
                     datapacks,
+                    custom_registries,
                 })
                 .map_err(|error| Reason::plain(error.to_string()))?;
             }
@@ -2088,7 +2097,14 @@ fn configure(
     cookies: &Cookies,
     resources: &ItemData,
     payloads: &Arc<crate::raw_payloads::Transport>,
-) -> Result<(Dynamic, crate::datapack_net::Receiver), Reason> {
+) -> Result<
+    (
+        Dynamic,
+        crate::datapack_net::Receiver,
+        crate::custom_registry_net::SyncedCustomRegistries,
+    ),
+    Reason,
+> {
     use sunrise_protocol::payload_negotiation::Phase;
     let io = CommonIo::new(writer, cookies, Phase::Configuration);
     let config = Arc::new(Configuration::default());
@@ -2098,6 +2114,7 @@ fn configure(
     let mut negotiation =
         sunrise_protocol::payload_negotiation::Negotiation::new(payloads.local.manifest.clone());
     let mut datapacks = crate::datapack_net::Receiver::default();
+    let mut custom_registries = crate::custom_registry_net::Receiver::default();
     let reply = |p: cfg::Serverbound| -> Result<(), Reason> {
         match writer.lock().unwrap().as_mut() {
             Some(w) => p
@@ -2188,6 +2205,13 @@ fn configure(
             }
             cfg::Clientbound::CustomPayload(p) if p.channel == crate::datapack_net::CHANNEL => {
                 datapacks.accept_chunk(&p.data).map_err(Reason::plain)?;
+            }
+            cfg::Clientbound::CustomPayload(p)
+                if p.channel == crate::custom_registry_net::CHANNEL =>
+            {
+                custom_registries
+                    .accept_chunk(&p.data)
+                    .map_err(Reason::plain)?;
             }
             cfg::Clientbound::CustomPayload(p) => {
                 let endpoint = crate::raw_payloads::Endpoint::client(
@@ -2323,12 +2347,13 @@ fn configure(
                     configuring: configuring.clone(),
                     play,
                     datapacks,
+                    custom_registries,
                     content_verified,
                     menu_extra_revision,
                     resume,
                 })))
                 .map_err(|error| Reason::plain(error.to_string()))?;
-                let (registries, datapacks) = match ready.recv() {
+                let (registries, datapacks, custom_registries) = match ready.recv() {
                     Ok(result) => result?,
                     Err(_) => {
                         if let Some(reason) = config.take_packet_error() {
@@ -2340,7 +2365,7 @@ fn configure(
                 if let Some(features) = features {
                     let _ = send.send_wait(Event::Features(features));
                 }
-                return Ok((registries, datapacks));
+                return Ok((registries, datapacks, custom_registries));
             }
             _ => {}
         }
@@ -3984,7 +4009,7 @@ mod tests {
                     panic!("expected the configuration finish task");
                 };
                 change.acknowledge();
-                let (registries, _) = worker.join().unwrap().unwrap();
+                let (registries, _, _) = worker.join().unwrap().unwrap();
                 assert_eq!(registries.consume_effect_id("effect_test:charge"), Some(0));
                 assert_eq!(
                     registries.consume_effect_id("minecraft:apply_effects"),
@@ -4206,7 +4231,7 @@ mod tests {
         let revision = thread
             .join()
             .unwrap()
-            .map(|(registries, _)| registries.menu_extra_revision)
+            .map(|(registries, _, _)| registries.menu_extra_revision)
             .unwrap_or(0);
         drop(writer);
         std::fs::remove_dir_all(root).unwrap();

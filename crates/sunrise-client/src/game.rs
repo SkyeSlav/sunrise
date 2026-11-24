@@ -3160,9 +3160,12 @@ struct WorldTables {
     reload_sources: Option<Arc<sunrise_client::crafting::ResolvedSources>>,
     /// The values of the data map types native mods registered (`native_data_map_types`).
     data_maps: native_data_maps::DataMaps,
-    /// Pack tags used by advancement predicates and built-in data maps
-    /// (`TagLoader.loadTagsForExistingRegistries`). Damage tags live in the catalog.
-    pack_tags: HashMap<&'static str, HashMap<String, HashSet<String>>>,
+    /// Pack tags used by advancement predicates, built-in data maps, and mod-declared static
+    /// custom registries (`TagLoader.loadTagsForExistingRegistries`). Damage tags live in the
+    /// catalog. Keyed by directory for `minecraft:` registries (`"worldgen/biome"`, ...) and
+    /// full canonical registry ID for mod-declared custom static registries (`"chemlib:gas"`).
+    /// Member order is preserved for `Tags::entries`.
+    pack_tags: HashMap<String, HashMap<String, Vec<String>>>,
 }
 
 struct PreparedParts {

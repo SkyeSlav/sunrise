@@ -342,42 +342,42 @@ impl Game<'_> {
             EntityTypeTags::REGISTRY.into(),
             items.entity_type_tags.ids().iter().cloned().collect(),
         );
-        let mut pack_tags = HashMap::new();
+        for dir in mod_api::__private::custom_registry_directories() {
+            view.ids.insert(
+                dir.id().to_owned(),
+                dir.entry_ids().iter().map(ToString::to_string).collect(),
+            );
+        }
+        let mut pack_tags: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
         let gameplay_tags = WorldTables::PACK_TAG_REGISTRIES
             .into_iter()
             .chain(sunrise_client::neoforge_mob_maps::MAPS.map(|definition| definition.directory))
             .filter(|directory| !matches!(*directory, "item" | "entity_type" | "damage_type"))
             .collect::<std::collections::BTreeSet<_>>();
-        let mut bind_tags = |registry: &str,
-                             view: &mut load_conditions::RegistryView|
-         -> Result<()> {
-            let ids = view.ids.get(registry);
-            let tags = sunrise_client::lan::data::registry_tag_bindings(
-                root,
-                &tag_files,
-                registry,
-                |id| ids.is_some_and(|ids| ids.contains(id)),
-            )?;
-            view.tags.insert(
-                registry.to_owned(),
-                tags.iter()
-                    .filter(|(_, members)| !members.is_empty())
-                    .map(|(tag, _)| tag.clone())
-                    .collect(),
-            );
-            if let Some(directory) = registry
-                .strip_prefix("minecraft:")
-                .and_then(|name| gameplay_tags.get(name))
-            {
-                pack_tags.insert(
-                    *directory,
-                    tags.into_iter()
-                        .map(|(tag, members)| (tag, members.into_iter().collect::<HashSet<_>>()))
+        let mut bind_tags =
+            |registry: &str, view: &mut load_conditions::RegistryView| -> Result<()> {
+                let ids = view.ids.get(registry);
+                let tags = sunrise_client::lan::data::registry_tag_bindings(
+                    root,
+                    &tag_files,
+                    registry,
+                    |id| ids.is_some_and(|ids| ids.contains(id)),
+                )?;
+                view.tags.insert(
+                    registry.to_owned(),
+                    tags.iter()
+                        .filter(|(_, members)| !members.is_empty())
+                        .map(|(tag, _)| tag.clone())
                         .collect(),
                 );
-            }
-            Ok(())
-        };
+                if let Some(directory) = registry
+                    .strip_prefix("minecraft:")
+                    .and_then(|name| gameplay_tags.get(name))
+                {
+                    pack_tags.insert((*directory).to_owned(), tags.into_iter().collect());
+                }
+                Ok(())
+            };
         // Item, block, fluid and entity type tags already came from Items' loader.
         let static_registries = builtin
             .registries
@@ -541,7 +541,7 @@ impl Game<'_> {
                 bind_tags(PLACED, &mut view)?;
             }
         }
-        let damage_tags: HashMap<_, HashSet<_>> = health
+        let damage_tags: HashMap<String, Vec<String>> = health
             .damage
             .tags()
             .map(|tag| {
@@ -559,7 +559,31 @@ impl Game<'_> {
                 .map(|(tag, _)| tag.clone())
                 .collect(),
         );
-        pack_tags.insert("damage_type", damage_tags);
+        pack_tags.insert("damage_type".to_owned(), damage_tags);
+        // Bind tags for mod-declared static custom registries into the same `pack_tags` store,
+        // keyed by canonical registry ID (`chemlib:gas`) and preserving tag order.
+        for dir in mod_api::__private::custom_registry_directories() {
+            match sunrise_world::tag_layers::load(root, dir.tag_directory(), &tag_files, |id| {
+                dir.contains_id(id)
+            }) {
+                Ok(tags) => {
+                    view.tags.insert(
+                        dir.id().to_owned(),
+                        tags.iter()
+                            .filter(|(_, members)| !members.is_empty())
+                            .map(|(tag, _)| tag.clone())
+                            .collect(),
+                    );
+                    pack_tags.insert(dir.id().to_owned(), tags);
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Sunrise: the world's {} tags are not applied: {e}",
+                        dir.id()
+                    );
+                }
+            }
+        }
 
         let datapack_candidate =
             Self::stage_datapack_registries(stack, root, &registry_overlay, &mut view);
@@ -683,6 +707,18 @@ impl Game<'_> {
             self.res.core.collision.clone(),
             &causes_suffocation,
         )?;
+        let pack_tag_sets: HashMap<&str, HashMap<String, HashSet<String>>> = pack_tags
+            .iter()
+            .filter(|(key, _)| !key.contains(':'))
+            .map(|(key, tags)| {
+                (
+                    key.as_str(),
+                    tags.iter()
+                        .map(|(tag, members)| (tag.clone(), members.iter().cloned().collect()))
+                        .collect(),
+                )
+            })
+            .collect();
         // Items already decoded the root's command export. Block-state-only
         // command metadata is not the registry universe, and professions and
         // biomes belong to the live world candidate rather than that export.
@@ -699,7 +735,7 @@ impl Game<'_> {
             |directory| match directory {
                 "item" => Some(&items.item_tags),
                 "entity_type" => Some(items.entity_type_tags.members()),
-                _ => pack_tags.get(directory),
+                _ => pack_tag_sets.get(directory),
             },
             |registry, id| match registry {
                 "minecraft:item" => items.items.contains_key(id),
@@ -1023,7 +1059,11 @@ impl Game<'_> {
             .as_ref()
             .map_or_else(|| self.res.shared_items(), |tables| tables.items.clone());
         let parts = self.prepare_parts(&items)?;
-        let wire_tags = sunrise_client::lan::data::WorldTags::new(items.clone(), &health.damage);
+        let mut wire_tags =
+            sunrise_client::lan::data::WorldTags::new(items.clone(), &health.damage);
+        if let Some(tables) = &tables {
+            wire_tags = wire_tags.with_pack_tags(&tables.pack_tags);
+        }
         let overlay = pack_files(&tables);
         let kept = self
             .lan

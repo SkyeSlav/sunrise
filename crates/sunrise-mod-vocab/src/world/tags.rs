@@ -97,6 +97,57 @@ pub trait Tags {
     fn blocks(&self, _tag: TagKey) -> TagMembers<BlockKey> {
         unimplemented!("Tags::blocks")
     }
+    /// Read the bound members of `tag` in custom static registry `registry`, in tag order.
+    // hidden: typed custom-registry tag reads live on `dyn Tags`; this object-safe method is plumbing.
+    #[doc(hidden)]
+    fn custom_tag_entries(&self, _registry: &str, _tag: TagKey) -> TagMembers<Identifier> {
+        TagMembers::Unavailable
+    }
+}
+
+impl dyn Tags + '_ {
+    /// Read the bound members of `tag` in custom static registry `registry`, in tag order.
+    ///
+    /// Returns [`TagMembers::Unavailable`] if the registry is not declared, authoritative
+    /// tags are not loaded, or any member ID fails to resolve in the frozen registry.
+    pub fn entries<T: Send + Sync + 'static>(
+        &self,
+        registry: crate::RegistryKey<T>,
+        tag: TagKey,
+    ) -> TagMembers<crate::EntryKey<T>> {
+        let Some(frozen) = crate::parts::custom_registry::<T>(registry.id()) else {
+            return TagMembers::Unavailable;
+        };
+        match self.custom_tag_entries(registry.id(), tag) {
+            TagMembers::Missing => TagMembers::Missing,
+            TagMembers::Unavailable => TagMembers::Unavailable,
+            TagMembers::Members(ids) => ids
+                .iter()
+                .map(|id| frozen.by_id(&id.to_string()).map(|(key, _)| key))
+                .collect::<Option<Vec<_>>>()
+                .map_or(TagMembers::Unavailable, TagMembers::Members),
+        }
+    }
+
+    /// Whether `entry` is in `tag` of custom static registry `registry`.
+    ///
+    /// Returns `Some(false)` for an unknown tag when authoritative tags are loaded, and
+    /// `None` when the registry or authoritative tags are unavailable or `entry` does not
+    /// belong to `registry`.
+    pub fn is_in_custom_tag<T: Send + Sync + 'static>(
+        &self,
+        registry: crate::RegistryKey<T>,
+        entry: crate::EntryKey<T>,
+        tag: TagKey,
+    ) -> Option<bool> {
+        let frozen = crate::parts::custom_registry::<T>(registry.id())?;
+        let target_id = frozen.id_of(entry)?;
+        match self.custom_tag_entries(registry.id(), tag) {
+            TagMembers::Unavailable => None,
+            TagMembers::Missing => Some(false),
+            TagMembers::Members(ids) => Some(ids.iter().any(|id| id == target_id)),
+        }
+    }
 }
 
 /// Resolve a tag name at the game boundary.

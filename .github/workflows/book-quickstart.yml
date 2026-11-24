@@ -186,6 +186,11 @@ jobs:
         run: >-
           cargo test --locked -p cargo-sunrise-mod --test addon --
           --ignored --exact builds_and_checks_a_native_addon_with_local_libraries
+      - name: Two separately built mods share custom static registries and tags
+        if: inputs.own_sdk
+        run: >-
+          cargo test --locked -p cargo-sunrise-mod --test m2m_custom_registries --
+          --ignored --exact two_separately_built_mods_share_custom_static_registry_and_tags
       - name: A library built against another build of its dependency is refused
         if: inputs.own_sdk
         run: >-

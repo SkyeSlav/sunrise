@@ -81,10 +81,70 @@ where
     })
 }
 
+/// Read ordered bound tag members for a mod-declared static custom registry from the
+/// server's `WorldTables::pack_tags` or the client's received `UpdateTags` + synced ID table.
+pub(super) fn custom_tag_entries(
+    game: &super::Game<'_>,
+    registry: &str,
+    tag: TagKey,
+) -> TagMembers<Identifier> {
+    mod_api::__private::with_tag_name(tag, |name| {
+        let Some(name) = name else {
+            return TagMembers::Unavailable;
+        };
+        if game.options.execution_role.is_client() {
+            let Some(remote) = game.remote.as_ref() else {
+                return TagMembers::Unavailable;
+            };
+            if remote.tags.is_none() {
+                return TagMembers::Unavailable;
+            }
+            let Some(tags) = remote.registries.tags.get(registry) else {
+                // Only `sync(true)` registries receive remote tags; if the registry was synced
+                // with no tags bound, report Missing; otherwise Unavailable.
+                return if remote.custom_registries.has_registry(registry)
+                    || mod_api::__private::custom_registry_directories()
+                        .iter()
+                        .any(|dir| dir.id() == registry && dir.sync())
+                {
+                    TagMembers::Missing
+                } else {
+                    TagMembers::Unavailable
+                };
+            };
+            let Some(raw_ids) = tags.get(name) else {
+                return TagMembers::Missing;
+            };
+            return raw_ids
+                .iter()
+                .map(|&raw_id| remote.custom_registries.entry_id(registry, raw_id))
+                .collect::<Option<Vec<_>>>()
+                .map_or(TagMembers::Unavailable, TagMembers::Members);
+        }
+        let Some(tables) = game.world_tables.as_ref() else {
+            return TagMembers::Unavailable;
+        };
+        let Some(tags) = tables.pack_tags.get(registry) else {
+            return TagMembers::Unavailable;
+        };
+        let Some(members) = tags.get(name) else {
+            return TagMembers::Missing;
+        };
+        members
+            .iter()
+            .map(|id| Identifier::parse(id).ok())
+            .collect::<Option<Vec<_>>>()
+            .map_or(TagMembers::Unavailable, TagMembers::Members)
+    })
+}
+
 // A restricted host supplies the same authoritative item tables but cannot borrow Game.
 // Only that choice differs; key resolution, ordered reads and membership stay above.
 macro_rules! impl_tags {
     ($ty:ty, $this:ident, $items:expr) => {
+        $crate::game::native_tags::impl_tags!($ty, $this, $items, None);
+    };
+    ($ty:ty, $this:ident, $items:expr, $game:expr) => {
         impl mod_api::Tags for $ty {
             fn key(&self, id: &mod_api::Identifier) -> Option<mod_api::TagKey> {
                 mod_api::__private::tag_key(id)
@@ -142,11 +202,26 @@ macro_rules! impl_tags {
                     mod_api::__private::block_key,
                 )
             }
+            fn custom_tag_entries(
+                &self,
+                registry: &str,
+                tag: mod_api::TagKey,
+            ) -> mod_api::TagMembers<mod_api::Identifier> {
+                let $this = self;
+                let _ = &$this;
+                let game: Option<&$crate::game::Game<'_>> = $game;
+                match game {
+                    Some(game) => {
+                        $crate::game::native_tags::custom_tag_entries(game, registry, tag)
+                    }
+                    None => mod_api::TagMembers::Unavailable,
+                }
+            }
         }
     };
 }
-pub(super) use impl_tags;
-impl_tags!(super::Game<'_>, game, game.native_tag_items());
+pub(in crate::game) use impl_tags;
+impl_tags!(super::Game<'_>, game, game.native_tag_items(), Some(game));
 
 #[cfg(test)]
 pub(in crate::game) const PACK_BINDING_CASES: [(&str, &[u8], bool); 3] = [
