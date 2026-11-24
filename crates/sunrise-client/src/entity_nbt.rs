@@ -1209,6 +1209,13 @@ pub fn write_mob(
         {
             map.insert("variant".into(), string(id));
         }
+    } else if species == S::Cat {
+        if let Some(variants) = variants
+            && let Some(r) = m.cat_variant(&variants.cat)
+            && let Some(id) = variants.cat.id(r)
+        {
+            map.insert("variant".into(), string(id));
+        }
     } else if species != S::ZombieNautilus
         && crate::mobs::finalize::saves_variant_name(species)
         && let Some((_, variant)) =
@@ -1221,6 +1228,13 @@ pub fn write_mob(
         if let Some(variants) = variants
             && let Some(r) = m.wolf_sound_variant(&variants.wolf_sound)
             && let Some(id) = variants.wolf_sound.id(r)
+        {
+            map.insert("sound_variant".into(), string(id));
+        }
+    } else if species == S::Cat {
+        if let Some(variants) = variants
+            && let Some(r) = m.cat_sound_variant(&variants.cat_sound)
+            && let Some(id) = variants.cat_sound.id(r)
         {
             map.insert("sound_variant".into(), string(id));
         }
@@ -2423,8 +2437,10 @@ fn mob_from_nbt_at(
             };
         }
     }
-    if m.species() != crate::mobs::Species::Wolf
-        && crate::mobs::finalize::saves_variant_name(m.species())
+    if !matches!(
+        m.species(),
+        crate::mobs::Species::Wolf | crate::mobs::Species::Cat
+    ) && crate::mobs::finalize::saves_variant_name(m.species())
         && let Some(v) = text(tag.get("variant"))
     {
         m.extra.variant = crate::mobs::finalize::variant_index(m.species(), &v);
@@ -2434,8 +2450,10 @@ fn mob_from_nbt_at(
     {
         m.extra.egg_time = t as i32;
     }
-    if m.species() != crate::mobs::Species::Wolf
-        && let Some(v) = text(tag.get("sound_variant"))
+    if !matches!(
+        m.species(),
+        crate::mobs::Species::Wolf | crate::mobs::Species::Cat
+    ) && let Some(v) = text(tag.get("sound_variant"))
     {
         let v = v.trim_start_matches("minecraft:");
         let sounds = crate::mobs::finalize::sound_variants(m.species());
@@ -7378,16 +7396,27 @@ pub fn apply_item_components(m: &mut Mob, stack: &crate::items::ItemStack) {
 }
 
 /// Resolve registry-backed mob variants from saved NBT against the world's
-/// `VariantTables` (`VariantUtils.readVariant` + `Wolf.readAdditionalSaveData`).
+/// `VariantTables` (`VariantUtils.readVariant` + `Wolf`/`Cat.readAdditionalSaveData`).
 /// Missing or unknown ids leave the vanilla default (`getDefaultOrAny`).
 pub fn read_mob_variants(m: &mut Mob, tag: &Tag, variants: &crate::mobs::variants::VariantTables) {
-    if m.species() == crate::mobs::Species::Wolf {
-        m.extra.wolf_variant = text(tag.get("variant"))
-            .and_then(|v| variants.wolf.lookup(&v))
-            .or_else(|| variants.wolf.default_or_any("minecraft:pale"));
-        m.extra.wolf_sound_variant = text(tag.get("sound_variant"))
-            .and_then(|v| variants.wolf_sound.lookup(&v))
-            .or_else(|| variants.wolf_sound.default_or_any("minecraft:classic"));
+    match m.species() {
+        crate::mobs::Species::Wolf => {
+            m.extra.wolf_variant = text(tag.get("variant"))
+                .and_then(|v| variants.wolf.lookup(&v))
+                .or_else(|| variants.wolf.default_or_any("minecraft:pale"));
+            m.extra.wolf_sound_variant = text(tag.get("sound_variant"))
+                .and_then(|v| variants.wolf_sound.lookup(&v))
+                .or_else(|| variants.wolf_sound.default_or_any("minecraft:classic"));
+        }
+        crate::mobs::Species::Cat => {
+            m.extra.cat_variant = text(tag.get("variant"))
+                .and_then(|v| variants.cat.lookup(&v))
+                .or_else(|| variants.cat.default_or_any("minecraft:black"));
+            m.extra.cat_sound_variant = text(tag.get("sound_variant"))
+                .and_then(|v| variants.cat_sound.lookup(&v))
+                .or_else(|| variants.cat_sound.default_or_any("minecraft:classic"));
+        }
+        _ => {}
     }
 }
 

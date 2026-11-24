@@ -418,7 +418,15 @@ fn apply_registry_data(
     let species = m.species();
     for (index, _, value) in values {
         let registry = match (species, *index, value) {
-            (Species::Cat, 20, Value::Id(_)) => "minecraft:cat_variant",
+            (Species::Cat, 20, Value::Id(id)) => {
+                m.extra.cat_variant = Some(sunrise_client::lan::data::RegistryRef::new(*id as u32));
+                continue;
+            }
+            (Species::Cat, 24, Value::Id(id)) => {
+                m.extra.cat_sound_variant =
+                    Some(sunrise_client::lan::data::RegistryRef::new(*id as u32));
+                continue;
+            }
             (Species::Wolf, 23, Value::Id(id)) => {
                 m.extra.wolf_variant =
                     Some(sunrise_client::lan::data::RegistryRef::new(*id as u32));

@@ -62,12 +62,17 @@ impl finalize::FinalizeLevel for FinalizeGame<'_, '_> {
         self.game.structures_at(pos)
     }
     fn structure_tag(&self, tag: &str, structure: &str) -> bool {
-        self.game
+        if let Some(tags) = self
+            .game
             .world_tables
             .as_ref()
             .and_then(|t| t.pack_tags.get("worldgen/structure"))
-            .and_then(|tags| tags.get(tag))
-            .is_some_and(|members| members.contains(structure))
+        {
+            return tags
+                .get(tag)
+                .is_some_and(|members| members.contains(structure));
+        }
+        self.game.structure_tag(tag).iter().any(|m| m == structure)
     }
     fn moon_phase(&self, _: [i32; 3]) -> usize {
         self.game.finalize_moon_phase()
@@ -146,7 +151,7 @@ impl Game<'_> {
     /// otherwise the server's frozen world tables (or prepared defaults).
     pub(in crate::game) fn world_variants(&self) -> &sunrise_client::mobs::variants::VariantTables {
         if let Some(r) = self.remote.as_ref()
-            && !r.variants.wolf.is_empty()
+            && !r.variants.is_empty()
         {
             return &r.variants;
         }

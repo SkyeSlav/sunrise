@@ -282,13 +282,11 @@ pub struct SpawnRegistries {
     pub pig: VariantRegistry,
     pub cow: VariantRegistry,
     pub chicken: VariantRegistry,
-    pub cat: VariantRegistry,
     pub frog: VariantRegistry,
     pub zombie_nautilus: VariantRegistry,
     pub pig_sound: VariantRegistry,
     pub cow_sound: VariantRegistry,
     pub chicken_sound: VariantRegistry,
-    pub cat_sound: VariantRegistry,
 }
 impl SpawnRegistries {
     /// Loads the variant registries from a resources directory
@@ -314,13 +312,11 @@ impl SpawnRegistries {
             pig: r("pig_variant"),
             cow: r("cow_variant"),
             chicken: r("chicken_variant"),
-            cat: r("cat_variant"),
             frog: r("frog_variant"),
             zombie_nautilus: r("zombie_nautilus_variant"),
             pig_sound: r("pig_sound_variant"),
             cow_sound: r("cow_sound_variant"),
             chicken_sound: r("chicken_sound_variant"),
-            cat_sound: r("cat_sound_variant"),
         }
     }
 }
@@ -2263,8 +2259,22 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
             }
             S::Cat => {
                 let g = self.ageable(m, g);
-                self.variant(m, |r| &r.cat);
-                self.sound(m, |r| &r.cat_sound);
+                let at = block(m);
+                if let Some(v) =
+                    self.level
+                        .spawn_data()
+                        .variants
+                        .cat
+                        .select(&*self.level, at, self.random)
+                {
+                    m.extra.cat_variant = Some(v);
+                }
+                m.extra.cat_sound_variant = self
+                    .level
+                    .spawn_data()
+                    .variants
+                    .cat_sound
+                    .random(self.random);
                 g
             }
             S::Wolf => {
@@ -2702,7 +2712,6 @@ fn cube_size(m: &mut Mob, size: i32) {
 pub fn variant_index(s: Species, name: &str) -> u8 {
     let name = name.strip_prefix("minecraft:").unwrap_or(name);
     let i = match s {
-        Species::Cat => super::tame::CAT_VARIANTS.iter().position(|v| *v == name),
         Species::ZombieNautilus => super::nautilus::VARIANTS.iter().position(|v| *v == name),
         // MushroomCow.Variant: red is the codec's default, brown the other.
         Species::Mooshroom => ["red", "brown"].iter().position(|v| *v == name),
@@ -2732,17 +2741,24 @@ pub fn variant_component_in(
     m: &Mob,
     variants: &super::variants::VariantTables,
 ) -> Option<(&'static str, String)> {
-    if m.species() == Species::Wolf {
-        let r = m.wolf_variant(&variants.wolf)?;
-        let id = variants.wolf.id(r)?;
-        return Some(("minecraft:wolf/variant", id.to_owned()));
+    match m.species() {
+        Species::Wolf => {
+            let r = m.wolf_variant(&variants.wolf)?;
+            let id = variants.wolf.id(r)?;
+            return Some(("minecraft:wolf/variant", id.to_owned()));
+        }
+        Species::Cat => {
+            let r = m.cat_variant(&variants.cat)?;
+            let id = variants.cat.id(r)?;
+            return Some(("minecraft:cat/variant", id.to_owned()));
+        }
+        _ => {}
     }
     variant_component(m)
 }
 /// [`variant_component`] of a species with the game's variant index.
 pub fn species_variant_component(s: Species, variant: u8) -> Option<(&'static str, String)> {
     let component = match s {
-        Species::Cat => "minecraft:cat/variant",
         Species::Frog => "minecraft:frog/variant",
         Species::Pig => "minecraft:pig/variant",
         Species::Cow => "minecraft:cow/variant",
@@ -2778,17 +2794,16 @@ pub fn sound_variants(s: Species) -> &'static [&'static str] {
         Species::Pig => &["big", "classic", "mini"],
         Species::Cow => &["classic", "moody"],
         Species::Chicken => &["classic", "picky"],
-        Species::Cat => &["classic", "royal"],
         _ => &[],
     }
 }
-/// A sound of the mob's `*_sound_variant` set (`Pig.getSoundSet`,
-/// `Cat.getSoundSet`, ...): `kind` is the sound's key
-/// (`ambient`, `hurt`, `step`, `purreow`...). Babies use the species'
+/// A sound of the mob's `*_sound_variant` set (`Pig.getSoundSet`, ...): `kind`
+/// is the sound's key (`ambient`, `hurt`, `step`...). Babies use the species'
 /// baby set (cows have none); an adult's set is `entity.<species>.*` for
 /// `classic` and `entity.<species>_<variant>.*` otherwise, except the
 /// footsteps that every variant shares (not the cow's). None for a species
-/// without sound variants (or one that moved onto `VariantTables`, like wolves).
+/// without sound variants (or one that moved onto `VariantTables`, like wolves
+/// and cats).
 pub fn variant_sound(m: &Mob, kind: &str) -> Option<&'static str> {
     use std::{collections::HashMap, sync::Mutex};
     let species = m.species();
@@ -2796,7 +2811,6 @@ pub fn variant_sound(m: &Mob, kind: &str) -> Option<&'static str> {
         Species::Pig => "pig",
         Species::Cow => "cow",
         Species::Chicken => "chicken",
-        Species::Cat => "cat",
         _ => return None,
     };
     let variant = m
@@ -2825,7 +2839,6 @@ pub fn variant_sound(m: &Mob, kind: &str) -> Option<&'static str> {
 pub fn variant_name(s: Species, index: u8) -> &'static str {
     let i = index as usize;
     match s {
-        Species::Cat => super::tame::CAT_VARIANTS.get(i).copied().unwrap_or("black"),
         Species::ZombieNautilus => super::nautilus::VARIANTS
             .get(i)
             .copied()
@@ -2998,7 +3011,6 @@ mod tests {
         assert_eq!(variant_index(Species::Llama, "minecraft:temperate"), 0);
         assert_eq!(variant_name(Species::Horse, 7), "white");
         assert_eq!(variant_name(Species::TraderLlama, 4), "creamy");
-        assert_eq!(variant_name(Species::Cat, 20), "black");
         // Only `VariantUtils.writeVariant` species save the name; a horse and
         // a llama save a packed `Variant` int, a fox and a mooshroom `Type`.
         for species in [Species::Wolf, Species::Cat, Species::Chicken, Species::Pig] {

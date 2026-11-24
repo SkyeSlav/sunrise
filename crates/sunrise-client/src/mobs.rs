@@ -1401,6 +1401,14 @@ pub struct Extra {
     /// holder; `None` before initialization resolves to `minecraft:classic`
     /// (or the registry's first entry).
     pub wolf_sound_variant: Option<crate::lan::data::RegistryRef<variants::WolfSoundVariant>>,
+    /// `Cat.DATA_VARIANT_ID`: the world's `minecraft:cat_variant` holder
+    /// (network id in the world's sync order); `None` before initialization
+    /// resolves to `minecraft:black` (or the registry's first entry).
+    pub cat_variant: Option<crate::lan::data::RegistryRef<variants::CatVariant>>,
+    /// `Cat.DATA_SOUND_VARIANT_ID`: the world's `minecraft:cat_sound_variant`
+    /// holder; `None` before initialization resolves to `minecraft:classic`
+    /// (or the registry's first entry).
+    pub cat_sound_variant: Option<crate::lan::data::RegistryRef<variants::CatSoundVariant>>,
     /// `Zombie.canBreakDoors`.
     pub can_break_doors: bool,
     /// A goat's `IsScreamingGoat` and the horns it lost (left, right).
@@ -5662,6 +5670,26 @@ impl Mob {
     ) -> Option<crate::lan::data::RegistryRef<variants::WolfSoundVariant>> {
         self.extra
             .wolf_sound_variant
+            .or_else(|| table.default_or_any("minecraft:classic"))
+    }
+    /// `Cat.getVariant` resolved against `table`: the stored holder, or
+    /// `VariantUtils.getDefaultOrAny(..., CatVariants.BLACK)` when unset.
+    pub fn cat_variant(
+        &self,
+        table: &variants::VariantTable<variants::CatVariant>,
+    ) -> Option<crate::lan::data::RegistryRef<variants::CatVariant>> {
+        self.extra
+            .cat_variant
+            .or_else(|| table.default_or_any("minecraft:black"))
+    }
+    /// `Cat.getSoundVariant` resolved against `table`: the stored holder, or
+    /// `CatSoundVariants.CLASSIC` (else any entry) when unset.
+    pub fn cat_sound_variant(
+        &self,
+        table: &variants::VariantTable<variants::CatSoundVariant>,
+    ) -> Option<crate::lan::data::RegistryRef<variants::CatSoundVariant>> {
+        self.extra
+            .cat_sound_variant
             .or_else(|| table.default_or_any("minecraft:classic"))
     }
 }

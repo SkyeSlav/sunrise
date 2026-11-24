@@ -5,7 +5,13 @@
 //! oracle's format.
 //!
 //! usage: finalize_spawn_fixture RESOURCES INPUT OUTPUT HALLOWEEN
-use std::{collections::HashMap, fmt::Write as _, fs, path::Path, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Write as _,
+    fs,
+    path::Path,
+    sync::Arc,
+};
 use sunrise_client::{
     assets::Assets,
     blocks::BlockFacts,
@@ -30,6 +36,7 @@ use sunrise_world::loot::PackOverlay;
 struct Level<'a> {
     types: &'a MobTypes,
     data: &'a MobData,
+    structure_tags: &'a HashMap<String, HashSet<String>>,
     registries: &'a SpawnRegistries,
     variants: &'a sunrise_client::mobs::variants::VariantTables,
     enchantments: &'a Enchantments,
@@ -71,6 +78,11 @@ impl FinalizeLevel for Level<'_> {
             }
             _ => Vec::new(),
         }
+    }
+    fn structure_tag(&self, tag: &str, structure: &str) -> bool {
+        self.structure_tags
+            .get(tag)
+            .is_some_and(|s| s.contains(structure))
     }
     fn moon_phase(&self, _pos: [i32; 3]) -> usize {
         self.phase
@@ -199,8 +211,18 @@ fn variant(
             v.push(format!("jockey={}", m.extra.jockey));
         }
         S::Cat => {
+            let var = m
+                .cat_variant(&variants.cat)
+                .and_then(|r| variants.cat.id(r))
+                .unwrap_or("minecraft:black")
+                .to_owned();
+            let snd = m
+                .cat_sound_variant(&variants.cat_sound)
+                .and_then(|r| variants.cat_sound.id(r))
+                .unwrap_or("minecraft:classic")
+                .to_owned();
             v.push(var);
-            v.push(named(&regs.cat_sound, m.extra.sound_variant));
+            v.push(snd);
         }
         S::Wolf => {
             let var = m
@@ -450,6 +472,9 @@ pub fn main() -> sunrise_client::Result<()> {
     let items = Items::tags_only(root, &PackOverlay::NONE, &defaults)?;
     let enchantments = Enchantments::load(root, &defaults)?;
     let types = MobTypes::load(root)?;
+    let structure_tags =
+        sunrise_client::items::load_tags(root, "worldgen/structure", &PackOverlay::NONE)
+            .unwrap_or_default();
     let registries = SpawnRegistries::load(root);
     let variants = sunrise_client::mobs::variants::VariantTables::load_prepared(root);
     let camel = &types.types["minecraft:camel_husk"];
@@ -496,6 +521,7 @@ pub fn main() -> sunrise_client::Result<()> {
         let mut level = Level {
             types: &types,
             data: &mob_data,
+            structure_tags: &structure_tags,
             registries: &registries,
             variants: &variants,
             enchantments: &enchantments,

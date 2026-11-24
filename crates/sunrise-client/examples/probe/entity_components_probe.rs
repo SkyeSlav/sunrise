@@ -77,13 +77,18 @@ pub fn main() -> Result<()> {
         let kind = c["type"].as_str().unwrap();
         let s = species(kind);
         let raw_variant = c["variant"].as_str().unwrap();
-        let components = if s == Species::Wolf {
+        let components = if matches!(s, Species::Wolf | Species::Cat) {
             let full = if raw_variant.contains(':') {
                 raw_variant.to_owned()
             } else {
                 format!("minecraft:{raw_variant}")
             };
-            std::iter::once(("minecraft:wolf/variant".to_owned(), full)).collect()
+            let key = if s == Species::Wolf {
+                "minecraft:wolf/variant"
+            } else {
+                "minecraft:cat/variant"
+            };
+            std::iter::once((key.to_owned(), full)).collect()
         } else {
             let variant = variant_index(s, raw_variant);
             species_variant_component(s, variant)

@@ -533,9 +533,21 @@ pub(super) fn mob_meta(
                 meta.push((18, serializer::BYTE, Value::Byte(flags)));
             }
             if kind == "minecraft:cat" {
-                let v = sunrise_client::mobs::tame::CAT_VARIANTS[(e.variant as usize).min(10)];
-                if let Some(v) = id("minecraft:cat_variant", v) {
+                // Cat.DATA_VARIANT_ID and DATA_SOUND_VARIANT_ID carry the world
+                // table's network id directly (`RegistryRef<K>`).
+                let variant_id = e
+                    .cat_variant
+                    .map(|r| r.network_id() as i32)
+                    .or_else(|| id("minecraft:cat_variant", "black"));
+                if let Some(v) = variant_id {
                     meta.push((20, serializer::CAT_VARIANT, Value::Id(v)));
+                }
+                let sound_id = e
+                    .cat_sound_variant
+                    .map(|r| r.network_id() as i32)
+                    .or_else(|| id("minecraft:cat_sound_variant", "classic"));
+                if let Some(v) = sound_id {
+                    meta.push((24, serializer::CAT_SOUND_VARIANT, Value::Id(v)));
                 }
             } else {
                 // Wolf.DATA_VARIANT_ID and DATA_SOUND_VARIANT_ID carry the world

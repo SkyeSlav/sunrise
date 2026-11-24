@@ -359,7 +359,7 @@ pub fn body_with_variants<'a>(
         ),
         S::Cat => (
             baby_or(m, "cat#main", "cat_baby#main"),
-            super::tame::cat_texture(m).into(),
+            super::tame::cat_texture(m, variants).into(),
         ),
         S::Frog => (
             "frog#main".into(),
@@ -2355,7 +2355,7 @@ fn render_selected(
         let uv = drawn.map(|(_, uv)| uv).or_else(|| {
             if avatar(m) {
                 atlas(&m.kind.texture)
-            } else if m.species() == Species::Wolf {
+            } else if matches!(m.species(), Species::Wolf | Species::Cat) {
                 atlas(crate::hud::MISSING_SPRITE)
             } else {
                 None

@@ -20,8 +20,6 @@ pub struct BiomeFacts {
     pub jungle: bool,
     /// Frog variant from `spawns_warm/cold_variant_frogs` (0 temperate, 1 warm, 2 cold).
     pub frog: u8,
-    /// `MoonBrightnessCheck(>= 0.9)`: the full moon.
-    pub full_moon: bool,
     /// `spawns_coral_variant_zombie_nautilus` (the warm ocean).
     pub coral_nautilus: bool,
     /// `#minecraft:spawns_white_rabbits` (`Rabbit.getRandomRabbitVariant`).
