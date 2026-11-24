@@ -366,6 +366,13 @@ pub struct AnvilCraftInputs<'a> {
     pub right: Option<&'a ItemStack>,
     /// The result stack that was taken.
     pub output: &'a ItemStack,
+    /// The levels the take charges: `AnvilMenu.cost` as `onTake` reads it, before it is set to 0. It is
+    /// the raw cost, also for a player who has infinite materials, whom `onTake` does not charge.
+    pub xp_cost: i32,
+    /// How many of the right stack the take uses up: `AnvilMenu.repairItemCountCost` as `onTake`
+    /// reads it. At 0 the whole right stack goes, unless the craft only renames; saturates at
+    /// `i32::MAX`.
+    pub material_cost: i32,
 }
 
 /// One of a menu's containers: the key a `menu_slot_rules` ask names its slot's container by

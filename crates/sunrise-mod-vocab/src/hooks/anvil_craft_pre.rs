@@ -2,7 +2,7 @@
 // catalog-order: 0238
 
 pub trait Hooks {
-    /// A player took an anvil's result at `pos` (`AnvilCraftEvent.Pre`, matching NeoForge `AnvilMenu.onTake`), before the levels are charged, the inputs used up and the anvil worn. `inputs` borrows the input stacks and result from before the take. Set `cancel` to return early before charging levels, consuming inputs, damaging the anvil or firing `anvil_craft_post`, without undoing the click's item move (the listener handles any post-processing itself).
+    /// A player took an anvil's result at `pos` (`AnvilCraftEvent.Pre`, matching NeoForge `AnvilMenu.onTake`), before the levels are charged, the inputs used up and the anvil worn. `inputs` borrows the input stacks and result from before the take, with the take's `xp_cost` (`AnvilMenu.cost`) and `material_cost` (`repairItemCountCost`). Set `cancel` to return early before charging levels, consuming inputs, damaging the anvil or firing `anvil_craft_post`, without undoing the click's item move (the listener handles any post-processing itself). A cancelling listener does the take itself, in vanilla's order: charges the player `xp_cost` levels unless they have infinite materials, takes `material_cost` from the right stack (the whole stack when `material_cost` is 0 and the craft is not only a rename, or when it holds no more than `material_cost`), empties the left stack, and wears the anvil (a 12% chance outside creative to chip, damage or break it).
     #[hook(
         target = "sunrise_client::game::native_hooks::base::Game<'_>::native_anvil_craft_pre",
         dispatch = "flat",
@@ -11,7 +11,7 @@ pub trait Hooks {
         out = "cancel",
         neoforge = "AnvilCraftEvent.Pre",
         cancellable = true,
-        version = 3
+        version = 4
     )]
     fn anvil_craft_pre(
         player: u128,

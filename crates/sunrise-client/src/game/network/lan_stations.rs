@@ -528,12 +528,17 @@ impl Game<'_> {
             let pre = mod_api::__private::listened(mod_api::HookId::AnvilCraftPre);
             let post = mod_api::__private::listened(mod_api::HookId::AnvilCraftPost);
             let snapshot = (pre || post).then(|| craft.try_into_api().ok()).flatten();
+            // AnvilMenu.cost and repairItemCountCost, as onTake reads them first.
+            let xp_cost = menu.data[0];
+            let material_cost = i32::try_from(menu.anvil.repair_count).unwrap_or(i32::MAX);
             let inputs = snapshot
                 .as_ref()
                 .map(|(left, right, output)| AnvilCraftInputs {
                     left: left.as_ref(),
                     right: right.as_ref(),
                     output,
+                    xp_cost,
+                    material_cost,
                 });
             let player = (pre || post)
                 .then(|| self.lan.as_ref()?.hub.guests.get(gi))
@@ -1328,6 +1333,8 @@ mod anvil_tests {
                 Some((Some("minecraft:iron_ingot"), 2, 0))
             );
             assert_eq!(stack(inputs.output), (Some("minecraft:iron_sword"), 1, 0));
+            // Two ingots repair the 80 damage, for 2 levels.
+            assert_eq!((inputs.xp_cost, inputs.material_cost), (2, 2));
             assert_eq!(self.0.load(Ordering::Relaxed), phase);
             self.0.fetch_add(1, Ordering::Relaxed);
         }
@@ -1359,6 +1366,142 @@ mod anvil_tests {
 
         fn anvil_craft_post(&self, _: &mut dyn ServerHost, event: &mut AnvilCraftPostEvent<'_>) {
             self.check_inputs(1, event.inputs);
+        }
+    }
+
+    /// Reads the take's costs in `anvil_craft_pre` and cancels when told to.
+    struct Costs {
+        cancel: bool,
+        seen: Arc<[AtomicI32; 2]>,
+    }
+
+    #[mod_api::__subscriptions]
+    impl Hooks for Costs {
+        fn anvil_craft_pre(
+            &self,
+            _: &mut dyn ServerHost,
+            event: &mut AnvilCraftPreEvent<'_>,
+        ) -> Flow {
+            self.seen[0].store(event.inputs.xp_cost, Ordering::Relaxed);
+            self.seen[1].store(event.inputs.material_cost, Ordering::Relaxed);
+            if self.cancel {
+                Flow::Cancel
+            } else {
+                Flow::Continue
+            }
+        }
+    }
+
+    /// A listener that cancels `anvil_craft_pre` and does the take itself from the costs it was given
+    /// (levels charged, the right stack used up, the left emptied, the anvil worn) leaves what
+    /// `AnvilMenu.onTake` leaves, the anvil chipped or not.
+    #[test]
+    #[ignore = "daily"]
+    fn a_cancelling_listener_taking_by_the_costs_matches_the_vanilla_take() {
+        const CONN: u32 = 12;
+        const POS: [i32; 3] = [1, 64, 1];
+        // The first float of a Java Random seeded 4096 is below the anvil's 0.12 wear chance;
+        // seed 0's is above it.
+        let run = |cancel: bool, seed: i64| {
+            let seen = Arc::new([AtomicI32::new(-1), AtomicI32::new(-1)]);
+            let mods = vec![ModEntry::new(
+                "anvil_costs",
+                Box::new(Costs {
+                    cancel,
+                    seen: seen.clone(),
+                }),
+            )];
+            let mut state = None;
+            mod_platform::testing::with_mods(mods.into(), || {
+                with_guests(|game| {
+                    game.world
+                        .chunks
+                        .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
+                    let [x, y, z] = POS;
+                    let anvil = game
+                        .pack
+                        .assets
+                        .registry
+                        .default_state("minecraft:anvil")
+                        .unwrap();
+                    game.world.set(x, y, z, anvil).unwrap();
+                    game.lan
+                        .as_mut()
+                        .unwrap()
+                        .hub
+                        .update_guest(CONN, |guest| guest.xp_level = 10)
+                        .unwrap();
+                    assert!(game.lan_open_station(CONN, &Station::new(StationKind::Anvil, POS)));
+                    assert!(game.lan_station_op(CONN, None, |menu, env| {
+                        let mut sword = ItemStack::new("minecraft:iron_sword", 1);
+                        sword.damage = 80;
+                        menu.set_slot(env, 0, Some(sword));
+                        menu.set_slot(env, 1, Some(ItemStack::new("minecraft:iron_ingot", 2)));
+                    }));
+                    let window = game.lan.as_ref().unwrap().menus[&CONN]
+                        .station
+                        .as_ref()
+                        .unwrap()
+                        .window;
+                    game.world.random.set_seed(seed);
+                    game.lan_guest_packet(
+                        CONN,
+                        play::Serverbound::ContainerClick(play::ContainerClick {
+                            container: window,
+                            state: 0,
+                            slot: 2,
+                            button: 0,
+                            input: 0,
+                            changed: Vec::new(),
+                            carried: None,
+                        }),
+                    );
+                    if cancel {
+                        let xp_cost = seen[0].load(Ordering::Relaxed);
+                        let material_cost = seen[1].load(Ordering::Relaxed) as u32;
+                        game.lan
+                            .as_mut()
+                            .unwrap()
+                            .hub
+                            .update_guest(CONN, |guest| guest.xp_level -= xp_cost)
+                            .unwrap();
+                        assert!(game.lan_station_op(CONN, None, |menu, env| {
+                            let right = menu
+                                .slot(1)
+                                .cloned()
+                                .filter(|stack| stack.count > material_cost)
+                                .map(|mut stack| {
+                                    stack.count -= material_cost;
+                                    stack
+                                });
+                            menu.set_slot(env, 1, right);
+                            menu.set_slot(env, 0, None);
+                        }));
+                        let _ = game.anvil_used(POS, false);
+                    }
+                    let host = game.lan.as_ref().unwrap();
+                    let menu = &host.menus[&CONN].station.as_ref().unwrap().menu;
+                    let guest = &host.hub.guests[0];
+                    let block = game.world.block(x, y, z);
+                    state = Some((
+                        (0..=2)
+                            .map(|slot| menu.slot(slot).cloned())
+                            .collect::<Vec<_>>(),
+                        guest.carried.clone(),
+                        guest.xp_level,
+                        game.res.facts().get(block).name.to_string(),
+                        seen[0].load(Ordering::Relaxed),
+                    ));
+                });
+            });
+            state.expect("the fixture ran")
+        };
+        for seed in [4096, 0] {
+            let vanilla = run(false, seed);
+            let by_listener = run(true, seed);
+            assert_eq!(vanilla.4, 2, "the listener saw the take's level cost");
+            assert_eq!(by_listener, vanilla, "seed {seed}");
+            assert_eq!(vanilla.2, 8);
         }
     }
 
