@@ -96,6 +96,7 @@ impl TryIntoEngine<()> for mod_api::BlockProperties {
             ignited_by_lava: self.ignited_by_lava,
             replaceable: self.replaceable,
             skip_same_block_faces: self.skip_same_block_faces,
+            spawn_rule: None,
             vegetation: self.vegetation,
         })
     }
