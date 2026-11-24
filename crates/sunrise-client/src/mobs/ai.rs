@@ -3491,27 +3491,8 @@ pub(super) fn play_ambient(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>
         Species::Enderman if m.ai.target.is_some() => "entity.enderman.scream",
         // Wolf.isAngry reads the persistent anger timer, not the current target.
         Species::Wolf => {
-            let kind = if super::tame::angry(m) {
-                "growl"
-            } else if m.random.next_int_bound(3).unwrap_or(1) == 0 {
-                if m.extra.tame && m.health < m.attrs.max_health / 2.0 {
-                    "whine"
-                } else {
-                    "pant"
-                }
-            } else {
-                "ambient"
-            };
-            if let Some(sound) = wolf_sound(m, w.side.variant_tables(), kind) {
-                m.voice_id(sound, events);
-                return;
-            }
-            match kind {
-                "growl" => "entity.wolf.growl",
-                "whine" => "entity.wolf.whine",
-                "pant" => "entity.wolf.pant",
-                _ => "entity.wolf.ambient",
-            }
+            play_wolf_ambient(m, w.side.variant_tables(), events);
+            return;
         }
         Species::Parrot => super::parrot::ambient(m, w),
         // Cat.getAmbientSound: purr in love, purreow one time in four, else ambient.
@@ -5530,6 +5511,35 @@ pub(super) fn wolf_sound<'a>(
     let variants = variants?;
     let r = m.wolf_sound_variant(&variants.wolf_sound)?;
     variants.wolf_sound.get(r)?.sound(m.is_baby(), kind)
+}
+/// `Wolf.getAmbientSound` + `Mob.playAmbientSound` over the world's sound-variant table.
+pub(super) fn play_wolf_ambient(
+    m: &mut Mob,
+    variants: Option<&super::variants::VariantTables>,
+    events: &mut Vec<MobEvent>,
+) {
+    let kind = if super::tame::angry(m) {
+        "growl"
+    } else if m.random.next_int_bound(3).unwrap_or(1) == 0 {
+        if m.extra.tame && m.health < m.attrs.max_health / 2.0 {
+            "whine"
+        } else {
+            "pant"
+        }
+    } else {
+        "ambient"
+    };
+    if let Some(sound) = wolf_sound(m, variants, kind) {
+        m.voice_id(sound, events);
+        return;
+    }
+    let fallback = match kind {
+        "growl" => "entity.wolf.growl",
+        "whine" => "entity.wolf.whine",
+        "pant" => "entity.wolf.pant",
+        _ => "entity.wolf.ambient",
+    };
+    m.voice(fallback, events);
 }
 /// `Animal.mobInteract` with its food in hand: an adult that can fall in
 /// love does, a baby grows up by a tenth, and either plays its eating sound
