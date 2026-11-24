@@ -162,6 +162,24 @@ impl Game<'_> {
             pending,
             format.has_skylight,
         );
+        // Heightmap.Types.MOTION_BLOCKING has stream ID 4; the last occurrence
+        // wins, as in ClientboundLevelChunkPacketData's EnumMap codec.
+        let words = p
+            .chunk
+            .heightmaps
+            .iter()
+            .rev()
+            .find_map(|(kind, words)| (*kind == 4).then_some(words.as_slice()));
+        // LevelChunk.replaceWithPacketData reads the map after the sections. Do it
+        // before either streaming replacement path so it doesn't depend on mesh changes.
+        if let Some(remote) = &self.remote {
+            chunk.adopt_packet_motion_blocking(
+                previous.map(Arc::as_ref),
+                [remote.dimension.min_y, remote.dimension.height],
+                words,
+                &self.pack.assets.properties,
+            );
+        }
         self.supersede_group_predictions(&chunk);
         // A column sent again while it is resident (a bulk edit): only what changed is lit and meshed again.
         if resident {

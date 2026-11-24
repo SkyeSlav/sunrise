@@ -369,6 +369,11 @@ pub(super) fn mob_meta(
     // A name taken away or hidden again is sent as none / false.
     defaults.push((2, serializer::OPTIONAL_COMPONENT, Value::OptText(None)));
     defaults.push((3, serializer::BOOLEAN, Value::Bool(false)));
+    // Entity.DATA_NO_GRAVITY (`setNoGravity`: `/data`, a summon's NoGravity, a mod).
+    if m.no_gravity {
+        meta.push((5, serializer::BOOLEAN, Value::Bool(true)));
+    }
+    defaults.push((5, serializer::BOOLEAN, Value::Bool(false)));
     // LivingEntity.DATA_LIVING_ENTITY_FLAGS: using an item 1, in the off
     // hand 2 (a skeleton draws its bow). Only startUsingItem and
     // stopUsingItem write them: a drinking witch's count is her own
@@ -1965,6 +1970,13 @@ impl Game<'_> {
             if self.tracked_entity_glowing(d.id) {
                 e.meta.push((0, serializer::BYTE, Value::Byte(0x40)));
             }
+            // Entity.DATA_NO_GRAVITY, which `setNoGravity` writes: also false by
+            // default, so a flag taken away goes out too.
+            if d.no_gravity {
+                e.meta.push((5, serializer::BOOLEAN, Value::Bool(true)));
+            }
+            e.defaults
+                .push((5, serializer::BOOLEAN, Value::Bool(false)));
             e.meta.push((8, serializer::ITEM_STACK, Value::Item(stack)));
         }
         for o in self.orbs.iter().filter(|o| o.id > after) {
@@ -7162,5 +7174,7 @@ mod merchant_packet_tests {
 
 #[cfg(test)]
 mod login_profile_tests;
+#[cfg(test)]
+mod no_gravity_sync_tests;
 #[cfg(test)]
 mod tracking_hook_tests;

@@ -100,10 +100,13 @@ use {
 
 pub(in crate::game) mod abilities;
 mod chat;
+#[cfg(test)]
+mod chat_audit_tests;
 mod chat_received;
 mod commands;
-pub(in crate::game) use chat::{ChatTrust, Decoration};
-use chat_received::QueuedChat;
+#[cfg(test)]
+pub(in crate::game) use chat::Decoration;
+use chat_received::{QueuedChat, QueuedChatKind};
 pub(in crate::game) mod client_level_tick;
 mod effect;
 mod entity_data_schema;
@@ -239,6 +242,8 @@ pub(super) struct PendingItem {
     pub(in crate::game) join: JoinSeq,
     pub(in crate::game) position: [f64; 3],
     velocity: Vec3,
+    /// Entity.DATA_NO_GRAVITY, if it came before the stack.
+    pub(in crate::game) no_gravity: bool,
 }
 
 /// `Entity.startRiding` / `removePassenger` for a `SetPassengers` packet: the
@@ -1519,6 +1524,7 @@ impl Game<'_> {
             join,
             position: [x, y, z],
             velocity,
+            no_gravity,
         }) = pending
         else {
             return;
@@ -1535,6 +1541,7 @@ impl Game<'_> {
             ItemEntity {
                 join,
                 random,
+                no_gravity,
                 ..ItemEntity::new(id as u32, stack, at, velocity, bob)
             },
         );
@@ -2427,6 +2434,8 @@ mod interaction_event_tests;
 
 #[cfg(test)]
 mod native_entity_tests;
+#[cfg(test)]
+mod no_gravity_data_tests;
 
 #[cfg(test)]
 mod camera_view_tests;

@@ -249,14 +249,7 @@ impl Arena {
         usage: wgpu::BufferUsages,
         page_bytes: u64,
     ) -> Self {
-        // Pages of `page_bytes`, or less where the device's buffers (or the
-        // storage bindings that read them whole) are smaller.
-        let limits = device.limits();
-        let mut bytes = limits.max_buffer_size.min(page_bytes);
-        if usage.contains(wgpu::BufferUsages::STORAGE) {
-            bytes = bytes.min(limits.max_storage_buffer_binding_size);
-        }
-        let page_limit = (bytes / stride) / GRAIN * GRAIN;
+        let page_limit = Self::page_limit(&device.limits(), stride, usage, page_bytes);
         let capacity = capacity.next_multiple_of(GRAIN).min(page_limit);
         Self {
             pages: Vec::new(),
@@ -273,6 +266,21 @@ impl Arena {
             #[cfg(test)]
             video_memory_full: false,
         }
+    }
+    /// Vertices of `stride` bytes a page of `usage` holds on a device of `limits`: pages of
+    /// `page_bytes`, or less where the device's buffers (or the storage bindings that read them
+    /// whole) are smaller.
+    pub(super) fn page_limit(
+        limits: &wgpu::Limits,
+        stride: u64,
+        usage: wgpu::BufferUsages,
+        page_bytes: u64,
+    ) -> u64 {
+        let mut bytes = limits.max_buffer_size.min(page_bytes);
+        if usage.contains(wgpu::BufferUsages::STORAGE) {
+            bytes = bytes.min(limits.max_storage_buffer_binding_size);
+        }
+        (bytes / stride) / GRAIN * GRAIN
     }
     /// A buffer of `capacity` vertices in video memory or, when that is full,
     /// `spill` allows it and so does the device, in system memory: Vulkan

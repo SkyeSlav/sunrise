@@ -5527,6 +5527,7 @@ dependencies = [
  "sunrise-core",
  "sunrise-render-core",
  "sunrise-shaders",
+ "tempfile",
  "wgpu",
 ]
 

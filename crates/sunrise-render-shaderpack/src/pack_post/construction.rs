@@ -465,7 +465,7 @@ pub type TerrainDraw<'a> = dyn FnMut(
     ) + 'a;
 
 /// An arena page's key, native vertices and optional source records (one per slot: a quad's at
-/// the slot that names it, `pack_atlas::PULL_FLAT`'s `hz_slot`).
+/// the slot that names it, `pack_atlas::PULL_CORNERS`'s `hz_slot`).
 pub type TerrainPage = (u32, wgpu::Buffer, Option<wgpu::Buffer>);
 
 /// Header (sprite-rect words, state count), sprite rectangles, then model/fluid ids.
@@ -559,10 +559,15 @@ pub struct Geometry<'a> {
     pub atlas: Option<wgpu::TextureView>,
     /// This draw uses the block atlas's surface identities.
     pub material_maps: bool,
-    /// `mc_Entity`'s table at set 3 (flat terrain).
+    /// Set 3's layout, for terrain that reads its arena page (`pages`): the quad sources and
+    /// `mc_Entity`'s table flat terrain reads, and the page itself. Filled in by `PackPost::new`.
     pub ids: Option<&'a wgpu::BindGroupLayout>,
     /// Back faces are culled, as for the game's own terrain.
     pub cull: bool,
+    /// Terrain whose program reads its arena page at set 3
+    /// (`pack_atlas::TerrainDraws::reads_pages`): its passes get set 3's layout (`ids`), and each
+    /// page's group before its draws.
+    pub pages: bool,
 }
 
 /// What a pack brings besides its programs: custom textures, images and storage buffers.
@@ -2067,11 +2072,12 @@ impl PackPost {
                 .fold(0, |m, n| m | 1 << n),
             jobs: defer.then(Default::default),
         };
-        // Flat terrain resolves each quad's source state against the current pack.
+        // Flat terrain resolves each quad's source state against the current pack; terrain that
+        // reads its pages per section binds them by the same layout.
         let block_ids = world
             .terrain
             .as_ref()
-            .filter(|g| g.table.is_some())
+            .filter(|g| g.pages)
             .map(|_| {
                 block_ids(device, queue, world.block_ids, world.sprite_rects).ok_or_else(|| {
                     Refused {
@@ -2227,6 +2233,7 @@ impl PackPost {
             material_maps: g.material_maps,
             ids: block_ids.as_ref().map(|i| &i.0),
             cull: g.cull,
+            pages: g.pages,
         });
         let split = post.terrain.is_some() && post.terrain_cutout.is_some();
         let (terrain_undrawn, water_undrawn) = (post.terrain_undrawn, post.water_undrawn);
@@ -2252,6 +2259,7 @@ impl PackPost {
             material_maps: g.material_maps,
             ids: g.ids,
             cull: false,
+            pages: g.pages,
         });
         let shadow_terrain = post
             .shadow
@@ -2284,6 +2292,7 @@ impl PackPost {
                 material_maps: false,
                 ids: None,
                 cull: false,
+                pages: false,
             };
             let basic = post.sky.and_then(|p| build(p, Some(&basic)));
             let textured = Geometry {
@@ -2294,6 +2303,7 @@ impl PackPost {
                 material_maps: false,
                 ids: None,
                 cull: false,
+                pages: false,
             };
             let textured = post.sky_textured.and_then(|p| build(p, Some(&textured)));
             Sky {
@@ -2337,6 +2347,7 @@ impl PackPost {
             material_maps: false,
             ids: None,
             cull: false,
+            pages: false,
         });
         // Programs drawing the shared atlas's geometry read its paged maps (`pack_entities::inputs`).
         let paged = |pass: Option<Pass>| {
@@ -2366,6 +2377,7 @@ impl PackPost {
                         material_maps: g.material_maps,
                         ids: g.ids,
                         cull: false,
+                        pages: g.pages,
                     };
                     paged(build(p, Some(&decal)))
                 } else {
@@ -2401,6 +2413,7 @@ impl PackPost {
             material_maps: false,
             ids: None,
             cull: false,
+            pages: false,
         });
         let hides_clouds = post.clouds_off || post.clouds.is_some() && cloud_geometry.is_some();
         // Rain and snow test depth but never write it: Iris 1.11.7 left none of either in
@@ -2413,6 +2426,7 @@ impl PackPost {
             material_maps: false,
             ids: None,
             cull: false,
+            pages: false,
         });
         let hand_geometry = world
             .hand
@@ -2426,6 +2440,7 @@ impl PackPost {
                 material_maps: false,
                 ids: None,
                 cull: false,
+                pages: false,
             };
             paged(build(p, Some(&g))).map(|pass| (pass, geometry))
         });
@@ -2440,6 +2455,7 @@ impl PackPost {
                 material_maps: false,
                 ids: None,
                 cull: false,
+                pages: false,
             };
             paged(build(p, Some(&g)))
         });
@@ -2468,6 +2484,7 @@ impl PackPost {
             material_maps: false,
             ids: None,
             cull: false,
+            pages: false,
         };
         let lines = post.lines.and_then(|p| build(p, Some(&line_geometry)));
         // Developers' aid: `SUNRISE_SHADER_PACK_SKIP=composite,final` leaves programs out.

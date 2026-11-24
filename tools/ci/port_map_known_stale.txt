@@ -30,8 +30,6 @@ tools/port_map/client-002.tsv	ClientPacketListener.handleOpenScreen	crates/sunri
 tools/port_map/client-002.tsv	ClientPacketListener.isAcceptingMessages	crates/sunrise-client/src/game/network/remote/mod.rs::Game::send_chat
 tools/port_map/client-002.tsv	MultiPlayerGameMode.handleCreativeModeItemDrop	crates/sunrise-client/src/game/network/remote/mod.rs::Game::remote_creative_drop
 tools/port_map/client-003.tsv	BlockStatePredictionHandler.updateKnownServerState	crates/sunrise-client/src/game/network/remote/mod.rs::Game::server_block
-tools/port_map/client-003.tsv	ChatListener.handleMessage	crates/sunrise-client/src/game/network/remote/mod.rs::handle_player_chat
-tools/port_map/client-003.tsv	ChatListener.showMessageToPlayer	crates/sunrise-client/src/game/network/remote/mod.rs::Game::chat_line
 tools/port_map/client-004.tsv	HumanoidMobRenderer.getEquipmentIfRenderable	crates/sunrise-client/src/mobs/render.rs::humanoid_armor
 tools/port_map/client-005.tsv	HumanoidArmorLayer.getArmorModel	crates/sunrise-client/src/mobs/render.rs::humanoid_armor
 tools/port_map/client-005.tsv	HumanoidArmorLayer.renderArmorPiece	crates/sunrise-client/src/mobs/render.rs::humanoid_armor

@@ -6,7 +6,7 @@ use std::hash::Hasher;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 
-use sunrise_render_shaderpack::pack_atlas::{PackAtlas, game_inputs};
+use sunrise_render_shaderpack::pack_atlas::{PackAtlas, TerrainDraws, game_inputs};
 use sunrise_shaders::{Macros, Pack, Post, PostProgram, Properties};
 
 use crate::cases::{self, DIMENSIONS};
@@ -88,8 +88,13 @@ pub fn load(dir: &Path, request: &Request) -> Post {
 /// atlas's size only reaches the GLSL as constants. `flat` picks the game's flat draws; the
 /// pack's `separateAo` sets the terrain colour's alpha, as the game sets it.
 pub fn inputs(properties: &Properties, flat: bool) -> sunrise_shaders::GameInputs {
-    let terrain =
-        PackAtlas::terrain_inputs_sized([1024, 1024], 64, 16, properties.separate_ao(), flat);
+    let terrain = PackAtlas::terrain_inputs_sized(
+        [1024, 1024],
+        64,
+        16,
+        properties.separate_ao(),
+        TerrainDraws::flat(flat),
+    );
     sunrise_shaders::GameInputs {
         // No device: the largest stage interface limits real devices have, not wgpu's defaults.
         interface_limits: sunrise_shaders::DEVICELESS_INTERFACE_LIMITS,

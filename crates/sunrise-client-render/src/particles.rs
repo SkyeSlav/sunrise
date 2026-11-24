@@ -1533,9 +1533,15 @@ impl ParticleEngine {
     pub fn vibration(&mut self, from: [f64; 3], to: [f64; 3], ticks: i32) {
         let mut q = Self::vibration_particle(from, to, ticks);
         q.set = self.set_of(ParticleType::Vibration);
-        self.pending.push(PendingParticle::Ordinary(q));
+        self.push(q);
     }
     /// `ParticleEngine.add` (via `particlesToAdd`, applied on the next tick).
+    ///
+    /// The engine's ordinary queue: every ordinary particle joins here (`add`, `add_with`,
+    /// `create`, block breaking, vibrations, firework sparks and their trails). A native mod takes a
+    /// particle here through `[[native.mixin]]`, as a Java mod does with a mixin on
+    /// `ParticleEngine.add`; a cancelled `HEAD` drops it.
+    #[sunrise_mod_api_macros::replaceable]
     pub fn push(&mut self, particle: Particle) {
         self.pending.push(PendingParticle::Ordinary(particle));
     }
@@ -3644,7 +3650,7 @@ impl ParticleEngine {
         });
         let [r, g, b] = rgb(c);
         let p = self.spark(s.at, v, [r, g, b, 0.99], fade, e.trail, e.twinkle);
-        self.pending.push(PendingParticle::Ordinary(p));
+        self.push(p);
     }
     fn spark_ball(
         &mut self,

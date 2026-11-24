@@ -68,6 +68,11 @@ impl Game<'_> {
     /// engine doesn't model sends the clicks unpredicted. False when the batch
     /// cannot be submitted.
     pub(in crate::game) fn remote_menu_ops(&mut self, ops: &[(Option<usize>, i32, Input)]) -> bool {
+        // A displayed native screen whose server menu was already closed stays
+        // visible until removed, but cannot submit clicks to window 0.
+        if self.shown_native_screen().is_some() && self.active_native_screen().is_none() {
+            return false;
+        }
         // CrafterScreen.slotClicked: a slot toggle goes out before the click.
         if let [(Some(slot), button, input)] = ops {
             self.crafter_slot_clicked(*slot, *button, *input);

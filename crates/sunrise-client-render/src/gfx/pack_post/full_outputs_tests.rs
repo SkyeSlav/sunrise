@@ -90,6 +90,7 @@ fn a_shadow_program_with_every_output_drops_the_boats_patches_not_its_water() {
             atlas: None,
             ids: None,
             cull: true,
+            pages: false,
         })
     };
     let outputs = gpu.device.limits().max_inter_stage_shader_variables;

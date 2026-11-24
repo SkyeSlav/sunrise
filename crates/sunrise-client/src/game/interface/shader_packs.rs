@@ -437,6 +437,15 @@ impl Game<'_> {
                                 .collect(),
                         );
                         let folder = dimension_folder_named(&pack, self.dim.id(), dimension);
+                        // Its terrain programs read the section arena's pages where they still
+                        // fit the vertex stage with them.
+                        renderer.set_pack_terrain_bindings(
+                            sunrise_client::gfx::pack_atlas::TerrainBindings::of(
+                                &pack,
+                                &properties,
+                                &folder,
+                            ),
+                        );
                         let inputs = renderer.pack_inputs();
                         let mut post = load_post(&pack, &folder, &properties, &macros, &inputs);
                         // Textures that name one of the game's: from the resource packs over
