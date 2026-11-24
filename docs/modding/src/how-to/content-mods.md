@@ -27,7 +27,7 @@ cargo sunrise-mod check target/sunrise-mod/my_mod.smod   # the registry's checks
   works after one command; your editor needs that first command too. `.sunrise/` is in the template's `.gitignore`
   and is never packed. The fetch checks Sunrise's signature on the release and every file against its `sdk.json`;
   `SUNRISE_SDK_BASE` (a URL or a folder) reads the releases from a mirror instead. When that Nightly has no SDK,
-  `new` says so and asks for `--sunrise`. `update` repins a native mod the same way
+  `new` asks for `--sunrise`. `pin [<build>]` moves a native mod to another build (the current Nightly by default)
   ([the SDK in a mod project](../reference/sdk/03-in-a-project.md)). Its root `impl Hooks` uses
   `#[mod_api::sunrise_mod]`. Compile it with `cargo sunrise-mod build`
   ([writing hooks](../start/writing-hooks.md)). Any other `--template` is refused.

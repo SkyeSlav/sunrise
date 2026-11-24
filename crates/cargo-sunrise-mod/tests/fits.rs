@@ -1,11 +1,11 @@
-//! `fits` and `update` on the game code a mod declares, judged by each build's build data, against
-//! offline SDKs: no downloads.
+//! `check --build` and `pin` against offline SDKs: no downloads.
 #[path = "support/sdk.rs"]
 mod sdk_fixture;
 
+use mod_surface::uses::{PLAIN_SCHEMA, USES_FILE, UsesTable};
 use sdk_fixture::OfflineSdk;
 use std::{collections::BTreeSet, fs, path::PathBuf, process::Output};
-use sunrise_mod_package::manifest::MANIFEST;
+use sunrise_mod_package::{Manifest, Package, manifest::MANIFEST, sdk};
 
 const OLD: &str = "0123456789abcdef0123456789abcdef01234567";
 const NEW: &str = "89abcdef0123456789abcdef0123456789abcdef";
@@ -30,7 +30,7 @@ impl Project {
     fn new(name: &str, internals: &[&str]) -> Self {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/i3-d/tests")
-            .join(format!("fits-{name}-{}", std::process::id()));
+            .join(format!("fit-check-{name}-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let declared = internals
             .iter()
@@ -133,22 +133,22 @@ fn assert_build_order(stdout: &str) {
 
 #[test]
 #[ignore = "daily"]
-fn fits_judges_declared_game_code_by_each_builds_data() {
+fn check_with_builds_judges_declared_game_code_by_each_builds_data() {
     let steady = Project::new("steady", &[STEADY]);
-    assert_answer(steady.run(&["fits", "--build", NEW]), 0, &[]);
+    assert_answer(steady.run(&["check", "--build", NEW]), 0, &[]);
     let stdout = assert_answer(
-        steady.run(&["fits", "--build", OLD, "--build", NEW]),
+        steady.run(&["check", "--build", OLD, "--build", NEW]),
         0,
         &[],
     );
     assert_build_order(&stdout);
 
     let moved = Project::new("moved", &[STEADY, RESHAPED, DROPPED]);
-    assert_answer(moved.run(&["fits", "--build", NEW]), 1, CHANGED_IDS);
+    assert_answer(moved.run(&["check", "--build", NEW]), 1, CHANGED_IDS);
     // The build it was made for still fits; one build that does not decides the answer.
-    assert_answer(moved.run(&["fits", "--build", OLD]), 0, &[]);
+    assert_answer(moved.run(&["check", "--build", OLD]), 0, &[]);
     let stdout = assert_answer(
-        moved.run(&["fits", "--build", OLD, "--build", NEW]),
+        moved.run(&["check", "--build", OLD, "--build", NEW]),
         1,
         CHANGED_IDS,
     );
@@ -156,14 +156,77 @@ fn fits_judges_declared_game_code_by_each_builds_data() {
 
     // Neither build can fingerprint the method, so the answer is unknown, not a fit.
     let bodiless = Project::new("bodiless", &[STEADY, BODILESS]);
-    assert_answer(bodiless.run(&["fits", "--build", NEW]), 2, &["reach"]);
+    assert_answer(bodiless.run(&["check", "--build", NEW]), 2, &["reach"]);
 }
 
 #[test]
 #[ignore = "daily"]
-fn update_names_the_declared_game_code_the_new_build_changed() {
-    let moved = Project::new("update-moved", &[STEADY, RESHAPED, DROPPED]);
-    assert_answer(moved.run(&["update", "--sunrise", NEW]), 0, CHANGED_IDS);
-    let steady = Project::new("update-steady", &[STEADY]);
-    assert_answer(steady.run(&["update", "--sunrise", NEW]), 0, &[]);
+fn check_with_a_file_and_build_reads_the_packages_uses_list() {
+    let project = Project::new("package", &[]);
+    let manifest = fs::read_to_string(project.dir.join(MANIFEST)).unwrap();
+    // Make the project uncheckable so accidentally using it instead of the package will fail.
+    fs::remove_file(project.dir.join(MANIFEST)).unwrap();
+    let uses = serde_json::to_vec(&UsesTable {
+        schema: PLAIN_SCHEMA,
+        made_for: OLD.into(),
+        entries: vec![],
+    })
+    .unwrap();
+    let mut files: Vec<(&str, &[u8])> = vec![
+        (
+            "Cargo.toml",
+            b"[package]\nname = 'example'\nversion = '0.1.0'\n",
+        ),
+        ("src/lib.rs", b""),
+        (USES_FILE, &uses),
+    ];
+    let file = "example.smod";
+    fs::write(
+        project.dir.join(file),
+        Package::write_files(&manifest, &files).unwrap(),
+    )
+    .unwrap();
+    let report = assert_answer(project.run(&["check", file, "--build", NEW]), 0, &[]);
+    assert!(
+        report.lines().any(|line| line == "89abcde  fits"),
+        "{report}"
+    );
+
+    files.pop();
+    fs::write(
+        project.dir.join(file),
+        Package::write_files(&manifest, &files).unwrap(),
+    )
+    .unwrap();
+    let report = assert_answer(project.run(&["check", file, "--build", NEW]), 2, &[]);
+    assert!(report.contains("no list of what it uses"), "{report}");
+}
+
+#[test]
+#[ignore = "daily"]
+fn pin_names_the_declared_game_code_the_new_build_changed() {
+    let moved = Project::new("pin-moved", &[STEADY, RESHAPED, DROPPED]);
+    assert_answer(moved.run(&["pin", NEW]), 0, CHANGED_IDS);
+    let steady = Project::new("pin-steady", &[STEADY]);
+    assert_answer(steady.run(&["pin", NEW]), 0, &[]);
+}
+
+#[test]
+#[ignore = "daily"]
+fn pin_without_a_build_moves_to_the_current_nightly() {
+    let project = Project::new("pin-nightly", &[]);
+    let releases = project.dir.join("releases");
+    let nightly = releases.join(sunrise_release_sign::NIGHTLY);
+    fs::create_dir(&nightly).unwrap();
+    fs::copy(
+        releases.join(format!("sdk-{NEW}")).join(sdk::INDEX),
+        nightly.join(sdk::INDEX),
+    )
+    .unwrap();
+    assert_answer(project.run(&["pin"]), 0, &[]);
+    let manifest = fs::read_to_string(project.dir.join(MANIFEST)).unwrap();
+    assert_eq!(
+        Manifest::parse(&manifest).unwrap().native.unwrap().sunrise,
+        NEW
+    );
 }

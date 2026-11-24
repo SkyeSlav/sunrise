@@ -19,7 +19,7 @@ Choose the walkthrough under `docs/modding/src/` for the kind of mod you are mak
 
 `cargo sunrise-mod new` generates the project and `sunrise-mod.toml`. Edit declared fields such as the name,
 description and dependencies as needed (`reference/manifest.md`); do not write the manifest from scratch
-or change generated pins by hand. For code mods, `cargo sunrise-mod update` changes the pins.
+or change generated pins by hand. For code mods, `cargo sunrise-mod pin` changes the pins.
 
 - `cargo sunrise-mod help all` lists the commands; `reference/sdk/05-commands.md` describes the SDK commands.
 - Find a hook with `cargo sunrise-mod hooks <words>`, never by guessing a name.

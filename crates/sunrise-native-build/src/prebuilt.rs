@@ -459,7 +459,7 @@ pub fn library(deps: &Path, krate: &str) -> Result<PathBuf, String> {
     match candidates.as_slice() {
         [path] => Ok(path.clone()),
         [] => Err(trf(
-            "The prebuilt game has no {crate}, a library this tool needs: the SDK it comes from is older than the tool. Pin a current build (`cargo sunrise-mod update --sunrise nightly`), or build with the tool in that SDK's own release (`sdk-<build>/tool-<target>.tar.xz`).",
+            "The prebuilt game has no {crate}, a library this tool needs: the SDK it comes from is older than the tool. Pin a current build (`cargo sunrise-mod pin nightly`), or build with the tool in that SDK's own release (`sdk-<build>/tool-<target>.tar.xz`).",
             &[("crate", krate)],
         )),
         _ => Err(facade_refused(krate)),

@@ -8,7 +8,7 @@ use sunrise_mod_package::{Manifest, manifest::MANIFEST};
 
 const OLD: &str = "0123456789abcdef0123456789abcdef01234567";
 const NEW: &str = "89abcdef0123456789abcdef0123456789abcdef";
-/// The manifest's pinned tool, before any update.
+/// The manifest's pinned tool, before repinning.
 const MANIFEST_MIXINS: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 /// The tool `NEW`'s `sdk.json` names.
 const NEW_MIXINS: &str = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c";
@@ -180,12 +180,12 @@ fn internals_add_refuses_missing_gated_and_shape_only_paths_without_partial_edit
 
 #[test]
 #[ignore = "daily"]
-fn update_diffs_signatures_refreshes_present_hashes_and_keeps_missing_declarations() {
+fn pin_diffs_signatures_refreshes_present_hashes_and_keeps_missing_declarations() {
     let project = Project::new(
-        "update",
+        "pin",
         "internals = [\n  { path = 'sunrise_client::game::Game', hash = '1111' }, # stable\n  { path = \"sunrise_client::game::Game<'_>::reach\" }, # reach\n  { path = 'sunrise_client::game::Game::creative', hash = '3333' }, # removed\n  { path = 'sunrise_client::game::conditional', hash = '8888' }, # gated now\n  { path = 'sunrise_client::game::restored', hash = '0000' }, # back again\n]\n",
     );
-    let report = success(&project.run(&["update", "--sunrise", NEW]));
+    let report = success(&project.run(&["pin", NEW]));
     assert!(
         report.contains("unchanged: sunrise_client::game::Game\n"),
         "{report}"
@@ -206,7 +206,7 @@ fn update_diffs_signatures_refreshes_present_hashes_and_keeps_missing_declaratio
     let manifest = project.manifest();
     let native = manifest.native.unwrap();
     assert_eq!(native.sunrise, NEW);
-    // An explicit pin of the tool is the mod's own choice: `update` leaves it.
+    // An explicit pin of the tool is the mod's own choice: `pin` leaves it.
     assert_eq!(native.mixins.as_deref(), Some(MANIFEST_MIXINS));
     assert_eq!(
         manifest
@@ -254,7 +254,7 @@ fn table_declarations_keep_their_format_when_adding_and_refreshing() {
     );
     assert!(project.text().contains("[[internals]] # the game"));
     assert!(project.text().contains("# fingerprint"));
-    let report = success(&project.run(&["update", "--sunrise", NEW]));
+    let report = success(&project.run(&["pin", NEW]));
     assert!(report.contains("unchanged: sunrise_client::game::Game"));
     assert_eq!(project.manifest().internals.len(), 2);
     assert_eq!(
@@ -266,7 +266,7 @@ fn table_declarations_keep_their_format_when_adding_and_refreshing() {
 
 #[test]
 #[ignore = "daily"]
-fn internals_add_requires_kind_for_ambiguous_paths_and_update_keeps_it() {
+fn internals_add_requires_kind_for_ambiguous_paths_and_pin_keeps_it() {
     let path = "sunrise_client::game::Round::listening";
     for kind in ["fn", "method"] {
         for (form, declarations) in [
@@ -306,7 +306,7 @@ fn internals_add_requires_kind_for_ambiguous_paths_and_update_keeps_it() {
             let before = project.text();
             success(&project.run(&["internals", "add", "--kind", kind, path]));
             assert_eq!(project.text(), before);
-            let report = success(&project.run(&["update", "--sunrise", NEW]));
+            let report = success(&project.run(&["pin", NEW]));
             assert!(
                 report.contains("fn listening(&self) -> bool → fn listening(&mut self) -> bool"),
                 "{report}"
@@ -331,7 +331,7 @@ fn unreadable_new_catalog_does_not_move_either_pin_or_hashes() {
     project.catalog(NEW, "not JSON");
     let manifest = project.text();
     let cargo = fs::read_to_string(project.dir.join("Cargo.toml")).unwrap();
-    let output = project.run(&["update", "--sunrise", NEW]);
+    let output = project.run(&["pin", NEW]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("internals.json"));
     assert_eq!(project.text(), manifest);
@@ -343,18 +343,18 @@ fn unreadable_new_catalog_does_not_move_either_pin_or_hashes() {
 
 #[test]
 #[ignore = "daily"]
-fn update_refuses_a_malformed_mixins_revision_and_changes_no_file() {
+fn pin_refuses_a_malformed_mixins_revision_and_changes_no_file() {
     let project = Project::new(
         "bad-mixins",
         "internals = [{ path = 'sunrise_client::game::Game', hash = 'stale' }]\n",
     );
     for rev in ["main", &NEW_MIXINS.to_uppercase(), &NEW_MIXINS[1..]] {
         project.sdk.release(NEW, rev);
-        // Force update to read the replacement signed release instead of the cached valid SDK.
+        // Force pin to read the replacement signed release instead of the cached valid SDK.
         fs::remove_dir_all(project.dir.join(".sunrise/cache").join(NEW)).unwrap();
         let manifest = fs::read(project.dir.join(MANIFEST)).unwrap();
         let cargo = fs::read(project.dir.join("Cargo.toml")).unwrap();
-        let output = project.run(&["update", "--sunrise", NEW]);
+        let output = project.run(&["pin", NEW]);
         assert!(!output.status.success(), "{rev}");
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(error.contains("mixins revision"), "{rev}: {error}");

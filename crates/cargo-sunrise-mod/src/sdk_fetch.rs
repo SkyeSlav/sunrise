@@ -168,7 +168,7 @@ pub(crate) fn resolve(
     if nightly || stable || build.is_some() {
         let missing = |e: String| {
             format!(
-                "Release {text} has no SDK ({e}). Pin a build that has one: --sunrise <full sha>"
+                "Release {text} has no SDK ({e}). Choose a build that has one, using its full SHA."
             )
         };
         let bytes = base.read(text, sdk::INDEX, SMALL).map_err(missing)?;

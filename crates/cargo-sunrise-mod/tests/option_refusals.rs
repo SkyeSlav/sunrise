@@ -15,7 +15,7 @@ fn tool(dir: &Path, args: &[&str]) -> Output {
 fn refused_before_any_work(dir: &Path, output: &Output, option: &str) {
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success());
-    assert!(error.contains(option), "{error}");
+    assert!(error.lines().next().unwrap().contains(option), "{error}");
     assert!(!dir.join(".sunrise").exists());
     assert!(!dir.join("target").exists());
 }
@@ -28,4 +28,16 @@ fn update_lock_is_refused_for_a_content_mod() {
     let content = root.path().join("ruby");
     let output = tool(&content, &["build", "--update-lock"]);
     refused_before_any_work(&content, &output, "--update-lock");
+}
+
+#[test]
+#[ignore = "daily"]
+fn check_fit_refuses_project_options_before_fetching_an_sdk() {
+    let root = tempfile::tempdir().unwrap();
+    for (option, extra) in [("--uses", vec![]), ("--with", vec!["library"])] {
+        let mut args = vec!["check", "--build", "nightly", option];
+        args.extend(extra);
+        let output = tool(root.path(), &args);
+        refused_before_any_work(root.path(), &output, option);
+    }
 }

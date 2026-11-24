@@ -1,6 +1,6 @@
-//! The commands that read the SDK's data (design §4, design-fit.md 10.2): `check` of a mod
-//! folder, `hooks <text>`, `sdk diff <a> <b>`, `fits` and the report `update` prints before it
-//! repins. Each reads the pinned build's `surface.json` from `.sunrise/sdk/`, or another build's
+//! Commands that read SDK data: `check` of a mod folder, `check --build <name>`, `hooks <text>`,
+//! `sdk diff <a> <b>`, and the report `pin` prints before it repins. Each reads the pinned build's
+//! `surface.json` from `.sunrise/sdk/`, or another build's
 //! small files through [`crate::sdk_fetch::fetch_build`]; none links the generator's catalog.
 use crate::options::Options;
 use crate::sdk_fetch::{PinnedSdk, ensure_sdk, fetch_build, fetch_pinned};
@@ -222,7 +222,7 @@ fn diff_text(old: &Surface, new: &Surface, new_name: &str, notes: &[ChangeNote])
     diff.to_text()
 }
 
-/// What `fits` judges: the package's or the folder's table, or why the question does not apply.
+/// What a fit check judges: the package's or the folder's table, or why the question does not apply.
 pub(crate) enum Subject {
     Table {
         name: String,
@@ -269,7 +269,7 @@ fn package_uses(path: &Path, package: Package) -> Result<Subject, String> {
     let Some(bytes) = Package::entry(path, USES_FILE, MAX_USES)? else {
         return Ok(Subject::NotApplicable {
             message: format!(
-                "{name} pins build {pin} and its package carries no list of what it uses, so it can't be shown to fit another build. Pack it with `cargo sunrise-mod build`, which writes the list when the mod's code can be read, or repin it with `cargo sunrise-mod update --sunrise <build>` first."
+                "{name} pins build {pin} and its package carries no list of what it uses, so it can't be shown to fit another build. Pack it with `cargo sunrise-mod build`, which writes the list when the mod's code can be read, or repin it with `cargo sunrise-mod pin <build>` first."
             ),
             reason: "no uses list",
         });
@@ -323,18 +323,17 @@ fn folder_subject(entry: ChildEntry, root: &Path) -> Result<Subject, String> {
 }
 
 fn content_text(name: &str) -> String {
-    format!("{name} is a content mod, with no code to check against a build; `fits` doesn't apply.")
+    format!("{name} is a content mod, with no code to check against a build.")
 }
 
 fn exact_text(name: &str, why: &str) -> String {
-    format!("{name} is made for exactly one build ({why}), so `fits` doesn't apply.")
+    format!("{name} is made for exactly one build ({why}), so the fit check doesn't apply.")
 }
 
-/// `fits [<file.smod>] [--build <name>]…`: one line per build (the current Nightly unless
-/// `--build` names others) saying whether the mod fits it. Exits 0 when every build fits, 1 when
-/// one does not, and 2 when the question cannot be answered or does not apply.
-pub(crate) fn fits(entry: ChildEntry, args: &[String]) -> ExitCode {
-    match fits_lines(entry, args) {
+/// `check [<file.smod>] --build <name> [--build <name>]…`: reports fit for each build. Exits 0
+/// when every build fits, 1 when one does not, and 2 when it cannot tell or does not apply.
+pub(crate) fn check_fit(entry: ChildEntry, package: Option<&Path>, builds: &[&str]) -> ExitCode {
+    match fit_lines(entry, package, builds) {
         Ok(Answer::Fits) => ExitCode::SUCCESS,
         Ok(Answer::DoesNotFit) => ExitCode::from(1),
         Ok(Answer::Unknown) => ExitCode::from(2),
@@ -350,7 +349,7 @@ pub(crate) fn fits(entry: ChildEntry, args: &[String]) -> ExitCode {
     }
 }
 
-/// What `fits` answered, once its lines are printed.
+/// The result of a fit check, once its lines are printed.
 enum Answer {
     Fits,
     DoesNotFit,
@@ -360,20 +359,7 @@ enum Answer {
     NotApplicable(String),
 }
 
-/// `fits`'s package and builds, as given.
-fn fits_args(args: &[String]) -> Result<(Option<&Path>, Vec<&str>), String> {
-    let mut options = Options::new("fits", args, &["--build"]);
-    let builds = options.values("--build")?;
-    let package = options.at_most_one()?.map(Path::new);
-    options.finish()?;
-    Ok((package, builds))
-}
-
-fn fits_lines(entry: ChildEntry, args: &[String]) -> Result<Answer, String> {
-    let (package, mut builds) = fits_args(args)?;
-    if builds.is_empty() {
-        builds.push("nightly");
-    }
+fn fit_lines(entry: ChildEntry, package: Option<&Path>, builds: &[&str]) -> Result<Answer, String> {
     let project = Path::new(".");
     let subject = match package {
         Some(path) => package_subject(path)?.uses?,
@@ -612,13 +598,9 @@ pub(crate) fn closest<'s>(old: &Surface, new: &'s Surface, id: &str) -> Option<R
 }
 
 /// What moving the pin from the build the mod is pinned to to `to` (the current Nightly when
-/// `None`) breaks in this mod, item by item with the lines that use it; printed before `update`
+/// `None`) breaks in this mod, item by item with the lines that use it; printed before `pin`
 /// repins. A mod made for exactly one build is only named.
-pub(crate) fn update_report(
-    entry: ChildEntry,
-    root: &Path,
-    to: Option<&str>,
-) -> Result<(), String> {
+pub(crate) fn pin_report(entry: ChildEntry, root: &Path, to: Option<&str>) -> Result<(), String> {
     let parsed = crate::read_manifest(root)?;
     let name = &parsed.name;
     let exact_line = || {
@@ -707,7 +689,7 @@ fn migrate_notes(notes: &[ChangeNote]) -> std::collections::BTreeMap<String, Str
     out
 }
 
-/// The text of [`update_report`].
+/// The text of [`pin_report`].
 fn report(
     name: &str,
     old: &PinnedSdk,
@@ -936,7 +918,7 @@ mod tests {
     }
 
     #[test]
-    fn a_content_mods_update_report_does_not_access_the_sdk() {
+    fn a_content_mods_pin_report_does_not_access_the_sdk() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join(MANIFEST),
@@ -944,14 +926,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            update_report(mod_surface::child::child_entry(), dir.path(), None),
+            pin_report(mod_surface::child::child_entry(), dir.path(), None),
             Ok(())
         );
         assert!(!dir.path().join(".sunrise").exists());
     }
 
     #[test]
-    fn the_update_report_takes_each_ids_migrate_line() {
+    fn the_pin_report_takes_each_ids_migrate_line() {
         let notes = migrate_notes(&[
             note(
                 &["method:ServerHost::give_item"],
@@ -1016,29 +998,13 @@ mod tests {
     }
 
     #[test]
-    fn hooks_fits_and_check_read_their_options_and_refuse_others() {
+    fn hooks_reads_its_options_and_refuses_others() {
         assert_eq!(
             hooks_args(&argv("block break --all")),
             Ok(("block break".into(), true))
         );
-        let build = argv("pack.smod --build a --build b");
-        assert_eq!(
-            fits_args(&build),
-            Ok((Some(Path::new("pack.smod")), vec!["a", "b"]))
-        );
-        for (error, option) in [
-            (hooks_args(&argv("spawn --al")).unwrap_err(), "--al"),
-            (
-                fits_args(&argv("--bild a")).map(drop).unwrap_err(),
-                "--bild",
-            ),
-            (
-                fits_args(&argv("a.smod b.smod")).map(drop).unwrap_err(),
-                "b.smod",
-            ),
-        ] {
-            assert!(error.contains(option), "{error}");
-        }
+        let error = hooks_args(&argv("spawn --al")).unwrap_err();
+        assert!(error.contains("--al"), "{error}");
         // The usage below the diagnostic has dashes of its own: the diagnostic names the separator.
         let error = hooks_args(&argv("block -- break")).unwrap_err();
         let refused = error.lines().next().unwrap().split(' ').next_back();

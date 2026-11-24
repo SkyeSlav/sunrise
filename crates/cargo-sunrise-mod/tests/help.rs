@@ -16,7 +16,7 @@ fn help_lists_the_everyday_commands_and_each_command_says_its_usage() {
         assert!(output.status.success(), "{args:?}");
         let text = String::from_utf8(output.stdout).unwrap();
         assert!(text.lines().count() < 20, "{args:?}: {text}");
-        for command in ["new", "build", "run", "check", "update", "hooks"] {
+        for command in ["new", "build", "run", "check", "pin", "hooks"] {
             assert!(
                 text.lines().any(|l| l.trim_start().starts_with(command)),
                 "{args:?}: {command}"
@@ -51,9 +51,16 @@ fn help_lists_the_everyday_commands_and_each_command_says_its_usage() {
 #[test]
 #[ignore = "daily"]
 fn an_unknown_command_is_an_error() {
-    let output = run(&["frobnicate"]);
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("not a cargo sunrise-mod command"));
+    for name in ["frobnicate", "update", "fits"] {
+        let output = run(&[name]);
+        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr).trim_end(),
+            format!(
+                "error: {name:?} is not a cargo sunrise-mod command; `cargo sunrise-mod --help` lists them"
+            )
+        );
+    }
     let output = run(&["release", "frobnicate", "--help"]);
     assert!(!output.status.success());
     assert!(

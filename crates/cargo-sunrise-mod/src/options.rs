@@ -170,13 +170,12 @@ mod tests {
 
     #[test]
     fn a_stray_word_a_second_file_and_an_unwanted_tail_are_refused_by_name() {
-        // `update nightly` without `--sunrise` would otherwise repin to the current Nightly.
-        let args = argv("nightly-2026-11-20");
-        let error = Options::new("update", &args, &[]).finish().unwrap_err();
-        assert!(error.contains("nightly-2026-11-20"), "{error}");
+        let args = argv("stray");
+        let error = Options::new("build", &args, &[]).finish().unwrap_err();
+        assert!(error.contains("stray"), "{error}");
 
         let args = argv("a.smod b.smod");
-        let error = Options::new("fits", &args, &["--build"])
+        let error = Options::new("check", &args, &["--build"])
             .at_most_one()
             .unwrap_err();
         assert!(
@@ -218,13 +217,13 @@ mod tests {
     #[test]
     fn repeated_options_are_all_read_and_a_missing_value_is_refused() {
         let args = argv("--build a --build b --all");
-        let mut options = Options::new("fits", &args, &["--build"]);
+        let mut options = Options::new("check", &args, &["--build"]);
         assert_eq!(options.values("--build").unwrap(), ["a", "b"]);
         assert!(options.switch("--all"));
         options.finish().unwrap();
 
         let last = argv("--build");
-        let error = Options::new("fits", &last, &["--build"])
+        let error = Options::new("check", &last, &["--build"])
             .value("--build")
             .unwrap_err();
         assert!(error.contains("--build"), "{error}");

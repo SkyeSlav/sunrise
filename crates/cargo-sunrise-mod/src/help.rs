@@ -31,14 +31,14 @@ const COMMANDS: &[Command] = &[
     Command {
         name: "check",
         everyday: true,
-        usage: "check [--uses] [--with <path>]… | check <file> [--kind <kind>] [--key <public key> --signature <file.minisig>] [--json]",
-        summary: "Checks the mod in this folder, including native Rust code with the same libraries as build, or a file as the registry would. Repeat --with for local libraries; --uses lists what the mod uses of its pinned build.",
+        usage: "check [--uses] [--with <path>]… | check <file> [--kind <kind>] [--key <public key> --signature <file.minisig>] [--json] | check [<file.smod>] --build <name> [--build <name>]…",
+        summary: "Checks a mod project, a package, or whether either fits specific builds; with --build, report fit instead of running the ordinary check. The fit report takes only a package path (optional) and build names. It exits 0 when all fit, 1 when one does not, and 2 when it cannot tell. For the ordinary project check, repeat --with for local libraries and use --uses to list what the mod uses of its pinned build.",
     },
     Command {
-        name: "update",
+        name: "pin",
         everyday: true,
-        usage: "update [--sunrise <build>]",
-        summary: "Repins a native mod to another game build (the current Nightly unless --sunrise names one) and reports what that breaks; a content mod pins no build.",
+        usage: "pin [<build>]",
+        summary: "Repins a native mod to another game build (the current Nightly if no build is given) and reports what that breaks; a content mod pins no build.",
     },
     Command {
         name: "hooks",
@@ -81,12 +81,6 @@ const COMMANDS: &[Command] = &[
         everyday: false,
         usage: "sdk diff <build> <build>",
         summary: "Lists what changed in the API surface between two builds.",
-    },
-    Command {
-        name: "fits",
-        everyday: false,
-        usage: "fits [<file.smod>] [--build <name>]…",
-        summary: "Says whether the mod fits each build; exits 0 when all do, 1 when one does not and 2 when that cannot be told.",
     },
     Command {
         name: "registry",

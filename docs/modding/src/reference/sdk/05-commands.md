@@ -17,10 +17,10 @@ folder.
 | `sign <file> [--key <path>] [--no-password]` or `sign <file> --key-env` | Writes the detached `<file>.minisig`, without overwriting an existing signature. Uses the current mod’s per-user signing key by default. For CI, `--key-env` reads `SUNRISE_MOD_SIGNING_KEY` and optional `SUNRISE_MOD_SIGNING_PASSPHRASE` with no prompt; see [Signing](../../how-to/publish.md#signing). |
 | `run [--resources <folder>] [--jars <dir>] [--with <path>]… [-- <game args>]` | For a native mod, builds, stages the game with the mod and its libraries in `target/sunrise-mod/run/` and starts it. |
 | `check [--uses] [--with <path>]…` | Checks the package rules and each [render pipeline shader](../../how-to/client/render-pipelines.md). For a native mod it then type-checks through the same SDK route and with the same libraries as `build`, without packaging or linking mod binaries, and reports what the project uses of its pinned build. `--uses` lists each item with the line that brought it in, and how the mod builds each struct it builds with a literal. |
+| `check [<file.smod>] --build <name> [--build <name>]…` | Reports fit for each named build instead of running the ordinary check. Takes no other options. Name the build `nightly` to check the current Nightly. Exits 0 when all fit, 1 when one does not fit, and 2 when fit cannot be judged. |
 | `hooks <text> [--all]` | Searches the pinned build's hooks offline, by id, doc and their NeoForge, Fabric and Paper names; every word must match. `--all` searches every record. Matches in the id come first, then in a counterpart, then in the doc. |
 | `sdk diff <build> <build>` | What changed in the surface from the first build to the second, [classified](02-surface.md#what-a-change-is), with the second build's change notes (why, and what a mod does now) under the changes they name: the notes of the changes since the SDK published before it. It reads only the builds' small files, so it works for builds whose compiled files are pruned. |
-| `fits [<file.smod>] [--build <build>]…` | Whether the mod, or a package, fits the current Nightly or each build named: one line per build, `made for`, `fits`, or `does not fit` with the changed items. |
-| `update [--sunrise <build>]` | Moves the pin to the current Nightly (or the build named). Reports API uses that would break before moving the pin. |
+| `pin [<build>]` | Moves the pin to the current Nightly (or the build named). Reports API uses that would break before moving the pin. |
 
 ## `build` for a native mod
 
@@ -112,9 +112,9 @@ standalone eligibility and lock rules as the registry. With `--build` it unpacks
 that directory's manifest to the plan's target SDK. Without `--build` it writes only the original manifest so
 signing and publication can read metadata without unpacking source. Neither mode runs Cargo or modifies the input.
 
-## `fits`
+## `check --build`
 
-`fits` exits 0 when every build fits, 1 when one does not, and 2 when it cannot tell: an input it cannot read or
+`check --build` exits 0 when every build fits, 1 when one does not, and 2 when it cannot tell: an input it cannot read or
 fetch, or a question that doesn't apply (a content mod, a mod made for exactly one build, a package made by an older
 tool). A mod's own scheduled CI can run it to learn of a break before players do:
 
@@ -127,10 +127,9 @@ nightly-2026-11-20 (9a8b7c6)  does not fit: 2 items changed
     the method `ServerHost::give_item` (removed)
 ```
 
-## `update`
+## `pin`
 
-
-For a native mod, before it repins, `update` lists every item the mod uses that changed between the two builds, the source line that
+For a native mod, before it repins, `pin` lists every item the mod uses that changed between the two builds, the source line that
 uses it, for a removed item the closest one in the new build (one with the same counterpart name first, then the
 nearest id and doc text), and the change note's `migrate` line when the change has one. It then lists the game
 code the mod declares (mixin targets, loops, internals) that changed. A mod made for exactly one

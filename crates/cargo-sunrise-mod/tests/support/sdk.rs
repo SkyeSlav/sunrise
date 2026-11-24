@@ -27,7 +27,7 @@ impl OfflineSdk {
         fs::create_dir_all(&folder).unwrap();
         let surface = format!(r#"{{"schema":{},"hash":"ab"}}"#, mod_surface::SCHEMA);
         fs::write(folder.join("surface.json"), &surface).unwrap();
-        // Update also fetches the project's API archive. These tests have no Rust sources to scan.
+        // Repinning also fetches the project's API archive. These tests have no Rust sources to scan.
         fs::write(
             folder.join("api-source.tar.xz"),
             include_bytes!("../../../sunrise-mod-package/src/sdk/fixture.tar.xz"),

@@ -40,7 +40,7 @@ greeter/
 ```
 
 After a fresh clone, run `cargo sunrise-mod check` once before opening the project in an editor: it fetches
-`.sunrise/sdk/` again. `cargo sunrise-mod update` moves both pins to the newer Nightly later.
+`.sunrise/sdk/` again. `cargo sunrise-mod pin` moves the build pin to the newer Nightly later.
 
 ## 3. Read the hook
 
