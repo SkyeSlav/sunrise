@@ -257,7 +257,6 @@ mod tests {
 
     const GASES: RegistryKey<Gas> = RegistryKey::new("chemlib:gas");
     const WRONG_GASES: RegistryKey<FakeGas> = RegistryKey::new("chemlib:gas");
-    const OTHER_GASES: RegistryKey<Gas> = RegistryKey::new("other:gas");
 
     struct TestHost;
     impl Host for TestHost {}

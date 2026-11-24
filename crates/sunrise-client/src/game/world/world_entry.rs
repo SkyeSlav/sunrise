@@ -374,7 +374,7 @@ impl Game<'_> {
                     .strip_prefix("minecraft:")
                     .and_then(|name| gameplay_tags.get(name))
                 {
-                    pack_tags.insert((*directory).to_owned(), tags);
+                    pack_tags.insert((*directory).to_owned(), tags.into_iter().collect());
                 }
                 Ok(())
             };
@@ -399,30 +399,6 @@ impl Game<'_> {
             .collect::<std::collections::BTreeSet<_>>();
         for registry in &static_registries {
             bind_tags(registry, &mut view)?;
-        }
-        // Bind tags for mod-declared static custom registries into the same `pack_tags` store,
-        // keyed by canonical registry ID (`chemlib:gas`) and preserving tag order.
-        for dir in mod_api::__private::custom_registry_directories() {
-            match sunrise_world::tag_layers::load(root, dir.tag_directory(), &tag_files, |id| {
-                dir.contains_id(id)
-            }) {
-                Ok(tags) => {
-                    view.tags.insert(
-                        dir.id().to_owned(),
-                        tags.iter()
-                            .filter(|(_, members)| !members.is_empty())
-                            .map(|(tag, _)| tag.clone())
-                            .collect(),
-                    );
-                    pack_tags.insert(dir.id().to_owned(), tags);
-                }
-                Err(e) => {
-                    log::warn!(
-                        "Sunrise: the world's {} tags are not applied: {e}",
-                        dir.id()
-                    );
-                }
-            }
         }
         // WORLD_REGISTRIES codecs see static holders (not their own pending entries)
         // and NeoForge's ResourceManagerRegistryLoadTask uses VANILLA_SET.
@@ -584,6 +560,30 @@ impl Game<'_> {
                 .collect(),
         );
         pack_tags.insert("damage_type".to_owned(), damage_tags);
+        // Bind tags for mod-declared static custom registries into the same `pack_tags` store,
+        // keyed by canonical registry ID (`chemlib:gas`) and preserving tag order.
+        for dir in mod_api::__private::custom_registry_directories() {
+            match sunrise_world::tag_layers::load(root, dir.tag_directory(), &tag_files, |id| {
+                dir.contains_id(id)
+            }) {
+                Ok(tags) => {
+                    view.tags.insert(
+                        dir.id().to_owned(),
+                        tags.iter()
+                            .filter(|(_, members)| !members.is_empty())
+                            .map(|(tag, _)| tag.clone())
+                            .collect(),
+                    );
+                    pack_tags.insert(dir.id().to_owned(), tags);
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Sunrise: the world's {} tags are not applied: {e}",
+                        dir.id()
+                    );
+                }
+            }
+        }
 
         let datapack_candidate =
             Self::stage_datapack_registries(stack, root, &registry_overlay, &mut view);

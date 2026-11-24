@@ -999,6 +999,7 @@ mod tests {
                     Event::Joined {
                         registries: invalid,
                         datapacks: Default::default(),
+                        custom_registries: Default::default(),
                         uuid: 1,
                         name: "Alex".into(),
                     },
@@ -1029,6 +1030,7 @@ mod tests {
                     Event::Joined {
                         registries: valid,
                         datapacks: Default::default(),
+                        custom_registries: Default::default(),
                         uuid: 2,
                         name: "Steve".into(),
                     },
@@ -1053,6 +1055,7 @@ mod tests {
                     Event::Reconfigured {
                         registries: invalid,
                         datapacks: Default::default(),
+                        custom_registries: Default::default(),
                     },
                     Event::Packet(Box::new(login_packet())),
                 ],

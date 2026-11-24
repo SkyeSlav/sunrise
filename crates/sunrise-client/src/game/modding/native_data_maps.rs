@@ -62,7 +62,7 @@ pub(crate) struct WorldRegistries<'a> {
     id_sets: RefCell<HashMap<String, HashSet<String>>>,
     tags: RefCell<HashMap<String, HashMap<String, HashSet<String>>>>,
 }
-type PackTags = HashMap<&'static str, HashMap<String, HashSet<String>>>;
+type PackTags = HashMap<String, HashMap<String, Vec<String>>>;
 impl<'a> WorldRegistries<'a> {
     pub(crate) fn new(
         ids: impl IntoIterator<Item = (&'a str, &'a [String])>,
@@ -177,11 +177,11 @@ impl MapRegistries for WorldRegistries<'_> {
                 members(self.items.entity_type_tags.members())
             }
             _ => {
-                if let Some(tags) = self
-                    .bound_tags
-                    .and_then(|tags| tags.get(folder(registry).as_str()))
-                {
-                    return members(tags);
+                if let Some(tags) = self.bound_tags.and_then(|tags| {
+                    tags.get(registry)
+                        .or_else(|| tags.get(folder(registry).as_str()))
+                }) {
+                    return tags.get(tag).cloned().unwrap_or_default();
                 }
                 let mut loaded = self.tags.borrow_mut();
                 let tags = loaded.entry(registry.to_owned()).or_insert_with(|| {
