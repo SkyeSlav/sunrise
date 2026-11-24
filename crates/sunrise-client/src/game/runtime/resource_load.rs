@@ -294,7 +294,6 @@ pub(super) fn load_core(
                         root,
                         resources.data_changes(),
                         registry,
-                        biomes.clone(),
                         additional_data,
                     );
                 }
@@ -844,7 +843,6 @@ pub(super) fn load_resources_for_mods(
             &root,
             resolved.data_changes(),
             assets.registry,
-            biomes.clone(),
             &additional_data,
         );
     }

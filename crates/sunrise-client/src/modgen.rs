@@ -340,7 +340,7 @@ mod tests {
                     .into(),
             sea_level: None,
         };
-        let (overrides, _) = crate::datapack::worldgen_overrides_over(&[pocket], &[], |_| true);
+        let (overrides, _) = crate::datapack::worldgen_overrides_over(&[pocket], &[]);
         let height = overrides.level_height("test:pocket").unwrap();
         let shape = LevelShape::new(
             height.min_y,

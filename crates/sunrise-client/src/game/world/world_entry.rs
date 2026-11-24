@@ -120,7 +120,6 @@ impl Game<'_> {
                         dir.as_deref(),
                         &self.options.resources,
                         &packs,
-                        self.res.biomes(),
                         &self.pack.additional_data,
                     )
                 })

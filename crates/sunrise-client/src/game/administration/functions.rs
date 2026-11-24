@@ -505,7 +505,7 @@ impl Game<'_> {
         // its worldgen tag ids for the `#tag` completions. The packs are the
         // ones the world's worldgen is built from.
         let enabled: Vec<_> = stack.enabled_packs().collect();
-        let (overrides, _) = sunrise_client::datapack::worldgen_overrides(&enabled, |_| true);
+        let (overrides, _) = sunrise_client::datapack::worldgen_overrides(&enabled);
         for (bundle, registry) in [
             ("biomes", "minecraft:worldgen/biome"),
             ("structures", "minecraft:worldgen/structure"),

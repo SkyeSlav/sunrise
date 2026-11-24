@@ -298,7 +298,6 @@ impl WorldRequest {
         let overrides = live_feature_overrides(
             &save_root,
             &options.resources,
-            res.biomes(),
             &level.enabled_features,
             &pack.additional_data,
         );
@@ -313,7 +312,6 @@ impl WorldRequest {
         let (mut overrides, _) = worldgen_overrides_of(
             &save_root,
             &options.resources,
-            res.biomes(),
             &level.enabled_features,
             &pack.additional_data,
         );
@@ -559,7 +557,6 @@ pub(super) fn preload_launch_world(
     resources: &std::path::Path,
     data_source: &sunrise_assets::resource_source::ResourceSource,
     registry: &'static sunrise_world::registry::BlockRegistry,
-    biomes: Arc<sunrise_client::biome::Biomes>,
     additional: &[Arc<sunrise_client::datapack::DataPack>],
 ) {
     let mut preload = PRELOAD.lock().unwrap_or_else(|e| e.into_inner());
@@ -586,13 +583,8 @@ pub(super) fn preload_launch_world(
             let enabled_features = level
                 .as_ref()
                 .map_or(&[][..], |l| l.enabled_features.as_ref());
-            let (overrides, _) = worldgen_overrides_of(
-                &world_root,
-                &resources,
-                &biomes,
-                enabled_features,
-                &additional,
-            );
+            let (overrides, _) =
+                worldgen_overrides_of(&world_root, &resources, enabled_features, &additional);
             if let Ok(data) = sunrise_client::vanillagen::shared_data_from(
                 &resources.join("worldgen"),
                 &overrides,
@@ -623,8 +615,7 @@ pub(super) fn world_data_used() {
 }
 
 /// The game's biomes with the world's enabled packs over them, from the same
-/// pack list its worldgen is built from (`WorldgenOverrides` keeps only the
-/// biomes this table knows).
+/// pack list its worldgen is built from.
 pub(super) fn packed_biomes(
     world_root: &std::path::Path,
     resources: &std::path::Path,
@@ -638,7 +629,7 @@ pub(super) fn packed_biomes(
         .iter()
         .filter_map(|id| packs.iter().find(|p| &p.id == id))
         .collect();
-    let (overrides, _) = sunrise_client::datapack::worldgen_overrides(&enabled, |_| true);
+    let (overrides, _) = sunrise_client::datapack::worldgen_overrides(&enabled);
     // The mods' spawns too: their biome modifiers go over the packs' biomes.
     let overrides = sunrise_client::vanillagen::biome_modifiers_over_packs(
         &resources.join("worldgen"),
@@ -655,17 +646,14 @@ pub(super) fn packed_biomes(
     Arc::new(base.with_packs(packed.iter().map(|(i, v)| (i.as_str(), v))))
 }
 /// The worldgen entries the world's generator reads, for the live feature
-/// registry: the same biome table and packs as `make_streaming`'s, so both share
-/// one loaded bundle.
+/// registry: the same packs as `make_streaming`'s, so both share one loaded bundle.
 fn live_feature_overrides(
     world_root: &std::path::Path,
     resources: &std::path::Path,
-    base: &Arc<sunrise_client::biome::Biomes>,
     enabled_features: &[String],
     additional: &[Arc<sunrise_client::datapack::DataPack>],
 ) -> sunrise_world::worldgen::overrides::WorldgenOverrides {
-    let biomes = packed_biomes(world_root, resources, base, enabled_features, additional);
-    worldgen_overrides_of(world_root, resources, &biomes, enabled_features, additional).0
+    worldgen_overrides_of(world_root, resources, enabled_features, additional).0
 }
 /// The Create screen's chosen packs' worldgen entries over the game's own
 /// (`applyNewPackConfig` reloads the world with the new pack config): the
@@ -675,7 +663,6 @@ pub(super) fn creation_worldgen_overrides(
     pack_dir: Option<&std::path::Path>,
     resources: &std::path::Path,
     data_packs: &[String],
-    biomes: &sunrise_client::biome::Biomes,
     additional: &[Arc<sunrise_client::datapack::DataPack>],
 ) -> sunrise_world::worldgen::overrides::WorldgenOverrides {
     let empty = std::path::PathBuf::new();
@@ -685,8 +672,7 @@ pub(super) fn creation_worldgen_overrides(
         .iter()
         .filter_map(|id| packs.iter().find(|p| &p.id == id))
         .collect();
-    let (overrides, _) =
-        sunrise_client::datapack::worldgen_overrides(&enabled, |b| biomes.contains(b));
+    let (overrides, _) = sunrise_client::datapack::worldgen_overrides(&enabled);
     overrides
 }
 /// The worldgen entries of the world's enabled data packs, logging what
@@ -694,12 +680,11 @@ pub(super) fn creation_worldgen_overrides(
 fn world_worldgen_overrides(
     world_root: &std::path::Path,
     resources: &std::path::Path,
-    biomes: &sunrise_client::biome::Biomes,
     enabled_features: &[String],
     additional: &[Arc<sunrise_client::datapack::DataPack>],
 ) -> sunrise_world::worldgen::overrides::WorldgenOverrides {
     let (overrides, warnings) =
-        worldgen_overrides_of(world_root, resources, biomes, enabled_features, additional);
+        worldgen_overrides_of(world_root, resources, enabled_features, additional);
     for warning in warnings {
         log::warn!("Sunrise: data pack worldgen: {warning}");
     }
@@ -711,7 +696,6 @@ fn world_worldgen_overrides(
 fn worldgen_overrides_of(
     world_root: &std::path::Path,
     resources: &std::path::Path,
-    biomes: &sunrise_client::biome::Biomes,
     enabled_features: &[String],
     additional: &[Arc<sunrise_client::datapack::DataPack>],
 ) -> (
@@ -724,7 +708,7 @@ fn worldgen_overrides_of(
         .iter()
         .filter_map(|id| packs.iter().find(|p| &p.id == id))
         .collect();
-    sunrise_client::datapack::worldgen_overrides(&enabled, |b| biomes.contains(b))
+    sunrise_client::datapack::worldgen_overrides(&enabled)
 }
 
 /// The shapes of the world's levels: their dimension types, the world's
@@ -968,8 +952,7 @@ fn mod_terrain(
     if generators.is_empty() {
         return None;
     }
-    let (overrides, _) =
-        worldgen_overrides_of(world_root, resources, biomes, enabled_features, additional);
+    let (overrides, _) = worldgen_overrides_of(world_root, resources, enabled_features, additional);
     let stem = runtime_stem.cloned().or_else(|| {
         overrides
             .entries(DIMENSIONS)
@@ -1093,7 +1076,6 @@ pub(super) fn make_streaming(
             world_worldgen_overrides(
                 world_root,
                 &options.resources,
-                &biomes,
                 enabled_features,
                 &pack.additional_data,
             )
@@ -1656,6 +1638,109 @@ mod tests {
         });
     }
 
+    /// A pack's new biome opens with the world: the packed table gives it an id past the
+    /// built-in ones, and the overworld stem's fixed biome source generates a chunk of it
+    /// (`RegistryDataLoader` loads every pack biome, none is left out).
+    #[test]
+    #[ignore = "daily"]
+    fn a_pack_biome_no_built_in_has_generates_in_the_overworld() {
+        use crate::game::native_entity_refs::tests::{run_fresh_cases, with_game};
+        use std::fs;
+        use sunrise_client::chunk::LevelShape;
+
+        const CASE: &str = "SUNRISE_NEW_BIOME_WORLD_CASE";
+        if run_fresh_cases(
+            "game::world_loading::tests::a_pack_biome_no_built_in_has_generates_in_the_overworld",
+            CASE,
+            &["overworld"],
+        ) {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let pack = root.join("datapacks/biome");
+        let write = |path: &str, text: &str| {
+            let path = pack.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        };
+        write(
+            "pack.mcmeta",
+            r#"{"pack":{"description":"New biome fixture","min_format":[121,0],"max_format":[121,0]}}"#,
+        );
+        fs::write(
+            root.join("datapacks.json"),
+            r#"{"enabled":["vanilla","file/biome"],"disabled":[]}"#,
+        )
+        .unwrap();
+        write(
+            "data/minecraft/dimension/overworld.json",
+            r#"{"type":"minecraft:overworld","generator":{"type":"minecraft:noise","settings":"minecraft:overworld",
+            "biome_source":{"type":"minecraft:fixed","biome":"test:new_biome"}}}"#,
+        );
+        with_game(|game| {
+            // A copy of the game's plains with its own water colour.
+            let mut file = game
+                .res
+                .biomes()
+                .builtin_file("minecraft:plains")
+                .unwrap()
+                .clone();
+            file["effects"]["water_color"] = serde_json::json!("#123456");
+            write("data/test/worldgen/biome/new_biome.json", &file.to_string());
+
+            let builtin = game.res.biomes();
+            assert!(!builtin.contains("test:new_biome"));
+            let biomes = packed_biomes(
+                root,
+                &game.options.resources,
+                builtin,
+                &game.level.enabled_features,
+                &game.pack.additional_data,
+            );
+            let id = biomes
+                .try_id("test:new_biome")
+                .expect("the packed table knows the biome");
+            assert!(usize::from(id) >= builtin.registry_order().len());
+            assert_eq!(biomes.name(id), "test:new_biome");
+
+            let shape = LevelShape::OVERWORLD;
+            let (mut streaming, _, locator) = make_streaming(
+                &game.res,
+                &game.pack,
+                &game.options,
+                &game.settings,
+                root,
+                Dim::Overworld,
+                shape,
+                7,
+                &game.level,
+                biomes.clone(),
+                None,
+                game.save.chunk_reports().clone(),
+                game.save.save_failure_reporter().clone(),
+            )
+            .unwrap();
+            if let Some(locator) = locator {
+                assert_eq!(
+                    locator.noise_biomes(&[[0, 0, 0]]),
+                    [Some("test:new_biome".into())]
+                );
+            }
+            let mut world = World::new(game.res.facts().air, 7);
+            world.shape = shape;
+            assert!(streaming.set_forced_loaded(&mut world, 0, 0, true));
+            let chunk = &world.chunks[&(0, 0)];
+            for y in [shape.min_y, 0, 64, 200] {
+                assert_eq!(
+                    biomes.saved_name(chunk.biome(0, y, 0)),
+                    "test:new_biome",
+                    "y {y}"
+                );
+            }
+        });
+    }
+
     /// A world whose level.dat does not read but whose level.dat_old does: only the
     /// dedicated server restores it unasked. Every role here carries the launch configuration
     /// (`options.dedicated`) a dedicated server and the integrated server thread both have, so
@@ -1723,7 +1808,7 @@ mod tests {
                 None,
             ),
         ];
-        let (overrides, _) = worldgen_overrides_over(&mods, &[], |_| true);
+        let (overrides, _) = worldgen_overrides_over(&mods, &[]);
         set_level_sea_levels(&overrides, &mods, std::path::Path::new("."));
         let sea = |id: &str| {
             sunrise_world::level::sea_level_of(sunrise_core::LevelKey::parse(id).unwrap())
@@ -2049,7 +2134,7 @@ mod tests {
     fn a_mods_level_opens_with_no_data_packs() {
         use sunrise_client::chunk::{LevelShape, LevelShapes};
         use sunrise_client::datapack::worldgen_overrides_over;
-        let (mut none, _) = worldgen_overrides_over(&[], &[], |_| true);
+        let (mut none, _) = worldgen_overrides_over(&[], &[]);
         none.include_implicit_level_stems();
         assert_eq!(shapes_of(&none, none.level_stems()).0, LevelShapes::VANILLA);
 
@@ -2061,7 +2146,7 @@ mod tests {
                     .into(),
             sea_level: None,
         };
-        let (mut overrides, _) = worldgen_overrides_over(&[pocket], &[], |_| true);
+        let (mut overrides, _) = worldgen_overrides_over(&[pocket], &[]);
         overrides.include_implicit_level_stems();
         let registry: std::collections::HashMap<_, _> = overrides.level_stems().collect();
         let traversal = [
@@ -2128,7 +2213,7 @@ mod tests {
         let world =
             std::env::temp_dir().join(format!("sunrise-mod-terrain-{}", std::process::id()));
         std::fs::create_dir_all(&world).unwrap();
-        let (mut overrides, _) = worldgen_overrides_of(&world, &root, &biomes, &[], &[]);
+        let (mut overrides, _) = worldgen_overrides_of(&world, &root, &[], &[]);
         overrides.include_implicit_level_stems();
         let (shapes, _) = shapes_of(&overrides, overrides.level_stems());
         use sunrise_world::native_load_context::{DataLoadOrigin, LoadContext, LoadInputs};
@@ -2325,7 +2410,6 @@ mod unused_feature_startup_tests {
             let (overrides, _) = worldgen_overrides_of(
                 &root,
                 &options.resources,
-                loaded.resources.biomes(),
                 &level.enabled_features,
                 &loaded.pack.additional_data,
             );
@@ -2430,7 +2514,6 @@ mod unused_feature_preservation_tests {
         let (mut overrides, _) = worldgen_overrides_of(
             &root,
             &options.resources,
-            loaded.resources.biomes(),
             &level.enabled_features,
             &loaded.pack.additional_data,
         );
