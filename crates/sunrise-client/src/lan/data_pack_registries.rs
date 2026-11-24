@@ -12,16 +12,18 @@ use sunrise_core::{
     nbt::{Compound, Tag},
 };
 use sunrise_items::{
-    enchant::{Enchantments, HolderSetBinding},
+    enchant::{EnchantmentProvider, Enchantments, HolderSetBinding},
     items::{Instrument, Items},
 };
 use sunrise_world::{item_defaults::ItemDefaults, loot::PackOverlay};
 
 /// One data-driven registry kind: `RegistryDataLoader.WORLD_REGISTRIES`'s entry for a
 /// registry a world's packs add to or replace, with the typed decode of its codec.
-/// Every row is synchronized; a decode error of any row refuses the whole load.
+/// `synchronized` mirrors `RegistryDataLoader.SYNCHRONIZED_REGISTRIES`; a decode error
+/// of any row refuses the whole load.
 pub struct RegistryKind {
     pub key: &'static str,
+    pub synchronized: bool,
     decode: fn(&mut Decoder<'_>, &str, Value) -> Result<Definition, String>,
 }
 
@@ -34,34 +36,47 @@ pub struct RegistryKind {
 pub const REGISTRY_KINDS: &[RegistryKind] = &[
     RegistryKind {
         key: "minecraft:dimension_type",
+        synchronized: true,
         decode: decode_dimension_type,
     },
     RegistryKind {
         key: "minecraft:chat_type",
+        synchronized: true,
         decode: decode_chat_type,
     },
     RegistryKind {
         key: "minecraft:painting_variant",
+        synchronized: true,
         decode: decode_painting_variant,
     },
     RegistryKind {
         key: "minecraft:banner_pattern",
+        synchronized: true,
         decode: decode_banner_pattern,
     },
     RegistryKind {
         key: "minecraft:enchantment",
+        synchronized: true,
         decode: decode_enchantment,
     },
     RegistryKind {
+        key: "minecraft:enchantment_provider",
+        synchronized: false,
+        decode: decode_enchantment_provider,
+    },
+    RegistryKind {
         key: "minecraft:instrument",
+        synchronized: true,
         decode: decode_instrument,
     },
     RegistryKind {
         key: "minecraft:dialog",
+        synchronized: true,
         decode: decode_dialog,
     },
     RegistryKind {
         key: "minecraft:world_clock",
+        synchronized: true,
         decode: decode_world_clock,
     },
 ];
@@ -121,6 +136,7 @@ pub struct PackRegistryDefinitions {
 enum Definition {
     Encoded(Tag),
     Enchantment(Value),
+    EnchantmentProvider(EnchantmentProvider),
     Instrument(Instrument, Tag),
 }
 
@@ -243,6 +259,16 @@ impl PackRegistryDefinitions {
                     }
                     let definition = if kind == "enchantment" {
                         Definition::Enchantment(value)
+                    } else if kind == "enchantment_provider" {
+                        let id = format!("{}:{}", key.0, key.1);
+                        match (table.decode)(&mut decoder, &id, value) {
+                            Ok(definition) => definition,
+                            Err(error) => {
+                                errors.entry(registry).or_default().insert(id, error);
+                                entries.insert(key, None);
+                                continue;
+                            }
+                        }
                     } else if from_pack {
                         let id = format!("{}:{}", key.0, key.1);
                         match (table.decode)(&mut decoder, &id, value) {
@@ -321,6 +347,66 @@ impl PackRegistryDefinitions {
                 entries.insert(key, None);
             }
         }
+        // Validate `minecraft:enchantment_provider` holder and tag references against
+        // the admitted `minecraft:enchantment` registry (RegistryDataLoader freeze).
+        let held_enchantments: BTreeSet<String> = definitions
+            .entries
+            .get("minecraft:enchantment")
+            .into_iter()
+            .flatten()
+            .filter(|(_, entry)| entry.is_some())
+            .map(|((namespace, path), _)| format!("{namespace}:{path}"))
+            .collect();
+        if let Some(provider_entries) = definitions
+            .entries
+            .get_mut("minecraft:enchantment_provider")
+        {
+            let needs_tags = provider_entries.values().any(|entry| {
+                matches!(
+                    entry,
+                    Some((Definition::EnchantmentProvider(provider), _))
+                        if provider.referenced_tag().is_some()
+                )
+            });
+            let enchantment_tags = if needs_tags {
+                let root = resources.join("data/minecraft");
+                bind_registry_tags(&root, overlay, "enchantment", |id, _| {
+                    held_enchantments.contains(id).then(|| id.to_owned())
+                })
+            } else {
+                BTreeMap::new()
+            };
+            let mut rejected = Vec::new();
+            for (key, entry) in provider_entries.iter() {
+                let Some((Definition::EnchantmentProvider(provider), _)) = entry else {
+                    continue;
+                };
+                let id = format!("{}:{}", key.0, key.1);
+                let mut error = None;
+                for enchantment in provider.referenced_enchantments() {
+                    if !held_enchantments.contains(enchantment.as_ref()) {
+                        error = Some(format!("unbound enchantment holder: {enchantment}"));
+                        break;
+                    }
+                }
+                if error.is_none()
+                    && let Some(tag) = provider.referenced_tag()
+                    && !enchantment_tags.contains_key(tag)
+                {
+                    error = Some(format!("unbound enchantment tag: #{tag}"));
+                }
+                if let Some(error) = error {
+                    errors
+                        .entry("minecraft:enchantment_provider")
+                        .or_default()
+                        .insert(id, error);
+                    rejected.push(key.clone());
+                }
+            }
+            for key in rejected {
+                provider_entries.insert(key, None);
+            }
+        }
         // RegistryDataLoader.validateRegistry: every dialog a winner names is bound.
         let dialogs = definitions.entries.get("minecraft:dialog");
         let root = resources.join("data/minecraft");
@@ -379,7 +465,10 @@ impl PackRegistryDefinitions {
     }
 
     pub(super) fn includes_prepared_entries(registry: &str) -> bool {
-        matches!(registry, "minecraft:enchantment" | "minecraft:instrument")
+        matches!(
+            registry,
+            "minecraft:enchantment" | "minecraft:enchantment_provider" | "minecraft:instrument"
+        )
     }
 
     pub fn append_encoded(&self, registry: &str, entries: &mut Vec<((String, String), Tag, bool)>) {
@@ -389,6 +478,7 @@ impl PackRegistryDefinitions {
                 let tag = match definition {
                     Definition::Encoded(tag) | Definition::Instrument(_, tag) => tag.clone(),
                     Definition::Enchantment(json) => json_to_nbt(json),
+                    Definition::EnchantmentProvider(_) => return None,
                 };
                 Some((key.clone(), tag, *from_pack))
             }));
@@ -415,12 +505,25 @@ impl PackRegistryDefinitions {
                 _ => None,
             })
             .collect();
-        let enchantments = Enchantments::load_selected(
+        let mut enchantments = Enchantments::load_selected(
             resources,
             overlay,
             defaults,
             enchantments.iter().map(|(id, value)| (id.as_str(), *value)),
         )?;
+        let providers = self
+            .entries
+            .get("minecraft:enchantment_provider")
+            .into_iter()
+            .flatten()
+            .filter_map(|((namespace, path), entry)| match entry {
+                Some((Definition::EnchantmentProvider(provider), _)) => {
+                    Some((format!("{namespace}:{path}"), provider.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        enchantments.install_providers(providers);
         let instruments = self
             .entries
             .get("minecraft:instrument")
@@ -672,6 +775,14 @@ fn decode_enchantment(
     let mut value = sunrise_items::enchant::decode_pack_definition(value)?;
     value["description"] = decoder.text("description", &value["description"])?;
     Ok(Definition::Enchantment(value))
+}
+
+fn decode_enchantment_provider(
+    _: &mut Decoder<'_>,
+    _: &str,
+    value: Value,
+) -> Result<Definition, String> {
+    EnchantmentProvider::decode(&value).map(Definition::EnchantmentProvider)
 }
 
 fn decode_instrument(
@@ -1492,5 +1603,128 @@ mod tests {
             }
         }
         assert!(!error.contains("condition_false"));
+    }
+
+    #[test]
+    fn enchantment_provider_is_unsynced_validates_references_and_installs_pack_overrides() {
+        let row = REGISTRY_KINDS
+            .iter()
+            .find(|table| table.key == "minecraft:enchantment_provider")
+            .expect("enchantment_provider row in REGISTRY_KINDS");
+        assert!(!row.synchronized);
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("items.json"),
+            json!({"minecraft:stick": {}, "minecraft:iron_sword": {}}).to_string(),
+        )
+        .unwrap();
+        let defaults = sunrise_world::item_defaults::read(root.path()).unwrap();
+
+        // Valid pack provider referencing an admitted enchantment and tag succeeds.
+        let files = [
+            (
+                "enchantment/minecraft:sharpness".into(),
+                vec![enchantment("Sharpness").to_string().into_bytes()],
+            ),
+            (
+                "tags/minecraft:enchantment/test_pool".into(),
+                vec![
+                    json!({"values": ["minecraft:sharpness"]})
+                        .to_string()
+                        .into_bytes(),
+                ],
+            ),
+            (
+                "enchantment_provider/minecraft:mob_spawn_equipment".into(),
+                vec![
+                    json!({
+                        "type": "minecraft:single",
+                        "enchantment": "minecraft:sharpness",
+                        "level": 5
+                    })
+                    .to_string()
+                    .into_bytes(),
+                ],
+            ),
+            (
+                "enchantment_provider/test:by_tag".into(),
+                vec![
+                    json!({
+                        "type": "minecraft:by_cost",
+                        "enchantments": "#minecraft:test_pool",
+                        "cost": 10
+                    })
+                    .to_string()
+                    .into_bytes(),
+                ],
+            ),
+        ];
+        let overlay = PackOverlay::new(&files);
+        let packed = PackRegistryDefinitions::load(
+            root.path(),
+            &defaults,
+            &overlay,
+            &Default::default(),
+            &Default::default(),
+            |_| true,
+        )
+        .unwrap();
+        let mut wire = Vec::new();
+        packed.append_encoded("minecraft:enchantment_provider", &mut wire);
+        assert!(wire.is_empty(), "enchantment_provider is not synchronized");
+
+        let mut items = Items::tags_only(root.path(), &overlay, &defaults).unwrap();
+        packed
+            .install_items(&mut items, root.path(), &overlay, &defaults)
+            .unwrap();
+        assert!(
+            items
+                .enchantments
+                .provider("minecraft:mob_spawn_equipment")
+                .is_some()
+        );
+        assert!(items.enchantments.provider("test:by_tag").is_some());
+
+        // Unbound enchantment holder and unbound enchantment tag refuse the load.
+        let bad_files = [
+            (
+                "enchantment_provider/test:missing_holder".into(),
+                vec![
+                    json!({
+                        "type": "minecraft:single",
+                        "enchantment": "minecraft:nonexistent",
+                        "level": 1
+                    })
+                    .to_string()
+                    .into_bytes(),
+                ],
+            ),
+            (
+                "enchantment_provider/test:missing_tag".into(),
+                vec![
+                    json!({
+                        "type": "minecraft:by_cost_with_difficulty",
+                        "enchantments": "#minecraft:nonexistent_tag",
+                        "min_cost": 5,
+                        "max_cost_span": 17
+                    })
+                    .to_string()
+                    .into_bytes(),
+                ],
+            ),
+        ];
+        let error = PackRegistryDefinitions::load(
+            root.path(),
+            &defaults,
+            &PackOverlay::new(&bad_files),
+            &Default::default(),
+            &Default::default(),
+            |_| true,
+        )
+        .err()
+        .expect("unbound enchantment_provider references must refuse load");
+        assert!(error.contains("test:missing_holder"), "{error}");
+        assert!(error.contains("test:missing_tag"), "{error}");
     }
 }

@@ -813,7 +813,8 @@ pub struct DataStore {
 }
 /// `<kind-dir>/<ns>:<path>` for a pack file the content tables read:
 /// `recipe/`, `recipe_filter/`, `loot_table/`, `advancement/`, `trade_set/`,
-/// `villager_trade/`, `dialog/`, `damage_type/`, `dimension_type/`, `chat_type/`, `data_maps/`, enchantments, songs,
+/// `villager_trade/`, `dialog/`, `damage_type/`, `dimension_type/`, `chat_type/`, `data_maps/`,
+/// enchantments, enchantment providers, songs,
 /// instruments, painting variants, banner patterns, predicates, item modifiers, `world_clock/`,
 /// `worldgen/biome/` or `tags/<sub>/`, where the id keeps the subpath for nested tag kinds.
 fn content_id(file: &str) -> Option<String> {
@@ -821,10 +822,26 @@ fn content_id(file: &str) -> Option<String> {
     let (ns, rest) = rest.split_once('/')?;
     let (kind, rest) = rest.split_once('/')?;
     let kind = match kind {
-        "recipe" | "recipe_filter" | "loot_table" | "advancement" | "trade_set"
-        | "villager_trade" | "dialog" | "damage_type" | "dimension_type" | "chat_type"
-        | "data_maps" | "enchantment" | "jukebox_song" | "instrument" | "painting_variant"
-        | "banner_pattern" | "predicate" | "item_modifier" | "world_clock" => kind,
+        "recipe"
+        | "recipe_filter"
+        | "loot_table"
+        | "advancement"
+        | "trade_set"
+        | "villager_trade"
+        | "dialog"
+        | "damage_type"
+        | "dimension_type"
+        | "chat_type"
+        | "data_maps"
+        | "enchantment"
+        | "enchantment_provider"
+        | "jukebox_song"
+        | "instrument"
+        | "painting_variant"
+        | "banner_pattern"
+        | "predicate"
+        | "item_modifier"
+        | "world_clock" => kind,
         "worldgen" => {
             return resource_id(file, "worldgen/biome", ".json")
                 .map(|id| format!("worldgen/biome/{id}"));
@@ -956,6 +973,7 @@ impl DataStore {
             "dialog",
             "dimension_type",
             "enchantment",
+            "enchantment_provider",
             "function",
             "instrument",
             "item_modifier",
