@@ -28,7 +28,7 @@ use sunrise_core::{
     geometry::{Aabb, Axis, ShapeOp, Vec3, VoxelShape},
     random::RandomSource,
 };
-use sunrise_world::native_load_context::LoopContext;
+use sunrise_world::native_load_context::{LoopContext, LoopSide};
 
 #[cfg(test)]
 mod inside_walk_tests {
@@ -78,6 +78,7 @@ mod inside_walk_tests {
             sunrise_client_core::potions::all_effects()
                 .map(|def| sunrise_client_core::potions::namespaced(def.id)),
             |id| sunrise_client_core::potions::effect(id).map(|e| e.index),
+            |_| true,
         )
         .unwrap();
         CONTACTS.lock().unwrap().clear();
@@ -1128,10 +1129,18 @@ pub enum Pause {
     Consumption {
         decision: super::fox::Consumption,
     },
+    Drink {
+        stack: crate::items::ItemStack,
+        resume: DrinkResume,
+    },
     Breathing {
         air: AirPause,
         /// `Entity.computeSpeed`, read before the tick moved the mob.
         known_speed: Vec3,
+    },
+    /// The server found changed equipment before the living AI step.
+    Equipment {
+        first: sunrise_core::equipment_slot::EquipmentSlot,
     },
     /// A breeding goal or brain behaviour finished its decision. Deliver the action before
     /// resuming any later goal, movement or age and love ticks.
@@ -1145,8 +1154,31 @@ pub enum Pause {
     Trample(sunrise_world::block_landing::FarmlandTrample),
     /// A vehicle must propagate the selected fall before this move continues.
     FallToPassengers(super::living::PassengerFall),
+    /// A brain was constructed or rebuilt during the tick and needs the owning
+    /// game to fire `register_behaviors` with a scoped `ServerHost`.
+    RegisterBehaviors {
+        stage: BrainStage,
+    },
     /// The mob's `InsideEffects` collector is ready to flush against the live level.
     InsideEffects(InsidePause),
+}
+
+/// Where a mob tick paused for staged `register_behaviors`.
+#[derive(Clone, Copy, Debug)]
+pub enum BrainStage {
+    /// Brain was just built or rebuilt before running its brain tick.
+    BeforeBrain,
+    /// Villager brain refreshed itself during `villager::tick_brain`.
+    AfterVillagerBrain,
+    /// A brain was rebuilt during `AgeableMob.aiStep` (`age_boundary_reached`).
+    AfterAgeBoundary { no_ai: bool, after_water: bool },
+}
+
+/// The remainder of the mob tick after a drink finishes on its owning level.
+#[derive(Debug)]
+pub enum DrinkResume {
+    Trader,
+    Witch,
 }
 
 #[derive(Debug)]
@@ -1216,6 +1248,7 @@ enum AiPause {
     Movement(MovementPhase),
     Breed(Box<MobEvent>, BreedingPhase),
     BeeDamage(super::bee::ServerAiStage),
+    RegisterBehaviors(BrainStage),
 }
 
 fn goal_pause_to_ai(phase: SelectorPhase, pause: super::goals::GoalPause) -> AiPause {
@@ -1323,14 +1356,30 @@ pub fn tick(
                 let breath = Some(air.step.vanilla);
                 resume_after_breathing(m, w, level, events, air, known_speed, breath, None)
             }
+            TickProgress::Paused(Pause::Drink { stack, resume }) => {
+                // The hostless probe runs the same drink's built-in behaviour.
+                if stack.potion().unwrap_or(&stack.item) == "minecraft:healing" {
+                    m.heal(w.loop_context, 4.0);
+                }
+                if let Some(effect) = drink_potion_effect(&stack) {
+                    m.add_effect_instance(crate::brewing::namespaced(effect.id), effect);
+                }
+                if &*stack.item == "minecraft:milk_bucket" {
+                    m.apply_consume_effect(&crate::items::ConsumeEffect::ClearAllEffects);
+                }
+                m.extra.set_main_hand_stack(None);
+                resume_after_drink(m, w, level, events, resume, None)
+            }
             TickProgress::Paused(Pause::AfterDamage(resume)) => {
                 resume_after_damage(m, w, level, events, resume, None)
             }
             TickProgress::Paused(
-                Pause::Trample(_) | Pause::FallToPassengers(_) | Pause::Breeding { .. },
-            ) => {
-                unreachable!("a hostless tick cannot pause for movement or breeding")
-            }
+                Pause::Equipment { .. }
+                | Pause::Trample(_)
+                | Pause::FallToPassengers(_)
+                | Pause::RegisterBehaviors { .. }
+                | Pause::Breeding { .. },
+            ) => unreachable!("a hostless tick cannot reach this pause"),
             TickProgress::Paused(Pause::InsideEffects(_)) => {
                 unreachable!("hostless inside-block flush cannot pause")
             }
@@ -1463,6 +1512,7 @@ pub(super) fn resume_after_damage(
     if m.join != resume.join {
         return TickProgress::Complete(true);
     }
+    hurt_teleports(m, w, events);
     match resume.tail {
         DamageTail::Base { next, known_speed } => {
             let progress = continue_base_tick(m, w, level, events, next);
@@ -1490,7 +1540,7 @@ pub(super) fn resume_after_damage(
     }
 }
 
-/// The tick after `Entity.baseTick`, up to the fox's consumption boundary.
+/// Update item use and detect equipment changes after `Entity.baseTick`.
 fn after_base_tick(
     m: &mut Mob,
     w: &MobWorld,
@@ -1516,6 +1566,82 @@ fn after_base_tick(
     if m.alive() {
         super::spear_use::update_using_item(m, w, known_speed, events);
     }
+    if m.alive()
+        && m.species() == Species::WanderingTrader
+        && let Some(stack) = super::trader::tick_drink(m, events)
+    {
+        return TickProgress::Paused(Pause::Drink {
+            stack,
+            resume: DrinkResume::Trader,
+        });
+    }
+    after_using_item(m, w, level, events, movement)
+}
+
+fn after_using_item(
+    m: &mut Mob,
+    w: &MobWorld,
+    level: &mut DamageLevel<'_>,
+    events: &mut Vec<MobEvent>,
+    movement: Option<&mut Option<MobMovement>>,
+) -> TickProgress {
+    // LivingEntity.tick -> detectEquipmentUpdates, before the sleep check and aiStep.
+    if movement.is_some()
+        && !m.removed
+        && w.loop_context.side() == LoopSide::Server
+        && let Some(items) = w.items
+        && let Some(first) =
+            super::finalize::detect_equipment_updates(m, w.attributes, items, || {
+                mod_api::__private::enabled_listened(mod_api::HookId::LivingEquipmentChange)
+            })
+    {
+        return TickProgress::Paused(Pause::Equipment { first });
+    }
+    resume_after_equipment(m, w, level, events, movement)
+}
+
+/// Continue `finish_server_ai_step` after the owning game flushed staged
+/// `register_behaviors` for a freshly built or rebuilt brain.
+pub(super) fn resume_after_register_behaviors(
+    m: &mut Mob,
+    w: &MobWorld,
+    level: &mut DamageLevel<'_>,
+    stage: BrainStage,
+    events: &mut Vec<MobEvent>,
+    movement: Option<&mut Option<MobMovement>>,
+) -> TickProgress {
+    let pause_owner = movement.is_some();
+    if let BrainStage::AfterAgeBoundary { no_ai, after_water } = stage {
+        let next = if after_water {
+            AiStage::Finish
+        } else {
+            AiStage::AfterWater
+        };
+        return continue_ai_tail(m, w, level, events, no_ai, pause_owner, next);
+    }
+    let progress = match finish_server_ai_step_from(
+        m,
+        w,
+        level,
+        events,
+        Some(stage),
+        pause_owner,
+        pause_owner,
+    ) {
+        ControlFlow::Continue(()) => ai_step_after_server_ai(m, w, level, events, pause_owner),
+        ControlFlow::Break(next) => ControlFlow::Break(next),
+    };
+    finish_ai_progress(m, w, level, events, movement, progress)
+}
+
+/// Continue without redoing base tick, item use or equipment detection.
+pub(super) fn resume_after_equipment(
+    m: &mut Mob,
+    w: &MobWorld,
+    level: &mut DamageLevel<'_>,
+    events: &mut Vec<MobEvent>,
+    movement: Option<&mut Option<MobMovement>>,
+) -> TickProgress {
     super::sulfur_cube::adopt_body(m);
     let sleep_answer = m
         .extra
@@ -1555,6 +1681,42 @@ pub fn resume_after_consumption(
     }
     super::fox::before_living_ai_step(m, w);
     ai_and_finish_tick(m, w, level, events, movement)
+}
+
+/// Resume the exact tick site after `finishUsingItem` or a witch's potion.
+pub(super) fn resume_after_drink(
+    m: &mut Mob,
+    w: &MobWorld,
+    level: &mut DamageLevel<'_>,
+    events: &mut Vec<MobEvent>,
+    resume: DrinkResume,
+    movement: Option<&mut Option<MobMovement>>,
+) -> TickProgress {
+    if m.removed {
+        return TickProgress::Complete(false);
+    }
+    match resume {
+        DrinkResume::Trader => after_using_item(m, w, level, events, movement),
+        DrinkResume::Witch => {
+            super::witch::after_drink(m, events);
+            let progress = ai_step(m, w, level, events, movement.is_some());
+            finish_ai_progress(m, w, level, events, movement, progress)
+        }
+    }
+}
+
+/// The built-in status effect on either specialty drink's potion contents.
+pub fn drink_potion_effect(
+    stack: &crate::items::ItemStack,
+) -> Option<crate::effects::EffectInstance> {
+    let effect = match stack.potion().unwrap_or(&stack.item) {
+        "minecraft:water_breathing" => "water_breathing",
+        "minecraft:fire_resistance" => "fire_resistance",
+        "minecraft:swiftness" => "speed",
+        "minecraft:invisibility" => "invisibility",
+        _ => return None,
+    };
+    Some(crate::effects::EffectInstance::new(effect, 3600, 0))
 }
 
 fn ai_and_finish_tick(
@@ -1598,6 +1760,18 @@ fn ai_and_finish_tick(
         let progress = ridden_without_ai(m, w, level, events, movement.is_some());
         return finish_ai_progress(m, w, level, events, movement, progress);
     }
+    // Witch.aiStep drinks before super.aiStep; resume at the following magic roll.
+    if m.species() == Species::Witch {
+        let far = m
+            .target_info(w)
+            .is_some_and(|t| t.position.distance_squared(m.position) > 121.0);
+        if let Some(stack) = super::witch::ai_step_until_drink(m, events, far) {
+            return TickProgress::Paused(Pause::Drink {
+                stack,
+                resume: DrinkResume::Witch,
+            });
+        }
+    }
     let progress = ai_step(m, w, level, events, movement.is_some());
     finish_ai_progress(m, w, level, events, movement, progress)
 }
@@ -1625,7 +1799,7 @@ pub(super) fn resume_after_birth(
             } else if m.removed {
                 return TickProgress::Complete(false);
             } else {
-                match finish_server_ai_step(m, w, level, events, true) {
+                match finish_server_ai_step_from(m, w, level, events, None, true, true) {
                     ControlFlow::Continue(()) => ai_step_after_server_ai(m, w, level, events, true),
                     ControlFlow::Break(pause) => ControlFlow::Break(pause),
                 }
@@ -1671,6 +1845,9 @@ fn finish_ai_progress(
                 join: m.join,
                 tail: DamageTail::BeeServerAi { next },
             }))
+        }
+        ControlFlow::Break(AiPause::RegisterBehaviors(stage)) => {
+            TickProgress::Paused(Pause::RegisterBehaviors { stage })
         }
     }
 }
@@ -1840,6 +2017,14 @@ fn continue_ai_tail(
                 AiStage::Finish
             }
             AiStage::Finish => {
+                if pause_damage && m.staged_parts.pending_behaviors.is_some() {
+                    return TickProgress::Paused(Pause::RegisterBehaviors {
+                        stage: BrainStage::AfterAgeBoundary {
+                            no_ai,
+                            after_water: true,
+                        },
+                    });
+                }
                 return TickProgress::Complete(finish_tick(m, w, level, events));
             }
         };
@@ -1848,6 +2033,12 @@ fn continue_ai_tail(
                 join: m.join,
                 tail: DamageTail::Ai { next, no_ai },
             }));
+        }
+        if pause_damage && m.staged_parts.pending_behaviors.is_some() {
+            let after_water = matches!(next, AiStage::Finish);
+            return TickProgress::Paused(Pause::RegisterBehaviors {
+                stage: BrainStage::AfterAgeBoundary { no_ai, after_water },
+            });
         }
     }
 }
@@ -1926,7 +2117,7 @@ pub(super) fn resume_movement(
                     return TickProgress::Complete(false);
                 }
                 let pause_birth = w.asks_live_birth(m.species());
-                match finish_server_ai_step(m, w, level, events, pause_birth) {
+                match finish_server_ai_step_from(m, w, level, events, None, true, pause_birth) {
                     ControlFlow::Continue(()) => ai_step_after_server_ai(m, w, level, events, true),
                     ControlFlow::Break(pause) => ControlFlow::Break(pause),
                 }
@@ -3510,13 +3701,6 @@ fn ai_step(
     if m.species() == Species::Parrot {
         super::parrot::ai_step(m, w, level.random(), events);
     }
-    // Witch.aiStep runs before super.aiStep().
-    if m.species() == Species::Witch {
-        let far = m
-            .target_info(w)
-            .is_some_and(|t| t.position.distance_squared(m.position) > 121.0);
-        super::witch::ai_step(m, w.loop_context, events, far);
-    }
     if m.species() == Species::Fox {
         super::fox::pre_ai_step(m);
     }
@@ -3619,6 +3803,9 @@ fn hurt(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>, amount: f32, sour
 /// The teleport `Enderman.hurtServer` or `Shulker.hurtServer` makes inside a
 /// hurt, after the hurt's sound; with or without AI.
 fn hurt_teleports(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+    if m.has_protected_hurt() {
+        return;
+    }
     if m.species() == Species::Enderman && m.extra.counter2 > 0 {
         events.append(&mut m.outbox);
         super::enderman::run_pending_teleports(m, w, events);
@@ -4847,30 +5034,71 @@ fn server_ai_step(
             }
         }
     }
-    finish_server_ai_step(m, w, level, events, pause_birth)
+    finish_server_ai_step_from(m, w, level, events, None, pause_movement, pause_birth)
 }
 
-fn finish_server_ai_step(
+fn finish_server_ai_step_from(
     m: &mut Mob,
     w: &MobWorld,
     level: &mut DamageLevel<'_>,
     events: &mut Vec<MobEvent>,
+    stage: Option<BrainStage>,
+    pause_owner: bool,
     pause_birth: bool,
 ) -> ControlFlow<AiPause> {
     // A creaking looked at stands still: its navigation, move, look and jump
     // controls wait (CreakingPathNavigation and the Creaking*Control).
     let frozen = super::creaking::is_creaking(m) && !super::creaking::can_move(m);
-    // The bee's navigation waits while it pollinates.
-    if !frozen && !super::bee::pollinating(m) {
-        m.nav_tick(w);
+    let animal_brain_active = m.species() == Species::Sniffer
+        || m.species() == Species::HappyGhast && m.is_baby()
+        || m.species() == Species::CopperGolem
+        || m.species() == Species::Axolotl
+        || m.species() == Species::Tadpole;
+    if stage.is_none() {
+        // The bee's navigation waits while it pollinates.
+        if !frozen && !super::bee::pollinating(m) {
+            m.nav_tick(w);
+        }
+        if pause_owner {
+            if super::monster_brain::has_brain(m.species()) {
+                super::monster_brain::ensure_brain(m);
+            }
+            if m.species() == Species::Villager {
+                super::villager_brain::ensure_brain(m, w.game_time, w.day_time);
+            }
+            if animal_brain_active {
+                super::animal_brain::ensure_brain(m);
+            }
+            if m.staged_parts.pending_behaviors.is_some() {
+                return ControlFlow::Break(AiPause::RegisterBehaviors(BrainStage::BeforeBrain));
+            }
+        }
     }
-    if super::monster_brain::has_brain(m.species()) {
-        // Breeze/Creaking.customServerAiStep: the brain, then updateActivity.
-        super::monster_brain::tick(m, w, level, events);
+    if !matches!(stage, Some(BrainStage::AfterVillagerBrain)) {
+        if super::monster_brain::has_brain(m.species()) {
+            // Breeze/Creaking.customServerAiStep: the brain, then updateActivity.
+            super::monster_brain::tick(m, w, level, events);
+        }
+        if m.species() == Species::Villager {
+            // Villager.customServerAiStep: the brain, then the raid sound roll.
+            super::villager::tick_brain(m, w, level, events);
+            if pause_owner && m.staged_parts.pending_behaviors.is_some() {
+                return ControlFlow::Break(AiPause::RegisterBehaviors(
+                    BrainStage::AfterVillagerBrain,
+                ));
+            }
+        }
+        if m.species() == Species::Warden {
+            // Warden.customServerAiStep: the brain and its bookkeeping.
+            super::warden::server_ai_step(m, w, level, events);
+        }
+        // Sniffer and HappyGhast.customServerAiStep: the brain (a happy ghast's
+        // only while it is a ghastling), then updateActivity.
+        if animal_brain_active {
+            super::animal_brain::tick(m, w, level, events);
+        }
     }
     if m.species() == Species::Villager {
-        // Villager.customServerAiStep: the brain, then the raid sound roll.
-        super::villager::tick_brain(m, w, level, events);
         if let Some(player) = super::villager::ext_mut(m).last_traded_player.take() {
             events.push(MobEvent::VillagerTrade { mob: m.id, player });
         }
@@ -4882,11 +5110,7 @@ fn finish_server_ai_step(
     }
     // Sniffer and HappyGhast.customServerAiStep: the brain (a happy ghast's
     // only while it is a ghastling), then updateActivity.
-    if (m.species() == Species::Sniffer
-        || m.species() == Species::HappyGhast && m.is_baby()
-        || m.species() == Species::CopperGolem
-        || m.species() == Species::Axolotl
-        || m.species() == Species::Tadpole)
+    if animal_brain_active
         && let Some((event, resume)) =
             super::animal_brain::tick_until_birth(m, w, level, events, pause_birth)
     {
@@ -6559,7 +6783,7 @@ mod poison_effect_tests {
         let pig_kind = Arc::new(data.types.get("minecraft:pig").unwrap().clone());
         let mut pig = Mob::new(1, pig_kind, Vec3::new(0.0, 4.0, 0.0), 0.0);
         pig.extra
-            .set_main_hand(Some("minecraft:totem_of_undying".into()));
+            .set_main_hand_stack(Some(crate::mobs::totem_tests::totem_with_components()));
         pig.extra.effects.push(crate::mobs::StoredEffect::new(
             "minecraft:instant_damage",
             5,

@@ -15,6 +15,71 @@ pub struct HudVertex {
     /// pack's text shader draws when it has one.
     pub text: u32,
 }
+/// A triangle clipped by a rectangle has at most seven vertices.
+type ClippedTriangle = SmallVec<[HudVertex; 7]>;
+
+fn triangle_area([a, b, c]: &[HudVertex; 3]) -> f32 {
+    (b.pos[0] - a.pos[0]) * (c.pos[1] - a.pos[1]) - (c.pos[0] - a.pos[0]) * (b.pos[1] - a.pos[1])
+}
+
+fn clip_triangle(triangle: &[HudVertex; 3], [x0, y0, x1, y1]: [f32; 4]) -> ClippedTriangle {
+    let mut poly = ClippedTriangle::from_slice(triangle);
+    for (axis, limit, keep_below) in [(0, x0, false), (0, x1, true), (1, y0, false), (1, y1, true)]
+    {
+        poly = clip_polygon(&poly, axis, limit, keep_below);
+    }
+    poly
+}
+
+/// Sutherland-Hodgman against one half plane, interpolating every attribute.
+fn clip_polygon(poly: &[HudVertex], axis: usize, limit: f32, keep_below: bool) -> ClippedTriangle {
+    let inside = |v: &HudVertex| {
+        if keep_below {
+            v.pos[axis] < limit
+        } else {
+            v.pos[axis] >= limit
+        }
+    };
+    let lerp = |a: &HudVertex, b: &HudVertex, t: f32| {
+        let mix = |p: f32, q: f32| p + (q - p) * t;
+        let mut v = *a;
+        v.pos = [mix(a.pos[0], b.pos[0]), mix(a.pos[1], b.pos[1])];
+        v.uv = [mix(a.uv[0], b.uv[0]), mix(a.uv[1], b.uv[1])];
+        v.depth = mix(a.depth, b.depth);
+        // A shaded shape (a gradient, `hud_kit::shapes`) keeps its colours across the cut.
+        v.color = if a.color == b.color {
+            a.color
+        } else {
+            let channel = |shift: u32| {
+                let (p, q) = (
+                    ((a.color >> shift) & 0xFF) as f32,
+                    ((b.color >> shift) & 0xFF) as f32,
+                );
+                ((p + (q - p) * t).round().clamp(0.0, 255.0) as u32) << shift
+            };
+            channel(0) | channel(8) | channel(16) | channel(24)
+        };
+        v.glint_uv = [
+            mix(a.glint_uv[0], b.glint_uv[0]),
+            mix(a.glint_uv[1], b.glint_uv[1]),
+        ];
+        v.pos[axis] = limit;
+        v
+    };
+    let mut out = ClippedTriangle::new();
+    for i in 0..poly.len() {
+        let (a, b) = (&poly[i], &poly[(i + 1) % poly.len()]);
+        let (ia, ib) = (inside(a), inside(b));
+        if ia {
+            out.push(*a);
+        }
+        if ia != ib {
+            let t = (limit - a.pos[axis]) / (b.pos[axis] - a.pos[axis]);
+            out.push(lerp(a, b, t));
+        }
+    }
+    out
+}
 /// Scale inputs for one view, copied from its owner's settings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GuiScale {
@@ -29,6 +94,8 @@ pub struct HudBatch {
     pub scale: f32,
     pub width: f32,
     pub height: f32,
+    /// Physical viewport; GUI width and height round up at non-integer ratios.
+    viewport: [u32; 2],
     /// Glyph pixels to upload into the atlas before drawing.
     pub patches: Vec<crate::font::Patch>,
     /// Client mods' dynamic textures to upload into their atlas slots before drawing, sharing
@@ -94,64 +161,27 @@ pub struct HudPaintCheckpoint {
     start: usize,
     pictures: usize,
     profiles: usize,
-    own_start: usize,
-    own_ranges: SmallVec<[std::ops::Range<usize>; 2]>,
-    delegated: bool,
 }
 
 impl HudPaintCheckpoint {
-    /// Exclude paint appended by a completed delegation.
-    pub fn preserve_delegated(&mut self, range: std::ops::Range<usize>) {
-        if self.own_start != range.start {
-            self.own_ranges.push(self.own_start..range.start);
-        }
-        self.own_start = range.end;
-        self.delegated = true;
-    }
-
     pub fn discard(self, batch: &mut HudBatch) {
-        // Remove from back to front so earlier ranges still refer to the original indices.
-        for range in std::iter::once(self.own_start..batch.vertices.len())
-            .chain(self.own_ranges.into_iter().rev())
-            .filter(|range| !range.is_empty())
-        {
-            let start = range.start as u32;
-            let len = (range.end - range.start) as u32;
-            let move_endpoint = |at: u32| at - at.saturating_sub(start).min(len);
-            drop(batch.vertices.drain(range));
+        if self.start < batch.vertices.len() {
+            let start = self.start as u32;
+            batch.vertices.truncate(self.start);
             let first = batch.blends.partition_point(|(run, _)| run.end <= start);
             for (run, _) in &mut batch.blends[first..] {
-                *run = move_endpoint(run.start)..move_endpoint(run.end);
+                run.end = run.end.min(start);
             }
             batch.blends.retain(|(run, _)| run.start < run.end);
             let first = batch.scissors.partition_point(|(run, _)| run.end <= start);
             for (run, _) in &mut batch.scissors[first..] {
-                *run = move_endpoint(run.start)..move_endpoint(run.end);
+                run.end = run.end.min(start);
             }
             batch.scissors.retain(|(run, _)| run.start < run.end);
         }
-        // Glyph atlas uploads are reusable by other painters. A delegated draw can also
-        // share a picture or inline skin first seen by the wrapper. Picture references
-        // can be checked against surviving blend runs; the inline skin cache deduplicates
-        // across the frame and does not carry a per-vertex reference.
-        if !self.delegated {
-            batch.pictures.truncate(self.pictures);
-            batch.inline_profiles.truncate(self.profiles);
-        } else {
-            let first = batch
-                .blends
-                .partition_point(|(run, _)| run.end <= self.start as u32);
-            let surviving = &batch.blends[first..];
-            let mut i = 0;
-            batch.pictures.retain(|picture| {
-                let keep = i < self.pictures
-                    || surviving
-                        .iter()
-                        .any(|(_, blend)| *blend == Blend::Picture(picture.id));
-                i += 1;
-                keep
-            });
-        }
+        // Glyph atlas uploads are reusable by other painters.
+        batch.pictures.truncate(self.pictures);
+        batch.inline_profiles.truncate(self.profiles);
     }
 }
 
@@ -159,6 +189,8 @@ impl HudPaintCheckpoint {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Blend {
     Picture(u64),
+    /// A run sampling a separately stitched registered atlas page.
+    AtlasPage(usize, AtlasBlend),
     /// `BlendFunction.TRANSLUCENT`.
     Alpha,
     /// `BlendFunction.INVERT` (`RenderPipelines.CROSSHAIR`, `GUI_INVERT`).
@@ -181,6 +213,32 @@ pub enum Blend {
     /// `GlintTextures::blends` says.
     CitGlint(u8),
 }
+impl Blend {
+    pub(super) fn scissor(self) -> Option<[u32; 4]> {
+        match self {
+            Self::Depth(clip) | Self::DepthGlint(clip) => Some(clip),
+            _ => None,
+        }
+    }
+}
+
+/// The backend scissor, intersected with its viewport in device pixels.
+pub(super) fn hud_scissor(clip: [u32; 4], size: [u32; 2], zoom: f32) -> Option<[u32; 4]> {
+    let [x, y, w, h] = clip.map(|v| (v as f32 * zoom) as u32);
+    let (x, y) = (x.min(size[0]), y.min(size[1]));
+    let (w, h) = (w.min(size[0] - x), h.min(size[1] - y));
+    (w != 0 && h != 0).then_some([x, y, w, h])
+}
+
+/// The 2D sampling pipelines that can draw a registered atlas's sprite.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AtlasBlend {
+    Alpha,
+    Invert,
+    Additive,
+    Vignette,
+}
+
 /// What a `Blend::EndPortal` fill samples: the atlas rects (u0, v0, width,
 /// height) of `end_sky.png` and `end_portal.png`, and the `GameTime` uniform.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -197,19 +255,13 @@ impl HudBatch {
     pub fn new(window: [u32; 2], inputs: GuiScale) -> Self {
         let gui =
             sunrise_client_input::window::GuiSize::new(window, inputs.requested, inputs.unicode);
-        Self::with_gui_size(gui)
-    }
-    /// An offscreen or test batch, independent of the active view's settings.
-    pub fn scratch(window: [u32; 2]) -> Self {
-        Self::with_gui_size(sunrise_client_input::window::GuiSize::new(window, 0, false))
-    }
-    fn with_gui_size(gui: sunrise_client_input::window::GuiSize) -> Self {
         Self {
             pictures: Vec::new(),
             vertices: Vec::new(),
             scale: gui.scale as f32,
             width: gui.size[0] as f32,
             height: gui.size[1] as f32,
+            viewport: window,
             patches: Vec::new(),
             image_patches: Vec::new(),
             blends: Vec::new(),
@@ -222,16 +274,22 @@ impl HudBatch {
             inline_profiles: Vec::new(),
         }
     }
+    /// An offscreen or test batch, independent of the active view's settings.
+    pub fn scratch(window: [u32; 2]) -> Self {
+        Self::new(
+            window,
+            GuiScale {
+                requested: 0,
+                unicode: false,
+            },
+        )
+    }
     /// Start tracking one callback's writes to this batch without copying existing paint.
     pub fn paint_checkpoint(&self) -> HudPaintCheckpoint {
-        let start = self.vertices.len();
         HudPaintCheckpoint {
-            start,
+            start: self.vertices.len(),
             pictures: self.pictures.len(),
             profiles: self.inline_profiles.len(),
-            own_start: start,
-            own_ranges: SmallVec::new(),
-            delegated: false,
         }
     }
 
@@ -281,6 +339,12 @@ impl HudBatch {
             _ => self.blends.push((range, blend)),
         }
     }
+    /// Make an ordinary GUI sprite draw use its registered atlas page, if it has one.
+    pub fn bind_gui_atlas(&mut self, start: usize, atlas: &HudAtlas, name: &str) {
+        if let Some(page) = atlas.gui_atlas_page(name) {
+            self.blend_since(start, Blend::AtlasPage(page, AtlasBlend::Alpha));
+        }
+    }
     /// `GuiGraphicsExtractor.textHighlight`: with `invert_text` the area's
     /// colours are inverted first (white text on a dark field turns blue on
     /// white), then blue is added.
@@ -319,29 +383,32 @@ impl HudBatch {
     pub(super) fn runs_in(
         &self,
         vertices: std::ops::Range<u32>,
-    ) -> SmallVec<[(std::ops::Range<u32>, Blend); 16]> {
-        let mut runs = SmallVec::new();
+    ) -> impl Iterator<Item = (std::ops::Range<u32>, Blend)> + '_ {
+        // Scissors and other non-default runs are kept in vertex order.
+        let first = self
+            .blends
+            .partition_point(|(run, _)| run.end <= vertices.start);
+        let mut runs = self.blends[first..].iter().peekable();
+        let end = vertices.end.min(self.vertices.len() as u32);
         let mut at = vertices.start;
-        for (range, blend) in &self.blends {
-            if range.start > at {
-                let start = at.max(vertices.start);
-                let end = range.start.min(vertices.end);
-                if start < end {
-                    runs.push((start..end, Blend::Alpha));
+        std::iter::from_fn(move || {
+            while let Some((run, blend)) = runs.peek().copied().filter(|(run, _)| run.start < end) {
+                if at < run.start {
+                    let gap = at..run.start;
+                    at = run.start;
+                    return Some((gap, Blend::Alpha));
+                }
+                runs.next();
+                let range = run.start.max(vertices.start)..run.end.min(end);
+                at = at.max(range.end);
+                if !range.is_empty() {
+                    return Some((range, *blend));
                 }
             }
-            let start = range.start.max(vertices.start);
-            let end = range.end.min(vertices.end);
-            if start < end {
-                runs.push((start..end, *blend));
-            }
-            at = at.max(range.end);
-        }
-        let end = (self.vertices.len() as u32).min(vertices.end);
-        if at < end {
-            runs.push((at.max(vertices.start)..end, Blend::Alpha));
-        }
-        runs
+            let tail = at..end;
+            at = end;
+            (!tail.is_empty()).then_some((tail, Blend::Alpha))
+        })
     }
     /// `AbstractContainerScreen.init`: center in integer GUI coordinates.
     pub fn centered_origin(&self, width: f32, height: f32) -> (f32, f32) {
@@ -489,7 +556,9 @@ impl HudBatch {
     }
     pub fn sprite(&mut self, atlas: &HudAtlas, name: &str, x: f32, y: f32) {
         if let Some(r) = atlas.gui_draw_rect(name).copied() {
+            let start = self.vertices.len();
             self.rect_uv(x, y, r.w as f32, r.h as f32, r, u32::MAX);
+            self.bind_gui_atlas(start, atlas, name);
         }
     }
     pub fn sprite_scaled(
@@ -503,7 +572,9 @@ impl HudBatch {
         color: u32,
     ) {
         if let Some(r) = atlas.gui_draw_rect(name).copied() {
+            let start = self.vertices.len();
             self.rect_uv(x, y, w, h, r, color);
+            self.bind_gui_atlas(start, atlas, name);
         }
     }
     /// Draw part of a sprite, `fraction` of its width from the left.
@@ -511,7 +582,9 @@ impl HudBatch {
         if let Some(mut r) = atlas.gui_draw_rect(name).copied() {
             let w = r.w as f32 * fraction;
             r.u1 = r.u0 + (r.u1 - r.u0) * fraction;
+            let start = self.vertices.len();
             self.rect_uv(x, y, w, r.h as f32, r, u32::MAX);
+            self.bind_gui_atlas(start, atlas, name);
         }
     }
     /// Scale the vertices pushed since `start` about `(cx, cy)` (a GUI pose
@@ -774,7 +847,15 @@ impl HudBatch {
             InlineObject::Atlas { .. } => {
                 if let Some(rect) = atlas.inline_object_sprite(object) {
                     let size = crate::font::INLINE_OBJECT_SIZE;
+                    let start = self.vertices.len();
                     self.rect_uv(x, y, size, size, rect, tint);
+                    if let crate::text::InlineObject::Atlas {
+                        atlas: id, sprite, ..
+                    } = object
+                        && id.strip_prefix("minecraft:").unwrap_or(id) == "gui"
+                    {
+                        self.bind_gui_atlas(start, atlas, sprite);
+                    }
                 }
             }
         }
@@ -807,6 +888,70 @@ impl HudBatch {
         self.vertices.extend(glyphs);
         behind
     }
+
+    /// `[x, y, width, height]` of the geometry appended since `start`, in GUI pixels,
+    /// after clipping to the viewport and the scissor of each draw run.
+    pub fn visible_vertex_bounds(&self, start: usize) -> Option<[f32; 4]> {
+        if self.viewport.contains(&0) || start >= self.vertices.len() {
+            return None;
+        }
+        let mut bounds = [
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        ];
+        let mut include = |[x, y]: [f32; 2]| {
+            bounds[0] = bounds[0].min(x);
+            bounds[1] = bounds[1].min(y);
+            bounds[2] = bounds[2].max(x);
+            bounds[3] = bounds[3].max(y);
+        };
+        for (range, blend) in self.runs_in(start as u32..self.vertices.len() as u32) {
+            let [x, y, w, h] = if let Some(clip) = blend.scissor() {
+                let Some(scissor) = hud_scissor(clip, self.viewport, 1.0) else {
+                    continue;
+                };
+                scissor
+            } else {
+                [0, 0, self.viewport[0], self.viewport[1]]
+            };
+            let [x0, y0, x1, y1] = [x, y, x + w, y + h].map(|v| v as f32 / self.scale);
+            let vertices = &self.vertices[range.start as usize..range.end as usize];
+            for triangle in vertices.as_chunks::<3>().0 {
+                if triangle.iter().flat_map(|v| v.pos).any(|v| !v.is_finite())
+                    || triangle_area(triangle) == 0.0
+                {
+                    continue;
+                }
+                if triangle.iter().all(|v| {
+                    let [x, y] = v.pos;
+                    x >= x0 && x <= x1 && y >= y0 && y <= y1
+                }) {
+                    triangle.iter().for_each(|v| include(v.pos));
+                } else {
+                    let poly = clip_triangle(triangle, [x0, y0, x1, y1]);
+                    if poly.len() >= 3 {
+                        // A polygon left on a clipping edge has no area. It must not
+                        // extend the bounds of neighbouring, actually drawn triangles.
+                        let (mut lo, mut hi) = (poly[0].pos, poly[0].pos);
+                        for v in &poly[1..] {
+                            for axis in 0..2 {
+                                lo[axis] = lo[axis].min(v.pos[axis]);
+                                hi[axis] = hi[axis].max(v.pos[axis]);
+                            }
+                        }
+                        if lo[0] < hi[0] && lo[1] < hi[1] {
+                            include(lo);
+                            include(hi);
+                        }
+                    }
+                }
+            }
+        }
+        let [x0, y0, x1, y1] = bounds;
+        (x0 < x1 && y0 < y1).then_some([x0, y0, x1 - x0, y1 - y0])
+    }
 }
 
 fn inline_profile_name(profile: &serde_json::Value) -> Option<&str> {
@@ -838,5 +983,82 @@ impl HudUniform {
                 [fill.game_time, tint[0], tint[1], tint[2]],
             ],
         }
+    }
+}
+
+#[cfg(test)]
+mod bounds_tests {
+    use super::*;
+
+    #[test]
+    fn visible_vertex_bounds_tracks_drawn_slice_and_ignores_empty_geometry() {
+        let mut batch = HudBatch::scratch([320, 240]);
+        let uv = Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 1,
+            h: 1,
+        };
+        assert_eq!(batch.visible_vertex_bounds(0), None);
+        batch.rect_uv(10.0, 20.0, 30.0, 40.0, uv, u32::MAX);
+        assert_eq!(
+            batch.visible_vertex_bounds(0),
+            Some([10.0, 20.0, 30.0, 40.0])
+        );
+
+        let layer_start = batch.vertices.len();
+        assert_eq!(batch.visible_vertex_bounds(layer_start), None);
+        batch.rect_uv(295.0, 1.0, 24.0, 24.0, uv, u32::MAX);
+        batch.rect_uv(270.0, 26.0, 24.0, 24.0, uv, u32::MAX);
+        assert_eq!(
+            batch.visible_vertex_bounds(layer_start),
+            Some([270.0, 1.0, 49.0, 49.0])
+        );
+
+        let degenerate = batch.vertices.len();
+        batch.rect_uv(5.0, 5.0, 0.0, 10.0, uv, u32::MAX);
+        assert_eq!(batch.visible_vertex_bounds(degenerate), None);
+    }
+
+    #[test]
+    fn visible_vertex_bounds_clips_preview_triangles_per_run_and_uses_the_physical_viewport() {
+        let mut batch = HudBatch::new(
+            [641, 481],
+            GuiScale {
+                requested: 2,
+                unicode: false,
+            },
+        );
+        // Same triangle in two model preview runs. The second scissor overlaps the
+        // triangle's axis-aligned box, but is wholly beyond the diagonal edge x+y=40.
+        let preview = [
+            [0.0, 0.0, 0.0],
+            [40.0, 0.0, 0.0],
+            [0.0, 40.0, 1.0],
+            [0.0, 40.0, 1.0],
+        ];
+        batch.quad_3d(preview, [[0.0; 2]; 4], u32::MAX);
+        batch.depth_since(0, [10.25, 10.0, 22.5, 40.0]);
+        let hidden = batch.vertices.len();
+        batch.quad_3d(preview, [[0.0; 2]; 4], u32::MAX);
+        batch.depth_since(hidden, [30.0, 30.0, 80.0, 80.0]);
+        assert_eq!(batch.visible_vertex_bounds(hidden), None);
+        assert_eq!(
+            batch.visible_vertex_bounds(0),
+            Some([10.0, 10.0, 12.5, 20.0])
+        );
+
+        let ordinary = batch.vertices.len();
+        batch.quad(
+            [[319.0, 1.0], [321.0, 1.0], [321.0, 3.0], [319.0, 3.0]],
+            [[0.0; 2]; 4],
+            u32::MAX,
+        );
+        assert_eq!(
+            batch.visible_vertex_bounds(ordinary),
+            Some([319.0, 1.0, 1.5, 2.0])
+        );
     }
 }

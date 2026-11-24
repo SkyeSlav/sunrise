@@ -485,7 +485,7 @@ pub(in crate::game) mod tests {
     #[test]
     #[ignore = "daily"]
     fn moves_and_pushes_a_live_mob() {
-        use super::super::native_entity_refs::tests::with_game;
+        use super::super::native_entity_refs::tests::{fixture_resident_column, with_game};
         use sunrise_client::mobs::Mob;
         use sunrise_core::geometry::Vec3;
 
@@ -508,8 +508,10 @@ pub(in crate::game) mod tests {
             mob.extra.passenger = true;
             mob.fall_distance = 5.0;
             mob.velocity.y = -2.0;
+            fixture_resident_column(&mut game.world, (0, 0));
             game.mobs.push(mob);
             let entity = game.entity(12).unwrap();
+            fixture_resident_column(&mut game.world, (0, -1));
             assert!(entity.teleport_to(game, [5.0, 70.0, -3.0], Some([90.0, 120.0])));
             let mob = &game.mobs[0];
             assert!(mob.ai.nav.path.is_none());
@@ -549,7 +551,7 @@ pub(in crate::game) mod tests {
                 knot_check: None,
                 eye: None,
                 join: Default::default(),
-                item_transformation: None,
+                display: None,
                 interaction: None,
                 id: 14,
                 kind: "minecraft:marker".into(),

@@ -23,7 +23,6 @@ impl PartRegistrar {
         let recipe_book_fields = self.recipe_book_fields.clone();
         let recipe_book_filters = self.recipe_book_filters.clone();
         let registered = self.registered;
-        let entity_selector_bytes = self.entity_selector_bytes;
         let block_entity_transforms = self.block_entity_transforms.clone();
         let type_identities = self.type_identities.clone();
         let custom_registry_count = self.custom_registries.len();
@@ -57,7 +56,6 @@ impl PartRegistrar {
                     registrar.recipe_book_fields = recipe_book_fields;
                     registrar.recipe_book_filters = recipe_book_filters;
                     registrar.registered = registered;
-                    registrar.entity_selector_bytes = entity_selector_bytes;
                     registrar.type_identities = type_identities;
                     let rejected_custom_registries =
                         registrar.custom_registries.split_off(custom_registry_count);
@@ -99,8 +97,8 @@ impl PartRegistrar {
             game_rules,
             custom_stats,
             custom_stat_owners,
-            entity_tick_each,
             block_entity_types,
+            block_entity_ticker_selectors,
             entity_attributes,
             general_entity_types,
             world_fluids,
@@ -112,6 +110,7 @@ impl PartRegistrar {
             biome_regions,
             biome_modifiers,
             datapack_registries,
+            configs,
             controllers,
             arm_poses,
             consume_effects,
@@ -236,9 +235,11 @@ mod tests {
             let kind = r
                 .block_entity_type("callback")
                 .blocks(&[])
-                .transform(|data: &crate::Compound, _: crate::StructureTransform| Ok(data.clone()))
+                .transform(|_: &mut crate::Compound, _: crate::StructureTransform| Ok(()))
                 .build();
             r.block_entity_part(&kind, Callback).unwrap();
+            r.register_config(crate::ConfigSpec::new(crate::ConfigKind::Common, ""), None)
+                .unwrap();
             r.refuse("bootstrap failed: café\nmissing bridge");
             r.refuse("second refusal: missing config");
             r.warn("test.warn.bridge", &["missing"]);
@@ -253,6 +254,8 @@ mod tests {
         fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
             r.declare_fluid("soup");
             r.declare_biome_region("kept", region()).unwrap();
+            r.register_config(crate::ConfigSpec::new(crate::ConfigKind::Common, ""), None)
+                .unwrap();
         }
     }
 
@@ -361,6 +364,14 @@ mod tests {
                 .map(|d| (d.mod_id.as_str(), d.id.as_str(), d.region.weight))
                 .collect::<Vec<_>>(),
             [("healthy", "healthy:kept", 5), ("later", "later:kept", 5)]
+        );
+        assert_eq!(
+            registrar
+                .configs
+                .iter()
+                .map(|config| config.mod_id())
+                .collect::<Vec<_>>(),
+            ["healthy", "later"]
         );
         assert!(registrar.block_entity_types.is_empty());
         assert!(registrar.block_entity_transforms.is_empty());

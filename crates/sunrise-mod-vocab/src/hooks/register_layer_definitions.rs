@@ -35,10 +35,11 @@ at a `PartPose`, on a texture of the given size. Texture offsets, mirroring and
 ```
 
 `ClientHost::bake_layer` bakes a registered layer or a vanilla layer by its
-`entity-models.json` name (`minecraft:zombie#main`) into an owned `ModelPart` tree. Bake once
-and keep it. Before each frame, call `reset_all_poses` and set the parts' positions and
-rotations as `setupAnim` does. A layer unavailable from the cached mob types is read from
-resources for each bake, so do not bake it every frame.
+`entity-models.json` name (`minecraft:zombie#main`) into an owned `ModelPart` tree. All
+layers are indexed once per client resource load and reload rather than read from disk on
+each bake; callers should still bake once and reuse the owned `ModelPart`, calling
+`reset_all_poses` and setting the parts' positions and rotations each frame as `setupAnim`
+does.
 
 Draw the tree with `BlockEntityDrawContext::model_part`, using the same draw context the mob
 or block entity submit hook received. There is no separate Host drawing helper. Positions

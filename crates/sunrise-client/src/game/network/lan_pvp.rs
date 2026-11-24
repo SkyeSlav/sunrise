@@ -8,7 +8,6 @@ use super::{
     Game, chat::PLAYER_NAME, commands::Target, lan_actions::CombatPlayer, lan_mobs::guest_bounds,
     mace::Spared,
 };
-use sunrise_client::enchant::EffectContext;
 
 use sunrise_client::{
     Result,
@@ -39,13 +38,6 @@ pub(super) enum Victim {
     Guest(u32),
 }
 
-impl Victim {
-    fn conn(self) -> Option<u32> {
-        let Victim::Guest(conn) = self;
-        Some(conn)
-    }
-}
-
 /// The attacker's side of the hit.
 pub(super) struct Strike {
     /// The attacking guest, kept after their turn through `as_guest` ends.
@@ -66,17 +58,15 @@ pub(super) struct Strike {
     /// yaw), and whether the hit is a sprinting knockback attack.
     knockback: (f32, f64, f64),
     knockback_attack: bool,
+    direct_motion: Option<(f64, bool)>,
     /// The attacker's team, for the victim's `Player.canHarmPlayer`.
     team: Option<sunrise_client::scoreboard::Team>,
     /// The attacker's main-hand item with a custom name, for the death
     /// message's `.item` form.
     item: Option<sunrise_client::text::Text>,
-    /// The weapon's `minecraft:ignite` (Fire Aspect) on the victim, in
-    /// seconds (`EnchantmentHelper.doPostAttackEffects`).
-    ignite: f32,
-    /// The weapon taken before the hit, for mods' own `post_attack` kinds
-    /// after it (lethal Thorns may empty the hand first).
+    /// The weapon that actually produced the strike, before either guest moves.
     pub(super) weapon: Option<sunrise_client::items::ItemStack>,
+    pub(super) damage_type: String,
 }
 
 /// A player's blow on another player as the native hooks name it: the hit's
@@ -103,12 +93,13 @@ impl Strike {
             from: [3.0, 64.0, 5.0],
             disable_blocking: 0.0,
             sweep: None,
-            knockback: (0.5, 1.0, 0.0),
+            knockback: (1.0, 1.0, 0.0),
             knockback_attack: false,
+            direct_motion: None,
             team: None,
             item: None,
-            ignite: 0.0,
             weapon: None,
+            damage_type: "minecraft:player_attack".into(),
         }
     }
 }
@@ -137,7 +128,7 @@ pub(super) struct Sweep {
     /// The damage after the enchantments and the attack strength.
     damage: f32,
     /// Custom effects need the actual victim, so keep their pre-hit input until each landing.
-    custom_damage: Option<SweepDamage>,
+    enchanted_damage: Option<SweepDamage>,
     /// The push along the attacker's yaw.
     knockback: (f64, f64),
     team: Option<sunrise_client::scoreboard::Team>,
@@ -145,17 +136,6 @@ pub(super) struct Sweep {
     pub(super) hit_box: Aabb,
     /// The entity id of the player the sweep started from, which it spares.
     pub(super) skip: Option<i32>,
-    /// The weapon's `minecraft:ignite` (Fire Aspect) on each swept player, in
-    /// seconds (`doPostAttackEffects` after a sweep hit lands).
-    ignite: f32,
-}
-
-impl Strike {
-    /// Whether it has extra knockback, which stops the attacker's sprint
-    /// once it lands (Player.causeExtraKnockback).
-    pub(super) fn stops_sprint(&self) -> bool {
-        self.knockback.0 > 0.0
-    }
 }
 
 impl Game<'_> {
@@ -201,7 +181,8 @@ impl Game<'_> {
         let (amount, scale, crit, magic) =
             self.melee_damage("minecraft:player", true, Some(victim));
         let sweep = self.sweep_attack_position(scale, crit, "minecraft:player");
-        let (strength, knockback_attack) = self.extra_knockback("minecraft:player", scale);
+        let strength = self.player_attack_knockback();
+        let knockback_attack = scale > 0.9 && self.player.as_ref().is_some_and(|p| p.sprinting);
         let (xd, zd) = self.extra_knockback_direction();
         self.attack_ticks = 0;
         self.swing_arm();
@@ -213,9 +194,12 @@ impl Game<'_> {
             self.held()
                 .map_or(0.0, |stack| self.items().weapon_disable_blocking(stack))
         };
-        let ignite = self.weapon_ignite_seconds();
-        // `Player.getWeaponItem`: the main hand.
-        let weapon = self.native_post_attack_weapon(self.inventory[self.selected].as_ref());
+        let weapon = self.held().cloned();
+        let motion = self
+            .player
+            .as_ref()
+            .map_or((0.0, false), |p| (p.fall_distance, p.fall_flying));
+        let damage_type = self.stack_melee_damage_type(weapon.as_ref(), motion, true);
         Some(Strike {
             attacker: self.lan_acting,
             creative: self.creative,
@@ -228,33 +212,12 @@ impl Game<'_> {
             sweep,
             knockback: (strength, xd, zd),
             knockback_attack,
+            direct_motion: Some(motion),
             team: self.player_team().cloned(),
             item: self.main_hand_custom_name(),
-            ignite,
             weapon,
+            damage_type,
         })
-    }
-
-    /// The held weapon's `minecraft:ignite` (Fire Aspect) seconds on a player
-    /// victim (`EnchantmentHelper.doPostAttackEffects`).
-    pub(super) fn weapon_ignite_seconds(&mut self) -> f32 {
-        let Some(held) = self.held().cloned() else {
-            return 0.0;
-        };
-        let ctx = EffectContext {
-            this: Some("minecraft:player"),
-            attacker: Some("minecraft:player"),
-            direct_attacker: Some("minecraft:player"),
-            is_direct: true,
-            items: Some(world_items!(self)),
-            ..Default::default()
-        };
-        let mut random = self.world.random.clone();
-        world_stations!(self).enchantments.ignite_seconds(
-            &held.all_enchantments(),
-            &ctx,
-            &mut random,
-        )
     }
 
     /// The guests by connection, with their entity ids.
@@ -358,25 +321,37 @@ impl Game<'_> {
             at,
         };
         let shooter = self.player_attacker(p.guest);
-        let effect_attacker = shooter
-            .as_ref()
-            .map_or(self.own_entity_id() as u32, |s| s.0);
-        let result = match victim {
-            Victim::Guest(conn) => self.guest_hit_by(conn, |g| {
-                g.combat.refuse_player_hit = refused;
-                g.combat.projectile_attacker = shooter;
-                let saved_effect_attacker = g
-                    .combat
-                    .enchantment_projectile_attacker
-                    .replace(effect_attacker);
-                let r = g.projectile_hit(p, on_player);
-                g.combat.refuse_player_hit = false;
-                g.combat.projectile_attacker = None;
-                g.combat.enchantment_projectile_attacker = saved_effect_attacker;
-                r
-            }),
-        };
-        result.unwrap_or(Ok(()))
+        let effect_attacker = self.player_entity_id_by_connection(p.guest);
+        let Victim::Guest(conn) = victim;
+        let mut landed_arrow = None;
+        self.guest_hit_by(conn, |g| {
+            g.combat.refuse_player_hit = refused;
+            g.combat.projectile_attacker = shooter;
+            let saved_effect_attacker = std::mem::replace(
+                &mut g.combat.enchantment_projectile_attacker,
+                effect_attacker,
+            );
+            let displaced = effect_attacker.is_some_and(|id| {
+                matches!(
+                    g.combat_player(id as u32),
+                    Some(CombatPlayer::Displaced(..))
+                )
+            });
+            let result = g.projectile_hit_deferring_player_arrow(
+                p,
+                on_player,
+                displaced.then_some(&mut landed_arrow),
+            );
+            g.combat.refuse_player_hit = false;
+            g.combat.projectile_attacker = None;
+            g.combat.enchantment_projectile_attacker = saved_effect_attacker;
+            result
+        })
+        .unwrap_or(Ok(()))?;
+        if let Some(landed) = landed_arrow {
+            self.resume_guest_arrow_hit(conn, landed);
+        }
+        Ok(())
     }
 
     /// `AbstractArrow.onHitEntity`: an arrow that hurt a player tells its owner, a player other
@@ -410,11 +385,18 @@ impl Game<'_> {
     }
 
     /// The hit landing on the victim with its extra knockback, then the
-    /// attacker's attack sound. Whether the victim was hurt.
-    pub(super) fn pvp_land(&mut self, victim: Victim, s: &Strike) -> bool {
-        let Some(host) = self.lan.as_ref() else {
-            return false;
-        };
+    /// attacker's attack sound. A landed hit returns whether it stopped the attacker's sprint.
+    pub(super) fn pvp_land(&mut self, victim: Victim, s: &Strike) -> Option<bool> {
+        self.lan.as_ref()?;
+        if s.knockback_attack {
+            self.play_audio(
+                "minecraft:entity.player.attack.knockback",
+                Some(s.from),
+                1.0,
+                1.0,
+            );
+        }
+        let host = self.lan.as_ref()?;
         // CombatTracker: the attacking player is the death message's killer.
         // Without it the message is built with one argument and a template
         // that names a killer ("%1$s was slain by %2$s") shows as written.
@@ -439,14 +421,6 @@ impl Game<'_> {
             }),
         };
         let harm = self.player_may_harm(harm_attacker, victim_id, s.team.as_ref(), team);
-        if s.knockback_attack {
-            self.audio.play(
-                "minecraft:entity.player.attack.knockback",
-                Some(s.from),
-                1.0,
-                1.0,
-            );
-        }
         // Player.attack: the hurt (with its knockback away from the
         // attacker), then causeExtraKnockback along the attacker's yaw.
         // Taken here, before the victim is swapped in, so the attacker's hands are found.
@@ -455,18 +429,29 @@ impl Game<'_> {
             g.with_attack(attack.clone(), |g| {
                 g.combat.player_attacker = Some((s.from, s.disable_blocking));
                 if let Some((id, name)) = attacker_note.clone() {
-                    g.note_player_attacker(
-                        "minecraft:player_attack",
-                        id as u32,
-                        name,
-                        s.item.clone(),
-                    );
+                    g.note_player_attacker(&s.damage_type, id as u32, name, s.item.clone());
                 }
-                let hurt =
-                    g.mob_hits_player_from(s.amount, s.from, "minecraft:player_attack", s.creative);
+                let hurt = g.mob_hits_player_from(s.amount, s.from, &s.damage_type, s.creative);
                 g.combat.player_attacker = None;
-                let (strength, xd, zd) = s.knockback;
-                if hurt && strength > 0.0 {
+                if !hurt {
+                    return None;
+                }
+                let (base, xd, zd) = s.knockback;
+                let source = attack.player_source(&s.damage_type, attack.attacker);
+                let mut ctx = attack.enchantment_context(source, "minecraft:player");
+                ctx.direct_motion = s.direct_motion;
+                ctx.attacker_motion = s.direct_motion;
+                let strength = s.weapon.as_ref().map_or(base, |weapon| {
+                    g.evaluate_weapon_value(
+                        weapon,
+                        "minecraft:knockback",
+                        Some(g.own_entity_id() as u32),
+                        ctx,
+                        base,
+                    )
+                });
+                let strength = strength * 0.5 + if s.knockback_attack { 0.5 } else { 0.0 };
+                if strength > 0.0 {
                     g.knock_back_player_full(
                         f64::from(strength),
                         xd,
@@ -477,26 +462,15 @@ impl Game<'_> {
                         true,
                     );
                 }
-                // Entity.igniteForSeconds on the victim: the fire timer only
-                // rises, and a fire-immune victim (no player is by type) is spared.
-                if hurt
-                    && s.ignite > 0.0
-                    && let Some(p) = g.player.as_mut()
-                {
-                    let _ = p.ignite_for_ticks((s.ignite * 20.0) as i32);
-                }
-                // The victim's thorns, dealt to the attacker below.
-                let thorns = if hurt { g.thorns_damage() } else { Vec::new() };
-                (hurt, thorns)
+                Some(strength > 0.0)
             })
         };
-        let (hurt, thorns) = if harm {
-            match victim {
-                Victim::Guest(conn) => self.guest_struck_by(conn, land).unwrap_or_default(),
-            }
-        } else {
-            Default::default()
-        };
+        let landed = harm
+            .then(|| match victim {
+                Victim::Guest(conn) => self.guest_struck_by(conn, land).flatten(),
+            })
+            .flatten();
+        let hurt = landed.is_some();
         if hurt && (s.crit || s.magic) {
             let target = match victim {
                 Victim::Guest(conn) => self
@@ -520,7 +494,6 @@ impl Game<'_> {
                 }
             }
         }
-        self.pvp_aftermath(victim, s.attacker, thorns);
         let sound = match (hurt, s.crit, s.scale > 0.9) {
             (false, ..) => "minecraft:entity.player.attack.nodamage",
             (true, true, _) => "minecraft:entity.player.attack.crit",
@@ -553,40 +526,9 @@ impl Game<'_> {
         }
         // A critical hit a mod let sweep has both sounds (attackVisualEffects).
         if swept.is_none() || s.crit {
-            self.audio.play(sound, Some(s.from), 1.0, 1.0);
+            self.play_audio(sound, Some(s.from), 1.0, 1.0);
         }
-        hurt
-    }
-
-    /// What follows a player's blow on a player as the victim's hurt ends:
-    /// the victim's thorns dealt back to the attacker (`ServerPlayer.die`'s
-    /// `awardKillScore` waits for the death itself, in
-    /// [`guest_award_kill_score`](Self::guest_award_kill_score)).
-    pub(super) fn pvp_aftermath(
-        &mut self,
-        victim: Victim,
-        attacker: Option<u32>,
-        thorns: Vec<f32>,
-    ) {
-        let thorns_cause = self.player_attacker(victim.conn());
-        for damage in thorns {
-            match attacker {
-                None => {
-                    if let Some((id, name)) = &thorns_cause {
-                        self.note_named_attacker("minecraft:thorns", *id, name.clone());
-                    }
-                    self.hurt_player_by("minecraft:thorns", damage);
-                }
-                Some(conn) => {
-                    self.guest_hit_by(conn, |g| {
-                        if let Some((id, name)) = &thorns_cause {
-                            g.note_named_attacker("minecraft:thorns", *id, name.clone());
-                        }
-                        g.hurt_player_by("minecraft:thorns", damage)
-                    });
-                }
-            }
-        }
+        landed
     }
 
     /// `ServerPlayer.die`'s `killer.awardKillScore(this, source)` for a guest,
@@ -641,39 +583,34 @@ impl Game<'_> {
             .player
             .as_ref()
             .map_or([0.0; 3], |p| [p.position.x, p.position.y, p.position.z]);
-        let custom_damage = self
-            .held()
-            .filter(|_| self.stations().enchantments.has_custom_damage_effects())
-            .zip(self.player.as_ref())
-            .map(|(held, player)| {
-                let weapon = self.item_combat_stack(held);
-                let motion = (player.fall_distance, player.fall_flying);
-                let damage_type = self.stack_melee_damage_type(Some(&weapon), motion, true);
-                SweepDamage {
-                    weapon,
-                    attacker: player.entity_id as u32,
-                    base,
-                    scale,
-                    damage_type,
-                    direct_motion: Some(motion),
-                }
-            });
-        let damage = if custom_damage.is_some() {
+        let enchanted_damage = self.held().zip(self.player.as_ref()).map(|(held, player)| {
+            let weapon = self.item_combat_stack(held);
+            let motion = (player.fall_distance, player.fall_flying);
+            let damage_type = self.stack_melee_damage_type(Some(&weapon), motion, true);
+            SweepDamage {
+                weapon,
+                attacker: player.entity_id as u32,
+                base,
+                scale,
+                damage_type,
+                direct_motion: Some(motion),
+            }
+        });
+        let damage = if enchanted_damage.is_some() {
             0.0
         } else {
-            self.enchanted_damage("minecraft:player", base, None) * scale
+            base * scale
         };
         Sweep {
             attacker: self.lan_acting,
             creative: self.creative,
             from,
             damage,
-            custom_damage,
+            enchanted_damage,
             knockback: self.extra_knockback_direction(),
             team: self.player_team().cloned(),
             hit_box: Aabb::new(Vec3::ZERO, Vec3::ZERO),
             skip: None,
-            ignite: self.weapon_ignite_seconds(),
         }
     }
 
@@ -733,7 +670,7 @@ impl Game<'_> {
         let attacker_id = self.player.as_ref().map_or(0, |p| p.entity_id);
         let attack = self.attack_of(attacker.as_ref().map_or(attacker_id, |(id, _)| *id as i32));
         let land = |g: &mut Self| {
-            let damage = if let Some(damage) = &sweep.custom_damage {
+            let damage = if let Some(damage) = &sweep.enchanted_damage {
                 let victim = g.player.as_ref().map(|player| player.entity_id as u32);
                 g.weapon_enchanted_damage(
                     &damage.weapon,
@@ -746,26 +683,21 @@ impl Game<'_> {
             } else {
                 sweep.damage
             };
+            let damage_type = sweep
+                .enchanted_damage
+                .as_ref()
+                .map_or("minecraft:player_attack", |damage| {
+                    damage.damage_type.as_str()
+                });
             g.with_attack(attack.clone(), |g| {
                 if let Some((id, name)) = &attacker {
-                    g.note_named_attacker("minecraft:player_attack", *id, name.clone());
+                    g.note_named_attacker(damage_type, *id, name.clone());
                 }
-                if g.mob_hits_player_from(
-                    damage,
-                    sweep.from,
-                    "minecraft:player_attack",
-                    sweep.creative,
-                ) {
+                let hurt = g.mob_hits_player_from(damage, sweep.from, damage_type, sweep.creative);
+                if hurt {
                     g.knock_back_player(0.4, xd, zd, PVP_SOURCE, &attack, damage);
-                    if sweep.ignite > 0.0
-                        && let Some(p) = g.player.as_mut()
-                    {
-                        let _ = p.ignite_for_ticks((sweep.ignite * 20.0) as i32);
-                    }
-                    // The swept player's thorns are dealt after the hit.
-                    return Some(g.thorns_damage());
                 }
-                None
+                hurt
             })
         };
         let attacker_id = attacker.as_ref().map_or(attacker_id, |(id, _)| *id as i32);
@@ -777,47 +709,22 @@ impl Game<'_> {
                 continue;
             }
             let Victim::Guest(conn) = victim;
-            let Some(thorns) = self.guest_struck_by(conn, land).flatten() else {
-                continue;
-            };
-            // doPostAttackEffects' victim side: its armour's thorns hurt the
-            // attacker, as on a direct hit (pvp_land).
-            let thorns_cause = self.player_attacker(victim.conn());
-            for damage in thorns {
-                match sweep.attacker {
-                    None => {
-                        if let Some((id, name)) = &thorns_cause {
-                            self.note_named_attacker("minecraft:thorns", *id, name.clone());
-                        }
-                        self.hurt_player_by("minecraft:thorns", damage);
-                    }
-                    Some(conn) => {
-                        self.guest_hit_by(conn, |g| {
-                            if let Some((id, name)) = &thorns_cause {
-                                g.note_named_attacker("minecraft:thorns", *id, name.clone());
-                            }
-                            g.hurt_player_by("minecraft:thorns", damage)
-                        });
-                    }
-                }
-            }
-            // doPostAttackEffects' attacker side, after the victim's: the mod
-            // kinds of the weapon the attacker holds now (`getWeaponItem`).
-            let weapon = match sweep.attacker {
-                // The attacker's turn is over: their record holds the hand.
-                Some(conn) => self.lan.as_ref().and_then(|host| {
-                    let g = host.hub.guest(conn)?;
-                    self.native_post_attack_weapon(g.inventory[g.selected].as_ref())
-                }),
-                None => self.native_post_attack_weapon(self.inventory[self.selected].as_ref()),
-            };
-            if let (Some(weapon), Some((attacker, _))) = (weapon, &attacker) {
-                self.native_weapon_post_attack(
-                    &weapon,
-                    (*attacker, "minecraft:player"),
-                    (id as u32, "minecraft:player"),
-                    // The type `land` hurt the player with.
-                    "minecraft:player_attack",
+            if self.guest_struck_by(conn, land).unwrap_or_default() {
+                let damage_type = sweep
+                    .enchanted_damage
+                    .as_ref()
+                    .map_or("minecraft:player_attack", |damage| {
+                        damage.damage_type.as_str()
+                    });
+                let source = attack.player_source(damage_type, attack.attacker);
+                let weapon = sweep.enchanted_damage.as_ref().map(|damage| &damage.weapon);
+                self.post_attack(
+                    id as u32,
+                    "minecraft:player",
+                    &attack,
+                    source,
+                    weapon,
+                    false,
                 );
             }
         }
@@ -1058,7 +965,39 @@ pub(in crate::game) mod arrow_hit_sound_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sunrise_client::gamerules::Value;
+    use crate::game::native_entity_refs::tests::{
+        bind_local_player, fixture_resident_column, run_fresh_cases, run_with_game_stack,
+    };
+    use crate::game::native_guest_turn_tests::with_guests;
+    use sunrise_client::{
+        command::args::GameMode, gamerules::Value, items::ItemStack, mobs::Mob,
+        motion::PlayerMotion,
+    };
+
+    fn ready_victim(game: &mut Game<'_>, with_full_armor: bool) {
+        game.lan
+            .as_mut()
+            .unwrap()
+            .hub
+            .update_guest(13, |guest| {
+                guest.loaded = true;
+                guest.load_timeout = 0;
+            })
+            .unwrap();
+        game.as_guest(13, |game| {
+            game.set_mode(GameMode::Survival);
+            let mut chest = ItemStack::new("minecraft:diamond_chestplate", 1);
+            chest.set_crafting_enchantments(vec![("minecraft:thorns".into(), 255)]);
+            game.armor[1] = Some(chest);
+            if with_full_armor {
+                game.armor[0] = Some(ItemStack::new("minecraft:diamond_helmet", 1));
+                game.armor[2] = Some(ItemStack::new("minecraft:diamond_leggings", 1));
+                game.armor[3] = Some(ItemStack::new("minecraft:diamond_boots", 1));
+            }
+            game.put_equipment_modifiers();
+        })
+        .unwrap();
+    }
 
     /// A fresh survival body for guest `conn` (entity `conn`), where `with_guests` stands it.
     fn fresh_body(game: &mut Game<'_>, conn: u32) {
@@ -1077,11 +1016,105 @@ mod tests {
             })
             .unwrap();
         game.as_guest(conn, |g| {
-            use sunrise_client::command::args::GameMode;
             g.set_game_mode(GameMode::Creative);
             g.set_game_mode(GameMode::Survival);
         })
         .unwrap();
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn pvp_mace_smash_keeps_the_players_breach_and_does_not_retaliate_on_a_bystander() {
+        if run_fresh_cases(
+            "game::lan_pvp::tests::pvp_mace_smash_keeps_the_players_breach_and_does_not_retaliate_on_a_bystander",
+            "SUNRISE_PVP_MACE_SMASH_CHILD",
+            &["smash"],
+        ) {
+            return;
+        }
+        run_with_game_stack(|| {
+            with_guests(|game| {
+                fixture_resident_column(&mut game.world, (0, 0));
+                ready_victim(game, true);
+                game.world.health_rules.difficulty = sunrise_world::food::Difficulty::Hard;
+                let mut mace = ItemStack::new("minecraft:mace", 1);
+                mace.enchant("minecraft:breach", 4);
+                game.lan
+                    .as_mut()
+                    .unwrap()
+                    .hub
+                    .update_guest(12, |guest| {
+                        guest.inventory[guest.selected] = Some(mace);
+                    })
+                    .unwrap();
+                let mut strike = Strike::test_blow(12);
+                strike.amount = 5.0;
+                strike.damage_type = "minecraft:mace_smash".into();
+                let cow = game.res.mob_types().get("minecraft:cow").unwrap().clone();
+                game.mobs
+                    .push(Mob::new(41, cow, Vec3::new(3.0, 64.0, 5.0), 0.0));
+                let bystander_health = game.mobs[0].health;
+                assert!(game.pvp_land(Victim::Guest(13), &strike).is_some());
+                let victim = game.lan.as_ref().unwrap().hub.guest(13).unwrap();
+                // CombatRules.getDamageAfterAbsorb: full diamond blocks 0.75 of a 5-point
+                // hit; Breach IV subtracts 0.60 from that fraction, leaving 4.25 damage.
+                assert_eq!(victim.health, 15.75);
+                assert_eq!(game.mobs[0].health, bystander_health);
+            });
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn guest_thorns_answers_the_host_that_shot_the_arrow() {
+        if run_fresh_cases(
+            "game::lan_pvp::tests::guest_thorns_answers_the_host_that_shot_the_arrow",
+            "SUNRISE_PVP_ARROW_THORNS_CHILD",
+            &["arrow"],
+        ) {
+            return;
+        }
+        run_with_game_stack(|| {
+            with_guests(|game| {
+                fixture_resident_column(&mut game.world, (0, 0));
+                ready_victim(game, false);
+                let start = Vec3::new(1.0, 65.0, 5.0);
+                game.player = Some(PlayerMotion::new(game.motion, start).unwrap());
+                bind_local_player(game, 77, 77);
+                game.set_mode(GameMode::Survival);
+                let before = game.player.as_ref().unwrap().health.health();
+                let at = Vec3::new(3.0, 65.0, 5.0);
+                let mut arrow = Projectile::new(
+                    ProjectileKind::Arrow {
+                        base_damage: 2.0,
+                        critical: false,
+                        effect: None,
+                    },
+                    at,
+                    Some(Who::Player),
+                );
+                arrow.id = 90;
+                arrow.previous = start;
+                arrow.velocity = Vec3::new(2.0, 0.0, 0.0);
+                game.projectile_hits_player(
+                    &arrow,
+                    Hit::Entity {
+                        who: Who::Mob(13),
+                        at,
+                    },
+                    Victim::Guest(13),
+                )
+                .unwrap();
+                let victim = game.lan.as_ref().unwrap().hub.guest(13).unwrap();
+                assert!(victim.health < 20.0, "the arrow did not hurt the guest");
+                let host = game.player.as_ref().unwrap();
+                assert_eq!(host.entity_id, 77);
+                assert!(
+                    host.health.health() < before,
+                    "Thorns did not hurt the shooter"
+                );
+            });
+        });
     }
 
     fn health(game: &Game<'_>, conn: u32) -> f32 {
@@ -1111,7 +1144,7 @@ mod tests {
         let attacker_team = game.score.board.players_team("guest12").cloned();
         let mut blow = Strike::test_blow(12);
         blow.team = attacker_team.clone();
-        let melee = game.pvp_land(Victim::Guest(13), &blow);
+        let melee = game.pvp_land(Victim::Guest(13), &blow).is_some();
 
         fresh_body(game, 13);
         let sweep = Sweep {
@@ -1119,12 +1152,11 @@ mod tests {
             creative: false,
             from: [3.0, 64.0, 5.0],
             damage: 1.0,
-            custom_damage: None,
+            enchanted_damage: None,
             knockback: (0.0, 0.0),
             team: attacker_team,
             hit_box: Aabb::new(Vec3::new(0.0, 60.0, 0.0), Vec3::new(6.0, 70.0, 10.0)),
             skip: None,
-            ignite: 0.0,
         };
         let before = health(game, 13);
         game.sweep_players(&sweep);

@@ -21,7 +21,8 @@ pub struct SaveDir {
     pub tables: OnceLock<Arc<SaveTables>>,
     pub(super) professions:
         std::sync::RwLock<Option<Arc<crate::mobs::villager::ResolvedProfessions>>>,
-    pub(super) trusted_fluid_load: bool,
+    /// A server-owned world save, not a remote cache: chunk-disk hooks need its worker context.
+    pub(super) server_owned: bool,
     /// The dimension's skylight and height, from its folder name.
     pub shape: LevelShape,
     /// The region file headers kept for far readers (`far_record`).
@@ -131,7 +132,7 @@ impl SaveDir {
             outstanding: Default::default(),
             tables: OnceLock::new(),
             professions: Default::default(),
-            trusted_fluid_load: false,
+            server_owned: false,
             shape,
             far_regions: Default::default(),
             lod_decoded: Default::default(),
@@ -177,8 +178,8 @@ impl SaveDir {
             .ok_or_else(|| "cannot save chunks without a loaded item catalog".into())
     }
     /// Mark this as a server-owned world save, not a remote cache.
-    pub fn enable_trusted_fluid_load(&mut self) {
-        self.trusted_fluid_load = true;
+    pub fn mark_server_owned(&mut self) {
+        self.server_owned = true;
     }
     /// Lets saves of this folder take an old chunk's calculated blending data
     /// (`lookup` must not calculate). Set once, before the folder saves.
@@ -442,14 +443,7 @@ impl SaveDir {
         {
             return Ok(tag.map(|t| (*t).clone()));
         }
-        read_region_record(self.region_storage(kind), x, z).inspect(|record| {
-            if self.trusted_fluid_load
-                && kind == Folder::Region
-                && let Some(root) = record
-            {
-                intern_saved_fluids(root);
-            }
-        })
+        read_region_record(self.region_storage(kind), x, z)
     }
     /// A record brought to the current version (`upgrade_record`); `Err` when that failed.
     fn try_read_record(

@@ -8,7 +8,7 @@
 //! installed for the test only.
 
 use super::*;
-use crate::game::native_entity_refs::tests::with_game;
+use crate::game::native_entity_refs::tests::{fixture_resident_column, with_game};
 use crate::game::pending_births::escaping_fault::{self, At};
 use mod_api::{
     AttachmentDescriptor, AttachmentKey, BabyEntitySpawnEvent, EntityConstructingEvent,
@@ -1088,6 +1088,7 @@ fn fox_breeding_rejects_non_fox_and_trusts_breeders_on_replaced_fox() {
                 criteria: vec![Criterion {
                     name: "pre_snap".into(),
                     trigger: "minecraft:bred_animals".into(),
+                    player: None,
                     conditions: serde_json::json!({
                         "child": {
                             "minecraft:flags": {"is_baby": false},
@@ -1434,11 +1435,12 @@ fn breeding_spawns_after_parent_host_edit_and_cancel_resets_both_parents() {
             let parent = host.entity(event.parent).expect("parent handle");
             assert!(parent.teleport_to(host, [2.0, 64.0, 0.0], None));
             let mut nbt = mod_api::Compound::new();
-            nbt.insert("InLove".into(), mod_api::Tag::Int(600));
+            nbt.insert("InLove".into(), mod_api::Tag::Int(300));
             assert!(parent.merge_nbt(host, nbt));
             Flow::Continue
         },
         |game| {
+            fixture_resident_column(&mut game.world, (0, 0));
             let (parent, partner, child) = breed_pair(game, "minecraft:cow");
             let baby = find(game, child.expect("parent host edit must not abort birth"));
             assert_eq!(baby.kind.id, "minecraft:cow");
@@ -1467,6 +1469,7 @@ fn breeding_spawns_after_parent_host_edit_and_cancel_resets_both_parents() {
             Flow::Cancel
         },
         |game| {
+            fixture_resident_column(&mut game.world, (0, 0));
             let (parent, partner, child) = breed_pair(game, "minecraft:cow");
             assert_eq!(child, None);
             assert!(game.mobs.iter().all(|m| m.extra.age >= 0), "no baby joined");
@@ -1709,7 +1712,10 @@ fn mob_split_constructs_all_children_before_any_join_and_cleans_up_on_unwind() {
             _: &mut dyn ServerHost,
             event: &mut EntityJoinLevelEvent<'_>,
         ) -> Flow {
-            self.trace.lock().unwrap().push(("join", event.entity));
+            self.trace
+                .lock()
+                .unwrap()
+                .push(("join", event.subject.id()));
             Flow::Continue
         }
     }
@@ -2027,7 +2033,10 @@ fn split_and_detached_construction_precede_admission() {
             _: &mut dyn ServerHost,
             event: &mut EntityJoinLevelEvent<'_>,
         ) -> Flow {
-            self.calls.lock().unwrap().push(("join", event.entity));
+            self.calls
+                .lock()
+                .unwrap()
+                .push(("join", event.subject.id()));
             Flow::Continue
         }
     }
@@ -2131,6 +2140,7 @@ fn split_listener_can_remove_the_live_parents_oozing() {
             Flow::Continue
         },
         |game| {
+            fixture_resident_column(&mut game.world, (0, 1));
             let mut dying = cube(game, "minecraft:slime", 4, SEED);
             dying.health = 0.0;
             dying

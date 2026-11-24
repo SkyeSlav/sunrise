@@ -25,7 +25,7 @@ pub use play_bundle::{BundleMember, BundleStep, CompletedBundle};
 #[path = "net/mod_packet_tests.rs"]
 mod mod_packet_tests;
 pub(crate) mod queued_writer;
-use queued_writer::QueuedWriter;
+use queued_writer::{PrepareRefusal, QueuedWriter, SendFailure};
 pub use queued_writer::{PreparedPacket, PreparedPayload};
 #[cfg(test)]
 use std::sync::mpsc::channel;
@@ -172,12 +172,16 @@ pub enum Event {
     ServerLinks(Vec<cfg::ServerLink>),
     /// The connection ended. `from_server`: the server gave the reason (or
     /// the connection was refused for good), rather than the connection
-    /// failing.
+    /// failing. `after_login`: the protocol already left handshake/login for
+    /// configuration or play (`ClientCommonPacketListenerImpl.onDisconnect`,
+    /// which calls `Minecraft.disconnect`), rather than failing in
+    /// `ConnectScreen` or `ClientHandshakePacketListenerImpl`.
     Disconnected {
         reason: String,
         /// The reason's translation key, when it had one.
         key: Option<String>,
         from_server: bool,
+        after_login: bool,
     },
 }
 
@@ -290,6 +294,7 @@ impl Event {
                 reason,
                 key,
                 from_server: _,
+                after_login: _,
             } => reason.capacity().saturating_add(key.owned_heap_bytes()),
         };
         owned.saturating_add(Self::INGRESS_RECORD_OVERHEAD)
@@ -476,6 +481,7 @@ impl Session {
             .name("sunrise-net".into())
             .spawn(move || {
                 sunrise_threads::favour_current();
+                let mut after_login = false;
                 let result = captured_payloads.map_err(Reason::plain).and_then(|_| {
                     run(
                         local,
@@ -497,12 +503,13 @@ impl Session {
                         &thread_payloads,
                         &thread_pings,
                         &reports,
+                        &mut after_login,
                     )
                 });
                 // The physical close is immediate. Session::disconnect retires
                 // the payload epoch when main drops the listener, so a bundle
                 // already in its member loop still has its handler table.
-                report_connection_end(result, &thread_writer, &send);
+                report_connection_end(result, &thread_writer, &send, after_login);
                 thread_far.cancel();
             })
             .inspect_err(|error| {
@@ -511,6 +518,7 @@ impl Session {
                     reason: format!("network thread: {error}"),
                     key: None,
                     from_server: false,
+                    after_login: false,
                 });
             })
             .ok();
@@ -583,7 +591,9 @@ impl Session {
             .as_ref()
             .cloned()
             .ok_or(SendPacketError::NotConnected)?;
-        writer.prepare_packet(encoded.data, None)
+        writer
+            .prepare_packet(encoded.data, self.serial(), None)
+            .map_err(PrepareRefusal::error)
     }
     /// Publish into the real session FIFO for an actor test, without a reader thread.
     #[cfg(feature = "test-payload-probe")]
@@ -755,7 +765,7 @@ impl Session {
             play::Serverbound::ResourcePack(status).encode()
         };
         if let Some(w) = writer.as_mut()
-            && w.send(&body).is_err()
+            && w.send_bypassing_held(&body).is_err()
         {
             w.shutdown();
         }
@@ -774,7 +784,7 @@ impl Session {
             play::Serverbound::CustomClickAction(click).encode()
         };
         if let Some(w) = writer.as_mut()
-            && w.send(&body).is_err()
+            && w.send_bypassing_held(&body).is_err()
         {
             w.shutdown();
         }
@@ -783,7 +793,7 @@ impl Session {
     pub fn accept_code_of_conduct(&self) {
         let mut writer = self.writer.lock().unwrap();
         if let Some(w) = writer.as_mut()
-            && w.send(&cfg::Serverbound::AcceptCodeOfConduct(Empty).encode())
+            && w.send_bypassing_held(&cfg::Serverbound::AcceptCodeOfConduct(Empty).encode())
                 .is_err()
         {
             w.shutdown();
@@ -918,11 +928,12 @@ pub struct Reason {
     from_server: bool,
 }
 impl Reason {
-    fn ended(self, from_server: bool) -> Event {
+    fn ended(self, from_server: bool, after_login: bool) -> Event {
         Event::Disconnected {
             reason: self.text,
             key: self.key,
             from_server,
+            after_login,
         }
     }
     fn plain(text: impl Into<String>) -> Self {
@@ -1314,6 +1325,7 @@ fn run(
     payloads: &Arc<crate::raw_payloads::Transport>,
     pings: &PingSamples,
     reports: &Arc<crate::chunk_io::Reports>,
+    after_login: &mut bool,
 ) -> Result<Reason, Reason> {
     let singleplayer = local.is_some();
     let (host, port, mut c) = if let Some(pipe) = local {
@@ -1383,6 +1395,10 @@ fn run(
         match login::Clientbound::decode(id, &payload).map_err(e)? {
             login::Clientbound::Compression(p) => c.set_compression(p.threshold),
             login::Clientbound::LoginFinished(p) => {
+                // ClientHandshakePacketListenerImpl.handleLoginFinished installs
+                // ClientConfigurationPacketListenerImpl (a ClientCommonPacketListenerImpl)
+                // before sending LoginAcknowledged.
+                *after_login = true;
                 c.send(&login::Serverbound::LoginAcknowledged(Empty).encode())
                     .map_err(e)?;
                 break p.profile;
@@ -1522,6 +1538,7 @@ fn report_connection_end(
     result: Result<Reason, Reason>,
     writer: &Mutex<Option<QueuedWriter>>,
     events: &ingress::Producer<Event>,
+    after_login: bool,
 ) {
     let (why, from_server) = match result {
         Ok(why) => (why, true),
@@ -1535,7 +1552,7 @@ fn report_connection_end(
     {
         w.shutdown();
     }
-    let _ = events.send_terminal(why.ended(from_server));
+    let _ = events.send_terminal(why.ended(from_server, after_login));
 }
 
 /// `Connection.setupOutboundProtocol`, run by the ordered main phase task.
@@ -1651,7 +1668,7 @@ impl CommonIo {
                     Phase::Play => play::Serverbound::CookieResponse(response).encode(),
                 };
                 if let Some(writer) = self.writer.lock().unwrap().as_ref() {
-                    let _ = writer.send(&body);
+                    let _ = writer.send_bypassing_held(&body);
                 }
             }
             Cookie::Store(p) => {
@@ -1781,7 +1798,7 @@ impl PlayIo {
             PlayIoAction::FarTile(data) => return self.far.deliver(data),
         };
         if let Some(writer) = self.common.writer.lock().unwrap().as_ref() {
-            let _ = writer.send(&reply.encode());
+            let _ = writer.send_bypassing_held(&reply.encode());
         }
     }
 }
@@ -2244,7 +2261,7 @@ fn configure(
                         ),
                     }))?;
                     // And the mods' datapack registries it has (#811).
-                    if let Some(data) = crate::datapack_net::offer() {
+                    if let Some(data) = crate::datapack_net::offer().map_err(Reason::plain)? {
                         reply(cfg::Serverbound::CustomPayload(cfg::CustomPayload {
                             channel: crate::datapack_net::OFFER_CHANNEL.into(),
                             data,
@@ -4087,10 +4104,11 @@ mod tests {
                     &client.consumable(None).unwrap().effects[..],
                     client.death_protection(None).unwrap(),
                 ] {
-                    let [crate::items::ConsumeEffect::Native { kind, data, .. }] = effects else {
+                    let [crate::items::ConsumeEffect::Native(effect)] = effects else {
                         panic!("expected custom effect: {effects:?}");
                     };
-                    assert_eq!(kind, "effect_test:charge");
+                    let data = &effect.data;
+                    assert_eq!(effect.kind.as_ref(), "effect_test:charge");
                     assert_eq!(data.get("points"), Some(&Tag::Int(0x1234)));
                     assert_eq!(data.get("samples"), Some(&Tag::IntArray(vec![3, 4])));
                     assert_eq!(data.get("flag"), Some(&Tag::Byte(7)));
@@ -4480,7 +4498,7 @@ mod tests {
                 &Arc::default(),
                 &Arc::default(),
             );
-            report_connection_end(result, &writer, &send);
+            report_connection_end(result, &writer, &send, true);
         });
         let server = Connection::local(server);
         server
@@ -5192,6 +5210,207 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
+    fn exhausted_held_play_credit_still_serves_replies_and_reconfiguration_ack() {
+        use mod_api::{Identifier, SendPacketError, ServerboundPlayPacket};
+        use sunrise_protocol::payload_negotiation::Phase;
+
+        // Configuration clears the remembered datapack registries; keep that in a fresh process.
+        const CHILD: &str = "SUNRISE_RECONFIG_HELD_PRESSURE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            crate::fresh_process::run_in_fresh_process(
+                "net::tests::exhausted_held_play_credit_still_serves_replies_and_reconfiguration_ack",
+                CHILD,
+                "1",
+            );
+            return;
+        }
+
+        let (root, data) = empty_item_data("reconfig-held-pressure");
+        let (client, server) = sunrise_protocol::connection::Pipe::pair();
+        let (mut reader, writer) = Connection::local(client).split();
+        let writer = QueuedWriter::new(writer).unwrap();
+        let mut server = Connection::local(server);
+        server
+            .reader
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        writer.transition_protocol(Phase::Play, &[3]).unwrap();
+        assert_eq!(server.recv().unwrap(), (3, vec![]));
+
+        let (send, events) = event_channel();
+        let session = Session {
+            events,
+            payload_events: event_channel().0,
+            payloads: crate::raw_payloads::Transport::empty(),
+            writer: Arc::new(Mutex::new(Some(writer))),
+            configuring: Arc::new(AtomicBool::new(false)),
+            thread: None,
+            address: "local".into(),
+            name: "Player".into(),
+            counters: Arc::new(Mutex::new(None)),
+            cookies: Cookies::default(),
+            debug: false,
+            far: Arc::default(),
+            recorder: Arc::new(Mutex::new(None)),
+            pings: Arc::default(),
+            serial: next_serial(),
+        };
+        let (thread_writer, thread_configuring, thread_recorder, thread_cookies) = (
+            session.writer.clone(),
+            session.configuring.clone(),
+            session.recorder.clone(),
+            session.cookies.clone(),
+        );
+        let thread = std::thread::spawn(move || {
+            receive_play(
+                &mut reader,
+                Arc::default(),
+                &thread_writer,
+                &thread_configuring,
+                &Arc::new(Language::new()),
+                &send,
+                &thread_cookies,
+                &Arc::default(),
+                &data,
+                &thread_recorder,
+                &crate::raw_payloads::Transport::empty(),
+                &Arc::default(),
+                &Arc::default(),
+            )
+        });
+
+        let mut held = {
+            let writer = session.writer.lock().unwrap();
+            writer
+                .as_ref()
+                .unwrap()
+                .exhaust_play_credit(session.serial())
+        };
+        assert!(!held.is_empty());
+
+        // Excluded replies bypass unpublished held credit without flushing held packets.
+        server
+            .send(&play::Clientbound::KeepAlive(cfg::KeepAlive { id: 11 }).encode())
+            .unwrap();
+        let (id, body) = server.recv().unwrap();
+        assert_eq!(
+            play::Serverbound::decode(id, &body).unwrap(),
+            play::Serverbound::KeepAlive(cfg::KeepAlive { id: 11 })
+        );
+
+        server
+            .send(&play::Clientbound::ChunkBatchStart(Empty).encode())
+            .unwrap();
+        server
+            .send(
+                &play::Clientbound::ChunkBatchFinished(play::ChunkBatchFinished { size: 0 })
+                    .encode(),
+            )
+            .unwrap();
+        let (id, body) = server.recv().unwrap();
+        assert!(matches!(
+            play::Serverbound::decode(id, &body).unwrap(),
+            play::Serverbound::ChunkBatchReceived(_)
+        ));
+
+        server
+            .send(
+                &play::Clientbound::CookieRequest(cfg::CookieRequest {
+                    key: "proxy:held".into(),
+                })
+                .encode(),
+            )
+            .unwrap();
+        let (event, _credit) = session
+            .events
+            .recv_timeout_owned(Duration::from_secs(2))
+            .unwrap()
+            .into_parts();
+        let Event::Cookie(task) = event else {
+            panic!("missing ordered cookie task")
+        };
+        task.handle();
+        let (id, body) = server.recv().unwrap();
+        assert_eq!(
+            play::Serverbound::decode(id, &body).unwrap(),
+            play::Serverbound::CookieResponse(cfg::CookieResponse {
+                key: "proxy:held".into(),
+                payload: None,
+            })
+        );
+
+        session.send_pack_status(42, 3);
+        let (id, body) = server.recv().unwrap();
+        assert_eq!(
+            play::Serverbound::decode(id, &body).unwrap(),
+            play::Serverbound::ResourcePack(cfg::ResourcePackResponse { id: 42, action: 3 })
+        );
+
+        // Acknowledge on the actor without dropping any of its held permits:
+        // the phase barrier revokes old-play reservations before admitting the ACK.
+        server
+            .send(&play::Clientbound::StartConfiguration(Empty).encode())
+            .unwrap();
+        let (event, _credit) = session
+            .events
+            .recv_timeout_owned(Duration::from_secs(2))
+            .unwrap()
+            .into_parts();
+        let Event::Reconfiguring(task) = event else {
+            panic!("missing configuration task")
+        };
+        task.acknowledge();
+        let (id, body) = server.recv().unwrap();
+        assert_eq!(
+            play::Serverbound::decode(id, &body).unwrap(),
+            play::Serverbound::ConfigurationAcknowledged(Empty)
+        );
+        server
+            .send(&cfg::Clientbound::FinishConfiguration(Empty).encode())
+            .unwrap();
+        let (event, _credit) = session
+            .events
+            .recv_timeout_owned(Duration::from_secs(2))
+            .unwrap()
+            .into_parts();
+        let Event::FinishConfiguration(task) = event else {
+            panic!("missing configuration finish task")
+        };
+        task.acknowledge();
+        let (id, body) = server.recv().unwrap();
+        assert_eq!(
+            cfg::Serverbound::decode(id, &body).unwrap(),
+            cfg::Serverbound::FinishConfiguration(Empty)
+        );
+
+        assert_eq!(
+            held.pop().unwrap().try_publish(),
+            Err(SendPacketError::NotInPlay)
+        );
+        drop(held);
+
+        // New play incarnation has full credit and accepts packets normally.
+        session
+            .prepare_mod_packet(ServerboundPlayPacket::new(
+                Identifier::parse("minecraft:pong").unwrap(),
+                vec![0, 0, 0, 7],
+            ))
+            .unwrap()
+            .try_publish()
+            .unwrap();
+        let (id, body) = server.recv().unwrap();
+        assert_eq!(
+            play::Serverbound::decode(id, &body).unwrap(),
+            play::Serverbound::Pong(cfg::Ping { id: 7 })
+        );
+
+        drop(session);
+        assert!(thread.join().unwrap().is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn server_brand_payload_is_decoded_and_invalid_or_unrelated_payloads_are_ignored() {
         let (send, events) = event_channel();
         let mut writer = ::sunrise_core::vanilla_bytes::Writer::new();
@@ -5652,20 +5871,7 @@ mod tests {
             return body(&case);
         }
         for &case in cases {
-            let out = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([name, "--exact", "--include-ignored", "--test-threads=1"])
-                .env(flag, case)
-                .output()
-                .unwrap();
-            let report = format!(
-                "{}{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            );
-            assert!(
-                out.status.success() && report.contains("test result: ok. 1 passed;"),
-                "{name} ({case}) failed in its own process:\n{report}"
-            );
+            crate::fresh_process::run_in_fresh_process(name, flag, case);
         }
     }
 

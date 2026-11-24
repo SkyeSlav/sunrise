@@ -1693,6 +1693,7 @@ mod player_status_tests {
                 .push(crate::game::creatures::NativeSound {
                     dimension: "minecraft:overworld",
                     sound: "minecraft:entity.pig.ambient".into(),
+                    inline_range: None,
                     at,
                     source: 0,
                     volume: 1.0,

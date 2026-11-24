@@ -24,6 +24,10 @@ pub struct SavedScreenshot {
 
 type SaveOutcome = (PathBuf, std::result::Result<[u32; 2], String>);
 
+pub(super) fn screenshot_world_scale(scale: f32) -> f32 {
+    scale / scale.max(1.0)
+}
+
 impl Renderer {
     /// The frame size of the pending `scaled` screenshot when it is larger than the
     /// window: the window's times the Resolution Scale (when above 100%) and
@@ -87,7 +91,7 @@ impl Renderer {
             return Ok(false);
         }
         let scale = self.world_post.scale;
-        self.world_post.scale = scale / scale.max(1.0);
+        self.world_post.scale = screenshot_world_scale(scale);
         self.hud.zoom = size[0] as f32 / window[0] as f32;
         [self.config.width, self.config.height] = size;
         // Frame generation's present thread shows the window's frames, not this one: it stops,

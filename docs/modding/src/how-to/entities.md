@@ -35,6 +35,13 @@ uses for contact. If the support check cannot finish, the call returns `Unavaila
 effect, but the previous supporting block stays recorded. This write does not apply landing effects or
 change velocity or fall distance.
 
+Use `entity.visit_parts(host, &mut visitor)` to visit the entities of a multipart body, not the mod API's
+behaviour Parts. It visits the ender dragon's children in `EnderDragon.getSubEntities` order. The visitor
+takes an `EntityRef`; return `ControlFlow::Break(())` to stop or `ControlFlow::Continue(())` to keep going.
+`Ok(Continue(()))` includes entities with no parts. A stale handle returns `Err(EntityReadError::Stale)`.
+If the world is unreadable, the body is parked or only packet-tracked, or the view cannot supply all
+its parts, the call returns `Err(EntityReadError::Unavailable)` before visiting any.
+
 Use `EntityRef::hurt` on the server with the fully qualified id of a registered damage type, vanilla
 or modded. Hurt hooks see that exact id. The direct and causing entities are separate from the type:
 passing a player as the cause of `minecraft:explosion` does not turn it into `minecraft:player_explosion`.

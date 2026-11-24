@@ -43,9 +43,10 @@ impl CustomRegistriesRegistrar for PartRegistrar {
             ));
             return;
         }
-        if !owns_namespace(self.mod_id, parsed.namespace()) {
+        let canonical = parsed.to_string();
+        if self.has_builtin_registry(&canonical) {
             self.refused.push(format!(
-                "mod {} declared custom registry {id:?} outside its owned namespaces",
+                "mod {} declared custom registry {id:?}, which collides with a built-in registry",
                 self.mod_id
             ));
             return;
@@ -68,7 +69,6 @@ impl CustomRegistriesRegistrar for PartRegistrar {
             ));
             return;
         }
-        let canonical = parsed.to_string();
         if let Some(datapack) = self
             .datapack_registries
             .iter()
@@ -138,13 +138,6 @@ impl CustomRegistriesRegistrar for PartRegistrar {
         if parsed_entry.namespace() == "minecraft" {
             self.refused.push(format!(
                 "mod {} registered entry {entry_id:?} in the reserved minecraft namespace of custom registry {registry_id:?}",
-                self.mod_id
-            ));
-            return invalid;
-        }
-        if !owns_namespace(self.mod_id, parsed_entry.namespace()) {
-            self.refused.push(format!(
-                "mod {} registered entry {entry_id:?} in custom registry {registry_id:?} outside its owned namespaces",
                 self.mod_id
             ));
             return invalid;
@@ -519,7 +512,7 @@ mod tests {
             "expected missing default_key refusal, got {err:?}"
         );
 
-        // 6. Foreign and minecraft: namespaces refused
+        // 6. Reserved minecraft: namespace and invalid identifiers refused
         struct BadNamespaces;
         #[crate::__subscriptions]
         impl Hooks for BadNamespaces {
@@ -528,13 +521,16 @@ mod tests {
                     RegistryKey::<Gas>::new("minecraft:gas"),
                     RegistryOptions::new(),
                 );
-                r.declare_registry(OTHER_GASES, RegistryOptions::new());
+                r.declare_registry(
+                    RegistryKey::<Gas>::new("not_namespaced"),
+                    RegistryOptions::new(),
+                );
             }
         }
         let err = install(&[ModEntry::new("chemlib", Box::new(BadNamespaces))]).unwrap_err();
         assert_eq!(err.len(), 2, "got {err:?}");
         assert!(err[0].contains("minecraft"));
-        assert!(err[1].contains("owned namespaces"));
+        assert!(err[1].contains("valid namespaced identifier"));
     }
 
     #[test]

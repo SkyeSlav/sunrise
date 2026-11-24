@@ -212,12 +212,16 @@ impl Modifier {
 }
 impl Modifier {
     /// RuleBlockEntityModifier.apply: the block entity the output gets.
-    fn apply(&self, nbt: Option<&Compound>, random: &mut impl ProcessorRandom) -> Option<Compound> {
+    fn apply(
+        &self,
+        nbt: Option<Box<Compound>>,
+        random: &mut impl ProcessorRandom,
+    ) -> Option<Box<Compound>> {
         match self {
-            Self::Passthrough => nbt.cloned(),
-            Self::Clear => Some(Compound::new()),
+            Self::Passthrough => nbt,
+            Self::Clear => Some(Box::new(Compound::new())),
             Self::AppendLoot(table) => {
-                let mut nbt = nbt.cloned().unwrap_or_default();
+                let mut nbt = nbt.unwrap_or_default();
                 nbt.insert("LootTable".into(), Tag::String(table.as_str().into()));
                 nbt.insert("LootTableSeed".into(), Tag::Long(random.long()));
                 Some(nbt)
@@ -227,8 +231,8 @@ impl Modifier {
     }
 }
 /// A block entity with `data` merged in (AppendStatic).
-fn append_static(nbt: Option<&Compound>, data: &Compound) -> Compound {
-    let mut nbt = nbt.cloned().unwrap_or_default();
+fn append_static(nbt: Option<Box<Compound>>, data: &Compound) -> Box<Compound> {
+    let mut nbt = nbt.unwrap_or_default();
     merge(&mut nbt, data);
     nbt
 }
@@ -755,10 +759,7 @@ pub(super) fn process_block<W: PlacementContext>(
                 return Ok(Some(BlockInfo {
                     pos: info.pos,
                     state: rule.output,
-                    nbt: rule
-                        .modifier
-                        .apply(info.nbt.as_deref(), &mut random)
-                        .map(Box::new),
+                    nbt: rule.modifier.apply(info.nbt, &mut random),
                 }));
             }
             Some(info)
@@ -897,7 +898,9 @@ fn process_infos<W: FeatureWorld + PlacementContext>(
         }
         if let Some(value) = current {
             processed.push(value);
-            original.push(info.clone());
+            if whole {
+                original.push(info.clone());
+            }
         }
     }
     for &processor in &processors {
@@ -1360,7 +1363,7 @@ mod tests {
     #[test]
     fn block_entity_edits_merge_deep_and_drop_keys() {
         let nbt = |v: Value| match json_to_nbt(&v) {
-            Tag::Compound(c) => c,
+            Tag::Compound(c) => Box::new(c),
             _ => unreachable!(),
         };
         let vault = nbt(json!({"id": "minecraft:vault",
@@ -1372,7 +1375,7 @@ mod tests {
         else {
             panic!("append_static")
         };
-        let merged = append_static(Some(&vault), &data);
+        let merged = append_static(Some(vault.clone()), &data);
         assert_eq!(
             merged,
             nbt(json!({"id": "minecraft:vault",

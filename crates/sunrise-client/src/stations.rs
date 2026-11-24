@@ -364,7 +364,7 @@ pub fn item_name_part(context: &LoopContext, stack: &ItemStack) -> Option<crate:
 #[inline(never)]
 pub fn native_item_name(
     context: &LoopContext,
-    stack: &mod_api::ItemStack,
+    stack: mod_api::ItemStackView<'_>,
     name: &mut Option<mod_api::Text>,
 ) {
     mod_api::dispatch_item_name(
@@ -658,7 +658,7 @@ pub fn can_grindstone_repair(context: &LoopContext, items: &Items, stack: &ItemS
 #[inline(never)]
 pub fn native_can_grindstone_repair(
     context: &LoopContext,
-    stack: &mod_api::ItemStack,
+    stack: mod_api::ItemStackView<'_>,
     can_repair: &mut bool,
 ) {
     mod_api::dispatch_can_grindstone_repair(

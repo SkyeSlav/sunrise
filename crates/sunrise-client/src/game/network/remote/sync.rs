@@ -395,7 +395,7 @@ impl Game<'_> {
             out.push(S::MovePlayerRot(play::MovePlayerRot {
                 yaw,
                 pitch,
-                flags: u8::from(on_ground) | u8::from(collision) << 1,
+                flags: play::pack_move_player_flags(on_ground, collision),
             }));
             if !vehicle.is_empty() {
                 out.extend(vehicle);

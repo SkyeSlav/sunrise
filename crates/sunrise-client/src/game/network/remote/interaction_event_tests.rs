@@ -1769,7 +1769,7 @@ fn setup_interaction_guest(
             seed: 0,
             max_players: 2,
             integrated: true,
-            levels: game.level_shapes,
+            levels: game.level_shapes.clone(),
             level_seeds: game.levels.runtime.seeds(),
         },
     )
@@ -2258,6 +2258,126 @@ fn a_server_client_keeps_a_bundle_use_until_the_server_completes_it() {
             );
         });
     });
+}
+
+/// `SolidBucketItem.getPlaceSound` changes only the event: both sides use
+/// the contextual sound type's levels, even with a no-op level-sound listener.
+#[test]
+#[ignore = "daily"]
+fn powder_snow_placement_uses_the_bucket_event_and_contextual_levels() {
+    use crate::game::native_sound_refs::tests::{guest, packets};
+    use mod_api::{BlockSoundCause, SoundSource, SoundTypeEvent};
+    use sunrise_protocol::packets::play::Clientbound;
+
+    struct PowderSound;
+    #[mod_api::sunrise_part]
+    impl BlockPart for PowderSound {
+        fn sound_type(&self, _: mod_api::LevelSide<'_>, event: &mut SoundTypeEvent<'_>) {
+            if event.cause == BlockSoundCause::Place {
+                event.sound.volume = 3.0;
+                event.sound.pitch = -1.25;
+            }
+        }
+    }
+    #[mod_api::__subscriptions]
+    impl Hooks for PowderSound {
+        fn register(&self, r: &mut dyn Registrar, _: &mod_api::RegistrationContext) {
+            let powder = r.block_key("minecraft:powder_snow");
+            r.block_part(powder, PowderSound);
+        }
+    }
+    struct Observe(Arc<AtomicUsize>);
+    #[mod_api::__subscriptions]
+    impl Hooks for Observe {
+        fn play_level_sound_at_position(
+            &self,
+            _: HostSide<'_>,
+            e: &mut mod_api::PlayLevelSoundAtPositionEvent,
+        ) -> Flow {
+            if e.sound.to_string() == EMPTY_POWDER_SNOW {
+                assert_eq!((e.original_volume, e.original_pitch), (2.0, -1.0));
+                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            Flow::Continue
+        }
+    }
+    const EMPTY_POWDER_SNOW: &str = "minecraft:item.bucket.empty_powder_snow";
+    if !crate::game::native_block_sounds::tests::install_sound_fixture_in_child(
+        "game::remote::interaction_event_tests::powder_snow_placement_uses_the_bucket_event_and_contextual_levels",
+    ) {
+        return;
+    }
+    for listened in [false, true] {
+        let observed = Arc::new(AtomicUsize::new(0));
+        let mut mods = vec![mod_api::ModEntry::new(
+            "powder_sound",
+            Box::new(PowderSound),
+        )];
+        if listened {
+            mods.push(mod_api::ModEntry::new(
+                "observe_sound",
+                Box::new(Observe(observed.clone())),
+            ));
+        }
+        mod_platform::testing::with_mods(mods.into(), || {
+            for client in [false, true] {
+                with_interaction_game(client, |game| {
+                    let registry = game.pack.assets.registry;
+                    let stone = registry.default_state("minecraft:stone").unwrap();
+                    let powder = registry.default_state("minecraft:powder_snow").unwrap();
+                    game.world.set(0, 64, 0, stone).unwrap();
+                    game.forced_hit = Some(hit());
+                    game.inventory[game.selected] =
+                        Some(ItemStack::new("minecraft:powder_snow_bucket", 1));
+                    game.audio.capture = Some(Vec::new());
+                    assert!(use_block(game, client));
+                    assert_eq!(game.world.block(0, 65, 0), powder);
+                    let captured = game.audio.capture.as_ref().unwrap();
+                    let [sound] = captured.as_slice() else {
+                        panic!("expected one placement sound, client={client}")
+                    };
+                    assert_eq!(sound.event, EMPTY_POWDER_SNOW);
+                    assert_eq!(sound.source, SoundSource::Blocks.index());
+                    assert_eq!((sound.volume, sound.pitch), (2.0, -1.0));
+                    assert_eq!(sound.except_entity, if client { None } else { Some(12) });
+
+                    if !client {
+                        let (other, rx) = guest(13, 13, [0.5, 65.0, 0.5]);
+                        game.lan.as_mut().unwrap().hub.guests.push(other);
+                        game.lan_broadcast_effects();
+                        let id = game
+                            .lan
+                            .as_ref()
+                            .unwrap()
+                            .hub
+                            .sync_data()
+                            .id("minecraft:sound_event", EMPTY_POWDER_SNOW)
+                            .unwrap();
+                        let sounds: Vec<_> = packets(&rx)
+                            .into_iter()
+                            .filter_map(|packet| {
+                                if let Clientbound::Sound(sound) = packet {
+                                    Some(sound)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        let [sound] = sounds.as_slice() else {
+                            panic!("expected one sound packet")
+                        };
+                        assert_eq!(sound.sound, (id, None), "use the registered bucket event");
+                        assert_eq!(sound.source, SoundSource::Blocks as i32);
+                        assert_eq!((sound.volume, sound.pitch), (2.0, -1.0));
+                    }
+                });
+            }
+        });
+        assert_eq!(
+            observed.load(std::sync::atomic::Ordering::Relaxed),
+            if listened { 2 } else { 0 }
+        );
+    }
 }
 
 /// `SolidBucketItem.useOn`: a powder snow bucket placed on a block leaves an empty bucket in the

@@ -91,8 +91,9 @@ is out, so label that pull request `release-now` (or ask the council to) once it
 ## The mods registry (sunrise-org/sunrise-mods)
 
 - **Submissions from the website** arrive as pull requests authored by `ludovic111` (the registry's account). A
-  Team member reviews the mod (what it does, its licence, no sign-in or token handling, no Mojang files; see
-  `MOD-POLICY.md` there), approves, and squash-merges once `check` passed. Publishing to the registry is hourly
+  Team member reviews every one of them, owner updates with a signed trailer included, for malware, dangerous
+  patterns and suspicious or obfuscated code only (never licences, provenance or copyright), approves, and
+  squash-merges once `check` passed. The trailer only proves who submitted it; it is never a reason to skip the review. Publishing to the registry is hourly
   (`publish.yml`).
 - **Fork pull requests:** approve their workflow run, and upload the mod's file to the registry's
   [`staging` release](https://github.com/sunrise-org/sunrise-mods/releases/tag/staging) as

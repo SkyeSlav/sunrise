@@ -305,7 +305,7 @@ fn is_animal(s: Species) -> bool {
         )
 }
 /// `Mob.getMaxSpawnClusterSize`.
-pub fn max_cluster_size(s: Species) -> u32 {
+pub fn max_cluster_size(s: Species) -> i32 {
     use Species as S;
     match s {
         S::Horse
@@ -322,11 +322,6 @@ pub fn max_cluster_size(s: Species) -> u32 {
         S::Ghast | S::HappyGhast | S::Pillager => 1,
         _ => 4,
     }
-}
-/// Whether a group of `size` mobs has reached its limit: `parts`, the limit the new mob's
-/// entity parts answered, else `Mob.getMaxSpawnClusterSize` of its species.
-fn cluster_full(size: u32, parts: Option<u32>, species: Species) -> bool {
-    size >= parts.unwrap_or_else(|| max_cluster_size(species))
 }
 /// `EntityType.canSpawnFarFromPlayer`: creatures, misc, pillagers, shulkers.
 fn spawns_far_from_player(s: Species, category: Category) -> bool {
@@ -347,6 +342,19 @@ pub trait NaturalLevel: SpawnLevel {
         _pending: Pending<'_>,
     ) -> SpawnCheck {
         SpawnCheck::Default
+    }
+    /// A spawner's configured entity data, loaded once before its position check
+    /// (`BaseSpawner.serverTick`'s `EntityType.loadEntityRecursive`): the level keeps the
+    /// loaded tree, lends its root to the check and hands the same tree on to finalization and
+    /// admission. False when the data cannot be loaded.
+    fn load_configured(
+        &self,
+        _entity: &sunrise_core::nbt::Compound,
+        _id: &str,
+        _at: [f64; 3],
+        _yaw: f32,
+    ) -> bool {
+        true
     }
     /// The position check just asked refused the mob: what the level made
     /// for it is dropped.
@@ -1288,9 +1296,6 @@ pub struct SpawnRequest<'a> {
 pub struct Spawned {
     /// `TropicalFish.isSchool`.
     pub school: bool,
-    /// The group's size limit the new mob's entity parts answered; `None` leaves
-    /// `Mob.getMaxSpawnClusterSize` of its species.
-    pub cluster_size: Option<u32>,
 }
 
 /// `NaturalSpawner.spawnForChunk` for the categories already filtered.
@@ -1302,18 +1307,28 @@ pub fn spawn_for_chunk<L: NaturalLevel, R: RandomSource + Clone>(
     categories: &[Category],
     chunk: (i32, i32),
     spawn: &mut dyn FnMut(&L, &SpawnRequest, &mut R) -> Option<Spawned>,
+    cluster_size: &mut dyn FnMut(&L, &SpawnRequest, i32) -> i32,
     trace: &mut dyn FnMut(Event<'_>),
 ) {
     for &category in categories {
         let local = state.can_spawn_local(category, chunk.0, chunk.1);
         trace(Event::Local(category, local));
         if local {
-            spawn_category_for_chunk(l, random, state, category, chunk, spawn, trace);
+            spawn_category_for_chunk(
+                l,
+                random,
+                state,
+                category,
+                chunk,
+                spawn,
+                cluster_size,
+                trace,
+            );
         }
     }
 }
 /// `NaturalSpawner.spawnCategoryForChunk`: `getRandomPosWithin` (a column of
-/// the chunk, a height up to one above the world surface).
+/// the chunk, a height up to one above the world surface), then the position's pass.
 pub fn spawn_category_for_chunk<L: NaturalLevel, R: RandomSource + Clone>(
     l: &L,
     random: &mut R,
@@ -1321,12 +1336,23 @@ pub fn spawn_category_for_chunk<L: NaturalLevel, R: RandomSource + Clone>(
     category: Category,
     chunk: (i32, i32),
     spawn: &mut dyn FnMut(&L, &SpawnRequest, &mut R) -> Option<Spawned>,
+    cluster_size: &mut dyn FnMut(&L, &SpawnRequest, i32) -> i32,
     trace: &mut dyn FnMut(Event<'_>),
 ) {
     let start = spawn_start(l, random, chunk);
     trace(Event::Start(category, start));
     if start[1] > l.min_y() {
-        spawn_category_for_position(l, random, state, category, chunk, start, spawn, trace);
+        spawn_category_for_position(
+            l,
+            random,
+            state,
+            category,
+            chunk,
+            start,
+            spawn,
+            cluster_size,
+            trace,
+        );
     }
 }
 
@@ -1354,6 +1380,7 @@ pub fn spawn_category_for_position<L: NaturalLevel, R: RandomSource + Clone>(
     chunk: (i32, i32),
     start: [i32; 3],
     spawn: &mut dyn FnMut(&L, &SpawnRequest, &mut R) -> Option<Spawned>,
+    cluster_size: &mut dyn FnMut(&L, &SpawnRequest, i32) -> i32,
     trace: &mut dyn FnMut(Event<'_>),
 ) {
     let Some(mut cluster) = SpawnCluster::new(l, state, category, chunk, start) else {
@@ -1361,6 +1388,7 @@ pub fn spawn_category_for_position<L: NaturalLevel, R: RandomSource + Clone>(
     };
     while let Some(candidate) = cluster.next_candidate(l, random, state, trace) {
         let request = cluster.request(candidate);
+        let group_index = request.group_index;
         let Some(result) = spawn(l, &request, random) else {
             continue;
         };
@@ -1371,7 +1399,12 @@ pub fn spawn_category_for_position<L: NaturalLevel, R: RandomSource + Clone>(
             candidate.block,
             trace,
         );
-        cluster.check_limit(candidate, result.cluster_size, result.school);
+        let request = SpawnRequest {
+            group_index,
+            ..cluster.request(candidate)
+        };
+        let size = cluster_size(l, &request, max_cluster_size(candidate.species));
+        cluster.check_limit(candidate, size, result.school);
     }
     cluster.finish(state);
 }
@@ -1400,6 +1433,13 @@ pub struct SpawnCandidate {
     yaw: f32,
     species: Species,
     category: Category,
+}
+
+impl SpawnCandidate {
+    /// `Mob.getMaxSpawnClusterSize` for this candidate's species.
+    pub fn vanilla_limit(self) -> i32 {
+        max_cluster_size(self.species)
+    }
 }
 
 impl SpawnCluster {
@@ -1588,8 +1628,8 @@ impl SpawnCluster {
     }
 
     /// Compare the cluster size only after the spawn callback.
-    pub fn check_limit(&mut self, candidate: SpawnCandidate, limit: Option<u32>, school: bool) {
-        if cluster_full(self.count, limit, candidate.species) {
+    pub fn check_limit(&mut self, candidate: SpawnCandidate, limit: i32, school: bool) {
+        if i64::from(self.count) >= i64::from(limit) {
             self.groups = 3;
             self.attempt = self.max;
         } else if candidate.species == Species::TropicalFish && !school {
@@ -2018,27 +2058,6 @@ mod tests {
             max: 1,
             constant: true,
         }
-    }
-
-    /// Vanilla's limits stand until a part answers; an answer replaces them, higher or lower,
-    /// and a group stops growing at the size the answer names.
-    #[test]
-    fn a_parts_answer_moves_where_a_group_stops_growing() {
-        let stops_at = |parts: Option<u32>, species| {
-            (1..=64)
-                .find(|&size| cluster_full(size, parts, species))
-                .unwrap()
-        };
-        // `Mob.getMaxSpawnClusterSize`: 4 by default, 8 for wolves, 1 for ghasts.
-        assert_eq!(stops_at(None, Species::Zombie), 4);
-        assert_eq!(stops_at(None, Species::Wolf), 8);
-        assert_eq!(stops_at(None, Species::Ghast), 1);
-        assert_eq!(stops_at(Some(2), Species::Zombie), 2);
-        assert_eq!(stops_at(Some(7), Species::Zombie), 7);
-        assert_eq!(stops_at(Some(3), Species::Wolf), 3);
-        assert_eq!(stops_at(Some(5), Species::Ghast), 5);
-        // A limit of 0 ends the group with the mob just spawned, as vanilla's would.
-        assert!(cluster_full(1, Some(0), Species::Zombie));
     }
 
     /// A state over `chunks` spawnable chunks with one player standing in chunk (0, 0).

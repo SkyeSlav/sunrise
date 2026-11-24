@@ -5,7 +5,7 @@ machines, biomes, structures, spawning and game rules.
 
 ## Register game rule categories
 
-In `Hooks::register`, call `registrar.game_rule_category("machines")` to declare a category in your mod's namespace. The call returns `Result<(), GameRuleError>`. A full ID in a manifest-owned namespace, or in a namespace delegated to the mod through `served_by` (see [Declare content in code](content-mods.md#declare-content-in-code)), is also accepted.
+In `Hooks::register`, call `registrar.game_rule_category("machines")` to declare a category in your mod's namespace, or pass an explicit valid `namespace:path` to keep that namespace. The call returns `Result<(), GameRuleError>`.
 
 Declare a boolean rule with `registrar.game_rule_bool("enabled", "mymod:machines", true)`. Handle its `Result<BoolGameRuleKey, GameRuleError>` and retain the key from `Ok(key)`. Read the value with `level.game_rule_bool(host, key)`, which returns `Option<bool>`.
 
@@ -13,7 +13,7 @@ Declare an integer rule, like vanilla's `random_tick_speed`, with `registrar.gam
 
 | Rule | Behavior |
 | --- | --- |
-| Invalid IDs, unowned namespaces or duplicate declarations | Registration returns `GameRuleError::InvalidId`, `ForeignNamespace` or `Duplicate`; loading is refused even if you ignore the error. |
+| Invalid IDs or duplicate declarations | Registration returns `GameRuleError::InvalidId` or `Duplicate` (including collisions with built-in vanilla categories or rules); loading is refused even if you ignore the error. |
 | Integer range | `min` above `max`, or a default outside `min..=max`, returns `GameRuleError::InvalidRange` and refuses loading. A saved value outside the range is ignored on load, and the rule keeps its default. |
 | Category references | Resolved after all mods register; an unknown category refuses loading. |
 | Translation | The category key is `gamerule.category.<namespace>.<path>`. |

@@ -28,19 +28,17 @@ impl Game<'_> {
             self.hot_mobs(128, 2)?;
             let dimension = self.dim.id().to_owned();
             let entities: Vec<u32> = self.mobs.iter().map(|mob| mob.id).collect();
-            // One entity a call, as an entity told alone is.
-            let mut canceled = Vec::new();
             recorder.measure(hook, CALLS, || {
                 let mut count = 0u64;
                 for call in 0..CALLS as usize {
+                    let mut canceled = false;
                     self.native_entity_tick_pre(
                         &dimension,
-                        std::slice::from_ref(&entities[call % entities.len()]),
-                        &["minecraft:cow"],
+                        entities[call % entities.len()],
+                        "minecraft:cow",
                         &mut canceled,
                     );
-                    count += canceled.len() as u64;
-                    canceled.clear();
+                    count += u64::from(canceled);
                 }
                 count
             })?;

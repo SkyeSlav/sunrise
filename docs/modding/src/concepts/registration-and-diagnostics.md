@@ -83,14 +83,19 @@ Register callbacks inside `Hooks::register` (the counterpart to NeoForge's `Cras
 | `r.crash_header(Arc::new(Banner))` | `<mod id>: <value>` under the report title |
 
 Both callbacks implement `CrashSection`. The report calls `value()` once when it is written,
-not during registration. Return `None` to omit a line.
+not during registration. Return `None` to omit an entry. The report includes the full label and
+value, including line breaks, without clipping or flattening them, and marks every continuation
+line with the registering mod's ID (`\t<mod id> | ` for headers, `\t\t<mod id> | ` for system
+details, including error text). That includes entries from the mod named in the crash itself.
 
-- Lines follow registration order on clients and dedicated servers.
-- Callbacks run on a separate thread. The report waits at most two seconds for headers and
-  another two seconds for system-detail sections.
-- A callback that panics or times out produces `~~ERROR~~`; the report is written.
-- Callbacks belonging to the mod blamed for the crash are not called.
-- Control characters become spaces, and each value is limited to 4096 bytes on one line.
+Callbacks run and appear in registration order on clients and dedicated servers. A report is
+built after the panicking thread has unwound, as vanilla builds it outside the throw, and the
+callbacks run then, on the thread that builds it: the locks the panicking code held are released.
+Read your own diagnostic state, and keep a callback cheap.
+
+A failed callback's entry begins with `~~ERROR~~`. A panic logs the mod's ID, queues an error
+toast, and disables only that callback for the session. Other failures are reported on each
+occurrence and do not disable the callback.
 
 ## Converted-package attribution
 

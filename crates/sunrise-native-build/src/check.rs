@@ -1,6 +1,7 @@
 //! How native mods stand against one game build before anything compiles: each mod's refusal and fit (SDK design §10), and the route the usable ones take.
 use crate::{api, game_uses, prebuilt, scan_bundles};
 use serde::{Deserialize, Serialize};
+use std::cell::OnceCell;
 use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -227,8 +228,9 @@ pub struct Plan {
     /// The build's `surface.json`; absent, a mod that needs it says so (`needs`).
     #[serde(default)]
     pub surface: Option<PathBuf>,
-    /// The build's unpacked build data (`functions.json`, `internals.json`, `loops.json`);
-    /// absent, a mod that needs it says so. Same-build mixins need `functions.json` too.
+    /// The build's complete unpacked build data (`functions.json`, `internals.json`, `loops.json`).
+    /// A mod that needs it reports `needs` if it is absent. Same-build mixins and loops need it too.
+    /// When read, missing files or a wrong build are errors even if a misfit is already known.
     #[serde(default)]
     pub build_data: Option<PathBuf>,
 }
@@ -270,7 +272,18 @@ impl From<String> for Lack {
 pub fn check(plan: &Plan) -> Result<Reply, String> {
     let found = scan_bundles(&plan.mods)?;
     let mut surface: Option<Rc<mod_surface::Surface>> = None;
-    let mut functions = None;
+    // One set of published inputs for this check, opened only if a verdict needs it.
+    let build_data = OnceCell::new();
+    let data = || {
+        let dir = plan
+            .build_data
+            .as_deref()
+            .ok_or(Lack::Needs("build-data"))?;
+        build_data
+            .get_or_init(|| game_uses::Data::read(dir, &plan.build))
+            .as_ref()
+            .map_err(|error| Lack::Unread(error.to_string()))
+    };
     let mut mods = Vec::new();
     let mut usable = Vec::new();
     for bundle in &found {
@@ -297,16 +310,12 @@ pub fn check(plan: &Plan) -> Result<Reply, String> {
             continue;
         }
         let native = bundle.native();
-        let judged = if native.sunrise == plan.build && !native.mixin.is_empty() {
-            (|| {
-                let dir = plan.build_data.as_ref().ok_or(Lack::Needs("build-data"))?;
-                let index = match &functions {
-                    Some(index) => index,
-                    None => functions
-                        .insert(game_uses::function_index(dir, &plan.build).map_err(Lack::Unread)?),
-                };
+        let judged = if native.sunrise == plan.build
+            && (!native.mixin.is_empty() || !native.r#loop.is_empty())
+        {
+            data().and_then(|data| {
                 for row in &native.mixin {
-                    if let Some(refused) = game_uses::mixin_refusal(index, &row.target) {
+                    if let Some(refused) = data.mixin_refusal(&row.target) {
                         return Err(Lack::Refused(format!(
                             "{}: {id}:{}: {}: {}",
                             refused.code.name(),
@@ -316,8 +325,11 @@ pub fn check(plan: &Plan) -> Result<Reply, String> {
                         )));
                     }
                 }
+                for row in &native.r#loop {
+                    data.loops.require(&id, row).map_err(Lack::Refused)?;
+                }
                 Ok(Verdict::MadeFor)
-            })()
+            })
         } else {
             // Read only when the verdict needs it.
             let mut read = None;
@@ -344,14 +356,14 @@ pub fn check(plan: &Plan) -> Result<Reply, String> {
                     surface = Some(read.clone());
                     Ok(read)
                 },
-                &mut || {
-                    let dir = plan.build_data.as_ref().ok_or(Lack::Needs("build-data"))?;
-                    game_uses::entries(&bundle.manifest, dir, &plan.build).map_err(Lack::Unread)
-                },
+                &mut || Ok(data()?.entries(&bundle.manifest)),
                 // The plan gives no surface of the build the mod was made for.
                 None,
             )
-            .map(|judged| judged.verdict)
+            .and_then(|judged| match judged.uncompared {
+                Some(Lack::Unread(why)) => Err(Lack::Unread(why)),
+                _ => Ok(judged.verdict),
+            })
         };
         match judged {
             Ok(mut verdict) => {

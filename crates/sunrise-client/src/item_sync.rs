@@ -3,7 +3,7 @@
 //! and command item NBT use fills every field. Both sides use it: a client for
 //! what its server sends, a server for a creative client's
 //! `SetCreativeModeSlot`. The other direction is `lan::guest::stack_to_network`.
-use crate::items::{ConsumeEffect, ItemInfo, ItemStack};
+use crate::items::{ItemInfo, ItemStack};
 use std::sync::Arc;
 use sunrise_core::nbt::Tag;
 use sunrise_protocol::buf::{Codec, Reader};
@@ -13,8 +13,6 @@ use sunrise_world::component_value::consume_effects::Admitted;
 
 pub(crate) mod attribute_modifiers;
 pub(crate) mod kinetic;
-use sunrise_world::consumable::Consumable;
-pub type ItemConsumable = Consumable<String, ConsumeEffect>;
 
 /// Publish native consume-effect codecs to the persistent and protocol layers.
 pub fn install_consume_effect_codecs() -> Result<(), String> {
@@ -312,64 +310,6 @@ pub fn damage_on_hurt(stack: &ItemStack, default: bool) -> bool {
             .unwrap_or(true);
     }
     default
-}
-
-/// `stack.get(DataComponents.CONSUMABLE)`: the item's own, replaced or removed
-/// by the saved components (a command's, a save's), then by the server's patch.
-pub fn consumable(stack: &ItemStack, items: &crate::items::Items) -> Option<ItemConsumable> {
-    stack.consumable(items.get(&stack.item)).cloned()
-}
-
-/// Decodes the `minecraft:consumable` component from wire bytes.
-pub fn decode_consumable_bytes(bytes: &[u8]) -> Option<ItemConsumable> {
-    decode_consumable_bytes_with(bytes, None)
-}
-
-pub fn decode_consumable_bytes_with(
-    bytes: &[u8],
-    builtin: Option<&Builtin>,
-) -> Option<ItemConsumable> {
-    let mut r = Reader::new(bytes);
-    let seconds = r.f32().ok()?;
-    let animation_id = r.varint().ok()?;
-    let animation_name = sunrise_core::use_animation::NAMES
-        .get(animation_id as usize)
-        .copied()
-        .unwrap_or("none");
-    let animation = sunrise_items::use_animation::animation_name(animation_name.encode_utf16());
-    let sound_holder = r.varint().ok()?;
-    let sound = match sound_holder {
-        0 => {
-            let s = r.string(32767).ok()?.to_owned();
-            if r.bool().ok()? {
-                let _ = r.f32().ok();
-            }
-            s
-        }
-        n => builtin
-            .and_then(|b| b.get("minecraft:sound_event"))
-            .and_then(|ids| ids.name(n.checked_sub(1)?))
-            .map_or_else(String::new, str::to_owned),
-    };
-    let particles = r.bool().unwrap_or(true);
-    let default_builtin = Builtin::default();
-    let b = builtin.unwrap_or(&default_builtin);
-    let n = r.count(r.remaining()).unwrap_or(0);
-    let mut effects = Vec::with_capacity(n.min(64));
-    for _ in 0..n {
-        if let Some(Some(tag)) = consume_effect_tag(&mut r, b, &mut EffectProjection::default())
-            && let Some(parsed) = sunrise_items::items::parse_consume_effect(&tag)
-        {
-            effects.push(parsed);
-        }
-    }
-    Some(Consumable {
-        seconds,
-        animation,
-        sound,
-        particles,
-        effects,
-    })
 }
 
 /// The `equippable` component `item`'s prototype has.
@@ -1371,6 +1311,7 @@ fn profile_tag(p: &Profile) -> Tag {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::items::{ConsumeEffect, ConsumeSound};
     use std::path::Path;
     use sunrise_core::use_animation::UseAnimation;
     use sunrise_protocol::registry::Ids;
@@ -1551,7 +1492,7 @@ mod tests {
                 let received = from_network(&sent, &builtin, &synced);
                 let child = received.data().unwrap().template_stack(key).unwrap();
                 assert!(
-                    matches!(child.death_protection(None), Some([ConsumeEffect::Native { registered: Some(effect), .. }]) if effect.wire.as_ref() == [7])
+                    matches!(child.death_protection(None), Some([ConsumeEffect::Native(effect)]) if effect.registered.as_ref().is_some_and(|admitted| admitted.wire.as_ref() == [7]))
                 );
                 let echoed =
                     crate::lan::guest::stack_to_network(|_| 1, ids, &Some(received)).unwrap();
@@ -1565,7 +1506,7 @@ mod tests {
                 let data = held.as_ref().unwrap().data().unwrap();
                 let child = data.template_stack(key).unwrap();
                 assert!(
-                    matches!(child.death_protection(None), Some([ConsumeEffect::Native { registered: Some(effect), .. }]) if effect.wire.as_ref() == [7])
+                    matches!(child.death_protection(None), Some([ConsumeEffect::Native(effect)]) if effect.registered.as_ref().is_some_and(|admitted| admitted.wire.as_ref() == [7]))
                 );
                 assert_eq!(loads.load(Ordering::Relaxed), before + 2);
 
@@ -1640,7 +1581,7 @@ mod tests {
                     ]),
                 ),
             ]);
-            assert!(sunrise_items::item_nbt::item_from_persistent_nbt(&saved).is_none());
+            assert!(sunrise_items::item_nbt::item_from_persistent_nbt(&saved).is_err());
             let inventory = Tag::List(vec![saved]);
             let slots = sunrise_items::item_nbt::decode_items(Some(&inventory), 3);
             let stack = slots[2].as_ref().expect("item survives reopening");
@@ -1795,16 +1736,17 @@ mod tests {
     /// A command's stick (`/give @s stick[consumable={}]`) gains consumable behaviour.
     #[test]
     fn saved_components_make_any_item_consumable() {
-        let items = crate::items::Items::for_tests(Default::default());
         let mut stack = ItemStack::new("minecraft:stick", 1);
-        assert!(consumable(&stack, &items).is_none());
+        assert!(stack.consumable(None).is_none());
 
         // /give @s stick[consumable={}]
         stack.data_mut().set_other(
             "minecraft:consumable",
             Some(Tag::Compound(Default::default())),
         );
-        let c = consumable(&stack, &items).expect("stick has consumable component");
+        let c = stack
+            .consumable(None)
+            .expect("stick has consumable component");
         assert_eq!(c.seconds, 1.6);
         assert_eq!(c.ticks(), 32);
         assert_eq!(c.animation, UseAnimation::Eat);
@@ -1824,7 +1766,7 @@ mod tests {
                 ("has_consume_particles", Tag::Byte(0)),
             ])),
         );
-        let c = consumable(&stack, &items).expect("custom drink stick");
+        let c = stack.consumable(None).expect("custom drink stick");
         assert_eq!(c.seconds, 3.0);
         assert_eq!(c.ticks(), 60);
         assert_eq!(c.animation, UseAnimation::Drink);
@@ -1836,7 +1778,7 @@ mod tests {
             "!minecraft:consumable",
             Some(Tag::Compound(Default::default())),
         );
-        assert!(consumable(&stack, &items).is_none());
+        assert!(stack.consumable(None).is_none());
     }
 
     /// A server's component patch adding or removing consumable.
@@ -1881,7 +1823,9 @@ mod tests {
         adds.added
             .push((component::CONSUMABLE, Component::Raw(r.data)));
         let stack = from_wire(adds);
-        let c = consumable(&stack, &items).expect("wire patch consumable");
+        let c = stack
+            .consumable(items.get(&stack.item))
+            .expect("wire patch consumable");
         assert_eq!(c.seconds, 2.0);
         assert_eq!(c.animation, UseAnimation::Drink);
         assert_eq!(c.sound, "minecraft:custom_drink");
@@ -1898,7 +1842,11 @@ mod tests {
                 .other("!minecraft:consumable")
                 .is_some()
         );
-        assert!(consumable(&stack_removed, &items).is_none());
+        assert!(
+            stack_removed
+                .consumable(items.get(&stack_removed.item))
+                .is_none()
+        );
 
         // Wire patch with on_consume_effects and registered sound holder
         let mut r = ::sunrise_core::vanilla_bytes::Writer::new();
@@ -1906,14 +1854,20 @@ mod tests {
         r.varint(2); // Drink
         r.varint(1); // Registered sound holder (id 0 + 1)
         r.bool(true); // particles
-        r.varint(2); // 2 effects
+        r.varint(4); // 4 effects
         r.varint(2); // ClearAllEffects (type 2)
+        r.varint(4); // PlaySound (type 4)
+        r.varint(0); // Direct sound holder
+        r.string("minecraft:test.inline");
+        r.bool(true); // Fixed range present
+        r.f32(3.5);
         r.varint(1); // RemoveEffects (type 1)
         r.varint(2); // holder set of 1 entry
         r.varint(0); // mob effect id 0
+        r.varint(4); // PlaySound again, this time a registry holder
+        r.varint(1);
         let consumable_bytes = r.data;
 
-        // Not the honey bottle's own sound, so a fallback to the prototype shows.
         let sounds = sunrise_protocol::registry::Ids::from_names(vec![
             "minecraft:entity.generic.drink".into(),
         ]);
@@ -1931,15 +1885,50 @@ mod tests {
         registries.insert("minecraft:data_component_type".into(), comp_ids);
         let builtin = Builtin { registries };
 
-        let decoded = decode_consumable_bytes_with(&consumable_bytes, Some(&builtin))
-            .expect("decoded with builtin");
-        assert_eq!(decoded.animation, UseAnimation::Drink);
-        assert_eq!(decoded.sound, "minecraft:entity.generic.drink");
         let effects = vec![
             ConsumeEffect::ClearAllEffects,
+            ConsumeEffect::PlaySound(ConsumeSound::Direct {
+                id: "minecraft:test.inline".into(),
+                range: Some(3.5),
+            }),
             ConsumeEffect::RemoveEffects(vec!["minecraft:poison".into()]),
+            ConsumeEffect::PlaySound(ConsumeSound::Registered(
+                "minecraft:entity.generic.drink".into(),
+            )),
         ];
-        assert_eq!(decoded.effects, effects);
+
+        let mut saved = ItemStack::new("minecraft:honey_bottle", 1);
+        saved.data_mut().set_other(
+            "minecraft:consumable",
+            Some(Tag::compound([(
+                "on_consume_effects",
+                Tag::List(vec![
+                    Tag::compound([("type", Tag::String("minecraft:clear_all_effects".into()))]),
+                    Tag::compound([
+                        ("type", Tag::String("minecraft:play_sound".into())),
+                        (
+                            "sound",
+                            Tag::compound([
+                                ("sound_id", Tag::String("minecraft:test.inline".into())),
+                                ("range", Tag::Float(3.5f32.to_bits())),
+                            ]),
+                        ),
+                    ]),
+                    Tag::compound([
+                        ("type", Tag::String("minecraft:remove_effects".into())),
+                        ("effects", Tag::String("minecraft:poison".into())),
+                    ]),
+                    Tag::compound([
+                        ("type", Tag::String("minecraft:play_sound".into())),
+                        (
+                            "sound",
+                            Tag::String("minecraft:entity.generic.drink".into()),
+                        ),
+                    ]),
+                ]),
+            )])),
+        );
+        assert_eq!(saved.consumable(None).unwrap().effects, effects);
 
         // Creative client / network stack via from_network & components_tag
         let mut s = sunrise_protocol::item::Stack::new(0, 1);
@@ -1949,10 +1938,23 @@ mod tests {
         ));
         let synced = sunrise_protocol::registry::Dynamic::default();
         let net_stack = from_network(&s, &builtin, &synced);
-        let net_c = consumable(&net_stack, &items).expect("network stack consumable");
+        let net_c = net_stack
+            .consumable(None)
+            .expect("network stack consumable");
         assert_eq!(net_c.animation, UseAnimation::Drink);
         assert_eq!(net_c.sound, "minecraft:entity.generic.drink");
         assert_eq!(net_c.effects, effects);
+
+        s.added.clear();
+        s.removed.push(component::CONSUMABLE);
+        let removed = from_network(&s, &builtin, &synced);
+        assert!(
+            removed
+                .data()
+                .unwrap()
+                .other("!minecraft:consumable")
+                .is_some()
+        );
     }
 
     #[test]
@@ -2116,7 +2118,6 @@ mod tests {
     /// Replacing a saved consumable uses codec defaults, not previous fields or effects.
     #[test]
     fn a_stacks_consumable_takes_the_codecs_defaults() {
-        use sunrise_core::use_animation::UseAnimation;
         let mut stack = ItemStack::new("minecraft:honey_bottle", 1);
         assert!(stack.consumable(None).is_none());
         stack.data_mut().set_other(

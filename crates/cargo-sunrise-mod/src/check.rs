@@ -504,6 +504,7 @@ mod tests {
         // Test policy on verified claims; the verifier crate exercises real signed bundles.
         let attested = Attested {
             repository_id: 123456,
+            owner_id: 654321,
             repository_name: "author/repo".into(),
             signer_workflow_ref:
                 "sunrise-org/sunrise-mods/.github/workflows/release.yml@refs/tags/release-v1".into(),

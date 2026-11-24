@@ -1,7 +1,10 @@
 #![cfg(test)]
 use super::Game;
 use super::item_abilities::ability;
-use mod_api::{CanPerformActionEvent, Hooks, Host, ItemPart, Registrar, RegistrationContext};
+use mod_api::{
+    CanPerformActionEvent, Hooks, Identifier, ItemAbilityContext, ItemPart, Registrar,
+    RegistrationContext,
+};
 use std::sync::Arc;
 use sunrise_client::items::ItemStack;
 use sunrise_client::mobs::Mob;
@@ -18,8 +21,32 @@ struct Abilities {
 
 #[mod_api::sunrise_part]
 impl ItemPart for Abilities {
-    fn can_perform_action(&self, _: &dyn Host, event: &mut CanPerformActionEvent<'_>) {
+    fn can_perform_action(
+        &self,
+        context: &ItemAbilityContext<'_>,
+        event: &mut CanPerformActionEvent<'_>,
+    ) {
+        let expected_key = event.stack.item();
+        assert_eq!(
+            mod_api::__private::item_key_id(expected_key),
+            Some(self.item)
+        );
+        let swords = context
+            .tags()
+            .key(&Identifier::parse("minecraft:swords").unwrap())
+            .expect("swords tag resolves");
+        assert_eq!(
+            context.tags().is_in_tag(expected_key, swords),
+            Some(self.item == "minecraft:diamond_sword")
+        );
+        if self.item == "minecraft:shears" && SHEARING.contains(&event.ability) {
+            assert!(event.can_perform);
+        }
+        if self.item == "minecraft:shield" && event.ability == ability::SHIELD_BLOCK {
+            assert!(event.can_perform);
+        }
         if self.grants.contains(&event.ability) {
+            assert!(!event.can_perform);
             event.can_perform = true;
         } else if self.denies.contains(&event.ability) {
             event.can_perform = false;
@@ -39,11 +66,14 @@ impl Hooks for Mod {
     }
 }
 
-/// A serving level with one chunk of air and a pumpkin at (4, 64, 4).
-fn field(game: &mut Game<'_>) {
+/// A serving level with one chunk of air and a pumpkin at (4, 64, 4), its world locked as an open
+/// world's is, so its merged tags are readable. The folder holds the lock; keep it for the test.
+fn field(game: &mut Game<'_>) -> tempfile::TempDir {
     game.options.dedicated = Some(Vec::new());
+    let folder = tempfile::tempdir().unwrap();
+    game.session_lock = Some(sunrise_client::save::SessionLock::acquire(folder.path()).unwrap());
     game.native_lifecycle
-        .begin_open(mod_api::Authority::IntegratedServer);
+        .begin_open(Some(mod_api::Authority::IntegratedServer));
     game.world = sunrise_client::world::World::new(game.res.facts().air, 1);
     game.world
         .chunks
@@ -55,6 +85,7 @@ fn field(game: &mut Game<'_>) {
         .default_state("minecraft:pumpkin")
         .unwrap();
     game.world.set(4, 64, 4, pumpkin).unwrap();
+    folder
 }
 
 fn block_name(game: &Game<'_>, pos: [i32; 3]) -> String {
@@ -134,7 +165,7 @@ fn parts_grant_and_deny_the_abilities_vanilla_asks_of_an_item_isolated() {
     mod_platform::testing::with_mods(mods.clone(), || {
         crate::game::api_values::install_parts(&mods).unwrap();
         with_game(|game| {
-            field(game);
+            let _world = field(game);
             let sword = ItemStack::new("minecraft:diamond_sword", 1);
             let axe = ItemStack::new("minecraft:diamond_axe", 1);
             let shield = ItemStack::new("minecraft:shield", 1);
@@ -218,7 +249,7 @@ fn parts_grant_and_deny_the_abilities_vanilla_asks_of_an_item_isolated() {
 #[ignore = "daily"]
 fn without_parts_the_vanilla_item_checks_stand() {
     crate::game::native_entity_refs::tests::with_game(|game| {
-        field(game);
+        let _world = field(game);
         let shield = ItemStack::new("minecraft:shield", 1);
         let granted = game.blocks_attacks(&shield).expect("a shield blocks");
         assert_eq!(granted.delay_seconds, 0.25);
@@ -280,7 +311,7 @@ impl Hooks for Lights {
     }
     fn block_tool_modification(
         &self,
-        host: &dyn Host,
+        host: &dyn mod_api::Host,
         event: &mut mod_api::BlockToolModificationEvent<'_>,
     ) -> mod_api::Flow {
         HEARD

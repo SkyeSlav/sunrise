@@ -344,7 +344,6 @@ impl Game<'_> {
             self.as_guest(conn, |game| game.server_spin_attack());
         }
         let in_wall = !sleeping && self.in_wall(conn, at, dimensions);
-        let mut soul = None;
         let events = self.as_guest(conn, |game| {
             let (rules, motion) = (game.world.health_rules, game.motion);
             let health = &motion.health;
@@ -490,6 +489,8 @@ impl Game<'_> {
             game.rain_extinguish_player();
             // WitherRoseBlock.entityInside along those moves.
             game.apply_player_inside_events(&events);
+            // `LivingEntity.baseTick` runs the equipment tick before location effects.
+            game.tick_equipment_enchantments(super::super::commands::Target::Player, id);
             // LivingEntity.baseTick: a new block position runs the worn
             // enchantments' location_changed effects (frost walker).
             game.location_changed_effects([start.x, start.y, start.z], from_ground);
@@ -511,9 +512,7 @@ impl Game<'_> {
                 let _ = w.server_player_pose_tick();
             }
             game.apply_player_waypoint_updates();
-            // Soul Speed's effects (LivingEntity.baseTick's location_changed
-            // and tick effects); its particle goes to the players around.
-            soul = game.tick_soul_speed();
+            game.update_soul_speed_location();
             game.handle_shoulder_entities();
             let Some(player) = game.player.as_mut() else {
                 return (Vec::new(), None, ServerTravel::Continue);
@@ -577,11 +576,7 @@ impl Game<'_> {
             .lan
             .as_mut()
             .is_some_and(|host| host.hub.apply_server_travel(conn, travel_teleport, travel));
-        if let Some((at, velocity)) = soul
-            && let Some(host) = self.lan.as_ref()
-        {
-            crate::game::lan_particles::send_soul_particle(host, at, velocity);
-        }
+
         self.as_guest(conn, |game| {
             game.sculk_step_on_player();
             game.tick_player_sculk_events();
@@ -655,7 +650,7 @@ impl Game<'_> {
                             f64::from(pos.y) + 0.5,
                             f64::from(pos.z) + 0.5,
                         ];
-                        self.audio.play_unshared(name, Some(at), volume, pitch);
+                        self.play_audio_unshared(name, Some(at), volume, pitch);
                         self.send_level_sound(LevelSound::new(name, at, volume, pitch), None);
                     }
                 }
@@ -669,7 +664,7 @@ impl Game<'_> {
                     ..
                 }) => {
                     if let Some(name) = sound.player_fall_sound() {
-                        self.audio.play_unshared(name, Some(at), volume, pitch);
+                        self.play_audio_unshared(name, Some(at), volume, pitch);
                         self.send_level_sound(LevelSound::new(name, at, volume, pitch), Some(conn));
                     }
                 }
@@ -709,22 +704,27 @@ impl Game<'_> {
                         .as_ref()
                         .and_then(|host| host.hub.guest(conn))
                         .map(|g| (g.entity_id as u32, "minecraft:player"));
-                    let sound = self.block_sound_type(
+                    let sound = self.selected_block_sound(
                         [position.x, position.y, position.z],
                         state,
                         entity,
                         mod_api::BlockSoundCause::Fall,
                     );
-                    self.audio.play_unshared(
-                        &sound.fall,
+                    self.play_audio_unshared(
+                        sound.event.as_str(),
                         Some(at),
                         sound.volume * 0.5,
                         sound.pitch * 0.75,
                     );
                     self.send_level_sound(
                         // `Player.playSound` plays in the players' source.
-                        LevelSound::new(&sound.fall, at, sound.volume * 0.5, sound.pitch * 0.75)
-                            .in_source(mod_api::SoundSource::Players),
+                        LevelSound::new(
+                            sound.event.as_str(),
+                            at,
+                            sound.volume * 0.5,
+                            sound.pitch * 0.75,
+                        )
+                        .in_source(mod_api::SoundSource::Players),
                         Some(conn),
                     );
                 }
@@ -795,7 +795,7 @@ impl Game<'_> {
                     };
                     if sound {
                         let name = "minecraft:block.honey_block.slide";
-                        self.audio.play_unshared(name, Some(at), 1.0, 1.0);
+                        self.play_audio_unshared(name, Some(at), 1.0, 1.0);
                         self.send_level_sound(LevelSound::new(name, at, 1.0, 1.0), Some(conn));
                     }
                     if particles {

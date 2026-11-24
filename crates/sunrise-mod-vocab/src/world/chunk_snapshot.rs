@@ -1,5 +1,5 @@
 //! Immutable, thread-safe chunk column snapshots (`ChunkSnapshot`, `SectionSnapshot`).
-use crate::{BiomeId, BlockState, Heightmap};
+use crate::{BiomeKey, BlockState, Heightmap};
 use std::fmt;
 use std::sync::Arc;
 
@@ -16,8 +16,7 @@ pub trait ChunkSnapshotBackend: Send + Sync + 'static {
     fn block_state(&self, lx: u8, y: i32, lz: u8) -> Option<BlockState>;
     fn light(&self, lx: u8, y: i32, lz: u8) -> Option<(u8, u8)>;
     fn biome(&self, lx: u8, y: i32, lz: u8) -> Option<u32>;
-    fn biome_name(&self, biome_index: u32) -> Option<&str>;
-    fn biome_id(&self, name: &str) -> Option<u32>;
+    fn biome_key(&self, biome_index: u32) -> Option<&BiomeKey>;
     fn section_y(&self, section_index: usize) -> i32;
     fn section_is_empty(&self, section_index: usize) -> bool;
     fn section_uniform_block(&self, section_index: usize) -> Option<BlockState>;
@@ -134,26 +133,18 @@ impl ChunkSnapshot {
         self.backend.light(lx, y, lz)
     }
 
-    /// Typed raw stored biome at chunk-local block coordinates `(lx, y, lz)` (`lx, lz` in
+    /// Registered biome stored at chunk-local block coordinates `(lx, y, lz)` (`lx, lz` in
     /// `0..16`, `y` in `min_y..min_y + height`), mapped to its 4x4x4 quart cell via vanilla's
     /// `>> 2` shift (`ChunkAccess.getNoiseBiome`, before biome-manager zoom). Returns `None` if
-    /// out of bounds.
-    pub fn biome(&self, lx: u8, y: i32, lz: u8) -> Option<BiomeId> {
-        self.backend.biome(lx, y, lz).map(BiomeId)
-    }
-
-    /// Resolves a [`BiomeId`] returned by this snapshot to its canonical namespaced identifier
-    /// (for example `"minecraft:plains"`), usable off-thread without holding a [`Host`](crate::Host).
-    /// Returns `None` if `biome` is not in this snapshot's biome table.
-    pub fn biome_name(&self, biome: BiomeId) -> Option<&str> {
-        self.backend.biome_name(biome.0)
-    }
-
-    /// Resolves a canonical biome name in this snapshot's biome table to its [`BiomeId`], so
-    /// worker code can compare typed `BiomeId` values directly without string lookups per cell.
-    /// Returns `None` if `name` is not in this snapshot's biome table.
-    pub fn biome_id(&self, name: &str) -> Option<BiomeId> {
-        self.backend.biome_id(name).map(BiomeId)
+    /// out of bounds, or if the stored slot names no registered biome (a save placeholder for a
+    /// biome the world's registry lacks).
+    ///
+    /// Equal keys name the same biome; parse a key once with [`BiomeKey::parse`] and compare it
+    /// against each cell off-thread, with no [`Host`](crate::Host).
+    pub fn biome(&self, lx: u8, y: i32, lz: u8) -> Option<&BiomeKey> {
+        self.backend
+            .biome(lx, y, lz)
+            .and_then(|slot| self.backend.biome_key(slot))
     }
 }
 
@@ -196,9 +187,12 @@ impl<'a> SectionSnapshot<'a> {
         self.backend.section_uniform_light(self.index)
     }
 
-    /// Uniform typed biome if every 4x4x4 quart cell in this section has the same biome.
-    pub fn uniform_biome(&self) -> Option<BiomeId> {
-        self.backend.section_uniform_biome(self.index).map(BiomeId)
+    /// Uniform registered biome if every 4x4x4 quart cell in this section has the same biome.
+    /// `None` if the cells differ or the shared slot names no registered biome.
+    pub fn uniform_biome(&self) -> Option<&'a BiomeKey> {
+        self.backend
+            .section_uniform_biome(self.index)
+            .and_then(|slot| self.backend.biome_key(slot))
     }
 
     /// Block state at section-local block coordinates `(lx, ly, lz)` (`0..16` on each axis).
@@ -213,12 +207,13 @@ impl<'a> SectionSnapshot<'a> {
         self.backend.section_light(self.index, lx, ly, lz)
     }
 
-    /// Typed stored biome at section-local quart coordinates `(qx, qy, qz)` (`0..4` on each axis,
-    /// 4 blocks per quart cell). Returns `None` if any coordinate is `>= 4`.
-    pub fn biome_quart(&self, qx: u8, qy: u8, qz: u8) -> Option<BiomeId> {
+    /// Registered biome stored at section-local quart coordinates `(qx, qy, qz)` (`0..4` on each
+    /// axis, 4 blocks per quart cell). Returns `None` if any coordinate is `>= 4`, or if the
+    /// stored slot names no registered biome.
+    pub fn biome_quart(&self, qx: u8, qy: u8, qz: u8) -> Option<&'a BiomeKey> {
         self.backend
             .section_biome_quart(self.index, qx, qy, qz)
-            .map(BiomeId)
+            .and_then(|slot| self.backend.biome_key(slot))
     }
 }
 
@@ -226,7 +221,7 @@ impl<'a> SectionSnapshot<'a> {
 mod tests {
     use super::*;
 
-    struct StubBackend;
+    struct StubBackend(BiomeKey);
 
     impl ChunkSnapshotBackend for StubBackend {
         fn pos(&self) -> [i32; 2] {
@@ -256,11 +251,8 @@ mod tests {
         fn biome(&self, lx: u8, y: i32, lz: u8) -> Option<u32> {
             (lx < 16 && lz < 16 && (-64..-32).contains(&y)).then_some(7)
         }
-        fn biome_name(&self, biome_index: u32) -> Option<&str> {
-            (biome_index == 7).then_some("minecraft:desert")
-        }
-        fn biome_id(&self, name: &str) -> Option<u32> {
-            (name == "minecraft:desert").then_some(7)
+        fn biome_key(&self, biome_index: u32) -> Option<&BiomeKey> {
+            (biome_index == 7).then_some(&self.0)
         }
         fn section_y(&self, section_index: usize) -> i32 {
             -4 + section_index as i32
@@ -274,8 +266,8 @@ mod tests {
         fn section_uniform_light(&self, _: usize) -> Option<(u8, u8)> {
             Some((15, 0))
         }
-        fn section_uniform_biome(&self, _: usize) -> Option<u32> {
-            Some(7)
+        fn section_uniform_biome(&self, section_index: usize) -> Option<u32> {
+            Some(if section_index == 0 { 8 } else { 7 })
         }
         fn section_block_state(&self, _: usize, _: u8, _: u8, _: u8) -> Option<BlockState> {
             None
@@ -293,24 +285,24 @@ mod tests {
         fn assert_send_sync_static<T: Send + Sync + 'static>() {}
         assert_send_sync_static::<ChunkSnapshot>();
 
-        let snap = ChunkSnapshot::from_backend(Arc::new(StubBackend));
+        let desert = BiomeKey::parse("minecraft:desert").unwrap();
+        let snap = ChunkSnapshot::from_backend(Arc::new(StubBackend(desert.clone())));
         assert_eq!(snap.pos(), [3, -5]);
         assert_eq!(snap.min_y(), -64);
         assert_eq!(snap.height(), 32);
         assert_eq!(snap.section_count(), 2);
         assert!(!snap.has_light());
 
-        let desert = snap.biome_id("minecraft:desert").unwrap();
-        assert_eq!(snap.biome_name(desert), Some("minecraft:desert"));
-        assert_eq!(snap.biome_id("minecraft:plains"), None);
-        assert_eq!(snap.biome(0, -64, 0), Some(desert));
+        assert_eq!(snap.biome(0, -64, 0), Some(&desert));
         assert_eq!(snap.biome(0, -32, 0), None);
+        // An unregistered slot (a save placeholder) names no biome.
+        assert_eq!(snap.section(0).unwrap().uniform_biome(), None);
 
         let sec1 = snap.section(1).unwrap();
         assert_eq!(sec1.section_y(), -3);
         assert!(sec1.is_empty());
-        assert_eq!(sec1.uniform_biome(), Some(desert));
-        assert_eq!(sec1.biome_quart(3, 3, 3), Some(desert));
+        assert_eq!(sec1.uniform_biome(), Some(&desert));
+        assert_eq!(sec1.biome_quart(3, 3, 3), Some(&desert));
         assert_eq!(sec1.biome_quart(4, 0, 0), None);
         assert!(snap.section(2).is_none());
     }

@@ -94,7 +94,7 @@ impl InstanceGroupStorage {
     }
     fn get_owned(
         &mut self,
-        owner: Option<&'static str>,
+        _owner: Option<&'static str>,
         handle: InstanceGroupRef,
         model_generation: u64,
     ) -> Result<&mut Group, GroupError> {
@@ -103,9 +103,7 @@ impl InstanceGroupStorage {
             .get_mut(fields.slot as usize)
             .and_then(Option::as_mut)
             .filter(|g| {
-                g.owner == owner
-                    && g.generation == fields.generation
-                    && g.model.fields().generation == model_generation
+                g.generation == fields.generation && g.model.fields().generation == model_generation
             })
             .ok_or(GroupError::Stale)
     }
@@ -237,10 +235,8 @@ impl Game<'_> {
     ) -> Result<(), GroupError> {
         let mut storage = self.instance_groups.borrow_mut();
         let group = storage.get(handle, self.standalone_geometry.generation())?;
-        if !draw.has_group(handle) {
-            group.submitted = true;
-            draw.queue_group(handle);
-        }
+        group.submitted = true;
+        draw.queue_group(handle);
         Ok(())
     }
 
@@ -252,10 +248,9 @@ impl Game<'_> {
     ) {
         let mut storage = self.instance_groups.borrow_mut();
         let mut submitted = draw.take_submitted_groups();
-        for handle in submitted.drain(..) {
+        for &handle in &submitted {
             let fields = handle.fields();
-            let retired = storage.retired.remove(&fields.generation);
-            let group = if let Some(group) = retired.as_ref() {
+            let group = if let Some(group) = storage.retired.get(&fields.generation) {
                 group
             } else if let Some(group) = storage.groups[fields.slot as usize]
                 .as_mut()
@@ -272,6 +267,9 @@ impl Game<'_> {
                 &group.composed[..group.len],
                 Some(&group.records[..group.len]),
             );
+        }
+        for handle in submitted.drain(..) {
+            storage.retired.remove(&handle.fields().generation);
         }
         draw.recycle_submitted_groups(submitted);
     }
@@ -367,22 +365,50 @@ mod tests {
             ]
         );
         let handle = mod_api::__private::built::instance_group_ref(1, 0);
+        let owned_handle = mod_api::__private::built::instance_group_ref(2, 1);
+        let owned = Group {
+            generation: 2,
+            owner: Some("group-owner"),
+            submitted: false,
+            model: mod_api::__private::built::model_ref(1, 0),
+            copies: vec![copy],
+            len: 1,
+            transform: Mat4::IDENTITY,
+            composed: vec![copy],
+            records: vec![PreparedModelInstance::new(
+                Mat4::IDENTITY,
+                DVec3::ZERO,
+                DVec3::ZERO,
+                [1.0; 4],
+                0,
+            )],
+            converted_bytes: 0,
+        };
         let mut storage = InstanceGroupStorage {
-            next: 1,
-            groups: vec![Some(group)],
+            next: 2,
+            groups: vec![Some(group), Some(owned)],
             retired: Default::default(),
         };
         assert!(storage.get(handle, 1).is_ok());
-        // Disabling a mod must not retire unmarked engine-owned groups.
+        assert!(storage.get(owned_handle, 1).is_ok());
+        // Access checks generation and model lifetime, not the TLS caller mod name.
+        {
+            let _other =
+                mod_platform::content::crash::enter_native_mod(mod_api::content::crash::ModCall {
+                    id: "other",
+                    hook: "test",
+                    part: None,
+                });
+            assert!(storage.get(handle, 1).is_ok());
+            assert!(storage.get(owned_handle, 1).is_ok());
+            assert!(matches!(storage.get(handle, 2), Err(GroupError::Stale)));
+        }
+        // Disabling the owner still retires its groups without touching engine-owned ones.
         storage.retire_disabled(&std::collections::BTreeSet::from(["group-owner".into()]));
         assert!(storage.get(handle, 1).is_ok());
-        assert!(matches!(storage.get(handle, 2), Err(GroupError::Stale)));
-        let _owner =
-            mod_platform::content::crash::enter_native_mod(mod_api::content::crash::ModCall {
-                id: "other",
-                hook: "test",
-                part: None,
-            });
-        assert!(matches!(storage.get(handle, 1), Err(GroupError::Stale)));
+        assert!(matches!(
+            storage.get(owned_handle, 1),
+            Err(GroupError::Stale)
+        ));
     }
 }

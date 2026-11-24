@@ -447,9 +447,7 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
         for s in &mut chunk.sections {
             Arc::make_mut(s).compact();
         }
-        if let Ok(entities) = self.save.load_entities(x, z) {
-            chunk.entities.extend(entities);
-        }
+        chunk.disk_entities = self.save.load_entities(x, z).unwrap_or_default();
         Some(chunk)
     }
     fn accept_loaded_chunk(&self, chunk: &mut Chunk) {
@@ -474,31 +472,36 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
     fn idle(&self, worker: &mut G::Worker) {
         self.inner.idle(worker);
     }
-    fn proto(&self, worker: &mut G::Worker, x: i32, z: i32) -> crate::streaming::Proto {
-        let (mut proto, saved) = self.worker_proto(worker, x, z);
+    fn proto(
+        &self,
+        worker: &mut G::Worker,
+        x: i32,
+        z: i32,
+    ) -> std::result::Result<crate::streaming::Proto, String> {
+        let (mut proto, saved) = self.worker_proto(worker, x, z)?;
         if let Some(saved) = saved {
             self.accept_loaded_proto(&mut proto, *saved);
         }
-        proto
+        Ok(proto)
     }
     fn worker_proto(
         &self,
         worker: &mut G::Worker,
         x: i32,
         z: i32,
-    ) -> (crate::streaming::Proto, Option<Box<SavedProto>>) {
-        let mut proto = self.inner.proto(worker, x, z);
+    ) -> std::result::Result<(crate::streaming::Proto, Option<Box<SavedProto>>), String> {
+        let mut proto = self.inner.proto(worker, x, z)?;
         let Some(saved) = self
             .save
             .decode_saved_proto(x, z, self.registry.registry, &self.biomes)
         else {
-            return (proto, None);
+            return Ok((proto, None));
         };
         if self.save.has_chunk_disk_hook(mod_api::ChunkDiskPhase::Load) {
-            (proto, Some(Box::new(saved)))
+            Ok((proto, Some(Box::new(saved))))
         } else {
             self.inner.restore_proto(&mut proto, saved);
-            (proto, None)
+            Ok((proto, None))
         }
     }
     fn accept_loaded_proto(
@@ -513,15 +516,6 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
     }
     fn is_decorated(&self, proto: &crate::streaming::Proto) -> bool {
         self.inner.is_decorated(proto)
-    }
-    fn proto_status(
-        &self,
-        proto: &crate::streaming::Proto,
-    ) -> Option<sunrise_world::chunk_status::ChunkStatus> {
-        self.inner.proto_status(proto)
-    }
-    fn proto_block(&self, proto: &crate::streaming::Proto, pos: [i32; 3]) -> Option<u32> {
-        self.inner.proto_block(proto, pos)
     }
     fn light_view(&self, proto: &crate::streaming::Proto) -> Option<Chunk> {
         self.inner.light_view(proto)
@@ -562,10 +556,21 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
             .get_or_init(|| Arc::new(SaveTables::new(&self.registry)));
         let key = (chunk.x, chunk.z);
         let entities = std::mem::take(&mut chunk.entities);
+        chunk.disk_entities.clear();
+        // This chunk did not enter the level. Add only the new generation
+        // records; its separate entity region may predate the terrain.
         let saved = self
             .save
             .save_later(&[Arc::new(chunk)], self.registry.registry, &self.biomes)
-            .and_then(|_| self.save.save_entities_later(vec![(key, entities)]));
+            .and_then(|_| {
+                if !entities.is_empty()
+                    && let Ok(mut stored) = self.save.load_entities(key.0, key.1)
+                {
+                    stored.extend(entities);
+                    self.save.save_entities_later(vec![(key, stored)])?;
+                }
+                Ok(())
+            });
         if let Err(e) = saved {
             log::warn!("Sunrise: failed to save chunk {} {}: {e}", key.0, key.1);
         }
@@ -599,7 +604,22 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
     fn decorate(&self, worker: &mut G::Worker, region: &mut [crate::streaming::Proto; 9]) {
         self.inner.decorate(worker, region);
     }
+    fn decorate_with_outer(
+        &self,
+        worker: &mut G::Worker,
+        region: &mut [crate::streaming::Proto; 9],
+        outer: &[Arc<Chunk>],
+    ) {
+        self.inner.decorate_with_outer(worker, region, outer);
+    }
     fn finish(&self, proto: crate::streaming::Proto) -> Chunk {
-        self.inner.finish(proto)
+        let mut chunk = self.inner.finish(proto);
+        // EntityStorage is independent of terrain: a newly generated column
+        // can already have a saved entity section.
+        chunk.disk_entities = self
+            .save
+            .load_entities(chunk.x, chunk.z)
+            .unwrap_or_default();
+        chunk
     }
 }

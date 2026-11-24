@@ -14,10 +14,6 @@ pub trait MobsHost {
 #[sunrise_mod_api_macros::host_area]
 pub trait MobsServerHost {
     /// Side: server.
-    /// Kills mob `id` as `/kill` does: it falls and drops its loot. False for
-    /// no such living mob or another dimension.
-    fn kill_mob(&mut self, dimension: &str, id: u32) -> bool;
-    /// Side: server.
     /// The entity as the ender dragon, or None for another kind, a stale
     /// handle or a client.
     fn dragon(&self, entity: EntityRef) -> Option<DragonRef>;

@@ -11,6 +11,7 @@
 //! on the same channel, built from the offer owned by its live connection. The
 //! client checks it as at the join and swaps its set in one step, or ends the connection.
 use std::sync::{Arc, Mutex};
+use sunrise_protocol::packets::custom_payload::SERVERBOUND_LIMIT;
 
 /// The snapshot, server to client.
 pub const CHANNEL: &str = "sunrise:datapack_registries";
@@ -83,15 +84,23 @@ pub fn served() -> Option<Arc<mod_api::DatapackRegistrySet>> {
     held(&SERVED)
 }
 
-/// What the client sends its server: its synchronized registries and their schemas, or `None`
-/// when it declared none.
-pub fn offer() -> Option<Vec<u8>> {
+/// What the client sends its server: its synchronized registries and their schemas, or `Ok(None)`
+/// when it declared none. A failed encoding ends configuration rather than posing as no offer.
+pub fn offer() -> Result<Option<Vec<u8>>, String> {
     let declarations = mod_api::__private::datapack_registry_declarations();
-    declarations
+    if declarations
         .iter()
-        .any(|declaration| declaration.sync != mod_api::DatapackRegistrySync::ServerOnly)
-        .then(|| mod_api::DatapackSnapshot::encode_offer(declarations))
-        .flatten()
+        .all(|declaration| declaration.sync == mod_api::DatapackRegistrySync::ServerOnly)
+    {
+        return Ok(None);
+    }
+    mod_api::DatapackSnapshot::encode_offer(declarations)
+        .map(Some)
+        .ok_or_else(|| {
+            format!(
+                "This client's datapack registry offer could not be encoded within the {SERVERBOUND_LIMIT}-byte serverbound custom payload limit."
+            )
+        })
 }
 
 /// What the server does for a joining client.
@@ -145,10 +154,10 @@ fn step_for(
         Ok(snapshot) if snapshot.registries.is_empty() => Step::Nothing,
         Ok(snapshot) => match snapshot.encode() {
             Some(bytes) => Step::Send(bytes),
-            None => Step::Refuse(
-                "The server's datapack registry snapshot exceeds the 64 MiB transport limit."
-                    .into(),
-            ),
+            None => Step::Refuse(format!(
+                "The server's datapack registry snapshot for this client could not be encoded within the {}-byte transport limit.",
+                mod_api::MAX_SNAPSHOT_BYTES
+            )),
         },
     }
 }
@@ -309,24 +318,52 @@ mod tests {
 
     #[test]
     fn optional_and_server_only_registries_never_end_a_join() {
-        let optional = spell(DatapackRegistrySync::Optional);
-        assert_eq!(
-            step_for(
-                std::slice::from_ref(&optional),
-                Some(&set(&optional)),
-                false,
-                None
-            ),
-            Step::Nothing
+        let required = spell(DatapackRegistrySync::Required);
+        let offer =
+            mod_api::DatapackSnapshot::encode_offer(std::slice::from_ref(&required)).unwrap();
+        let oversized = DatapackRegistryDeclaration {
+            mod_id: "example".into(),
+            key: "example:oversized".into(),
+            // This schema alone, before any entry bytes or Wire framing, fills the snapshot
+            // budget. The peer offers only the small required registry.
+            fields: vec![DatapackField::with_default(
+                "body",
+                DatapackFieldKind::Text {
+                    max_len: mod_api::MAX_SNAPSHOT_BYTES as u32,
+                },
+                mod_api::DatapackValue::Text("x".repeat(mod_api::MAX_SNAPSHOT_BYTES)),
+            )],
+            sync: DatapackRegistrySync::Optional,
+        };
+        let mut declarations = [required, oversized];
+        let server = DatapackRegistrySet::from_candidate(
+            DatapackCandidate::build(&declarations, &[]).unwrap(),
         );
-        let only = spell(DatapackRegistrySync::ServerOnly);
-        assert_eq!(
-            step_for(std::slice::from_ref(&only), Some(&set(&only)), true, None),
-            Step::Nothing
-        );
+        for sync in [
+            DatapackRegistrySync::Optional,
+            DatapackRegistrySync::ServerOnly,
+        ] {
+            declarations[1].sync = sync;
+            let Step::Send(bytes) = step_for(&declarations, Some(&server), true, Some(&offer))
+            else {
+                panic!("only the negotiated registry should be encoded");
+            };
+            let received = mod_api::DatapackSnapshot::decode(&bytes).unwrap();
+            assert_eq!(received.registries.len(), 1);
+            assert_eq!(received.registries[0].key, "example:spell");
+            assert_eq!(
+                step_for(
+                    &declarations[1..],
+                    Some(&server),
+                    sync == DatapackRegistrySync::ServerOnly,
+                    None,
+                ),
+                Step::Nothing
+            );
+        }
         // No world published yet: nothing to send.
         assert_eq!(
-            step_for(std::slice::from_ref(&optional), None, true, None),
+            step_for(&declarations, None, true, Some(&offer)),
             Step::Nothing
         );
     }

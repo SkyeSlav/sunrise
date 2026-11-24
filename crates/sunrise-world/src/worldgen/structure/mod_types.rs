@@ -418,6 +418,9 @@ mod tests {
         fn generation(&self) -> crate::worldgen::anchor::WorldGenerationContext {
             crate::worldgen::anchor::WorldGenerationContext::new(-64, 384, 63)
         }
+        fn biome_key(&self, _: crate::worldgen::biome::BiomeId) -> mod_api::BiomeKey {
+            unreachable!("a pool chain asks no biome")
+        }
         fn noise_biome(&mut self, _: [i32; 3]) -> crate::worldgen::biome::BiomeId {
             unreachable!("a pool chain asks no biome")
         }

@@ -21,7 +21,9 @@ use std::{
 use sunrise_client::{
     Result,
     lan::{
-        LoginGate, NetConfig, NetLog, OnlineMode, hub::HubConfig, viewed_levels::areas as viewed,
+        LoginGate, NetConfig, NetLog, OnlineMode,
+        hub::{HubConfig, effective_view_distance},
+        viewed_levels::areas as viewed,
     },
     server::{
         eula, profiles,
@@ -247,6 +249,13 @@ fn idles_out(idle_ticks: u64, minutes: i32, won_game: bool) -> bool {
 /// Log4j's console pattern: `[HH:mm:ss] [thread/LEVEL]: message`.
 pub(super) fn log(level: &str, message: &str) {
     log_from("Server thread", level, message);
+}
+
+/// Public chat goes to the server log, never to the RCON or console command result.
+pub(super) fn log_public_chat(message: &str) {
+    let held = CAPTURE.take();
+    log("INFO", message);
+    CAPTURE.set(held);
 }
 
 /// A line from another of vanilla's threads (the login's User Authenticator).
@@ -1033,8 +1042,11 @@ impl Game<'_> {
         self.native_server_about_to_start(true);
         self.native_lifecycle_open_started();
         // The registries the server sends are read while the world prepares.
-        let sync =
-            super::lan::sync::preload_sync_data(&self.res.core.item_data, self.res.shared_items());
+        let sync = super::lan::sync::preload_sync_data(
+            &self.res.core.item_data,
+            self.res.shared_items(),
+            self.res.biomes(),
+        );
         let opened_packs = self.finish_open_world(prepared)?;
         // WorldLoader: the world's packs must load before the server starts. The data store is read
         // now rather than at the first tick (reading parses functions; it runs none), and a broken
@@ -1087,7 +1099,7 @@ impl Game<'_> {
                 self.game_rule_changed("minecraft:show_advancement_messages", value, None);
             }
         }
-        self.settings.render_distance = props.view_distance.clamp(2, 32);
+        self.settings.render_distance = effective_view_distance(props.view_distance);
         self.settings.simulation_distance = props.simulation_distance.clamp(2, 32);
         // Nothing is kept around the spawn while nobody is on.
         self.streaming.radius = -1;
@@ -1165,7 +1177,7 @@ impl Game<'_> {
             code_of_conducts,
             // DedicatedServer.serverLinks: `bug-report-link` as the only link
             // (ServerLinks.KnownLinkType.BUG_REPORT is id 0).
-            levels: self.level_shapes,
+            levels: self.level_shapes.clone(),
             sunrise_clients_only: props
                 .raw
                 .get(sunrise_client::lan::SUNRISE_CLIENTS_ONLY)
@@ -1196,10 +1208,10 @@ impl Game<'_> {
             guest_commands: true,
             force_game_mode: props.force_game_mode,
             hardcore: self.level.hardcore,
-            view_distance: props.view_distance.clamp(2, 32),
+            view_distance: props.view_distance,
             simulation_distance: props.simulation_distance.clamp(2, 32),
             dimension: self.dim.id().to_owned(),
-            levels: self.level_shapes,
+            levels: self.level_shapes.clone(),
             level_seeds: self.levels.runtime.seeds(),
             seed: self.level.seed,
             max_players: props.max_players.max(0) as usize,
@@ -1235,7 +1247,6 @@ impl Game<'_> {
             host.hub.transfers = Some(transfers);
         }
         self.sync_ops(&lists);
-        self.read_runtime_level_cap(|key| props.raw.get(key));
         if let Some(host) = self.lan.as_mut() {
             // The viewed areas' chunk caps (#3716): server.toml's `max_viewed_*` settings.
             let (caps, clamped) = viewed::ViewedCaps::from_properties(|key| props.raw.get(key));
@@ -1297,7 +1308,7 @@ impl Game<'_> {
             ),
             compression: props.network_compression_threshold,
             view: (
-                props.view_distance.clamp(2, 32) as u32,
+                props.view_distance.max(0) as u32,
                 props.simulation_distance.clamp(2, 32) as u32,
             ),
             max_players: props.max_players.max(0) as usize,
@@ -1333,6 +1344,8 @@ impl Game<'_> {
         // `/stop`, or a stop signal (the shutdown hook's `halt`): either way the players and levels are
         // saved below, after the wait `[transfer]` may make (transfer.rs).
         while !self.stop_now(&state) {
+            // `BlockableEventLoop.relayDelayCrash`: a worker's panic is reported on this thread.
+            sunrise_client::crash::relay_worker_panic();
             self.server_tick_deadline = Some(next + self.clock.tick_duration());
             let tick_start = Instant::now();
             if let Some(watchdog) = &watchdog {
@@ -1536,12 +1549,16 @@ impl Game<'_> {
                 .loading_chunks(|g| super::game_mode::loads_chunks(rule, g.spectator()))
                 .next()
         });
+        // The live setter and startup put the effective ChunkMap radius in settings;
+        // the PlayerList keeps the raw value separately for its packets.
         if self.is_dedicated_server() || self.dim != super::Dim::Overworld || guest.is_some() {
             self.streaming.radius = if guest.is_some() {
                 self.settings.render_distance
             } else {
                 -1
             };
+        } else if self.serving.is_some() {
+            self.streaming.radius = self.settings.render_distance;
         }
         let spawn = self
             .spawn
@@ -1754,22 +1771,6 @@ impl Game<'_> {
             self.enter_command_level(back);
         }
         out
-    }
-
-    /// A console or RCON announcement, logged without adding to the source's command output.
-    pub(super) fn dedicated_console_say(&mut self, message: String) {
-        let name = if self.rcon_source { "Rcon" } else { "Server" };
-        let Some(hidden) = self.chat_hidden_from(|_| (0, name, message.as_str())) else {
-            return;
-        };
-        let held = self.rcon_source.then(|| CAPTURE.take());
-        log("INFO", &format!("[Not Secure] [{name}] {message}"));
-        if let Some(held) = held {
-            CAPTURE.set(held);
-        }
-        if let Some(host) = &self.lan {
-            host.hub.console_say(name, &message, &hidden);
-        }
     }
 
     /// DedicatedServer.handleConsoleInputs: one console line, run as the
@@ -2118,7 +2119,6 @@ impl Game<'_> {
                     ],
                 ));
             }
-            "say" if !rest.is_empty() => self.dedicated_console_say(rest.join(" ")),
             _ => self.console_dispatch(line),
         }
     }
@@ -2469,7 +2469,8 @@ mod tests {
                 .into();
                 mod_platform::testing::with_mods(mods, || {
                     with_game_role(fixture_root(), ExecutionRole::DedicatedServer, |game| {
-                        game.native_lifecycle.begin_open(Authority::DedicatedServer);
+                        game.native_lifecycle
+                            .begin_open(Some(Authority::DedicatedServer));
                         game.native_lifecycle.world_open_ready().unwrap();
                         let dir = tempfile::tempdir().unwrap();
                         game.world_root = dir.path().to_path_buf();
@@ -2524,7 +2525,8 @@ mod tests {
                             error.downcast_ref::<std::io::Error>().unwrap().kind(),
                             expected.kind()
                         );
-                        game.native_lifecycle.begin_open(Authority::DedicatedServer);
+                        game.native_lifecycle
+                            .begin_open(Some(Authority::DedicatedServer));
                         game.native_lifecycle.world_open_ready().unwrap();
                         game.session_lock =
                             Some(sunrise_client::save::SessionLock::acquire(dir.path()).unwrap());

@@ -1,6 +1,6 @@
 //! One shared startup `(kind, id) -> (owner_mod, TypeId, type_name)` identity guard
 //! across capabilities, custom static registries, mod events, and data maps.
-use std::{any::TypeId, collections::HashMap, sync::Arc};
+use std::{any::TypeId, collections::HashMap};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum TypeIdentityKind {
@@ -11,55 +11,27 @@ pub(crate) enum TypeIdentityKind {
 }
 
 impl TypeIdentityKind {
-    fn describe(self) -> &'static str {
-        match self {
-            Self::BlockCapability | Self::ItemCapability | Self::EntityCapability => "capability",
-            Self::CustomRegistry => "custom registry",
-        }
-    }
-
-    fn conflict_verb(self) -> &'static str {
-        match self {
-            Self::BlockCapability | Self::ItemCapability | Self::EntityCapability => {
-                "is answered with two handler types"
-            }
-            Self::CustomRegistry => "is used with two types",
-        }
+    fn is_capability(self) -> bool {
+        matches!(
+            self,
+            Self::BlockCapability | Self::ItemCapability | Self::EntityCapability
+        )
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct TypeIdentity {
-    type_id: Option<TypeId>,
-    type_name: Arc<str>,
+    type_id: TypeId,
+    type_name: &'static str,
 }
 
 impl TypeIdentity {
     pub(crate) fn typed(type_id: TypeId, type_name: &'static str) -> Self {
-        Self {
-            type_id: Some(type_id),
-            type_name: Arc::from(type_name),
-        }
-    }
-
-    pub(crate) fn by_name(type_name: Arc<str>) -> Self {
-        Self {
-            type_id: None,
-            type_name,
-        }
-    }
-
-    fn matches(&self, other: &Self) -> bool {
-        if let (Some(a), Some(b)) = (self.type_id, other.type_id)
-            && a != b
-        {
-            return false;
-        }
-        self.type_name == other.type_name
+        Self { type_id, type_name }
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 struct Entry {
     owner_mod: &'static str,
     identity: TypeIdentity,
@@ -97,17 +69,24 @@ impl TypeIdentityTable {
     ) -> Result<(), String> {
         let key = (kind, id.to_owned());
         if let Some(existing) = self.entries.get(&key) {
-            if !existing.identity.matches(&identity) {
+            if existing.identity.type_id == identity.type_id {
+                return Ok(());
+            }
+            if kind.is_capability() {
+                let conflict = if existing.identity.type_name == identity.type_name {
+                    "incompatible handler or context types"
+                } else {
+                    "two handler types"
+                };
                 return Err(format!(
-                    "{} {id} {}, {} by {} and {} by {mod_id}",
-                    kind.describe(),
-                    kind.conflict_verb(),
-                    existing.identity.type_name,
-                    existing.owner_mod,
-                    identity.type_name,
+                    "capability {id} is answered with {conflict}, {} by {} and {} by {mod_id}",
+                    existing.identity.type_name, existing.owner_mod, identity.type_name
                 ));
             }
-            return Ok(());
+            return Err(format!(
+                "custom registry {id} is used with two types, {} by {} and {} by {mod_id}",
+                existing.identity.type_name, existing.owner_mod, identity.type_name
+            ));
         }
         self.entries.insert(
             key,

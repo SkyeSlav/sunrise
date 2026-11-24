@@ -23,6 +23,51 @@ thread_local! {
     // A reference to the registrar's canonical requests while Hooks::register is in flight.
     // The table is moved, not copied, into Installed when registration finishes.
     pub(crate) static REGISTERING_KEYS: RefCell<Option<Rc<RefCell<sunrise_mod_runtime::registry_keys::Requests>>>> = const { RefCell::new(None) };
+    // The authoritative built-in game rule schema active for the synchronous registration call.
+    static ACTIVE_RULE_SCHEMA: std::cell::Cell<*const ()> = const { std::cell::Cell::new(std::ptr::null()) };
+}
+
+pub(crate) fn with_active_rule_schema<T>(
+    schema: &mod_vocab::__private::RuleSchema<'_>,
+    f: impl FnOnce() -> T,
+) -> T {
+    struct Restore(*const ());
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ACTIVE_RULE_SCHEMA.set(self.0);
+        }
+    }
+    let ptr: *const mod_vocab::__private::RuleSchema<'_> = schema;
+    let _guard = Restore(ACTIVE_RULE_SCHEMA.replace(ptr.cast()));
+    f()
+}
+
+pub(crate) fn active_rule_schema_has_category(id: &str) -> bool {
+    ACTIVE_RULE_SCHEMA.with(|cell| {
+        let ptr = cell.get();
+        if ptr.is_null() {
+            return false;
+        }
+        #[allow(unsafe_code)]
+        // SAFETY: `with_active_rule_schema` stores a live `&RuleSchema` pointer for the
+        // duration of its synchronous call frame and restores the prior pointer on drop.
+        let schema = unsafe { &*ptr.cast::<mod_vocab::__private::RuleSchema<'_>>() };
+        (schema.category)(id)
+    })
+}
+
+pub(crate) fn active_rule_schema_has_rule(id: &str) -> bool {
+    ACTIVE_RULE_SCHEMA.with(|cell| {
+        let ptr = cell.get();
+        if ptr.is_null() {
+            return false;
+        }
+        #[allow(unsafe_code)]
+        // SAFETY: `with_active_rule_schema` stores a live `&RuleSchema` pointer for the
+        // duration of its synchronous call frame and restores the prior pointer on drop.
+        let schema = unsafe { &*ptr.cast::<mod_vocab::__private::RuleSchema<'_>>() };
+        (schema.position)(id).is_some()
+    })
 }
 
 pub(crate) fn with_registering_keys<T>(
@@ -43,6 +88,7 @@ pub struct PartRegistrar {
     pub(crate) datapack_registries: Vec<crate::DatapackRegistryDeclaration>,
     pub(crate) custom_registries: Vec<PendingCustomRegistry>,
     pub(crate) type_identities: TypeIdentityTable,
+    pub(crate) configs: Vec<mod_vocab::__private::RegisteredConfig>,
     pub(crate) consume_effects: Vec<RegisteredConsumeEffect>,
     pub(crate) menu_screen_factories: HashMap<String, MenuScreenRegistration>,
     pub(crate) menu_recipe_books: HashMap<String, MenuBookDeclaration>,
@@ -55,27 +101,26 @@ pub struct PartRegistrar {
     pub(crate) recipe_book_types: HashMap<String, String>,
     pub(crate) recipe_book_fields: HashMap<String, (String, String)>,
     pub(crate) recipe_book_filters: HashMap<String, crate::RecipeBookFilterLook>,
-    pub(crate) game_rule_categories: Vec<String>,
-    pub(crate) game_rules: Vec<crate::GameRuleDecl>,
+    pub(crate) game_rule_categories: Vec<(&'static str, String)>,
+    pub(crate) game_rules: Vec<(&'static str, crate::GameRuleDecl)>,
     pub(crate) attachment_types:
         HashMap<&'static str, HashMap<&'static str, crate::RegisteredAttachment>>,
     pub(crate) custom_stats: Vec<String>,
     pub(crate) custom_stat_owners: Vec<&'static str>,
-    /// The entity types each named to `entity_tick_each`, in order: `None` for every type.
-    pub(crate) entity_tick_each: Vec<Option<String>>,
     pub(crate) mod_id: &'static str,
     pub(crate) mod_index: usize,
     /// Parts registered so far, by every mod: the next part's `order`.
     pub(crate) registered: usize,
     pub(crate) parts: Parts,
-    /// Aggregate selector metadata bytes during this registration pass.
-    pub(crate) entity_selector_bytes: usize,
     pub(crate) tags: TagParts,
     pub(crate) block_entity_types: Vec<(&'static str, BlockEntityTypeDecl)>,
-    pub(crate) block_entity_transforms: HashMap<String, Arc<dyn crate::BlockEntityTransform>>,
+    pub(crate) block_entity_ticker_selectors:
+        Vec<mod_vocab::__private::RegisteredBlockEntityTickerSelector>,
+    pub(crate) block_entity_transforms:
+        HashMap<String, mod_vocab::__private::RegisteredBlockEntityTransform>,
     pub(crate) entity_attributes: Vec<EntityAttributeDeclaration>,
     pub(crate) world_fluids: Vec<(&'static str, (String, crate::WorldFluid))>,
-    pub(crate) fluid_interactions: Vec<crate::FluidInteraction>,
+    pub(crate) fluid_interactions: Vec<mod_vocab::__private::RegisteredFluidInteraction>,
     pub(crate) entity_attribute_modifications: Vec<EntityAttributeModification>,
     pub(crate) attributes: Vec<AttributeDeclaration>,
     pub(crate) attribute_widenings: Vec<AttributeBoundsWidening>,
@@ -120,6 +165,7 @@ impl PartRegistrar {
             datapack_registries: Vec::new(),
             custom_registries: Vec::new(),
             type_identities,
+            configs: Vec::new(),
             consume_effects: Vec::new(),
             recipe_book_types: HashMap::new(),
             recipe_book_fields: HashMap::new(),
@@ -129,14 +175,13 @@ impl PartRegistrar {
             attachment_types: HashMap::new(),
             custom_stats: Vec::new(),
             custom_stat_owners: Vec::new(),
-            entity_tick_each: Vec::new(),
             mod_id,
             mod_index: 0,
             registered: 0,
             parts,
-            entity_selector_bytes: 0,
             tags: TagParts::default(),
             block_entity_types: Vec::new(),
+            block_entity_ticker_selectors: Vec::new(),
             block_entity_transforms: HashMap::new(),
             entity_attributes: Vec::new(),
             world_fluids: Vec::new(),
@@ -309,7 +354,8 @@ pub fn install_parts(
     schema: &mod_vocab::__private::RuleSchema<'_>,
     dimension_shape: fn(&crate::DimensionSettings) -> bool,
 ) -> Result<(), Vec<String>> {
-    install_registrar(register_all(mods, dimension_shape), schema)
+    let registrar = with_active_rule_schema(schema, || register_all(mods, dimension_shape));
+    install_registrar(registrar, schema)
 }
 
 pub(crate) fn install_registrar(
@@ -331,6 +377,7 @@ pub(crate) fn install_registrar(
     }
     registrar.validate_recipe_types();
     registrar.skip_absent_effect_parts();
+    registrar.order_tooltip_appenders();
     let custom_registries = registrar.validate_and_freeze_custom_registries();
     if !registrar.refused.is_empty() {
         return Err(registrar.refused);
@@ -348,6 +395,7 @@ pub(crate) fn install_registrar(
         },
         datapack_registries: registrar.datapack_registries,
         custom_registries,
+        configs: registrar.configs,
         consume_effects: registrar.consume_effects,
         menu_screen_factories: registrar.menu_screen_factories,
         menu_recipe_books: registrar.menu_recipe_books,
@@ -355,15 +403,23 @@ pub(crate) fn install_registrar(
         recipe_book_fields: registrar.recipe_book_fields,
         recipe_book_filters: registrar.recipe_book_filters,
         game_rule_slots,
-        game_rules: registrar.game_rules,
-        game_rule_categories: registrar.game_rule_categories,
+        game_rules: registrar
+            .game_rules
+            .into_iter()
+            .map(|(_, rule)| rule)
+            .collect(),
+        game_rule_categories: registrar
+            .game_rule_categories
+            .into_iter()
+            .map(|(_, category)| category)
+            .collect(),
         attachment_types: registrar.attachment_types,
         custom_stats: registrar.custom_stats,
         custom_stat_owners: registrar.custom_stat_owners,
-        entity_tick_each: mod_vocab::__private::EntityTickEach::of(&registrar.entity_tick_each),
         keys: registrar.parts,
         tags: registrar.tags,
         block_entity_types: registrar.block_entity_types,
+        block_entity_ticker_selectors: registrar.block_entity_ticker_selectors,
         block_entity_transforms: registrar.block_entity_transforms,
         entity_attributes: registrar.entity_attributes,
         world_fluids: registrar.world_fluids,
@@ -418,6 +474,21 @@ pub mod tests {
     use crate::*;
 
     use std::sync::Arc;
+
+    #[cfg(test)]
+    pub(crate) fn with_builtin_part_registry<T>(
+        registry: &str,
+        id: &str,
+        f: impl FnOnce() -> T,
+    ) -> T {
+        let data = mod_vocab::__private::RegistrationData::new(
+            [(registry.to_owned(), vec![id.to_owned()])].into(),
+            Default::default(),
+            InstanceDirectory::from_path(std::path::Path::new(".")).unwrap(),
+            RuntimeEnvironment::new(Dist::Client, "26.3".into(), "test".into(), false),
+        );
+        crate::load_state::with_test_registration_data(data, f)
+    }
 
     include!(concat!(env!("OUT_DIR"), "/shared_fixtures.rs"));
 }

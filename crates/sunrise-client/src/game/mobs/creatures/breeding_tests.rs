@@ -284,7 +284,7 @@ fn breeding_announces_the_orb_before_the_lower_id_child() {
             self.joins
                 .lock()
                 .unwrap()
-                .push((event.entity, event.kind.into()));
+                .push((event.subject.id(), event.kind.into()));
             Flow::Continue
         }
     }

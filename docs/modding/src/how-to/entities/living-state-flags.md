@@ -69,8 +69,13 @@ It ends when that entity copy is discarded.
 `EntityRef::is_under_water(host)` reads `Entity.isUnderWater` for players and mobs on either side:
 the previous eye-in-water sample AND current water contact. The local client player follows the
 `LocalPlayer.isUnderWater` override instead: its saved eye sample alone, even when current water
-contact is false. It is deliberately not equivalent to checking `eye_fluid` now. Both reads return
-`None` for unsupported kinds or stale handles.
+contact is false. It is deliberately not equivalent to checking the current `eye_fluid` sample.
+`entity.eye_fluid(host)` returns `Some(Some(id))` with an `&'static str` in fluid and
+`Some(None)` in air. Both reads return `None` for unsupported kinds or stale handles.
+`entity.visit_fluid_heights(host, &mut visit)` lends each body contact's ID and depth,
+deepest first, with water before lava on a tie. No contacts is a successful empty visit.
+A retired handle returns `EntityReadError::Stale`; a parked or otherwise unreadable body
+returns `EntityReadError::Unavailable` without calling the visitor.
 
 On the server, `LivingRef::can_breathe_underwater(host)` reads whether the mob's type is currently in
 `minecraft:can_breathe_under_water`. It does not predict drowning: it ignores effects, species-specific
@@ -86,9 +91,20 @@ for continuing a swim.
 mods can also use. It uses the same advancement path as food and potions, with the supplied stack,
 in the player's own level. It does not eat, update inventory, or award a used statistic.
 `Ok(())` means reached, whether or not a criterion matched. Invalid stacks return
-`TriggerCriterionError::Stack` before firing; clients return `NotServer`, and stale, offline or
-nested-turn displaced players return `PlayerUnavailable`. The generic `trigger_criterion` still
-refuses `minecraft:` trigger identifiers.
+`TriggerCriterionError::Stack` before firing; clients return `NotServer`. A stale, offline or
+nested-turn displaced player, or a player whose level cannot be entered, returns `PlayerUnavailable`.
+The generic `trigger_criterion` refuses this
+exact built-in key, not every identifier in the `minecraft` namespace. See [advancement triggers](advancement-progress.md#advancement-triggers).
+
+## Active effects and attributes
+
+`living.visit_effects(host, &mut visit)` passes each `ActiveEffect` by value.
+`living.visit_attributes(host, &mut visit)` lends attribute IDs in registry order, and
+`living.visit_attribute_modifiers(host, id, &mut visit)` lends an `AttributeModifierView`
+for each modifier in addition order. Return `ControlFlow::Break(())` to stop and copy a
+borrowed ID only to retain it. An attribute with no modifiers is a successful empty visit;
+an unknown or unreadable attribute returns `EntityReadError::Unavailable` instead. Like fluid
+visits, these distinguish a retired handle from a body the current view cannot read.
 
 ## Portals and leashes
 
@@ -200,31 +216,39 @@ its saved UUID does not make another object's handle refer to it.
 
 `is_passenger` and `is_vehicle` describe the actual relationships, including
 retained off-level objects. Thus `is_passenger` can be `Some(true)` while
-`vehicle` is `None`, and `is_vehicle` can be `Some(true)` while `passengers`
-returns an empty list. Dying passengers keep their place until removed.
+`vehicle` is `None`, and `is_vehicle` can be `Some(true)` while `visit_passengers`
+completes without visiting anyone. Dying passengers keep their place until removed.
 
-`passengers` returns only resident direct passengers in boarding order.
-`indirect_passengers` walks the full tree depth-first, through retained objects,
-and omits only unrepresentable handles: a resident grandchild below an off-level
-passenger appears. `root_vehicle` also traverses retained intermediaries,
-but returns `None` if the actual root is off-level; it never returns a resident
-descendant in its place. `is_passenger_of_same_vehicle` compares the actual roots,
-so two resident entities can share an off-level root even though neither can
-obtain its handle. Cyclic relationships have no root and return `None`.
+`entity.visit_passengers(host, &mut visitor)` visits resident direct passengers in boarding order.
+`entity.visit_indirect_passengers(host, &mut visitor)` visits each passenger before its riders,
+walking through retained objects without lending their handles: it still visits a resident grandchild
+below an off-level passenger. Both visitors take an `EntityRef` and return `ControlFlow<()>`.
+Return `ControlFlow::Break(())` to stop, or `ControlFlow::Continue(())` to visit the next rider.
+`Ok(Continue(()))` means the visit completed, even if there were no handles. A stale handle returns
+`Err(EntityReadError::Stale)`. A parked server vehicle or otherwise unreadable view returns
+`Err(EntityReadError::Unavailable)`. Push handles into your own collection inside the visitor
+only if you need to keep a list.
+
+`root_vehicle` also traverses retained intermediaries, but returns `None` if the actual root is
+off-level; it never returns a resident descendant in its place. `is_passenger_of_same_vehicle`
+compares the actual roots, so two resident entities can share an off-level root even though neither
+can obtain its handle. Cyclic relationships have no root and return `None`.
 
 `controlling_passenger` chooses the actual first passenger before checking whether
 its handle can be returned. An off-level first passenger means `None`, not a later
 resident rider. All these reads refuse stale input handles; none loads a retained
 object into the level or exposes a handle for it.
 
-On a client, `vehicle`, `is_passenger`, `passengers`, `root_vehicle` and
+On a client, `vehicle`, `is_passenger`, `visit_passengers`, `root_vehicle` and
 `is_vehicle` read the riding relationships sent in the server's passenger
-packets. They work for every tracked entity and the local player. A stale or
-untracked input returns `None`. Passenger lists for unknown vehicles and entities
-that cannot carry passengers (markers and ominous item spawners) are ignored.
-Unknown passengers and links that would form a cycle do not board.
-`passengers` returns client handles in the order they boarded from the list.
-The other riding reads and all riding writes are server-only.
+packets. They work for every tracked entity and the local player without a projected body.
+A stale or untracked input returns `None` for the optional reads and `Err(EntityReadError::Stale)`
+for the visitor while a client world is live. With no live client world, the visitor returns
+`Err(EntityReadError::Unavailable)`. Passenger lists for unknown vehicles and entities that cannot
+carry passengers (markers and ominous item spawners) are ignored. Unknown
+passengers and links that would form a cycle do not board. `visit_passengers`
+visits client handles in packet seat order. The other riding reads and all
+riding writes are server-only.
 
 A declared general entity can ride a supported vehicle, and players, mobs and
 other general entities can ride a general vehicle. The vehicle type's optional

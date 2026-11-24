@@ -1,5 +1,4 @@
 //! The `server_about_to_start` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0004
 
 pub trait Hooks {
     /// The server is about to open its worlds: nothing of the world is

@@ -18,6 +18,7 @@ use std::{
 use sunrise_core::geometry::{Aabb, Vec3};
 use sunrise_protocol::{
     attachment_sync,
+    entity_data::{Value, serializer},
     item::Stack,
     packets::{
         configuration::{ClientInformation, CustomPayload},
@@ -264,7 +265,7 @@ pub struct Guest {
     /// `Player.sleepCounter`, and the bed last told to the player itself.
     pub bed: Option<[i32; 3]>,
     pub woke_from: Option<[i32; 3]>,
-    pub sleep_timer: u32,
+    pub sleep_timer: i32,
     pub sent_bed: Option<[i32; 3]>,
     /// Where the player respawns (a bed's spot; `ServerPlayer.respawnConfig`),
     /// None for the world spawn.
@@ -337,6 +338,9 @@ pub struct Guest {
     pub load_timeout: u8,
     // Chunks.
     pub center: Option<(i32, i32)>,
+    /// View distance changed since `update_view` last ran, so the next view pass
+    /// must prune/requeue even when `center` stayed the same.
+    pub(super) view_dirty: bool,
     pub sent_chunks: crate::fast_hash::FxHashSet<(i32, i32)>,
     /// The near chunks the mods were told this player watches
     /// (`lan::chunk_watch`); empty while no mod listens.
@@ -436,6 +440,8 @@ pub struct Guest {
     pub xp_level: i32,
     pub xp_progress: f32,
     pub xp_total: i32,
+    /// `Player.DATA_SCORE_ID`, independent of total experience.
+    pub score: i32,
     /// `Player.enchantmentSeed` (the enchanting table's offers).
     pub xp_seed: i32,
     /// Active status effects (`LivingEntity.activeEffects`).
@@ -459,6 +465,7 @@ pub struct Guest {
     /// Whether the entity tracker has sent the initial health metadata to this player.
     pub(super) sent_health_data: bool,
     pub sent_xp: Option<(f32, i32, i32)>,
+    pub(super) sent_score: i32,
     /// The air supply and absorption the player's client was last sent
     /// (Entity.DATA_AIR_SUPPLY_ID, Player.DATA_PLAYER_ABSORPTION_ID); their
     /// defaults until either changes.
@@ -536,9 +543,6 @@ pub struct Guest {
     /// saves neither its player file nor its records, since the other server has the
     /// player now.
     pub released: bool,
-    /// Root command names the mods took out of this player's command tree
-    /// (`native_player_commands_sent`); their tree is sent without them.
-    pub hidden_commands: Vec<String>,
     /// `Player.getAbilities`: set from the game mode when it changes, and
     /// written by server mods. Saved with the player.
     pub abilities: super::abilities::PlayerAbilities,
@@ -889,6 +893,7 @@ impl Guest {
             loading: true,
             load_timeout: CLIENT_LOADED_TIMEOUT,
             center: None,
+            view_dirty: false,
             sent_chunks: Default::default(),
             watched: Default::default(),
             chunk_queue: Vec::new(),
@@ -934,6 +939,7 @@ impl Guest {
             xp_level: 0,
             xp_progress: 0.0,
             xp_total: 0,
+            score: 0,
             xp_seed: 0,
             effects: Default::default(),
             modified_effect_particles: None,
@@ -945,6 +951,7 @@ impl Guest {
             sent_health: None,
             sent_health_data: false,
             sent_xp: None,
+            sent_score: 0,
             sent_air: (300, 0.0),
             sent_frozen: 0,
             sent_shared: 0,
@@ -975,7 +982,6 @@ impl Guest {
             arrival_recentered: false,
             quiet_leave: false,
             released: false,
-            hidden_commands: Vec::new(),
             abilities: Default::default(),
             dimension: "minecraft:overworld".into(),
             menu: None,
@@ -1012,6 +1018,16 @@ impl Guest {
         match packet.try_encode() {
             Ok(body) => self.sender.send(body),
             Err(error) => eprintln!("[lan] send refused: {error}"),
+        }
+    }
+    /// Send `Player.DATA_SCORE_ID` when its synced value changes, including before a death screen.
+    pub fn sync_score(&mut self) {
+        if self.score != self.sent_score {
+            self.sent_score = self.score;
+            self.send(&play::Clientbound::SetEntityData(play::SetEntityData {
+                id: self.entity_id,
+                values: vec![(18, serializer::INT, Value::Int(self.score))],
+            }));
         }
     }
     /// Send the committed data that fits the negotiated blockless packet's index.
@@ -1857,6 +1873,24 @@ pub fn canonicalize_stack_patch(
     };
     wire.added.retain(|(id, _)| retain(*id, false));
     wire.removed.retain(|id| retain(*id, true));
+}
+
+/// Encode a live stack, dropping component patch rows already in its prototype.
+pub(super) fn resident_stack(
+    source: &ItemStack,
+    item_id: &dyn Fn(&str) -> i32,
+    sync: &super::data::SyncData,
+    items: &crate::items::Items,
+    projected: &dyn Fn(&Admitted),
+) -> Stack {
+    let mut wire = network_stack_projecting(
+        item_id,
+        &|registry, name| sync.id(registry, name),
+        source,
+        projected,
+    );
+    canonicalize_stack_patch(&mut wire, source, items, &sync.builtin);
+    wire
 }
 
 /// Convert a borrowed item template with the same component codecs as inventory slots.

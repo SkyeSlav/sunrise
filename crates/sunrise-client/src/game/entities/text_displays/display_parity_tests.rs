@@ -181,7 +181,9 @@ fn teleport_duration_unclamped_negative_same_target_and_rotation_match_vanilla_2
     // 2. NBT readAdditionalSaveData still clamps teleport_duration to 0..59.
     let mut tag = Compound::new();
     tag.insert("teleport_duration".into(), Tag::Int(100));
-    let nbt_entries = sunrise_client::text_display::display_data(&Tag::Compound(tag), false);
+    let state = crate::game::persist::display::read_text_display_nbt(&Tag::Compound(tag));
+    let mut nbt_entries = Vec::new();
+    state.append_metadata(None, false, |_| None, &mut nbt_entries);
     let nbt_tp = nbt_entries
         .iter()
         .find_map(|(id, _, v)| match (id, v) {
@@ -315,7 +317,7 @@ fn display_camera_angles_and_billboard_use_active_camera_not_player_26_3() {
             let ent_yaw = hex_f32(&case["entity_yRot_bits"]);
             let ent_pitch = hex_f32(&case["entity_xRot_bits"]);
             let bb = case["billboard"].as_i64().unwrap() as i8;
-            game.posed_rotation = Some((cam_yaw, cam_pitch));
+            game.posed_rotation = Some((cam_yaw, cam_pitch, 0.0));
             game.view.y_rot = cam_yaw;
             game.view.x_rot = cam_pitch;
             let got = game.display_camera_angles();
@@ -397,7 +399,7 @@ fn no_culling_text_displays_are_not_frustum_culled_26_3() {
         game.camera_type = CameraType::FirstPerson;
         game.yaw = 0.0;
         game.pitch = 0.0;
-        game.posed_rotation = Some((0.0, 0.0));
+        game.posed_rotation = Some((0.0, 0.0, 0.0));
         game.view.y_rot = 0.0;
         game.view.x_rot = 0.0;
         game.view_frustum = Some(looking_south_frustum(70.0, 1280.0 / 800.0));
@@ -478,7 +480,7 @@ fn display_lifecycle_pre_tick_deferred_swap_live_culling_and_culled_progress_26_
     let live = &w["live_culling_and_no_culling"];
     with_client_game(|game| {
         game.view_frustum = None;
-        game.posed_rotation = Some((0.0, 0.0));
+        game.posed_rotation = Some((0.0, 0.0, 0.0));
         game.view.y_rot = 0.0;
         game.view.x_rot = 0.0;
         // Match VanillaDisplayParityOracle's `Entity.setViewScale(1.0)`.
@@ -808,7 +810,7 @@ fn text_display_render_order_solid_split_and_see_through_sort_26_3() {
     let phases = &w["text_submit_phases_and_sorting"];
     with_client_game(|game| {
         game.view_frustum = None;
-        game.posed_rotation = Some((0.0, 0.0));
+        game.posed_rotation = Some((0.0, 0.0, 0.0));
         game.view.y_rot = 0.0;
         game.view.x_rot = 0.0;
         // Match VanillaDisplayParityOracle's `Entity.setViewScale(1.0)`.
@@ -1020,7 +1022,7 @@ fn text_display_resolves_inline_player_head_profiles_26_3() {
 
     with_client_game(|game| {
         game.view_frustum = None;
-        game.posed_rotation = Some((0.0, 0.0));
+        game.posed_rotation = Some((0.0, 0.0, 0.0));
         game.view.y_rot = 0.0;
         game.view.x_rot = 0.0;
         // Match VanillaDisplayParityOracle's `Entity.setViewScale(1.0)`.
@@ -1073,7 +1075,7 @@ fn block_display_backface_culling_translucent_pass_and_light_emission_26_3() {
     }
     with_client_game(|game| {
         game.view_frustum = None;
-        game.posed_rotation = Some((0.0, 0.0));
+        game.posed_rotation = Some((0.0, 0.0, 0.0));
         game.view.y_rot = 0.0;
         game.view.x_rot = 0.0;
         game.settings.render_distance = 8;
@@ -1178,7 +1180,7 @@ fn display_name_tags_and_fire_block_light_match_vanilla_26_3() {
     }
     with_client_game(|game| {
         game.view_frustum = None;
-        game.posed_rotation = Some((0.0, 0.0));
+        game.posed_rotation = Some((0.0, 0.0, 0.0));
         game.view.y_rot = 0.0;
         game.view.x_rot = 0.0;
         game.settings.render_distance = 8;
@@ -1308,7 +1310,7 @@ fn section_compiled_and_visible_gates_displays_and_mobs_26_3() {
     with_client_game(|game| {
         let _event_loop = frame_scene(game);
         game.view_frustum = None;
-        game.posed_rotation = Some((0.0, 0.0));
+        game.posed_rotation = Some((0.0, 0.0, 0.0));
         game.view.y_rot = 0.0;
         game.view.x_rot = 0.0;
         let stone = game
@@ -1453,7 +1455,7 @@ fn bold_missing_glyph_displays_and_block_display_83224_match_vanilla_26_3() {
     with_client_game(|game| {
         game.view_frustum = None;
         game.camera_type = CameraType::FirstPerson;
-        game.posed_rotation = Some((0.0, 0.0));
+        game.posed_rotation = Some((0.0, 0.0, 0.0));
         game.view.y_rot = 0.0;
         game.view.x_rot = 0.0;
         game.settings.render_distance = 8;
@@ -1471,7 +1473,7 @@ fn bold_missing_glyph_displays_and_block_display_83224_match_vanilla_26_3() {
             let billboard = case["billboard"].as_i64().unwrap() as i8;
             let cursor_tag = decode_network_nbt_hex(&case["component_nbt_hex"]);
 
-            game.posed_rotation = Some((cam_yaw, cam_pitch));
+            game.posed_rotation = Some((cam_yaw, cam_pitch, 0.0));
             game.view.y_rot = cam_yaw;
             game.view.x_rot = cam_pitch;
             game.text_displays.clear();
@@ -1540,7 +1542,7 @@ fn bold_missing_glyph_displays_and_block_display_83224_match_vanilla_26_3() {
         }
 
         // 2. EID 83224 (minecraft:lime_concrete): exact 6-face vertex parity + opaque atlas padding.
-        game.posed_rotation = Some((0.0, 0.0));
+        game.posed_rotation = Some((0.0, 0.0, 0.0));
         game.view.y_rot = 0.0;
         game.view.x_rot = 0.0;
         let ent_pos = [
@@ -1714,7 +1716,7 @@ fn set_camera_on_display_and_unbobbed_culling_match_vanilla_26_3() {
         assert_eq!(snap.eye_height, 0.0);
 
         game.view_frustum = None;
-        game.posed_rotation = Some((0.0, 0.0));
+        game.posed_rotation = Some((0.0, 0.0, 0.0));
         game.view.y_rot = 0.0;
         game.view.x_rot = 0.0;
         game.camera_type = CameraType::FirstPerson;

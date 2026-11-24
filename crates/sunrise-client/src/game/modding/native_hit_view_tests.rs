@@ -169,7 +169,17 @@ fn handle_read(game: &mut super::Game<'_>, id: u32) -> Read {
         speed: living
             .effect(game, speed())
             .map(|e| (e.amplifier, e.duration)),
-        effects: living.effects(game).map(|list| list.len()),
+        effects: {
+            // Part 3 lends each effect through `visit_effects` instead of a list.
+            let mut count = 0;
+            living
+                .visit_effects(game, &mut |_| {
+                    count += 1;
+                    core::ops::ControlFlow::Continue(())
+                })
+                .map(|_| count)
+                .ok()
+        },
         speed_affected: living.potion_affected(game, speed()),
         main_hand: living.with_hand_item(game, Hand::Main, |stack| {
             (stack.count(), Some(stack.item()) == stick)

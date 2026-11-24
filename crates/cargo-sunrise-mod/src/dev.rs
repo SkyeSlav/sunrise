@@ -11,9 +11,14 @@ mod libraries;
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use sunrise_mod_package::sdk::{self, Index};
-use sunrise_native_build::{contract, library_record::Library, prebuilt::Route, rust::Unpacked};
+use sunrise_native_build::{
+    Bundle, contract,
+    library_record::Library,
+    prebuilt::{self, Route},
+    rust::Unpacked,
+};
 
 /// Names the cache's folder instead of the platform's.
 const CACHE_ENV: &str = "SUNRISE_MOD_CACHE";
@@ -187,11 +192,7 @@ pub(crate) struct NativeSdk {
 }
 
 impl NativeSdk {
-    fn slices(
-        &self,
-        side: sdk::Side,
-        route: Route,
-    ) -> Result<sunrise_native_build::prebuilt::Package, String> {
+    fn slices(&self, side: sdk::Side, route: Route) -> Result<prebuilt::Package, String> {
         sdk_fetch::fetch_slices(
             &self.base,
             &self.index,
@@ -201,6 +202,28 @@ impl NativeSdk {
             &self.dir,
             &self.stamp,
         )
+    }
+
+    fn compile(
+        &self,
+        bundles: &[Bundle],
+        plan: &contract::Plan,
+        events: &mut Events,
+    ) -> Result<(), String> {
+        let mut needs_tool = false;
+        for bundle in bundles {
+            if prebuilt::needs_pinned_patch_tool(&plan.package, bundle)? {
+                needs_tool = true;
+                break;
+            }
+        }
+        if needs_tool {
+            let (_temporary, tool) =
+                sdk_fetch::fetch_tool(&self.base, &self.index, &self.rust.target, &self.dir)?;
+            events.run_tool(&tool, plan)
+        } else {
+            contract::run(plan, &mut std::io::empty(), events)
+        }
     }
 }
 
@@ -272,9 +295,37 @@ pub(crate) struct Built {
 }
 
 /// Turns the build's event lines into the lines a developer reads, and keeps its result.
+#[derive(Default)]
 struct Events {
     partial: Vec<u8>,
     built: Option<contract::Event>,
+    failed: Option<String>,
+}
+
+impl Events {
+    /// Run the verified SDK tool using the native-build contract. The plan already answers consent.
+    fn run_tool(&mut self, tool: &Path, plan: &contract::Plan) -> Result<(), String> {
+        let mut input = serde_json::to_vec(plan).map_err(|e| e.to_string())?;
+        input.push(b'\n');
+        let describe = |error: std::io::Error| format!("{}: {error}", tool.display());
+        let mut child = Command::new(tool)
+            .arg("native-build")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(describe)?;
+        let sent = child.stdin.take().expect("piped stdin").write_all(&input);
+        let received = std::io::copy(&mut child.stdout.take().expect("piped stdout"), self);
+        let status = child.wait().map_err(describe)?;
+        if !status.success() {
+            return Err(self.failed.take().unwrap_or_else(|| {
+                format!("{}: native-build exited with {status}", tool.display())
+            }));
+        }
+        sent.map_err(describe)?;
+        received.map_err(describe)?;
+        Ok(())
+    }
 }
 
 impl Write for Events {
@@ -287,7 +338,7 @@ impl Write for Events {
                     println!("Compiling {id} ({done}/{total})")
                 }
                 Ok(event @ contract::Event::Built { .. }) => self.built = Some(event),
-                // A failure is the build's returned error; consent is never asked (the plan answers).
+                Ok(contract::Event::Failed { error, .. }) => self.failed = Some(error),
                 _ => {}
             }
         }
@@ -301,6 +352,8 @@ impl Write for Events {
 
 struct Prepared {
     plan: contract::Plan,
+    sdk: NativeSdk,
+    staged: Vec<Bundle>,
     id: String,
     crate_name: String,
     mixins: String,
@@ -452,7 +505,7 @@ fn prepare(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
     let slices = sdk.slices(side, Route::of(&projects))?;
-    let rust = sdk.rust;
+    let rust = sdk.rust.clone();
     // A stable source path keeps the native builder's Cargo stage and fingerprints reusable.
     let mods = work.join("input");
     match fs::remove_dir_all(&mods) {
@@ -473,6 +526,8 @@ fn prepare(
             registry: Some(true),
             mixins_from_source: false,
         },
+        sdk,
+        staged,
         id,
         crate_name,
         mixins,
@@ -505,11 +560,11 @@ pub(crate) fn build(
     let prepared = prepare(project, package, with, update_lock, target, release_check)?;
     let id = &prepared.id;
     let failed = |error| prepared.failed(error);
-    let mut events = Events {
-        partial: Vec::new(),
-        built: None,
-    };
-    contract::run(&prepared.plan, &mut std::io::empty(), &mut events).map_err(failed)?;
+    let mut events = Events::default();
+    prepared
+        .sdk
+        .compile(&prepared.staged, &prepared.plan, &mut events)
+        .map_err(failed)?;
     let Some(contract::Event::Built {
         binary,
         libraries,

@@ -205,8 +205,8 @@ fn client_level_notices_pair_across_replacement_reconfiguration_leave_and_quit()
                     "old handle retires after Unload"
                 );
                 assert_eq!(
-                    overworld.datapack_entries(game, "levels:spell"),
-                    None,
+                    overworld.visit_datapack_entries(game, "levels:spell", &mut |_| unreachable!()),
+                    Err(DatapackReadError::UnknownRegistry),
                     "a synchronized registry does not revive a stale level handle"
                 );
                 let next_set = DatapackRegistrySet::from_candidate(candidate(29));
@@ -255,7 +255,10 @@ fn client_level_notices_pair_across_replacement_reconfiguration_leave_and_quit()
                 assert!(remote.logged_in);
                 assert_eq!(remote.entity_id, 8);
                 let next = game.level(&login.dimension).unwrap();
-                assert_eq!(nether.datapack_entries(game, "levels:spell"), None);
+                assert_eq!(
+                    nether.visit_datapack_entries(game, "levels:spell", &mut |_| unreachable!()),
+                    Err(DatapackReadError::UnknownRegistry),
+                );
                 assert_eq!(
                     nether.datapack_read(
                         game,
@@ -499,8 +502,8 @@ fn client_level_transitions_stop_streams_opened_during_unload() {
         native_entity_refs::tests::with_client_game, remote::RemoteDimensionEntry,
     };
     use mod_api::{
-        AudioStream, AudioStreamRef, AudioStreamState, ClientDisconnectingEvent, ClientHost,
-        ClientLevelUnloadEvent, Hooks, ModEntry, SoundSource, StreamSpec,
+        AudioStream, AudioStreamRef, AudioStreamState, ClientHost, ClientLevelUnloadEvent,
+        ClientPlayerLoggingOutEvent, Hooks, ModEntry, SoundSource, StreamSpec,
     };
     use std::sync::{Arc, Mutex};
     use sunrise_client::level_loading::Reason;
@@ -537,7 +540,11 @@ fn client_level_transitions_stop_streams_opened_during_unload() {
             self.open(host);
         }
 
-        fn client_disconnecting(&self, host: &dyn ClientHost, _: &mut ClientDisconnectingEvent) {
+        fn client_player_logging_out(
+            &self,
+            host: &mut dyn ClientHost,
+            _: &mut ClientPlayerLoggingOutEvent,
+        ) {
             self.open(host);
         }
     }

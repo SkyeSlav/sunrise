@@ -210,6 +210,7 @@ pub struct Renderer {
     /// Screen effects: alpha-blended, then vignette (`dst * (1 - src)`)
     /// pipelines, each for every sampling (index `blend * 4 + sampling`).
     pub(crate) screen_pipelines: [wgpu::RenderPipeline; 16],
+    pub(crate) screen_page_groups: Vec<Option<wgpu::BindGroup>>,
     pub(crate) screen_buffer: wgpu::Buffer,
     pub(crate) screen_capacity: u64,
     pub(crate) entity_group: wgpu::BindGroup,

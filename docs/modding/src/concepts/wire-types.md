@@ -27,9 +27,9 @@ an event, copy the fields you intend to send into your own `Wire` payload type. 
 then select the facts you need for your protocol. Local client drawing, render-pipeline, input, audio,
 screen, options, recipe-panel, and pose/model/animation values are likewise in-process only rather than
 `Wire`; load model and animation assets through JSON and copy only the fields you intend to synchronize
-into your own `Wire` payload struct. Keep issued packet-hold and chunk-ticket controller
-handles in the process that issued them; use a ticket controller's namespaced `id()` when you need to
-record its name.
+into your own `Wire` payload struct. Keep issued packet-hold, chunk-ticket controller, and watered-area
+(`WaterTicket`) handles in the process that issued them; use a ticket controller's namespaced `id()`
+when you need to record its name, and re-add transient watered areas when a level or block entity loads.
 Likewise, keep [attachment queries and write tokens](attachments/querying.md) in process; an
 attachment's own codec handles saving and syncing its value.
 
@@ -42,7 +42,7 @@ convert to `ItemStack` or `FluidStack`, or copy the fields you need into your ow
 ```rust,ignore
 #[derive(mod_api::Wire)]
 pub struct ChemicalAmount {
-    pub chemical: String,
+    pub chemical: mod_api::Identifier,
     pub amount: u64,
 }
 ```
@@ -50,7 +50,9 @@ pub struct ChemicalAmount {
 Records encode fields in declaration order. Enums encode a case index followed by
 its fields. Lengths and numbers are little-endian; collections are length-prefixed.
 Decoding returns `WireError` for invalid data rather than accepting an unknown tag,
-invalid UTF-8 or an unsupported length.
+invalid UTF-8 or an unsupported length. An `Identifier` writes the namespace and path
+as two length-prefixed UTF-8 strings in both ordinary Wire and typed payloads. The reader
+validates the pair as an owned resource name; it does not resolve or intern a registry key.
 
 ## Nesting and stacks
 
@@ -59,7 +61,7 @@ variants and `Box`/`Arc` values (`MAX_DEPTH`). Collection iteration, `Option`
 and tuples do not consume a level. The reader returns `WireError::Depth` before
 entering level 33; the writer records the same error. Always check `Writer::error`
 before sending its bytes. This is a transport budget for unbounded mod-defined
-trees, including ingredients, loot vehicles and recipe slot displays.
+trees, including ingredients and recipe slot displays.
 
 Typed payloads use the same encoding with their own limits. They count lists, present
 options, boxes, shared pointers, NBT containers and explicit recursion, not derived record

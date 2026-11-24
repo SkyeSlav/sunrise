@@ -336,11 +336,22 @@ fn named_id(t: Target) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::super::api_values::TryIntoApi;
-    use super::super::native_entity_refs::tests::with_game;
     use mod_api::{EntityRef, MobCategory};
     use sunrise_client::{entities::ArmorStand, mobs::Mob, text::Text};
     use sunrise_core::geometry::Vec3;
     use sunrise_core::nbt::{JavaString, Tag};
+
+    /// The entity refs fixture with chunk (0, 0) loaded: a handle resolves only for an
+    /// entity in an accessible section (`LevelEntityGetter`), and every entity here stands in it.
+    fn with_game(test: impl FnOnce(&mut super::Game<'_>)) {
+        super::super::native_entity_refs::tests::with_game(|game| {
+            game.world.chunks.insert(
+                (0, 0),
+                std::sync::Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)),
+            );
+            test(game);
+        });
+    }
 
     fn push_mob(game: &mut super::Game<'_>, id: u32, kind: &str) -> EntityRef {
         let kind = game.res.mob_types().get(kind).unwrap().clone();
@@ -579,7 +590,7 @@ mod tests {
                 event: &mut EntityJoinLevelEvent<'_>,
             ) -> Flow {
                 let host: &dyn Host = host;
-                let entity = host.entity(event.entity).unwrap();
+                let entity = host.entity(event.subject.id()).unwrap();
                 self.0.lock().unwrap().push(entity.added_to_level(host));
                 Flow::Continue
             }

@@ -34,8 +34,14 @@ pub trait EntityIdentityBackend {
     /// The players this entity is sent to (`ChunkMap.TrackedEntity.seenBy`), in the order the
     /// server keeps its players: those in the entity's level whose client has the entity from
     /// its tracking pass. A player is not among its own trackers. Fake players track nothing.
-    /// None on a client, and for a stale handle or an entity that is not in the level in place.
-    fn entity_trackers(&self, entity: EntityRef) -> Option<Vec<PlayerRef>>;
+    /// A stale handle returns `Stale`; a side, backend or level that cannot expose its tracking
+    /// state returns `Unavailable`. Return `Break(())` to stop, or `Continue(())` to visit the
+    /// next player. A readable entity with no trackers completes without a call.
+    fn entity_visit_trackers(
+        &self,
+        entity: EntityRef,
+        visit: &mut dyn FnMut(PlayerRef) -> core::ops::ControlFlow<()>,
+    ) -> Result<core::ops::ControlFlow<()>, EntityReadError>;
     /// Side: server.
     /// The entity's resolved type key (`Entity.getType`). Compare keys directly;
     /// request `key.id(host)` explicitly when its canonical name is needed.
@@ -62,14 +68,21 @@ pub trait EntityIdentityBackend {
     /// stale handle.
     fn entity_is_multipart(&self, entity: EntityRef) -> Option<bool>;
     /// Side: both.
-    /// The entities a multipart entity is made of (`Entity.getParts`), in
-    /// `getSubEntities` order: for the dragon its head, neck, body, three
-    /// tail segments and two wings. Each is a handle of the part's own entity
-    /// id, the eight after the dragon's, with the dragon's type, its own
-    /// position, rotation, velocity and box, and no living state; the
-    /// handle stops resolving with the dragon. Empty for an entity that is not
-    /// multipart, None for a stale handle.
-    fn entity_parts(&self, entity: EntityRef) -> Option<Vec<EntityRef>>;
+    /// Visit the entities a multipart entity is made of (NeoForge `IEntityExtension.getParts`).
+    /// For the dragon, `EnderDragon.getSubEntities` orders its head, neck, body, three tail
+    /// segments and two wings. Each is a handle of the part's own entity id, the eight after
+    /// the dragon's, with the dragon's type, its own position, rotation, velocity and box,
+    /// and no living state; the handle stops resolving with the dragon.
+    /// Return `ControlFlow::Break(())` to stop (`Ok(Break(()))`). `Ok(Continue(()))` means
+    /// the visit completed, without calling `visit` for a non-multipart entity. A stale handle
+    /// returns [`EntityReadError::Stale`]. If the world is unreadable, the body is parked or
+    /// only packet-tracked, or not all parts can be resolved, returns
+    /// [`EntityReadError::Unavailable`]. No refusal calls `visit`.
+    fn entity_visit_parts(
+        &self,
+        entity: EntityRef,
+        visit: &mut dyn FnMut(EntityRef) -> core::ops::ControlFlow<()>,
+    ) -> Result<core::ops::ControlFlow<()>, EntityReadError>;
     /// Side: server.
     /// `Entity.getSoundSource`: the group an entity's sounds play under.
     /// Players are `Players`; `Monster`s, the dragon, hoglins, ghasts,

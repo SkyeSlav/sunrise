@@ -77,7 +77,12 @@ READERS = {
     # The ignored-test inventory reads the game's modules and the vocabulary's export fragments.
     "sunrise-game-discovery": ["crates/sunrise-client/src", "crates/sunrise-mod-vocab/src"],
     "sunrise-mod-api": MOD_API_GEN,
-    "sunrise-mod-api-gen": [*MOD_API_GEN, "crates/sunrise-mod-vocab/extension-tags"],
+    "sunrise-mod-api-gen": [
+        *MOD_API_GEN,
+        "crates/sunrise-mod-surface/tests/fixtures/occultism-0.9.0-alpha.1/uses.json",
+        "crates/sunrise-mod-vocab/changes",
+        "crates/sunrise-mod-vocab/extension-tags",
+    ],
     "sunrise-mod-api-gen-tests": MOD_API_GEN,
     # content_keys' source guard searches these crates' sources for the files that define declaration types.
     "sunrise-mod-package": [
@@ -118,6 +123,8 @@ SCANNED = {"sunrise-client-core": ["crates"]}
 NOT_READS = {
     "sunrise-client": {"crates"}, "sunrise-client-lib": {"crates"}, "sunrise-parity-fixtures": {"crates"},
     "sunrise-mod-package": {"crates"},
+    # The retained-SDK test writes a synthetic render.rs into its temporary archive, not this checkout.
+    "cargo-sunrise-mod": {"crates/sunrise-mod-render/src/render.rs"},
     "sunrise-mod-vocab": {"."}, "sunrise-port-pack": {"mods"}, "sunrise-prepare": {"crates"},
     # A package's source-file names (`package::source_file`), never this checkout's lock.
     "sunrise-mod-source": {"Cargo.lock"},

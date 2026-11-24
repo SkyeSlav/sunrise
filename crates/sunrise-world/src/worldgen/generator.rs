@@ -133,6 +133,10 @@ impl HeightmapState for GenBlockState {
 #[derive(Clone, Debug)]
 pub struct GenBlockStates(Arc<[GenBlockState]>);
 impl GenBlockStates {
+    pub(super) fn new(states: Vec<GenBlockState>) -> Self {
+        Self(states.into())
+    }
+
     pub fn get(&self, id: BlockStateId) -> GenBlockState {
         self.0.get(id.0 as usize).copied().unwrap_or_default()
     }
@@ -144,9 +148,44 @@ impl TerrainBlockStates for GenBlockStates {
     }
 }
 
+/// Read-only view of resident columns in the `FEATURES` `STRUCTURE_STARTS` dependency ring
+/// (Chebyshev distance `2..=8` around the center chunk, `ChunkPyramid.GENERATION_PYRAMID`).
+/// A chunk absent here has no resident proto or full column yet and reads as an empty
+/// `STRUCTURE_STARTS` `ProtoChunk` (`minecraft:air` inside build height, `minecraft:void_air`
+/// outside, `FluidState::EMPTY`, and height `min_y`), matching vanilla `WorldGenRegion`.
+pub trait DecorationDependencies {
+    /// Block state at `[x, y, z]` when chunk `(x >> 4, z >> 4)` has a resident proto or full
+    /// column, or `None` when that chunk is a `STRUCTURE_STARTS`-only holder.
+    fn resident_block(&self, position: [i32; 3]) -> Option<BlockStateId>;
+    /// `WorldGenRegion.getHeight` (`Heightmap.getFirstAvailable`) at `(x, z)` for build
+    /// range `build = (min_y, max_y)` when chunk `(x >> 4, z >> 4)` has a resident proto
+    /// or full column, or `None` when that chunk is a `STRUCTURE_STARTS`-only holder.
+    fn resident_height(
+        &self,
+        kind: HeightmapType,
+        x: i32,
+        z: i32,
+        build: (i32, i32),
+        properties: &GenBlockStates,
+    ) -> Option<i32> {
+        let (min_y, max_y) = build;
+        // Confirm the column is resident before scanning vertically.
+        self.resident_block([x, min_y, z])?;
+        for y in (min_y..max_y).rev() {
+            if let Some(state) = self.resident_block([x, y, z]) {
+                let props = properties.get(state);
+                if !props.is_air_block() && kind.is_opaque(props) {
+                    return Some(y + 1);
+                }
+            }
+        }
+        Some(min_y)
+    }
+}
+
 /// The seed-independent resources, at the path the internals list names.
 pub mod data;
-pub use data::GeneratorData;
+pub use data::{BiomeSourceData, GeneratorData};
 #[cfg(test)]
 use data::{RING_CACHE_LIMIT, build_tags};
 mod noise_settings;
@@ -358,7 +397,7 @@ struct Pipeline<R: RandomSource> {
     aquifer: Option<[Arc<dyn DensitySampler>; 6]>,
     rule: MaterialRule,
     preliminary: Arc<dyn DensitySampler>,
-    source: ResolvedBiomeSource,
+    source: Arc<ResolvedBiomeSource>,
     surface: MaterialSurface<R::Positional>,
     noises: BTreeMap<String, Arc<dyn Noise>>,
     extensions: MaterialExtensions<R::Positional>,
@@ -447,6 +486,11 @@ fn state(
         .map_err(|e| resource(format!("block state {raw}: {e}")))
 }
 
+enum BiomeOverride<'a> {
+    Regions(&'a RegionLayout),
+    Bound(Arc<ResolvedBiomeSource>),
+}
+
 impl<R: RandomSource + 'static> Pipeline<R>
 where
     R::Positional: Clone + Send + Sync,
@@ -459,7 +503,7 @@ where
         settings_json: &Value,
         with_structures: bool,
         level: Option<(i32, i32)>,
-        regions: Option<&RegionLayout>,
+        biome_override: Option<BiomeOverride<'_>>,
     ) -> Result<Self, GeneratorError> {
         let registry = data.registry;
         let root = random.fork_positional();
@@ -473,20 +517,26 @@ where
         } = data.decode_noise_settings(settings_json, seed, level)?;
         let preliminary = router.get(RouterField::ChunkSurfaceLevel).clone();
         let mut source_json = generator["biome_source"].to_string();
-        let definition = data.source_catalog.decode(&source_json)?;
-        let source = definition
-            .resolve(&data.presets, seed)
-            .map_err(|e| resource(format!("biome source: {e}")))?;
-        // Only the multi-noise presets (Overworld, Nether) take regions, not inline point lists.
-        let source = if matches!(definition, BiomeSourceDefinition::Preset { .. }) {
-            source
-                .with_regions(regions, &root)
-                .map_err(|e| resource(format!("biome regions: {e}")))?
-        } else {
-            source
+        let source = match biome_override {
+            Some(BiomeOverride::Bound(source)) => source,
+            other => {
+                let definition = data.source_catalog.decode(&source_json)?;
+                let mut source = definition
+                    .resolve(&data.presets, seed)
+                    .map_err(|e| resource(format!("biome source: {e}")))?;
+                // Only the multi-noise presets (Overworld, Nether) take regions.
+                if let Some(BiomeOverride::Regions(regions)) = other
+                    && matches!(definition, BiomeSourceDefinition::Preset { .. })
+                {
+                    source = source
+                        .with_regions(Some(regions), &root)
+                        .map_err(|e| resource(format!("biome regions: {e}")))?;
+                }
+                Arc::new(source)
+            }
         };
         // Regions add biomes, so their decoration is cached apart from the bare preset's.
-        if let ResolvedBiomeSource::Regions(layered) = &source {
+        if let ResolvedBiomeSource::Regions(layered) = source.as_ref() {
             for biome in layered.biomes() {
                 source_json.push(' ');
                 source_json.push_str(biome);
@@ -830,7 +880,7 @@ where
     fn identity_end_surface(&self, pos: ChunkPos) -> bool {
         // A mod's terrain is not the noise's default block.
         if self.mod_terrain.is_some()
-            || !matches!(self.source, ResolvedBiomeSource::End(_))
+            || !matches!(self.source.as_ref(), ResolvedBiomeSource::End(_))
             // At wrapped block coordinates the ordinary biome-region lookup
             // can fail; retain that lookup and its error outside this range.
             || ![pos.x, pos.z].into_iter().all(|c| {
@@ -1106,6 +1156,7 @@ where
                 .collect()
         };
         context.set_lattice(lattice);
+        // Masking off structures in WorldOptions does not change the terrain's range.
         let filled = match &self.mod_terrain {
             Some(terrain) => terrain.fill(&mut chunk, data.registry, self.seed, [min, height]),
             None => fill_noise(
@@ -1578,6 +1629,9 @@ where
         self.worker.structure_biomes.insert(quart, id);
         id
     }
+    fn biome_key(&self, biome: BiomeId) -> mod_api::BiomeKey {
+        self.pipeline.data.biome_keys[biome.0 as usize].clone()
+    }
     fn noise_biomes(&mut self, quarts: &[[i32; 3]]) -> Vec<BiomeId> {
         let mut resolver = self.pipeline.source.resolver(
             &self.pipeline.climate,
@@ -1928,6 +1982,7 @@ trait SeededPipeline: Send + Sync {
         &self,
         worker: &mut WorkerState,
         region: &mut [ProtoChunk; 9],
+        dependencies: Option<&dyn DecorationDependencies>,
     ) -> Result<DecorateStats, GeneratorError>;
     fn data(&self) -> &Arc<GeneratorData>;
     /// What the shared caches hold, for `sunrise-ctl memory`.
@@ -2035,6 +2090,7 @@ where
         &self,
         worker: &mut WorkerState,
         region: &mut [ProtoChunk; 9],
+        dependencies: Option<&dyn DecorationDependencies>,
     ) -> Result<DecorateStats, GeneratorError> {
         match &self.decoration {
             Some(decoration) => {
@@ -2047,6 +2103,7 @@ where
                     region,
                     &mut random,
                     self.structures.as_ref(),
+                    dependencies,
                 )
             }
             // A mod's level that asks for neither structures nor features has nothing to place.
@@ -2879,8 +2936,12 @@ impl OverworldGenerator {
         stem: &Value,
         with_structures: bool,
         regions: Option<Arc<RegionLayout>>,
-        terrain: Option<mod_terrain::ModTerrain>,
+        custom: Option<(mod_terrain::ModTerrain, Arc<ResolvedBiomeSource>)>,
     ) -> Result<Self, GeneratorError> {
+        let (terrain, biome_override) = match custom {
+            Some((terrain, source)) => (Some(terrain), Some(BiomeOverride::Bound(source))),
+            None => (None, regions.as_deref().map(BiomeOverride::Regions)),
+        };
         let generator = &stem["generator"];
         // The level's build range: its dimension type's, a data pack's
         // over the vanilla one.
@@ -2925,7 +2986,7 @@ impl OverworldGenerator {
                     &settings_json,
                     with_structures,
                     level,
-                    regions.as_deref(),
+                    biome_override,
                 )?
                 .with_mod_terrain(terrain)?,
             )
@@ -2939,7 +3000,7 @@ impl OverworldGenerator {
                     &settings_json,
                     with_structures,
                     level,
-                    regions.as_deref(),
+                    biome_override,
                 )?
                 .with_mod_terrain(terrain)?,
             )
@@ -3185,7 +3246,19 @@ impl GeneratorWorker {
         &mut self,
         region: &mut [ProtoChunk; 9],
     ) -> Result<DecorateStats, GeneratorError> {
-        self.pipeline.decorate(&mut self.state, region)
+        self.decorate_with_dependencies(region, None)
+    }
+    /// [`Self::decorate`] with optional read-only resident columns for the
+    /// `FEATURES` `STRUCTURE_STARTS` dependency ring (Chebyshev distance `2..=8`).
+    /// Columns absent from `dependencies` read as empty `STRUCTURE_STARTS` proto
+    /// chunks (`WorldGenRegion` + `ChunkPyramid.GENERATION_PYRAMID`).
+    pub fn decorate_with_dependencies(
+        &mut self,
+        region: &mut [ProtoChunk; 9],
+        dependencies: Option<&dyn DecorationDependencies>,
+    ) -> Result<DecorateStats, GeneratorError> {
+        self.pipeline
+            .decorate(&mut self.state, region, dependencies)
     }
     /// Skip placed features when decorating and keep structure pieces only
     /// (for structure placement parity checks).
@@ -3297,6 +3370,28 @@ mod tests {
         let none = WorldgenOverrides::default();
         assert!(build_tags(&broken, &none, "biome_tags", &mut dropped, known).is_err());
     }
+    #[test]
+    fn invalid_biome_identifier_refuses_worldgen_data() {
+        let dir = std::env::temp_dir().join(format!(
+            "sunrise-invalid-worldgen-biome-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("biomes.json"), r#"{"test:Bad_Biome":"{}"}"#).unwrap();
+        fs::write(dir.join("biome_tags.json"), "{}").unwrap();
+        let (registry, _) = BlockRegistry::from_facts_json_bytes(
+            br#"{"states":[["minecraft:air",true,false,"x","minecraft:air"]],"defaults":{"minecraft:air":0}}"#,
+        )
+        .unwrap();
+        let loaded = GeneratorData::load(&dir, Box::leak(Box::new(registry)));
+        fs::remove_dir_all(dir).unwrap();
+        assert!(matches!(
+            loaded,
+            Err(GeneratorError::Decode(DecodeError::InvalidIdentifier(id)))
+                if id == "test:Bad_Biome"
+        ));
+    }
+
     /// A pack's level on a generator nobody registered: opening it is an
     /// error for the caller to report, and the noise levels still build.
     #[test]
@@ -3464,9 +3559,11 @@ mod tests {
         pipeline.settings.default_fluid = old_fluid;
         let old_source = std::mem::replace(
             &mut pipeline.source,
-            ResolvedBiomeSource::Fixed(super::super::biome_source::FixedBiomeSource {
-                biome: "minecraft:the_end".into(),
-            }),
+            Arc::new(ResolvedBiomeSource::Fixed(
+                super::super::biome_source::FixedBiomeSource {
+                    biome: "minecraft:the_end".into(),
+                },
+            )),
         );
         assert!(!pipeline.identity_end_surface(ChunkPos::new(0, 0)));
         pipeline.source = old_source;

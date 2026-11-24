@@ -17,12 +17,6 @@ pub(crate) mod entity_renderers;
 pub(crate) mod item_extensions;
 // hidden: a module of game-side types; mods use their re-exports
 #[doc(hidden)]
-pub mod extras;
-// hidden: a module of game-side types; mods use their re-exports
-#[doc(hidden)]
-pub mod extras_hud;
-// hidden: a module of game-side types; mods use their re-exports
-#[doc(hidden)]
 pub mod first_person;
 pub(crate) mod fluid_draw;
 // hidden: a module of game-side types; mods use their re-exports

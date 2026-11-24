@@ -41,11 +41,12 @@ impl dyn Registrar + '_ {
     /// NeoForge's registries `STRUCTURE_TYPE` and `STRUCTURE_PIECE` register
     /// once at startup: a data pack structure with `"type": "modid:tower"`
     /// then generates by `ty`'s code — its own start and pieces, placed by the
-    /// game's own spacing, biome and terrain-adaptation checks. The type's id
-    /// is in a namespace owned by the calling mod's manifest (`mymod:tower`); another mod's
-    /// namespace, an empty name and an id registered twice refuse the mods at
-    /// startup, naming the mod. `ty`'s `load_piece` is its saved pieces'
-    /// loader: keep the type for as long as the game runs.
+    /// game's own spacing, biome and terrain-adaptation checks. A bare name uses
+    /// this mod's namespace; an explicit valid `namespace:path` keeps its
+    /// namespace. A malformed name, a built-in structure type and an id
+    /// registered twice refuse the mods at startup, naming the mod. `ty`'s
+    /// `load_piece` is its saved pieces' loader: keep the type for as long as the
+    /// game runs.
     pub fn register_structure_type<T: crate::StructureType>(&mut self, name: &str, ty: T) {
         self.add_structure_type(name, Arc::new(ty));
     }
@@ -53,9 +54,9 @@ impl dyn Registrar + '_ {
     /// the way NeoForge's registry `STRUCTURE_POOL_ELEMENT` registers once at
     /// startup: a template pool entry with `"element_type": "modid:corridor"`
     /// then decodes, lays out and places by `ty`'s code, in any structure
-    /// that draws from that pool. The id's namespace must be owned by the
-    /// calling mod's manifest; another mod's namespace, an empty name and an
-    /// id registered twice refuse the mods at startup, naming the mod.
+    /// that draws from that pool. A bare name uses this mod's namespace; an
+    /// explicit valid `namespace:path` keeps its namespace. A malformed name and
+    /// an id registered twice refuse the mods at startup, naming the mod.
     pub fn register_pool_element_type<T: crate::PoolElementType>(&mut self, name: &str, ty: T) {
         self.add_pool_element_type(name, Arc::new(ty));
     }
@@ -63,9 +64,10 @@ impl dyn Registrar + '_ {
     /// `mymod:weathering`), the way NeoForge's registry `STRUCTURE_PROCESSOR`
     /// registers once at startup: a processor list entry with
     /// `"processor_type": "modid:weathering"` then decodes and runs by `ty`'s
-    /// code beside vanilla's processors. The id's namespace must be owned by
-    /// the calling mod's manifest; another mod's namespace, an empty name and
-    /// an id registered twice refuse the mods at startup, naming the mod.
+    /// code beside vanilla's processors. A bare name uses this mod's
+    /// namespace; an explicit valid `namespace:path` keeps its namespace. A
+    /// malformed name and an id registered twice refuse the mods at startup,
+    /// naming the mod.
     pub fn register_structure_processor_type<T: crate::StructureProcessorType>(
         &mut self,
         name: &str,
@@ -78,9 +80,9 @@ impl dyn Registrar + '_ {
     /// registers once at startup: a processor rule or ore/replacement target
     /// entry with `"predicate_type": "modid:matter_phase"` then decodes once
     /// at load and runs by `ty`'s code beside vanilla's built-in rule tests.
-    /// The id's namespace must be owned by the calling mod's manifest; another
-    /// mod's namespace, an empty name and an id registered twice refuse the
-    /// mods at startup, naming the mod.
+    /// A bare name uses this mod's namespace; an explicit valid
+    /// `namespace:path` keeps its namespace. A malformed name and an id
+    /// registered twice refuse the mods at startup, naming the mod.
     pub fn register_rule_test_type<T: crate::RuleTestType>(&mut self, name: &str, ty: T) {
         self.add_rule_test_type(name, Arc::new(ty));
     }
@@ -88,10 +90,10 @@ impl dyn Registrar + '_ {
     /// `mymod:y_value`), the way NeoForge's registry `POS_RULE_TEST` registers
     /// once at startup: a processor rule's `position_predicate` entry with
     /// `"predicate_type": "modid:y_value"` then decodes once at load and runs
-    /// by `ty`'s code beside vanilla's built-in position rule tests. The id's
-    /// namespace must be owned by the calling mod's manifest; another mod's
-    /// namespace, an empty name and an id registered twice refuse the mods at
-    /// startup, naming the mod.
+    /// by `ty`'s code beside vanilla's built-in position rule tests. A bare
+    /// name uses this mod's namespace; an explicit valid `namespace:path` keeps
+    /// its namespace. A malformed name and an id registered twice refuse the
+    /// mods at startup, naming the mod.
     pub fn register_pos_rule_test_type<T: crate::PosRuleTestType>(&mut self, name: &str, ty: T) {
         self.add_pos_rule_test_type(name, Arc::new(ty));
     }

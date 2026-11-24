@@ -6,7 +6,7 @@
 use super::Game;
 use super::native_block_entity_draw::BlockEntityDraw;
 use glam::{Mat4, Vec3};
-use mod_api::SceneView;
+use mod_api::{BlockEntityDataView, SceneView};
 use sunrise_client::{block_entity_render::diffuse_lights, hud::HudBatch};
 use sunrise_world::level::data::state_flags;
 /// Prepared scene data. Entity fields remain borrowed for the duration of the draw.
@@ -161,9 +161,8 @@ impl Game<'_> {
                     cull: true,
                 });
             }
-            if let Some(entity) = &block.entity {
-                let entity =
-                    mod_api::ModBlockEntity::new(entity.id.to_string(), entity.fields.clone());
+            if let Some(entity) = block.entity {
+                let entity = BlockEntityDataView::new(entity);
                 let name = &*self.res.facts().get(block.state).name;
                 let mut draw = BlockEntityDraw::posed(
                     self.clock.fraction() as f32,
@@ -174,8 +173,9 @@ impl Game<'_> {
                     diffuse_lights(false),
                     Vec::new(),
                 )
+                .with_quad_budget(self.entity_quad_capacity(), 0)
                 .animated(self.animation_time());
-                self.native_block_entity_submit(block.pos, name, block.state, &entity, &mut draw);
+                self.native_block_entity_submit(block.pos, name, block.state, entity, &mut draw);
                 // Its text's new glyphs upload with this screen's batch.
                 batch.patches.append(&mut self.text_patches.borrow_mut());
                 let placed = draw.into_placed(at);

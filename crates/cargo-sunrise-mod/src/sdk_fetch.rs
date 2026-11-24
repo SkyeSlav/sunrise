@@ -514,6 +514,24 @@ pub(crate) fn fetch_slices(
     Ok(package)
 }
 
+/// Opens the tool asset described by the already verified SDK index. An executable is unpacked
+/// into a fresh directory for this invocation so no stale, unverified copy can run.
+pub(crate) fn fetch_tool(
+    base: &Base,
+    index: &Index,
+    target: &str,
+    dir: &Path,
+) -> Result<(tempfile::TempDir, PathBuf), String> {
+    let name = sdk::Asset::name(sdk::Kind::Tool, target, sdk::Side::Client);
+    let temporary = tempfile::tempdir_in(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    unpack(base, index, &name, temporary.path(), "tool", SLICE_LIMIT)?;
+    let program = temporary
+        .path()
+        .join("tool")
+        .join(format!("cargo-sunrise-mod{}", std::env::consts::EXE_SUFFIX));
+    Ok((temporary, program))
+}
+
 /// Downloads the archive `name` that `index` lists into `dir`, and unpacks it, verified, into
 /// `dir`'s folder `into`.
 fn unpack(

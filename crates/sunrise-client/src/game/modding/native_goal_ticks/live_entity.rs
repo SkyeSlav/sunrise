@@ -9,7 +9,8 @@ use super::super::{
 };
 use super::{GoalCx, Resolved};
 use crate::mobs::Mob;
-use mod_api::{EntityRef, EntityTags, MobCategory};
+use mod_api::{EntityReadError, EntityRef, EntityTags, MobCategory};
+use std::ops::ControlFlow;
 
 impl GoalCx<'_, '_> {
     pub(super) fn r_entity_tags(&self, entity: EntityRef) -> Option<EntityTags<'_>> {
@@ -178,8 +179,25 @@ impl GoalCx<'_, '_> {
         self.entity_mob(entity).map(|_| false)
     }
 
-    pub(super) fn r_entity_parts(&self, entity: EntityRef) -> Option<Vec<EntityRef>> {
-        self.entity_mob(entity).map(|_| Vec::new())
+    /// Goal visitors need an actual mob body, not a snapshot.
+    pub(super) fn live_entity_for_read(&self, entity: EntityRef) -> Result<&Mob, EntityReadError> {
+        match self.resolve(entity) {
+            Some(Resolved::Own) => Ok(self.m),
+            Some(Resolved::Live(mob)) => Ok(mob),
+            Some(Resolved::Player | Resolved::Seen(_) | Resolved::Dragon(_)) => {
+                Err(EntityReadError::Unavailable)
+            }
+            Some(Resolved::Unavailable) | None => Err(EntityReadError::Stale),
+        }
+    }
+
+    pub(super) fn r_entity_visit_parts(
+        &self,
+        entity: EntityRef,
+        _visit: &mut dyn FnMut(EntityRef) -> ControlFlow<()>,
+    ) -> Result<ControlFlow<()>, EntityReadError> {
+        self.live_entity_for_read(entity)?;
+        Ok(ControlFlow::Continue(()))
     }
 
     pub(super) fn r_entity_dimensions(&self, entity: EntityRef) -> Option<[f64; 2]> {

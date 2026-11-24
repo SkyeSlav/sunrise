@@ -562,11 +562,12 @@ fn a_server_reads_a_mobs_jump_cooldown() {
         game.streaming.forced.insert((0, 0));
         game.native_joins_skip();
         let nbt: Compound = [("NoAI".into(), Tag::Byte(1))].into_iter().collect();
-        let dimension = game.dim.id();
-        let id = game
-            .summon(dimension, "minecraft:pig", [1.5, 70.0, 1.5], nbt)
+        let level = game.level("minecraft:overworld").expect("the overworld");
+        let entity = game
+            .level_summon(level, "minecraft:pig", [1.5, 70.0, 1.5], nbt)
+            .expect("a level write")
             .expect("a pig");
-        let entity = game.entity(id).expect("its handle");
+        let id = entity.id();
         for delay in [7, 0] {
             game.mobs
                 .iter_mut()

@@ -37,8 +37,8 @@ impl Uploads {
     pub fn new(device: &wgpu::Device) -> Self {
         Self::with_chunk(device, CHUNK)
     }
-    /// A belt whose staging buffers hold `chunk` bytes (a larger write gets
-    /// a buffer of its own, rounded up to a power of two).
+    /// A belt whose staging buffers hold up to `chunk` bytes (a larger write gets
+    /// a buffer of its own, rounded up only as far as the device allows).
     pub fn with_chunk(device: &wgpu::Device, chunk: u64) -> Self {
         let limit = legal_buffer_limit(device);
         let chunk = chunk.min(limit);
@@ -146,6 +146,20 @@ impl Uploads {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_admitted_entity_write_fits_staging_on_a_non_power_of_two_device() {
+        use crate::gfx::EntityQuadCapacity;
+
+        let limit = CHUNK + CHUNK / 2 + 3;
+        let capacity = EntityQuadCapacity::from_max_buffer_size(limit);
+        let size =
+            NonZeroU64::new(capacity.max_quads() as u64 * EntityQuadCapacity::VERTEX_QUAD_BYTES)
+                .unwrap();
+        assert!(size.get() <= limit && size.get().next_power_of_two() > limit);
+        let aligned_limit = limit - (limit % wgpu::COPY_BUFFER_ALIGNMENT);
+        assert_eq!(legal_buffer_size(size.get(), aligned_limit), limit - 3);
+    }
 
     fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
         let (_, device, queue) = crate::gfx::test_gpu::optional_device()?;

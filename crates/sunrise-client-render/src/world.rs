@@ -201,6 +201,9 @@ pub struct World {
     /// The chunks changed in bulk (`edit_runs`) since the log was last
     /// drained, kept while `block_log` is: sent to the players whole.
     pub bulk_log: FxHashSet<(i32, i32)>,
+    /// Explicit resends with their light-completion markers (`ChunkResend`). Unlike bulk edits,
+    /// these do not refresh far terrain for a client that hasn't received the chunk.
+    pub chunk_resends: FxHashMap<(i32, i32), ChunkResend>,
     /// The sections whose light changed since the log was last drained, as
     /// a bit per section of each column, kept while `block_log` is
     /// (`ChunkHolder.sectionLightChanged`).
@@ -219,6 +222,12 @@ pub struct World {
     /// (`ShulkerBoxBlockEntity.getBoundingBox`), as `moving_pistons` for pistons.
     pub shulkers: FxHashMap<[i32; 3], crate::block_entity_anim::Shulker>,
 }
+/// `Level.isRaining` and `isThundering` compare interpolated float strengths to doubles.
+/// Use zero strengths for a level that cannot have weather.
+pub fn weather_flags((rain, thunder): (f32, f32)) -> (bool, bool) {
+    (f64::from(rain) > 0.2, f64::from(thunder) > 0.9)
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Weather {
     pub clear_time: i32,
@@ -230,6 +239,15 @@ pub struct Weather {
     pub thunder_level: (f32, f32),
 }
 impl Weather {
+    /// `MinecraftServer.getWeatherData` is shared; the Level interpolants are not.
+    pub fn copy_parameters_from(&mut self, weather: Self) {
+        self.clear_time = weather.clear_time;
+        self.rain_time = weather.rain_time;
+        self.thunder_time = weather.thunder_time;
+        self.raining = weather.raining;
+        self.thundering = weather.thundering;
+    }
+
     /// The timers of `advanceWeatherCycle`, which run only while
     /// `advance_weather` is on.
     pub fn tick_timers(&mut self, random: &mut sunrise_core::random::LegacyRandom) {
@@ -275,13 +293,21 @@ impl Weather {
         self.rain_level.1 =
             (self.rain_level.1 + if self.raining { 0.01 } else { -0.01 }).clamp(0.0, 1.0);
     }
+    /// `Level.setRainLevel` and `Level.setThunderLevel`: clamp both strengths to
+    /// `[0, 1]` and set both the previous and current interpolants.
+    pub fn set_levels(&mut self, rain: f32, thunder: f32) {
+        let rain = rain.clamp(0.0, 1.0);
+        let thunder = thunder.clamp(0.0, 1.0);
+        self.rain_level = (rain, rain);
+        self.thunder_level = (thunder, thunder);
+    }
+
     /// The levels at their targets at once (rain 1 while it rains, else 0, and thunder the
     /// same), both halves, so the frame shows them at any partial tick: a frozen world under
     /// `SUNRISE_STILL`, which would otherwise have to run about a hundred ticks to fade them.
     pub fn settle_levels(&mut self) {
         let target = |on: bool| if on { 1.0 } else { 0.0 };
-        self.rain_level = (target(self.raining), target(self.raining));
-        self.thunder_level = (target(self.thundering), target(self.thundering));
+        self.set_levels(target(self.raining), target(self.thundering));
     }
     /// Level.getRainLevel / getThunderLevel (thunder scales with rain).
     pub fn levels(&self, partial: f32) -> (f32, f32) {
@@ -397,6 +423,7 @@ impl World {
             group_lifetime: None,
             path_writes: None,
             bulk_log: Default::default(),
+            chunk_resends: Default::default(),
             light_log: None,
             moving_piston_fallback: Vec::new(),
             moving_pistons: Vec::new(),
@@ -893,6 +920,7 @@ impl World {
     pub fn unload_chunk(&mut self, key: (i32, i32)) -> Option<Arc<Chunk>> {
         self.capability_generations.unload_chunk(key);
         let chunk = self.chunks.remove(&key)?;
+        self.chunk_resends.remove(&key);
         // A surviving quad may join across any side or corner of the dropped column.
         for &cell in chunk.connection_groups.keys() {
             let (x, y, z) = chunk.dynamic_cell_coords(cell);
@@ -1104,6 +1132,22 @@ impl World {
         chunk.saved = Some(Arc::new(extras));
         self.modified.insert(chunk_key);
     }
+}
+
+/// Completion boundary for an explicit chunk resend (`ChunkMap.waitForLightBeforeSending` /
+/// `ThreadedLevelLightEngine.waitForPendingTasks`): tracks only the light work that preceded
+/// the resend request, so later light checks do not keep the resend queued indefinitely.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChunkResend {
+    /// Preceding light work for this column is complete; ready to send on the next broadcast.
+    Ready,
+    /// Waiting for the prefix of `World::light_edits` already queued for the next light pass.
+    WaitingEdits { through: usize },
+    /// Waiting for the whole-column light job for this column that covers the request: the
+    /// running job when nothing was queued after it, else the first job submitted after the
+    /// request (`from_seq` and later). That job's light is published when it returns, even
+    /// if a newer request has since queued another job; later requests never extend the wait.
+    WaitingLight { from_seq: u64 },
 }
 
 /// The game rules and difficulty a player's health reads (`Player.isInvulnerableTo`,

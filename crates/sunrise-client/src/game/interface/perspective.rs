@@ -202,7 +202,7 @@ fn load_player_type(models: &sunrise_client::mobs::EntityModelDocument) -> Optio
             eye_height: 1.62,
             category: "misc".into(),
             max_health: 20.0,
-            speed: 0.1,
+            speed: f64::from(0.1_f32), // Player.createAttributes' MOVEMENT_SPEED
             flying_speed: 0.02,
             attack_damage: 1.0,
             attack_knockback: 0.0,
@@ -265,6 +265,13 @@ fn shadow_pass_takes_own_model(
     shadow_draws_player && !(shader_pack && spectator)
 }
 
+struct CameraAlignment {
+    entity: CameraEntity,
+    descending: bool,
+    entity_kind: sunrise_world::collision_context::EntityContextKind,
+    interpolating_minecart: bool,
+}
+
 fn wrap(d: f32) -> f32 {
     let d = d % 360.0;
     if d >= 180.0 {
@@ -303,21 +310,12 @@ impl Game<'_> {
         self.apply_camera_type(camera_type);
         changed
     }
-    /// `Camera.update` (`alignWithEntity` and `getMaxZoom`): the
-    /// interpolated eye, or a point up to the camera distance behind (or in
-    /// front of) it, pulled in where visual shapes are in the way. Returns the
-    /// position, yaw and pitch to render from.
-    pub(super) fn camera_view(&mut self, partial: f32) -> Option<(glam::DVec3, f32, f32)> {
-        if self.studio.flying() {
-            return Some((
-                self.studio.freecam.position,
-                self.studio.freecam.yaw,
-                self.studio.freecam.pitch,
-            ));
-        }
+    /// Resolve the camera entity snapshot and collision context inputs for `Camera.alignWithEntity`.
+    fn camera_alignment_source(&mut self, partial: f32) -> Option<CameraAlignment> {
         let subject = self.camera_subject()?;
         let mut entity = subject.camera;
-        if let Some(position) = self.remote_minecart_camera_position(&subject, partial) {
+        let minecart_position = self.remote_minecart_camera_position(&subject, partial);
+        if let Some(position) = minecart_position {
             // Already evaluated at partial: do not linearly interpolate
             // between tick endpoints across a corner a second time.
             entity.position = position;
@@ -325,16 +323,28 @@ impl Game<'_> {
         }
         let descending =
             subject.is_local_player && self.player.as_ref().is_some_and(|p| p.shift_key_down);
-        let entity_kind = subject.collision_kind;
+        Some(CameraAlignment {
+            entity,
+            descending,
+            entity_kind: subject.collision_kind,
+            interpolating_minecart: minecart_position.is_some(),
+        })
+    }
+
+    fn align_view_with_angles(
+        &self,
+        source: &CameraAlignment,
+        partial: f32,
+        angles: (f32, f32, f32),
+    ) -> sunrise_client::camera::Camera {
         let mut view = self.view;
         let kind = self.camera_type;
-
         let context = CollisionContext::for_entity(
             CollisionEntity {
                 identity: EntityIdentity(0),
-                kind: entity_kind,
-                y: entity.position[1],
-                descending,
+                kind: source.entity_kind,
+                y: source.entity.position[1],
+                descending: source.descending,
                 main_hand: Some(CollisionItem::EMPTY),
             },
             false,
@@ -351,12 +361,18 @@ impl Game<'_> {
             },
             facts: self.res.facts(),
         };
-        view.align_with_entity_distance(
-            &entity,
+        view.align_with_entity_angles(
+            &source.entity,
             partial,
             kind,
+            angles,
             |mut distance| {
-                self.native_camera_distance(partial, kind.is_mirrored(), &entity, &mut distance);
+                self.native_camera_distance(
+                    partial,
+                    kind.is_mirrored(),
+                    &source.entity,
+                    &mut distance,
+                );
                 distance
             },
             |from, to| {
@@ -372,23 +388,110 @@ impl Game<'_> {
                 (!hit.miss).then_some([hit.hit.location.x, hit.hit.location.y, hit.hit.location.z])
             },
         );
-        self.view = view;
+        view
+    }
+
+    /// `Camera.update` (`alignWithEntity` and `getMaxZoom`): the
+    /// interpolated eye, or a point up to the camera distance behind (or in
+    /// front of) it, pulled in where visual shapes are in the way. Returns the
+    /// position, yaw and pitch to render from (without `compute_camera_angles`
+    /// or `camera_position` mod hooks).
+    pub(super) fn camera_view(&mut self, partial: f32) -> Option<(glam::DVec3, f32, f32)> {
+        if self.studio.flying() {
+            return Some((
+                self.studio.freecam.position,
+                self.studio.freecam.yaw,
+                self.studio.freecam.pitch,
+            ));
+        }
+        let source = self.camera_alignment_source(partial)?;
+        let view = self.align_view_with_angles(
+            &source,
+            partial,
+            (
+                source.entity.view_y_rot(partial),
+                source.entity.view_x_rot(partial),
+                0.0,
+            ),
+        );
+        self.view = sunrise_client::camera::Camera {
+            placed_position: view.position,
+            ..view
+        };
         Some((
             glam::DVec3::from_array(view.position),
             view.y_rot,
             view.x_rot,
         ))
     }
+
+    /// The authoritative frame camera. NeoForge posts `ComputeCameraAngles` only on ordinary
+    /// entity alignment, not in `Camera.alignWithEntity`'s interpolating minecart branch. The
+    /// final `camera_position` stage sees either placed entity view, or the studio's custom view.
+    /// Neither callback runs for the title panorama.
+    pub(super) fn frame_camera(&mut self, partial: f32) -> Option<(glam::DVec3, f32, f32, f32)> {
+        self.apply_requested_camera_type();
+        let run_hooks = !self.shows_panorama();
+        let (mut view, alignment) = if self.studio.flying() {
+            let mut view = self.view;
+            if let Some(source) = self.camera_alignment_source(partial) {
+                view.align_eye(&source.entity, partial);
+            }
+            let freecam = &self.studio.freecam;
+            // Studio stores roll with the opposite sign to NeoForge's camera angles.
+            view.set_rotation_with_roll(freecam.yaw, freecam.pitch, -freecam.roll);
+            view.position = freecam.position.to_array();
+            (view, None)
+        } else {
+            let source = self.camera_alignment_source(partial)?;
+            let (mut yaw, mut pitch, mut roll) = (
+                source.entity.view_y_rot(partial),
+                source.entity.view_x_rot(partial),
+                0.0,
+            );
+            if run_hooks && !source.interpolating_minecart {
+                self.native_compute_camera_angles(partial, &mut yaw, &mut pitch, &mut roll);
+                self.apply_requested_camera_type();
+            }
+            let angles = (yaw, pitch, roll);
+            let view = self.align_view_with_angles(&source, partial, angles);
+            (view, Some((source, angles)))
+        };
+        view.placed_position = view.position;
+        if run_hooks {
+            let mut position = mod_api::CameraPosition::placed_at(view.position);
+            self.native_camera_position(partial, &mut position);
+            if self.apply_requested_camera_type()
+                && let Some((source, angles)) = alignment
+            {
+                view = self.align_view_with_angles(&source, partial, angles);
+            }
+            view.placed_position = view.position;
+            for (coordinate, override_value) in view.position.iter_mut().zip(position.overrides()) {
+                if let Some(value) = override_value {
+                    *coordinate = value;
+                }
+            }
+        }
+        self.view = view;
+        Some((
+            glam::DVec3::from_array(view.position),
+            view.y_rot,
+            view.x_rot,
+            view.roll,
+        ))
+    }
+
     /// `Camera.rotation()` as the quads of particles take it: the frame's camera (a
     /// bed's, a front view's, a mod's), not the player's own yaw and pitch.
     pub(super) fn particle_rotation(&self) -> glam::Quat {
         if self.studio.flying() {
             return self.camera_orientation();
         }
-        let (yaw, pitch) = self
-            .posed_rotation
-            .unwrap_or((self.view.y_rot, self.view.x_rot));
-        super::camera_rotation(CameraType::FirstPerson, yaw, pitch)
+        let (yaw, pitch, roll) =
+            self.posed_rotation
+                .unwrap_or((self.view.y_rot, self.view.x_rot, self.view.roll));
+        super::camera_rotation_rolled(CameraType::FirstPerson, yaw, pitch, roll)
     }
     /// The player as `Camera.alignWithEntity` sees it.
     pub(super) fn player_camera_entity(&mut self) -> Option<CameraEntity> {
@@ -671,11 +774,22 @@ impl Game<'_> {
     /// agent's `turn`.
     /// The model's old pitch is the player's `xRotO`, which the turn moves
     /// with `xRot` (`turn_rotation`).
-    pub(super) fn turn_player(&mut self, xo: f64, yo: f64) {
+    pub(super) fn turn_player(&mut self, mut xo: f64, mut yo: f64) {
         if self.studio.flying() {
             self.studio
                 .freecam
                 .turn((xo * 0.15) as f32, (yo * 0.15) as f32);
+            return;
+        }
+        if self.player.is_some() && mod_api::__private::listened(mod_api::HookId::PlayerTurn) {
+            let (orig_x, orig_y) = (xo, yo);
+            self.native_player_turn(self.own_entity_id(), self.own_uuid(), &mut xo, &mut yo);
+            xo = finite_turn_delta("x", orig_x, xo);
+            yo = finite_turn_delta("y", orig_y, yo);
+        }
+        // `Entity.turn` adds the delta to the yaw and to `yRotO`: refuse a turn whose result
+        // either sum cannot represent, as a whole, so the two never disagree.
+        if !turn_yaw_representable(self.yaw, self.rope_rot_old.0, xo) {
             return;
         }
         let pitch_o = self.player_model.as_ref().map(|m| m.previous_head_pitch);
@@ -1647,6 +1761,13 @@ pub(super) fn emit_preview(
     batch.depth_glint_since(start, glint, clip);
 }
 
+/// Whether `Entity.turn`'s yaw delta (`xo`, 0.15 degrees a unit) leaves both the yaw and `yRotO`
+/// finite: arithmetic stays plain for any turn that does, with no angular cap.
+fn turn_yaw_representable(yaw: f32, old_yaw: f32, xo: f64) -> bool {
+    let delta = (xo as f32) * 0.15;
+    (yaw + delta).is_finite() && (old_yaw + delta).is_finite()
+}
+
 /// `Entity.turn` adds the turn to `xRotO` as well as to `xRot`, so the local
 /// player's `getXRot(partialTick)` follows the mouse every frame instead of
 /// easing in over a tick (#3844), while a change the tick made itself (the
@@ -1722,9 +1843,30 @@ fn player_walk_distance(from: Vec3, to: Vec3) -> f32 {
     (dx * dx + dz * dz).sqrt() as f32
 }
 
+/// Keeps a listener-edited `Entity.turn` axis delta when vanilla's `(delta as f32) * 0.15`
+/// cast produces a finite turn; logs and reverts that axis otherwise.
+fn finite_turn_delta(axis: &'static str, original: f64, proposed: f64) -> f64 {
+    if ((proposed as f32) * 0.15).is_finite() {
+        proposed
+    } else {
+        log::warn!("player_turn: refused non-finite {axis} delta ({proposed}); keeping {original}");
+        original
+    }
+}
+
 #[cfg(test)]
 mod preview_tests {
     use super::*;
+
+    #[test]
+    fn finite_turn_delta_keeps_finite_values_and_reverts_non_finite_ones() {
+        assert_eq!(finite_turn_delta("x", 10.0, 2.5), 2.5);
+        assert_eq!(finite_turn_delta("y", -4.0, 0.0), 0.0);
+        assert_eq!(finite_turn_delta("x", 10.0, -3600.0), -3600.0);
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1e300, -1e300] {
+            assert_eq!(finite_turn_delta("x", 10.0, bad), 10.0, "{bad}");
+        }
+    }
     #[test]
     fn a_spectators_own_model_stays_out_of_a_shader_packs_shadow_pass() {
         // First person, a shader pack whose shadow pass draws the player: a spectator's head
@@ -1821,6 +1963,20 @@ mod preview_tests {
         // xRotO is clamped as xRot is.
         let old = rope_old_after_turn((0.0, 85.0), 0.0, 85.0, 0.0, 100.0);
         assert_eq!(old.1, 90.0);
+    }
+    /// Individually finite turns can overflow the old yaw while the current yaw still takes
+    /// them: such a turn is refused whole, and every turn that fits is plain arithmetic.
+    #[test]
+    fn a_turn_that_overflows_the_old_yaw_is_refused_whole() {
+        let big = f64::from(f32::MAX);
+        assert!(turn_yaw_representable(0.0, 0.0, big));
+        // The current yaw takes a second turn of the same size; the old yaw, already moved by
+        // one, would overflow.
+        let yaw = f32::MAX * 0.5;
+        let old = f32::MAX * 0.9;
+        assert!(!turn_yaw_representable(yaw, old, big));
+        assert!(turn_yaw_representable(yaw, old, 100.0));
+        assert!(turn_yaw_representable(yaw, old, -big));
     }
     #[test]
     fn preview_keeps_crossing_faces_depth_and_clips_without_dropping_faces() {
@@ -2028,7 +2184,13 @@ mod preview_tests {
             return;
         };
         let m = Mob::new(1, kind.clone(), Vec3::ZERO, 0.0);
-        let armour = [(&*kind.model, [0.5, 0.5, 0.75, 0.75], u32::MAX, 0, false)];
+        let armour = [(
+            sunrise_client::mobs::render::WornModel::Vanilla(&kind.model),
+            [0.5, 0.5, 0.75, 0.75],
+            u32::MAX,
+            0,
+            false,
+        )];
         let atlas = |_: &str| Some([0.0, 0.0, 0.25, 0.25]);
         let data = sunrise_client::mobs::MobData {
             states: Vec::new(),

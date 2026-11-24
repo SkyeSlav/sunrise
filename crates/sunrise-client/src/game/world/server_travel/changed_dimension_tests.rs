@@ -96,7 +96,7 @@ fn with_server(role: ExecutionRole, test: impl FnOnce(&mut Game<'_>)) {
             seed: 0,
             max_players: 2,
             integrated: role == ExecutionRole::IntegratedServer,
-            levels: game.level_shapes,
+            levels: game.level_shapes.clone(),
             level_seeds: game.levels.runtime.seeds(),
         };
         game.lan_host(
@@ -469,6 +469,82 @@ fn a_failed_cross_level_trip_closes_the_retired_client_window() {
             }
         });
     });
+}
+
+#[test]
+#[ignore = "daily"]
+fn cross_dimension_command_trees_see_the_player_before_portal_and_command_moves() {
+    type Reads = Arc<Mutex<Vec<(String, [f64; 3])>>>;
+    struct Observe(Reads);
+    #[mod_api::__subscriptions]
+    impl Hooks for Observe {
+        fn player_commands_sent(
+            &self,
+            host: &dyn mod_api::Host,
+            event: &mut mod_api::PlayerCommandsSentEvent<'_>,
+        ) -> Option<mod_api::CommandTreeSelection> {
+            assert_eq!(event.player.uuid(), UUID);
+            self.0.lock().unwrap().push((
+                event.player.dimension(host).unwrap().to_string(),
+                event.player.entity().position(host).unwrap(),
+            ));
+            None
+        }
+    }
+
+    let reads = Reads::default();
+    mod_platform::testing::with_mods(
+        vec![ModEntry::new(
+            "command_tree_travel",
+            Box::new(Observe(reads.clone())),
+        )]
+        .into(),
+        || {
+            let role = ExecutionRole::DedicatedServer;
+            for via_portal in [true, false] {
+                with_server(role, |game| {
+                    if via_portal {
+                        let portal = game
+                            .pack
+                            .assets
+                            .registry
+                            .default_state("minecraft:nether_portal")
+                            .unwrap();
+                        game.world.set(3, 64, 5, portal).unwrap();
+                        game.world.set(3, 65, 5, portal).unwrap();
+                        for _ in 0..100 {
+                            if game.on_server_trip(CONN) {
+                                break;
+                            }
+                            game.tick_server_travel();
+                        }
+                    } else {
+                        run_as_player(
+                            game,
+                            role,
+                            "execute in minecraft:the_nether run tp @s 0 64 0",
+                        );
+                    }
+                    assert!(game.on_server_trip(CONN));
+                    assert_eq!(
+                        game.lan
+                            .as_ref()
+                            .unwrap()
+                            .hub
+                            .guest(CONN)
+                            .unwrap()
+                            .dimension,
+                        Dim::Nether.id()
+                    );
+                    assert_eq!(
+                        std::mem::take(&mut *reads.lock().unwrap()),
+                        [("minecraft:overworld".to_owned(), [3.5, 64.0, 5.5])],
+                        "via portal: {via_portal}"
+                    );
+                });
+            }
+        },
+    );
 }
 
 #[test]
