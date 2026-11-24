@@ -11,6 +11,7 @@ use super::{
     feature_graph::{FeatureDefinition, PlacedFeatureDefinition},
     generator::{GeneratorData, GeneratorError},
     placement::PlacementContext,
+    state_provider::StateProviderCatalog,
     tags::TagDefinitions,
 };
 use serde_json::Value;
