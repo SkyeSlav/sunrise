@@ -1033,3 +1033,7 @@ fn decode_prepared_cat_sound(value: &Value) -> Result<CatSoundVariant, String> {
 #[cfg(test)]
 #[path = "wolf_variant_tests.rs"]
 mod wolf_variant_tests;
+
+#[cfg(test)]
+#[path = "cat_variant_tests.rs"]
+mod cat_variant_tests;
