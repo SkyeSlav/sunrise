@@ -18,7 +18,6 @@ pub(in crate::game) use fire::{
 };
 use mod_api::{BlockEntityDataSource, BlockEntityRef, ClockAdjustment};
 
-use super::native_data_maps::DataMapType;
 use super::{
     Game, GameLevel, LevelDimension, Screen,
     execution_role::{self, ExecutionRole},
@@ -42,7 +41,7 @@ use mod_api::{
     ClientInputOptions, ClientMiningPrediction, ClientModifiers, ClientReloadListeners,
     ColorResolvers, EnchantmentEffects, EnchantmentInfo, EntityLayers, EntityRef, EntityRenderers,
     ExperienceOrbRef, GuiLayerRegistrar, HandDrawContext, HandRender, InsideEffects,
-    InteractionAttempt, InteractionKey, ItemEntityRef, LifecycleContext, LivingRef, LoadConditions,
+    InteractionAttempt, InteractionKey, ItemEntityRef, LifecycleContext, LivingRef,
     NoteBlockChange, ParticleProviders, PathComputationType, Placement, PlayerRef,
     PoiTypeExtensions, RecipeBookCategory, ScreenId, ScreenOpening, ScreenTarget, ScreenWidgets,
     ScreenshotImage, ServerReloadListeners, ServerTickPhase, SpecialModelRenderers, ToolUse,
@@ -491,7 +490,6 @@ mod register_item_models;
 mod register_item_tint_sources;
 mod register_json_animation_types;
 mod register_layer_definitions;
-mod register_load_conditions;
 mod register_mob_parts;
 mod register_model_loaders;
 mod register_particle_groups;
