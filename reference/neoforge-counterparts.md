@@ -6,7 +6,7 @@ The book build renders it directly from those declarations; there is no generate
 A key names the event class (`PlayerEvent.Clone`) or runtime callback (`IPayloadHandler.handle`);
 notes about cancelling or the event bus belong in the hook's `///` doc, not in the key.
 
-767 hooks: 461 name a counterpart, 302 say they have none.
+769 hooks: 461 name a counterpart, 304 say they have none.
 This is a declaration reference, not an independent verification of every mapping. Registration events and the
 callbacks they register are different moments: packet receipt names `IPayloadHandler.handle`, and per-draw item
 decoration names `IItemDecorator.render`, not their registration events. A `none` explains why no event or method
@@ -535,6 +535,7 @@ A hook with no NeoForge counterpart is judged on its merits like any other. The 
 | `can_place_item` | server | vanilla Container.canPlaceItem; the item capability wraps this decision |
 | `can_place_liquid` | both | vanilla LiquidBlockContainer.canPlaceLiquid |
 | `can_survive` | both | vanilla BlockBehaviour.canSurvive; NeoForge adds no event or extension for it |
+| `can_take_item_through_face` | server | vanilla WorldlyContainer.canTakeItemThroughFace; the sided item capability wraps this decision |
 | `cauldron_level_changed` | server | NeoForge has no such event; Bukkit's CauldronLevelChangeEvent |
 | `chat_recipient` | server | NeoForge has no per-receiver server chat event |
 | `chat_suggestion_applied` | client | vanilla command suggestions; NeoForge adds no event |
@@ -573,7 +574,7 @@ A hook with no NeoForge counterpart is judged on its merits like any other. The 
 | `entity_enter_block` | server | NeoForge has no such event |
 | `entity_enter_love_mode` | server | NeoForge has no such event |
 | `entity_inside` | server | vanilla Block.entityInside; NeoForge adds no event or extension for it |
-| `entity_move` | server | fork addition; see travel-and-move.md, #2308 |
+| `entity_move` | server | fork addition, #2308 |
 | `entity_outline` | client | NeoForge 26.3 has no glowing or team colour override |
 | `entity_portal` | server | NeoForge has no such event |
 | `entity_pose_change` | server | NeoForge has no such event |
@@ -632,7 +633,7 @@ A hook with no NeoForge counterpart is judged on its merits like any other. The 
 | `living_flying_speed` | both | vanilla LivingEntity.getFlyingSpeed; NeoForge adds no event or extension for it |
 | `living_jump_power` | both | vanilla LivingEntity.getJumpPower; not LivingEvent.LivingJumpEvent |
 | `living_speed` | both | vanilla LivingEntity.getSpeed; NeoForge adds no event or extension for it |
-| `living_travel` | server | fork addition; see travel-and-move.md, #2308 |
+| `living_travel` | server | fork addition, #2308 |
 | `menu_background` | client | NeoForge has no menu blur event |
 | `menu_button` | server | NeoForge has no such event; vanilla AbstractContainerMenu.clickMenuButton |
 | `menu_button_valid` | server | vanilla menu button ids are handled by their menu implementation |
@@ -747,6 +748,7 @@ A hook with no NeoForge counterpart is judged on its merits like any other. The 
 | `should_apply_effect_tick_this_tick` | server | vanilla MobEffect.shouldApplyEffectTickThisTick |
 | `should_redstone_wire_connect_to` | server | vanilla BlockBehaviour.shouldRedstoneWireConnectTo; NeoForge adds no event or extension for it |
 | `sign_changed` | server | NeoForge has no sign-editing event |
+| `sleep_skip_night` | server | SleepFinishedTimeEvent cancels only the clock move |
 | `smoke_source` | both | vanilla CampfireBlock.isSmokeSource; NeoForge adds no event or extension for it |
 | `spawn_change` | server | NeoForge has no such event |
 | `sponge_absorb` | server | NeoForge has no such event |
