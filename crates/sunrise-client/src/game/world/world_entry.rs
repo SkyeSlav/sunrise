@@ -656,7 +656,7 @@ impl Game<'_> {
             self.res.item_defaults(),
             (&sources, &recipes),
         );
-        self.prepare_professions(root, &items, &mut stations)?;
+        self.prepare_professions(root, &items, &overlay, &mut stations)?;
         // Use the same candidate's IDs and bound tags for data map targets.
         let datapack_registries =
             datapack_candidate?.map(mod_api::DatapackRegistrySet::from_candidate);
