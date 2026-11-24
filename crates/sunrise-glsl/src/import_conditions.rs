@@ -1,6 +1,7 @@
 //! Each stage shares macro definitions with its includes. For branch arithmetic, hand naga's
 //! GLSL preprocessor the condition and its referenced definitions; unrelated source and
-//! earlier conditional arms never have to be replayed.
+//! earlier conditional arms never have to be replayed. [`Conditionals`] keeps the nesting of
+//! `#if` ... `#endif` around them.
 use super::{MAX_SCANNED, is_ident, replace_ident};
 use pp_rs::{pp::Preprocessor, token::TokenValue};
 use std::collections::{HashMap, HashSet};
@@ -80,7 +81,7 @@ impl Conditions {
     }
 
     fn number(&mut self, expression: &str, line: u32, line_directive: bool) -> Result<u32, String> {
-        let expression = sunrise_shaders::resolve_defined(expression, |name| {
+        let expression = resolve_defined(expression, |name| {
             name == "__LINE__" || self.macros.contains_key(name)
         })?;
         let mut source = String::new();
@@ -127,4 +128,124 @@ impl Conditions {
         }
         Ok(())
     }
+}
+
+/// One level of `#if` ... `#endif`.
+struct Branch {
+    /// This branch's lines are read.
+    on: bool,
+    /// A branch of this `#if` was already taken (the rest are skipped).
+    taken: bool,
+    /// The enclosing level is read.
+    outer: bool,
+    seen_else: bool,
+}
+
+/// The state of nested conditional directives.
+#[derive(Default)]
+pub(super) struct Conditionals(Vec<Branch>);
+
+impl Conditionals {
+    /// Lines here are read.
+    pub(super) fn active(&self) -> bool {
+        self.0.last().is_none_or(|b| b.on)
+    }
+
+    /// An `#if` is still open.
+    pub(super) fn open(&self) -> bool {
+        !self.0.is_empty()
+    }
+
+    /// Applies `#word` when it is a conditional directive (`Ok(false)` when it is not), with the
+    /// caller's evaluator for its condition. Skipped arms never evaluate their conditions; one
+    /// that can't be evaluated reads as false and returns why.
+    pub(super) fn apply_with(
+        &mut self,
+        word: &str,
+        mut evaluate: impl FnMut(&str) -> Result<bool, String>,
+    ) -> Result<bool, String> {
+        let on = self.active();
+        match word {
+            "if" | "ifdef" | "ifndef" => {
+                let value = if on { evaluate(word) } else { Ok(false) };
+                let v = *value.as_ref().unwrap_or(&false);
+                self.0.push(Branch {
+                    on: v,
+                    taken: v,
+                    outer: on,
+                    seen_else: false,
+                });
+                value.map(|_| true)
+            }
+            "elif" | "else" => {
+                let b = self
+                    .0
+                    .last_mut()
+                    .ok_or_else(|| format!("`#{word}` without `#if`"))?;
+                if b.seen_else {
+                    return Err(format!("`#{word}` after `#else`"));
+                }
+                b.seen_else = word == "else";
+                let take = b.outer && !b.taken;
+                let value = match word {
+                    "else" => Ok(take),
+                    _ if take => evaluate("if"),
+                    _ => Ok(false),
+                };
+                b.on = *value.as_ref().unwrap_or(&false);
+                b.taken |= b.on;
+                value.map(|_| true)
+            }
+            "endif" => self
+                .0
+                .pop()
+                .map(|_| true)
+                .ok_or_else(|| "`#endif` without `#if`".into()),
+            _ => Ok(false),
+        }
+    }
+}
+
+/// `defined X` and `defined(X)` become `1` or `0` before anything is expanded.
+fn resolve_defined(expr: &str, is_defined: impl Fn(&str) -> bool) -> Result<String, String> {
+    let mut out = String::with_capacity(expr.len());
+    let mut rest = expr;
+    while let Some(at) = find_word(rest, "defined") {
+        out.push_str(&rest[..at]);
+        let after = rest[at + "defined".len()..].trim_start();
+        let (inner, tail) = match after.strip_prefix('(') {
+            Some(open) => {
+                let close = open.find(')').ok_or("`defined(` without `)`")?;
+                (open[..close].trim(), &open[close + 1..])
+            }
+            None => {
+                let len = after.find(|c: char| !is_ident(c)).unwrap_or(after.len());
+                (&after[..len], &after[len..])
+            }
+        };
+        if inner.is_empty()
+            || !inner.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+            || !inner.chars().all(is_ident)
+        {
+            return Err("`defined` needs a macro name".into());
+        }
+        out.push_str(if is_defined(inner) { " 1 " } else { " 0 " });
+        rest = tail;
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+/// Where `word` starts in `text` as a whole identifier.
+fn find_word(text: &str, word: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(i) = text[from..].find(word).map(|i| i + from) {
+        let before = text[..i].chars().next_back().is_some_and(is_ident);
+        let after = text[i + word.len()..].chars().next().is_some_and(is_ident);
+        if !before && !after {
+            return Some(i);
+        }
+        from = i + word.len();
+    }
+    None
 }

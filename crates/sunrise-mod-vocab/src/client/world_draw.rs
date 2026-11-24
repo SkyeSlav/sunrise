@@ -191,7 +191,8 @@ pub enum RenderLevelStage {
     /// portions. Provides no active render pass.
     AfterSky,
     /// After solid and cutout chunk geometry, before opaque entities and block entities
-    /// (`RenderLevelStageEvent.AfterOpaqueBlocks`).
+    /// (`RenderLevelStageEvent.AfterOpaqueBlocks`). When a classic shader pack owns terrain with a
+    /// float-blendable `colortex0`, the pack's opaque terrain pass supplies this boundary.
     AfterOpaqueBlocks,
     /// After opaque entities, block entities and particles
     /// (`RenderLevelStageEvent.AfterOpaqueFeatures`). With a classic pack that owns
@@ -203,13 +204,16 @@ pub enum RenderLevelStage {
     /// translucent feature drawing finishes.
     AfterTranslucentFeatures,
     /// Classic transparency only: after translucent chunk geometry such as water and stained
-    /// glass, before translucent particles (`RenderLevelStageEvent.AfterTranslucentBlocks`).
+    /// glass, before translucent particles (`RenderLevelStageEvent.AfterTranslucentBlocks`). When
+    /// a classic shader pack owns terrain/water with a float-blendable `colortex0`, the pack's
+    /// translucent terrain pass supplies this boundary.
     AfterTranslucentBlocks,
     /// Classic transparency only: after translucent particles, before weather
     /// (`RenderLevelStageEvent.AfterTranslucentParticles`).
     AfterTranslucentParticles,
     /// Classic transparency only: after rain and snow, before the world border
-    /// (`RenderLevelStageEvent.AfterWeather`).
+    /// (`RenderLevelStageEvent.AfterWeather`). When a classic shader pack owns weather with a
+    /// float-blendable `colortex0`, the pack's weather pass supplies this boundary.
     AfterWeather,
     /// Improved transparency (OIT) only: fired once per [`OitStage`] after translucent chunk
     /// geometry, translucent features, the world border and weather
@@ -223,7 +227,8 @@ pub enum RenderLevelStage {
 }
 impl RenderLevelStage {
     /// The engine's stage order when classic transparency is active (`!view.improved_transparency`).
-    /// A classic shader pack can skip engine stages or provide its own sky and feature boundaries.
+    /// A classic shader pack can skip engine stages or provide its own sky, block, feature, and
+    /// weather boundaries on a float-blendable `colortex0`.
     pub const CLASSIC_ORDER: &[Self] = &[
         Self::AfterSky,
         Self::AfterOpaqueBlocks,
@@ -248,7 +253,8 @@ impl RenderLevelStage {
     ];
 
     /// The engine's stage order for the active transparency mode. Classic shader packs can
-    /// skip stages or complete their sky and feature passes after the engine world pass.
+    /// skip stages or complete their sky, block, feature, and weather passes after the engine
+    /// world pass.
     pub const fn frame_order(improved_transparency: bool) -> &'static [Self] {
         if improved_transparency {
             Self::OIT_ORDER

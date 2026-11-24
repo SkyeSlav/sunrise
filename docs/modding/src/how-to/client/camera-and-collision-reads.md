@@ -9,6 +9,12 @@ It advances once per unpaused client tick, including on the title screen, and wr
 Java's `int`. Pausing holds it; a server tick freeze does not. This is not world game time
 or the frame's animation clock.
 
+`LevelRef::tick_rate(host)` reads the displayed client level's configured ticks per second
+(`ClientLevel.tickRateManager().tickrate()`), not measured TPS or the frame interpolation rate.
+Freezing the level does not change the value. Both `render_frame_pre` and `render_frame_post` can
+read it. On the server, for a preview level or stale handle, and without a displayed level, it
+returns `Ok(None)`; a host that cannot read the level returns a typed refusal.
+
 Two reads give the facts the HUD picks its contextual bar from (the jump bar, the locator bar or the
 experience bar): `ClientHost::jumpable_vehicle()` is the vehicle the local player controls that can jump now
 (`LocalPlayer.jumpableVehicle`: the player is its first passenger, on a saddled horse, donkey, mule, nautilus or

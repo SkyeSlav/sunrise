@@ -82,3 +82,74 @@ fn the_staged_record_is_the_builds_libraries_as_the_loader_reads_them() {
     assert_eq!(json["libraries"][0]["mod"], "greeter");
     assert_eq!(json["libraries"][0]["identity"], "b greeter 0.1.0 1.99.1");
 }
+
+/// The Motion Blur 0.1.5 case: the pin moved, the SDK's `sunrise-core` changed its dependencies,
+/// and the committed lock still named the old ones.
+#[test]
+#[ignore = "daily"]
+fn a_lock_the_pinned_sdk_moved_is_refused_until_refreshed() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let write = |path: &str, text: &str| {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    };
+    let package = |path: &str, name: &str, dependencies: &str| {
+        write(
+            &format!("{path}Cargo.toml"),
+            &format!(
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\n{dependencies}"
+            ),
+        );
+        write(&format!("{path}src/lib.rs"), "");
+    };
+    let sdk = ".sunrise/sdk/api/crates/";
+    package(
+        "",
+        "mod-fixture",
+        "sunrise-mod-api = { path = \".sunrise/sdk/api/crates/sunrise-mod-api\" }\n",
+    );
+    package(
+        &format!("{sdk}sunrise-mod-api/"),
+        "sunrise-mod-api",
+        "sunrise-core = { path = \"../sunrise-core\" }\n",
+    );
+    // Local stand-ins for the registry packages, so Cargo needs no network.
+    package(&format!("{sdk}crc-fast/"), "crc-fast", "");
+    package(&format!("{sdk}stacker/"), "stacker", "");
+    let core = |dependency: &str| {
+        package(
+            &format!("{sdk}sunrise-core/"),
+            "sunrise-core",
+            &format!("{dependency} = {{ path = \"../{dependency}\" }}\n"),
+        )
+    };
+    core("crc-fast");
+    let found = found().expect("a rustc on PATH");
+    let rust = Unpacked {
+        dir: found.sysroot,
+        target: found.host,
+        cargo_home: root.join("cargo-home"),
+        cargo_config: Vec::new(),
+        c_bin: None,
+    };
+    refresh_lock(&rust, root).unwrap();
+    check_lock(&rust, root, "old").unwrap();
+
+    // The new pin's SDK.
+    core("stacker");
+    let stale = fs::read_to_string(root.join("Cargo.lock")).unwrap();
+    let error = check_lock(&rust, root, "new").unwrap_err();
+    assert!(error.contains("pinned SDK (Sunrise new)"), "{error}");
+    assert!(error.contains("cargo sunrise-mod pin new"), "{error}");
+    assert_eq!(fs::read_to_string(root.join("Cargo.lock")).unwrap(), stale);
+
+    refresh_lock(&rust, root).unwrap();
+    check_lock(&rust, root, "new").unwrap();
+    let lock = fs::read_to_string(root.join("Cargo.lock")).unwrap();
+    assert!(
+        lock.contains("\"stacker\"") && !lock.contains("crc-fast"),
+        "{lock}"
+    );
+}

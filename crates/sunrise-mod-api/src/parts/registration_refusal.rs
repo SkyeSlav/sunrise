@@ -144,6 +144,7 @@ fn discard_rejected_parts(owner: &'static str, parts: Parts) {
             .flatten(),
         parts.place_providers.into_values(),
         parts.tooltip_appenders,
+        parts.config_screens,
         parts.crash_sections,
         parts.command_arguments,
         parts.recipe_serializers.into_values(),

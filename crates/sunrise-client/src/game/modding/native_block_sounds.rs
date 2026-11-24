@@ -1,18 +1,21 @@
 //! The `sound_type` Part method (`IBlockExtension.getSoundType`). The client library asks through
-//! `native_client_hooks`; only a state whose block has a subscribing part is converted, and only
-//! then is its own sound type kept to fall back on.
-use super::api_values::{TryIntoApi, block_state};
+//! `native_client_hooks` with the side's read-only level; only a state whose block has a
+//! subscribing part is converted, and only then is its own sound type kept to fall back on.
+use super::api_values::block_state;
+use super::native_surface::FrictionView;
 use super::{Game, GameLevel};
 use mod_api::{BlockSoundCause, BlockSoundType};
 use std::sync::Arc;
+use sunrise_client::{items::Items, motion::FrictionLevel, world::World};
 use sunrise_core::{identifier::Identifier, position::BlockPos};
 use sunrise_world::{
-    level::data::Sounds, native_load_context::LoopContext, registry::BlockStateId,
+    level::data::Sounds,
+    registry::{BlockRegistry, BlockStateId},
 };
 
 /// The game's side of `sunrise_client::block_sounds::native_sound_type`.
 pub(crate) fn sound_type(
-    context: &LoopContext,
+    level: FrictionLevel<'_>,
     pos: BlockPos,
     state: BlockStateId,
     entity: Option<(u32, &str)>,
@@ -22,18 +25,8 @@ pub(crate) fn sound_type(
     if !block_state::block_listens(mod_api::HookId::SoundType, state) {
         return;
     }
-    let Ok(api_state) = state.try_into_api() else {
-        return;
-    };
     let own = sound.clone();
-    mod_api::dispatch_sound_type(
-        &sunrise_client_render::api_context::LoopReader(context).context(),
-        pos,
-        api_state,
-        entity,
-        cause,
-        sound,
-    );
+    FrictionView(level).native_sound_type(pos, state, entity, cause, sound);
     if !playable(sound) {
         *sound = own;
     }
@@ -68,9 +61,17 @@ impl Game<'_> {
         entity: Option<(u32, &str)>,
         cause: BlockSoundCause,
     ) -> BlockSoundType {
+        let facts = self.res.facts();
+        let level = FrictionLevel {
+            world: &self.world,
+            registry: self.pack.assets.registry,
+            context: &self.loop_context,
+            side: self,
+            coefficient: &|id| facts.states.get(id.0 as usize).map(|facts| facts.friction),
+        };
         sunrise_client::block_sounds::sound_type(
-            &self.loop_context,
-            self.res.facts(),
+            level,
+            facts,
             BlockPos::new(x, y, z),
             state,
             entity,
@@ -123,8 +124,16 @@ impl GameLevel<'_> {
             .map(|id| (id as u32, "minecraft:player"));
         let own = sunrise_client::block_sounds::own(&self.facts.get(state).sounds);
         let mut answer = own.clone();
+        let facts = self.facts;
+        let level = FrictionLevel {
+            world: &*self.world,
+            registry: self.registry,
+            context: self.loop_context,
+            side: self,
+            coefficient: &|id| facts.states.get(id.0 as usize).map(|facts| facts.friction),
+        };
         sunrise_client::block_sounds::native_sound_type(
-            self.loop_context,
+            level,
             pos,
             state,
             entity,
@@ -141,6 +150,49 @@ impl GameLevel<'_> {
             break_: answer.break_sound,
             fall: answer.fall,
         })
+    }
+}
+
+/// A block-behaviour level as the side's read-only level a placement's sound type reads: its own
+/// world, with the reads its `LevelHost` makes.
+impl sunrise_client::motion::SideLevel for GameLevel<'_> {
+    fn is_raining_at(&self, world: &World, pos: BlockPos) -> bool {
+        world.is_loaded_at(pos.x, pos.y, pos.z) && self.behaviours.is_raining_at(self, pos)
+    }
+
+    fn enabled_features(&self) -> &std::sync::Arc<[String]> {
+        self.enabled_features
+    }
+
+    fn tag_items(&self) -> Option<&Items> {
+        self.native_authoritative.then_some(self.items)
+    }
+
+    fn damage_types(&self) -> &sunrise_world::damage_source::Catalog {
+        self.location.tags.damage
+    }
+
+    fn block_entity(&self, world: &World, pos: BlockPos) -> Option<mod_api::BlockEntityRef> {
+        super::native_block_entity_refs::world_block_entity(
+            world,
+            self.api_level?,
+            [pos.x, pos.y, pos.z],
+        )
+    }
+
+    fn block_entity_data(
+        &self,
+        world: &World,
+        registry: &BlockRegistry,
+        entity: mod_api::BlockEntityRef,
+    ) -> Option<mod_api::Compound> {
+        use mod_api::__private::game::Fields;
+        if self.api_level != Some(entity.fields().level) {
+            return None;
+        }
+        super::native_block_entity_refs::world_block_entity_data(
+            world, registry, self.items, entity,
+        )
     }
 }
 
@@ -333,6 +385,31 @@ mod tests {
                 ),
                 "{events:?}"
             );
+            // A torch on stone sounds as the stone beneath it, which its part reads from the
+            // level; one with nothing under it keeps its own sound.
+            let torch = registry.default_state("minecraft:torch").unwrap();
+            game.world.set(6, 64, 5, stone).unwrap();
+            let torch_step = |game: &crate::game::Game<'_>, x| {
+                let sound = game.block_sound_type([x, 65, 5], torch, player, Step);
+                (sound.step.to_string(), sound.volume, sound.pitch)
+            };
+            assert_eq!(
+                torch_step(game, 6),
+                ("minecraft:block.stone.step".to_owned(), 1.0, 1.0)
+            );
+            let own = sunrise_client::block_sounds::own(&game.res.facts().get(torch).sounds);
+            assert_eq!(
+                torch_step(game, 7),
+                (own.step.to_string(), own.volume, own.pitch)
+            );
+            // The placement asks the block-behaviour level, which reads the same.
+            game.lan_acting_entity = Some(7);
+            let placed = game.with_level(|behaviours, level, _| {
+                let own = Arc::clone(&behaviours.data(torch).sounds);
+                let sounds = level.place_sound_type(BlockPos::new(6, 65, 5), torch, own);
+                sounds.place.to_string()
+            });
+            assert_eq!(placed, "minecraft:block.stone.place");
         });
     }
 }

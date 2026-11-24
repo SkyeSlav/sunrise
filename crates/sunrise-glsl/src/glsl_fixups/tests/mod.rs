@@ -183,18 +183,18 @@ fn a_parameter_matched_twice_in_one_identifier_stays_whole() {
 }
 
 /// `fsh` translated beside a vertex shader that passes its position on.
-fn translate(fsh: &str) -> Result<crate::core_shader::CoreProgram, String> {
+fn translate(fsh: &str) -> Result<crate::Translated, String> {
     let vsh = "#version 330\nin vec3 Position;\nout vec2 texCoord0;\n\
         void main() {\n    gl_Position = vec4(Position, 1.0);\n    texCoord0 = Position.xy;\n}\n";
-    let glue = crate::core_shader::Glue {
+    let glue = crate::Glue {
         inputs: &[("Position", "vec3")],
         prelude: "layout(location = 0) in vec3 hz_position;",
         setup: "Position = hz_position;",
         finish: "",
         vertex_id: "int(gl_VertexIndex)",
-        interface: sunrise_shaders::DEVICELESS_INTERFACE_LIMITS,
+        interface: crate::tests::LIMITS,
     };
-    crate::core_shader::translate_core(vsh, fsh, &[], &|_| None, &glue)
+    crate::tests::translate_core(vsh, fsh, &[], &|_| None, &glue)
 }
 
 /// #9386 end to end: naga refuses a helper taking the sampler it reads, as GLSL vanilla's GL

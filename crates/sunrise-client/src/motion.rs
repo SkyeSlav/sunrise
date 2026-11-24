@@ -414,6 +414,8 @@ pub struct PlayerMotion {
     pub piston: sunrise_world::piston_movement::PistonMovement,
     pub yaw: f32,
     pub head_yaw: f32,
+    /// The server player's `LivingEntity.yBodyRot`, carried with its body on guest turns.
+    pub body_yaw: f32,
     pub jumping: bool,
     pub no_jump_delay: i32,
     pub jump_trigger_time: i32,

@@ -538,6 +538,8 @@ impl Game<'_> {
             self.demo_intro = None;
         }
         self.screen = screen;
+        // Set again by the Mods screen's Config once its mod screen is open.
+        self.native_mod_screen_parent = false;
         if let Some(owner) = owner {
             self.native_mod_screen = Some(owner.to_owned());
         } else if screen != Screen::Mod {
@@ -3720,7 +3722,11 @@ impl Game<'_> {
                     category: k.category.clone(),
                 })
                 .collect();
-            row.native = Some(NativePage { mappings, settings });
+            row.native = Some(NativePage {
+                mappings,
+                settings,
+                own_screen: mod_api::__private::has_config_screen(&row.id),
+            });
             self.settings.mods.installed.push(row);
         }
     }

@@ -345,7 +345,7 @@ impl HudRenderer {
         &mut self,
         device: &wgpu::Device,
         shader: Option<(
-            &crate::core_shader::CoreProgram,
+            &sunrise_glsl::Translated,
             &[crate::polytone_post::ExpressionUniform],
         )>,
     ) {

@@ -251,15 +251,6 @@ fn load_player_type(models: &sunrise_client::mobs::EntityModelDocument) -> Optio
         })
     })
 }
-/// What sets the body's yaw of a player riding something (`Game::ridden_body`).
-#[derive(Clone, Copy)]
-enum RiddenBody {
-    /// The boat's yaw.
-    Boat(f32),
-    /// The living vehicle's body yaw.
-    Living(f32),
-}
-
 /// Whether a shadow pass that draws the player (`shadow_draws_player`: shadowPlayer, or a
 /// native pack's shadow) takes the player's own model in first person. A shader pack's shadow
 /// pass does, except for a spectator: in our probe packs' readings of Iris 1.11.7's shadow map
@@ -469,9 +460,32 @@ impl Game<'_> {
         };
         Some(entity)
     }
+    /// Build the avatar for a newly installed local body, before any frame can read it.
+    pub(super) fn ensure_player_model(&mut self) {
+        if self.player_model.is_none()
+            && let (Some(p), Some(kind)) = (&self.player, self.res.player_type().clone())
+        {
+            let mut model = Mob::new(0, kind, p.position, self.yaw);
+            // The first position packet sets the look, not LivingEntity.yBodyRot.
+            model.body_yaw = 0.0;
+            model.previous_body_yaw = 0.0;
+            model.head_pitch = self.pitch;
+            model.previous_head_pitch = self.pitch;
+            // The render state starts with the profile's paired default skin and model.
+            let skin = sunrise_client::tab_list::default_skin(self.own_uuid());
+            model.skin = Some(skin.into());
+            model.slim = skin.contains("/slim/");
+            self.player_model = Some(model);
+        }
+    }
+
     /// Keep the player's model in step with the player (`LivingEntity.tick`
     /// body turning, `WalkAnimationState`, the swing and the pose).
     pub(super) fn tick_player_model(&mut self) {
+        self.tick_player_model_with_rider_movement(None);
+    }
+
+    pub(super) fn tick_player_model_with_rider_movement(&mut self, rider_movement: Option<Vec3>) {
         let (scale, nameplate) = self.player.as_mut().map_or_else(
             || (1.0, NameplateDistances::default()),
             |p| {
@@ -483,22 +497,12 @@ impl Game<'_> {
                 (scale, nameplate)
             },
         );
-        let Some(p) = self.player.as_ref() else {
+        if self.player.is_none() {
             self.player_model = None;
             return;
-        };
-        if self.player_model.is_none() {
-            let Some(kind) = self.res.player_type().clone() else {
-                return;
-            };
-            let mut m = Mob::new(0, kind, p.position, self.yaw);
-            m.head_pitch = self.pitch;
-            // The render state starts with the profile's paired default skin and model.
-            let skin = sunrise_client::tab_list::default_skin(self.own_uuid());
-            m.skin = Some(skin.into());
-            m.slim = skin.contains("/slim/");
-            self.player_model = Some(m);
         }
+        self.ensure_player_model();
+        let p = self.player.as_ref().unwrap();
         let pose = p.pose;
         let crouching = pose == Pose::Crouching;
         let position = p.position;
@@ -543,7 +547,10 @@ impl Game<'_> {
         // another player's does (`villager::sleep_pose`).
         let bed = self.sleeping.map_or(0, |head| self.bed_facing(head));
         let spectator = self.own_player_is_spectator();
-        let ridden = self.ridden_body();
+        let boat_yaw = self
+            .riding
+            .and_then(|id| self.boats.iter().find(|b| b.id == id).map(|b| b.yaw));
+        let blocking = boat_yaw.is_none() && self.player_blocking_component().is_some();
         let Some(m) = self.player_model.as_mut() else {
             return;
         };
@@ -555,7 +562,13 @@ impl Game<'_> {
             player_model_positions(previous_position, position, m.extra.crouching, crouching);
         m.previous = from;
         m.position = at;
-        let (dx, dz) = (at.x - m.previous.x, at.z - m.previous.z);
+        // The rider's own tick turns its body before the vehicle positions it
+        // (Entity.rideTick). Seat displacement only updates the drawn position.
+        let turn_movement = if riding {
+            rider_movement.unwrap_or(Vec3::ZERO)
+        } else {
+            at.subtract(from)
+        };
         let walked = player_walk_distance(m.previous, at);
         m.previous_yaw = m.yaw;
         m.previous_body_yaw = m.body_yaw;
@@ -564,41 +577,18 @@ impl Game<'_> {
         m.yaw = yaw;
         m.head_yaw = yaw;
         m.head_pitch = pitch;
-        match ridden {
-            // AbstractBoat.positionRider (clampRotation): the passenger's body
-            // is set to the boat's yaw each tick.
-            Some(RiddenBody::Boat(boat)) => m.body_yaw += wrap(boat - m.body_yaw),
-            // A living vehicle's rider is drawn from its body
-            // (`LivingEntityRenderer.solveBodyRot`).
-            Some(RiddenBody::Living(body)) => {
-                m.body_yaw +=
-                    wrap(sunrise_client::mobs::riders::solve_body_rot(yaw, body) - m.body_yaw);
-            }
-            // A minecart's, a cushion's: the body turns as on foot.
-            None => {
-                let mut target = m.body_yaw;
-                if dx * dx + dz * dz > 0.002_500_000_2 {
-                    // LivingEntity.tick: walking backwards the body faces away from
-                    // the walk direction, not along it.
-                    let walk = (dz.atan2(dx) as f32).to_degrees() - 90.0;
-                    let facing = (wrap(yaw) - walk).abs();
-                    target = if 95.0 < facing && facing < 265.0 {
-                        walk - 180.0
-                    } else {
-                        walk
-                    };
-                }
-                if swinging {
-                    target = yaw;
-                }
-                // tickHeadTurn: ease toward the target, within 50 degrees of the head.
-                m.body_yaw += wrap(target - m.body_yaw) * 0.3;
-                let diff = wrap(yaw - m.body_yaw);
-                if diff.abs() > 50.0 {
-                    m.body_yaw += diff - diff.signum() * 50.0;
-                }
-            }
-        }
+        // AbstractBoat.positionRider follows the rider tick and directly assigns
+        // the boat's yaw. A living vehicle affects only the extracted pose.
+        m.body_yaw = boat_yaw.unwrap_or_else(|| {
+            sunrise_client::mobs::living::player_body_yaw(
+                m.body_yaw,
+                yaw,
+                turn_movement.x,
+                turn_movement.z,
+                attack.1 > 0.0,
+                blocking,
+            )
+        });
         if riding {
             // LivingEntity.calculateEntityAnimation: a passenger stops the
             // walk animation (WalkAnimationState.stop), so the seat moving with
@@ -708,20 +698,12 @@ impl Game<'_> {
         {
             let (yaw, clamped) = sunrise_client::camera::clamp_boat_rotation(self.yaw, b.yaw);
             self.yaw = yaw;
+            if let Some(m) = self.player_model.as_mut() {
+                m.body_yaw = b.yaw;
+            }
             // clampRotation moves `yRotO` with the view.
             self.rope_rot_old.0 += clamped;
         }
-    }
-    /// What the player rides that sets their body's yaw: a boat's yaw, or a
-    /// living vehicle's body yaw. Minecarts and cushions leave it to the
-    /// player's own turn.
-    fn ridden_body(&self) -> Option<RiddenBody> {
-        let id = self.riding?;
-        if let Some(b) = self.boats.iter().find(|b| b.id == id) {
-            return Some(RiddenBody::Boat(b.yaw));
-        }
-        let m = self.mobs.iter().find(|m| m.id == id)?;
-        Some(RiddenBody::Living(m.body_yaw))
     }
     /// `Entity.setOldRot` after a server sets the player's rotation
     /// (`handleRotatePlayer`): the model's head snaps to it instead of easing
@@ -773,6 +755,25 @@ impl Game<'_> {
     pub(super) fn own_body_visible(&self) -> bool {
         body_visible(self.own_invisible(), self.own_team())
     }
+    /// LivingEntityRenderer.solveBodyRot uses the current vehicle, even when a passenger
+    /// packet arrived between ticks. These pose inputs do not change the live body angle.
+    pub(super) fn extract_local_player_vehicle(&mut self) {
+        if self.player_model.is_none() {
+            return;
+        }
+        let vehicle_body = self.riding.and_then(|id| {
+            if let Some(mob) = self.mob_object(id).filter(|mob| !mob.removed) {
+                return Some((id, mob.previous_body_yaw, mob.body_yaw));
+            }
+            let stand = self.armor_stands.iter().find(|stand| stand.id == id)?;
+            Some((id, stand.previous_body_yaw, stand.body_yaw))
+        });
+        if let Some(model) = self.player_model.as_mut() {
+            model.extra.mount = self.riding;
+            model.extra.vehicle_body = vehicle_body;
+        }
+    }
+
     /// The local player's body in the ordered entity pass.
     pub(super) fn local_player_geometry(
         &self,

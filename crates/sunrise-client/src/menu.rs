@@ -4688,8 +4688,15 @@ pub(crate) mod tests {
         };
         let step = |context: &LoopContext, kind: &str, cause| {
             let mut sound = crate::block_sounds::own(&stone);
+            let world = crate::world::World::new(sunrise_world::registry::BlockStateId(0), 0);
             crate::block_sounds::native_sound_type(
-                context,
+                crate::motion::FrictionLevel {
+                    context,
+                    world: &world,
+                    registry: crate::test_fixtures::air_registry(),
+                    side: crate::motion::dry_side(),
+                    coefficient: &|_| Some(0.6),
+                },
                 sunrise_core::position::BlockPos::new(0, 0, 0),
                 sunrise_world::registry::BlockStateId(0),
                 Some((1, kind)),

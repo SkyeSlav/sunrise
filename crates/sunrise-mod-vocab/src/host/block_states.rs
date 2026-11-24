@@ -191,6 +191,15 @@ pub trait BlockStatesBackend {
     /// None for an unknown state.
     fn block_state_is_solid_render(&self, state: BlockState) -> Option<bool>;
     /// Side: both.
+    /// `BlockState.propagatesSkylightDown()`: whether sky light passes down through the state
+    /// unchanged, the block's own answer included (glass, barriers and vegetation override the
+    /// shape's). None for an unknown state.
+    fn block_state_propagates_skylight_down(&self, state: BlockState) -> Option<bool>;
+    /// Side: both.
+    /// `BlockState.isAir()`: air, cave air and void air, by the block's own flag rather than
+    /// the `#minecraft:air` tag a data pack may change. None for an unknown state.
+    fn block_state_is_air(&self, state: BlockState) -> Option<bool>;
+    /// Side: both.
     /// `BlockState.isRedstoneConductor` for a state alone. None if the state is unknown
     /// or the predicate needs a level and position.
     fn block_state_is_redstone_conductor(&self, state: BlockState) -> Option<bool>;

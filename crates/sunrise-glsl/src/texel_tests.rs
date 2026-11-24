@@ -1,5 +1,6 @@
-//! Integer texel buffers in a pack's core shader (26.3's `clouds.vsh` reads its faces from
+//! Integer texel buffers in a program (a clouds shader reading its faces from
 //! `uniform isamplerBuffer CloudFaces`): a read-only storage buffer the pipeline gives.
+use super::tests::{LIMITS, SAMPLERS, translate_core_with};
 use super::*;
 
 const GLUE: Glue = Glue {
@@ -8,7 +9,7 @@ const GLUE: Glue = Glue {
     setup: "",
     finish: "",
     vertex_id: "int(gl_VertexIndex)",
-    interface: sunrise_shaders::DEVICELESS_INTERFACE_LIMITS,
+    interface: LIMITS,
 };
 
 /// `clouds.vsh` in shape: a block of its own and an integer texel buffer read with `texelFetch`
@@ -62,8 +63,8 @@ fn integer_texel_buffers_become_storage_buffers_the_pipeline_gives() {
     assert_eq!(
         storage(&program.vertex),
         [
-            (other_binding(1), naga::ScalarKind::Sint),
-            (other_binding(2), naga::ScalarKind::Uint)
+            (program.other_binding(1), naga::ScalarKind::Sint),
+            (program.other_binding(2), naga::ScalarKind::Uint)
         ]
     );
     assert!(program.vertex.global_variables.iter().any(|(_, v)| {

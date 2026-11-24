@@ -258,6 +258,7 @@ impl GoalCx<'_, '_> {
         match self.resolve(entity)? {
             Resolved::Own if !self.m.removed => Some(self.m.body_yaw),
             Resolved::Live(mob) => Some(mob.body_yaw),
+            Resolved::Player | Resolved::Dragon(_) => entity.body_yaw(self.host),
             _ => None,
         }
     }

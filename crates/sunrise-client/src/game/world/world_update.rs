@@ -168,6 +168,9 @@ impl Game<'_> {
                 Ok(())
             };
         }
+        if self.is_logical_server() {
+            self.prune_disabled_async_chunk_requests();
+        }
         let areas = self.streaming.extra.len();
         // The configuration connection is not a guest and owns no player area.
         // `extra` finishes chunks through radius + 1, even with no players.
@@ -293,6 +296,9 @@ impl Game<'_> {
             self.native_chunks_loaded();
             self.native_chunks_unloaded(&unloaded);
         });
+        if self.is_logical_server() {
+            self.process_async_chunk_requests();
+        }
         if let Some(lod) = &mut self.lod {
             self.lod_observe
                 .extend(uploads.iter().map(|upload| (upload.key.0, upload.key.2)));

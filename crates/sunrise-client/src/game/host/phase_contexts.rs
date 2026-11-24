@@ -223,16 +223,16 @@ impl ClientSetupContext for Game<'_> {
         <Self as prelude::ConfigClientHost>::translate(self, key)
     }
     fn enchantments(&self) -> Vec<EnchantmentInfo> {
-        <Self as prelude::ItemsClientHost>::enchantments(self)
+        <Self as prelude::ItemsHost>::enchantments(self)
     }
     fn potions(&self) -> Vec<PotionInfo> {
         <Self as prelude::ItemsClientHost>::potions(self)
     }
     fn enchantment_min_cost(&self, id: &str, level: u32) -> Option<i32> {
-        <Self as prelude::ItemsClientHost>::enchantment_min_cost(self, id, level)
+        <Self as prelude::ItemsHost>::enchantment_min_cost(self, id, level)
     }
     fn enchantment_supports(&self, id: &str, item: ItemKey) -> bool {
-        <Self as prelude::ItemsClientHost>::enchantment_supports(self, id, item)
+        <Self as prelude::ItemsHost>::enchantment_supports(self, id, item)
     }
     fn sound_events(&self) -> Vec<Identifier> {
         <Self as prelude::EffectsClientHost>::sound_events(self)

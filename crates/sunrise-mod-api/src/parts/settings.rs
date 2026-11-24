@@ -62,4 +62,28 @@ impl SettingsRegistrar for PartRegistrar {
         self.parts.settings.push((self.mod_id, setting));
         Ok(())
     }
+
+    fn register_config_screen(
+        &mut self,
+        factory: Arc<dyn crate::ConfigScreenFactory>,
+    ) -> Result<(), String> {
+        if self
+            .parts
+            .config_screens
+            .iter()
+            .any(|prior| prior.owner == self.mod_id)
+        {
+            return Err(format!(
+                "mod {} registers a second config screen",
+                self.mod_id
+            ));
+        }
+        self.parts.config_screens.push(ConfigScreenRegistration {
+            owner: self.mod_id,
+            index: self.mod_index,
+            factory,
+            panicked: Default::default(),
+        });
+        Ok(())
+    }
 }

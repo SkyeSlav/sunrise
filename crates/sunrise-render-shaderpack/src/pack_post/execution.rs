@@ -27,14 +27,34 @@ use crate::pack_uniforms::{self, PackInputs};
 #[derive(Clone, Copy, Default)]
 pub struct WorldBoundaries {
     pub sky: bool,
+    pub opaque_blocks: bool,
     pub features: bool,
+    pub translucent_blocks: bool,
+    pub weather: bool,
+    pub custom_geometry: bool,
 }
 
 /// Render boundaries reached within the classic pack's world pass.
 pub enum WorldBoundary<'a> {
     AfterSky,
+    AfterOpaqueBlocks {
+        color: &'a wgpu::TextureView,
+        depth: &'a wgpu::TextureView,
+    },
     Features {
         translucent: bool,
+        color: &'a wgpu::TextureView,
+        depth: &'a wgpu::TextureView,
+    },
+    AfterTranslucentBlocks {
+        color: &'a wgpu::TextureView,
+        depth: &'a wgpu::TextureView,
+    },
+    AfterWeather {
+        color: &'a wgpu::TextureView,
+        depth: &'a wgpu::TextureView,
+    },
+    CustomGeometry {
         color: &'a wgpu::TextureView,
         depth: &'a wgpu::TextureView,
     },
@@ -95,6 +115,7 @@ impl PackPost {
         self.custom.forget_world();
         self.center_depth = None;
         self.targets = None;
+        self.export_depth_group = None;
         self.main = 0;
         self.mips_valid = 0;
         self.rgb_unset = true;
@@ -202,24 +223,30 @@ impl PackPost {
         })
     }
 
+    fn target_boundary(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        boundary: &mut impl FnMut(&mut wgpu::CommandEncoder, WorldBoundary<'_>) -> bool,
+        make: impl for<'a> FnOnce(&'a wgpu::TextureView, &'a wgpu::TextureView) -> WorldBoundary<'a>,
+    ) {
+        let targets = self.targets.as_ref().expect("resized");
+        let color = &targets.color[0].as_ref().expect("colortex0")[usize::from(self.main & 1 != 0)];
+        if boundary(encoder, make(color, &targets.depth)) {
+            self.mips_valid &= !1;
+        }
+    }
+
     fn feature_boundary(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         translucent: bool,
         boundary: &mut impl FnMut(&mut wgpu::CommandEncoder, WorldBoundary<'_>) -> bool,
     ) {
-        let targets = self.targets.as_ref().expect("resized");
-        let color = &targets.color[0].as_ref().expect("colortex0")[usize::from(self.main & 1 != 0)];
-        if boundary(
-            encoder,
-            WorldBoundary::Features {
-                translucent,
-                color,
-                depth: &targets.depth,
-            },
-        ) {
-            self.mips_valid &= !1;
-        }
+        self.target_boundary(encoder, boundary, |color, depth| WorldBoundary::Features {
+            translucent,
+            color,
+            depth,
+        });
     }
 
     /// Whether the pack draws the block outline itself.
@@ -623,9 +650,10 @@ impl PackPost {
         let mut passes = std::mem::take(&mut self.passes);
         let mut seen = (false, false);
         let mut shown = false;
-        // The opaque phase owns the sky boundary even without geometry, and a water-only
-        // pack still needs it to populate requested snapshots.
+        // The opaque phase owns the sky/block/feature boundaries even without geometry, and a
+        // water-only pack still needs it to populate requested snapshots.
         let mut terrain_drawn = !boundaries.sky
+            && !boundaries.opaque_blocks
             && !boundaries.features
             && self.terrain.is_none()
             && self.terrain_cutout.is_none()
@@ -642,7 +670,12 @@ impl PackPost {
                 .zip(e.late)
                 .any(|(p, late)| p.is_some() && late)
         });
-        let mut water_drawn = self.water.is_none() && self.weather.is_none() && !late_entities;
+        let mut water_drawn = !boundaries.translucent_blocks
+            && !boundaries.weather
+            && !boundaries.custom_geometry
+            && self.water.is_none()
+            && self.weather.is_none()
+            && !late_entities;
         let mut shadow_drawn = false;
         let mut world_finished = false;
         for pass in &mut passes {
@@ -692,7 +725,7 @@ impl PackPost {
                         encoder,
                         size,
                         terrain,
-                        boundaries.features,
+                        boundaries,
                         &mut boundary,
                     );
                 }
@@ -820,7 +853,7 @@ impl PackPost {
                 encoder,
                 size,
                 terrain,
-                boundaries.features,
+                boundaries,
                 &mut boundary,
             );
         }
@@ -831,6 +864,42 @@ impl PackPost {
         // depthtex0 as the frame leaves it, for next frames' `centerDepthSmooth`.
         if let Some(center) = &mut self.center_depth {
             center.copy(device, encoder, &targets.depth_texture);
+        }
+        // Export the pack's final GL depth (`targets.depth`) back to Sunrise's screen-rows,
+        // reversed-Z `world_depth` whenever the pack wrote depth, so post-pack consumers
+        // (`world_drawn`, overlays, secondary views) depth-test against pack-drawn geometry.
+        if self.draws_depth {
+            if self
+                .export_depth_group
+                .as_ref()
+                .is_none_or(|g| g.0 != targets.depth)
+            {
+                let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Shader pack depth export"),
+                    layout: &self.export_depth.1,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&targets.depth),
+                    }],
+                });
+                self.export_depth_group = Some((targets.depth.clone(), group));
+            }
+            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Shader pack depth export"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: world_depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            rp.set_pipeline(&self.export_depth.0);
+            rp.set_bind_group(0, self.export_depth_group.as_ref().map(|g| &g.1), &[]);
+            rp.draw(0..3, 0..1);
         }
         let view = |m: u16, i: usize, alt: bool| {
             targets.color[i]
@@ -1706,6 +1775,11 @@ impl PackPost {
             boundary(encoder, WorldBoundary::AfterSky);
         }
         self.draw_terrain(device, queue, encoder, size, TerrainList::Solid, terrain);
+        if boundaries.opaque_blocks {
+            self.target_boundary(encoder, boundary, |color, depth| {
+                WorldBoundary::AfterOpaqueBlocks { color, depth }
+            });
+        }
         self.draw_entities(device, queue, encoder, size, false, &OPAQUE_FEATURES);
         if boundaries.features {
             self.feature_boundary(encoder, false, boundary);
@@ -1888,7 +1962,7 @@ impl PackPost {
         encoder: &mut wgpu::CommandEncoder,
         size: [u32; 2],
         terrain: &mut TerrainDraw<'_>,
-        after_features: bool,
+        boundaries: WorldBoundaries,
         boundary: &mut impl FnMut(&mut wgpu::CommandEncoder, WorldBoundary<'_>) -> bool,
     ) {
         self.draw_terrain(
@@ -1899,8 +1973,13 @@ impl PackPost {
             TerrainList::Translucent,
             terrain,
         );
+        if boundaries.translucent_blocks {
+            self.target_boundary(encoder, boundary, |color, depth| {
+                WorldBoundary::AfterTranslucentBlocks { color, depth }
+            });
+        }
         self.draw_entities(device, queue, encoder, size, true, &TRANSLUCENT_FEATURES);
-        if after_features && self.has_late_features() {
+        if boundaries.features && self.has_late_features() {
             self.feature_boundary(encoder, true, boundary);
         }
         self.draw_entities(
@@ -1913,6 +1992,16 @@ impl PackPost {
         );
         self.draw_hand_water(device, queue, encoder, size);
         self.draw_weather(device, queue, encoder, size);
+        if boundaries.weather {
+            self.target_boundary(encoder, boundary, |color, depth| {
+                WorldBoundary::AfterWeather { color, depth }
+            });
+        }
+        if boundaries.custom_geometry {
+            self.target_boundary(encoder, boundary, |color, depth| {
+                WorldBoundary::CustomGeometry { color, depth }
+            });
+        }
     }
 
     /// The hand's translucent quads (uploaded by `draw_hand` this frame), with
@@ -2053,9 +2142,21 @@ impl PackPost {
         !pass.group.shadow() && pass.group != Group::Final && sizes.any(|s| Some(s) != first)
     }
 
+    /// Whether `colortex0` is float-blendable on `device`, so standard world-primitive
+    /// pipelines can draw into the pack's color target.
+    pub fn colortex0_blendable(&self, device: &wgpu::Device) -> bool {
+        let format = self.formats[0];
+        holds_floats(format)
+            && format
+                .guaranteed_format_features(device.features())
+                .flags
+                .contains(wgpu::TextureFormatFeatureFlags::BLENDABLE)
+    }
+
     /// Drops every pass's cached bind groups, compute stages included: they name views that
     /// were made again.
     pub fn forget_groups(&mut self) {
+        self.export_depth_group = None;
         let sky = self
             .sky
             .iter_mut()

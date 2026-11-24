@@ -426,6 +426,22 @@ impl Game<'_> {
             stack, picked,
         ))
     }
+    /// `EnchantmentHelper.modifyDurabilityToRepairFromXp` for `stack` and `points`, by the world's
+    /// enchantment definitions, drawing from the active level's random as Mending's repair does,
+    /// behind `ItemResource::durability_to_repair_from_xp`. API @API:item_components@.
+    pub(in crate::game) fn item_resource_durability_to_repair_from_xp(
+        &mut self,
+        stack: &ItemStack,
+        points: u32,
+    ) -> u32 {
+        super::enchant_effects::repair_from_xp(
+            &world_stations!(self).enchantments,
+            Some(world_items!(self)),
+            stack,
+            points,
+            &mut self.world.random,
+        )
+    }
     /// Whether an enchantment on `stack` has effect component `effect`, by the world's
     /// enchantment definitions (`EnchantmentHelper.has`), behind
     /// `ItemResource::has_enchantment_effect`, through the opaque backend. API
@@ -593,6 +609,32 @@ mod enchantment_conflict_tests {
                     .is_empty()
             );
             assert_eq!(game.world.random.next_long(), expected_random.next_long());
+        });
+    }
+
+    /// `EnchantmentHelper.modifyDurabilityToRepairFromXp` through `ItemResource`: vanilla
+    /// Mending's `repair_with_xp` multiplies the points by 2, a stack without the effect keeps
+    /// them, and an unconditioned effect draws nothing from the level's random.
+    #[test]
+    #[ignore = "daily"]
+    fn durability_to_repair_from_xp_runs_the_stacks_repair_with_xp_effects() {
+        with_game(|game| {
+            let mut mending = ItemStack::new("minecraft:diamond_pickaxe", 1);
+            mending.enchant("minecraft:mending", 1);
+            let mending = ItemResource::of(&test_snapshot(&mending));
+            let mut unbreaking = ItemStack::new("minecraft:diamond_pickaxe", 1);
+            unbreaking.enchant("minecraft:unbreaking", 3);
+            let unbreaking = ItemResource::of(&test_snapshot(&unbreaking));
+            let expected_random = game.world.random.clone();
+
+            assert_eq!(mending.durability_to_repair_from_xp(game, 7), 14);
+            assert_eq!(mending.durability_to_repair_from_xp(game, 0), 0);
+            // Vanilla starts from the points and lets the effects change them: none, none changed.
+            assert_eq!(unbreaking.durability_to_repair_from_xp(game, 7), 7);
+            assert_eq!(
+                game.world.random.clone().next_long(),
+                expected_random.clone().next_long()
+            );
         });
     }
 

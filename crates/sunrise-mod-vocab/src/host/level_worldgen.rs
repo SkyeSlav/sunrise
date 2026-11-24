@@ -39,6 +39,27 @@ pub trait LevelWorldgenBackend {
         parameters: StructureSearch,
     ) -> Option<StructureSearchResult>;
     /// Side: server.
+    /// `StructureManager.getStructureWithPieceAt`: the structures `structure` names (an id or a
+    /// `#tag`) with a start that one of its pieces reaches `pos` in, by the structure references
+    /// of `pos`'s loaded chunk, in their order and without repeats. Empty where none does. None
+    /// for a stale level, a client, and a chunk not loaded: never loads or generates chunks.
+    fn level_structures_with_piece_at(
+        &self,
+        level: LevelRef,
+        pos: [i32; 3],
+        structure: &str,
+    ) -> Option<Vec<String>>;
+    /// Side: server.
+    /// `StructureManager.getStructureAt`: as [`LevelRef::structures_with_piece_at`], with the
+    /// start's whole bounding box reaching `pos` instead of a piece's, so a position between a
+    /// structure's pieces counts.
+    fn level_structures_at(
+        &self,
+        level: LevelRef,
+        pos: [i32; 3],
+        structure: &str,
+    ) -> Option<Vec<String>>;
+    /// Side: server.
     /// The biome id selected by `LevelReader.getBiome` and this level's biome zoom.
     /// Reads an active or parked server level. None for a
     /// stale handle or an unloaded selected noise column. Never generates or loads chunks.

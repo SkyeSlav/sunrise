@@ -87,8 +87,9 @@ pub fn dry_side() -> &'static dyn SideLevel {
     &*SIDE
 }
 
-/// The engine data a subscribed friction part may read. Borrows the actual world, this side's
-/// level data and the caller's coefficient table; it carries no write access or entity snapshot.
+/// The read-only level a subscribed block part reads: friction, bounce restitution, sound type
+/// and a client's step-on. Borrows the actual world, this side's level data and the caller's
+/// friction coefficient table; it carries no write access or entity snapshot.
 #[derive(Clone, Copy)]
 pub struct FrictionLevel<'a> {
     pub world: &'a World,

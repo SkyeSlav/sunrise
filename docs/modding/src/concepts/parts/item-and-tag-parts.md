@@ -225,9 +225,9 @@ engines read the stored answers until the next install or world close. Support r
 resolves primary answers. Each snapshot owns its answers; publishing a fresh world-loot snapshot copies
 the current answers without asking listeners again.
 
-`enchantments()`, `enchantment_supports(id, item)` and `enchantment_min_cost(id, level)` on `ClientHost`
-and `ClientSetupContext` read the table built from the server's synced enchantment entries when available,
-and the local table otherwise. `enchantments()` lists `EnchantmentInfo` records in registry order, including
+`enchantments()`, `enchantment_supports(id, item)` and `enchantment_min_cost(id, level)` answer on either
+side, on any `Host` and on `ClientSetupContext`: a server reads its own enchantment registry, data packs
+included, and a client the table built from the server's synced entries when available, else the local table. `enchantments()` lists `EnchantmentInfo` records in registry order, including
 `weight` (selection weight) and `anvil_cost` (base anvil fee per enchantment level).
 `enchantment_supports` checks only `supported_items` membership, not Item Part overrides.
 

@@ -328,6 +328,11 @@ for a stale handle, a client, a level the server has not opened, a chunk past `C
 generation is paused or stopped; `Err(ChunkLoadError::Failed)` when a mod's chunk generator panicked for the chunk
 or one its generation needs, which the call reports instead of waiting forever.
 
+For bulk or background loads that must not block the server tick, use `level.request_chunk(host, [x, z])` to queue a
+non-blocking level-33 (`FULL`, non-ticking) load at priority below player views and `/forceload`, drain finished
+[`ChunkSnapshot`] results on subsequent ticks with `level.drain_chunk_requests(host)`, or release a queued ticket
+early with `request.cancel(host)`.
+
 ## World mutation: chunks, blocks shown and placed as a player
 
 For mods that write blocks by other means (an editor's own section writes, a schematic) and then have to make the game and the client agree. Server only. Each method returns `Result` and names every refusal; a refusal changes nothing.

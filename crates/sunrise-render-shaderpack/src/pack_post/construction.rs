@@ -1835,6 +1835,11 @@ pub struct PackPost {
     /// nor buffer to clear.
     pub blit: Option<(wgpu::RenderPipeline, wgpu::BindGroupLayout)>,
     /// The blit also writes depthtex0 (some program reads it) and clears these buffers.
+    /// Whether any gbuffer pass in this pack writes `targets.depth` (and therefore
+    /// `fs_export_depth` should write the pack's final depth back to Sunrise's `world_depth`).
+    pub draws_depth: bool,
+    /// Whether `targets.depth` receives the world's depth (`blit_depth` includes post-only
+    /// depth readers in addition to `draws_depth`).
     pub blit_depth: bool,
     pub blit_clears: Vec<usize>,
     /// Buffers cleared in passes of their own (more than the blit's eight attachments).
@@ -1846,6 +1851,12 @@ pub struct PackPost {
     /// Copies the picture `final` drew at the world's size onto the window: no flip, it is
     /// already in the screen's rows.
     pub upscale: (wgpu::RenderPipeline, wgpu::BindGroupLayout),
+    /// Copies the pack's GL-rows, GL-depth `targets.depth` back into Sunrise's screen-rows,
+    /// reversed-Z `world_depth` so post-pack stages (`AfterLevel`, `world_drawn`) see valid
+    /// terrain, water, entity, and hand depth.
+    pub export_depth: (wgpu::RenderPipeline, wgpu::BindGroupLayout),
+    /// Cached bind group for `export_depth`, keyed by the pack's `targets.depth` view.
+    pub export_depth_group: Option<(wgpu::TextureView, wgpu::BindGroup)>,
     /// The picture `final` draws while the world's size is not the window's.
     pub final_target: Option<FinalTarget>,
     pub screen: wgpu::TextureFormat,
@@ -2712,7 +2723,7 @@ impl PackPost {
             }
         }
         // Terrain tests against the world's depth (entities...), so the blit copies it then.
-        let blit_depth = terrain.is_some()
+        let draws_depth = terrain.is_some()
             || terrain_cutout.is_some()
             || water.is_some()
             || sky.is_some()
@@ -2720,7 +2731,8 @@ impl PackPost {
             || clouds.is_some()
             || lines.is_some()
             || weather.is_some()
-            || hand.is_some()
+            || hand.is_some();
+        let blit_depth = draws_depth
             || passes
                 .iter()
                 .flat_map(|p| std::iter::once(p).chain(&p.compute))
@@ -2823,6 +2835,23 @@ impl PackPost {
             ],
             &[target(screen)],
             None,
+        );
+        let export_depth = helper(
+            device,
+            "vs_full",
+            "fs_export_depth",
+            &[texture_entry(
+                1,
+                wgpu::TextureSampleType::Float { filterable: false },
+            )],
+            &[],
+            Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
         );
         let filterable = |b: usize| {
             formats[b].sample_type(None, Some(device.features()))
@@ -2934,6 +2963,7 @@ impl PackPost {
             storage,
             copied,
             sizes,
+            draws_depth,
             blit_depth,
             blit_clears: cleared,
             other_clears,
@@ -3038,6 +3068,8 @@ impl PackPost {
             blit,
             copy,
             upscale,
+            export_depth,
+            export_depth_group: None,
             final_target: None,
             screen,
             uniforms: {

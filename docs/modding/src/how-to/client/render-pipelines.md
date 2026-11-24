@@ -107,20 +107,12 @@ refused at load: when its registration declares no texture but the file samples 
 reverse), when the registration's texture or another resource it names is missing, or when the GPU
 rejects the shader.
 
-The check, and the load, also refuse a shader that is too costly or that a player's system could
-not translate:
-
-- **Expressions.** The composed shader (your file with the game's prelude and entry points, which
-  are small and fixed) may hold 20,000 expressions over all its functions. The refusal gives the
-  count: `21066 expressions; a pipeline shader may hold 20000`.
-- **Texture reads.** It may hold 64 texture reads (`textureLoad` and `textureSample*` expressions
-  written in the code, not executions). A textured pipeline's `pipeline_texture` function is one of
-  them, so your own code has 63. The refusal gives the count.
-- **Backends.** The shader is translated to SPIR-V (Vulkan), MSL (Metal) and HLSL (DirectX 12) as
-  the GPU library does, and a shader that any of them refuses is refused naming it, as in
-  `Vulkan (SPIR-V) refuses it: ...`. Some shaders pass validation and still fail here, such as
-  passing a pointer to a matrix column or to an element of a local array to a function; copy the
-  value into a function argument instead.
+The check, and the load, also refuse a shader that a player's system could not translate. The
+shader is translated to SPIR-V (Vulkan), MSL (Metal) and HLSL (DirectX 12) as the GPU library does,
+and a shader that any of them refuses is refused naming it, as in `Vulkan (SPIR-V) refuses it: ...`.
+Some shaders pass validation and still fail here, such as passing a pointer to a matrix column or
+to an element of a local array to a function; copy the value into a function argument instead.
+There is no count of expressions or texture reads: what the GPU library translates is drawn.
 
 ## 3. Resolve and draw
 
@@ -208,3 +200,26 @@ naming `RenderPipeline::textured`.
 
 A pipeline cannot take values of its own from the mod, sample more than one texture, or replace the
 vertex stage.
+
+## Participating in translated shader packs
+
+To let an active Iris/OptiFine shader pack shade a pipeline's geometry with its own program, declare
+its `PipelineGeometryClass` on registration via `.geometry_class(...)`:
+
+```rust,ignore
+event.register(
+    RenderPipeline::new(id.clone(), id, PipelineBlend::Translucent, WorldDepth::Tested)
+        .geometry_class(PipelineGeometryClass::Terrain),
+);
+```
+
+Each geometry class selects a standard Iris/OptiFine program fallback chain (for example,
+`Terrain` resolves `gbuffers_terrain -> gbuffers_textured_lit -> gbuffers_textured -> gbuffers_basic`,
+and `Particles` resolves `gbuffers_particles -> gbuffers_textured_lit -> gbuffers_textured -> gbuffers_basic`).
+Pipelines that need pack-defined programs, preprocessor defines, an auxiliary depth target, or
+per-frame pack uniforms attach an optional `.pack_binding(PackBinding::new()...)`. Startup refuses
+invalid GLSL identifiers, reserved Iris/OptiFine sampler/image/uniform names, and cross-mod or
+namespace collisions across samplers, uniforms, defines, and depth-target IDs.
+
+To check whether a shader pack is currently loaded and rendering the world (always `false` on the
+title screen, matching `IrisApi.isShaderPackInUse()`), call `host.shader_pack_active()`.

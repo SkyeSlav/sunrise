@@ -6,6 +6,9 @@ level, position, block state, and `include_data`, true when a creative player pi
 player reads such as `event.player.food(host).map(|food| food.level)`. The request does not include
 a client hit face. Return `None` to keep the game's item.
 
+A server mod reads the same answer, with that player acting, through `PlayerRef::clone_item_stack`
+(see its documentation in the [API reference](../../reference/api.md)).
+
 ## Breaking-crack display
 
 `BlockPart::break_progress_positions(host, event)` supplies extra positions for a

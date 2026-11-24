@@ -368,9 +368,7 @@ pub(crate) fn install_client_hooks() {
             let context = reader.context();
             mod_api::dispatch_fluid_flow(&context, fluid, pos, flow);
         },
-        sound_type: |context, pos, state, entity, cause, sound| {
-            crate::game::native_block_sounds::sound_type(context, pos, state, entity, cause, sound);
-        },
+        sound_type: crate::game::native_block_sounds::sound_type,
         can_grindstone_repair: crate::game::native_item_menu_parts::can_grindstone_repair,
         is_combine_repairable: crate::game::native_item_menu_parts::is_combine_repairable,
         can_fit_inside_container_items:

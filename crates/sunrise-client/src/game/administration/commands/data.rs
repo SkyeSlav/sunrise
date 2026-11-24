@@ -717,6 +717,7 @@ impl Game<'_> {
                     // Entity.load keeps the existing entity's firstTick state
                     // and its place in the level's join order.
                     new.first_tick = slot.first_tick;
+                    new.body_yaw = slot.body_yaw;
                     new.join = slot.join;
                     sunrise_client::join_seq::store_back(slot, new);
                 }

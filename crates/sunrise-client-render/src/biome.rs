@@ -485,6 +485,10 @@ impl Biomes {
             .copied()
             .unwrap_or(0)
     }
+    /// Exact biome table index for `name`, or `None` when the table does not contain it.
+    pub fn try_id(&self, name: &str) -> Option<u16> {
+        self.index.get(name).copied()
+    }
     /// Whether the game has the biome `name`.
     pub fn contains(&self, name: &str) -> bool {
         self.index.contains_key(name)
@@ -585,6 +589,10 @@ impl Biomes {
         self.list
             .get(usize::from(id))
             .map_or("minecraft:plains", |b| b.name.as_str())
+    }
+    /// Exact canonical name of biome `id`, or `None` when `id` is past this table.
+    pub fn try_name(&self, id: u16) -> Option<&str> {
+        self.list.get(usize::from(id)).map(|b| b.name.as_str())
     }
     /// A biome's natural spawners by category, sorted by category name; None for a name this
     /// table lacks.

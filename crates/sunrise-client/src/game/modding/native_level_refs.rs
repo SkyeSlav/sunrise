@@ -185,6 +185,57 @@ impl Game<'_> {
             .map(|(structure, position)| mod_api::StructureSearchResult::new(structure, position))
     }
 
+    /// `StructureManager.getStructureWithPieceAt`, through the active or parked level's
+    /// generator starts.
+    pub(super) fn level_structures_with_piece_at(
+        &self,
+        level: LevelRef,
+        pos: [i32; 3],
+        structure: &str,
+    ) -> Option<Vec<String>> {
+        self.native_structures_at(level, pos, structure, true)
+    }
+
+    /// `StructureManager.getStructureAt`, the start's bounding box instead of a piece's.
+    pub(super) fn level_structures_at(
+        &self,
+        level: LevelRef,
+        pos: [i32; 3],
+        structure: &str,
+    ) -> Option<Vec<String>> {
+        self.native_structures_at(level, pos, structure, false)
+    }
+
+    /// The structures `structure` names whose start reaches `pos` from the loaded chunk's
+    /// references: inside a piece where `piece`, inside the start's box otherwise.
+    fn native_structures_at(
+        &self,
+        level: LevelRef,
+        pos: [i32; 3],
+        structure: &str,
+        piece: bool,
+    ) -> Option<Vec<String>> {
+        let world = self.native_level_world(level)?;
+        world.chunks.get(&(pos[0] >> 4, pos[2] >> 4))?;
+        let names = self.structure_names(&normalized_selector(structure));
+        let active = level.dimension() == self.dim.key();
+        let locator = || {
+            if active {
+                self.end.locator()
+            } else {
+                self.levels.parked_locator_of(level.dimension_id())
+            }
+        };
+        let wanted = |id: &str| names.iter().any(|name| name == id);
+        Some(
+            sunrise_gameplay::structures::structures_reaching_in(world, &locator, pos, &wanted)
+                .into_iter()
+                .filter(|(_, in_piece)| !piece || *in_piece)
+                .map(|(name, _)| name)
+                .collect(),
+        )
+    }
+
     /// `LevelReader.getBiome`: the noise cell selected by this level's BiomeManager zoom.
     /// Unlike a generating server query, an absent selected column returns None.
     fn native_read_biome(&self, level: LevelRef, pos: [i32; 3]) -> Option<String> {
@@ -337,15 +388,18 @@ impl Game<'_> {
         (self.level_handle_current(level) && level.dimension() == remote.level_key)
             .then_some(&self.world)
     }
-    /// Find a loaded chunk in an open server level: `ServerChunkCache.getChunkNow`, which also
-    /// makes a FULL column one of the level's recent FULL lookups (`Streaming::note_full_read`).
+    /// Find a loaded chunk in an open server level (`ServerChunkCache.getChunkNow`) or in a
+    /// logged-in client's loaded level. On a server, a FULL chunk found becomes one of the
+    /// level's recent FULL lookups (`Streaming::note_full_read`).
     pub(super) fn chunk(&self, level: LevelRef, pos: [i32; 2]) -> Option<ChunkRef> {
-        let world = self.native_level_world(level)?;
+        let world = self.native_level_view_world(level)?;
         let key = (pos[0], pos[1]);
         if !world.chunks.contains_key(&key) {
             return None;
         }
-        if let Some(streaming) = self.native_level_streaming(level) {
+        if self.is_logical_server()
+            && let Some(streaming) = self.native_level_streaming(level)
+        {
             streaming.note_full_read(world, key);
         }
         Some(mod_api::__private::game::chunk_ref(level, pos))
@@ -369,11 +423,13 @@ impl Game<'_> {
     }
     /// Whether this chunk is loaded; false on a client or for a stale handle.
     pub(super) fn chunk_loaded(&self, chunk: ChunkRef) -> bool {
-        self.chunk(chunk.level(), chunk.pos()).is_some()
+        self.is_logical_server() && self.chunk(chunk.level(), chunk.pos()).is_some()
     }
     /// The status of a loaded chunk. Proto chunks are not exposed here.
     pub(super) fn chunk_status(&self, chunk: ChunkRef) -> Option<ChunkStatus> {
-        self.chunk(chunk.level(), chunk.pos())
+        self.is_logical_server()
+            .then(|| self.chunk(chunk.level(), chunk.pos()))
+            .flatten()
             .map(|_| ChunkStatus::Full)
     }
     /// A handle for chunk `pos` of an open level, loaded or not, so a mod can
@@ -1086,6 +1142,13 @@ impl Game<'_> {
         self.native_level_read_world(level)?;
         Some(horizontal_in_bounds(pos) && (-20_000_000..20_000_000).contains(&pos[1]))
     }
+    pub(super) fn level_tick_rate(
+        &self,
+        level: LevelRef,
+    ) -> Result<Option<f32>, mod_api::LevelReadError> {
+        Ok((self.native_client_level() == Some(level)).then(|| self.clock.rate()))
+    }
+
     /// The ticks the server has run (`Level.getGameTime`), shared by every
     /// level as in vanilla. API 381.
     pub(super) fn level_game_time(&self, level: LevelRef) -> Option<i64> {
@@ -3222,13 +3285,18 @@ mod tests {
             let block = game.world.light(3, -60, 5) & 15;
             assert_eq!((sky, block), (12, 5));
             let chunks = game.world.chunks.len();
+            // Night: the sky is darkened, so the read is not just the daytime 0.
+            game.world.day_time = 18000;
             let darken = game.sky_darken();
+            assert!(darken > 0, "night darkens the sky");
 
             game.with_level(|_, host, _| {
                 assert_eq!(host.brightness(LightLayer::Block, lit), 5);
                 assert_eq!(host.brightness(LightLayer::Sky, lit), 12);
                 assert_eq!(host.raw_brightness(lit, 0), 12);
                 assert_eq!(host.raw_brightness(lit, 9), 5);
+                // `Level.getSkyDarken` as the game's own light reads take it.
+                assert_eq!(LevelHost::sky_darken(&*host), Some(darken));
                 let pos = BlockPos::new(lit[0], lit[1], lit[2]);
                 assert_eq!(
                     host.raw_brightness(lit, darken),
@@ -3252,9 +3320,29 @@ mod tests {
                 game.level_brightness(level, LightLayer::Sky, [0, 320, 0]),
                 None
             );
+            // The level view a block part's callback gets (`ReadLevel`), on the server.
+            let view = crate::game::native_level_signals::ReadLevel { game, level };
+            assert_eq!(LevelHost::sky_darken(&view), Some(darken));
             let stale = LevelRef::new(WorldEpoch::new(u64::MAX), game.dim.key());
             assert_eq!(game.level_brightness(stale, LightLayer::Sky, lit), None);
             assert_eq!(game.world.chunks.len(), chunks, "nothing was loaded");
+
+            // A logged-in client reads the same darkening through the same view.
+            game.options.execution_role = crate::game::execution_role::ExecutionRole::Client;
+            game.options.dedicated = None;
+            let (pipe, _server) = sunrise_protocol::connection::Pipe::pair();
+            game.connect_local(pipe, "SkyDarkenReadTest").unwrap();
+            game.remote.as_mut().unwrap().logged_in = true;
+            let client = game.level("minecraft:overworld").unwrap();
+            // The client's own world, at night as the server's time packet would set it.
+            game.world.day_time = 18000;
+            let darken = game.sky_darken();
+            assert!(darken > 0, "night darkens the client's sky");
+            let view = crate::game::native_level_signals::ReadLevel {
+                game,
+                level: client,
+            };
+            assert_eq!(LevelHost::sky_darken(&view), Some(darken));
         });
     }
 
@@ -3717,6 +3805,114 @@ pub(in crate::game) mod environment_read_tests {
             );
             assert_eq!(
                 stale.find_nearest_structure(game, "minecraft:stronghold", search),
+                None
+            );
+        });
+    }
+
+    /// `getStructureWithPieceAt` and `getStructureAt` over a stronghold start the generator
+    /// builds: inside a piece both name it, between its pieces only the bounding box does, a tag
+    /// and a bare id name it too, another structure is not there, and an unloaded chunk or a
+    /// stale level gives no answer.
+    #[test]
+    #[ignore = "daily"]
+    fn structures_at_reads_the_loaded_chunks_references() {
+        use mod_api::StructureSearch;
+        use sunrise_client::vanillagen::{TerrainResources, VanillaTerrain};
+
+        with_game(|game| {
+            let directory = game.options.resources.join("worldgen");
+            let terrain = VanillaTerrain::for_dimension(
+                TerrainResources {
+                    data: Some(&game.pack.data_changes),
+                    dir: &directory,
+                    registry: game.pack.assets.registry,
+                    biomes: world_biomes!(game),
+                    item_data: &game.res.core.item_data,
+                },
+                12345,
+                "minecraft:overworld",
+            )
+            .unwrap();
+            let terrain = Arc::new(terrain);
+            game.end.set_locator(Some(terrain.clone()));
+            let overworld = game.level("minecraft:overworld").unwrap();
+            let found = overworld
+                .find_nearest_structure(
+                    game,
+                    "minecraft:stronghold",
+                    StructureSearch::new([0, 64, 0], 100),
+                )
+                .unwrap();
+            let start_chunk = (found.position[0] >> 4, found.position[2] >> 4);
+            let start = terrain
+                .starts_at(start_chunk.0, start_chunk.1)
+                .into_iter()
+                .find(|start| start.name == "minecraft:stronghold")
+                .unwrap();
+            let in_a_piece = |pos: [i32; 3]| {
+                start
+                    .pieces
+                    .iter()
+                    .any(|piece| piece.bounding_box().is_inside(pos))
+            };
+            let in_piece = start.pieces[0].bounding_box().min;
+            let [min, max] = [start.bounding_box.min, start.bounding_box.max];
+            let between = (min[1]..=max[1])
+                .flat_map(|y| {
+                    (min[0]..=max[0]).flat_map(move |x| (min[2]..=max[2]).map(move |z| [x, y, z]))
+                })
+                .find(|&pos| !in_a_piece(pos))
+                .expect("a stronghold's box has room between its pieces");
+
+            let stronghold = || Some(vec!["minecraft:stronghold".to_owned()]);
+            for pos in [in_piece, between] {
+                let chunk = (pos[0] >> 4, pos[2] >> 4);
+                if game.world.chunks.contains_key(&chunk) {
+                    continue;
+                }
+                assert_eq!(
+                    overworld.structures_at(game, pos, "minecraft:stronghold"),
+                    None
+                );
+                let mut referring = Chunk::empty(chunk.0, chunk.1);
+                referring
+                    .structure_refs
+                    .push(("minecraft:stronghold".into(), start_chunk));
+                game.world.chunks.insert(chunk, Arc::new(referring));
+            }
+            for selector in [
+                "minecraft:stronghold",
+                "stronghold",
+                "#minecraft:eye_of_ender_located",
+            ] {
+                assert_eq!(
+                    overworld.structures_with_piece_at(game, in_piece, selector),
+                    stronghold()
+                );
+                assert_eq!(
+                    overworld.structures_at(game, in_piece, selector),
+                    stronghold()
+                );
+            }
+            assert_eq!(
+                overworld.structures_with_piece_at(game, between, "minecraft:stronghold"),
+                Some(Vec::new())
+            );
+            assert_eq!(
+                overworld.structures_at(game, between, "minecraft:stronghold"),
+                stronghold()
+            );
+            assert_eq!(
+                overworld.structures_at(game, in_piece, "minecraft:fortress"),
+                Some(Vec::new())
+            );
+            let stale = LevelRef::new(
+                WorldEpoch::new(overworld.epoch().get() + 1),
+                overworld.dimension(),
+            );
+            assert_eq!(
+                stale.structures_at(game, in_piece, "minecraft:stronghold"),
                 None
             );
         });

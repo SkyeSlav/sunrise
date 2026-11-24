@@ -99,7 +99,9 @@ pub trait ScreensClientHost {
     /// focused mounted controls. That activation does not dispatch screen mouse hooks.
     fn mod_screen_open(&mut self, mod_id: &str) -> bool;
     /// Side: client.
-    /// Closes mod `mod_id`'s own screen, if it is open.
+    /// Closes mod `mod_id`'s own screen, if it is open: to the Mods screen when its
+    /// [`ConfigScreenFactory`](crate::ConfigScreenFactory) opened it, otherwise as Escape
+    /// closes a screen (back to the game, or to the title screen with no world).
     fn mod_screen_close(&mut self, mod_id: &str);
     /// Side: client.
     /// Closes the open screen as its Escape key does: a container screen

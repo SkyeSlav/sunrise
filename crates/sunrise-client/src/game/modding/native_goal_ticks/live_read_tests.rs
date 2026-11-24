@@ -159,13 +159,20 @@ fn scoped_host_resolves_other_real_players_from_the_game() {
     });
 }
 
-/// The body yaw is a mob's own raw `yBodyRot`, not a normalized facing or a
-/// player's: the scoped goal view and the game host agree, and a stale handle
-/// or another kind has none.
+/// Authoritative living body yaw, including subclass overrides and the scoped goal read.
 #[test]
 #[ignore = "daily"]
-fn body_yaw_is_the_raw_mob_yaw_and_none_for_others() {
-    use crate::game::native_guest_turn_tests::with_guests;
+fn body_yaw_targets_live_living_owners_and_respects_overrides() {
+    use crate::game::{
+        native_entity_refs::tests::run_fresh_cases, native_guest_turn_tests::with_guests,
+    };
+    if run_fresh_cases(
+        "game::native_goal_ticks::live_read_tests::body_yaw_targets_live_living_owners_and_respects_overrides",
+        "SUNRISE_SERVER_BODY_YAW_CASE",
+        &["owners"],
+    ) {
+        return;
+    }
 
     with_guests(|game| {
         let kind = game
@@ -174,26 +181,85 @@ fn body_yaw_is_the_raw_mob_yaw_and_none_for_others() {
             .get("minecraft:zombie")
             .unwrap()
             .clone();
-        let mut mob = Mob::new(40, kind.clone(), Vec3::ZERO, 0.0);
-        mob.body_yaw = -725.5;
+        let mut mob = Mob::new(40, kind.clone(), Vec3::ZERO, 5.0);
+        mob.head_yaw = 45.0;
         game.mobs.push(mob);
         let entity = game.entity(40).expect("the mob's handle");
+        assert_eq!(entity.set_body_yaw(game, -725.5), Ok(true));
         assert_eq!(entity.body_yaw(game), Some(-725.5));
-        assert!(game.entity_set_head_yaw(entity, 45.0));
-        assert_eq!(entity.body_yaw(game), Some(-725.5));
+        assert_eq!(entity.head_yaw(game), Some(45.0));
+        assert_eq!(entity.rotation(game), Some([5.0, 0.0]));
+        assert_eq!(game.mobs[0].previous_body_yaw, 5.0);
+        assert!(!game.mobs[0].needs_sync);
+
+        for (id, name) in [(48, "minecraft:silverfish"), (49, "minecraft:endermite")] {
+            let kind = game.res.mob_types().get(name).unwrap().clone();
+            game.mobs.push(Mob::new(id, kind, Vec3::ZERO, 5.0));
+            let insect = game.entity(id).unwrap();
+            assert_eq!(insect.set_body_yaw(game, 405.5), Ok(true));
+            assert_eq!(insect.rotation(game), Some([405.5, 0.0]));
+            assert_eq!(insect.head_yaw(game), Some(5.0));
+            assert_eq!(insect.set_body_yaw(game, f32::NAN), Ok(true));
+            assert!(insect.body_yaw(game).unwrap().is_nan());
+            assert_eq!(insect.rotation(game), Some([405.5, 0.0]));
+        }
+        use sunrise_client::entity_nbt::{armor_stand_from_nbt, armor_stand_to_nbt};
+        let stand = sunrise_client::entities::ArmorStand::new(50, Vec3::ZERO, 12.0);
+        let saved = armor_stand_to_nbt(&stand, [0; 4], None, game.items());
+        game.armor_stands
+            .push(armor_stand_from_nbt(&saved, 50).unwrap());
+        let stand = game.entity(50).unwrap();
+        assert_eq!(stand.body_yaw(game), Some(0.0));
+        assert_eq!(stand.head_yaw(game), Some(12.0));
+        assert_eq!(game.armor_stands[0].previous_yaw, 12.0);
+        assert_eq!(stand.set_body_yaw(game, -405.5), Ok(true));
+        assert_eq!(stand.body_yaw(game), Some(0.0));
+        assert_eq!(stand.rotation(game), Some([12.0, 0.0]));
+        assert_eq!(stand.head_yaw(game), Some(-405.5));
+        assert_eq!(game.armor_stands[0].previous_yaw, -405.5);
+        assert_eq!(game.armor_stands[0].previous_body_yaw, -405.5);
+        assert_eq!(game.armor_stands[0].previous_head_yaw, -405.5);
+        // EntityDataAccessor reloads the existing body rather than resetting it.
+        game.armor_stands[0].body_yaw = 50.0;
+        game.apply_entity_nbt(crate::game::commands::Target::Stand(50), saved)
+            .unwrap();
+        assert_eq!(stand.body_yaw(game), Some(50.0));
+        assert_eq!(stand.head_yaw(game), Some(12.0));
 
         let stale = EntityRef::new(
             mod_api::WorldEpoch::new(entity.epoch().get() + 1),
             entity.id(),
         );
         assert_eq!(stale.body_yaw(game), None);
+        assert_eq!(stale.set_body_yaw(game, 10.0), Ok(false));
 
-        let players: Vec<_> = [12, 13]
-            .map(|conn| game.player(conn).expect("guest player").entity())
-            .into();
-        for player in &players {
-            assert_eq!(player.body_yaw(game), None);
-        }
+        let [guest, other_guest] = [12, 13].map(|conn| game.player(conn).unwrap().entity());
+        assert_eq!(guest.body_yaw(game), None);
+        game.as_guest(12, |game| {
+            assert_eq!(guest.body_yaw(game), Some(0.0));
+            assert_eq!(guest.set_body_yaw(game, 85.0), Ok(true));
+            assert_eq!(other_guest.body_yaw(game), None);
+        })
+        .unwrap();
+        assert_eq!(guest.body_yaw(game), Some(85.0));
+        game.as_guest(13, |game| {
+            assert_eq!(other_guest.body_yaw(game), Some(0.0));
+            assert_eq!(guest.body_yaw(game), Some(85.0));
+        })
+        .unwrap();
+        game.guest_server_tick(12, true);
+        assert_eq!(guest.body_yaw(game), Some(50.0));
+        game.boats.push(crate::game::boats::Boat::new(
+            51,
+            "oak".into(),
+            Vec3::ZERO,
+            385.0,
+        ));
+        let hub = &mut game.lan.as_mut().unwrap().hub;
+        hub.update_guest(12, |g| g.vehicle = Some(51)).unwrap();
+        game.guest_vehicle_tick(12);
+        assert_eq!(guest.body_yaw(game), Some(385.0));
+
         game.others.push(crate::game::commands::OtherEntity {
             size_answer: None,
             attachment_lifetime: Default::default(),
@@ -210,16 +276,19 @@ fn body_yaw_is_the_raw_mob_yaw_and_none_for_others() {
         });
         let marker = game.entity(41).expect("the marker's handle");
         assert_eq!(marker.body_yaw(game), None);
+        assert_eq!(marker.set_body_yaw(game, 15.0), Ok(false));
 
         let mut dragon = crate::game::dragon::Dragon::new(Vec3::ZERO, 540.75, 0);
-        dragon.id = 42;
+        dragon.id = 100;
         game.dragon.replace(dragon);
-        let dragon = game.entity(42).expect("the dragon's handle");
+        let dragon = game.entity(100).expect("the dragon's handle");
         assert!(game.mob(dragon).is_some());
         assert_eq!(dragon.body_yaw(game), Some(540.75));
+        assert_eq!(dragon.set_body_yaw(game, 71.0), Ok(true));
+        assert_eq!(game.dragon.as_ref().unwrap().yaw, 540.75);
         let stale_dragon = EntityRef::new(stale.epoch(), dragon.id());
         assert_eq!(stale_dragon.body_yaw(game), None);
-        let part = game.entity(43).expect("the dragon head's handle");
+        let part = game.entity(101).expect("the dragon head's handle");
         assert_eq!(part.body_yaw(game), None);
 
         let other = game
@@ -246,13 +315,12 @@ fn body_yaw_is_the_raw_mob_yaw_and_none_for_others() {
         };
         assert_eq!(own.body_yaw(&context), Some(815.25));
         assert_eq!(entity.body_yaw(&context), Some(-725.5));
-        assert_eq!(dragon.body_yaw(&context), Some(540.75));
+        assert_eq!(dragon.body_yaw(&context), Some(71.0));
         assert_eq!(stale_dragon.body_yaw(&context), None);
         assert_eq!(part.body_yaw(&context), None);
         assert_eq!(stale.body_yaw(&context), None);
-        for player in players {
-            assert_eq!(player.body_yaw(&context), None);
-        }
+        assert_eq!(guest.body_yaw(&context), Some(385.0));
+        assert_eq!(other_guest.body_yaw(&context), Some(0.0));
         assert_eq!(marker.body_yaw(&context), None);
         context.m.removed = true;
         assert_eq!(own.body_yaw(&context), None);

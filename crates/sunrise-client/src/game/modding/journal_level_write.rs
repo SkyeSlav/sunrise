@@ -102,6 +102,8 @@ impl LevelHost for JournalLevelWrite<'_, '_> {
         fn raw_brightness(&self, pos: [i32; 3], sky_darken: i32) -> i32;
         fn is_loaded(&self, pos: [i32; 3]) -> bool;
         fn is_raining_at(&self, pos: [i32; 3]) -> bool;
+        fn is_raining(&self) -> Option<bool>;
+        fn sky_darken(&self) -> Option<i32>;
         fn enabled_features(&self) -> FeatureFlags;
     }
     fn state_block(&self, state: BlockState) -> Option<&str> {

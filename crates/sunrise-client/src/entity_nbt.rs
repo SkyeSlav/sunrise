@@ -4166,6 +4166,9 @@ fn normalize_pitch(pitch: f32) -> f32 {
 pub fn armor_stand_from_nbt(tag: &Tag, id: u32) -> Option<ArmorStand> {
     let rot = rotation(tag);
     let mut a = ArmorStand::new(id, position(tag)?, rot[0]);
+    // Entity.load calls ArmorStand.setYBodyRot, which only sets the old body
+    // and both head angles. Current body rotation starts at zero.
+    a.body_yaw = 0.0;
     a.pitch = normalize_pitch(rot[1]);
     a.enchantment_fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
     // AttributeMap.load makes an instance for each saved attribute.

@@ -1816,10 +1816,15 @@ pub struct ArmorStand {
     pub fall_flying: bool,
     /// `LivingEntity.currentImpulseContextResetGraceTime`.
     pub impulse_grace: i32,
-    /// `yRot`, which the body follows (`ArmorStand.tickHeadTurn`: `yBodyRot`).
+    /// `Entity.yRot`; `ArmorStand.tickHeadTurn` copies it to `yBodyRot`.
     pub yaw: f32,
-    /// `yBodyRotO`: the body's yaw at the start of the tick.
+    pub body_yaw: f32,
+    /// `Entity.yRotO`: previous view yaw.
     pub previous_yaw: f32,
+    /// `LivingEntity.yBodyRotO`; `tickHeadTurn` syncs it to `yRotO` after admission.
+    pub previous_body_yaw: f32,
+    pub head_yaw: f32,
+    pub previous_head_yaw: f32,
     /// Every `EquipmentSlot`, by ordinal: mainhand, offhand, feet, legs, chest,
     /// head, body, saddle. Vanilla's `canUseSlot` refuses body and saddle only
     /// for interaction; `setItemSlot` and the save keep them.
@@ -2079,7 +2084,8 @@ impl ArmorStand {
     /// (`LivingEntityRenderer.solveBodyRot`: `Mth.rotLerp(partialTick,
     /// yBodyRotO, yBodyRot)`).
     pub fn render_yaw(&self, alpha: f32) -> f32 {
-        self.previous_yaw + alpha * crate::camera::wrap_degrees(self.yaw - self.previous_yaw)
+        self.previous_body_yaw
+            + alpha * crate::camera::wrap_degrees(self.body_yaw - self.previous_body_yaw)
     }
     /// A server's stand on its client, each tick:
     /// `setOldPosAndRot` (`ClientLevel.tickNonPassenger`), then the step of
@@ -2096,9 +2102,11 @@ impl ArmorStand {
             self.yaw += crate::camera::wrap_degrees(yaw - self.yaw);
             self.pitch = (pitch % 360.0).clamp(-90.0, 90.0);
         }
+        self.previous_body_yaw = self.previous_yaw;
+        self.body_yaw = self.yaw;
     }
-    /// Put there at once, with nothing to blend from
-    /// (`Entity.snapTo`).
+    /// Snap position and view rotation without changing the body's or head's
+    /// yaw samples (`Entity.snapTo`).
     pub fn snap(&mut self, at: Vec3, yaw: f32, pitch: f32) {
         self.position = at;
         self.previous = at;
@@ -2129,7 +2137,11 @@ impl ArmorStand {
             previous: position,
             velocity: Vec3::ZERO,
             yaw,
+            body_yaw: yaw,
             previous_yaw: yaw,
+            previous_body_yaw: yaw,
+            head_yaw: yaw,
+            previous_head_yaw: yaw,
             equipment: Default::default(),
             small: false,
             show_arms: false,
@@ -3142,14 +3154,16 @@ mod armor_stand_render_tests {
         assert_eq!(stand.render_yaw(0.5), 190.0);
     }
 
-    /// A snap (a move too far to interpolate) leaves nothing to blend from.
+    /// A snap leaves no position or view samples to blend from. The body
+    /// keeps its own turn between ticks.
     #[test]
     fn a_snapped_stand_is_drawn_where_it_landed() {
         let mut stand = ArmorStand::new(1, Vec3::new(0.5, 70.0, 0.5), 0.0);
-        stand.interpolate(Some((Vec3::new(0.5, 69.0, 0.5), 0.0, 0.0)));
+        stand.interpolate(Some((Vec3::new(0.5, 69.0, 0.5), 20.0, 0.0)));
         stand.snap(Vec3::new(200.5, 64.0, 0.5), 90.0, 0.0);
         assert_eq!(stand.render_position(0.5), Vec3::new(200.5, 64.0, 0.5));
-        assert_eq!(stand.render_yaw(0.5), 90.0);
+        assert_eq!([stand.previous_yaw, stand.yaw], [90.0; 2]);
+        assert_eq!(stand.render_yaw(0.5), 10.0);
     }
 }
 #[cfg(test)]

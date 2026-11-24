@@ -1150,20 +1150,7 @@ impl Game<'_> {
                     // The block's item, a part's in its place, then the block
                     // entity's data on whichever won (addBlockDataToItem).
                     let include_data = g.creative && p.include_data;
-                    let stack = g.clone_stack(p.pos, include_data);
-                    let state = g.world.block(p.pos[0], p.pos[1], p.pos[2]);
-                    let mut replacement = None;
-                    if let Some(player) = g.native_acting_player() {
-                        g.native_clone_item_stack(
-                            g.dim.level(),
-                            sunrise_core::position::BlockPos::new(p.pos[0], p.pos[1], p.pos[2]),
-                            state,
-                            include_data,
-                            player,
-                            &mut replacement,
-                        );
-                    }
-                    let mut stack = replacement.or(stack)?;
+                    let mut stack = g.acting_clone_stack(p.pos, include_data)?;
                     if include_data {
                         g.add_block_data(p.pos, &mut stack);
                     }

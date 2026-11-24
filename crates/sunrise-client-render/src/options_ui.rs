@@ -1743,6 +1743,9 @@ pub enum Event {
     NativePackOptions(usize),
     /// Native mod `.0`'s page opened: the game reads its settings' kept values again.
     NativeSettings(usize),
+    /// Config was pressed for native mod `.0`, which has its own config screen
+    /// (`IConfigScreenFactory`): the game asks the mod to open it over this screen.
+    ModConfigScreen(usize),
     /// Setting `.1` of native mod `.0`'s page changed (`settings.mods`): the game keeps it and
     /// tells the mod (`setting_changed`).
     NativeSetting(usize, usize),
@@ -3365,6 +3368,15 @@ impl OptionsUi {
                 Do::None => {}
                 Do::OpenFolder => events.push(Event::OpenModFolder),
                 Do::Back => events.extend(self.back(s)),
+                Do::Config(i)
+                    if s.mods.is_on(i)
+                        && s.mods.installed[i]
+                            .native
+                            .as_ref()
+                            .is_some_and(|page| page.own_screen) =>
+                {
+                    events.push(Event::ModConfigScreen(i));
+                }
                 Do::Config(i) => {
                     self.push(Page::NativeMod(i));
                     events.push(Event::NativeSettings(i));
@@ -5577,6 +5589,17 @@ mod tests {
         let events = click(&mut ui, &mut s, 320.0, 223.0);
         assert_eq!(events.first(), Some(&Event::ButtonClick));
         assert_eq!(ui.page(), Page::Main);
+        // A mod with its own config screen (`IConfigScreenFactory`) has Config with no
+        // settings, and Config asks the game to open that screen over this one.
+        s.mods.installed[0].native = Some(crate::mod_list::NativePage {
+            own_screen: true,
+            ..Default::default()
+        });
+        ui.show(Page::Mods);
+        assert!(click(&mut ui, &mut s, 61.0, 76.0).is_empty());
+        let events = click(&mut ui, &mut s, 397.0, 192.0);
+        assert_eq!(events, vec![Event::ButtonClick, Event::ModConfigScreen(0)]);
+        assert_eq!(ui.page(), Page::Mods);
     }
 
     #[test]
@@ -6062,6 +6085,7 @@ mod tests {
                     ..Default::default()
                 }],
                 settings: Vec::new(),
+                own_screen: false,
             }),
         });
         ui.show(Page::KeyBinds);
@@ -6420,6 +6444,7 @@ mod tests {
                     tooltip: None,
                     value: crate::mod_list::NativeSettingValue::Toggle(true),
                 }],
+                own_screen: false,
             }),
         });
         let labels = lang::scoped(english(), || ui.extras.row_labels(&s)).0;

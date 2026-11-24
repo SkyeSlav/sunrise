@@ -76,7 +76,9 @@ The default version bump is `patch`. The version must increase and its tag must 
 locally or on `origin`. A root package gets `v<version>` and `.github/workflows/sunrise-release.yml`; a
 subfolder package gets `<id>/v<version>` and `.github/workflows/sunrise-release-<id>.yml`. A native release
 updates the mod manifest, Cargo manifest, and the mod's own entry in its committed `Cargo.lock` without
-changing its pinned dependencies.
+changing its pinned dependencies. Before it tags, the release check refuses a `Cargo.lock` that Cargo would change
+for the mod's manifests and its pinned SDK (`cargo fetch --locked`, the registry scan's own check); the shared
+release workflow runs the same check, and `pin <build>` with the pinned build regenerates the lock.
 
 `release --check` checks the proposed version and tag in a separate checkout. `release --pull-request` is for a
 branch that takes only pull requests: it commits on a new branch `release/<tag>` (which must not exist locally or
@@ -122,7 +124,7 @@ Run these commands in your native mod’s project folder.
 | --- | --- |
 | `cargo sunrise-mod internals sync` | Checks a trusted native mod's library against an isolated copy of its pinned game source with the Rust version named by its signed SDK. Replaces top-level `internals` with compiler-discovered paths, kinds and hashes, including uses inside globs and macros. Removes unused declarations, preserves retained entries and prints additions/removals. Skips discovery when the mod neither depends on `sunrise-internals` nor declares `internals`. Never runs automatically on build. |
 | `cargo sunrise-mod internals add <path>…` | Adds each declared internal and its tool-written hash to top-level `internals` in your mod's `sunrise-mod.toml`. Reads `internals.json` from the pinned SDK, or discovers a catalog with the mod's `[[native.module]]` tables applied. Unknown paths, shape-only entries and paths available only under a `cfg` are refused before the manifest is changed. Existing declarations are refreshed, not duplicated. |
-| `cargo sunrise-mod pin [<build>]` | Moves the mod's pin to the current Nightly's build (or the build given: a release tag such as `nightly-<date>`, `26.3-0.1.0` or `dev-<date>-<short sha>`, or a sha); the next command fetches its SDK into `.sunrise/sdk/`. `pin` fetches the destination SDK's `sdk.json` (into `.sunrise/cache/<build>/`) before changing `[native] sunrise`. It leaves any explicit `[native] mixins` revision and `Cargo.toml` alone. For a native mod's every declared internal, prints `missing`, `changed` (old signature → new signature), or `unchanged`, then refreshes the available hashes. Missing or gated declarations keep their old hash and must be removed or replaced before building. Build names: [build names](03-in-a-project.md#build-names). |
+| `cargo sunrise-mod pin [<build>]` | Moves the mod's pin to the current Nightly's build (or the build given: a release tag such as `nightly-<date>`, `26.3-0.1.0` or `dev-<date>-<short sha>`, or a sha); the next command fetches its SDK into `.sunrise/sdk/`. `pin` fetches the destination SDK's `sdk.json` (into `.sunrise/cache/<build>/`) before changing `[native] sunrise`. It leaves any explicit `[native] mixins` revision and `Cargo.toml` alone. A mod with a `Cargo.lock` gets the new SDK in `.sunrise/sdk/` at once, and `cargo update --workspace`, run with the SDK's Rust, brings the lock to it, keeping every registry pin still in use. For a native mod's every declared internal, prints `missing`, `changed` (old signature → new signature), or `unchanged`, then refreshes the available hashes. Missing or gated declarations keep their old hash and must be removed or replaced before building. Build names: [build names](03-in-a-project.md#build-names). |
 
 The native-mod commands run in the mod's project folder and preserve the manifest's comments and
 layout. `sync` performs a metadata-only `cargo check` on the current host, using default features;

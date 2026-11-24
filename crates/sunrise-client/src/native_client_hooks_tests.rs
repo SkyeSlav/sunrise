@@ -222,8 +222,8 @@ pub(crate) fn install() {
             fluid_flow: |context, _, _, flow| {
                 flow[0] += context.setting("rules_mod", "stack").map_or(0.0, |_| 1.0);
             },
-            sound_type: |context, _, _, entity, cause, sound| {
-                if context.setting("rules_mod", "stack").is_some()
+            sound_type: |level, _, _, entity, cause, sound| {
+                if level.context.setting("rules_mod", "stack").is_some()
                     && entity.is_some_and(|(_, kind)| kind == "minecraft:player")
                     && cause == mod_api::BlockSoundCause::Step
                 {

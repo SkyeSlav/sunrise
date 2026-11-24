@@ -9,8 +9,35 @@
 //! the mod's function reads and returns linear light, and the generated entry points convert
 //! from the quad's vanilla-space colour and to the frame, which stores vanilla's 2.2 encoding
 //! in every format the renderer draws today.
-use crate::check::{Problem, cost, cost_problems, located, problem, translate, validate};
-use crate::stages::Composed;
+//!
+//! The WGSL shader-pack checker uses [`check`] and [`guard`] as well, so a file is refused the
+//! same way by both.
+pub mod check;
+pub mod guard;
+
+use crate::check::{Composed, Problem, located, problem, translate, validate};
+
+/// The colour boundary of mod pipelines' generated entries (and of every WGSL pack 0.2 prelude):
+/// vanilla's 2.2 power both ways.
+pub const COLOR_HELPERS: &str = "\
+// Negatives and NaN made 0 (a comparison with NaN is false), so no `pow` sees them.
+fn sunrise_sanitize(c: vec3<f32>) -> vec3<f32> {
+    return select(vec3<f32>(0.0), c, c > vec3<f32>(0.0));
+}
+fn sunrise_decode(c: vec3<f32>) -> vec3<f32> {
+    return pow(sunrise_sanitize(c), vec3<f32>(2.2));
+}
+fn sunrise_encode(c: vec3<f32>) -> vec3<f32> {
+    return pow(sunrise_sanitize(c), vec3<f32>(1.0 / 2.2));
+}
+// Alpha is coverage: it stays as it is.
+fn sunrise_decode_rgba(c: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(sunrise_decode(c.rgb), c.a);
+}
+fn sunrise_encode_rgba(c: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(sunrise_encode(c.rgb), c.a);
+}
+";
 
 /// The folder under each namespace's `shaders` the fragment files are read from.
 pub const FOLDER: &str = "shaders/pipeline";
@@ -111,7 +138,7 @@ fn prelude(textured: bool) -> String {
     format!(
         "{PRELUDE_TYPES}{}{}",
         if textured { TEXTURE_PRELUDE } else { "" },
-        crate::stages::COLOR_HELPERS
+        COLOR_HELPERS
     )
 }
 
@@ -122,12 +149,13 @@ pub fn compose(file: &str, text: &str) -> Result<String, Vec<Problem>> {
 
 /// The whole shader of a pipeline whose file `file` holds `text`, with `pipeline_texture` when
 /// it is `textured`, or each reason the file is refused, located in the file where it has a
-/// span (the pack checker's [`Problem`], which prints `<file>:<line>:<column>: <message>`).
+/// span ([`Problem`], which prints `<file>:<line>:<column>: <message>`).
 ///
-/// The checks are the pack checker's, on the whole composed module, so the renderer's own
-/// prelude and entry points count as the mod's: its rules above, then naga validation,
-/// [`MAX_EXPRESSIONS`](crate::check::MAX_EXPRESSIONS) and [`MAX_TEXTURE_READS`](crate::check::MAX_TEXTURE_READS) over every function, and translation of the
-/// module to SPIR-V, MSL and HLSL with wgpu's options, refused naming the backend.
+/// The checks run on the whole composed module, so the renderer's own prelude and entry points
+/// count as the mod's: its rules above, then naga validation, and translation of the module to
+/// SPIR-V, MSL and HLSL with wgpu's options, refused naming the backend. There is no count of
+/// expressions or texture reads: as with a vanilla or NeoForge pipeline, what the driver compiles
+/// is drawn.
 ///
 /// The file is parsed and validated on a thread with the stack and the bounds of
 /// [`crate::guard`], so no file, whatever its shape, can crash the game: one that is too long or
@@ -196,12 +224,14 @@ fn compose_checked(file: &str, text: &str, textured: bool) -> Result<String, Vec
     let module = naga::front::wgsl::parse_str(&composed.text)
         .map_err(|e| vec![located(&composed, None, e.message().to_owned())])?;
     let info = validate(&composed, &module)?;
-    let mut problems = cost_problems(cost(&module), file, "pipeline shader");
-    problems.extend(translate(&module, &info, None, file));
-    if problems.is_empty() {
+    let refusals = translate(&module, &info, &Default::default());
+    if refusals.is_empty() {
         Ok(composed.text)
     } else {
-        Err(problems)
+        Err(refusals
+            .into_iter()
+            .map(|refusal| problem(file, refusal))
+            .collect())
     }
 }
 
@@ -392,75 +422,36 @@ fn pipeline_fragment(input: PipelineInput) -> vec4<f32> { return pipeline_textur
         assert!(!compose(GLOW).unwrap().contains("@group(1)"));
     }
 
-    /// The number a refusal gives before `what`, as in `20123 expressions; ...`.
-    fn count_before(message: &str, what: &str) -> usize {
-        let before = &message[..message.find(what).unwrap()];
-        before
-            .rsplit(' ')
-            .find(|word| !word.is_empty())
-            .unwrap()
-            .parse()
-            .unwrap()
-    }
-
-    /// The caps are the pack checker's: more than 20,000 expressions in the composed module is
-    /// refused naming the count and the cap, and a shader well under both passes.
+    /// A fragment of any cost the backends translate builds: one over the WGSL pack checker's 20,000
+    /// expressions and 64 texture reads included.
     #[test]
-    #[ignore = "daily"]
-    fn a_shader_over_the_expression_cap_is_refused_with_its_count() {
-        // Each `x = x + 1.0;` is a load, a literal and an addition: three expressions.
-        let steps = 7_000;
-        let big = format!(
-            "fn pipeline_fragment(input: PipelineInput) -> vec4<f32> {{\n    var x = input.color.r;\n{}    return vec4<f32>(x);\n}}\n",
-            "    x = x + 1.0;\n".repeat(steps)
+    fn a_fragment_over_the_pack_caps_builds() {
+        // 70 texture reads, then 4,100 statements of a few expressions each.
+        let shader = format!(
+            "fn pipeline_fragment(input: PipelineInput) -> vec4<f32> {{\n    var s = vec4<f32>(0.0);\n    var x = input.uv.x;\n{}{}    return s * x;\n}}\n",
+            "    s += textureLoad(sunrise_pipeline_texture, vec2(0), 0);\n".repeat(70),
+            "    x = x * x + x;\n".repeat(4_100),
         );
-        let message = compose(&big).unwrap_err();
+        let composed = compose_with(FILE, &shader, true).map_err(join).unwrap();
+        let module = naga::front::wgsl::parse_str(&composed).unwrap();
+        let (expressions, reads) =
+            module
+                .functions
+                .iter()
+                .map(|(_, f)| f)
+                .fold((0, 0), |(e, r), f| {
+                    (
+                        e + f.expressions.len(),
+                        r + f
+                            .expressions
+                            .iter()
+                            .filter(|(_, e)| matches!(e, naga::Expression::ImageLoad { .. }))
+                            .count(),
+                    )
+                });
         assert!(
-            message.starts_with(&format!("{FILE}: "))
-                && message.ends_with("a pipeline shader may hold 20000"),
-            "{message}"
-        );
-        let count = count_before(&message, " expressions;");
-        assert!(
-            (3 * steps..3 * steps + 1_000).contains(&count),
-            "the mod's {} expressions and the renderer's few hundred: {count}",
-            3 * steps
-        );
-        assert!(compose(GLOW).is_ok());
-    }
-
-    /// The cap is on the count itself: 20,000 expressions pass, one more is refused.
-    #[test]
-    fn the_expression_cap_is_exact() {
-        assert!(cost_problems((20_000, 64), FILE, "pipeline shader").is_empty());
-        let over = cost_problems((20_001, 65), FILE, "pipeline shader");
-        assert_eq!(
-            over.iter().map(Problem::to_string).collect::<Vec<_>>(),
-            [
-                format!("{FILE}: 20001 expressions; a pipeline shader may hold 20000"),
-                format!("{FILE}: 65 texture reads; a pipeline shader may write 64"),
-            ]
-        );
-    }
-
-    /// A textured pipeline reading its texture 64 times in its own code is refused: the
-    /// prelude's `pipeline_texture` is one more read, so the 64th of the mod's is over.
-    #[test]
-    fn a_textured_shader_over_the_texture_read_cap_is_refused() {
-        let shader = |reads: usize| {
-            let loads: String = (0..reads)
-                .map(|i| format!("    sum = sum + textureLoad(sunrise_pipeline_texture, vec2<i32>({i}, 0), 0);\n"))
-                .collect();
-            format!(
-                "fn pipeline_fragment(input: PipelineInput) -> vec4<f32> {{\n    var sum = vec4<f32>(0.0);\n{loads}    return sum * input.color;\n}}\n"
-            )
-        };
-        // 63 of the mod's reads and the prelude's one make the cap exactly.
-        assert!(compose_with(FILE, &shader(63), true).is_ok());
-        let message = join(compose_with(FILE, &shader(64), true).unwrap_err());
-        assert_eq!(
-            message,
-            format!("{FILE}: 65 texture reads; a pipeline shader may write 64")
+            expressions > 20_000 && reads > 64,
+            "{expressions} expressions, {reads} reads"
         );
     }
 

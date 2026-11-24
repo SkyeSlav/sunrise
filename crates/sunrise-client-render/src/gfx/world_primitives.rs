@@ -424,6 +424,7 @@ impl WorldPrimitives {
                 Self::standard_pipelines(device, &self.layout, format, linear, true, mask),
             ));
         }
+        self.pipelines.ensure_pack_pipelines(device, format, rgb);
     }
 
     fn standard_pipelines(
@@ -906,6 +907,87 @@ impl WorldPrimitives {
             ..Default::default()
         });
         self.draw_prepared_ranges(&mut pass, pipelines, false, draws)
+    }
+
+    /// Draws deferred custom geometry (`STAGE_CUSTOM_GEOMETRY`, including `ModPipelines` runs)
+    /// into a classic shader pack's active `colortex0` + `depthtex0` attachments.
+    pub(super) fn draw_pack_custom(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        color: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+    ) -> bool {
+        let Some((_, pipelines)) = &self.pack_pipelines else {
+            return false;
+        };
+        let Some(AtlasGroup { group, .. }) = &self.group else {
+            return false;
+        };
+        let [quads, quads_through, lines, lines_through] = spans(
+            self.counts,
+            &self.stage_ends,
+            STAGE_CUSTOM_GEOMETRY,
+            STAGE_CUSTOM_GEOMETRY,
+        );
+        let has_primitives = !(quads.is_empty()
+            && quads_through.is_empty()
+            && lines.is_empty()
+            && lines_through.is_empty());
+        let has_pipelines = self
+            .pipelines
+            .has_runs(STAGE_CUSTOM_GEOMETRY, STAGE_CUSTOM_GEOMETRY);
+        if !has_primitives && !has_pipelines {
+            return false;
+        }
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Classic pack custom geometry"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: color,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            ..Default::default()
+        });
+        if has_primitives {
+            pass.set_bind_group(0, group, &[]);
+            for (through, (quad_range, line_range)) in
+                [(quads, lines), (quads_through, lines_through)]
+                    .into_iter()
+                    .enumerate()
+            {
+                Self::draw_pages(
+                    &mut pass,
+                    &self.indices,
+                    (
+                        &pipelines.quad_pipelines[through],
+                        &pipelines.line_pipelines[through],
+                    ),
+                    (&self.quads, 0, quad_range),
+                    (&self.lines, 0, line_range),
+                );
+            }
+        }
+        if has_pipelines {
+            self.pipelines.draw_pack(
+                &mut pass,
+                &self.indices,
+                STAGE_CUSTOM_GEOMETRY,
+                STAGE_CUSTOM_GEOMETRY,
+            );
+        }
+        true
     }
 
     fn draw_prepared_ranges(

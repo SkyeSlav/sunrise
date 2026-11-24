@@ -5,6 +5,20 @@ use crate::*;
 #[sunrise_mod_api_macros::host_area]
 pub trait ItemsHost {
     /// Side: both.
+    /// Registered enchantments (`Registries.ENCHANTMENT`) in registry order, with `max_level`
+    /// (`Enchantment.getMaxLevel`), selection `weight`, `anvil_cost` (the base anvil fee per
+    /// enchantment level) and whether each is a curse. A server answers from its own registry,
+    /// data packs included; a client from the server's synced entries when it has them, and
+    /// the local table otherwise. The other enchantment reads use the same table.
+    fn enchantments(&self) -> Vec<EnchantmentInfo>;
+    /// Side: both.
+    /// `Enchantment.getMinCost(level)`: the enchanting power needed, or None for an unknown id.
+    fn enchantment_min_cost(&self, id: &str, level: u32) -> Option<i32>;
+    /// Side: both.
+    /// Whether `item` is in enchantment `id`'s `supported_items` (`Enchantment.isSupportedItem`);
+    /// false for an unknown id. Does not consult Item Part overrides.
+    fn enchantment_supports(&self, id: &str, item: ItemKey) -> bool;
+    /// Side: both.
     /// The most of the item `item` one slot holds (`Item.getDefaultMaxStackSize`),
     /// or `None` for an unknown item: for a mod's container that fills or
     /// merges stacks itself.
@@ -164,23 +178,11 @@ pub trait ItemsClientHost {
     /// reload, a different build, or without a live catalog, this returns an empty list.
     fn creative_search_items(&mut self) -> Vec<ItemStack>;
     /// Side: client.
-    /// Registered enchantments in registry order, including selection `weight` and `anvil_cost`
-    /// (the base anvil fee per enchantment level). This and the other enchantment reads use the
-    /// table built from the server's synced entries when available, and the local table otherwise.
-    fn enchantments(&self) -> Vec<EnchantmentInfo>;
-    /// Side: client.
     /// Registered potions (`Registries.POTION`), in registry order, each by its registry id:
     /// vanilla's 46, from `minecraft:water` to `minecraft:infested` (content mods cannot declare
     /// potions yet). The game builds the list once; each call copies it. A mod builds the potion, splash,
     /// lingering or tipped-arrow stack itself with the `minecraft:potion_contents` component.
     fn potions(&self) -> Vec<PotionInfo>;
-    /// Side: client.
-    /// `Enchantment.getMinCost(level)`: the enchanting power needed, or None for an unknown id.
-    fn enchantment_min_cost(&self, id: &str, level: u32) -> Option<i32>;
-    /// Side: client.
-    /// Whether `item` is in enchantment `id`'s `supported_items` (`Enchantment.isSupportedItem`).
-    /// Does not consult Item Part overrides.
-    fn enchantment_supports(&self, id: &str, item: ItemKey) -> bool;
 }
 /// The handles' reads of the `items` area, implemented by the game and reached through [`Backend`].
 // hidden: a handle's backend, reached through `Backend`; mods call the handle, never this trait
@@ -454,6 +456,11 @@ pub trait ItemsBackendMut {
         power: i32,
         pool: &Identifier,
     ) -> Result<Option<ItemStack>, StackWriteError>;
+    /// Side: server. The durability `stack`'s enchantments repair for `points` experience points
+    /// (`EnchantmentHelper.modifyDurabilityToRepairFromXp`), drawing from the active level's
+    /// random where an effect's conditions do.
+    fn item_resource_durability_to_repair_from_xp(&mut self, stack: &ItemStack, points: u32)
+    -> u32;
     /// Side: server.
     /// Puts up to `amount` of `resource` into slot `slot` of those `at`'s side reaches, as a hopper
     /// would (`canPlaceItem`, the slot's limit, the same item and components), in transaction

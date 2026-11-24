@@ -114,10 +114,13 @@ impl Game<'_> {
         let charts = self.debug_charts.corners(!self.has_singleplayer_server());
         !debug_takes(corner, self.debug, charts)
     }
-    /// A mod's own screen closes (Escape, or `mod_screen_close`).
+    /// A mod's own screen closes (Escape, or `mod_screen_close`): to the Mods screen when
+    /// its Config opened it (the parent screen NeoForge's `IConfigScreenFactory` returns to).
     pub(in crate::game) fn close_mod_screen(&mut self) {
         if self.screen == Screen::Mod {
-            if self.title.is_some() {
+            if self.native_mod_screen_parent {
+                self.set_screen(Screen::Options);
+            } else if self.title.is_some() {
                 self.close_mod_screen_to_title();
             } else {
                 self.set_screen(Screen::Playing);

@@ -1829,7 +1829,7 @@ fn mending_entries(stack: &ItemStack, slot: PlayerSlot, enchantments: &Enchantme
 /// repairs at the stack's `repair_with_xp` xp-per-point rate. Vanilla's
 /// `Enchantment.itemContext` puts the repaired stack in
 /// `LootContextParams.TOOL`, so `minecraft:match_tool` judges that item.
-fn repair_from_xp(
+pub(super) fn repair_from_xp(
     enchantments: &Enchantments,
     items: Option<&Items>,
     stack: &ItemStack,

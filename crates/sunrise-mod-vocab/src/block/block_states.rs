@@ -103,6 +103,9 @@ pub enum BlockClass {
     StainedGlassPane,
     /// `TrapDoorBlock`.
     TrapDoor,
+    /// `BonemealableBlock`: the blocks that take bone meal (crops, saplings, grass, stems,
+    /// rooted dirt), whether or not they are a valid target at a given place and moment.
+    Bonemealable,
 }
 
 /// An invalid constraint, identifying its index in the supplied list.
@@ -255,6 +258,12 @@ impl BlockStatesBackend for NoBlockTables {
         None
     }
     fn block_state_is_solid_render(&self, _: BlockState) -> Option<bool> {
+        None
+    }
+    fn block_state_propagates_skylight_down(&self, _: BlockState) -> Option<bool> {
+        None
+    }
+    fn block_state_is_air(&self, _: BlockState) -> Option<bool> {
         None
     }
     fn block_state_is_redstone_conductor(&self, _: BlockState) -> Option<bool> {
@@ -452,6 +461,18 @@ impl BlockStates<'_> {
     /// None as for `replaceable`.
     pub fn is_solid_render(&self, state: BlockState) -> Option<bool> {
         self.backend.block_state_is_solid_render(state)
+    }
+    /// `BlockState.propagatesSkylightDown()`: whether sky light passes down through `state`
+    /// unchanged, the block's own answer included (glass, barriers and vegetation override what
+    /// the shape would say), as `NetherrackBlock.isValidBonemealTarget` tests the block above.
+    /// None as for `replaceable`.
+    pub fn propagates_skylight_down(&self, state: BlockState) -> Option<bool> {
+        self.backend.block_state_propagates_skylight_down(state)
+    }
+    /// `BlockState.isAir()`: air, cave air and void air (`LevelReader.isEmptyBlock`), by the
+    /// block's own flag, not the `#minecraft:air` tag. None as for `replaceable`.
+    pub fn is_air(&self, state: BlockState) -> Option<bool> {
+        self.backend.block_state_is_air(state)
     }
     /// Whether `state`'s block is of vanilla class `class`, subclasses included (Java's
     /// `instanceof`). It reads the engine's class of the block, never a tag, so it does not move

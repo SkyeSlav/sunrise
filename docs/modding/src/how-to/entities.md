@@ -4,7 +4,22 @@ Pages for mods that work with players, mobs and other entities, and with the ser
 
 For custom status-effect behaviour, see [Ticking a registered mob effect](entities/effect-ticks.md).
 
-`EntityRef::body_yaw(host)` reads a mob's stored body rotation on the server, in degrees without normalization. This is separate from its head rotation. It returns `None` for stale or removed entities, clients, players and other non-mobs, including dragon parts. The ender dragon returns its stored flight/body yaw. In a mob goal, the active mob and disjoint live mobs are read from the goal's view.
+`EntityRef::body_yaw(host)` reads stored living body rotation, in degrees without normalization.
+It is available for live server mobs, armor stands, the ender dragon and players with a live body;
+on a client it reads only the local player's avatar. Stale handles, nonliving entities and dragon
+parts have no body yaw. In a mob goal, the active mob and disjoint live mobs are read from the goal's view.
+
+`EntityRef::set_body_yaw(server_host, degrees)` changes the current body rotation, not the previous
+angle used for interpolation, the head, or the view. Like vanilla's `LivingEntity.setYBodyRot`, it
+neither normalizes the angle nor sends a packet. The dragon's body turn does not steer its flight.
+Vanilla's overrides still apply: silverfish and endermites also turn their view for a finite angle;
+armor stands update the previous view angle and both head angles instead of assigning current body yaw.
+On the client, use `PlayerRef::set_body_yaw(client_host, degrees)` on the local player. It changes the
+live avatar's stored angle, not a pose already extracted for rendering. For a player riding a living
+mount, pose extraction uses the mount's interpolated body and the rider's head instead. A boat assigns
+its own yaw directly to its passenger when positioning them.
+Both setters return `Ok(false)` for an inapplicable or stale handle and a typed refusal from a host
+that cannot write living state.
 
 Use `entity.set_persistent(host, false)` from a server hook to keep a temporary entity, such as a display,
 out of future world saves. It stays live until it is removed or its chunk unloads. Passing `true` restores

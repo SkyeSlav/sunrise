@@ -64,4 +64,12 @@ pub trait ClientTextClientHost {
     #[forward_api_inputs]
     #[forward_api_output]
     fn text_split(&self, text: &Text, width: i32) -> Vec<Text>;
+
+    /// Side: client.
+    /// `Language.isDefaultRightToLeft`, the flag `Font.isBidirectional` reads: whether the
+    /// active language reads right to left (its `bidirectional` in a pack's `language`
+    /// section), false for the default language. Lay out a row of GUI or tooltip pieces in
+    /// reading order with it. Available outside drawing and outside a logged-in world,
+    /// including client setup, as the other text reads are.
+    fn language_right_to_left(&self) -> bool;
 }

@@ -64,9 +64,11 @@ pub trait PlayerInteractionBackendMut {
     /// one tick of mining removes at `pos`, using the tool in `player`'s selected hotbar
     /// slot (never the offhand), the block's hardness, efficiency, effects, block-break
     /// speed, submerged mining and the on-ground penalty, then the `can_harvest_block`,
-    /// `player_harvest_check` and `player_break_speed` hooks. `0.0` for an unbreakable
-    /// state. Nothing requires `pos` to hold `state`. A server asks a connected or fake
-    /// player (their state swapped in); a client only its local player.
+    /// `player_harvest_check` and `player_break_speed` hooks; or, in place of all that, a block
+    /// Part's `destroy_progress` answer for `state`, except from inside such an answer, where it
+    /// is that math. `0.0` for an unbreakable state. Nothing requires `pos` to hold `state`. A
+    /// server asks a connected or fake player (their state swapped in); a client only its local
+    /// player.
     /// None for a stale handle or player, an unknown block state, a dead server player, a
     /// level other than the one in place, and a call from inside one of those hooks, which
     /// would run it again without bound.
@@ -77,6 +79,23 @@ pub trait PlayerInteractionBackendMut {
         pos: [i32; 3],
         state: BlockState,
     ) -> Option<f32>;
+    /// Side: server.
+    /// `BlockState.getCloneItemStack(level, pos, include_data)` for `player`: the stack Pick
+    /// Block gives for the block at `pos`, the answer `ServerGamePacketListenerImpl
+    /// .handlePickItemFromBlock` takes, before it copies block-entity data onto it
+    /// (`addBlockDataToItem`). It is the block's own item (a crop's seed, a piston head's
+    /// piston...) unless a block Part's `clone_item_stack` answers in its place, so it **runs
+    /// that hook** with this player. `include_data` is what the block is told, true for a
+    /// creative pick with Ctrl. Neither reach nor game mode is checked, and nothing is given.
+    /// None for an empty stack (air), a stale handle or player, a dead player, a level other
+    /// than the one in place, an unloaded position and a client.
+    fn player_clone_item_stack(
+        &mut self,
+        player: PlayerRef,
+        level: LevelRef,
+        pos: [i32; 3],
+        include_data: bool,
+    ) -> Option<ItemStack>;
     /// Side: both.
     /// `Player.hasCorrectToolForDrops(state, level, pos)` and `IBlockExtension.canHarvestBlock`
     /// in one answer: whether the tool in `player`'s selected hotbar slot (never the offhand)

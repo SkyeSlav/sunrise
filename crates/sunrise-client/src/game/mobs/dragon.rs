@@ -442,6 +442,10 @@ pub(in crate::game) struct Dragon {
     pub yaw: f32,
     pub pitch: f32,
     pub previous_yaw: f32,
+    /// LivingEntity.yBodyRot, distinct from the flight and part yaw.
+    pub body_yaw: f32,
+    head_yaw: f32,
+    body_rotation: sunrise_client::mobs::control::BodyRotation,
     yaw_accel: f32,
     pub health: f32,
     pub hurt_time: i32,
@@ -699,6 +703,9 @@ impl Dragon {
             yaw,
             pitch: 0.0,
             previous_yaw: yaw,
+            body_yaw: yaw,
+            head_yaw: yaw,
+            body_rotation: Default::default(),
             yaw_accel: 0.0,
             health: MAX_HEALTH,
             hurt_time: 0,
@@ -2744,8 +2751,24 @@ impl Game<'_> {
             [look[0] / norm, look[1] / norm, look[2] / norm]
         }
     }
-    /// `EnderDragon.aiStep` (and `tickDeath`) for the dragon's own entity tick.
+    /// The inherited LivingEntity.tick runs Mob.tickHeadTurn after aiStep.
     pub(super) fn tick_dragon(&mut self) {
+        self.dragon_ai_step();
+        if let Some(d) = self.dragon.as_mut() {
+            let (dx, dz) = (d.position.x - d.previous.x, d.position.z - d.previous.z);
+            // EnderDragon inherits Mob.getMaxHeadYRot (75 degrees).
+            d.body_rotation.tick(
+                dx * dx + dz * dz,
+                d.yaw,
+                &mut d.body_yaw,
+                &mut d.head_yaw,
+                75.0,
+            );
+        }
+    }
+
+    /// `EnderDragon.aiStep` (and `tickDeath`) for the dragon's own entity tick.
+    fn dragon_ai_step(&mut self) {
         // updateDragon runs when the fight dragon ticks or dies, but not with NoAI.
         let ticks = self.dragon.as_ref().is_some_and(|d| !d.alive() || !d.no_ai);
         if ticks && self.is_fight_dragon() {
@@ -2925,6 +2948,8 @@ impl Game<'_> {
                 d.velocity.z * slide,
             );
         }
+        // EnderDragon.aiStep assigns the body's angle after flight, before placing parts.
+        d.body_yaw = d.yaw;
         self.place_dragon_parts();
         self.dragon_contacts();
         // The chunks the dragon passes through re-save their entity lists.
@@ -4695,6 +4720,9 @@ impl Game<'_> {
         let yaw = self.world.random.next_float() * 360.0;
         let seed = random_source::unique_seed();
         let mut dragon = Dragon::new(Vec3::new(0.0, 128.0, 0.0), yaw, seed);
+        // The fight's snapTo sets only the view yaw, not the new living angles.
+        dragon.body_yaw = 0.0;
+        dragon.head_yaw = 0.0;
         dragon.join = sunrise_client::join_seq::JoinSeq::next();
         dragon.id = self.next_entity + 1;
         dragon.phase = Phase::Holding {
@@ -6832,6 +6860,28 @@ pub(in crate::game) mod tests {
         // Past 1.0 or NaN, `Math.acos` is NaN and the gate refuses, as vanilla's does.
         assert!(strafe_angle(f32::from_bits(0x3f80_0001)).is_nan());
         assert!(strafe_angle(f32::NAN).is_nan());
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_stationary_no_ai_dragon_runs_its_living_body_turn() {
+        super::super::native_entity_refs::tests::with_game(|game| {
+            game.create_new_dragon();
+            let dragon = game.dragon.as_mut().unwrap();
+            assert_ne!(dragon.yaw, 0.0);
+            assert_eq!((dragon.body_yaw, dragon.head_yaw), (0.0, 0.0));
+            dragon.yaw = 35.0;
+            dragon.no_ai = true;
+            dragon.head_yaw = 90.0;
+            let id = dragon.id;
+            let entity = game.entity(id).unwrap();
+            assert_eq!(entity.set_body_yaw(game, 0.0), Ok(true));
+            game.tick_dragon();
+            // The changed head is 90 degrees off the raw body. With a 75
+            // degree limit the controller turns the body by 15, not the view.
+            assert_eq!(entity.body_yaw(game), Some(15.0));
+            assert_eq!(game.dragon.as_ref().unwrap().yaw, 35.0);
+        });
     }
 
     #[test]

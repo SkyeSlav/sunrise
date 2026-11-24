@@ -246,8 +246,9 @@ impl<'a> GoalContext<'a> {
     /// as [`MobRef::move_to_path`](crate::MobRef::move_to_path) does on the
     /// handle. The engine classifies each node's type on submit and trims the
     /// path; the path is followed as given rather than judged by that type.
-    /// A supplied path keeps no recompute target, so a block change on it or
-    /// the stuck check drops it without a search. As in vanilla, a goal of the
+    /// As in vanilla, a block change on the path re-searches to the target the
+    /// navigation last searched for (with none, the path is kept), and the
+    /// stuck check drops it. As in vanilla, a goal of the
     /// mob's own that creates a path replaces this one next tick. The mob this
     /// goal runs on is always there, so the refusals are `NotFinite` and
     /// `Empty`, the same [`MoveToPathError`] the handle answers.

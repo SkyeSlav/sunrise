@@ -317,6 +317,7 @@ impl Game<'_> {
                 position_packet_pitch(m.previous_head_pitch, p.pitch, relative_pitch);
             m.head_pitch = pitch;
         }
+        self.ensure_player_model();
         if let Some(id) = self.remote.as_mut().and_then(|r| r.ghast_dismount.take()) {
             self.place_ghast_under(id, position);
         }

@@ -143,7 +143,7 @@ fn should_run_idle_maintenance(paused: bool) -> bool {
 /// A level that is not in place: every per-level field of `Game`.
 pub(super) struct Parked {
     pub(super) world: World,
-    streaming: Streaming,
+    pub(super) streaming: Streaming,
     locator: Option<Arc<VanillaTerrain>>,
     pub(super) save: Arc<SaveDir>,
     block_ticks: Ticks,
@@ -1825,6 +1825,7 @@ impl Game<'_> {
                 || self.should_tick_level(dim)
                 || self.needs_view_pass(dim)
                 || self.has_spawn_tickets(dim)
+                || self.has_async_chunk_requests(dim)
                 || self.vehicle_waits_in(dim)
             {
                 continue;
@@ -1849,6 +1850,7 @@ impl Game<'_> {
         self.streaming.paused = false;
         self.streaming.force_unload_sweep();
         let evicted = self.update_world_with_eviction(true);
+        self.rebuild_chunk_tickets(false);
         self.streaming.radius = prev_radius;
         self.streaming.paused = prev_paused;
         self.streaming.extra = prev_extra;
@@ -1925,6 +1927,9 @@ impl Game<'_> {
         }
         self.attachment_indexes.remove(&dim);
         self.passages.retire_level(dim.key());
+        self.clear_async_chunk_requests_for_dim(dim);
+        self.close_saved_chunk_readers_for_dim(dim);
+        self.close_detached_generators_for_dim(dim);
     }
 
     /// `MinecraftServer.stopServer`'s `level.close()` loop: close every loaded

@@ -542,6 +542,8 @@ impl mod_api::LevelHost for FireOddsLevel<'_> {
         fn raw_brightness(pos: [i32; 3], sky_darken: i32) -> i32;
         fn is_loaded(pos: [i32; 3]) -> bool;
         fn enabled_features() -> mod_api::FeatureFlags;
+        fn is_raining() -> Option<bool>;
+        fn sky_darken() -> Option<i32>;
     }
 
     fn has_item_capability(&self, pos: [i32; 3], side: Option<mod_api::Direction>) -> Option<bool> {
@@ -847,6 +849,12 @@ impl mod_api::LevelHost for super::GameLevel<'_> {
             && self
                 .behaviours
                 .is_raining_at(self, BlockPos::new(pos[0], pos[1], pos[2]))
+    }
+    fn is_raining(&self) -> Option<bool> {
+        Some(self.raining)
+    }
+    fn sky_darken(&self) -> Option<i32> {
+        Some(self.darken)
     }
     fn enabled_features(&self) -> mod_api::FeatureFlags {
         mod_api::FeatureFlags::new(self.enabled_features.clone())
@@ -1443,6 +1451,12 @@ impl<
     }
     fn is_raining_at(&self, pos: [i32; 3]) -> bool {
         mod_api::LevelHost::is_raining_at(&*self.level, pos)
+    }
+    fn is_raining(&self) -> Option<bool> {
+        mod_api::LevelHost::is_raining(&*self.level)
+    }
+    fn sky_darken(&self) -> Option<i32> {
+        mod_api::LevelHost::sky_darken(&*self.level)
     }
     fn enabled_features(&self) -> mod_api::FeatureFlags {
         mod_api::LevelHost::enabled_features(&*self.level)

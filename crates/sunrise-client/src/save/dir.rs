@@ -516,6 +516,73 @@ impl SaveDir {
         chunk.entities = sunrise_world::chunk::legacy_entities(&root.tag);
         Ok(Some(chunk))
     }
+    /// Read the last saved state of full chunk `(x, z)` from pending writes or its `.mca` file
+    /// directly read-only, without touching gameplay `RegionCache`, loading entities, or firing
+    /// mod hooks. Safe to call concurrently from background worker threads.
+    pub fn read_saved_chunk_readonly(
+        &self,
+        x: i32,
+        z: i32,
+        registry: &BlockRegistry,
+        biomes: &Biomes,
+    ) -> Result<Option<Chunk>> {
+        let pending = self
+            .pending
+            .lock()
+            .map_err(|_| "pending writes poisoned")?
+            .get(&(Folder::Region, x, z))
+            .map(|(_, r)| r.clone());
+        let mut root = if let Some(record) = pending {
+            let tag = compression_pool::catch_encoding_panic(|| Ok(record.tag_for_metadata()))?;
+            let Some(tag) = tag else {
+                return Ok(None);
+            };
+            (*tag).clone()
+        } else {
+            let Some(root) =
+                region::read_region_record_readonly(self.region_storage(Folder::Region), x, z)?
+            else {
+                return Ok(None);
+            };
+            root
+        };
+        self.upgrade_record(Folder::Region, &mut root)?;
+        let Some(mut chunk) = decode_readonly_full(&root, (x, z), registry, biomes, self.shape)?
+        else {
+            return Ok(None);
+        };
+        load_light(&root.tag, &mut chunk, self.shape.sky_light);
+        Ok(Some(chunk))
+    }
+    /// List chunk coordinates present in region `(rx, rz)`'s 8 KiB sector header unioned with
+    /// pending unflushed writes (excluding pending deletes), without decompressing chunk payloads.
+    pub fn saved_region_chunks(&self, rx: i32, rz: i32) -> Result<Vec<[i32; 2]>> {
+        // Snapshot pending writes BEFORE reading the region header so a chunk flushed between the
+        // two steps cannot be missed (`writes.rs` removes from `pending` only after writing disk).
+        let mut pending_added = Vec::new();
+        let mut pending_deleted = Vec::new();
+        {
+            let pending = self.pending.lock().map_err(|_| "pending writes poisoned")?;
+            for (&(folder, x, z), (_, record)) in pending.iter() {
+                if folder == Folder::Region && (x >> 5) == rx && (z >> 5) == rz {
+                    if matches!(record.source(), Record::Delete) {
+                        pending_deleted.push([x, z]);
+                    } else {
+                        pending_added.push([x, z]);
+                    }
+                }
+            }
+        }
+        let mut chunks =
+            region::list_region_chunks_readonly(self.region_storage(Folder::Region), rx, rz)?;
+        if !pending_deleted.is_empty() {
+            chunks.retain(|pos| !pending_deleted.contains(pos));
+        }
+        chunks.extend(pending_added);
+        chunks.sort_unstable();
+        chunks.dedup();
+        Ok(chunks)
+    }
     /// A proto chunk saved before it became final (`decode_proto`).
     pub fn load_proto(
         &self,

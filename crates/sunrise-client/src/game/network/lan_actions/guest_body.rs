@@ -52,6 +52,14 @@ pub(super) fn initialize(resources: &MotionResources, guest: &mut Guest) -> bool
         return false;
     };
     let mut motion = motion;
+    motion.body_yaw = guest.carried_body_yaw.take().unwrap_or_else(|| {
+        // Entity.load initializes the joining player's body yaw from its saved view.
+        if guest.saved.is_some() {
+            guest.yaw
+        } else {
+            0.0
+        }
+    });
     let spectator = guest.spectator();
     motion.spectator = spectator;
     motion.local_spectator = spectator;
@@ -289,6 +297,7 @@ impl Game<'_> {
             self.as_guest(conn, |game| {
                 game.handle_shoulder_entities();
                 let rules = game.world.health_rules;
+                let blocking = game.player_blocking_component().is_some();
                 let Some(player) = game.player.as_mut() else {
                     return;
                 };
@@ -310,6 +319,14 @@ impl Game<'_> {
                 let Some(player) = game.player.as_mut().filter(|p| p.entity_id as u32 == id) else {
                     return;
                 };
+                player.body_yaw = sunrise_client::mobs::living::player_body_yaw(
+                    player.body_yaw,
+                    game.yaw,
+                    0.0,
+                    0.0,
+                    game.swing.animation > 0.0,
+                    blocking,
+                );
                 let events = std::mem::take(&mut player.events);
                 game.record_combat(&events);
             });
@@ -529,9 +546,21 @@ impl Game<'_> {
             // even when the level and its mobs are frozen. Flush their damage
             // events and marked velocity through the existing guest path.
             game.touch_pufferfish();
+            let blocking = body && game.player_blocking_component().is_some();
             let Some(player) = game.player.as_mut() else {
                 return (events, None, ServerTravel::Continue);
             };
+            if body {
+                let movement = player.position.subtract(vector(at));
+                player.body_yaw = sunrise_client::mobs::living::player_body_yaw(
+                    player.body_yaw,
+                    game.yaw,
+                    movement.x,
+                    movement.z,
+                    game.swing.animation > 0.0,
+                    blocking,
+                );
+            }
             // Landing damage from this travel reaches the tracker too.
             events.append(&mut player.events);
             // A hurt since the last tick marked the velocity (Entity.markHurt):

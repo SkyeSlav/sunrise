@@ -215,6 +215,7 @@ impl FrameHooks for WorldStageProbe {
         Batch {
             lines_through: &lines[..1],
             lines: &lines[1..],
+            stage_ends: [[0, 0, 1, 1]; client::gfx::world_primitives::STAGES - 1],
             ..Default::default()
         }
     }
@@ -594,14 +595,12 @@ fn fixture(window: Arc<Window>, out: &Path) -> Result<(), Box<dyn std::error::Er
         !hooks.stages.contains(&Stage::AfterSky),
         "a dimension with no skybox has no sky stage"
     );
-    assert!(
-        !hooks.stages.contains(&Stage::AfterOpaqueBlocks),
-        "the pack owns terrain"
-    );
     assert!(hooks.stages.contains(&Stage::AfterTranslucentParticles));
     assert!(hooks.stages.ends_with(&[
+        Stage::AfterOpaqueBlocks,
         Stage::AfterOpaqueFeatures,
         Stage::AfterTranslucentFeatures,
+        Stage::AfterTranslucentBlocks,
         Stage::AfterLevel
     ]));
     assert_eq!(hooks.prepared_after_sky, Some(false));
@@ -708,11 +707,13 @@ fn fixture(window: Arc<Window>, out: &Path) -> Result<(), Box<dyn std::error::Er
     assert!(
         classic.stages.ends_with(&[
             Stage::AfterSky,
+            Stage::AfterOpaqueBlocks,
             Stage::AfterOpaqueFeatures,
             Stage::AfterTranslucentFeatures,
+            Stage::AfterTranslucentBlocks,
             Stage::AfterLevel
         ]),
-        "the pack sky follows the engine world stages and precedes the end of the pack world: {:?}",
+        "the pack sky, block, and feature stages follow the engine world stages and precede AfterLevel: {:?}",
         classic.stages
     );
     assert_eq!(
@@ -745,8 +746,10 @@ fn fixture(window: Arc<Window>, out: &Path) -> Result<(), Box<dyn std::error::Er
         if boss_world_fog {
             assert!(end.stages.ends_with(&[
                 Stage::AfterSky,
+                Stage::AfterOpaqueBlocks,
                 Stage::AfterOpaqueFeatures,
                 Stage::AfterTranslucentFeatures,
+                Stage::AfterTranslucentBlocks,
                 Stage::AfterLevel
             ]));
         } else {
@@ -868,8 +871,10 @@ fn fixture(window: Arc<Window>, out: &Path) -> Result<(), Box<dyn std::error::Er
     );
     assert!(celestial_hooks.stages.ends_with(&[
         Stage::AfterSky,
+        Stage::AfterOpaqueBlocks,
         Stage::AfterOpaqueFeatures,
         Stage::AfterTranslucentFeatures,
+        Stage::AfterTranslucentBlocks,
         Stage::AfterLevel,
     ]));
     frame.celestial = &[];

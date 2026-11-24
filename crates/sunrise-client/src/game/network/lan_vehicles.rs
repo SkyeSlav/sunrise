@@ -291,6 +291,10 @@ impl Game<'_> {
                     return None;
                 }
                 let p = game.player_boat_seat(i);
+                // AbstractBoat.positionRider's clampRotation sets the raw body yaw.
+                if let Some(player) = &mut game.player {
+                    player.body_yaw = game.boats[i].yaw;
+                }
                 return Some([p.x, p.y, p.z]);
             }
             // The minecart moves with the rider's input, and lets it out when

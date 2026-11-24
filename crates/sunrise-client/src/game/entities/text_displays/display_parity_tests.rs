@@ -337,7 +337,7 @@ fn display_camera_angles_and_billboard_use_active_camera_not_player_26_3() {
                 83083,
                 "minecraft:block_display",
                 pos,
-                (ent_yaw, ent_pitch),
+                [ent_yaw, ent_pitch, 0.0],
                 0
             ));
             let d = game.text_displays.get_mut(&83083).unwrap();
@@ -407,7 +407,7 @@ fn no_culling_text_displays_are_not_frustum_culled_26_3() {
             1001,
             "minecraft:text_display",
             [0.5, 301.62, 0.5],
-            (0.0, 0.0),
+            [0.0; 3],
             0,
         ));
         game.text_displays.get_mut(&1001).unwrap().metadata(&[
@@ -426,7 +426,7 @@ fn no_culling_text_displays_are_not_frustum_culled_26_3() {
             1002,
             "minecraft:text_display",
             [0.5, 301.62, -1.0],
-            (0.0, 0.0),
+            [0.0; 3],
             0,
         ));
         game.text_displays.get_mut(&1002).unwrap().metadata(&[
@@ -447,7 +447,7 @@ fn no_culling_text_displays_are_not_frustum_culled_26_3() {
             1003,
             "minecraft:text_display",
             [0.5, 301.62, 2.0],
-            (0.0, 0.0),
+            [0.0; 3],
             0,
         ));
         game.text_displays.get_mut(&1003).unwrap().metadata(&[
@@ -499,7 +499,7 @@ fn display_lifecycle_pre_tick_deferred_swap_live_culling_and_culled_progress_26_
 
         // 1. BlockDisplay: no rendering pre-tick or after empty tick; first metadata tick snaps; swap defers to tick.
         let bd_case = &lc["block_display_pre_tick_and_swap"];
-        assert!(game.spawn_remote_object(2001, "minecraft:block_display", [0.0; 3], (0.0, 0.0), 0));
+        assert!(game.spawn_remote_object(2001, "minecraft:block_display", [0.0; 3], [0.0; 3], 0));
         let mut out = Vec::new();
         game.block_item_display_geometry(DVec3::ZERO, 1.0, &mut out);
         assert_eq!(
@@ -574,7 +574,7 @@ fn display_lifecycle_pre_tick_deferred_swap_live_culling_and_culled_progress_26_
         // 2. ItemDisplay: pre-tick renders nothing; item & context swap defers to tick.
         game.text_displays.clear();
         let id_case = &lc["item_display_pre_tick_and_swap"];
-        assert!(game.spawn_remote_object(2002, "minecraft:item_display", [0.0; 3], (0.0, 0.0), 0));
+        assert!(game.spawn_remote_object(2002, "minecraft:item_display", [0.0; 3], [0.0; 3], 0));
         game.text_displays.get_mut(&2002).unwrap().show(
             &[(24, 0, Value::Byte(6))],
             Some(Some(ItemStack::new("minecraft:end_crystal", 1))),
@@ -607,7 +607,7 @@ fn display_lifecycle_pre_tick_deferred_swap_live_culling_and_culled_progress_26_
             2003,
             "minecraft:text_display",
             [0.5, 301.62, 0.5],
-            (0.0, 0.0),
+            [0.0; 3],
             0,
         ));
         game.text_displays.get_mut(&2003).unwrap().metadata(&[(
@@ -689,7 +689,7 @@ fn display_lifecycle_pre_tick_deferred_swap_live_culling_and_culled_progress_26_
         // 4. last_progress must NOT advance during frames where the display is culled.
         game.text_displays.clear();
         let culled_case = &lc["last_progress_while_culled"];
-        assert!(game.spawn_remote_object(2004, "minecraft:text_display", [0.0; 3], (0.0, 0.0), 0));
+        assert!(game.spawn_remote_object(2004, "minecraft:text_display", [0.0; 3], [0.0; 3], 0));
         game.text_displays.get_mut(&2004).unwrap().metadata(&[
             (23, 0, Value::Text(Tag::String("C".into()))),
             (11, 0, Value::Floats(vec![0.0, 0.0, 0.0])),
@@ -745,7 +745,7 @@ fn display_lifecycle_pre_tick_deferred_swap_live_culling_and_culled_progress_26_
         // 5. Rendering during duration == 0 must return 1.0 without overwriting last_progress.
         game.text_displays.clear();
         let dur_case = &lc["duration_zero_and_negative"];
-        assert!(game.spawn_remote_object(2005, "minecraft:text_display", [0.0; 3], (0.0, 0.0), 0));
+        assert!(game.spawn_remote_object(2005, "minecraft:text_display", [0.0; 3], [0.0; 3], 0));
         game.text_displays.get_mut(&2005).unwrap().metadata(&[
             (23, 0, Value::Text(Tag::String("Z".into()))),
             (11, 0, Value::Floats(vec![0.0, 0.0, 0.0])),
@@ -820,13 +820,7 @@ fn text_display_render_order_solid_split_and_see_through_sort_26_3() {
         let initial_ids = [83226, 83191, 83242, 83102, 83249, 83232, 83100, 83250];
         let mut expected_bgs = Vec::new();
         for (idx, &eid) in initial_ids.iter().enumerate() {
-            assert!(game.spawn_remote_object(
-                eid,
-                "minecraft:text_display",
-                [0.0; 3],
-                (0.0, 0.0),
-                0
-            ));
+            assert!(game.spawn_remote_object(eid, "minecraft:text_display", [0.0; 3], [0.0; 3], 0));
             let argb = 0xFF00_0001u32 + idx as u32;
             let abgr =
                 0xFF00_0000u32 | ((argb & 0xFF) << 16) | (argb & 0xFF00) | ((argb >> 16) & 0xFF);
@@ -881,7 +875,7 @@ fn text_display_render_order_solid_split_and_see_through_sort_26_3() {
                 3001,
                 "minecraft:text_display",
                 [0.0; 3],
-                (0.0, 0.0),
+                [0.0; 3],
                 0
             ));
             game.text_displays.get_mut(&3001).unwrap().metadata(&[
@@ -957,7 +951,7 @@ fn text_display_render_order_solid_split_and_see_through_sort_26_3() {
                 id,
                 "minecraft:text_display",
                 [0.0, 0.0, z],
-                (0.0, 0.0),
+                [0.0; 3],
                 0
             ));
             game.text_displays.get_mut(&id).unwrap().metadata(&[
@@ -1039,7 +1033,7 @@ fn text_display_resolves_inline_player_head_profiles_26_3() {
             83225,
             "minecraft:text_display",
             [0.5, 301.62, 0.5],
-            (0.0, 0.0),
+            [0.0; 3],
             0,
         ));
         game.text_displays
@@ -1095,7 +1089,7 @@ fn block_display_backface_culling_translucent_pass_and_light_emission_26_3() {
                 id,
                 "minecraft:block_display",
                 [0.5, 64.0, 0.5],
-                (0.0, 0.0),
+                [0.0; 3],
                 0,
             ));
             game.text_displays
@@ -1193,7 +1187,7 @@ fn display_name_tags_and_fire_block_light_match_vanilla_26_3() {
         game.world.chunks.insert((0, 0), std::sync::Arc::new(chunk));
 
         // 1. Display name tags.
-        assert!(game.spawn_remote_object(6001, "minecraft:text_display", [0.0; 3], (0.0, 0.0), 0));
+        assert!(game.spawn_remote_object(6001, "minecraft:text_display", [0.0; 3], [0.0; 3], 0));
         game.text_displays.get_mut(&6001).unwrap().metadata(&[
             (2, 0, Value::OptText(Some(Tag::String("DisplayTag".into())))),
             (3, 0, Value::Bool(true)),
@@ -1274,7 +1268,7 @@ fn display_name_tags_and_fire_block_light_match_vanilla_26_3() {
             6002,
             "minecraft:block_display",
             [0.5, 64.0, 0.5],
-            (0.0, 0.0),
+            [0.0; 3],
             0,
         ));
         {
@@ -1330,7 +1324,7 @@ fn section_compiled_and_visible_gates_displays_and_mobs_26_3() {
             7001,
             "minecraft:text_display",
             [0.5, 65.5, 3.5],
-            (0.0, 0.0),
+            [0.0; 3],
             0,
         ));
         game.text_displays.get_mut(&7001).unwrap().metadata(&[(
@@ -1342,7 +1336,7 @@ fn section_compiled_and_visible_gates_displays_and_mobs_26_3() {
             7002,
             "minecraft:block_display",
             [0.5, 65.5, 3.5],
-            (0.0, 0.0),
+            [0.0; 3],
             0,
         ));
         game.text_displays
@@ -1413,7 +1407,7 @@ fn section_compiled_and_visible_gates_displays_and_mobs_26_3() {
                 id,
                 "minecraft:text_display",
                 [0.5, y, 3.5],
-                (0.0, 0.0),
+                [0.0; 3],
                 0,
             ));
             game.text_displays.get_mut(&id).unwrap().metadata(&[(
@@ -1485,7 +1479,7 @@ fn bold_missing_glyph_displays_and_block_display_83224_match_vanilla_26_3() {
                 83100,
                 "minecraft:text_display",
                 ent_pos,
-                (ent_yaw, ent_pitch),
+                [ent_yaw, ent_pitch, 0.0],
                 0,
             ));
             game.text_displays.get_mut(&83100).unwrap().metadata(&[
@@ -1566,9 +1560,7 @@ fn bold_missing_glyph_displays_and_block_display_83224_match_vanilla_26_3() {
             .default_state("minecraft:lime_concrete")
             .unwrap();
         game.text_displays.clear();
-        assert!(
-            game.spawn_remote_object(83224, "minecraft:block_display", ent_pos, (0.0, 0.0), 0,)
-        );
+        assert!(game.spawn_remote_object(83224, "minecraft:block_display", ent_pos, [0.0; 3], 0,));
         {
             let d = game.text_displays.get_mut(&83224).unwrap();
             d.show(&[(23, 0, Value::Id(lime.0 as i32))], None);
@@ -1762,7 +1754,7 @@ fn set_camera_on_display_and_unbobbed_culling_match_vanilla_26_3() {
             9002,
             "minecraft:text_display",
             [0.0, 64.0, -2.0],
-            (0.0, 0.0),
+            [0.0; 3],
             0,
         ));
         game.text_displays.get_mut(&9002).unwrap().metadata(&[
@@ -1774,7 +1766,7 @@ fn set_camera_on_display_and_unbobbed_culling_match_vanilla_26_3() {
             9003,
             "minecraft:text_display",
             [0.0, 64.0, -6.0],
-            (0.0, 0.0),
+            [0.0; 3],
             0,
         ));
         game.text_displays.get_mut(&9003).unwrap().metadata(&[

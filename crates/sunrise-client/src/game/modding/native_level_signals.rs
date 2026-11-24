@@ -359,6 +359,12 @@ impl LevelHost for ReadLevel<'_, '_> {
             .level_is_raining_at(self.level, pos)
             .unwrap_or(false)
     }
+    fn is_raining(&self) -> Option<bool> {
+        self.game.level_read_is_raining(self.level)
+    }
+    fn sky_darken(&self) -> Option<i32> {
+        self.game.level_get_sky_darken(self.level)
+    }
     fn enabled_features(&self) -> mod_api::FeatureFlags {
         mod_api::FeatureFlags::new(self.game.enabled_feature_ids().clone())
     }

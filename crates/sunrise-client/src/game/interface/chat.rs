@@ -1,6 +1,9 @@
 //! Chat, the command registries and the per-world state behind commands
 //! (game rules, the world clock, difficulty), bound to the game.
 #[cfg(test)]
+#[path = "chat/submit_order_tests.rs"]
+mod submit_order_tests;
+#[cfg(test)]
 #[path = "chat/suggestion_completion_tests.rs"]
 mod suggestion_completion_tests;
 
@@ -1272,19 +1275,28 @@ impl Game<'_> {
                 self.close_chat(ChatExit::Intentional);
             }
             ChatAction::Submit(message) => {
-                // InBedChatScreen sends without closing (`closeOnSubmit` is
-                // false): the box empties and the screen stays.
-                if self.ui.in_bed_chat && self.sleeping.is_some() {
-                    screen.suggest_command(&m, &c, "");
-                    self.ui.chat.reset_scroll();
-                    self.ui.chat_screen = Some(screen);
-                } else {
-                    // The screen is taken here, so close_chat sees no text: a sent
-                    // message discards the draft (DONE).
-                    self.close_chat(ChatExit::Done);
-                }
+                // ChatScreen.keyPressed: handleChatInput runs with the screen still open,
+                // then `closeOnSubmit` closes it. InBedChatScreen sends without closing
+                // (`closeOnSubmit` is false): the box empties and the screen stays.
+                let close_on_submit = !(self.ui.in_bed_chat && self.sleeping.is_some());
+                self.ui.chat_screen = Some(screen);
                 if !message.is_empty() {
                     self.handle_chat_input(&message);
+                }
+                if close_on_submit {
+                    // A sent message discards the draft (DONE), whatever the box holds.
+                    self.close_chat(ChatExit::Done);
+                } else {
+                    // The line is handled first, then the box empties and chat scrolls back.
+                    if let Some(screen) = self.ui.chat_screen.as_mut() {
+                        let m = Measure(&self.gui.atlas.font);
+                        let c = Commands {
+                            dispatcher: chat_tree(&self.remote),
+                            registries: &self.ui.registries,
+                        };
+                        screen.suggest_command(&m, &c, "");
+                    }
+                    self.ui.chat.reset_scroll();
                 }
             }
             ChatAction::None => {

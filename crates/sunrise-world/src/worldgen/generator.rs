@@ -809,13 +809,14 @@ where
         worker.carver_biomes.insert(key, id);
         Ok(id)
     }
-    fn generate(
+    fn generate_stage(
         &self,
         worker: &mut WorkerState,
         pos: ChunkPos,
+        stop_at: ProtoStage,
     ) -> Result<ProtoChunk, GeneratorError> {
         let mut context = std::mem::take(&mut worker.terrain_context);
-        let result = self.generate_with_context(worker, pos, &mut context);
+        let result = self.generate_with_context(worker, pos, &mut context, stop_at);
         // Release chunk-specific bindings and caches even after a sampling error.
         context.reset();
         worker.terrain_context = context;
@@ -868,6 +869,7 @@ where
         worker: &mut WorkerState,
         pos: ChunkPos,
         context: &mut SamplerContext,
+        stop_at: ProtoStage,
     ) -> Result<ProtoChunk, GeneratorError> {
         let data = &self.data;
         let (min, height, sea) = (
@@ -876,6 +878,31 @@ where
             self.settings.sea_level,
         );
         let mut clock = std::time::Instant::now();
+        if stop_at == ProtoStage::Biomes {
+            let center = (*self.biome_chunk(worker, pos)?).clone();
+            worker.timings.biomes += lap(&mut clock);
+            let mut chunk = TerrainChunk::new(
+                pos,
+                self.settings.level_min_y,
+                self.settings.level_height,
+                data.registry,
+                data.states.clone(),
+            )
+            .map_err(stage("biomes"))?;
+            chunk.set_generation_stage(PreLightChunkStage::Biomes);
+            return Ok(ProtoChunk {
+                terrain: chunk,
+                biomes: center,
+                data: data.clone(),
+                decorated: false,
+                block_entities: Vec::new(),
+                structure_starts: Vec::new(),
+                own_starts: Starts::default(),
+                entities: Vec::new(),
+                saved_root: Default::default(),
+                full: false,
+            });
+        }
         let mut neighbors = Vec::with_capacity(9);
         // The biome ids present, as a bitset: ascending like a sorted set. The
         // registry's ordinary ids fit in the stack array; retain a spill only
@@ -1094,6 +1121,28 @@ where
         filled.map_err(stage("noise"))?;
         let generation = self.generation();
         worker.timings.noise += lap(&mut clock);
+        if stop_at == ProtoStage::Noise {
+            chunk
+                .prime_heightmaps(&[
+                    HeightmapType::MotionBlocking,
+                    HeightmapType::MotionBlockingNoLeaves,
+                    HeightmapType::OceanFloor,
+                    HeightmapType::WorldSurface,
+                ])
+                .map_err(stage("heightmaps"))?;
+            return Ok(ProtoChunk {
+                terrain: chunk,
+                biomes: center,
+                data: data.clone(),
+                decorated: false,
+                block_entities: Vec::new(),
+                structure_starts: references,
+                own_starts,
+                entities: Vec::new(),
+                saved_root: Default::default(),
+                full: false,
+            });
+        }
         // The surface rule, compiled by this worker's first chunk.
         let mut shared = worker
             .surface_rule
@@ -1131,6 +1180,29 @@ where
             .map_err(stage("surface"))?;
         }
         worker.timings.surface += lap(&mut clock);
+        if stop_at == ProtoStage::Surface {
+            worker.surface_rule = shared.map(|rule| Box::new(rule) as Box<dyn Any + Send>);
+            chunk
+                .prime_heightmaps(&[
+                    HeightmapType::MotionBlocking,
+                    HeightmapType::MotionBlockingNoLeaves,
+                    HeightmapType::OceanFloor,
+                    HeightmapType::WorldSurface,
+                ])
+                .map_err(stage("heightmaps"))?;
+            return Ok(ProtoChunk {
+                terrain: chunk,
+                biomes: center,
+                data: data.clone(),
+                decorated: false,
+                block_entities: Vec::new(),
+                structure_starts: references,
+                own_starts,
+                entities: Vec::new(),
+                saved_root: Default::default(),
+                full: false,
+            });
+        }
         let carvers = &data.biome_carvers;
         let carves = stages.is_none_or(|stages| stages.carvers);
         let mask = generate_carving_mask(self.seed, pos, generation, false, |origin| {
@@ -1197,6 +1269,17 @@ where
             full: false,
         })
     }
+}
+
+/// Single-chunk pre-decoration generation stages (`ChunkStatus.BIOMES` and the `Noise`, `Surface`,
+/// and `Carvers` sub-phases of vanilla 26.3's unified `ChunkStatus.TERRAIN`), run in order by
+/// [`GeneratorWorker::generate_proto_stage`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProtoStage {
+    Biomes,
+    Noise,
+    Surface,
+    Carvers,
 }
 
 impl<R: RandomSource> Pipeline<R>
@@ -1835,10 +1918,11 @@ pub type SavedStructureStarts =
 
 trait SeededPipeline: Send + Sync {
     fn set_saved_starts(&self, source: Arc<SavedStructureStarts>);
-    fn generate(
+    fn generate_stage(
         &self,
         worker: &mut WorkerState,
         pos: ChunkPos,
+        stop_at: ProtoStage,
     ) -> Result<ProtoChunk, GeneratorError>;
     fn decorate(
         &self,
@@ -1939,12 +2023,13 @@ impl<R: RandomSource + 'static> SeededPipeline for Pipeline<R>
 where
     R::Positional: Clone + Send + Sync,
 {
-    fn generate(
+    fn generate_stage(
         &self,
         worker: &mut WorkerState,
         pos: ChunkPos,
+        stop_at: ProtoStage,
     ) -> Result<ProtoChunk, GeneratorError> {
-        Pipeline::generate(self, worker, pos)
+        Pipeline::generate_stage(self, worker, pos, stop_at)
     }
     fn decorate(
         &self,
@@ -2961,7 +3046,16 @@ impl GeneratorWorker {
     /// Biomes, noise fill and aquifers, material surface and carvers: the
     /// vanilla statuses up to TERRAIN. Independent of neighbor chunks' state.
     pub fn generate_proto(&mut self, pos: ChunkPos) -> Result<ProtoChunk, GeneratorError> {
-        let result = self.pipeline.generate(&mut self.state, pos);
+        self.generate_proto_stage(pos, ProtoStage::Carvers)
+    }
+    /// Run single-chunk pre-decoration generation up to `stage` (`Biomes`, `Noise`, `Surface`, or
+    /// `Carvers`), bit-exact with [`Self::generate_proto`].
+    pub fn generate_proto_stage(
+        &mut self,
+        pos: ChunkPos,
+        stage: ProtoStage,
+    ) -> Result<ProtoChunk, GeneratorError> {
+        let result = self.pipeline.generate_stage(&mut self.state, pos, stage);
         self.state.timings.chunks += 1;
         result
     }
@@ -3316,12 +3410,16 @@ mod tests {
             ChunkPos::new(-128, 192),
             ChunkPos::new(1_875_000, -1_875_000),
         ] {
-            let actual = pipeline.generate(&mut worker.state, pos).unwrap();
+            let actual = pipeline
+                .generate_stage(&mut worker.state, pos, ProtoStage::Carvers)
+                .unwrap();
             let rule = pipeline.rule.clone();
             // A singleton sequence evaluates the same block rule through the full surface path.
             pipeline.rule = MaterialRule::Sequence(vec![rule.clone()]);
             assert!(!pipeline.identity_end_surface(ChunkPos::new(0, 0)));
-            let expected = pipeline.generate(&mut worker.state, pos).unwrap();
+            let expected = pipeline
+                .generate_stage(&mut worker.state, pos, ProtoStage::Carvers)
+                .unwrap();
             pipeline.rule = rule;
             assert_eq!(
                 actual.terrain.generation_stage(),

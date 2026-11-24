@@ -1706,6 +1706,20 @@ pub trait LevelHost {
     fn is_raining_at(&self, _pos: [i32; 3]) -> bool {
         unimplemented!("LevelHost::is_raining_at")
     }
+    /// `Level.isRaining`: whether it rains in this level (its rain level is above 0.2),
+    /// wherever a position is. Both sides answer for the level the view belongs to. None in a
+    /// callback whose level view has no weather: the friction and hit hooks have none.
+    fn is_raining(&self) -> Option<bool> {
+        None
+    }
+    /// `Level.getSkyDarken`: how much the sky light is dimmed this tick, 0 to 11, from the
+    /// time of day, rain and thunder. With [`Self::raw_brightness`] it gives
+    /// `LevelReader.getMaxLocalRawBrightness(pos)`, which `SaplingBlock.randomTick` tests
+    /// (`>= 9`). Both sides answer for the level the view belongs to. None where
+    /// [`Self::is_raining`] is None.
+    fn sky_darken(&self) -> Option<i32> {
+        None
+    }
     /// `LevelReader.enabledFeatures`: the feature flags the world enables.
     fn enabled_features(&self) -> FeatureFlags {
         unimplemented!("LevelHost::enabled_features")

@@ -91,7 +91,7 @@ impl Game<'_> {
             r.cart_lerps.remove(&p.id);
             r.lerps.remove(&p.id);
         }
-        if !self.spawn_remote_object(p.id, &kind, p.position, (rotation[0], rotation[1]), p.data) {
+        if !self.spawn_remote_object(p.id, &kind, p.position, rotation, p.data) {
             self.spawn_added_projectile(&p, &kind, (rotation[0], rotation[1]), replace);
         }
         // Entity.recreateFromPacket: objects must exist before applying motion.

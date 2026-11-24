@@ -143,3 +143,17 @@ pub trait PlayerWorldBackendMut {
         player: PlayerRef,
     ) -> Result<RespawnTarget, RespawnTargetUnavailable>;
 }
+
+/// The handles' client writes of the `player_world` area, reached through [`ClientBackendMut`].
+// hidden: a handle's backend, reached through `ClientBackendMut`; mods call the handle
+#[doc(hidden)]
+#[sunrise_mod_api_macros::host_area]
+pub trait PlayerWorldClientBackendMut {
+    /// Side: client.
+    /// Sets the local player's current body yaw in degrees (`LivingEntity.setYBodyRot`).
+    /// The view, head, previous body angle and packets are unchanged. `Ok(false)` for a stale,
+    /// nonlocal, or unavailable player. Returns `Err(LevelWriteError::Unavailable)` when the
+    /// host cannot write living state. Does not change frame extraction order.
+    fn player_set_body_yaw(&mut self, player: PlayerRef, yaw: f32)
+    -> Result<bool, LevelWriteError>;
+}

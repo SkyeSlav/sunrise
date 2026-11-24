@@ -3473,6 +3473,10 @@ impl Entity for ArmorStand {
         let yaw = if yaw.is_finite() { yaw } else { previous[0] };
         let pitch = if pitch.is_nan() { previous[1] } else { pitch };
         self.yaw = yaw;
+        // Entity.forceSetRotation and teleportSetPosition call ArmorStand.setYHeadRot.
+        self.head_yaw = yaw;
+        self.previous_head_yaw = yaw;
+        self.previous_body_yaw = yaw;
         self.previous_yaw = yaw;
         self.pitch = pitch.clamp(-90.0, 90.0);
     }

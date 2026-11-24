@@ -2399,6 +2399,14 @@ impl Renderer {
                 .as_ref()
                 .and_then(|p| p.1.as_ref())
                 .is_some_and(|p| p.has_weather());
+        let pack_colortex0_blendable = pack_world_runs
+            && self
+                .pack_post
+                .as_ref()
+                .and_then(|(_, post)| post.as_ref())
+                .is_some_and(|post| post.colortex0_blendable(&self.device));
+        let after_pack_custom_geometry =
+            live_hooks && world_primitives && pack_draws_terrain && pack_colortex0_blendable;
         if oit_on {
             let size = self
                 .world_post
@@ -3991,9 +3999,10 @@ impl Renderer {
                 pack_frame(&mut pass);
             }
             // Native mods' deferred custom geometry (`submit_custom_geometry` and debug renderers):
-            // drawn at the end of the world pass before the hand. Live stage hooks never relocate
-            // skipped stages here.
-            if world_primitives {
+            // drawn at the end of the world pass before the hand, or inside `PackPost` when an
+            // active shader pack owns terrain rendering. Live stage hooks never relocate skipped
+            // stages here.
+            if world_primitives && !after_pack_custom_geometry {
                 if live_hooks {
                     primitive_stage = world_primitives::STAGE_CUSTOM_GEOMETRY;
                 }
@@ -4054,6 +4063,7 @@ impl Renderer {
                 native_post,
                 after_pack_sky: sky_stage == Some(SkyStageOwner::ClassicPack),
                 after_pack_features,
+                after_pack_custom_geometry,
                 pack_draws_weather,
                 pack_draws_terrain,
                 pack_draws_shadow,

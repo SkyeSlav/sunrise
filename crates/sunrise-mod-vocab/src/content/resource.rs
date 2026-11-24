@@ -377,6 +377,23 @@ impl ItemResource {
             .item_resource_enchant_randomly(&self.0, level, power, pool)?
             .map(Self))
     }
+    /// The durability this item's enchantments repair for `points` experience points
+    /// (`EnchantmentHelper.modifyDurabilityToRepairFromXp`): every `minecraft:repair_with_xp`
+    /// value effect on the stack, by the enchantments' definitions as loaded, data packs'
+    /// included, run over `points`, at least 0. Where no enchantment on it has the effect the
+    /// points come back unchanged, as in vanilla: ask
+    /// [`has_enchantment_effect`](Self::has_enchantment_effect) first, as an experience orb's
+    /// pick does.
+    ///
+    /// The item's own `xp_repair_ratio` hook is not applied: an experience orb takes that step
+    /// after this one. Conditions on an effect that draw randomness draw from the active level's
+    /// random, as vanilla's do from the server level's, so a repeated call may answer
+    /// differently. 0 where no game answers.
+    pub fn durability_to_repair_from_xp(&self, host: &mut dyn ServerHost, points: u32) -> u32 {
+        crate::backend_mut_of(host).map_or(0, |backend| {
+            backend.item_resource_durability_to_repair_from_xp(&self.0, points)
+        })
+    }
     /// Whether an enchantment on this item has effect `effect` (`EnchantmentHelper.has`), by the
     /// enchantments' definitions, data packs' included, not their ids.
     pub fn has_enchantment_effect(&self, host: &dyn Host, effect: EnchantmentEffect) -> bool {

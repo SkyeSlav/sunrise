@@ -1593,9 +1593,10 @@ impl Game<'_> {
                     // Entity.teleport's stopRiding(), as for a mob: a stand a
                     // server seats on a vehicle (a name tag hologram) leaves it.
                     a.vehicle = None;
-                    if let Some(r) = rotation {
-                        Entity::set_rotation(a, r);
-                    }
+                    // TeleportCommand uses the current view angles when rotation
+                    // is omitted; teleportSetPosition still updates head yaw.
+                    let angles = rotation.unwrap_or_else(|| a.rotation());
+                    Entity::set_rotation(a, angles);
                 }
             }
             Target::Boat(id) => {

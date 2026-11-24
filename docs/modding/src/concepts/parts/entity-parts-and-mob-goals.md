@@ -82,8 +82,9 @@ mob itself through the engine's own paths: `move_to(pos, speed)` and `stop_navig
 It returns `Result<(), MoveToPathError>`: `NotFinite` for a non-finite speed or coordinate,
 `Unavailable` when no navigable mob is available, and `Empty` when no node remains after trimming.
 `NotFinite` and `Unavailable` preserve navigation; `Empty` leaves no path in progress.
-The engine classifies and trims every supplied node, follows the path as given, and drops it on a
-block change or the stuck check instead of searching again. Unloaded and out-of-world positions
+The engine classifies and trims every supplied node and follows the path as given. As in vanilla,
+a block change on the path re-searches to the target the navigation last searched for (with none,
+the path is kept), and the stuck check drops it. Unloaded and out-of-world positions
 are classified using void air without loading chunks; finite positions are not refused for their
 size. Submission, classification and trimming take linear work and allocate per-node storage.
 Optional per-node type overrides are not supported: the engine supplies every classification.

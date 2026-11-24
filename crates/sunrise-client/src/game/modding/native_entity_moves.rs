@@ -213,21 +213,75 @@ impl Game<'_> {
         if let Some(g) = self.native_target_guest(t) {
             return Some(g.head_yaw);
         }
-        if let Target::Mob(id) = t {
-            return Some(self.mobs.iter().find(|m| m.id == id)?.head_yaw);
+        match t {
+            Target::Mob(id) => Some(self.mobs.iter().find(|m| m.id == id)?.head_yaw),
+            Target::Stand(id) => Some(self.armor_stands.iter().find(|a| a.id == id)?.head_yaw),
+            _ => Some(0.0),
         }
-        Some(0.0)
     }
-    /// The yaw of the entity's body (`LivingEntity.yBodyRot`) in degrees as
-    /// vanilla keeps it, not normalized: mobs only, None for players and every
-    /// other kind, and for a stale handle.
+    /// `LivingEntity.yBodyRot`: the local player's render model on a client,
+    /// the living entity's authoritative body on a server.
     pub(super) fn entity_body_yaw(&self, entity: EntityRef) -> Option<f32> {
+        if !self.is_logical_server() {
+            self.native_client_level()?;
+            if self.local_player()?.entity() == entity {
+                return Some(self.player_model.as_ref()?.body_yaw);
+            }
+            return None;
+        }
         match self.native_entity_target(entity)? {
             Target::Mob(id) => Some(self.mobs.iter().find(|m| m.id == id)?.body_yaw),
-            // The dragon's flight yaw also drives its body and part poses.
-            Target::Dragon(_) => Some(self.native_dragon(entity)?.yaw),
+            Target::Stand(id) => Some(self.armor_stands.iter().find(|a| a.id == id)?.body_yaw),
+            Target::Dragon(_) => Some(self.dragon.as_ref()?.body_yaw),
+            t @ (Target::Player | Target::Guest(_)) => Some(self.native_player_body(t)?.body_yaw),
             _ => None,
         }
+    }
+
+    /// `LivingEntity.setYBodyRot`, including the vanilla subclass overrides.
+    pub(super) fn entity_set_body_yaw(
+        &mut self,
+        entity: EntityRef,
+        yaw: f32,
+    ) -> Result<bool, mod_api::LevelWriteError> {
+        Ok(match self.native_entity_target(entity) {
+            Some(Target::Mob(id)) => {
+                let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
+                    return Ok(false);
+                };
+                use sunrise_client::mobs::Species;
+                // Silverfish and endermites call Entity.setYRot too. Only that
+                // side effect rejects non-finite values, not the body assignment.
+                if matches!(m.species(), Species::Silverfish | Species::Endermite)
+                    && yaw.is_finite()
+                {
+                    m.yaw = yaw;
+                }
+                m.body_yaw = yaw;
+                true
+            }
+            Some(Target::Stand(id)) => {
+                let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == id) else {
+                    return Ok(false);
+                };
+                a.previous_yaw = yaw;
+                a.previous_body_yaw = yaw;
+                a.head_yaw = yaw;
+                a.previous_head_yaw = yaw;
+                true
+            }
+            Some(Target::Dragon(_)) => self.dragon.as_mut().is_some_and(|d| {
+                d.body_yaw = yaw;
+                true
+            }),
+            Some(t @ (Target::Player | Target::Guest(_))) => {
+                self.native_player_body_mut(t).is_some_and(|p| {
+                    p.body_yaw = yaw;
+                    true
+                })
+            }
+            _ => false,
+        })
     }
     /// Turns a mob's head to `yaw` (`Entity.setYHeadRot`); its body follows
     /// as its AI turns it. Players' heads can turn too; false for other kinds

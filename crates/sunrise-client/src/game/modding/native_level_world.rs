@@ -425,6 +425,11 @@ impl Game<'_> {
             level.dimension() == Dim::End.key(),
         ))
     }
+    /// `Level.isRaining` on either side: a client reads the weather its server synced, as
+    /// [`Self::level_get_sky_darken`] reads the darkening.
+    pub(super) fn level_read_is_raining(&self, level: LevelRef) -> Option<bool> {
+        Some(weather_flags(self.level_weather(level)?).0)
+    }
     /// Whether it rains (`Level.isRaining`: a rain level above 0.2).
     pub(super) fn level_is_raining(&self, level: LevelRef) -> Option<bool> {
         let world = self.native_level_world(level)?;
@@ -565,6 +570,8 @@ mod tests {
             assert_eq!(game.level_is_raining_at(level, unloaded), None);
             assert_eq!(game.level_is_raining_at(level, [1, 4000, 1]), None);
             game.with_level(|_, host, _| {
+                // The level's own weather, wherever a position is (`Level.isRaining`).
+                assert_eq!(mod_api::LevelHost::is_raining(&*host), Some(true));
                 assert!(host.is_raining_at(plains));
                 assert!(!host.is_raining_at(roofed));
                 assert!(!host.is_raining_at(desert));
@@ -588,10 +595,40 @@ mod tests {
                 );
             }
 
+            let server_view = |game: &super::Game<'_>| {
+                let view = super::super::native_level_signals::ReadLevel { game, level };
+                mod_api::LevelHost::is_raining(&view)
+            };
+            // The level view a block part's callback gets (`ReadLevel`) answers too.
+            assert_eq!(server_view(game), Some(true));
+
             game.world.weather.rain_level = (0.0, 0.0);
             assert_eq!(game.level_is_raining_at(level, plains), Some(false));
-            game.with_level(|_, host, _| assert!(!host.is_raining_at(plains)));
+            game.with_level(|_, host, _| {
+                assert_eq!(mod_api::LevelHost::is_raining(&*host), Some(false));
+                assert!(!host.is_raining_at(plains));
+            });
+            assert_eq!(server_view(game), Some(false));
             assert_eq!(game.world.chunks.len(), chunks, "nothing was loaded");
+
+            // A logged-in client reads the weather its server synced through the same view.
+            game.options.execution_role = crate::game::execution_role::ExecutionRole::Client;
+            game.options.dedicated = None;
+            let (pipe, _server) = sunrise_protocol::connection::Pipe::pair();
+            game.connect_local(pipe, "WeatherReadTest").unwrap();
+            game.remote.as_mut().unwrap().logged_in = true;
+            let client = game.level("minecraft:overworld").unwrap();
+            let client_view = |game: &super::Game<'_>| {
+                let view = super::super::native_level_signals::ReadLevel {
+                    game,
+                    level: client,
+                };
+                mod_api::LevelHost::is_raining(&view)
+            };
+            game.world.weather.rain_level = (1.0, 1.0);
+            assert_eq!(client_view(game), Some(true));
+            game.world.weather.rain_level = (0.0, 0.0);
+            assert_eq!(client_view(game), Some(false));
         });
     }
 

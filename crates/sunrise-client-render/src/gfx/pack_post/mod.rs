@@ -415,3 +415,6 @@ mod material_route_tests;
 
 #[cfg(test)]
 mod sign_text_target_tests;
+
+#[cfg(test)]
+mod mod_stage_tests;

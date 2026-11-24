@@ -226,6 +226,40 @@ pub(crate) fn native_sdk(cache: &Path, build: &str) -> Result<NativeSdk, String>
     })
 }
 
+/// Refuses a `Cargo.lock` that Cargo would change for the mod's manifests and the SDK of `build` in
+/// `.sunrise/sdk/`, with the registry's release scan's own command (`cargo fetch --locked`). The
+/// lock names the SDK's local packages and their dependencies, so a pin moved without it is stale;
+/// the native build reads only the lock's registry pins and would pass it.
+pub(crate) fn check_lock(rust: &Unpacked, project: &Path, build: &str) -> Result<(), String> {
+    // The toolchain's commands run from outside the project: name it absolutely.
+    let project =
+        dunce::canonicalize(project).map_err(|e| format!("{}: {e}", project.display()))?;
+    let mut fetch = sunrise_native_build::cargo(rust, &project, "fetch");
+    fetch.args(["--locked", "--color", "never"]);
+    let out = fetch.output().map_err(|e| format!("cargo fetch: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let error = String::from_utf8_lossy(&out.stderr);
+    if !error.contains("--locked was passed") {
+        return Err(format!("cargo fetch --locked failed: {}", error.trim()));
+    }
+    Err(format!(
+        "Cargo.lock does not match Cargo.toml and the pinned SDK (Sunrise {build}), and the registry refuses such a release. \
+         Regenerate it with `cargo sunrise-mod pin {build}`, which brings the lock to the pinned SDK, then commit Cargo.lock and release again."
+    ))
+}
+
+/// Brings `Cargo.lock` to the SDK in `.sunrise/sdk/`: Cargo resolves the mod's and the SDK's local
+/// packages again and keeps every registry pin they still use.
+pub(crate) fn refresh_lock(rust: &Unpacked, project: &Path) -> Result<(), String> {
+    let project =
+        dunce::canonicalize(project).map_err(|e| format!("{}: {e}", project.display()))?;
+    let mut update = sunrise_native_build::cargo(rust, &project, "update");
+    update.args(["--workspace", "--color", "never"]);
+    output(&mut update).map(drop)
+}
+
 /// What a native build made.
 pub(crate) struct Built {
     binary: PathBuf,
@@ -378,6 +412,11 @@ fn prepare(
     let lock = project.join("Cargo.lock");
     if registry && (update_lock || !lock.exists()) {
         println!("Pinning dependencies in Cargo.lock");
+        // The lock names the SDK's packages, read from `.sunrise/sdk/` (`run` fetches no SDK before).
+        if sdk_fetch::game_tree(&project)?.is_none() {
+            sdk_fetch::fetch_pinned(&project, &build)?;
+        }
+        let before = fs::read(&lock).ok();
         sunrise_native_build::registry_generate::generate(
             || Ok(rust.clone()),
             sunrise_native_build::registry_generate::game_lock,
@@ -385,6 +424,22 @@ fn prepare(
             update_lock,
         )
         .map_err(build_error)?;
+        // Those pins come from a copy without the SDK's path packages; the committed lock also
+        // names them, as the registry's `cargo fetch --locked` requires. A lock without them is
+        // never left behind: the one before comes back.
+        if let Err(error) = refresh_lock(rust, &project) {
+            let restored = match &before {
+                Some(text) => fs::write(&lock, text),
+                None => fs::remove_file(&lock),
+            };
+            return Err(match restored {
+                Ok(()) => format!("Cargo.lock could not name the SDK's packages: {error}"),
+                Err(e) => format!(
+                    "Cargo.lock could not name the SDK's packages: {error}\n{} was left without them: {e}",
+                    lock.display()
+                ),
+            });
+        }
     }
     crate::registry_source::write_files(
         &input.path().join(stage_name(&id)),

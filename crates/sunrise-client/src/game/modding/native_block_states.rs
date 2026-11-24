@@ -1104,6 +1104,18 @@ mod facts_tests {
                 facts.is_solid_render(state("minecraft:stone_slab")),
                 Some(false)
             );
+            // propagatesSkylightDown: glass's own answer and air, not a full cube.
+            assert_eq!(
+                facts.propagates_skylight_down(state("minecraft:glass")),
+                Some(true)
+            );
+            assert_eq!(facts.propagates_skylight_down(air), Some(true));
+            assert_eq!(facts.propagates_skylight_down(stone), Some(false));
+            // isAir: the three airs by their own flag, nothing else.
+            assert_eq!(facts.is_air(air), Some(true));
+            assert_eq!(facts.is_air(state("minecraft:cave_air")), Some(true));
+            assert_eq!(facts.is_air(stone), Some(false));
+            assert_eq!(facts.is_air(grass), Some(false));
             assert_eq!(facts.is_redstone_conductor(stone), Some(true));
             assert_eq!(
                 facts.is_redstone_conductor(state("minecraft:glass")),

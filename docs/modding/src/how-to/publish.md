@@ -51,7 +51,9 @@ first release is reviewed and merged.
 `release` is in the [newest tool from main](../start/install-tool.md#newest-tool-from-main). A Nightly's tool that
 lacks it answers `"release" is not a cargo sunrise-mod command`.
 
-Commit your mod's source, its page, and `Cargo.lock` for a native mod. From the mod's folder on a clean branch
+Commit your mod's source, its page, and `Cargo.lock` for a native mod. The lock must match the pinned SDK:
+`cargo sunrise-mod pin` keeps it so, and after moving `[native] sunrise` by hand, `cargo sunrise-mod pin <build>`
+with the build already pinned regenerates it. From the mod's folder on a clean branch
 that is up to date with its upstream:
 
 ```sh

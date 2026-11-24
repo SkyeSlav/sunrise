@@ -37,4 +37,9 @@ pub trait ClientOptionsClientHost {
     /// Side: client.
     /// A snapshot of the current audio preferences.
     fn audio_options(&self) -> ClientAudioOptions;
+    /// Side: client.
+    /// Whether a shader pack is currently loaded and active (Iris's
+    /// `IrisApi.isShaderPackInUse()`). `false` on a server, when no renderer
+    /// exists, or while no shader pack is running.
+    fn shader_pack_active(&self) -> bool;
 }

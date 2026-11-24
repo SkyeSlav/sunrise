@@ -2175,8 +2175,9 @@ impl Game<'_> {
                 .capture_code_switches(&self.settings.mods.disabled);
         }
         // A mod with a native version built in says so instead, and isn't news.
-        self.list_native_mods();
+        // The switches first: a row's config screen is offered only while its mod is on.
         self.sync_native_switches();
+        self.list_native_mods();
         let built = self.mods.native.built();
         let built_mods = native_mods_detail(built);
         if let Some(list) = built_mods {

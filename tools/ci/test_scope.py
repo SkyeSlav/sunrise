@@ -57,6 +57,8 @@ READERS = {
     ],
     # The pinned Rust, and the mods library's template its tests render.
     "sunrise-native-build": ["crates/sunrise-client/src/native_mod_entry.rs.template", "tools/ci/rust-version"],
+    # The pipeline bench example links the bench mod's source in.
+    "sunrise-mod-host": ["tools/fixtures/mod-pipeline-bench"],
     "sunrise-client": SUNRISE_CLIENT,
     # Shares sunrise-client's sources, so its unit tests run the same reads.
     "sunrise-client-lib": SUNRISE_CLIENT,

@@ -369,6 +369,22 @@ pub mod game {
     pub fn chunk_ref(level: LevelRef, pos: [i32; 2]) -> ChunkRef {
         ChunkRef { level, pos }
     }
+    /// A non-blocking chunk request handle the game names.
+    pub fn chunk_request_ref(level: LevelRef, id: u64) -> ChunkRequestRef {
+        ChunkRequestRef { level, id }
+    }
+    /// One finished or failed non-blocking chunk request constructed by the game.
+    pub fn completed_chunk_request(
+        request: ChunkRequestRef,
+        pos: [i32; 2],
+        result: Result<ChunkSnapshot, ChunkLoadError>,
+    ) -> CompletedChunkRequest {
+        CompletedChunkRequest {
+            request,
+            pos,
+            result,
+        }
+    }
     /// An open menu's handle the game names.
     pub fn menu_ref(player: PlayerRef, window: i32, generation: u64) -> MenuRef {
         MenuRef {
