@@ -532,20 +532,28 @@ pub(super) fn mob_meta(
             if flags != 0 {
                 meta.push((18, serializer::BYTE, Value::Byte(flags)));
             }
-            let (index, registry, name) = if kind == "minecraft:cat" {
+            if kind == "minecraft:cat" {
                 let v = sunrise_client::mobs::tame::CAT_VARIANTS[(e.variant as usize).min(10)];
-                (20, "minecraft:cat_variant", v)
+                if let Some(v) = id("minecraft:cat_variant", v) {
+                    meta.push((20, serializer::CAT_VARIANT, Value::Id(v)));
+                }
             } else {
-                let v = sunrise_client::mobs::tame::WOLF_VARIANTS[(e.variant as usize).min(8)].0;
-                (23, "minecraft:wolf_variant", v)
-            };
-            let serializer = if index == 20 {
-                serializer::CAT_VARIANT
-            } else {
-                serializer::WOLF_VARIANT
-            };
-            if let Some(v) = id(registry, name) {
-                meta.push((index, serializer, Value::Id(v)));
+                // Wolf.DATA_VARIANT_ID and DATA_SOUND_VARIANT_ID carry the world
+                // table's network id directly (`RegistryRef<K>`).
+                let variant_id = e
+                    .wolf_variant
+                    .map(|r| r.network_id() as i32)
+                    .or_else(|| id("minecraft:wolf_variant", "pale"));
+                if let Some(v) = variant_id {
+                    meta.push((23, serializer::WOLF_VARIANT, Value::Id(v)));
+                }
+                let sound_id = e
+                    .wolf_sound_variant
+                    .map(|r| r.network_id() as i32)
+                    .or_else(|| id("minecraft:wolf_sound_variant", "classic"));
+                if let Some(v) = sound_id {
+                    meta.push((24, serializer::WOLF_SOUND_VARIANT, Value::Id(v)));
+                }
             }
             // Cat.IS_LYING and RELAX_STATE_ONE.
             if kind == "minecraft:cat" {

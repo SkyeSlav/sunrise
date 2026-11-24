@@ -3104,6 +3104,7 @@ struct WorldCore {
     motion: MotionResources,
     suffocation: sunrise_world::suffocation::SuffocationRegistry<'static>,
     spawn_registries: sunrise_client::mobs::finalize::SpawnRegistries,
+    variants: Arc<sunrise_client::mobs::variants::VariantTables>,
     threads: usize,
 }
 
@@ -3151,6 +3152,8 @@ struct WorldTables {
     items: Arc<Items>,
     /// Registry definitions stay frozen at world open, even when tags reload.
     packed_registries: Arc<sunrise_client::lan::data::PackRegistryDefinitions>,
+    /// Data-driven mob variant and sound-variant registries, frozen at world open.
+    variants: Arc<sunrise_client::mobs::variants::VariantTables>,
     providers: Providers,
     biomes: Arc<world_loading::WorldBiomeRegistry>,
     loot: Arc<sunrise_world::loot::LootData>,

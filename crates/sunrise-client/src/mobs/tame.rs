@@ -18,40 +18,6 @@ use sunrise_core::{
     random::RandomSource,
 };
 
-/// Wolf variants: registry name and texture file (`WolfVariants`).
-pub const WOLF_VARIANTS: [(&str, &str); 9] = [
-    ("pale", "wolf"),
-    ("spotted", "wolf_spotted"),
-    ("snowy", "wolf_snowy"),
-    ("black", "wolf_black"),
-    ("ashen", "wolf_ashen"),
-    ("rusty", "wolf_rusty"),
-    ("woods", "wolf_woods"),
-    ("chestnut", "wolf_chestnut"),
-    ("striped", "wolf_striped"),
-];
-/// The wolf variant a biome spawns (its high-priority `BiomeCheck`).
-pub fn wolf_variant_for(biome: &str, has_tag: &dyn Fn(&str) -> bool) -> u8 {
-    if has_tag("minecraft:is_savanna") {
-        1
-    } else if biome == "minecraft:grove" {
-        2
-    } else if biome == "minecraft:old_growth_pine_taiga" {
-        3
-    } else if biome == "minecraft:snowy_taiga" {
-        4
-    } else if has_tag("minecraft:is_jungle") {
-        5
-    } else if biome == "minecraft:forest" {
-        6
-    } else if biome == "minecraft:old_growth_spruce_taiga" {
-        7
-    } else if has_tag("minecraft:is_badlands") {
-        8
-    } else {
-        0
-    }
-}
 /// The default collar: red.
 pub const RED: u8 = 14;
 
@@ -1071,18 +1037,22 @@ pub fn tint(m: &Mob, partial: f32) -> u32 {
     let c = (shade * 255.0) as u32;
     0xFF00_0000 | c << 16 | c << 8 | c
 }
-/// `Wolf.getTexture`.
-pub fn texture(m: &Mob) -> String {
-    let file = WOLF_VARIANTS[(m.extra.variant as usize).min(8)].1;
-    let state = if m.extra.tame {
-        "_tame"
-    } else if angry(m) {
-        "_angry"
-    } else {
-        ""
+/// `Wolf.getTexture`: resolves the mob's `RegistryRef<WolfVariant>` through the
+/// synced `minecraft:wolf_variant` table. An absent entry yields an empty key
+/// so the renderer draws the missing texture rather than a built-in fallback.
+pub fn texture(m: &Mob, variants: Option<&super::variants::VariantTables>) -> String {
+    let Some(variants) = variants else {
+        return String::new();
     };
-    let baby = if m.is_baby() { "_baby" } else { "" };
-    format!("entity/wolf/{file}{state}{baby}")
+    let Some(r) = m.wolf_variant(&variants.wolf) else {
+        return String::new();
+    };
+    let Some(entry) = variants.wolf.get(r) else {
+        return String::new();
+    };
+    entry
+        .texture(m.is_baby(), m.extra.tame, angry(m))
+        .to_owned()
 }
 
 /// Cat variants (`CatVariants`): registry name, texture file.

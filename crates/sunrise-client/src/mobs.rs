@@ -1393,6 +1393,14 @@ pub struct Extra {
     /// The sound variant: index in the species' `*_sound_variant` registry
     /// (`finalize::sound_variants`); None is the default, `classic`.
     pub sound_variant: Option<u8>,
+    /// `Wolf.DATA_VARIANT_ID`: the world's `minecraft:wolf_variant` holder
+    /// (network id in the world's sync order); `None` before initialization
+    /// resolves to `minecraft:pale` (or the registry's first entry).
+    pub wolf_variant: Option<crate::lan::data::RegistryRef<variants::WolfVariant>>,
+    /// `Wolf.DATA_SOUND_VARIANT_ID`: the world's `minecraft:wolf_sound_variant`
+    /// holder; `None` before initialization resolves to `minecraft:classic`
+    /// (or the registry's first entry).
+    pub wolf_sound_variant: Option<crate::lan::data::RegistryRef<variants::WolfSoundVariant>>,
     /// `Zombie.canBreakDoors`.
     pub can_break_doors: bool,
     /// A goat's `IsScreamingGoat` and the horns it lost (left, right).
@@ -2572,7 +2580,7 @@ pub enum MobEvent {
         /// Whether the parent supplies the variant, if already drawn.
         parent_variant: Option<bool>,
         /// Wolf voice drawn before experience, unless baby-spawn approval defers inheritance.
-        wolf_voice: Option<u8>,
+        wolf_voice: Option<crate::lan::data::RegistryRef<variants::WolfSoundVariant>>,
         /// The parent-RNG experience decision, if already made.
         experience: BreedExperience,
     },
@@ -5620,6 +5628,41 @@ impl Mob {
         // Entity.playSound: at the entity's feet.
         let at = [self.position.x, self.position.y, self.position.z];
         events.push(MobEvent::Sound(event, at, ai::sound_volume(self), pitch));
+    }
+    /// Mob.playSound with LivingEntity.getVoicePitch for a dynamic sound id
+    /// (such as a data-pack sound variant).
+    pub fn voice_id(&mut self, event: &str, events: &mut Vec<MobEvent>) {
+        let pitch = self.voice_pitch();
+        if self.silent || event.is_empty() {
+            return;
+        }
+        let at = [self.position.x, self.position.y, self.position.z];
+        events.push(MobEvent::SoundId(
+            entity_sounds::full_id(event).into_owned(),
+            at,
+            ai::sound_volume(self),
+            pitch,
+        ));
+    }
+    /// `Wolf.getVariant` resolved against `table`: the stored holder, or
+    /// `VariantUtils.getDefaultOrAny(..., WolfVariants.DEFAULT)` when unset.
+    pub fn wolf_variant(
+        &self,
+        table: &variants::VariantTable<variants::WolfVariant>,
+    ) -> Option<crate::lan::data::RegistryRef<variants::WolfVariant>> {
+        self.extra
+            .wolf_variant
+            .or_else(|| table.default_or_any("minecraft:pale"))
+    }
+    /// `Wolf.getSoundVariant` resolved against `table`: the stored holder, or
+    /// `WolfSoundVariants.CLASSIC` (else any entry) when unset.
+    pub fn wolf_sound_variant(
+        &self,
+        table: &variants::VariantTable<variants::WolfSoundVariant>,
+    ) -> Option<crate::lan::data::RegistryRef<variants::WolfSoundVariant>> {
+        self.extra
+            .wolf_sound_variant
+            .or_else(|| table.default_or_any("minecraft:classic"))
     }
 }
 /// Model geometry for a mob, posed for its animation state, as camera-relative

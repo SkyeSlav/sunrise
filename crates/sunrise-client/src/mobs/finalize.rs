@@ -51,6 +51,10 @@ pub trait FinalizeLevel {
     fn biome_tag(&self, tag: &str, pos: [i32; 3]) -> bool;
     /// The structures with a piece at a block.
     fn structures_with_piece_at(&self, pos: [i32; 3]) -> Vec<String>;
+    /// Whether `structure` belongs to a `worldgen/structure` tag (`minecraft:...`).
+    fn structure_tag(&self, _tag: &str, _structure: &str) -> bool {
+        false
+    }
     /// `EnvironmentAttributes.MOON_PHASE` at a block (0 full moon to 7).
     fn moon_phase(&self, pos: [i32; 3]) -> usize;
     /// `ServerLevel.isSpawningMonsters`.
@@ -123,7 +127,10 @@ pub enum Group {
     Fox(Ageable, u8),
     Rabbit(Ageable, u8),
     Axolotl(Ageable, [u8; 2]),
-    Wolf(Ageable, u8),
+    Wolf(
+        Ageable,
+        crate::lan::data::RegistryRef<super::variants::WolfVariant>,
+    ),
     /// `AbstractSchoolingFish.SchoolSpawnGroupData` (the leader's id), and
     /// `TropicalFishGroupData` with its variant.
     School(u32, Option<(u8, u8, u8)>),
@@ -276,14 +283,12 @@ pub struct SpawnRegistries {
     pub cow: VariantRegistry,
     pub chicken: VariantRegistry,
     pub cat: VariantRegistry,
-    pub wolf: VariantRegistry,
     pub frog: VariantRegistry,
     pub zombie_nautilus: VariantRegistry,
     pub pig_sound: VariantRegistry,
     pub cow_sound: VariantRegistry,
     pub chicken_sound: VariantRegistry,
     pub cat_sound: VariantRegistry,
-    pub wolf_sound: VariantRegistry,
 }
 impl SpawnRegistries {
     /// Loads the variant registries from a resources directory
@@ -310,14 +315,12 @@ impl SpawnRegistries {
             cow: r("cow_variant"),
             chicken: r("chicken_variant"),
             cat: r("cat_variant"),
-            wolf: r("wolf_variant"),
             frog: r("frog_variant"),
             zombie_nautilus: r("zombie_nautilus_variant"),
             pig_sound: r("pig_sound_variant"),
             cow_sound: r("cow_sound_variant"),
             chicken_sound: r("chicken_sound_variant"),
             cat_sound: r("cat_sound_variant"),
-            wolf_sound: r("wolf_sound_variant"),
         }
     }
 }
@@ -325,6 +328,7 @@ impl SpawnRegistries {
 /// What finalizeSpawn needs besides the level: registries, enchantments.
 pub struct SpawnData<'a> {
     pub registries: &'a SpawnRegistries,
+    pub variants: &'a super::variants::VariantTables,
     pub enchantments: &'a Enchantments,
     pub items: &'a Items,
     /// `EntityTypes.CAMEL_HUSK` dimensions (width, height).
@@ -2266,23 +2270,27 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
             S::Wolf => {
                 let g = match g {
                     Some(Group::Wolf(a, v)) => {
-                        m.extra.variant = v;
+                        m.extra.wolf_variant = Some(v);
                         Some(Group::Wolf(a, v))
                     }
                     other => {
-                        let r = &self.level.spawn_data().registries.wolf;
+                        let r = &self.level.spawn_data().variants.wolf;
                         let at = block(m);
                         match r.select(&*self.level, at, self.random) {
-                            Some(i) => {
-                                let v = variant_index(s, &r.names[i]);
-                                m.extra.variant = v;
+                            Some(v) => {
+                                m.extra.wolf_variant = Some(v);
                                 Some(Group::Wolf(Ageable::babies(false), v))
                             }
                             None => other,
                         }
                     }
                 };
-                self.sound(m, |r| &r.wolf_sound);
+                m.extra.wolf_sound_variant = self
+                    .level
+                    .spawn_data()
+                    .variants
+                    .wolf_sound
+                    .random(self.random);
                 self.ageable(m, g)
             }
             S::Frog => {
@@ -2695,7 +2703,6 @@ pub fn variant_index(s: Species, name: &str) -> u8 {
     let name = name.strip_prefix("minecraft:").unwrap_or(name);
     let i = match s {
         Species::Cat => super::tame::CAT_VARIANTS.iter().position(|v| *v == name),
-        Species::Wolf => super::tame::WOLF_VARIANTS.iter().position(|v| v.0 == name),
         Species::ZombieNautilus => super::nautilus::VARIANTS.iter().position(|v| *v == name),
         // MushroomCow.Variant: red is the codec's default, brown the other.
         Species::Mooshroom => ["red", "brown"].iter().position(|v| *v == name),
@@ -2719,10 +2726,22 @@ pub fn variant_index(s: Species, name: &str) -> u8 {
 pub fn variant_component(m: &Mob) -> Option<(&'static str, String)> {
     species_variant_component(m.species(), m.extra.variant)
 }
+/// [`variant_component`] resolved against the world's data-driven variant tables
+/// for species whose variants are registry holders.
+pub fn variant_component_in(
+    m: &Mob,
+    variants: &super::variants::VariantTables,
+) -> Option<(&'static str, String)> {
+    if m.species() == Species::Wolf {
+        let r = m.wolf_variant(&variants.wolf)?;
+        let id = variants.wolf.id(r)?;
+        return Some(("minecraft:wolf/variant", id.to_owned()));
+    }
+    variant_component(m)
+}
 /// [`variant_component`] of a species with the game's variant index.
 pub fn species_variant_component(s: Species, variant: u8) -> Option<(&'static str, String)> {
     let component = match s {
-        Species::Wolf => "minecraft:wolf/variant",
         Species::Cat => "minecraft:cat/variant",
         Species::Frog => "minecraft:frog/variant",
         Species::Pig => "minecraft:pig/variant",
@@ -2760,17 +2779,16 @@ pub fn sound_variants(s: Species) -> &'static [&'static str] {
         Species::Cow => &["classic", "moody"],
         Species::Chicken => &["classic", "picky"],
         Species::Cat => &["classic", "royal"],
-        Species::Wolf => &["angry", "big", "classic", "cute", "grumpy", "puglin", "sad"],
         _ => &[],
     }
 }
 /// A sound of the mob's `*_sound_variant` set (`Pig.getSoundSet`,
-/// `Wolf.getSoundSet`, `Cat.getSoundSet`, ...): `kind` is the sound's key
-/// (`ambient`, `hurt`, `step`, `growl`, `purreow`...). Babies use the species'
+/// `Cat.getSoundSet`, ...): `kind` is the sound's key
+/// (`ambient`, `hurt`, `step`, `purreow`...). Babies use the species'
 /// baby set (cows have none); an adult's set is `entity.<species>.*` for
 /// `classic` and `entity.<species>_<variant>.*` otherwise, except the
 /// footsteps that every variant shares (not the cow's). None for a species
-/// without sound variants.
+/// without sound variants (or one that moved onto `VariantTables`, like wolves).
 pub fn variant_sound(m: &Mob, kind: &str) -> Option<&'static str> {
     use std::{collections::HashMap, sync::Mutex};
     let species = m.species();
@@ -2778,7 +2796,6 @@ pub fn variant_sound(m: &Mob, kind: &str) -> Option<&'static str> {
         Species::Pig => "pig",
         Species::Cow => "cow",
         Species::Chicken => "chicken",
-        Species::Wolf => "wolf",
         Species::Cat => "cat",
         _ => return None,
     };
@@ -2809,7 +2826,6 @@ pub fn variant_name(s: Species, index: u8) -> &'static str {
     let i = index as usize;
     match s {
         Species::Cat => super::tame::CAT_VARIANTS.get(i).copied().unwrap_or("black"),
-        Species::Wolf => super::tame::WOLF_VARIANTS.get(i).map_or("pale", |v| v.0),
         Species::ZombieNautilus => super::nautilus::VARIANTS
             .get(i)
             .copied()

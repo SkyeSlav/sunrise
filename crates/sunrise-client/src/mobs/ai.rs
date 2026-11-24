@@ -3490,16 +3490,28 @@ pub(super) fn play_ambient(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>
         Species::Nautilus | Species::ZombieNautilus => super::nautilus::sounds(m)[0],
         Species::Enderman if m.ai.target.is_some() => "entity.enderman.scream",
         // Wolf.isAngry reads the persistent anger timer, not the current target.
-        Species::Wolf if super::tame::angry(m) => {
-            super::finalize::variant_sound(m, "growl").unwrap_or("entity.wolf.growl")
-        }
-        Species::Wolf if m.random.next_int_bound(3).unwrap_or(1) == 0 => {
-            let kind = if m.extra.tame && m.health < m.attrs.max_health / 2.0 {
-                "whine"
+        Species::Wolf => {
+            let kind = if super::tame::angry(m) {
+                "growl"
+            } else if m.random.next_int_bound(3).unwrap_or(1) == 0 {
+                if m.extra.tame && m.health < m.attrs.max_health / 2.0 {
+                    "whine"
+                } else {
+                    "pant"
+                }
             } else {
-                "pant"
+                "ambient"
             };
-            super::finalize::variant_sound(m, kind).unwrap_or("entity.wolf.pant")
+            if let Some(sound) = wolf_sound(m, w.side.variant_tables(), kind) {
+                m.voice_id(sound, events);
+                return;
+            }
+            match kind {
+                "growl" => "entity.wolf.growl",
+                "whine" => "entity.wolf.whine",
+                "pant" => "entity.wolf.pant",
+                _ => "entity.wolf.ambient",
+            }
         }
         Species::Parrot => super::parrot::ambient(m, w),
         // Cat.getAmbientSound: purr in love, purreow one time in four, else ambient.
@@ -5498,7 +5510,7 @@ pub(super) fn inherited_voice_sounds(m: &Mob) -> [&'static str; 3] {
             m.kind.sounds[2],
         ],
         // The mob's sound variant set, the baby one for a baby.
-        Species::Pig | Species::Cow | Species::Chicken | Species::Wolf | Species::Cat => {
+        Species::Pig | Species::Cow | Species::Chicken | Species::Cat => {
             use super::finalize::variant_sound as v;
             match (v(m, "ambient"), v(m, "hurt"), v(m, "death")) {
                 (Some(a), Some(h), Some(d)) => [a, h, d],
@@ -5507,6 +5519,17 @@ pub(super) fn inherited_voice_sounds(m: &Mob) -> [&'static str; 3] {
         }
         _ => m.kind.sounds,
     }
+}
+/// `Wolf.getSoundSet`: resolves `kind` (`ambient`, `death`, `growl`, `hurt`,
+/// `pant`, `whine`, `step`) from the world's `minecraft:wolf_sound_variant` table.
+pub(super) fn wolf_sound<'a>(
+    m: &Mob,
+    variants: Option<&'a super::variants::VariantTables>,
+    kind: &str,
+) -> Option<&'a str> {
+    let variants = variants?;
+    let r = m.wolf_sound_variant(&variants.wolf_sound)?;
+    variants.wolf_sound.get(r)?.sound(m.is_baby(), kind)
 }
 /// `Animal.mobInteract` with its food in hand: an adult that can fall in
 /// love does, a baby grows up by a tenth, and either plays its eating sound

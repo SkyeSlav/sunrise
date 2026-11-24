@@ -76,14 +76,25 @@ pub fn main() -> Result<()> {
         writeln!(out, "== {n}")?;
         let kind = c["type"].as_str().unwrap();
         let s = species(kind);
-        let variant = variant_index(s, c["variant"].as_str().unwrap());
+        let raw_variant = c["variant"].as_str().unwrap();
+        let components = if s == Species::Wolf {
+            let full = if raw_variant.contains(':') {
+                raw_variant.to_owned()
+            } else {
+                format!("minecraft:{raw_variant}")
+            };
+            std::iter::once(("minecraft:wolf/variant".to_owned(), full)).collect()
+        } else {
+            let variant = variant_index(s, raw_variant);
+            species_variant_component(s, variant)
+                .map(|(id, v)| (id.to_owned(), v))
+                .into_iter()
+                .collect()
+        };
         let view = EntityView {
             kind: kind.to_owned(),
             position: [0.5, 64.0, 0.5],
-            components: species_variant_component(s, variant)
-                .map(|(id, v)| (id.to_owned(), v))
-                .into_iter()
-                .collect(),
+            components,
             ..Default::default()
         };
         for p in c["predicates"].as_array().unwrap() {

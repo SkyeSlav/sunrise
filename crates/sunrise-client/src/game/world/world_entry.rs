@@ -740,6 +740,9 @@ impl Game<'_> {
         loot.set_global_modifiers(modifiers);
         items.set_loot_data(&loot);
         let loot = Arc::new(loot);
+        let variants = frozen
+            .map(|tables| tables.variants.clone())
+            .unwrap_or_else(|| Arc::new(packed_registry_definitions.variant_tables()));
         Ok(super::condition_reload_state::StagedWorldTables {
             tables: Some(WorldTables {
                 conditions,
@@ -748,6 +751,7 @@ impl Game<'_> {
                 priority_layers,
                 items: Arc::new(items),
                 packed_registries: packed_registry_definitions,
+                variants,
                 providers,
                 biomes,
                 loot,

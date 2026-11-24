@@ -31,6 +31,7 @@ struct Level<'a> {
     types: &'a MobTypes,
     data: &'a MobData,
     registries: &'a SpawnRegistries,
+    variants: &'a sunrise_client::mobs::variants::VariantTables,
     enchantments: &'a Enchantments,
     items: &'a Items,
     camel_husk_size: (f32, f32),
@@ -120,6 +121,7 @@ impl FinalizeLevel for Level<'_> {
     fn spawn_data(&self) -> SpawnData<'_> {
         SpawnData {
             registries: self.registries,
+            variants: self.variants,
             enchantments: self.enchantments,
             items: self.items,
             camel_husk_size: self.camel_husk_size,
@@ -166,7 +168,12 @@ const MEMORIES: [&str; 7] = [
     "home",
 ];
 
-fn variant(m: &Mob, regs: &SpawnRegistries, v: &mut Vec<String>) {
+fn variant(
+    m: &Mob,
+    regs: &SpawnRegistries,
+    variants: &sunrise_client::mobs::variants::VariantTables,
+    v: &mut Vec<String>,
+) {
     use Species as S;
     let s = m.species();
     let named = |reg: &finalize::VariantRegistry, i: Option<u8>| {
@@ -196,8 +203,18 @@ fn variant(m: &Mob, regs: &SpawnRegistries, v: &mut Vec<String>) {
             v.push(named(&regs.cat_sound, m.extra.sound_variant));
         }
         S::Wolf => {
+            let var = m
+                .wolf_variant(&variants.wolf)
+                .and_then(|r| variants.wolf.id(r))
+                .unwrap_or("minecraft:pale")
+                .to_owned();
+            let snd = m
+                .wolf_sound_variant(&variants.wolf_sound)
+                .and_then(|r| variants.wolf_sound.id(r))
+                .unwrap_or("minecraft:classic")
+                .to_owned();
             v.push(var);
-            v.push(named(&regs.wolf_sound, m.extra.sound_variant));
+            v.push(snd);
         }
         S::Frog | S::ZombieNautilus => v.push(var),
         S::Sheep => v.push(DYE_NAMES[m.extra.color as usize & 15].into()),
@@ -276,7 +293,12 @@ fn variant(m: &Mob, regs: &SpawnRegistries, v: &mut Vec<String>) {
     }
 }
 
-fn describe(m: &Mob, all: &[Mob], regs: &SpawnRegistries) -> String {
+fn describe(
+    m: &Mob,
+    all: &[Mob],
+    regs: &SpawnRegistries,
+    variants: &sunrise_client::mobs::variants::VariantTables,
+) -> String {
     let mut t = vec![m.kind.id.clone()];
     let vehicle = m
         .extra
@@ -402,7 +424,7 @@ fn describe(m: &Mob, all: &[Mob], regs: &SpawnRegistries) -> String {
         t.push(format!("mem={}", mem.join(",")));
     }
     let mut v = Vec::new();
-    variant(m, regs, &mut v);
+    variant(m, regs, variants, &mut v);
     if !v.is_empty() {
         t.push(format!("v={}", v.join(" ").replace(' ', "_")));
     }
@@ -429,6 +451,7 @@ pub fn main() -> sunrise_client::Result<()> {
     let enchantments = Enchantments::load(root, &defaults)?;
     let types = MobTypes::load(root)?;
     let registries = SpawnRegistries::load(root);
+    let variants = sunrise_client::mobs::variants::VariantTables::load_prepared(root);
     let camel = &types.types["minecraft:camel_husk"];
     let camel_husk_size = (camel.width as f32, camel.height as f32);
     let mut out = format!("halloween {halloween}\n");
@@ -474,6 +497,7 @@ pub fn main() -> sunrise_client::Result<()> {
             types: &types,
             data: &mob_data,
             registries: &registries,
+            variants: &variants,
             enchantments: &enchantments,
             items: &items,
             camel_husk_size,
@@ -544,7 +568,10 @@ pub fn main() -> sunrise_client::Result<()> {
             }
         }
         all.sort_by_key(|m| m.id);
-        let mut parts: Vec<String> = all.iter().map(|m| describe(m, &all, &registries)).collect();
+        let mut parts: Vec<String> = all
+            .iter()
+            .map(|m| describe(m, &all, &registries, &variants))
+            .collect();
         for m in &mut all {
             parts.push(format!("rng {}", m.random.next_long()));
         }

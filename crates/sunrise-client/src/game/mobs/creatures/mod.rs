@@ -1351,9 +1351,13 @@ impl Game<'_> {
     ) {
         let mut heard = mod_api::Difficulty::from(difficulty);
         let (mut spawn_cancelled, mut skip_finalize) = (false, false);
-        let given = group
-            .as_ref()
-            .and_then(|g| super::native_unspawned_mob::native_spawn_group(g, self.lend_epoch()));
+        let given = group.as_ref().and_then(|g| {
+            super::native_unspawned_mob::native_spawn_group(
+                g,
+                self.lend_epoch(),
+                self.world_variants(),
+            )
+        });
         let mut native_group = given.clone();
         let mut borrowed = self.borrowed_unspawned_mob_mut(kind, at, mob);
         self.native_finalize_spawn(mod_api::__private::FinalizeSpawnCall {
@@ -1371,7 +1375,7 @@ impl Game<'_> {
         if native_group != given {
             *group = native_group
                 .as_ref()
-                .and_then(super::native_unspawned_mob::spawn_group);
+                .and_then(|g| super::native_unspawned_mob::spawn_group(g, self.world_variants()));
         }
         (
             sunrise_client::mobs::finalize::SpawnEvent {
@@ -4469,7 +4473,11 @@ impl Game<'_> {
         partner: u32,
         equine: Option<Box<sunrise_client::mobs::equine::Offspring>>,
         parent_variant: Option<bool>,
-        wolf_voice: Option<u8>,
+        wolf_voice: Option<
+            sunrise_client::lan::data::RegistryRef<
+                sunrise_client::mobs::variants::WolfSoundVariant,
+            >,
+        >,
         experience: sunrise_client::mobs::BreedExperience,
         at_tick_boundary: bool,
     ) -> Option<u32> {
@@ -4624,10 +4632,10 @@ impl Game<'_> {
                     // Wolf.getBreedOffspring: a parent's variant; tame parents
                     // give a tame baby with their collar colours mixed.
                     let other = q.as_ref().unwrap_or(&p);
-                    child.extra.variant = if coin {
-                        p.extra.variant
+                    child.extra.wolf_variant = if coin {
+                        p.extra.wolf_variant
                     } else {
-                        other.extra.variant
+                        other.extra.wolf_variant
                     };
                     if p.extra.tame {
                         sunrise_client::mobs::tame::set_tame(child, true);
@@ -4641,7 +4649,8 @@ impl Game<'_> {
                         );
                         child.extra.color = mixed;
                     }
-                    child.extra.sound_variant = wolf_voice.or_else(|| self.bred_wolf_voice(parent));
+                    child.extra.wolf_sound_variant =
+                        wolf_voice.or_else(|| self.bred_wolf_voice(parent));
                     break 'offspring;
                 }
                 // Panda.getBreedOffspring: genes from both parents.
