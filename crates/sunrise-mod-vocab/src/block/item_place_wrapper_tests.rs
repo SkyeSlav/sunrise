@@ -1,5 +1,5 @@
 use super::*;
-use crate::prelude::ItemsHost;
+use crate::prelude::{ItemsHost, PlayersHost};
 use crate::testing::FakeHost;
 use crate::{HostTransaction, Identifier, Tag};
 
@@ -374,7 +374,7 @@ fn a_block_entity_place_reports_the_slot_wrapped_or_not() {
 #[test]
 fn a_menu_slot_with_no_block_entity_backing_has_none() {
     let (mut fake, _) = host_with(&[]);
-    let player = fake.players.handle(STEVE).unwrap();
+    let player = fake.player(STEVE).unwrap();
     let host: &mut dyn ServerHost = &mut fake;
     let place = ItemPlace::MenuSlot {
         menu: MenuRef {
