@@ -943,6 +943,43 @@ pub struct Song {
     pub description: Value,
 }
 impl Song {
+    /// `JukeboxSong.DIRECT_CODEC`: every field is required: a `sound_event`
+    /// (a sound id or an inline definition), a `description` (a text
+    /// component), a positive `length_in_seconds` and a `comparator_output`
+    /// from 0 to 15.
+    pub fn decode(v: &Value) -> std::result::Result<Self, String> {
+        let event = &v["sound_event"];
+        let sound = match event {
+            Value::String(id) => id.as_str(),
+            Value::Object(_) => event["sound_id"]
+                .as_str()
+                .ok_or("sound_event needs a sound_id")?,
+            _ => return Err("sound_event must be a sound id or definition".into()),
+        };
+        let sound = sunrise_core::identifier::Identifier::parse(sound)
+            .map_err(|error| format!("sound_event: {error}"))?
+            .to_string();
+        let description = v["description"].clone();
+        if description.is_null() {
+            return Err("description is required".into());
+        }
+        let length = v["length_in_seconds"]
+            .as_f64()
+            .map(|n| n as f32)
+            .filter(|n| *n >= f32::MIN_POSITIVE && *n <= f32::MAX)
+            .ok_or("length_in_seconds must be positive and finite")?;
+        let comparator = v["comparator_output"]
+            .as_f64()
+            .filter(|n| n.fract() == 0.0 && (0.0..=15.0).contains(n))
+            .ok_or("comparator_output must be an integer from 0 to 15")?
+            as i32;
+        Ok(Self {
+            sound,
+            length_ticks: i64::from((length * 20.0).ceil() as i32),
+            comparator,
+            description,
+        })
+    }
     /// `hasFinished`: the length plus one second.
     pub fn finished(&self, ticks: i64) -> bool {
         ticks >= self.length_ticks + 20
@@ -1056,21 +1093,12 @@ fn load_instruments(root: &Path, overlay: &PackOverlay) -> HashMap<String, Instr
 fn load_songs(root: &Path, overlay: &PackOverlay) -> HashMap<String, Song> {
     data_files(root, "jukebox_song", overlay)
         .into_iter()
-        .map(|(id, v)| {
-            let sound = match &v["sound_event"] {
-                Value::String(s) => s.clone(),
-                other => other["sound_id"].as_str().unwrap_or("").to_owned(),
-            };
-            (
-                id,
-                Song {
-                    sound,
-                    length_ticks: (v["length_in_seconds"].as_f64().unwrap_or(0.0) as f32 * 20.0)
-                        .ceil() as i64,
-                    comparator: v["comparator_output"].as_i64().unwrap_or(0) as i32,
-                    description: v["description"].clone(),
-                },
-            )
+        .filter_map(|(id, v)| match Song::decode(&v) {
+            Ok(song) => Some((id, song)),
+            Err(error) => {
+                log::warn!("Sunrise: jukebox_song {id} refused: {error}");
+                None
+            }
         })
         .collect()
 }
@@ -4209,6 +4237,41 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// `JukeboxSong.DIRECT_CODEC` requires every field: a definition missing
+    /// one is refused, not filled with a default.
+    #[test]
+    fn load_songs_refuses_a_definition_missing_a_required_field() {
+        let root = std::env::temp_dir().join(format!("sunrise-songs-bad-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("data/demo/jukebox_song")).unwrap();
+        fs::write(root.join("items.json"), "{}").unwrap();
+        let whole = json!({"sound_event": "demo:tune", "length_in_seconds": 5.0, "comparator_output": 3, "description": "tune"});
+        for missing in [
+            None,
+            Some("sound_event"),
+            Some("description"),
+            Some("length_in_seconds"),
+            Some("comparator_output"),
+        ] {
+            let mut song = whole.clone();
+            if let Some(field) = missing {
+                song.as_object_mut().unwrap().remove(field);
+            }
+            fs::write(
+                root.join("data/demo/jukebox_song/tune.json"),
+                song.to_string(),
+            )
+            .unwrap();
+            let songs = load_songs(&root, &PackOverlay::NONE);
+            assert_eq!(
+                songs.contains_key("demo:tune"),
+                missing.is_none(),
+                "{missing:?}"
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn server_json_conditions_filter_selected_songs_instruments_and_enchantments() {
         let root = std::env::temp_dir().join(format!("sunrise-server-json-{}", std::process::id()));
@@ -4220,7 +4283,7 @@ mod tests {
             fs::write(dir.join("entry.json"), "{}").unwrap();
             files.push((format!("{kind}/demo:entry"), vec![
                 b"{}".to_vec(),
-                json!({"neoforge:conditions":[{"type":"neoforge:mod_loaded","modid":"provider"}],"description":"winning","max_level":7,"sound_event":"demo:note","use_duration":4.0,"range":16.0}).to_string().into_bytes(),
+                json!({"neoforge:conditions":[{"type":"neoforge:mod_loaded","modid":"provider"}],"description":"winning","max_level":7,"sound_event":"demo:note","use_duration":4.0,"range":16.0,"length_in_seconds":4.0,"comparator_output":1}).to_string().into_bytes(),
             ]));
             files.push((
                 format!("{kind}/demo:unknown"),
