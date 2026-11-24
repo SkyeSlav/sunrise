@@ -22,8 +22,6 @@ pub struct BiomeFacts {
     pub frog: u8,
     /// `MoonBrightnessCheck(>= 0.9)`: the full moon.
     pub full_moon: bool,
-    /// `spawns_coral_variant_zombie_nautilus` (the warm ocean).
-    pub coral_nautilus: bool,
     /// `#minecraft:spawns_white_rabbits` (`Rabbit.getRandomRabbitVariant`).
     pub white_rabbit: bool,
     /// `#minecraft:spawns_gold_rabbits` (`Rabbit.getRandomRabbitVariant`).

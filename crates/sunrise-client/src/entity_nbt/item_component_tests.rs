@@ -49,14 +49,21 @@ fn a_spawn_egg_beats_the_biome_variant() {
     assert_eq!(sheep.extra.color, 5, "lime, not the white it started as");
     // ZombieNautilus.applyImplicitComponents: the egg carries the coral
     // variant over the temperate one the biome picked.
+    let variants = crate::mobs::variants::VariantTables::load_prepared(&root);
     let mut egg = crate::items::ItemStack::new("minecraft:zombie_nautilus_spawn_egg", 1);
     egg.data_mut().set_other(
         "minecraft:zombie_nautilus/variant",
         Some(string("minecraft:warm")),
     );
     let mut nautilus = spawn("minecraft:zombie_nautilus", 4);
-    apply_item_components(&mut nautilus, &egg);
-    assert_eq!(nautilus.extra.variant, 1, "minecraft:warm, not temperate");
+    apply_item_components_with_variants(&mut nautilus, &egg, &variants);
+    assert_eq!(
+        nautilus
+            .zombie_nautilus_variant(&variants.zombie_nautilus)
+            .and_then(|r| variants.zombie_nautilus.id(r)),
+        Some("minecraft:warm"),
+        "minecraft:warm, not temperate"
+    );
 }
 
 /// `Fox.applyImplicitComponent` and `Frog.applyImplicitComponent`: the

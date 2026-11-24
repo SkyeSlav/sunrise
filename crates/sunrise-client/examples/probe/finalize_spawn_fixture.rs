@@ -216,7 +216,15 @@ fn variant(
             v.push(var);
             v.push(snd);
         }
-        S::Frog | S::ZombieNautilus => v.push(var),
+        S::Frog => v.push(var),
+        S::ZombieNautilus => {
+            let var = m
+                .zombie_nautilus_variant(&variants.zombie_nautilus)
+                .and_then(|r| variants.zombie_nautilus.id(r))
+                .unwrap_or("minecraft:temperate")
+                .to_owned();
+            v.push(var);
+        }
         S::Sheep => v.push(DYE_NAMES[m.extra.color as usize & 15].into()),
         S::Horse => v.push(format!(
             "{}/{}",

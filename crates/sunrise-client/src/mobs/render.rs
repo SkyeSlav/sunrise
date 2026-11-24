@@ -331,8 +331,8 @@ pub fn body_with_variants<'a>(
             },
         ),
         S::Nautilus | S::ZombieNautilus => (
-            super::nautilus::model(m).into(),
-            super::nautilus::texture(m).into(),
+            super::nautilus::model(m, variants).into(),
+            super::nautilus::texture(m, variants).into(),
         ),
         S::SulfurCube => {
             let (model, texture) = super::sulfur_cube::body(m);
@@ -2355,7 +2355,7 @@ fn render_selected(
         let uv = drawn.map(|(_, uv)| uv).or_else(|| {
             if avatar(m) {
                 atlas(&m.kind.texture)
-            } else if m.species() == Species::Wolf {
+            } else if matches!(m.species(), Species::Wolf | Species::ZombieNautilus) {
                 atlas(crate::hud::MISSING_SPRITE)
             } else {
                 None

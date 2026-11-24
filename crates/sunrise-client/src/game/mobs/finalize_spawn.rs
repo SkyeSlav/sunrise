@@ -146,7 +146,7 @@ impl Game<'_> {
     /// otherwise the server's frozen world tables (or prepared defaults).
     pub(in crate::game) fn world_variants(&self) -> &sunrise_client::mobs::variants::VariantTables {
         if let Some(r) = self.remote.as_ref()
-            && !r.variants.wolf.is_empty()
+            && !r.variants.is_empty()
         {
             return &r.variants;
         }

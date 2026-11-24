@@ -284,7 +284,6 @@ pub struct SpawnRegistries {
     pub chicken: VariantRegistry,
     pub cat: VariantRegistry,
     pub frog: VariantRegistry,
-    pub zombie_nautilus: VariantRegistry,
     pub pig_sound: VariantRegistry,
     pub cow_sound: VariantRegistry,
     pub chicken_sound: VariantRegistry,
@@ -316,7 +315,6 @@ impl SpawnRegistries {
             chicken: r("chicken_variant"),
             cat: r("cat_variant"),
             frog: r("frog_variant"),
-            zombie_nautilus: r("zombie_nautilus_variant"),
             pig_sound: r("pig_sound_variant"),
             cow_sound: r("cow_sound_variant"),
             chicken_sound: r("chicken_sound_variant"),
@@ -2300,7 +2298,14 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
                 self.ageable(m, g)
             }
             S::ZombieNautilus => {
-                self.variant(m, |r| &r.zombie_nautilus);
+                let at = block(m);
+                if let Some(v) = self.level.spawn_data().variants.zombie_nautilus.select(
+                    &*self.level,
+                    at,
+                    self.random,
+                ) {
+                    m.extra.zombie_nautilus_variant = Some(v);
+                }
                 let cooldown = self.uniform(2400, 3600);
                 set_memory(m, "attack_target_cooldown", i64::from(cooldown), i64::MAX);
                 m.extra.counter = cooldown;
@@ -2703,7 +2708,6 @@ pub fn variant_index(s: Species, name: &str) -> u8 {
     let name = name.strip_prefix("minecraft:").unwrap_or(name);
     let i = match s {
         Species::Cat => super::tame::CAT_VARIANTS.iter().position(|v| *v == name),
-        Species::ZombieNautilus => super::nautilus::VARIANTS.iter().position(|v| *v == name),
         // MushroomCow.Variant: red is the codec's default, brown the other.
         Species::Mooshroom => ["red", "brown"].iter().position(|v| *v == name),
         // Fox.Variant, read from a `minecraft:fox/variant` component; the save
@@ -2732,12 +2736,19 @@ pub fn variant_component_in(
     m: &Mob,
     variants: &super::variants::VariantTables,
 ) -> Option<(&'static str, String)> {
-    if m.species() == Species::Wolf {
-        let r = m.wolf_variant(&variants.wolf)?;
-        let id = variants.wolf.id(r)?;
-        return Some(("minecraft:wolf/variant", id.to_owned()));
+    match m.species() {
+        Species::Wolf => {
+            let r = m.wolf_variant(&variants.wolf)?;
+            let id = variants.wolf.id(r)?;
+            Some(("minecraft:wolf/variant", id.to_owned()))
+        }
+        Species::ZombieNautilus => {
+            let r = m.zombie_nautilus_variant(&variants.zombie_nautilus)?;
+            let id = variants.zombie_nautilus.id(r)?;
+            Some(("minecraft:zombie_nautilus/variant", id.to_owned()))
+        }
+        _ => variant_component(m),
     }
-    variant_component(m)
 }
 /// [`variant_component`] of a species with the game's variant index.
 pub fn species_variant_component(s: Species, variant: u8) -> Option<(&'static str, String)> {
@@ -2748,7 +2759,6 @@ pub fn species_variant_component(s: Species, variant: u8) -> Option<(&'static st
         Species::Cow => "minecraft:cow/variant",
         Species::Mooshroom => "minecraft:mooshroom/variant",
         Species::Chicken => "minecraft:chicken/variant",
-        Species::ZombieNautilus => "minecraft:zombie_nautilus/variant",
         Species::Horse => "minecraft:horse/variant",
         Species::Llama | Species::TraderLlama => "minecraft:llama/variant",
         _ => return None,
@@ -2826,10 +2836,6 @@ pub fn variant_name(s: Species, index: u8) -> &'static str {
     let i = index as usize;
     match s {
         Species::Cat => super::tame::CAT_VARIANTS.get(i).copied().unwrap_or("black"),
-        Species::ZombieNautilus => super::nautilus::VARIANTS
-            .get(i)
-            .copied()
-            .unwrap_or("temperate"),
         Species::Mooshroom => ["red", "brown"].get(i).copied().unwrap_or("red"),
         Species::Horse => super::equine::VARIANT_NAMES
             .get(i)

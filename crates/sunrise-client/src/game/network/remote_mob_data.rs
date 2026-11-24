@@ -433,7 +433,11 @@ fn apply_registry_data(
             (Species::Pig, 19, Value::Id(_)) => "minecraft:pig_variant",
             (Species::Cow, 18, Value::Id(_)) => "minecraft:cow_variant",
             (Species::Chicken, 18, Value::Id(_)) => "minecraft:chicken_variant",
-            (Species::ZombieNautilus, 21, Value::Id(_)) => "minecraft:zombie_nautilus_variant",
+            (Species::ZombieNautilus, 21, Value::Id(id)) => {
+                m.extra.zombie_nautilus_variant =
+                    Some(sunrise_client::lan::data::RegistryRef::new(*id as u32));
+                continue;
+            }
             // Wolf.DATA_ANGER_END_TIME: the angry texture while it lies ahead.
             (Species::Wolf, 22, Value::Long(end)) => {
                 m.extra.anger = (end - game_time).clamp(0, i64::from(i32::MAX)) as i32;

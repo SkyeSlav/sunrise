@@ -198,25 +198,14 @@ fn mob_variant_meta(
                 meta.push((18, serializer::INT, Value::Int(i32::from(e.variant))));
             }
         }
-        // Frog.DATA_VARIANT_ID, Pig's, Cow's, Chicken's and ZombieNautilus's
+        // Frog.DATA_VARIANT_ID, Pig's, Cow's and Chicken's
         // (after the entries of their parents): registry holders.
-        "minecraft:frog"
-        | "minecraft:pig"
-        | "minecraft:cow"
-        | "minecraft:chicken"
-        | "minecraft:zombie_nautilus" => {
+        "minecraft:frog" | "minecraft:pig" | "minecraft:cow" | "minecraft:chicken" => {
             let (index, serializer, registry) = match kind {
                 "minecraft:frog" => (18, serializer::FROG_VARIANT, "minecraft:frog_variant"),
                 "minecraft:pig" => (19, serializer::PIG_VARIANT, "minecraft:pig_variant"),
                 "minecraft:cow" => (18, serializer::COW_VARIANT, "minecraft:cow_variant"),
-                "minecraft:chicken" => {
-                    (18, serializer::CHICKEN_VARIANT, "minecraft:chicken_variant")
-                }
-                _ => (
-                    21,
-                    serializer::ZOMBIE_NAUTILUS_VARIANT,
-                    "minecraft:zombie_nautilus_variant",
-                ),
+                _ => (18, serializer::CHICKEN_VARIANT, "minecraft:chicken_variant"),
             };
             // Each registry's default (`define(DATA_VARIANT_ID, ... TEMPERATE)`)
             // stays out of the pairing data, as other default values do.
@@ -229,6 +218,23 @@ fn mob_variant_meta(
             }
             if let Some(v) = id(registry, "temperate") {
                 defaults.push((index, serializer, Value::Id(v)));
+            }
+        }
+        // ZombieNautilus.DATA_VARIANT_ID carries the world table's network id
+        // directly (`RegistryRef<ZombieNautilusVariant>`).
+        "minecraft:zombie_nautilus" => {
+            let default = id("minecraft:zombie_nautilus_variant", "temperate");
+            let variant_id = e
+                .zombie_nautilus_variant
+                .map(|r| r.network_id() as i32)
+                .or(default);
+            if let Some(v) = variant_id
+                && Some(v) != default
+            {
+                meta.push((21, serializer::ZOMBIE_NAUTILUS_VARIANT, Value::Id(v)));
+            }
+            if let Some(v) = default {
+                defaults.push((21, serializer::ZOMBIE_NAUTILUS_VARIANT, Value::Id(v)));
             }
         }
         // Rabbit.DATA_TYPE_ID (after AgeableMob's two) and
