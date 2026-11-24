@@ -717,6 +717,10 @@ impl Game<'_> {
                     .is_ok(),
             },
         )?;
+        // The timeline tags the raid code reads bind from this world's packs too.
+        let gameplay = Arc::new(sunrise_client::patrol::GameplayAttributes::load(
+            root, &overlay,
+        ));
         let data_maps = native_data_maps::DataMaps::load(&data_map_types, &overlay, &registries)
             .with_builtins(builtin)
             .with_biome_keys(mod_api::__private::BiomeKeys::new(
@@ -757,6 +761,7 @@ impl Game<'_> {
                 reload_sources: reload.then_some(sources),
                 data_maps,
                 pack_tags,
+                gameplay,
             }),
             advancements,
             health,
