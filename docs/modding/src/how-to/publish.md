@@ -1,11 +1,49 @@
 # Publishing your mod
 
+## Releasing
+
+Commit your mod's source, `page.toml` and screenshots (and `Cargo.lock` for a native mod).
+If your repository doesn't already have the Sunrise release workflow, run `cargo sunrise-mod release setup`
+from the mod's folder, then commit and push the changes. Register the repository at
+[Submit a mod](https://playsunrise.net/mods/submit) before your first release.
+
+From the mod's folder on a clean branch:
+
+```sh
+cargo sunrise-mod release patch
+```
+
+Use `minor`, `major`, or a higher SemVer instead of `patch` to choose another version. Add `--check`
+to run the release checks and preview the changes without touching your checkout. The release command
+refreshes the workflow, commits the version bump, and pushes the branch and a tag. GitHub Actions builds
+and attests the `.smod` and its page bundle; the registry bot submits them for review.
+
+## The old registry
+
 Sunrise's registry, [sunrise-org/sunrise-mods](https://github.com/sunrise-org/sunrise-mods), lists mods, modpacks,
 resource packs and shader packs at [playsunrise.net/mods](https://playsunrise.net/mods). Every new or changed
 registry version row must name a stable Sunrise release in `sunrise`. A native mod submits a version through
 [the stable source submission](#publishing-a-stable-source-version); for any other kind, a content-only mod
 included, write the row by hand as [the registry reference](../reference/registry-index.md#the-entry) shows. The steps below show how to prepare and check
 a local draft, and what review does with a submission.
+
+## Your mod's page
+
+For a tagged registry release, edit `page.toml` beside `sunrise-mod.toml`:
+
+- `summary`: a short description of at least 25 characters.
+- `description`: a long description of at least 125 characters. You can use Markdown.
+- `categories`: an optional list of up to eight IDs from the registry's `registry/categories.toml`.
+- `[[screenshots]]`: at least one entry, with a `path` such as `page/recipes.png` and an optional `caption`.
+  Put the images under `page/`. Use PNG or JPEG files, at most 5 MiB each.
+
+Text minimums count Unicode scalar values after trimming surrounding whitespace. Optional `name`, `authors`,
+`homepage` and `issues` override the values in `sunrise-mod.toml`. The page uses the mod's own `icon.png`.
+
+Run `cargo sunrise-mod check` to see what you still need before release. Run
+[`cargo sunrise-mod check --release <tag>`](../reference/sdk/05-commands.md) to require a complete page and
+check the tag against the manifest's version. `build` writes `target/sunrise-mod/<id>.page.tar` separately from the
+`.smod` whenever the project has a `page.toml`.
 
 ## 1. Build and write the submission
 

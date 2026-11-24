@@ -761,10 +761,15 @@ fn report(
     text
 }
 
-/// `check [--uses]` in a mod folder: the package rules, then `cargo check` and an API use
-/// report for a native mod. `--uses` lists each item and the line that brought it in.
-pub(crate) fn check_mod(entry: ChildEntry, show_uses: bool, with: &[&Path]) -> Result<(), String> {
-    let root = Path::new(".");
+/// Checks a mod folder and reports its API uses. Release checks enforce the page and tag
+/// requirements, and compile a native mod instead of only type-checking it.
+pub(crate) fn check_mod(
+    entry: ChildEntry,
+    root: &Path,
+    show_uses: bool,
+    with: &[&Path],
+    release: Option<&str>,
+) -> Result<(), String> {
     let package = Package::read(root)?;
     let files = package.directory_files(root)?;
     let (pipelines, refused) = crate::check::pipeline_shaders(&files);
@@ -781,6 +786,7 @@ pub(crate) fn check_mod(entry: ChildEntry, show_uses: bool, with: &[&Path]) -> R
         );
     }
     crate::check::references(root, &package.manifest)?;
+    crate::page::check(root, &package.manifest, release)?;
     let Some(native) = &package.manifest.native else {
         if !with.is_empty() {
             return Err("check --with supplies libraries to a native mod".into());
@@ -791,7 +797,18 @@ pub(crate) fn check_mod(entry: ChildEntry, show_uses: bool, with: &[&Path]) -> R
     // The mod's `sunrise-mod-api` is a path into `.sunrise/sdk/`: fetch it before Cargo looks.
     let sdk = fetch_pinned(root, &native.sunrise)?;
     let surface = surface_of(&sdk)?;
-    crate::dev::check(root, &package, with)?;
+    if release.is_some() {
+        crate::dev::build(
+            root,
+            &package,
+            with,
+            false,
+            sunrise_native_build::contract::TargetName::Client,
+            None,
+        )?;
+    } else {
+        crate::dev::check(root, &package, with)?;
+    }
     match uses_table::scan(entry, root, &package.manifest, &surface)? {
         Scanned::Uses(uses) => {
             print!(

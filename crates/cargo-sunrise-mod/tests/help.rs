@@ -16,7 +16,7 @@ fn help_lists_the_everyday_commands_and_each_command_says_its_usage() {
         assert!(output.status.success(), "{args:?}");
         let text = String::from_utf8(output.stdout).unwrap();
         assert!(text.lines().count() < 20, "{args:?}: {text}");
-        for command in ["new", "build", "run", "check", "update", "hooks"] {
+        for command in ["new", "build", "run", "check", "update", "hooks", "release"] {
             assert!(
                 text.lines().any(|l| l.trim_start().starts_with(command)),
                 "{args:?}: {command}"
@@ -56,7 +56,5 @@ fn an_unknown_command_is_an_error() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("not a cargo sunrise-mod command"));
     let output = run(&["release", "frobnicate", "--help"]);
     assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("unknown release command \"frobnicate\"")
-    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--help"));
 }

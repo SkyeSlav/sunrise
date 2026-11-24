@@ -1,0 +1,4 @@
+cargo-sunrise-mod author_release::tests::git_fixtures::preview_and_failed_check_leave_files_and_refs_untouched bin:cargo-sunrise-mod daily child-process
+cargo-sunrise-mod author_release::tests::git_fixtures::publishes_native_package_and_keeps_pinned_dependencies bin:cargo-sunrise-mod daily child-process
+cargo-sunrise-mod author_release::tests::git_fixtures::refuses_dirty_branch_local_or_remote_tag_and_behind_branch bin:cargo-sunrise-mod daily child-process
+cargo-sunrise-mod author_release::tests::git_fixtures::setup_refreshes_only_workflow_files_and_keeps_foreign_release bin:cargo-sunrise-mod daily child-process
