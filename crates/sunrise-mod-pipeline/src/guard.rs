@@ -96,7 +96,7 @@ fn scan(text: &str) -> Option<(Option<usize>, String)> {
             '#' => {
                 // Skip preprocessor directives (with backslash line continuations).
                 let mut prev = '#';
-                while let Some((_, ch)) = chars.next() {
+                for (_, ch) in chars.by_ref() {
                     if ch == '\n' && prev != '\\' {
                         break;
                     }
