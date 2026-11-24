@@ -398,6 +398,7 @@ impl Game<'_> {
             .and_then(|id| self.mobs.iter().find(|o| o.id == id))
             .map(|o| LootEntity::new(&o.kind.id));
         let kind = crate::game::native_hooks::mob_kind(m);
+        let variants = self.world_variants().clone();
         let death = drops::Death {
             this_nbt: if loot.copies_entity_nbt() {
                 self.command_target_nbt(crate::game::commands::Target::Mob(m.id))
@@ -416,6 +417,7 @@ impl Game<'_> {
                 .rules
                 .bool_at(sunrise_client::gamerules::vanilla::MOB_DROPS),
             world_seed: self.level.seed,
+            variants: Some(&variants),
         };
         let raider = sunrise_client::mobs::raider::is_raider(m.species());
         let to_stack = |stack: &sunrise_world::loot::LootStack| {

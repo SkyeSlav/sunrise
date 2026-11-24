@@ -1401,6 +1401,10 @@ pub struct Extra {
     /// holder; `None` before initialization resolves to `minecraft:classic`
     /// (or the registry's first entry).
     pub wolf_sound_variant: Option<crate::lan::data::RegistryRef<variants::WolfSoundVariant>>,
+    /// `Frog.DATA_VARIANT_ID`: the world's `minecraft:frog_variant` holder
+    /// (network id in the world's sync order); `None` before initialization
+    /// resolves to `minecraft:temperate` (or the registry's first entry).
+    pub frog_variant: Option<crate::lan::data::RegistryRef<variants::FrogVariant>>,
     /// `Zombie.canBreakDoors`.
     pub can_break_doors: bool,
     /// A goat's `IsScreamingGoat` and the horns it lost (left, right).
@@ -5663,6 +5667,16 @@ impl Mob {
         self.extra
             .wolf_sound_variant
             .or_else(|| table.default_or_any("minecraft:classic"))
+    }
+    /// `Frog.getVariant` resolved against `table`: the stored holder, or
+    /// `VariantUtils.getDefaultOrAny(..., FrogVariants.TEMPERATE)` when unset.
+    pub fn frog_variant(
+        &self,
+        table: &variants::VariantTable<variants::FrogVariant>,
+    ) -> Option<crate::lan::data::RegistryRef<variants::FrogVariant>> {
+        self.extra
+            .frog_variant
+            .or_else(|| table.default_or_any("minecraft:temperate"))
     }
 }
 /// Model geometry for a mob, posed for its animation state, as camera-relative

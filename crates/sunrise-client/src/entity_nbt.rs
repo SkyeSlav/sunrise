@@ -1209,6 +1209,13 @@ pub fn write_mob(
         {
             map.insert("variant".into(), string(id));
         }
+    } else if species == S::Frog {
+        if let Some(variants) = variants
+            && let Some(r) = m.frog_variant(&variants.frog)
+            && let Some(id) = variants.frog.id(r)
+        {
+            map.insert("variant".into(), string(id));
+        }
     } else if species != S::ZombieNautilus
         && crate::mobs::finalize::saves_variant_name(species)
         && let Some((_, variant)) =
@@ -2423,8 +2430,10 @@ fn mob_from_nbt_at(
             };
         }
     }
-    if m.species() != crate::mobs::Species::Wolf
-        && crate::mobs::finalize::saves_variant_name(m.species())
+    if !matches!(
+        m.species(),
+        crate::mobs::Species::Wolf | crate::mobs::Species::Frog
+    ) && crate::mobs::finalize::saves_variant_name(m.species())
         && let Some(v) = text(tag.get("variant"))
     {
         m.extra.variant = crate::mobs::finalize::variant_index(m.species(), &v);
@@ -7335,10 +7344,9 @@ pub fn apply_item_components(m: &mut Mob, stack: &crate::items::ItemStack) {
         ),
         // ZombieNautilus.applyImplicitComponents: the variant only.
         crate::mobs::Species::ZombieNautilus => (Some("minecraft:zombie_nautilus/variant"), None),
-        // Fox and Frog.applyImplicitComponent: `setVariant` from the component
+        // Fox.applyImplicitComponent: `setVariant` from the component
         // alone, so a spawn egg carrying one hatches that variant.
         crate::mobs::Species::Fox => (Some("minecraft:fox/variant"), None),
-        crate::mobs::Species::Frog => (Some("minecraft:frog/variant"), None),
         // Horse.applyImplicitComponent: `setVariant` sets the coat colour and
         // keeps the markings the spawn picked (`getTypeVariant() & -256`),
         // which Sunrise keeps in `extra.variant2` and leaves alone here.
@@ -7377,17 +7385,46 @@ pub fn apply_item_components(m: &mut Mob, stack: &crate::items::ItemStack) {
     }
 }
 
+/// [`apply_item_components`] plus registry-backed variant components resolved
+/// against the world's `VariantTables` (e.g. `Frog.applyImplicitComponent` for
+/// `minecraft:frog/variant`).
+pub fn apply_item_components_with_variants(
+    m: &mut Mob,
+    stack: &crate::items::ItemStack,
+    variants: &crate::mobs::variants::VariantTables,
+) {
+    apply_item_components(m, stack);
+    let Some(components) = stack.data() else {
+        return;
+    };
+    if m.species() == crate::mobs::Species::Frog
+        && let Some(name) = text(components.other("minecraft:frog/variant"))
+        && let Some(r) = variants.frog.lookup(&name)
+    {
+        m.extra.frog_variant = Some(r);
+    }
+}
+
 /// Resolve registry-backed mob variants from saved NBT against the world's
-/// `VariantTables` (`VariantUtils.readVariant` + `Wolf.readAdditionalSaveData`).
+/// `VariantTables` (`VariantUtils.readVariant`, `Wolf.readAdditionalSaveData`,
+/// `Frog.readAdditionalSaveData`).
 /// Missing or unknown ids leave the vanilla default (`getDefaultOrAny`).
 pub fn read_mob_variants(m: &mut Mob, tag: &Tag, variants: &crate::mobs::variants::VariantTables) {
-    if m.species() == crate::mobs::Species::Wolf {
-        m.extra.wolf_variant = text(tag.get("variant"))
-            .and_then(|v| variants.wolf.lookup(&v))
-            .or_else(|| variants.wolf.default_or_any("minecraft:pale"));
-        m.extra.wolf_sound_variant = text(tag.get("sound_variant"))
-            .and_then(|v| variants.wolf_sound.lookup(&v))
-            .or_else(|| variants.wolf_sound.default_or_any("minecraft:classic"));
+    match m.species() {
+        crate::mobs::Species::Wolf => {
+            m.extra.wolf_variant = text(tag.get("variant"))
+                .and_then(|v| variants.wolf.lookup(&v))
+                .or_else(|| variants.wolf.default_or_any("minecraft:pale"));
+            m.extra.wolf_sound_variant = text(tag.get("sound_variant"))
+                .and_then(|v| variants.wolf_sound.lookup(&v))
+                .or_else(|| variants.wolf_sound.default_or_any("minecraft:classic"));
+        }
+        crate::mobs::Species::Frog => {
+            m.extra.frog_variant = text(tag.get("variant"))
+                .and_then(|v| variants.frog.lookup(&v))
+                .or_else(|| variants.frog.default_or_any("minecraft:temperate"));
+        }
+        _ => {}
     }
 }
 

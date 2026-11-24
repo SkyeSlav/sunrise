@@ -198,15 +198,23 @@ fn mob_variant_meta(
                 meta.push((18, serializer::INT, Value::Int(i32::from(e.variant))));
             }
         }
-        // Frog.DATA_VARIANT_ID, Pig's, Cow's, Chicken's and ZombieNautilus's
+        // Frog.DATA_VARIANT_ID: the world table's network id directly (`RegistryRef<FrogVariant>`).
+        "minecraft:frog" => {
+            let default_id = id("minecraft:frog_variant", "temperate");
+            let variant_id = e.frog_variant.map(|r| r.network_id() as i32).or(default_id);
+            if let Some(v) = variant_id
+                && Some(v) != default_id
+            {
+                meta.push((18, serializer::FROG_VARIANT, Value::Id(v)));
+            }
+            if let Some(v) = default_id {
+                defaults.push((18, serializer::FROG_VARIANT, Value::Id(v)));
+            }
+        }
+        // Pig's, Cow's, Chicken's and ZombieNautilus's DATA_VARIANT_ID
         // (after the entries of their parents): registry holders.
-        "minecraft:frog"
-        | "minecraft:pig"
-        | "minecraft:cow"
-        | "minecraft:chicken"
-        | "minecraft:zombie_nautilus" => {
+        "minecraft:pig" | "minecraft:cow" | "minecraft:chicken" | "minecraft:zombie_nautilus" => {
             let (index, serializer, registry) = match kind {
-                "minecraft:frog" => (18, serializer::FROG_VARIANT, "minecraft:frog_variant"),
                 "minecraft:pig" => (19, serializer::PIG_VARIANT, "minecraft:pig_variant"),
                 "minecraft:cow" => (18, serializer::COW_VARIANT, "minecraft:cow_variant"),
                 "minecraft:chicken" => {

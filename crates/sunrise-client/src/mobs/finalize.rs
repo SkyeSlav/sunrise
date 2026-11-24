@@ -283,7 +283,6 @@ pub struct SpawnRegistries {
     pub cow: VariantRegistry,
     pub chicken: VariantRegistry,
     pub cat: VariantRegistry,
-    pub frog: VariantRegistry,
     pub zombie_nautilus: VariantRegistry,
     pub pig_sound: VariantRegistry,
     pub cow_sound: VariantRegistry,
@@ -315,7 +314,6 @@ impl SpawnRegistries {
             cow: r("cow_variant"),
             chicken: r("chicken_variant"),
             cat: r("cat_variant"),
-            frog: r("frog_variant"),
             zombie_nautilus: r("zombie_nautilus_variant"),
             pig_sound: r("pig_sound_variant"),
             cow_sound: r("cow_sound_variant"),
@@ -2294,7 +2292,13 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
                 self.ageable(m, g)
             }
             S::Frog => {
-                self.variant(m, |r| &r.frog);
+                if let Some(v) = self.level.spawn_data().variants.frog.select(
+                    &*self.level,
+                    block(m),
+                    self.random,
+                ) {
+                    m.extra.frog_variant = Some(v);
+                }
                 let jump = self.uniform(100, 140);
                 set_memory(m, "long_jump_cooling_down", i64::from(jump), i64::MAX);
                 self.ageable(m, g)
@@ -2732,10 +2736,18 @@ pub fn variant_component_in(
     m: &Mob,
     variants: &super::variants::VariantTables,
 ) -> Option<(&'static str, String)> {
-    if m.species() == Species::Wolf {
-        let r = m.wolf_variant(&variants.wolf)?;
-        let id = variants.wolf.id(r)?;
-        return Some(("minecraft:wolf/variant", id.to_owned()));
+    match m.species() {
+        Species::Wolf => {
+            let r = m.wolf_variant(&variants.wolf)?;
+            let id = variants.wolf.id(r)?;
+            return Some(("minecraft:wolf/variant", id.to_owned()));
+        }
+        Species::Frog => {
+            let r = m.frog_variant(&variants.frog)?;
+            let id = variants.frog.id(r)?;
+            return Some(("minecraft:frog/variant", id.to_owned()));
+        }
+        _ => {}
     }
     variant_component(m)
 }
@@ -2743,7 +2755,6 @@ pub fn variant_component_in(
 pub fn species_variant_component(s: Species, variant: u8) -> Option<(&'static str, String)> {
     let component = match s {
         Species::Cat => "minecraft:cat/variant",
-        Species::Frog => "minecraft:frog/variant",
         Species::Pig => "minecraft:pig/variant",
         Species::Cow => "minecraft:cow/variant",
         Species::Mooshroom => "minecraft:mooshroom/variant",

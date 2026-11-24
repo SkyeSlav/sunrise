@@ -55,6 +55,8 @@ pub struct Death<'a> {
     /// The `doMobLoot` game rule.
     pub mob_drops: bool,
     pub world_seed: i64,
+    /// The world's variant tables for registry-backed entity predicates.
+    pub variants: Option<&'a super::variants::VariantTables>,
 }
 
 /// What a death's loot rolls with: the world's random sequences, the level's
@@ -422,7 +424,11 @@ pub fn drop_preserved_equipment(m: &mut Mob) -> Vec<crate::items::ItemStack> {
     dropped
 }
 /// The facts loot predicates read about a mob.
-pub fn loot_entity(m: &Mob, vehicle: Option<LootEntity>) -> LootEntity {
+pub fn loot_entity(
+    m: &Mob,
+    vehicle: Option<LootEntity>,
+    variants: Option<&super::variants::VariantTables>,
+) -> LootEntity {
     use Species as S;
     let s = m.species();
     let mut e = LootEntity::new(&m.kind.id);
@@ -446,11 +452,9 @@ pub fn loot_entity(m: &Mob, vehicle: Option<LootEntity>) -> LootEntity {
         e.captain = Some(raider::is_captain(m));
     }
     if s == S::Frog {
-        e.frog_variant = Some(
-            ["minecraft:temperate", "minecraft:warm", "minecraft:cold"]
-                [usize::from(m.extra.variant).min(2)]
-            .to_owned(),
-        );
+        e.frog_variant = variants
+            .and_then(|v| m.frog_variant(&v.frog).and_then(|r| v.frog.id(r)))
+            .map(str::to_owned);
     }
     if s == S::Chicken {
         e.chicken_variant = super::finalize::variant_component(m).map(|(_, id)| id);
@@ -522,7 +526,7 @@ pub fn roll_death(m: &mut Mob, d: &Death, rolls: &mut dyn DeathRolls) -> Rolled 
     let mut out = Vec::new();
     let mut table_rolled = false;
     death_state(m);
-    let mut this = loot_entity(m, d.vehicle.clone());
+    let mut this = loot_entity(m, d.vehicle.clone(), d.variants);
     this.nbt = d.this_nbt.clone();
     let mut skulls = false;
     // Creeper.killedEntity: a charged creeper's victim drops its head.
@@ -903,6 +907,7 @@ mod death_loot_table_tests {
             vehicle: None,
             mob_drops: true,
             world_seed: 0,
+            variants: None,
         };
         let items = |seed: i64, own: bool| {
             let kind = crate::mobs::sensor_scan_tests::kind();
@@ -1006,6 +1011,7 @@ mod death_loot_table_tests {
             vehicle: None,
             mob_drops: true,
             world_seed: 0,
+            variants: None,
         };
         let run = |chosen: Option<f32>| {
             let kind = crate::mobs::sensor_scan_tests::kind();
@@ -1146,6 +1152,7 @@ mod slot_tests {
             vehicle: None,
             mob_drops: true,
             world_seed: 0,
+            variants: None,
         };
         let zombie = |helmet: bool| {
             let mut m = mob("minecraft:zombie", Species::Zombie);

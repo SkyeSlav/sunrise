@@ -361,10 +361,15 @@ pub fn body_with_variants<'a>(
             baby_or(m, "cat#main", "cat_baby#main"),
             super::tame::cat_texture(m).into(),
         ),
-        S::Frog => (
-            "frog#main".into(),
-            interned(format_args!("entity/frog/frog_{}", climate(m))),
-        ),
+        S::Frog => {
+            let texture = variants
+                .and_then(|v| {
+                    let r = m.frog_variant(&v.frog)?;
+                    Some(v.frog.get(r)?.texture().to_owned())
+                })
+                .unwrap_or_default();
+            ("frog#main".into(), Cow::Owned(texture))
+        }
         // RabbitRenderer.getTextureLocation: the Toast name tag, else the
         // variant (the killer bunny's id is 99).
         S::Rabbit => {
@@ -2355,7 +2360,7 @@ fn render_selected(
         let uv = drawn.map(|(_, uv)| uv).or_else(|| {
             if avatar(m) {
                 atlas(&m.kind.texture)
-            } else if m.species() == Species::Wolf {
+            } else if matches!(m.species(), Species::Wolf | Species::Frog) {
                 atlas(crate::hud::MISSING_SPRITE)
             } else {
                 None

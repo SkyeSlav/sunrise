@@ -38,12 +38,5 @@ pub(in crate::game) fn biome_facts_in(
         desert: b.name == "minecraft:desert",
         jungle: has("minecraft:is_jungle"),
         full_moon: (world.day_time / 24000).rem_euclid(8) == 0,
-        frog: if has("minecraft:spawns_warm_variant_frogs") {
-            1
-        } else if has("minecraft:spawns_cold_variant_frogs") {
-            2
-        } else {
-            0
-        },
     }
 }

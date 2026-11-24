@@ -2673,7 +2673,7 @@ impl Game<'_> {
             .mobs
             .iter()
             .find(|m| m.id == mob)
-            .map(|m| drops::loot_entity(m, None));
+            .map(|m| drops::loot_entity(m, None, Some(self.world_variants())));
         let stacks = match (loot, this) {
             (Some(loot), Some(this)) if loot.has_table(table) => {
                 let params = EntityLootParams {
@@ -9565,8 +9565,9 @@ impl Game<'_> {
         };
         // SpawnEggItem.spawnMob: `EntityType.create` finalizes the mob, then
         // `PostSpawnProcessor` puts the egg's components on it.
+        let variants = self.world_variants().clone();
         if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-            sunrise_client::entity_nbt::apply_item_components(m, stack);
+            sunrise_client::entity_nbt::apply_item_components_with_variants(m, stack, &variants);
         }
         self.apply_spawn_egg_entity_data(id, &data);
         self.post_block_game_event("minecraft:entity_place", p, Some(Who::Player), None);
