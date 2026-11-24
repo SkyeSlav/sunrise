@@ -96,6 +96,8 @@ pub enum DecodeError {
     Noise(NoiseBuildError),
     Graph(sunrise_core::density::graph::CompileError),
     Sample(sunrise_core::density::SampleError),
+    InvalidIdentifier(String),
+    MissingRegistryEntry(String),
     Registry(String),
 }
 impl std::fmt::Display for DecodeError {
@@ -106,11 +108,17 @@ impl std::fmt::Display for DecodeError {
             Self::Noise(error) => error.fmt(f),
             Self::Graph(error) => error.fmt(f),
             Self::Sample(error) => error.fmt(f),
-            Self::Registry(error) => f.write_str(error),
+            Self::InvalidIdentifier(name) => write!(f, "invalid registry identifier: {name}"),
+            Self::MissingRegistryEntry(error) | Self::Registry(error) => f.write_str(error),
         }
     }
 }
 impl std::error::Error for DecodeError {}
+impl From<String> for DecodeError {
+    fn from(value: String) -> Self {
+        Self::Registry(value)
+    }
+}
 impl From<serde_json::Error> for DecodeError {
     fn from(value: serde_json::Error) -> Self {
         Self::Json(value)

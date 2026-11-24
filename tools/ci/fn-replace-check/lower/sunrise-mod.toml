@@ -14,7 +14,7 @@ mixins = "MIXINS"
 
 [[native.mixin]]
 id = "commands"
-target = "sunrise_client_lib::lan::hub::Hub::set_mod_commands"
+target = "sunrise_client_lib::lan::hub::Hub::send_permission_level"
 kind = "HEAD"
 helper = "src/mixins/commands.rs"
 

@@ -42,7 +42,7 @@ Pass the namespaced tag with or without a leading `#`.
 ## Read and write limits
 
 - `biome_at` never loads or generates a chunk: an unloaded column answers `None`.
-- `find_closest_biome` follows vanilla's sampled spiral, so it is not a search through cells a mod edited, and it refuses a search whose sample count passes `BiomeSearch::MAX_SAMPLES`.
+- `find_closest_biome` follows vanilla's sampled spiral (`ServerLevel.findClosestBiome3d`), so it is not a search through cells a mod edited; a negative radius or nonpositive step returns `None`.
 - `set_biome` refuses a client, an unknown biome and an unchanged cell, and returns false rather than an error.
 - **Biome writes in transactions:** reads inside a transaction see tentative `LevelRef::set_biome` cells, and an abort restores them without publishing changes. Saving, remeshing and resending wait for the outermost commit, once per column. An inner commit does not publish; its cells still roll back if the outer transaction aborts. Outside a transaction these effects run immediately.
 

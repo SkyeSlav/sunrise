@@ -14,6 +14,8 @@ pub mod arrows;
 pub mod bed_geometry;
 pub mod block_contact;
 pub mod block_sounds;
+#[cfg(test)]
+mod fresh_process;
 pub mod item_damage;
 pub mod mod_packet_builders;
 pub mod packet_source;

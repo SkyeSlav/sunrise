@@ -1,5 +1,4 @@
 //! The `level_load` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0138
 
 pub trait Hooks {
     /// `dimension`'s level opened on the server (NeoForge's `LevelEvent.Load`,

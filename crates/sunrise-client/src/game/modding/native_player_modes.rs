@@ -21,9 +21,13 @@ impl Game<'_> {
             .or_else(|| self.online_player_record(player).map(PlayerRead::Guest))?;
         Some(match read {
             PlayerRead::Guest(g) => g.permission,
-            PlayerRead::Acting { .. } if self.lan_acting.is_some() => self.ui.registries.permission,
-            PlayerRead::Acting { .. } if self.allow_commands() => 4,
-            PlayerRead::Acting { .. } => 0,
+            // The command being executed keeps its source snapshot in `ui.registries`.
+            // A live handle instead sees the same permission as the outgoing tree.
+            PlayerRead::Acting { .. } => match self.lan_acting {
+                Some(conn) => self.command_guest(conn)?.permission,
+                None if self.allow_commands() => 4,
+                None => 0,
+            },
         })
     }
     /// `Player.hasInfiniteMaterials`: the `instabuild` ability, which

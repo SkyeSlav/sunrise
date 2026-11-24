@@ -380,7 +380,7 @@ impl Game<'_> {
                         join: Default::default(),
                         id,
                         kind: "minecraft:area_effect_cloud".into(),
-                        item_transformation: None,
+                        display: None,
                         interaction: None,
                         knot_check: None,
                         eye: None,
@@ -493,7 +493,7 @@ impl Game<'_> {
                     position: sunrise_client::mobs::leash::knot_state(fence).position,
                     yaw: 0.0,
                     pitch: 0.0,
-                    item_transformation: None,
+                    display: None,
                     interaction: None,
                     knot_check: None,
                     eye: None,
@@ -673,18 +673,17 @@ impl Game<'_> {
                     .position(|o| o.id == id)
                     .ok_or_else(stale)?;
                 let slot = &self.others[i];
-                let mut new = Self::other_from_nbt(&mut tag, id, &slot.kind).ok_or_else(stale)?;
+                let mut new = self
+                    .other_from_nbt(&mut tag, id, &slot.kind)
+                    .ok_or_else(stale)?;
                 new.join = slot.join;
-                let is_display = matches!(
-                    slot.kind.as_str(),
-                    "minecraft:block_display" | "minecraft:item_display" | "minecraft:text_display"
-                );
+                if let Some(display) = &new.display {
+                    crate::game::persist::display::strip_display_nbt(display, &mut tag);
+                    self.persist.force_meta(id, 8);
+                }
                 self.others.update(i, |slot| *slot = new);
                 // `EntityDataAccessor.setData` keeps the entity's UUID.
                 set_key(&mut tag, "UUID", Tag::IntArray(self.uuid_for(id).to_vec()));
-                if is_display {
-                    self.persist.force_meta(id, 8);
-                }
             }
             Target::Item(id) => {
                 let mut new = entity_nbt::item_entity_from_nbt(&tag, id, 0.0).ok_or_else(stale)?;
@@ -717,6 +716,8 @@ impl Game<'_> {
                     // Entity.load keeps the existing entity's firstTick state
                     // and its place in the level's join order.
                     new.first_tick = slot.first_tick;
+                    new.random = slot.random.clone();
+                    new.body_yaw = slot.body_yaw;
                     new.join = slot.join;
                     sunrise_client::join_seq::store_back(slot, new);
                 }
@@ -1958,22 +1959,19 @@ impl Game<'_> {
     /// Spawn an entity from its compound (`EntityType.loadEntityRecursive`);
     /// returns what was created.
     pub(in crate::game) fn spawn_entity_from_nbt(&mut self, tag: Tag) -> Option<Target> {
+        self.spawn_staged_entity_from_nbt(self.stage_entity_tree(tag)?)
+    }
+
+    fn spawn_staged_entity_from_nbt(
+        &mut self,
+        tree: crate::game::persist::StagedEntityTree,
+    ) -> Option<Target> {
         let key = {
-            let p = entity_nbt::position(&tag)?;
+            let p = entity_nbt::position(tree.tag())?;
             ((p.x.floor() as i32) >> 4, (p.z.floor() as i32) >> 4)
         };
-        // Only this stack spawns now: the entities of chunks that finished
-        // loading wait for the level's entity tick, as in vanilla
-        // (PersistentEntitySectionManager.processPendingLoads), and must not
-        // take the ids counted as this stack's.
-        let mut waiting = std::mem::take(&mut self.world.loaded_entities);
         let before = self.next_entity;
-        let mut tag = tag;
-        crate::game::persist::mark_fresh(&mut tag);
-        self.world.queue_entity_nbt(key, vec![tag]);
-        self.spawn_loaded_entities();
-        waiting.append(&mut self.world.loaded_entities);
-        self.world.loaded_entities = waiting;
+        self.spawn_staged_entity_tree(key, tree);
         if self.next_entity == before {
             return None;
         }
@@ -2040,10 +2038,37 @@ impl Game<'_> {
         pos: [f64; 3],
         nbt: &str,
     ) -> R<Option<Target>> {
-        let (mut tag, _) = parse_snbt(nbt).map_err(|e| err("argument.nbt.invalid", &[&e]))?;
-        if !matches!(tag, Tag::Compound(_)) {
+        let (tag, _) = parse_snbt(nbt).map_err(|e| err("argument.nbt.invalid", &[&e]))?;
+        let Tag::Compound(nbt) = tag else {
             return Err(err("argument.nbt.expected.compound", &[]));
+        };
+        self.summon_from_compound(kind, pos, nbt)
+    }
+
+    /// `SummonCommand.createEntity` with explicit NBT, shared by commands and level handles.
+    pub(in crate::game) fn summon_from_compound(
+        &mut self,
+        kind: &str,
+        pos: [f64; 3],
+        nbt: Compound,
+    ) -> R<Option<Target>> {
+        if !summon_position_ok(pos) {
+            return Err(err("commands.summon.invalidPosition", &[]));
         }
+        if matches!(kind, "minecraft:player" | "minecraft:fishing_bobber") {
+            return Err(err("entity.not_summonable", &[&kind]));
+        }
+        let peaceful = self.difficulty_id() == 0;
+        if peaceful
+            && self
+                .res
+                .mob_types()
+                .get(kind)
+                .is_some_and(|t| !t.allowed_in_peaceful())
+        {
+            return Err(err("commands.summon.failed.peaceful", &[]));
+        }
+        let mut tag = Tag::Compound(nbt);
         // SummonCommand.createEntity with an NBT argument passes
         // `finalize = false`: the mob is what its compound says, and the
         // `sunrise:finalize` marker worldgen leaves on a structure mob is not
@@ -2060,15 +2085,18 @@ impl Game<'_> {
             });
             set_key(&mut tag, "home_pos", Tag::IntArray(home.to_vec()));
         }
-        if self.difficulty_id() == 0 {
+        if peaceful {
             self.prune_peaceful_summon_passengers(&mut tag);
         }
         place_summoned(&mut tag, pos);
-        // ServerLevel.tryAddFreshEntityWithPassengers: a UUID of the tree that
-        // an entity (including a player) in the destination level holds refuses
-        // the whole tree before any of it joins.
+        let Some(tree) = self.stage_entity_tree(tag) else {
+            return Ok(None);
+        };
+        // ServerLevel.tryAddFreshEntityWithPassengers checks the same tree that
+        // will be published: feature-disabled riders and their descendants never enter it,
+        // and a UUID held by any entity (including a player) in the destination level refuses it.
         if self
-            .summon_tree_uuids(&tag)
+            .summon_tree_uuids(tree.tag())
             .into_iter()
             .any(|u| self.is_loaded_uuid_in_level(u))
         {
@@ -2076,8 +2104,8 @@ impl Game<'_> {
         }
         let from = self.mobs.len();
         let canceled = self.persist.joins_canceled;
-        let target = self.spawn_entity_from_nbt(tag);
-        self.native_mobs_joined(from, false);
+        let target = self.spawn_staged_entity_from_nbt(tree);
+        self.admit_new_mobs(from);
         // A mod kept the entity out: tryAddFreshEntityWithPassengers is false.
         if self.persist.joins_canceled != canceled
             && target.is_none_or(|t| self.target_position(t).is_none())
@@ -2110,13 +2138,20 @@ impl Game<'_> {
     }
 }
 
+/// `Level.isInSpawnableBounds(BlockPos.containing(pos))`.
+pub(in crate::game) fn summon_position_ok([x, y, z]: [f64; 3]) -> bool {
+    (-30_000_000.0..30_000_000.0).contains(&x)
+        && (-20_000_000.0..20_000_000.0).contains(&y)
+        && (-30_000_000.0..30_000_000.0).contains(&z)
+}
+
 /// `sunrise:finalize` off `tag` and off the riders under its `Passengers`:
 /// only worldgen leaves it, for a structure mob the game finishes when its
 /// chunk loads (`Game::load_mob`), never for a player to ask for. Taken off the
 /// compounds a player's NBT arrives in: `/summon`'s argument, `/data`'s and the
 /// `minecraft:entity_data` component's (`Game::apply_entity_nbt`), and
-/// `native_summon`, which takes `/summon`'s argument.
-pub(in crate::game) fn strip_finalize_tree(tag: &mut Tag) {
+/// `LevelRef::summon`, which takes `/summon`'s argument.
+fn strip_finalize_tree(tag: &mut Tag) {
     let Tag::Compound(c) = tag else { return };
     c.remove(&"sunrise:finalize".into());
     if let Some(Tag::List(passengers)) = c.get_mut(&"Passengers".into()) {
@@ -2129,7 +2164,7 @@ pub(in crate::game) fn strip_finalize_tree(tag: &mut Tag) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::native_entity_refs::tests::with_game;
+    use crate::game::native_entity_refs::tests::{fixture_resident_column, with_game};
     use sunrise_core::geometry::Vec3;
 
     /// `lan_guest_joined`'s placement-only pass, between a forced write and
@@ -2173,6 +2208,7 @@ mod tests {
     #[ignore = "daily"]
     fn merging_display_nbt_keeps_the_uuid_and_forces_the_start_delay() {
         with_game(|game| {
+            fixture_resident_column(&mut game.world, (0, 0));
             let mut raw = Compound::new();
             raw.insert(
                 "Pos".into(),
@@ -2182,13 +2218,17 @@ mod tests {
                         .to_vec(),
                 ),
             );
-            game.persist.raw.insert(12, Tag::Compound(raw));
+            let raw = Tag::Compound(raw);
+            let display = game
+                .read_display_nbt("minecraft:block_display", &raw)
+                .map(std::sync::Arc::new);
+            game.persist.raw.insert(12, raw);
             game.persist.uuids.insert(12, [1, 2, 3, 4]);
             game.others.push(super::super::OtherEntity {
                 size_answer: None,
                 attachment_lifetime: Default::default(),
                 join: Default::default(),
-                item_transformation: None,
+                display,
                 knot_check: None,
                 eye: None,
                 interaction: None,
@@ -2209,10 +2249,14 @@ mod tests {
             );
             merge.insert("UUID".into(), Tag::IntArray(vec![9, 9, 9, 9]));
             merge.insert("start_interpolation".into(), Tag::Int(0));
+            merge.insert("view_range".into(), Tag::Float(2.5_f32.to_bits()));
             game.apply_entity_nbt(Target::Other(12), Tag::Compound(merge))
                 .unwrap();
             assert_eq!(game.uuid_for(12), [1, 2, 3, 4]);
             assert_eq!(game.persist.forced_meta.get(&12), Some(&[1 << 8, 0, 0, 0]));
+            let entity = game.entity(12).unwrap();
+            assert_eq!(game.display(entity).unwrap().view_range(game), Some(2.5));
+            assert!(game.persist.raw[&12].get("view_range").is_none());
             game.spend_forced_meta();
             let ctx = sunrise_command::Context {
                 root: 0,

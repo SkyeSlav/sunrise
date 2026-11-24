@@ -231,6 +231,9 @@ impl Game<'_> {
         uuid: Option<[i32; 4]>,
         transferred: Option<crate::game::entity_initialization::TransferredEntityState>,
     ) {
+        if transferred.is_none() && uuid.is_some_and(|u| self.target_with_uuid(u).is_some()) {
+            return;
+        }
         entity_nbt::sanitize_custom_name(&mut tag);
         if let Some((state, position, velocity, age, fall_distance)) =
             entity_nbt::falling_block_from_nbt(&tag)
@@ -293,6 +296,7 @@ impl Game<'_> {
             let mut t =
                 crate::game::trident::ThrownTrident::from_nbt(n, &tag, self.pack.assets.registry);
             t.id = self.take_entity_id();
+            self.resolve_trident_loyalty(&mut t);
             // One that came through a portal keeps its cooldown.
             let id = t.id;
             self.tridents.push(t);
@@ -600,10 +604,13 @@ impl Game<'_> {
         if resident {
             self.bind_saved_entity_attachments(id, &mut m.attachment_lifetime);
             self.mobs.push(m);
+            let join = self.mobs.last().unwrap().join;
+            self.flush_resident_mob_parts(id, join);
             if restore_target {
                 self.native_restore_loaded_target(id, anger_uuid);
             }
         } else {
+            self.flush_unjoined_mob_parts(&mut m);
             self.persist.off_level.insert(id, OffLevel::Mob(m));
         }
         id

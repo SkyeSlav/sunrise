@@ -1,16 +1,23 @@
 # Breaking blocks as a player
 
 `PlayerRef::destroy_block(host, pos, into_inventory)` breaks a block as that player breaks it,
-through vanilla's `ServerPlayerGameMode.destroyBlock`, as FTB Ultimine does for each block of a
-vein. The player's own checks hold (game mode, the tool's `can_break`, game master blocks, spawn
-protection, bedrock), and the break is the player's: `break_block` and `player_destroyed_block`
-hear it, the loot is rolled for the held tool and its enchantments, `block_drops` sees the drops
-with the player as `breaker`, and the tool wears, the mined statistic counts and the player gets
-the exhaustion. The player needn't reach or look at the block. It is true when the block was
-removed. With `into_inventory`, the drops `block_drops` leaves go to the player's inventory, and
-what doesn't fit drops from them.
+through vanilla's `ServerPlayerGameMode.destroyBlock` and NeoForge's `CommonHooks.fireBlockBreak`,
+as FTB Ultimine does for each block of a vein. On a live block, `break_block` posts pre-canceled
+when game mode, the main-hand item's restrictions, or game-master permissions refuse the break;
+`#[listener(receive_cancelled)]` listeners can observe those attempts, while game-mode and
+game-master restrictions still prevent removal even if the cancel is cleared. This is not a dig
+packet: there is no check for spawn protection, reach or mining progress. For example, a survival
+player can directly destroy bedrock.
 
-For a player in another level than the hook's it breaks nothing and returns false: a break lands in the world, and the hook's level is the one in place.
+`player_destroyed_block` hears a successful removal. Loot is rolled for the main-hand item and
+its enchantments; `block_drops` sees the player as `breaker`; and item wear, statistics and
+exhaustion follow the player's break path. With `into_inventory`, the block's remaining item
+drops go to the player's inventory after `block_drops`, and overflow drops from them.
+
+The result is `true` only if this call removed the block. It is `false` for a player who is dead
+or not present in the hook's level, an absent block, a refusal or veto, or a block a listener
+already removed or broke in a nested call at that position in that level (even if a non-air block
+or fluid such as fewer turtle eggs or water remains).
 
 ## Asking first
 
@@ -93,7 +100,7 @@ breaker too when other players can break the same blocks while the vein runs. Wh
 sets loose (a torch losing its support, a container's contents) is not the block's own drop and
 still drops where it was.
 
-Keep a guard like `busy`: the engine only bounds the nesting as a safety net of Sunrise's own, not
-found in the reference. A break started from
-inside eight others is refused with `false`, which ends an unguarded listener's recursion but not
-its eight levels of work.
+Chained calls have no fixed nesting limit. A listener that breaks the block it is being told
+about does not hear itself again: that nested break removes the block without a second
+`break_block`, and the outer call then does nothing more. Keep a guard like `busy` when a
+listener starts breaks of other blocks that may themselves fire it.

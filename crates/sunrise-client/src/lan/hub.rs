@@ -11,7 +11,8 @@ use super::{
     data::SyncData,
     entity::{Entities, EntityState, avatar_main_arm_meta},
     equipment_cache,
-    guest::{Guest, InboxItem, SentEffect, stack_to_network_projecting},
+    guest::{Guest, InboxItem, SentEffect, resident_stack},
+    weather,
 };
 use crate::{
     chunk::Chunk,
@@ -115,6 +116,11 @@ pub struct HubConfig {
     pub level_seeds: std::collections::BTreeMap<String, i64>,
 }
 
+/// `ChunkMap.setServerViewDistance`: bounds for chunk loading and tracking, not the advertised radius.
+pub fn effective_view_distance(advertised: i32) -> i32 {
+    advertised.clamp(2, 32)
+}
+
 /// What the other players see of a player's body besides sneaking and
 /// sprinting: the pose and the rest of `Entity.DATA_SHARED_FLAGS_ID`.
 #[derive(Clone, Copy, Debug, Default)]
@@ -171,6 +177,14 @@ pub struct TickCtx<'a> {
     pub streaming: Option<&'a crate::streaming::Streaming>,
 }
 
+/// Destination placement and viewed-level handoff after the command-tree send.
+pub struct LevelChange {
+    at: [f64; 3],
+    yaw: f32,
+    pitch: Option<f32>,
+    view: Option<sunrise_protocol::viewed_levels::Level>,
+}
+
 /// What the gameplay code has to do for a guest.
 pub enum HostEvent {
     /// Release input reservations only after this segment has finished in Game.
@@ -185,6 +199,12 @@ pub enum HostEvent {
     Joined(u32, Option<super::configuration_tasks::Configured>),
     /// A guest left (state to save, entities to drop).
     Left(Box<Guest>),
+    /// Slot synchronization found a container whose backing storage is gone.
+    CloseInvalidContainer {
+        conn: u32,
+        window: i32,
+        generation: u64,
+    },
     Packet(u32, Box<S>),
     /// A guest sent new client information: the values before and after, for the mods.
     ClientInformation(
@@ -228,21 +248,8 @@ pub enum HostEvent {
         conn: u32,
         flying: bool,
     },
-    /// A chat line to show on the host (already broadcast to the guests);
-    /// a dedicated server logs it, `[Not Secure]` unless signed and fresh.
-    Chat {
-        line: String,
-        secure: bool,
-    },
-    /// A chat message a player sent (after it was broadcast), for server mods.
-    PlayerChat {
-        sender: u128,
-        text: String,
-    },
-    /// A chat message the sender's chain let through,
-    /// not yet broadcast: with server mods loaded, the game tells them
-    /// (`native_server_chat`, NeoForge's `ServerChatEvent`) and then
-    /// broadcasts it with `Hub::broadcast_chat`.
+    /// A chat message the sender's chain let through. The game fires
+    /// `ServerChatEvent` when subscribed, then owns its publication.
     ChatSubmitted {
         message: Box<chat::ChatMessage>,
         bound: Box<play::ChatTypeBound>,
@@ -911,19 +918,13 @@ impl Hub {
                 .and_then(|i| i.id(name))
                 .unwrap_or(0)
         };
-        let mut wire = stack_to_network_projecting(
-            item_id,
-            |registry, name| sync.id(registry, name),
-            s,
-            projected,
-        )?;
-        super::guest::canonicalize_stack_patch(
-            &mut wire,
+        Some(resident_stack(
             source,
+            &item_id,
+            &sync,
             &self.encoder.items,
-            &sync.builtin,
-        );
-        Some(wire)
+            projected,
+        ))
     }
 
     /// `PlayerList.broadcastAll`: send a packet to every placed player.
@@ -993,13 +994,10 @@ impl Hub {
     pub fn set_view_distance(&mut self, distance: i32) {
         self.config.view_distance = distance;
         self.broadcast(&C::SetChunkCacheRadius(play::Distance { distance }));
+        let effective = effective_view_distance(distance);
         self.guests.update_all(|g| {
-            // Mth.clamp(requested, 2, serverViewDistance): Java's max then min order also
-            // handles a management value below two without panicking when the bounds cross.
-            g.view_distance = i32::from(g.info.view_distance)
-                .max(2)
-                .min(self.config.view_distance);
-            g.center = None;
+            g.view_distance = i32::from(g.info.view_distance).clamp(2, effective);
+            g.view_dirty = true;
         });
     }
     /// PlayerList.setSimulationDistance.
@@ -1097,10 +1095,18 @@ impl Hub {
             .filter(move |g| self.watches(g) && loads(g))
             .map(Guest::chunk)
     }
-    /// `PlayerList.broadcastAll(packet, dimension)`: the players in the level in place.
+    /// `PlayerList.broadcastAll(packet, dimension)`: the players watching the level in place.
     pub fn broadcast_level(&self, packet: &C) {
+        self.broadcast_in_level(&self.config.dimension, packet);
+    }
+    /// `PlayerList.broadcastAll(packet, dimension)`, for a level whether or not it is in place.
+    pub fn broadcast_in_level(&self, dimension: &str, packet: &C) {
         let mut body = None;
-        for g in self.guests.simulation_iter().filter(|g| self.watches(g)) {
+        for g in self
+            .guests
+            .simulation_iter()
+            .filter(|g| g.watches_level(dimension))
+        {
             g.sender
                 .send(body.get_or_insert_with(|| packet.encode()).clone());
         }
@@ -1468,7 +1474,12 @@ impl Hub {
         *ctx.next_entity += 1;
         let entity_id = *ctx.next_entity as i32;
         let conn = j.conn;
-        let mut guest = Guest::new(j, entity_id, ctx.spawn, self.config.view_distance);
+        let mut guest = Guest::new(
+            j,
+            entity_id,
+            ctx.spawn,
+            effective_view_distance(self.config.view_distance),
+        );
         self.bind_raw_player(&guest, entity_id);
         guest.last_action_tick = self.ticks;
         guest.game_mode = self.config.default_game_mode;
@@ -1496,18 +1507,12 @@ impl Hub {
         }
     }
 
-    /// PlayerList.placeNewPlayer for a guest whose saved state is loaded.
-    pub fn place_new_player(&mut self, conn: u32, ctx: &mut TickCtx) {
-        let Some(i) = self.guests.iter().position(|g| g.conn == conn) else {
-            return;
-        };
+    /// PlayerList.placeNewPlayer up to the command-tree send.
+    pub fn begin_player_join(&mut self, conn: u32, ctx: &TickCtx) -> Option<usize> {
+        let i = self.guests.connection_index(conn)?;
         if !self.guests[i].participates_online() {
-            return;
+            return None;
         }
-        let (name, uuid, entity_id, mode) = {
-            let g = &self.guests[i];
-            (g.name.clone(), g.uuid, g.entity_id, g.game_mode)
-        };
         // A player whose login used up a proxy's expectation (`arrivals`, as the
         // login started) is held: it gets the whole join sequence, so it can build
         // its picture of the world, but no one else is told about it.
@@ -1520,10 +1525,9 @@ impl Hub {
         let levels = self.level_keys();
         self.guests
             .update(i, |g| g.viewed.logged_in_with(levels.clone()));
-        let held = self.guests[i].held;
         let g = &self.guests[i];
         g.send(&C::Login(play::Login {
-            player_id: entity_id,
+            player_id: g.entity_id,
             hardcore: self.config.hardcore,
             levels,
             max_players: i32::try_from(self.lan.shared.max_players()).unwrap_or(i32::MAX),
@@ -1553,8 +1557,14 @@ impl Hub {
             super::recipes::send_content(g);
             super::recipes::advertise_viewer_channels(g);
         }
-        // PlayerList.sendPlayerPermissionLevel, then the recipe book.
         self.send_permission_level(i);
+        Some(i)
+    }
+
+    /// The rest of PlayerList.placeNewPlayer, after the player's command tree.
+    pub fn finish_player_join(&mut self, i: usize, ctx: &TickCtx) {
+        let g = &self.guests[i];
+        let (conn, name, uuid, mode, held) = (g.conn, g.name.clone(), g.uuid, g.game_mode, g.held);
         self.send_initial_recipe_book(i);
         // PlayerList.placeNewPlayer broadcasts the join line before
         // players.add: the others read it, the newcomer doesn't (nor those
@@ -1636,7 +1646,7 @@ impl Hub {
                 }
             });
         }
-        self.send_level_info(i, ctx, true);
+        self.send_level_info(i, ctx, true, None);
         // ServerLevel.addNewPlayer: the chunk tracking starts at the player.
         self.guests.update(i, |g| {
             let (cx, cz) = g.chunk();
@@ -1964,28 +1974,17 @@ impl Hub {
     }
 
     /// PlayerList.sendPlayerPermissionLevel: the op level as an entity event
-    /// (24 + level), then the commands that level may use.
-    fn send_permission_level(&self, i: usize) {
+    /// (24 + level), sent before the commands that level may use.
+    #[sunrise_mod_api_macros::replaceable]
+    pub fn send_permission_level(&self, i: usize) {
         let g = &self.guests[i];
         g.send(&C::EntityEvent(play::EntityEvent {
             id: g.entity_id,
             event: 24 + g.permission.min(4) as i8,
         }));
-        self.send_commands(i);
     }
 
-    /// The permissions changed: tell everyone their level and commands again.
-    pub fn resend_commands(&mut self) {
-        self.refresh_permissions();
-        for i in 0..self.guests.len() {
-            if self.guests[i].placed {
-                self.send_permission_level(i);
-            }
-        }
-    }
-
-    /// Every guest's level from the operator list and the settings, the first
-    /// half of [`Hub::resend_commands`].
+    /// Recompute every guest's level from the operator list and settings.
     pub fn refresh_permissions(&mut self) {
         for i in 0..self.guests.len() {
             {
@@ -1995,80 +1994,47 @@ impl Hub {
         }
     }
 
-    /// The names of the root commands the tree `conn`'s player would get
-    /// holds (before the mods take any out), in the tree's order.
-    pub fn command_names(&self, conn: u32) -> Vec<String> {
-        let Some(g) = self.guest(conn) else {
-            return Vec::new();
-        };
-        let packet = self.commands_packet(g.permission);
-        packet
-            .nodes
-            .get(packet.root as usize)
-            .map(|root| {
-                root.children
-                    .iter()
-                    .filter_map(|&c| packet.nodes.get(c as usize))
-                    .map(|n| n.name.clone())
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
     /// The key [`Hub::set_mod_commands`] last had: the game compares it
     /// with its server mods' each tick.
     pub fn mod_commands_key(&self) -> Option<u64> {
         self.mod_commands.1
     }
-    /// Server mods' commands changed: every player gets their tree again.
-    #[sunrise_mod_api_macros::replaceable]
-    pub fn set_mod_commands(&mut self, key: u64, commands: serde_json::Value) {
-        if self.store_mod_commands(key, commands) {
-            for i in 0..self.guests.len() {
-                if self.guests[i].placed {
-                    self.send_commands(i);
-                }
-            }
-        }
-    }
-
-    /// [`Hub::set_mod_commands`] without sending: true when the tree changed.
-    /// The caller sends the trees itself (`native_refresh_commands` first asks
-    /// the mods which root commands each player keeps).
-    pub fn store_mod_commands(&mut self, key: u64, commands: serde_json::Value) -> bool {
+    /// Install server mods' commands; true when the display tree changed.
+    /// Gameplay sends the per-player trees after each live recipient's filter.
+    pub fn set_mod_commands(&mut self, key: u64, commands: serde_json::Value) -> bool {
         let changed = self.mod_commands.0 != commands;
         self.mod_commands = (commands, Some(key));
         changed
     }
 
-    /// The command tree a player of this permission level gets.
-    fn commands_packet(&self, permission: u8) -> play::Commands {
-        match &self.sync.commands {
-            Some(tree) => {
-                let dedicated = !self.config.integrated;
-                tree.packet_with_features(
+    /// The command tree a player of this permission level gets without listener selections.
+    pub fn commands_packet(&self, permission: u8) -> play::Commands {
+        self.encode_command_graph(self.command_graph(permission), &[])
+    }
+
+    /// The recipient's usable graph before the command-tree hook and wire numbering.
+    pub fn command_graph(&self, permission: u8) -> super::commands::CommandGraph {
+        self.sync
+            .commands
+            .as_ref()
+            .map_or_else(Default::default, |tree| {
+                tree.graph_with_features(
                     permission,
-                    dedicated,
-                    &self.sync.builtin,
+                    !self.config.integrated,
                     &super::commands::with_session_tools(&self.mod_commands.0),
                     &self.sync.features,
                     &self.rule_registry,
                 )
-            }
-            None => play::Commands {
-                nodes: vec![play::CommandNode {
-                    kind: 0,
-                    executable: false,
-                    restricted: false,
-                    children: Vec::new(),
-                    redirect: None,
-                    name: String::new(),
-                    parser: None,
-                    suggestions: None,
-                }],
-                root: 0,
-            },
-        }
+            })
+    }
+
+    /// Finish the graph using this connection's command argument registry.
+    pub fn encode_command_graph(
+        &self,
+        graph: super::commands::CommandGraph,
+        hidden: &[usize],
+    ) -> play::Commands {
+        graph.packet(&self.sync.builtin, hidden)
     }
 
     /// ServerGamePacketListenerImpl.teleport: move the client and wait for its confirmation.
@@ -2335,7 +2301,13 @@ impl Hub {
     /// PlayerList.sendLevelInfo; `load_start` false holds back
     /// LEVEL_CHUNKS_LOAD_START for a player who has no position yet
     /// ([`Self::land`] sends it).
-    fn send_level_info(&mut self, i: usize, ctx: &TickCtx, load_start: bool) {
+    fn send_level_info(
+        &mut self,
+        i: usize,
+        ctx: &TickCtx,
+        load_start: bool,
+        viewed_weather: Option<weather::State>,
+    ) {
         let spawn = ctx.spawn;
         let g = &self.guests[i];
         if self.sync_attachments {
@@ -2348,20 +2320,14 @@ impl Hub {
         g.send(&C::InitializeBorder(super::border::initialize(ctx.border)));
         g.send(&self.time_packet(ctx.world, ctx.clock_rate));
         g.send(&self.default_spawn(spawn, ctx.spawn_angle, ctx.spawn_dimension));
-        let w = &ctx.world.weather;
-        if w.raining {
-            g.send(&C::GameEvent(play::GameEvent {
-                event: game_event::START_RAINING,
-                param: 0.0,
-            }));
-            g.send(&C::GameEvent(play::GameEvent {
-                event: game_event::RAIN_LEVEL,
-                param: w.rain_level.1,
-            }));
-            g.send(&C::GameEvent(play::GameEvent {
-                event: game_event::THUNDER_LEVEL,
-                param: w.thunder_level.1,
-            }));
+        let weather = weather::state(ctx.world, &g.dimension);
+        if let Some(previous) = viewed_weather {
+            // Unlike a fresh ClientLevel, a promoted view may still hold the old strengths.
+            weather::send_updates(Some(previous), weather, |packet| g.send(packet));
+        } else if weather.0 {
+            // PlayerList uses the getters for a fresh world, including thunder scaled by rain.
+            let (rain, thunder) = ctx.world.weather.levels(1.0);
+            weather::send_updates(None, (true, rain, thunder), |packet| g.send(packet));
         }
         if load_start {
             g.send(&C::GameEvent(play::GameEvent {
@@ -2435,10 +2401,10 @@ impl Hub {
     }
 
     /// ServerPlayer.initInventoryMenu / sendAllDataToRemote for the inventory menu.
-    /// ClientboundPlaceGhostRecipePacket: the recipe `id` faded into the
-    /// guest's menu `container`, whose items were missing.
-    pub fn send_ghost_recipe(&mut self, conn: u32, container: i32, id: &str) {
-        let Some(display) = self.sync.advancements.ghost_display(id, &self.sync) else {
+    /// ClientboundPlaceGhostRecipePacket: the clicked display `display` faded
+    /// into the guest's menu `container`, whose items were missing.
+    pub fn send_ghost_recipe(&mut self, conn: u32, container: i32, display: i32) {
+        let Some(display) = self.sync.advancements.ghost_display(display, &self.sync) else {
             return;
         };
         self.send_to(
@@ -2676,7 +2642,6 @@ impl Hub {
         >,
         publish_players: bool,
     ) -> Vec<HostEvent> {
-        let events = Vec::new();
         if !self.guests.simulation_iter().any(|g| self.watches(g)) {
             // ServerTickRateManager broadcasts a change to the players there
             // are; one who joins later is sent the state as it is then
@@ -2690,7 +2655,7 @@ impl Hub {
                 self.stepping = ctx.tick_steps.revision;
             }
             if self.viewed_pass(ctx) {
-                return events;
+                return Vec::new();
             }
             if !self
                 .guests
@@ -2701,8 +2666,9 @@ impl Hub {
                 ctx.world.connection_group_log = None;
                 let _ = ctx.world.light_log.take();
                 ctx.world.bulk_log.clear();
+                ctx.world.chunk_resends.clear();
             }
-            return events;
+            return Vec::new();
         }
         if ctx.world.block_log.is_none() {
             ctx.world.block_log = Some(Vec::new());
@@ -2729,7 +2695,7 @@ impl Hub {
                 g.send(&C::BlockChangedAck(play::BlockChangedAck { sequence }));
             }
         }
-        crate::spans::time("lan_containers", || self.sync_containers(ctx.world));
+        let events = crate::spans::time("lan_containers", || self.sync_containers(ctx.world));
         self.sync_hidden();
         crate::spans::time("lan_track_entities", || {
             self.track_entities(ctx, entity_attachments)
@@ -2812,20 +2778,22 @@ impl Hub {
         let mut g = self.guests.remove(i);
         g.listed_behind = behind;
         super::chunk_watch::unwatch_all(&mut self.chunk_watches, &mut g);
-        if let Some(menu) = g.menu.as_ref() {
-            let inputs = menu.take_processing_inputs(&mut g.native_menu);
-            if !inputs.is_empty() {
-                self.native_menu_events.push(
-                    super::menu::NativeMenuEvent::ReturnProcessingInputs {
-                        conn: g.conn,
-                        items: inputs,
-                        drop_instead: true,
-                    },
-                );
-            }
-            if let Some(closed) = menu.native_closed(g.uuid, g.menu_generation, &mut g.native_menu)
-            {
-                self.native_menu_events.push(closed);
+        if !g.placed {
+            let uuid = g.uuid;
+            let generation = g.menu_generation;
+            if let Some(menu) = g.menu.as_mut() {
+                let inputs = menu.take_processing_inputs(&mut g.native_menu);
+                if !inputs.is_empty() {
+                    self.native_menu_events.push(
+                        super::menu::NativeMenuEvent::ReturnProcessingInputs {
+                            conn: g.conn,
+                            items: inputs,
+                            drop_instead: true,
+                        },
+                    );
+                }
+                let closed = menu.native_removed(uuid, generation, &mut g.native_menu, false);
+                self.native_menu_events.extend(closed);
             }
         }
         // A held player a proxy dropped keeps, in the log, how its connection really ended
@@ -2916,12 +2884,18 @@ impl Hub {
         }
     }
 
+    /// `ServerTickRateManager.updateStateToClients`: send the current ticking state
+    /// and remember it for the next tick's synchronization.
+    pub fn send_ticking_state(&mut self, rate: f32, frozen: bool) {
+        self.ticking = (rate, frozen);
+        self.broadcast(&ticking_state(rate, frozen));
+    }
+
     /// `ServerTickRateManager.updateStepTicks` / `updateStateToClients`:
     /// send clock changes before the block events caused by their ticks.
     pub fn sync_ticking(&mut self, rate: f32, frozen: bool, steps: crate::clock::StepState) {
         if (rate, frozen) != self.ticking {
-            self.ticking = (rate, frozen);
-            self.broadcast(&ticking_state(rate, frozen));
+            self.send_ticking_state(rate, frozen);
         }
         // ServerTickRateManager.updateStepTicks: a step started or stopped.
         if steps.revision != self.stepping {
@@ -2992,31 +2966,11 @@ impl Hub {
             None => self.last_level_clock = (i64::MIN, 0.0),
         }
         self.sync_ticking(ctx.tick_rate, ctx.tick_frozen, ctx.tick_steps);
-        let w = &world.weather;
-        let (raining, rain, thunder) = self.weather;
-        if w.raining != raining {
-            self.broadcast_level(&C::GameEvent(play::GameEvent {
-                event: if w.raining {
-                    game_event::START_RAINING
-                } else {
-                    game_event::STOP_RAINING
-                },
-                param: 0.0,
-            }));
-        }
-        if (w.rain_level.1 - rain).abs() > f32::EPSILON {
-            self.broadcast_level(&C::GameEvent(play::GameEvent {
-                event: game_event::RAIN_LEVEL,
-                param: w.rain_level.1,
-            }));
-        }
-        if (w.thunder_level.1 - thunder).abs() > f32::EPSILON {
-            self.broadcast_level(&C::GameEvent(play::GameEvent {
-                event: game_event::THUNDER_LEVEL,
-                param: w.thunder_level.1,
-            }));
-        }
-        self.weather = (w.raining, w.rain_level.1, w.thunder_level.1);
+        let state = weather::state(world, &self.config.dimension);
+        weather::send_updates(Some(self.weather), state, |packet| {
+            self.broadcast_level(packet);
+        });
+        self.weather = state;
     }
 
     // ---- chunks --------------------------------------------------------
@@ -3056,14 +3010,41 @@ impl Hub {
             })
             .collect();
         self.encoder.warm(&columns.chunks);
-        let mut encoded = self.encoder.bodies_with(&columns.chunks, world, &|x, z| {
+        let encoded_results = self.encoder.bodies_with(&columns.chunks, world, &|x, z| {
             ctx.streaming.and_then(|s| s.proto_sections(x, z))
         });
+        let mut encoded: Vec<Option<Vec<u8>>> = encoded_results
+            .into_iter()
+            .enumerate()
+            .map(|(j, result)| match result {
+                Ok(body) => Some(body),
+                Err(error) => {
+                    let chunk = columns.chunks[j];
+                    log::warn!(
+                        "[lan] chunk ({}, {}) could not be encoded for streaming: {error}",
+                        chunk.x,
+                        chunk.z
+                    );
+                    None
+                }
+            })
+            .collect();
         let uses = &mut columns.uses;
         let chunks = &columns.chunks;
         for (i, taken, batch) in batches {
+            let mut sent_taken = Vec::with_capacity(taken.len());
+            let mut sent_batch = Vec::with_capacity(batch.len());
+            let mut failed_taken = Vec::new();
+            for (idx, j) in taken.into_iter().zip(batch) {
+                if encoded[j].is_some() {
+                    sent_taken.push(idx);
+                    sent_batch.push(j);
+                } else {
+                    failed_taken.push(idx);
+                }
+            }
             self.guests.update(i, |g| {
-                let size = batch.len();
+                let size = sent_batch.len();
                 // The single-player window shares the sections it is sent (handoff.rs).
                 let memory = g.address() == super::conn::MEMORY_ADDRESS;
                 let sync_groups = g.negotiated_connection_groups();
@@ -3071,10 +3052,10 @@ impl Hub {
                     g.batch_quota -= size as f32;
                     g.send(&C::ChunkBatchStart(sunrise_protocol::packets::Empty));
                     let grouped = sync_groups
-                        && batch
+                        && sent_batch
                             .iter()
                             .any(|&j| !chunks[j].connection_groups.is_empty());
-                    let bodies = batch.into_iter().flat_map(|j| {
+                    let bodies = sent_batch.into_iter().flat_map(|j| {
                         let chunk = chunks[j];
                         if memory {
                             super::handoff::offer(chunk);
@@ -3086,9 +3067,9 @@ impl Hub {
                         };
                         uses[j] -= 1;
                         let body = if uses[j] == 0 {
-                            std::mem::take(&mut encoded[j])
+                            encoded[j].take().expect("valid chunk body")
                         } else {
-                            encoded[j].clone()
+                            encoded[j].as_ref().expect("valid chunk body").clone()
                         };
                         block_changes::group_bundle(body, groups)
                     });
@@ -3105,23 +3086,31 @@ impl Hub {
                 if watching {
                     // ChunkMap.markChunkPendingToSend, then PlayerChunkSender.sendChunk's end:
                     // Sunrise picks a chunk only as it sends it.
-                    for &idx in &taken {
+                    for &idx in &sent_taken {
                         let key = g.chunk_queue[idx];
                         if g.watched.insert(key) {
                             self.chunk_watches.push(g, ChunkWatchKind::Watch, key);
                         }
                     }
-                    for &idx in &taken {
+                    for &idx in &sent_taken {
                         let key = g.chunk_queue[idx];
                         self.chunk_watches.push(g, ChunkWatchKind::Sent, key);
                     }
                 }
-                let seen: Vec<_> = taken
+                let mut remove: Vec<(usize, bool)> = sent_taken
                     .into_iter()
-                    .rev()
-                    .map(|idx| g.chunk_queue.remove(idx))
+                    .map(|idx| (idx, true))
+                    .chain(failed_taken.into_iter().map(|idx| (idx, false)))
                     .collect();
-                if self.sync_attachments {
+                remove.sort_unstable_by_key(|&(idx, _)| idx);
+                let mut seen = Vec::with_capacity(remove.len());
+                for (idx, sent) in remove.into_iter().rev() {
+                    let key = g.chunk_queue.remove(idx);
+                    if sent {
+                        seen.push(key);
+                    }
+                }
+                if self.sync_attachments && !seen.is_empty() {
                     queue_snapshots(
                         &mut self.attachment_snapshots,
                         g.uuid,
@@ -3141,11 +3130,13 @@ impl Hub {
         let (cx, cz) = self.guests[i].chunk();
         let r = self.guests[i].view_distance;
         self.guests.update(i, |g| {
-            if g.center == Some((cx, cz)) {
+            if g.center == Some((cx, cz)) && !g.view_dirty {
                 return;
             }
+            let moved = g.center != Some((cx, cz));
             g.center = Some((cx, cz));
-            if g.center_sent.take() != Some((cx, cz)) {
+            g.view_dirty = false;
+            if moved && g.center_sent.take() != Some((cx, cz)) {
                 g.send(&C::SetChunkCacheCenter(play::SetChunkCacheCenter {
                     x: cx,
                     z: cz,
@@ -3492,6 +3483,7 @@ impl Hub {
             velocity: [0.0; 3],
             data: 0,
             meta,
+            display: None,
             forced_meta: [0; 4],
             defaults,
             equipment,
@@ -3798,6 +3790,7 @@ impl Hub {
                     }));
                 }
             }
+            g.sync_score();
             // ServerEntity.sendDirtyEntityData: the shared flags go to the player
             // too, so the sprint a hit stops (Player.causeExtraKnockback) stops
             // on its client.
@@ -4500,21 +4493,18 @@ impl Hub {
                     }
                 }
                 S::ClientInformation(info) => {
+                    let effective = effective_view_distance(self.config.view_distance);
                     let (was_hat, hat, uuid) = self.guests.update(i, |g| {
                         // PlayerModelPart.HAT (bit 6): the tab list shows the hat layer.
                         let was_hat = g.info.model_customisation & 0x40 != 0;
-                        // max(2).min(view), not clamp: a live management value
-                        // below 2 would cross the bounds and panic (horizon-rust/horizon#8118).
-                        g.view_distance = i32::from(info.view_distance)
-                            .max(2)
-                            .min(self.config.view_distance);
+                        g.view_distance = i32::from(info.view_distance).clamp(2, effective);
                         let old_info = self.mods_loaded.then(|| Box::new(g.info.clone()));
                         g.info = info;
                         if let Some(old) = old_info {
                             let new = Box::new(g.info.clone());
                             events.push(HostEvent::ClientInformation(conn, old, new));
                         }
-                        g.center = None;
+                        g.view_dirty = true;
                         let hat = g.info.model_customisation & 0x40 != 0;
                         (was_hat, hat, g.uuid)
                     });
@@ -5152,7 +5142,7 @@ impl Hub {
     /// start" event and the chunk under the player, so the packets follow vanilla's order.
     /// `rotation` is the facing a mod's `player_respawn_position` chose; none
     /// is the level's respawn direction.
-    pub fn respawn(
+    pub fn begin_respawn(
         &mut self,
         i: usize,
         at: [f64; 3],
@@ -5182,9 +5172,11 @@ impl Hub {
                 spawn: info,
                 keep: i8::from(keep_attributes),
             }));
+            g.sent_score = 0; // The replacement LocalPlayer starts with default entity data.
             // The client's new body needs the full replacement effect state.
             g.sent_effects.clear();
             g.center = None;
+            g.view_dirty = false;
             g.sent_chunks.clear();
             g.chunk_queue.clear();
             g.tracker.clear();
@@ -5210,8 +5202,12 @@ impl Hub {
             g.send(&C::PostEffects(play::PostEffects { effects: list }));
         });
         self.send_active_effects(i);
-        self.send_level_info(i, ctx, true);
+        self.send_level_info(i, ctx, true, None);
         self.send_permission_level(i);
+    }
+
+    /// The rest of PlayerList.respawn, after sending the command tree.
+    pub fn finish_respawn(&mut self, i: usize) {
         // ServerLevel.addRespawnedPlayer: the chunk tracking starts again at the player.
         self.guests.update(i, |g| {
             g.placed = true;
@@ -5223,10 +5219,17 @@ impl Hub {
                 z: cz,
             }));
             g.center = None;
+            g.view_dirty = false;
             g.center_sent = Some((cx, cz));
             // ServerPlayer.initInventoryMenu.
         });
         self.send_inventory(i);
+        // PlayerList.sendAllPlayerInfo: the replacement's held slot, which a respawn without
+        // keep_inventory resets while the client still holds the old selection.
+        let g = &self.guests[i];
+        g.send(&C::SetHeldSlot(play::SetHeldSlot {
+            slot: g.selected as i32,
+        }));
     }
 
     /// The level the players are in: the server holds one at a time, and the
@@ -5277,20 +5280,55 @@ impl Hub {
     /// the destination has loaded around `at`. Until [`Self::land`] the
     /// client gets no position, so it stays on its level loading screen
     /// instead of showing the player in the air at `at`.
-    pub fn change_level(
+    pub fn begin_level_change(
         &mut self,
         i: usize,
         at: [f64; 3],
         yaw: f32,
         pitch: Option<f32>,
-        portal: bool,
         portal_cooldown: i32,
         ctx: &TickCtx,
-    ) {
-        let left = self.guests[i].dimension.clone();
+    ) -> LevelChange {
         let info = self.spawn_info(i, portal_cooldown, ctx.sea_level);
         self.close_container_for(i);
-        self.before_travel(i);
+        let view = self.before_travel(i);
+        let g = &self.guests[i];
+        g.send(&C::Respawn(play::Respawn {
+            spawn: info,
+            // ClientboundRespawnPacket.KEEP_ALL_DATA.
+            keep: 3,
+        }));
+        if let Some(level @ sunrise_protocol::viewed_levels::Level::Bound { .. }) = view {
+            g.sender.send(sunrise_protocol::viewed_levels::swap(level));
+        }
+        g.send(&C::ChangeDifficulty(play::ChangeDifficulty {
+            difficulty: ctx.difficulty,
+            locked: ctx.difficulty_locked,
+        }));
+        self.send_permission_level(i);
+        LevelChange {
+            at,
+            yaw,
+            pitch,
+            view,
+        }
+    }
+
+    /// Finish the move after sending the command tree from the player's source state.
+    pub fn finish_level_change(
+        &mut self,
+        i: usize,
+        change: LevelChange,
+        portal: bool,
+        ctx: &TickCtx,
+    ) {
+        let LevelChange {
+            at,
+            yaw,
+            pitch,
+            view,
+        } = change;
+        let left = self.guests[i].dimension.clone();
         self.guests.update(i, |g| {
             // Out of the old level with its chunks (ChunkMap.removeEntity).
             super::chunk_watch::unwatch_all(&mut self.chunk_watches, g);
@@ -5301,24 +5339,15 @@ impl Hub {
             // The load timer is not restarted: vanilla resets the client's loaded state on death and
             // respawn only, and covers a level change with its separate `isChangingDimension` term.
             g.center = None;
+            g.view_dirty = false;
             g.yaw = yaw;
             if let Some(pitch) = pitch {
                 g.pitch = pitch;
             }
             g.place(at);
-            g.send(&C::Respawn(play::Respawn {
-                spawn: info,
-                // ClientboundRespawnPacket.KEEP_ALL_DATA.
-                keep: 3,
-            }));
         });
         // Its chunks, queues and entities left behind, or kept as a viewed level (#3716).
-        self.leave_level(i, &left);
-        self.guests[i].send(&C::ChangeDifficulty(play::ChangeDifficulty {
-            difficulty: ctx.difficulty,
-            locked: ctx.difficulty_locked,
-        }));
-        self.send_permission_level(i);
+        let viewed_weather = self.leave_level(i, &left, view);
         if portal {
             // A teleport still pending from the old level is void: its late
             // acceptance must not move the player back there.
@@ -5334,7 +5363,7 @@ impl Hub {
         }
         let g = &self.guests[i];
         g.send(&g.abilities_packet());
-        self.send_level_info(i, ctx, !portal);
+        self.send_level_info(i, ctx, !portal, viewed_weather);
         // PlayerList.sendAllPlayerInfo: the inventory and the held slot.
         self.send_inventory(i);
         let g = &self.guests[i];
@@ -5368,7 +5397,7 @@ impl Hub {
         });
     }
 
-    /// The rest of a portal's [`Self::change_level`] once its exit is found:
+    /// The rest of a portal's [`Self::finish_level_change`] once its exit is found:
     /// the position, LEVEL_CHUNKS_LOAD_START (the client's loading screen
     /// closes once its chunk is in) and TeleportTransition.PLAY_PORTAL_SOUND.
     pub fn land(&mut self, i: usize, at: [f64; 3]) {
@@ -5581,6 +5610,7 @@ mod tests {
                 .unwrap()
                 .names
                 .clone(),
+            ["test:machine".into()],
         );
         let states = ["minecraft:air", "test:machine"].map(|n| (Arc::<str>::from(n), false, None));
         hub.encoder =
@@ -5672,6 +5702,271 @@ mod tests {
         };
         assert_eq!(machine.revision(), revision);
         assert_eq!(machine.nbt, Compound::from([progress]));
+    }
+
+    #[test]
+    fn unencodable_block_entity_nbt_is_skipped_without_forging_end_tag() {
+        use crate::{
+            block_entity_types::BlockEntityTypes,
+            containers::{BlockEntity, ModBlockEntity, ModBlockEntityFields},
+            lan::chunks::ChunkEncoder,
+        };
+        use sunrise_core::nbt::{Compound, JavaString, Tag};
+
+        let mut deep = Tag::Byte(1);
+        for _ in 0..515 {
+            deep = Tag::Compound(Compound::from([("child".into(), deep)]));
+        }
+        let deep_compound = Compound::from([("nested".into(), deep)]);
+        let ok_compound = Compound::from([(JavaString::from("ok"), Tag::Int(5))]);
+
+        let (mut hub, rx) = hub_with_a_guest();
+        let builtin = sunrise_protocol::registry::Builtin::parse(
+            r#"{"minecraft:block_entity_type":{"entries":{"test:machine":{"protocol_id":49}}}}"#,
+        )
+        .unwrap();
+        let types = BlockEntityTypes::new(
+            [("test:machine".into(), "test:machine".into())].into(),
+            builtin
+                .get("minecraft:block_entity_type")
+                .unwrap()
+                .names
+                .clone(),
+            [],
+        );
+        let states = ["minecraft:air", "test:machine"].map(|n| (Arc::<str>::from(n), false, None));
+        hub.encoder =
+            ChunkEncoder::with_types(states, &builtin, &[], &[], Some(&types), Default::default());
+        hub.encoder.mod_update_tag = Some(|_, entity| Some(entity.nbt.clone()));
+
+        let mut world = World::new(sunrise_world::registry::BlockStateId(0), 0);
+        let bad_pos = (1, 64, 3);
+        let ok_pos = (17, 64, 3);
+        let mut bad_chunk = Chunk::empty(0, 0);
+        bad_chunk.lit = true;
+        bad_chunk.set(1, 64, 3, 1);
+        let mut ok_chunk = Chunk::empty(1, 0);
+        ok_chunk.lit = true;
+        ok_chunk.set(1, 64, 3, 1);
+        world.chunks.insert((0, 0), Arc::new(bad_chunk));
+        world.chunks.insert((1, 0), Arc::new(ok_chunk));
+        world.block_entities.insert(
+            bad_pos,
+            BlockEntity::Mod(Box::new(ModBlockEntity::new(
+                "test:machine".into(),
+                ModBlockEntityFields {
+                    nbt: deep_compound,
+                    ..Default::default()
+                },
+            ))),
+        );
+        world.block_entities.insert(
+            ok_pos,
+            BlockEntity::Mod(Box::new(ModBlockEntity::new(
+                "test:machine".into(),
+                ModBlockEntityFields {
+                    nbt: ok_compound.clone(),
+                    ..Default::default()
+                },
+            ))),
+        );
+
+        // 1. Chunk streaming: bad chunk is skipped, valid sibling streams with matching batch size.
+        hub.guests.update(0, |g| {
+            g.center = Some((0, 0));
+            g.chunk_queue = vec![(0, 0), (1, 0)];
+            g.batch_quota = 4.0;
+        });
+        send_chunks(&mut hub, &mut world);
+        let mut sent_chunks = Vec::new();
+        let mut batch_sizes = Vec::new();
+        while let Ok(out) = rx.try_recv() {
+            let crate::lan::Out::Packet(body) = out else {
+                continue;
+            };
+            let mut r = sunrise_protocol::buf::Reader::new(&body);
+            let id = r.varint().unwrap();
+            match C::decode(id, r.rest()).unwrap() {
+                C::LevelChunkWithLight(p) => sent_chunks.push((p.x, p.z)),
+                C::ChunkBatchFinished(p) => batch_sizes.push(p.size),
+                _ => {}
+            }
+        }
+        assert_eq!(sent_chunks, [(1, 0)]);
+        assert_eq!(batch_sizes, [1]);
+        assert!(hub.guests[0].chunk_queue.is_empty());
+        assert!(!hub.guests[0].sent_chunks.contains(&(0, 0)));
+        assert!(hub.guests[0].sent_chunks.contains(&(1, 0)));
+
+        // 2. Block-change broadcast: bad update is dropped; valid update still reaches viewers.
+        hub.guests.update(0, |g| {
+            g.sent_chunks.insert((0, 0));
+        });
+        world.block_log = Some(vec![bad_pos, ok_pos]);
+        hub.broadcast_block_changes(&mut world);
+        let mut updates = Vec::new();
+        while let Ok(out) = rx.try_recv() {
+            let crate::lan::Out::Packet(body) = out else {
+                continue;
+            };
+            let mut r = sunrise_protocol::buf::Reader::new(&body);
+            let id = r.varint().unwrap();
+            if let C::BlockEntityData(p) = C::decode(id, r.rest()).unwrap() {
+                updates.push((p.pos, p.tag));
+            }
+        }
+        assert_eq!(updates, [([17, 64, 3], Tag::Compound(ok_compound))]);
+
+        // 3. Single-connection support-block resend: BlockUpdate sends, bad BlockEntityData does not.
+        hub.ticks = 300;
+        hub.guests.update(0, |g| {
+            g.joined_tick = 0;
+            g.support_blocks_sent = 0;
+            g.position = [1.5, 65.0, 3.5];
+        });
+        let mut next_entity = 100;
+        let border = crate::worldborder::WorldBorder::default();
+        let ctx = TickCtx {
+            sea_level: 63,
+            world: &mut world,
+            entities: &[],
+            next_entity: &mut next_entity,
+            spawn: [0.5, 64.0, 0.5],
+            spawn_angle: [0.0; 2],
+            spawn_dimension: "minecraft:overworld",
+            difficulty: 2,
+            difficulty_locked: false,
+            clock_rate: 1.0,
+            tick_rate: 20.0,
+            tick_frozen: false,
+            tick_steps: Default::default(),
+            collision: None,
+            border: &border,
+            streaming: None,
+        };
+        hub.force_send_player_support_blocks(0, &ctx);
+        let mut saw_block_update = false;
+        let mut saw_entity_data = false;
+        while let Ok(out) = rx.try_recv() {
+            let crate::lan::Out::Packet(body) = out else {
+                continue;
+            };
+            let mut r = sunrise_protocol::buf::Reader::new(&body);
+            let id = r.varint().unwrap();
+            match C::decode(id, r.rest()).unwrap() {
+                C::BlockUpdate(p) if p.pos == [1, 64, 3] => saw_block_update = true,
+                C::BlockEntityData(_) => saw_entity_data = true,
+                _ => {}
+            }
+        }
+        assert!(saw_block_update);
+        assert!(!saw_entity_data);
+    }
+
+    #[test]
+    fn has_chunk_resend_target_checks_owning_dimension_sent_chunks() {
+        let (mut hub, _rx) = hub_with_a_guest();
+        // Guest 0 is placed in overworld on loopback TCP, with no tracking view or sent chunks yet.
+        assert!(!hub.has_chunk_resend_target("minecraft:overworld", (2, 3)));
+        assert!(!hub.has_chunk_resend_target("minecraft:the_nether", (2, 3)));
+
+        // A sent entry without an applied tracking view is not tracked (`Guest::tracks_chunk`).
+        hub.guests.update(0, |g| _ = g.sent_chunks.insert((2, 3)));
+        assert!(!hub.has_chunk_resend_target("minecraft:overworld", (2, 3)));
+
+        // Inside the applied view, ownership belongs only to the guest's dimension.
+        hub.guests.update(0, |g| g.center = Some((2, 3)));
+        assert!(hub.has_chunk_resend_target("minecraft:overworld", (2, 3)));
+        assert!(!hub.has_chunk_resend_target("minecraft:overworld", (2, 4)));
+        assert!(!hub.has_chunk_resend_target("minecraft:the_nether", (2, 3)));
+
+        // Switching the guest to the Nether moves the sent-chunk ownership to that dimension.
+        hub.guests.update(0, |g| {
+            g.dimension = "minecraft:the_nether".into();
+        });
+        assert!(!hub.has_chunk_resend_target("minecraft:overworld", (2, 3)));
+        assert!(hub.has_chunk_resend_target("minecraft:the_nether", (2, 3)));
+    }
+
+    #[test]
+    fn chunk_resend_respects_reduced_view_distance_before_update_view() {
+        let (mut hub, rx) = hub_with_a_guest();
+        hub.encoder = ChunkEncoder::new(
+            [(Arc::<str>::from("minecraft:air"), false)],
+            &sunrise_protocol::registry::Builtin::default(),
+            &[],
+            &[],
+            Default::default(),
+        );
+        hub.guests.update(0, |g| {
+            g.center = Some((0, 0));
+            g.sent_chunks.extend([(0, 0), (5, 0), (6, 0)]);
+        });
+        let mut world = World::new(sunrise_world::registry::BlockStateId(0), 0);
+        for key in [(0, 0), (5, 0), (6, 0)] {
+            world
+                .chunks
+                .insert(key, Arc::new(Chunk::empty(key.0, key.1)));
+        }
+        assert!(hub.has_chunk_resend_target("minecraft:overworld", (0, 0)));
+        assert!(hub.has_chunk_resend_target("minecraft:overworld", (5, 0)));
+        assert!(hub.has_chunk_resend_target("minecraft:overworld", (6, 0)));
+
+        world
+            .chunk_resends
+            .insert((0, 0), crate::world::ChunkResend::Ready);
+        world
+            .chunk_resends
+            .insert((5, 0), crate::world::ChunkResend::Ready);
+        world.chunk_resends.insert(
+            (6, 0),
+            crate::world::ChunkResend::WaitingLight { from_seq: 0 },
+        );
+
+        // Shrinking the radius updates the tracking view immediately without waiting for
+        // `update_view` to prune `sent_chunks`.
+        hub.set_view_distance(2);
+        while rx.try_recv().is_ok() {}
+        assert_eq!(hub.guests[0].center, Some((0, 0)));
+        assert!(hub.guests[0].sent_chunks.contains(&(5, 0)));
+        assert!(hub.has_chunk_resend_target("minecraft:overworld", (0, 0)));
+        assert!(!hub.has_chunk_resend_target("minecraft:overworld", (5, 0)));
+        assert!(!hub.has_chunk_resend_target("minecraft:overworld", (6, 0)));
+
+        hub.broadcast_block_changes(&mut world);
+        let mut resent = Vec::new();
+        while let Ok(crate::lan::Out::Packet(body)) = rx.try_recv() {
+            let mut r = sunrise_protocol::buf::Reader::new(&body);
+            let id = r.varint().unwrap();
+            if let Ok(C::LevelChunkWithLight(packet)) = C::decode(id, r.rest()) {
+                resent.push((packet.x, packet.z));
+            }
+        }
+        assert_eq!(resent, vec![(0, 0)]);
+        assert!(
+            world.chunk_resends.is_empty(),
+            "waiting resend outside the reduced view is dropped"
+        );
+
+        // `update_view` still prunes the columns that left the view even with the same centre.
+        hub.update_view(0);
+        let mut forgotten = Vec::new();
+        let mut saw_center = false;
+        while let Ok(crate::lan::Out::Packet(body)) = rx.try_recv() {
+            let mut r = sunrise_protocol::buf::Reader::new(&body);
+            let id = r.varint().unwrap();
+            match C::decode(id, r.rest()).unwrap() {
+                C::ForgetLevelChunk(packet) => forgotten.push((packet.pos[0], packet.pos[1])),
+                C::SetChunkCacheCenter(_) => saw_center = true,
+                _ => {}
+            }
+        }
+        forgotten.sort_unstable();
+        assert_eq!(forgotten, vec![(5, 0), (6, 0)]);
+        assert!(!saw_center, "radius change at the same centre keeps centre");
+        assert!(hub.guests[0].sent_chunks.contains(&(0, 0)));
+        assert!(!hub.guests[0].sent_chunks.contains(&(5, 0)));
+        assert!(!hub.guests[0].sent_chunks.contains(&(6, 0)));
     }
 
     #[test]
@@ -5792,7 +6087,9 @@ mod tests {
             border: &border,
             streaming: None,
         };
-        hub.change_level(0, [100.5, 49.0, 0.5], 0.0, None, false, 0, &ctx);
+        let change = hub.begin_level_change(0, [100.5, 49.0, 0.5], 0.0, None, 0, &ctx);
+        hub.send_commands(0, hub.commands_packet(hub.guests[0].permission));
+        hub.finish_level_change(0, change, false, &ctx);
         assert_eq!(drain(&rx).1, [3]);
         assert_eq!(hub.guests[0].sent_pose, Pose::Crouching);
         hub.sync_player_state(0);
@@ -5804,7 +6101,9 @@ mod tests {
         hub.sync_player_state(0);
         drain(&rx);
         hub.remove_player_for_respawn(0);
-        hub.respawn(0, [0.5, 64.0, 0.5], Some([0.0; 2]), false, &ctx);
+        hub.begin_respawn(0, [0.5, 64.0, 0.5], Some([0.0; 2]), false, &ctx);
+        hub.send_commands(0, hub.commands_packet(hub.guests[0].permission));
+        hub.finish_respawn(0);
         assert_eq!(drain(&rx).1, [0]);
         assert_eq!(hub.guests[0].sent_pose, Pose::Standing);
         hub.sync_player_state(0);
@@ -5869,9 +6168,8 @@ mod tests {
             for refresh in [false, true] {
                 if refresh {
                     hub.set_mod_commands(7, serde_json::json!({"children":{"plugin":{"type":"literal","executable":true}}}));
-                } else {
-                    hub.send_commands(0);
                 }
+                hub.send_commands(0, hub.commands_packet(hub.guests[0].permission));
                 let crate::lan::Out::Packet(body) = rx.try_recv().unwrap() else {
                     panic!("packet");
                 };
@@ -5943,7 +6241,7 @@ mod tests {
                 .unwrap(),
         );
         hub.guests.update(0, |guest| guest.permission = 2);
-        hub.send_commands(0);
+        hub.send_commands(0, hub.commands_packet(hub.guests[0].permission));
         let crate::lan::Out::Packet(body) = rx.try_recv().unwrap() else {
             panic!("packet")
         };
@@ -5997,7 +6295,7 @@ mod tests {
         let (mut hub, rx) = hub_with_sync(sync);
         hub.rule_registry = Arc::new(crate::gamerules::RuleRegistry::vanilla());
         hub.guests.update(0, |g| g.permission = 2);
-        hub.send_commands(0);
+        hub.send_commands(0, hub.commands_packet(hub.guests[0].permission));
         let crate::lan::Out::Packet(body) = rx.try_recv().unwrap() else {
             panic!("expected packet")
         };
@@ -6244,9 +6542,7 @@ mod tests {
         );
     }
 
-    /// `store_mod_commands` keeps a new mod tree without sending it (the
-    /// game sends it after the mods filtered it: `native_refresh_commands`),
-    /// and `set_mod_commands` still sends a changed tree, and only a changed one.
+    /// Installation never bypasses the per-recipient send.
     #[test]
     fn stored_mod_commands_are_not_sent_until_asked() {
         let (mut hub, rx) = hub_with_a_guest();
@@ -6264,16 +6560,12 @@ mod tests {
             sent
         };
         let first = serde_json::json!({"hello": {}});
-        assert!(hub.store_mod_commands(0, first.clone()));
-        assert!(!hub.store_mod_commands(0, first.clone()));
-        assert_eq!(trees(&rx), 0);
+        assert!(hub.set_mod_commands(0, first.clone()));
+        assert!(!hub.set_mod_commands(0, first));
         assert_eq!(hub.mod_commands_key(), Some(0));
-        hub.set_mod_commands(0, first);
-        assert_eq!(trees(&rx), 0, "an unchanged tree is not sent again");
-        hub.set_mod_commands(0, serde_json::json!({"hello": {}, "bye": {}}));
+        assert_eq!(trees(&rx), 0, "installing the tree sends no packets");
+        hub.send_commands(0, hub.commands_packet(hub.guests[0].permission));
         assert_eq!(trees(&rx), 1);
-        hub.resend_commands();
-        assert_eq!(trees(&rx), 1, "every placed player gets their tree again");
     }
 
     /// `onGameRuleChanged`: a changed `reduced_debug_info` reaches each player
@@ -6495,7 +6787,9 @@ mod tests {
             border: &border,
             streaming: None,
         };
-        hub.change_level(0, [100.5, 49.0, 0.5], 0.0, None, false, 0, &ctx);
+        let change = hub.begin_level_change(0, [100.5, 49.0, 0.5], 0.0, None, 0, &ctx);
+        hub.send_commands(0, hub.commands_packet(hub.guests[0].permission));
+        hub.finish_level_change(0, change, false, &ctx);
         let _ = shared_flags_sent(&rx);
         hub.guests.update(0, |g| g.sneaking = false);
         hub.sync_player_state(0);
@@ -6567,6 +6861,8 @@ mod tests {
                     links: Vec::new(),
                     asks_still_valid: true,
                     opening_item: None,
+                    opener_block: None,
+                    removed: false,
                     slot_changed_seen: None,
                 });
             });
@@ -6576,17 +6872,70 @@ mod tests {
             filtering: true,
         };
         hub.guests.update(0, |g| {
-            g.recipe_book.custom.set("test:cooking", flags).unwrap();
+            let book =
+                crate::recipe_book::placement_sync::ResourceId::try_from("test:cooking".to_owned())
+                    .unwrap();
+            g.recipe_book.custom.set(&book, flags);
         });
         open(&mut hub);
-        hub.change_level(0, [100.5, 49.0, 0.5], 0.0, None, false, 0, &ctx);
+        let change = hub.begin_level_change(0, [100.5, 49.0, 0.5], 0.0, None, 0, &ctx);
+        hub.send_commands(0, hub.commands_packet(hub.guests[0].permission));
+        hub.finish_level_change(0, change, false, &ctx);
         assert!(hub.guests[0].menu.is_none());
         assert_eq!(hub.guests[0].recipe_book.custom.get("test:cooking"), flags);
         open(&mut hub);
         hub.remove_player_for_respawn(0);
-        hub.respawn(0, [0.5, 64.0, 0.5], None, false, &ctx);
+        hub.begin_respawn(0, [0.5, 64.0, 0.5], None, false, &ctx);
+        hub.send_commands(0, hub.commands_packet(hub.guests[0].permission));
+        hub.finish_respawn(0);
         assert!(hub.guests[0].menu.is_none());
         assert_eq!(hub.guests[0].recipe_book.custom.get("test:cooking"), flags);
+    }
+
+    /// `PlayerList.sendAllPlayerInfo`: a respawn sends the replacement's held slot, which the
+    /// client still holds the old selection of.
+    #[test]
+    fn a_respawn_sends_the_replacements_held_slot() {
+        let (mut hub, rx) = hub_with_a_guest();
+        let mut world = World::new(sunrise_world::registry::BlockStateId(0), 0);
+        let mut next_entity = 2;
+        let border = crate::worldborder::WorldBorder::default();
+        let ctx = TickCtx {
+            sea_level: 63,
+            world: &mut world,
+            entities: &[],
+            next_entity: &mut next_entity,
+            spawn: [0.5, 64.0, 0.5],
+            spawn_angle: [0.0; 2],
+            spawn_dimension: "minecraft:overworld",
+            difficulty: 2,
+            difficulty_locked: false,
+            clock_rate: 1.0,
+            tick_rate: 20.0,
+            tick_frozen: false,
+            tick_steps: Default::default(),
+            collision: None,
+            border: &border,
+            streaming: None,
+        };
+        hub.guests.update(0, |g| g.selected = 4);
+        hub.remove_player_for_respawn(0);
+        hub.begin_respawn(0, [0.5, 64.0, 0.5], None, false, &ctx);
+        hub.send_commands(0, hub.commands_packet(hub.guests[0].permission));
+        while rx.try_recv().is_ok() {}
+        hub.finish_respawn(0);
+        let mut held = Vec::new();
+        while let Ok(out) = rx.try_recv() {
+            let crate::lan::Out::Packet(body) = out else {
+                continue;
+            };
+            let mut r = sunrise_protocol::buf::Reader::new(&body);
+            let id = r.varint().unwrap();
+            if let C::SetHeldSlot(p) = C::decode(id, r.rest()).unwrap() {
+                held.push(p.slot);
+            }
+        }
+        assert_eq!(held, [hub.guests[0].selected as i32]);
     }
 
     /// `ServerGamePacketListenerImpl.forceSendPlayerSupportBlocks`: a client that says it stands
@@ -6769,9 +7118,15 @@ mod tests {
             let value = false;
             hub.guests.update(0, |g| g.placed = value);
         }
-        hub.place_new_player(2, &mut ctx);
+        if let Some(i) = hub.begin_player_join(2, &ctx) {
+            hub.send_commands(i, hub.commands_packet(hub.guests[i].permission));
+            hub.finish_player_join(i, &ctx);
+        }
         assert!(rx.try_recv().is_err());
-        hub.place_new_player(1, &mut ctx);
+        if let Some(i) = hub.begin_player_join(1, &ctx) {
+            hub.send_commands(i, hub.commands_packet(hub.guests[i].permission));
+            hub.finish_player_join(i, &ctx);
+        }
         let mut saw_list = false;
         while let Ok(crate::lan::Out::Packet(body)) = rx.try_recv() {
             let mut reader = sunrise_protocol::buf::Reader::new(&body);
@@ -7110,7 +7465,7 @@ mod tests {
 
     /// `handleChatSessionUpdate` shares `chatMessageChain` with chat: a new
     /// session is announced after a message that came before it. With mods
-    /// loaded that message waits for the game (`ChatSubmitted`), so the
+    /// the message waits for the game (`ChatSubmitted`), so the
     /// announcement waits behind it; with nothing held it goes out at once.
     #[test]
     fn a_new_chat_session_waits_behind_chat_the_mods_hold() {
@@ -8085,7 +8440,9 @@ mod tests {
                 border: &border,
                 streaming: None,
             };
-            hub.change_level(0, [0.5, 64.0, 0.5], 0.0, None, true, 0, &ctx);
+            let change = hub.begin_level_change(0, [0.5, 64.0, 0.5], 0.0, None, 0, &ctx);
+            hub.send_commands(0, hub.commands_packet(hub.guests[0].permission));
+            hub.finish_level_change(0, change, true, &ctx);
             // The nether's chunks: the level left and the new one are a run
             // each, which names its level once.
             send_chunks(&mut hub, &mut world);
@@ -8370,6 +8727,8 @@ mod tests {
                 links: Vec::new(),
                 opening_item: None,
                 asks_still_valid: false,
+                opener_block: None,
+                removed: false,
                 slot_changed_seen: None,
             });
         });
@@ -8685,7 +9044,9 @@ mod tests {
         };
         assert_eq!(hub.spawn_info(0, 0, 63).previous_game_type, Some(2));
         hub.set_dimension("minecraft:the_nether");
-        hub.change_level(0, [10.5, 64.0, 10.5], 0.0, None, false, 0, &ctx);
+        let change = hub.begin_level_change(0, [10.5, 64.0, 10.5], 0.0, None, 0, &ctx);
+        hub.send_commands(0, hub.commands_packet(hub.guests[0].permission));
+        hub.finish_level_change(0, change, false, &ctx);
         let mut respawn_prev = None;
         while let Ok(out) = rx.try_recv() {
             let crate::lan::Out::Packet(body) = out else {

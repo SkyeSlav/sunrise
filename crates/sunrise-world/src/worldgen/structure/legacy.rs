@@ -123,7 +123,7 @@ impl<W: FeatureWorld + PlacementContext> PieceWorld for W {
     }
     fn set(&mut self, pos: [i32; 3], state: BlockStateId, flags: i32) -> Result<bool> {
         self.set_block(pos, state, flags)
-            .map_err(|_| PlacementQueryError::Failed("piece write".into()))
+            .map_err(|error| PlacementQueryError::Failed(format!("piece write: {error:?}")))
     }
     fn fluid(&mut self, pos: [i32; 3]) -> Result<FluidState> {
         self.fluid_state(pos)
@@ -347,7 +347,7 @@ pub fn write_block(
     pos: [i32; 3],
     state: BlockStateId,
 ) -> Result<bool> {
-    world.set(pos, state, 2)?;
+    let written = world.set(pos, state, 2)?;
     let fluid = world.fluid(pos)?;
     if fluid.kind() != crate::fluid::FluidKind::Empty {
         world.fluid_tick(pos, fluid.kind(), 0)?;
@@ -374,7 +374,7 @@ pub fn write_block(
     ) {
         world.post_process(pos)?;
     }
-    Ok(true)
+    Ok(written)
 }
 
 /// A placed structure piece.
@@ -1364,5 +1364,41 @@ mod tests {
         assert!(placed);
         assert!(world.sets.is_empty());
         assert!(world.entities.is_empty());
+    }
+
+    #[test]
+    fn piece_world_set_retains_underlying_feature_world_error_diagnostic() {
+        struct FailingWorld;
+        impl FeatureWorld for FailingWorld {
+            type Error = &'static str;
+            fn block(&mut self, _: [i32; 3]) -> std::result::Result<BlockStateId, Self::Error> {
+                Ok(AIR)
+            }
+            fn set_block(
+                &mut self,
+                _: [i32; 3],
+                _: BlockStateId,
+                _: i32,
+            ) -> std::result::Result<bool, Self::Error> {
+                Err("chunk (4, -2) is not writable")
+            }
+        }
+        impl PlacementContext for FailingWorld {
+            fn generation(&self) -> crate::worldgen::anchor::WorldGenerationContext {
+                crate::worldgen::anchor::WorldGenerationContext::new(-64, 384, 63)
+            }
+            fn min_y(&mut self) -> Result<i32> {
+                Ok(-64)
+            }
+            fn height(&mut self, _: HeightmapType, _: i32, _: i32) -> Result<i32> {
+                Ok(64)
+            }
+        }
+        let mut world = FailingWorld;
+        let error = PieceWorld::set(&mut world, [64, 70, -32], STONE, 2).unwrap_err();
+        assert_eq!(
+            error,
+            PlacementQueryError::Failed(r#"piece write: "chunk (4, -2) is not writable""#.into())
+        );
     }
 }

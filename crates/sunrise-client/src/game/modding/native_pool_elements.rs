@@ -206,15 +206,17 @@ impl ElementDecodeContext for Decoding<'_> {
     }
     fn element(&self, config: &sunrise_core::nbt::Tag) -> Result<PoolElementRef, StructureError> {
         let value = sunrise_core::json_nbt::tag_to_json(config)
-            .map_err(|error| StructureError(error.to_string()))?;
+            .map_err(|error| StructureError::new(std::io::Error::other(error.to_string())))?;
         let element = PoolElement::decode_element(&value, self.resources, self.bindings)
-            .map_err(|error| StructureError(error.to_string()))?;
+            .map_err(|error| StructureError::new(std::io::Error::other(error.to_string())))?;
         Ok(element_ref(Arc::new(element)))
     }
 }
 
 /// The engine's element type around a mod's.
 struct ElementType {
+    id: &'static str,
+    mod_id: &'static str,
     inner: Arc<dyn PoolElementType>,
 }
 impl ModPoolElementType for ElementType {
@@ -231,14 +233,23 @@ impl ModPoolElementType for ElementType {
             bindings,
             worker,
         };
-        let inner = self.inner.decode(&context, &config).map_err(|e| e.0)?;
-        Ok(Arc::new(ModElement { inner }))
+        let inner = self
+            .inner
+            .decode(&context, &config)
+            .map_err(|e| e.to_string())?;
+        Ok(Arc::new(ModElement {
+            id: self.id,
+            mod_id: self.mod_id,
+            inner,
+        }))
     }
 }
 
 /// The engine's element around a mod's.
 #[derive(Debug)]
 struct ModElement {
+    id: &'static str,
+    mod_id: &'static str,
     inner: Arc<dyn mod_api::PoolElement>,
 }
 impl ModPoolElement for ModElement {
@@ -292,10 +303,10 @@ impl ModPoolElement for ModElement {
             mod_api::LiquidSettings::IgnoreWaterlogging
         };
         placement.keep_jigsaws = at.keep_jigsaws;
-        let mut context = Placing::new(context)?;
+        let mut context = Placing::new(context, self.mod_id, self.id)?;
         self.inner
             .place(&mut context, &placement)
-            .map_err(|e| PlacementQueryError::Failed(e.0))
+            .map_err(|e| PlacementQueryError::Failed(e.to_string()))
     }
     fn projection(&self) -> Projection {
         engine_projection(self.inner.projection())
@@ -328,8 +339,13 @@ mod tests;
 pub(in crate::game) fn installed_pool_element_types() -> ModPoolElementTypes {
     mod_api::__private::pool_element_type_declarations()
         .into_iter()
-        .map(|(id, inner)| {
-            let ty: Arc<dyn ModPoolElementType> = Arc::new(ElementType { inner });
+        .map(|(id, mod_id, inner)| {
+            let static_id: &'static str = Box::leak(id.clone().into_boxed_str());
+            let ty: Arc<dyn ModPoolElementType> = Arc::new(ElementType {
+                id: static_id,
+                mod_id,
+                inner,
+            });
             (id, ty)
         })
         .collect()

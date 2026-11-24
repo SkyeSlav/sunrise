@@ -193,6 +193,11 @@ impl Game<'_> {
             if let Some(done) = self.entity_interaction(hand, id) {
                 return done;
             }
+            // ShearsItem.interactLivingEntity runs on this side too: a part that makes the mob
+            // shearable shears this copy, and the server decides the rest.
+            if self.predict_part_shear(i, hand) {
+                return true;
+            }
             // Player.interactOn: another player passes, and so does a mob
             // the held item means nothing to: the item is used instead.
             let player = self

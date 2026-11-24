@@ -18,8 +18,8 @@ between individual reload listeners.
 | --- | --- |
 | Registration (`register`, `blocks`, `items`, and others) | `&RegistrationContext` for captured startup facts; declare changes through the registrar or event. |
 | `client_setup` | `&mut dyn ClientSetupContext` for client setup and published assets/data, not world handles or transactions. |
-| Config registration and initial loading | `&dyn ConfigContext` for settings and mod-scoped `ConfigFiles`. |
-| `config_reloading`, `config_unloading` | `HostSide<'_>` for the polling game or `&mut dyn ServerHost` for the stopping server, respectively. |
+| Registered config's `ConfigEvent::Loading` | Owner-bound `&dyn ConfigContext` for settings reads and the native config directory. |
+| Registered config's `ConfigEvent::Reloading`, `ConfigEvent::Unloading` | `HostSide<'_>` for the polling game and `&mut dyn ServerHost` for the stopping server, respectively. |
 | Data and asset reload callbacks | A reload or data-load context for the relevant resource generation, not a live `Host`. |
 | Ordinary game callbacks | `ServerHost`, `ClientHost` or `HostSide`; world or session queries may still be unavailable. |
 

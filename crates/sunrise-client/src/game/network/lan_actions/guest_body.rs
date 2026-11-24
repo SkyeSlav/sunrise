@@ -52,6 +52,14 @@ pub(super) fn initialize(resources: &MotionResources, guest: &mut Guest) -> bool
         return false;
     };
     let mut motion = motion;
+    motion.body_yaw = guest.carried_body_yaw.take().unwrap_or_else(|| {
+        // Entity.load initializes the joining player's body yaw from its saved view.
+        if guest.saved.is_some() {
+            guest.yaw
+        } else {
+            0.0
+        }
+    });
     let spectator = guest.spectator();
     motion.spectator = spectator;
     motion.local_spectator = spectator;
@@ -289,6 +297,7 @@ impl Game<'_> {
             self.as_guest(conn, |game| {
                 game.handle_shoulder_entities();
                 let rules = game.world.health_rules;
+                let blocking = game.player_blocking_component().is_some();
                 let Some(player) = game.player.as_mut() else {
                     return;
                 };
@@ -310,6 +319,14 @@ impl Game<'_> {
                 let Some(player) = game.player.as_mut().filter(|p| p.entity_id as u32 == id) else {
                     return;
                 };
+                player.body_yaw = sunrise_client::mobs::living::player_body_yaw(
+                    player.body_yaw,
+                    game.yaw,
+                    0.0,
+                    0.0,
+                    game.swing.animation > 0.0,
+                    blocking,
+                );
                 let events = std::mem::take(&mut player.events);
                 game.record_combat(&events);
             });
@@ -327,7 +344,6 @@ impl Game<'_> {
             self.as_guest(conn, |game| game.server_spin_attack());
         }
         let in_wall = !sleeping && self.in_wall(conn, at, dimensions);
-        let mut soul = None;
         let events = self.as_guest(conn, |game| {
             let (rules, motion) = (game.world.health_rules, game.motion);
             let health = &motion.health;
@@ -473,6 +489,8 @@ impl Game<'_> {
             game.rain_extinguish_player();
             // WitherRoseBlock.entityInside along those moves.
             game.apply_player_inside_events(&events);
+            // `LivingEntity.baseTick` runs the equipment tick before location effects.
+            game.tick_equipment_enchantments(super::super::commands::Target::Player, id);
             // LivingEntity.baseTick: a new block position runs the worn
             // enchantments' location_changed effects (frost walker).
             game.location_changed_effects([start.x, start.y, start.z], from_ground);
@@ -494,9 +512,7 @@ impl Game<'_> {
                 let _ = w.server_player_pose_tick();
             }
             game.apply_player_waypoint_updates();
-            // Soul Speed's effects (LivingEntity.baseTick's location_changed
-            // and tick effects); its particle goes to the players around.
-            soul = game.tick_soul_speed();
+            game.update_soul_speed_location();
             game.handle_shoulder_entities();
             let Some(player) = game.player.as_mut() else {
                 return (Vec::new(), None, ServerTravel::Continue);
@@ -529,9 +545,21 @@ impl Game<'_> {
             // even when the level and its mobs are frozen. Flush their damage
             // events and marked velocity through the existing guest path.
             game.touch_pufferfish();
+            let blocking = body && game.player_blocking_component().is_some();
             let Some(player) = game.player.as_mut() else {
                 return (events, None, ServerTravel::Continue);
             };
+            if body {
+                let movement = player.position.subtract(vector(at));
+                player.body_yaw = sunrise_client::mobs::living::player_body_yaw(
+                    player.body_yaw,
+                    game.yaw,
+                    movement.x,
+                    movement.z,
+                    game.swing.animation > 0.0,
+                    blocking,
+                );
+            }
             // Landing damage from this travel reaches the tracker too.
             events.append(&mut player.events);
             // A hurt since the last tick marked the velocity (Entity.markHurt):
@@ -548,11 +576,7 @@ impl Game<'_> {
             .lan
             .as_mut()
             .is_some_and(|host| host.hub.apply_server_travel(conn, travel_teleport, travel));
-        if let Some((at, velocity)) = soul
-            && let Some(host) = self.lan.as_ref()
-        {
-            crate::game::lan_particles::send_soul_particle(host, at, velocity);
-        }
+
         self.as_guest(conn, |game| {
             game.sculk_step_on_player();
             game.tick_player_sculk_events();
@@ -626,7 +650,7 @@ impl Game<'_> {
                             f64::from(pos.y) + 0.5,
                             f64::from(pos.z) + 0.5,
                         ];
-                        self.audio.play_unshared(name, Some(at), volume, pitch);
+                        self.play_audio_unshared(name, Some(at), volume, pitch);
                         self.send_level_sound(LevelSound::new(name, at, volume, pitch), None);
                     }
                 }
@@ -640,7 +664,7 @@ impl Game<'_> {
                     ..
                 }) => {
                     if let Some(name) = sound.player_fall_sound() {
-                        self.audio.play_unshared(name, Some(at), volume, pitch);
+                        self.play_audio_unshared(name, Some(at), volume, pitch);
                         self.send_level_sound(LevelSound::new(name, at, volume, pitch), Some(conn));
                     }
                 }
@@ -680,22 +704,27 @@ impl Game<'_> {
                         .as_ref()
                         .and_then(|host| host.hub.guest(conn))
                         .map(|g| (g.entity_id as u32, "minecraft:player"));
-                    let sound = self.block_sound_type(
+                    let sound = self.selected_block_sound(
                         [position.x, position.y, position.z],
                         state,
                         entity,
                         mod_api::BlockSoundCause::Fall,
                     );
-                    self.audio.play_unshared(
-                        &sound.fall,
+                    self.play_audio_unshared(
+                        sound.event.as_str(),
                         Some(at),
                         sound.volume * 0.5,
                         sound.pitch * 0.75,
                     );
                     self.send_level_sound(
                         // `Player.playSound` plays in the players' source.
-                        LevelSound::new(&sound.fall, at, sound.volume * 0.5, sound.pitch * 0.75)
-                            .in_source(mod_api::SoundSource::Players),
+                        LevelSound::new(
+                            sound.event.as_str(),
+                            at,
+                            sound.volume * 0.5,
+                            sound.pitch * 0.75,
+                        )
+                        .in_source(mod_api::SoundSource::Players),
                         Some(conn),
                     );
                 }
@@ -766,7 +795,7 @@ impl Game<'_> {
                     };
                     if sound {
                         let name = "minecraft:block.honey_block.slide";
-                        self.audio.play_unshared(name, Some(at), 1.0, 1.0);
+                        self.play_audio_unshared(name, Some(at), 1.0, 1.0);
                         self.send_level_sound(LevelSound::new(name, at, 1.0, 1.0), Some(conn));
                     }
                     if particles {

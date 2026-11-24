@@ -18,8 +18,9 @@ are refused. A content-only package omits both. The mod's id and version come on
 not Cargo's package name or version. An id is a plain `[a-z0-9_]{1,64}` name, also used as its resource namespace.
 A `rust-toolchain.toml` in the folder is not packaged: the pinned Sunrise commit decides the toolchain that builds
 the mod. `cargo sunrise-mod check`, which runs Cargo in the folder, still reads it.
-There is no input `native/` or `rust/` directory, `sunrise-native.json` or hand-written `horizon-mixin.toml`.
-The launcher writes the tool's manifest and stages the crate itself; those internal paths are not package layouts.
+The native builder stages the crate and writes the tool's manifest itself. Packing leaves unrelated project
+files out of the archive; the [archive layout](../../reference/manifest.md#project-and-archive-layout) does not
+allow extra files.
 
 The manifest keeps the [content fields](../content-mods.md#the-manifest), except that
 `api` and `capabilities` are written by `cargo sunrise-mod build` into the package, not by you. A native mod adds:

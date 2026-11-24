@@ -657,7 +657,10 @@ impl StructureRegistry {
         };
         let sx = spread(&mut random);
         let sz = spread(&mut random);
-        Some(ChunkPos::new(gx * spacing + sx, gz * spacing + sz))
+        Some(ChunkPos::new(
+            gx.wrapping_mul(spacing).wrapping_add(sx),
+            gz.wrapping_mul(spacing).wrapping_add(sz),
+        ))
     }
     pub fn is_structure_chunk(
         &self,
@@ -708,7 +711,8 @@ impl StructureRegistry {
                 };
                 let sx = spread(&mut random);
                 let sz = spread(&mut random);
-                gx * spacing + sx == x && gz * spacing + sz == z
+                gx.wrapping_mul(spacing).wrapping_add(sx) == x
+                    && gz.wrapping_mul(spacing).wrapping_add(sz) == z
             }
             Placement::ConcentricRings { .. } => rings
                 .get(&set.name)
@@ -763,9 +767,9 @@ impl StructureRegistry {
         let Some(other) = self.sets.iter().find(|s| s.name == other) else {
             return false;
         };
-        (x - range..=x + range).any(|tx| {
-            (z - range..=z + range)
-                .any(|tz| self.structure_chunk(other, seed, tx, tz, rings, zones))
+        (i64::from(x) - i64::from(range)..=i64::from(x) + i64::from(range)).any(|tx| {
+            (i64::from(z) - i64::from(range)..=i64::from(z) + i64::from(range))
+                .any(|tz| self.structure_chunk(other, seed, tx as i32, tz as i32, rings, zones))
         })
     }
 }
@@ -781,7 +785,11 @@ impl StructureSet {
     /// the set's `locate_offset`.
     pub fn locate_pos(&self, chunk: ChunkPos) -> [i32; 3] {
         let o = self.locate_offset;
-        [chunk.x * 16 + o[0], o[1], chunk.z * 16 + o[2]]
+        [
+            chunk.x.wrapping_mul(16).wrapping_add(o[0]),
+            o[1],
+            chunk.z.wrapping_mul(16).wrapping_add(o[2]),
+        ]
     }
 }
 fn reduce(method: Reduction, seed: i64, salt: i32, x: i32, z: i32, probability: f32) -> bool {
@@ -999,6 +1007,8 @@ pub trait StartContext: JigsawContext {
     fn generation(&self) -> WorldGenerationContext;
     /// Noise biome at a quart position (caching resolver, no zoom).
     fn noise_biome(&mut self, quart: [i32; 3]) -> BiomeId;
+    /// The loaded registry key for a biome id issued by this generator's resolver.
+    fn biome_key(&self, biome: BiomeId) -> mod_api::BiomeKey;
     /// Noise biomes of `quarts` in order through one resolver, as
     /// BiomeSource.findBiomeHorizontal samples: each climate lookup starts
     /// from the previous result, which a tie keeps.

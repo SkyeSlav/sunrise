@@ -107,20 +107,12 @@ refused at load: when its registration declares no texture but the file samples 
 reverse), when the registration's texture or another resource it names is missing, or when the GPU
 rejects the shader.
 
-The check, and the load, also refuse a shader that is too costly or that a player's system could
-not translate:
-
-- **Expressions.** The composed shader (your file with the game's prelude and entry points, which
-  are small and fixed) may hold 20,000 expressions over all its functions. The refusal gives the
-  count: `21066 expressions; a pipeline shader may hold 20000`.
-- **Texture reads.** It may hold 64 texture reads (`textureLoad` and `textureSample*` expressions
-  written in the code, not executions). A textured pipeline's `pipeline_texture` function is one of
-  them, so your own code has 63. The refusal gives the count.
-- **Backends.** The shader is translated to SPIR-V (Vulkan), MSL (Metal) and HLSL (DirectX 12) as
-  the GPU library does, and a shader that any of them refuses is refused naming it, as in
-  `Vulkan (SPIR-V) refuses it: ...`. Some shaders pass validation and still fail here, such as
-  passing a pointer to a matrix column or to an element of a local array to a function; copy the
-  value into a function argument instead.
+The check, and the load, also refuse a shader that a player's system could not translate. The
+shader is translated to SPIR-V (Vulkan), MSL (Metal) and HLSL (DirectX 12) as the GPU library does,
+and a shader that any of them refuses is refused naming it, as in `Vulkan (SPIR-V) refuses it: ...`.
+Some shaders pass validation and still fail here, such as passing a pointer to a matrix column or
+to an element of a local array to a function; copy the value into a function argument instead.
+There is no count of expressions or texture reads: what the GPU library translates is drawn.
 
 ## 3. Resolve and draw
 
@@ -206,8 +198,8 @@ cause and resolves to `Invalid`:
 A pipeline without `.textured(…)` has no `pipeline_texture`: its file is refused with a note
 naming `RenderPipeline::textured`.
 
-A pipeline cannot take values of its own from the mod, sample more than one texture, or replace the
-vertex stage.
+A pipeline cannot sample more than one texture or replace the vertex stage; custom per-frame values
+are available for translated shader-pack uniforms via `WorldDrawContext::set_pack_uniform` (below).
 
 ## Participating in translated shader packs
 
@@ -229,5 +221,12 @@ per-frame pack uniforms attach an optional `.pack_binding(PackBinding::new()...)
 invalid GLSL identifiers, reserved Iris/OptiFine sampler/image/uniform names, and cross-mod or
 namespace collisions across samplers, uniforms, defines, and depth-target IDs.
 
-To check whether a shader pack is currently loaded and rendering the world (always `false` on the
-title screen, matching `IrisApi.isShaderPackInUse()`), call `host.shader_pack_active()`.
+During a world draw hook, feed declared per-frame pack uniforms with
+`ctx.set_pack_uniform(name, PackUniformValue::...)` (returns `false` without panicking when `name`
+or its `PackUniformType` is not registered; any `previous_name` declared on the uniform is tracked
+automatically across frames). To inspect whether an active shader pack bound a specific pipeline to
+one of its translated programs (`PackOverrideState::Bound`), left it on the mod's own fallback
+shader (`PackOverrideState::UnboundPack`), or no pack is active (`PackOverrideState::NoPack`), call
+`ctx.pack_override_state(pipeline)`. To check generally whether a shader pack is currently loaded
+and rendering the world (always `false` on the title screen, matching `IrisApi.isShaderPackInUse()`),
+call `host.shader_pack_active()`.

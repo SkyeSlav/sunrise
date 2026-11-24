@@ -107,6 +107,11 @@ pub enum AttachmentError {
     Decode,
     /// The value could not be encoded.
     Encode,
+    /// A stock stack codec could not encode this occupied index or its stack.
+    StackEncoding {
+        /// The index the codec could not encode.
+        index: usize,
+    },
     /// A namespace in the saved compound is not a compound.
     InvalidNamespace,
     /// Copy-on-death requires an already configured serializer.
@@ -1775,8 +1780,20 @@ impl Attachments {
         policy: impl Fn(&str, &str) -> Option<CloneAttachmentPolicy>,
     ) -> Self {
         let mut copy = Self::default();
+        copy.copy_clone_attachments_from(self, is_death, policy);
+        copy
+    }
+
+    /// Apply the original's clone-eligible entries over the replacement's constructor values.
+    #[doc(hidden)]
+    pub fn copy_clone_attachments_from(
+        &mut self,
+        original: &Self,
+        is_death: bool,
+        policy: impl Fn(&str, &str) -> Option<CloneAttachmentPolicy>,
+    ) {
         let flag = JavaString::from("copy_on_death");
-        for (key, entry) in &self.entries {
+        for (key, entry) in &original.entries {
             let current = key
                 .0
                 .to_string()
@@ -1808,12 +1825,10 @@ impl Attachments {
                 _ => None,
             };
             if let Some(encoded) = encoded {
-                copy.entries
-                    .insert(key.clone(), Arc::new(AttachmentEntry::raw(encoded)));
+                self.write_entry(key, Some(Arc::new(AttachmentEntry::raw(encoded))));
             }
         }
-        copy.allocated = !copy.entries.is_empty();
-        copy
+        self.allocated = !self.entries.is_empty();
     }
     /// Copy opted-in values through their disk encoding for a player respawn.
     pub fn copy_on_death(

@@ -337,10 +337,16 @@ pub fn nine_slice(
     match crate::hud::sprite_modifiers::draws(atlas, sprite, *r, [x, y, w, h], color) {
         Some(draws) => {
             for d in draws {
+                let start = batch.vertices.len();
                 draw_whole_sprite(batch, atlas, &d.key, d.rect, d.at, d.color);
+                batch.bind_gui_atlas(start, atlas, &d.key);
             }
         }
-        None => draw_whole_sprite(batch, atlas, sprite, *r, [x, y, w, h], color),
+        None => {
+            let start = batch.vertices.len();
+            draw_whole_sprite(batch, atlas, sprite, *r, [x, y, w, h], color);
+            batch.bind_gui_atlas(start, atlas, sprite);
+        }
     }
 }
 /// `blitSprite` of the whole GUI sprite `key`, found as `rect`: as its `gui.scaling` says. A
@@ -479,6 +485,7 @@ pub fn tiled_sized(
     let Some(r) = atlas.gui_draw_rect(sprite).copied() else {
         return;
     };
+    let start = batch.vertices.len();
     tile_viewport(
         batch,
         r,
@@ -487,6 +494,7 @@ pub fn tiled_sized(
         [x, y, w, h],
         color,
     );
+    batch.bind_gui_atlas(start, atlas, sprite);
 }
 /// Text drawn at `scale` times its size (a scaled pose).
 pub fn text_scaled(

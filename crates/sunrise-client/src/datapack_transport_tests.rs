@@ -67,7 +67,13 @@ fn incompressible_large_registry_snapshot_fits_each_frame_and_activates_only_whe
         let packets: Vec<_> = chunks(&bytes).unwrap().collect();
         assert!(packets.len() > 1);
         for (i, data) in packets.iter().enumerate() {
-            assert!(data.len() < 1 << 20, "vanilla unknown custom payload bound");
+            assert!(
+                data.len() <= 1 << 20,
+                "vanilla unknown custom payload bound"
+            );
+            if i + 1 < packets.len() {
+                assert_eq!(data.len(), 1 << 20, "the header is inside that bound");
+            }
             let body = play::Clientbound::CustomPayload(cfg::CustomPayload {
                 channel: CHANNEL.into(),
                 data: data.clone(),
@@ -113,9 +119,21 @@ fn registry_fragments_refuse_oversize_reordered_duplicate_and_truncated_transfer
     assert!(assembly.push(&parts[0]).unwrap().is_none());
     assert!(assembly.push(&parts[0]).is_err());
     assert!(assembly.pending.is_none());
-    let mut oversized = parts[0].clone();
-    oversized[4..8].copy_from_slice(&((MAX_SNAPSHOT_BYTES + 1) as u32).to_le_bytes());
-    assert!(assembly.push(&oversized).unwrap_err().contains("64 MiB"));
+    assert_eq!(parts[0].len(), 1 << 20);
+    let mut at_limit = parts[0].clone();
+    at_limit[4..8].copy_from_slice(&(128_u32 << 20).to_le_bytes());
+    assert!(Assembly::default().push(&at_limit).unwrap().is_none());
+    let mut oversized = parts[0][..HEADER + 1].to_vec();
+    oversized[4..8].copy_from_slice(&((128_u32 << 20) + 1).to_le_bytes());
+    assert!(
+        assembly
+            .push(&oversized)
+            .unwrap_err()
+            .contains("transport limit")
+    );
+    let mut overlong_fragment = parts[0].clone();
+    overlong_fragment.push(0);
+    assert!(assembly.push(&overlong_fragment).is_err());
     let mut truncated = parts[0].clone();
     truncated.pop();
     assert!(assembly.push(&truncated).is_err());

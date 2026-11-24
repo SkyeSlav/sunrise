@@ -17,25 +17,6 @@ pub struct Inventory {
     pub proc_macros: Vec<String>,
 }
 
-impl Inventory {
-    pub fn label(&self) -> String {
-        crate::host::trf(
-            "Native mod adds {count} registry crates",
-            &[("count", &self.added_crates.to_string())],
-        )
-    }
-    pub fn detail(&self) -> String {
-        let none = crate::host::tr("None");
-        let scripts = self.build_scripts.join(", ");
-        let macros = self.proc_macros.join(", ");
-        [
-            crate::host::tr("Registry dependencies are native code. Their build scripts and proc macros run during compilation, before the game starts.").to_owned(),
-            crate::host::trf("Build scripts: {crates}", &[("crates", if self.build_scripts.is_empty() { none } else { &scripts })]),
-            crate::host::trf("Proc macros: {crates}", &[("crates", if self.proc_macros.is_empty() { none } else { &macros })]),
-        ].join("\n\n")
-    }
-}
-
 #[derive(Deserialize)]
 pub struct Metadata {
     pub packages: Vec<Package>,
@@ -635,16 +616,18 @@ mod tests {
                 "target": "x86_64-unknown-linux-gnu",
                 "side": "client",
                 "registry_lock": lock,
+                "registry_patches": {},
                 "native_links": [{"name": "native-sys", "version": version, "library": "example"}],
+                "facade_crates": [],
+                "game_features": [],
+                "slices": {"runtime": [], "api": []},
             })
             .to_string(),
         )
         .unwrap();
         let sdk = super::super::prebuilt::identity(dir.path()).unwrap();
-        let plan =
-            super::super::registry_plan::Plan::read(sdk.registry_lock.as_ref().unwrap(), &[], &[])
-                .unwrap();
-        (plan, sdk.native_links.unwrap())
+        let plan = super::super::registry_plan::Plan::read(&sdk.registry_lock, &[], &[]).unwrap();
+        (plan, sdk.native_links)
     }
 
     #[test]

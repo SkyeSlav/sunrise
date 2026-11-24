@@ -120,8 +120,10 @@ numeric widths and typed-array identity and can refuse values it cannot represen
 Tank-only fluids have keys but no world state. For a fluid that flows, declare a world fluid with
 its block, flowing form and bucket supplied by the game. See [Content mods](../how-to/content-mods.md)
 for both declaration forms and [Block fluids](capabilities/block-fluids.md) for tank behaviour. A
-saved tank can retain an unresolved fluid's name without inventing a key or admitting it to vanilla
-storage. Active effects use `EffectKey`, not an enchantment effect-component name or a tag string.
+saved tank whose fluid's mod is absent retains its saved name as an `UnresolvedFluid`, without inventing a
+key or admitting it to vanilla storage: its stack's `key()` is `None`, `UnresolvedFluid::id()` borrows the
+name, and a payload sends the name, which the receiving game refuses when it has registered it. Active
+effects use `EffectKey`, not an enchantment effect-component name or a tag string.
 
 ## Where to go next
 

@@ -190,7 +190,7 @@ impl Game<'_> {
         game.world.random = random;
         for m in created {
             game.mobs.push(m);
-            game.native_mobs_joined(game.mobs.len() - 1, false);
+            game.admit_new_mobs(game.mobs.len() - 1);
         }
     }
 }

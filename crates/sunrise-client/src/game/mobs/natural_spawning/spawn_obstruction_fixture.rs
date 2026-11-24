@@ -157,10 +157,11 @@ fn spawner_batch(
         yaws: 0,
     };
     let mut own = LegacyRandom::new(0);
+    let mut sequences = Default::default();
     let mut planned = Vec::new();
     let mut spawn = |l: &GameLevel, _: &mut Attempts, r: &SpawnerSpawn| {
         assert!(!r.finalize);
-        game.plan_spawner_mob(l, r, None, &mut planned, &mut own)
+        game.plan_spawner_mob(l, r, None, &mut planned, &mut own, &mut sequences)
     };
     let mut events = Vec::new();
     spawner.server_tick(
@@ -350,6 +351,7 @@ fn spawn_entity_obstruction() {
                             None,
                             &mut Vec::new(),
                             &mut LegacyRandom::new(0),
+                            &mut Default::default(),
                         )
                         .expect(name);
                     }

@@ -257,8 +257,8 @@ mod tests {
                 assert_eq!(snap.block_state(0, 0, 0).unwrap().block(), stone_key);
                 assert_eq!(snap.light(0, 0, 0), Some((11, 5)));
                 assert!(snap.has_light());
-                let desert = snap.biome_id("minecraft:desert").unwrap();
-                assert_eq!(snap.biome(0, 0, 0), Some(desert));
+                let desert = mod_api::BiomeKey::parse("minecraft:desert").unwrap();
+                assert_eq!(snap.biome(0, 0, 0), Some(&desert));
 
                 // Unsaved chunk returns Ok(None).
                 assert!(bg_reader.read([99, 99]).expect("read ok").is_none());

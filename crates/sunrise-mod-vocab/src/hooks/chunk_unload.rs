@@ -1,5 +1,4 @@
 //! The `chunk_unload` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0066
 
 pub trait Hooks {
     /// Chunk `chunk` of `dimension` left the world (NeoForge's

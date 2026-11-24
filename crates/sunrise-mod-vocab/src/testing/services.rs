@@ -1,7 +1,6 @@
 //! The service fakes: the commands a mod runs and the messages it sends.
-use crate::{CommandResult, Commands, Messages, Text};
-use std::cell::RefCell;
-use std::collections::HashSet;
+use crate::{CommandFeedback, CommandResult, Commands, Messages, Text, TextFormError};
+use std::{cell::RefCell, collections::HashSet, sync::mpsc::Sender};
 
 // no wire: in-process testing harness state, not a mod boundary payload.
 /// The server's command service: the commands run, in order, of which those listed as known
@@ -35,6 +34,13 @@ impl Commands for FakeCommands {
     }
     fn run_command_with_output(&mut self, line: &str) -> CommandResult {
         CommandResult::new(self.run_command(line), Vec::new())
+    }
+    fn run_command_with_feedback(
+        &mut self,
+        line: &str,
+        _: Sender<Result<CommandFeedback, TextFormError>>,
+    ) -> bool {
+        self.run_command(line)
     }
     fn feedback(
         &mut self,

@@ -142,7 +142,7 @@ impl CommandArgument {
     }
 }
 
-/// Validated input borrowed by a registered server command's executor, never a raw line.
+/// Validated input borrowed by a registered server or client command's executor, never a raw line.
 ///
 /// Missing optional arguments are absent. Selectors are permission-checked and resolved
 /// by the current server dispatcher before the executor runs. `entity` and `player` select exactly one;
@@ -281,6 +281,19 @@ impl CommandInvocation {
     }
 }
 
+/// One structured message delivered to the native console's command source.
+// no wire: these messages travel through an in-process command output sink.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum CommandFeedback {
+    /// Feedback sent by `CommandSourceStack.sendSuccess`.
+    Success(crate::Text),
+    /// Feedback sent by `CommandSourceStack.sendFailure`, including its error style.
+    Failure(crate::Text),
+    /// A direct `CommandSourceStack.sendSystemMessage`, not gated as success feedback.
+    System(crate::Text),
+}
+
 /// A command's outcome and the messages received by its source.
 ///
 /// The default is an unsuccessful run with no feedback, including when a handle
@@ -306,7 +319,7 @@ impl CommandResult {
 pub(crate) mod command_argument;
 pub(crate) mod entity_selector;
 pub(crate) mod suggestion;
-pub(crate) mod suggestion_provider;
+pub(crate) mod tree_filter;
 pub(crate) mod types;
 
 #[cfg(test)]

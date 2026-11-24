@@ -155,7 +155,7 @@ impl ConfigurationTask {
                 if let Some(writer) = self.io.writer.lock().unwrap().as_ref() {
                     writer.close_after_pending();
                 }
-                return Some(reason.ended(false));
+                return Some(reason.ended(false, true));
             }
         };
         if let Some(writer) = self.io.writer.lock().unwrap().as_ref() {

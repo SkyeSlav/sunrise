@@ -445,6 +445,9 @@ menus and clearing any overlay), switches to `Screen::Mod` owned by `mod_id`, an
 `screen_init_post`. It returns `false` when cancelled or redirected by `screen_opening`, while a
 world or connection is loading, or without a client window.
 
+The Mods screen's **Config** button opens your screen the same way when you register a config screen factory
+([settings](../mod-settings.md#your-own-config-screen)); closing it then returns to the Mods screen.
+
 Widget callbacks (`Button` `on_press`, `TextField` `on_change` / `on_submit`, and `ScreenWidget`
 input handlers) receive `&mut dyn ClientHost` and execute screen transitions synchronously: calling
 `host.close_screen()`, `host.mod_screen_close(id)`, or `host.mod_screen_open(next_id)` transitions

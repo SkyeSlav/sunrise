@@ -149,10 +149,13 @@ impl StructureProcessorType for WeatherAndSupportType {
     ) -> Result<Arc<dyn StructureProcessor>, StructureError> {
         let block = |key: &str| -> Result<BlockState, StructureError> {
             let Some(Tag::String(name)) = config.get(key) else {
-                return Err(StructureError(format!("missing string field {key}")));
+                return Err(StructureError::new(std::io::Error::other(format!(
+                    "missing string field {key}"
+                ))));
             };
-            let id = mod_api::__private::block_key(&name.to_string_lossy())
-                .ok_or_else(|| StructureError(format!("unknown block {name:?}")))?;
+            let id = mod_api::__private::block_key(&name.to_string_lossy()).ok_or_else(|| {
+                StructureError::new(std::io::Error::other(format!("unknown block {name:?}")))
+            })?;
             Ok(context.state(id))
         };
         let nested = config

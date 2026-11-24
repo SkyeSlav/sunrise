@@ -33,11 +33,12 @@ fn stand_with_id(game: &mut Game<'_>, at: [f64; 3]) -> (u32, EntityRef) {
     ]
     .into_iter()
     .collect();
-    let dimension = game.dim.id();
-    let id = game
-        .summon(dimension, "minecraft:pig", at, nbt)
+    let level = game.level(game.dim.id()).expect("level");
+    let entity = game
+        .level_summon(level, "minecraft:pig", at, nbt)
+        .expect("summon write")
         .expect("a pig");
-    (id, game.entity(id).expect("its handle"))
+    (entity.id(), entity)
 }
 
 #[test]

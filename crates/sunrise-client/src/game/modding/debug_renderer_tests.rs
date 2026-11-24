@@ -116,6 +116,7 @@ fn test_camera(position: [f64; 3]) -> mod_api::Camera {
         partial_tick: 0.0,
         yaw: 0.0,
         pitch: 0.0,
+        roll: 0.0,
         fov_degrees: 70.0,
         near: 0.05,
         far: 128.0,

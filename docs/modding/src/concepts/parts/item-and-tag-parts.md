@@ -182,7 +182,8 @@ A part does not get the wearing entity;
 
 `ItemPart::xp_repair_ratio` is `IItemExtension.getXpRepairRatio`: the durability points Mending restores to a
 stack of the part's item per point of experience (`ExperienceOrb.repairPlayerItems`), asked on the server once for
-each item it repairs, from an orb or from `PlayerRef::give_experience_points`. `event.ratio` arrives as vanilla's:
+each item it repairs at orb pickup. `PlayerRef::give_experience_points` never invokes Mending.
+`event.ratio` arrives as vanilla's:
 the item's `minecraft:repair_with_xp` repair divided by `event.experience`, 2.0 for vanilla Mending. The repair
 becomes `floor(experience × ratio)`, capped at the item's damage, and the experience it doesn't use goes on to the
 next damaged Mending item, then to the player. A ratio left as it arrived keeps vanilla's repair exactly. One that
@@ -231,6 +232,21 @@ included, and a client the table built from the server's synced entries when ava
 `weight` (selection weight) and `anvil_cost` (base anvil fee per enchantment level).
 `enchantment_supports` checks only `supported_items` membership, not Item Part overrides.
 
+## Inventory ticks and attacks
+
+`inventory_tick` chooses the Parts of `event.item` at the start of the tick. Read the live
+slot with `event.place.with_stack(host, |stack| ...)`, or use `event.place.edit(host, tx, ...)`
+to edit its component overrides in a transaction. A later read sees the write; replacing the
+item does not redispatch the tick. `event.slot` and `event.selected` still describe the slot
+that started this callback.
+
+`on_left_click_entity`, `on_entity_swing` and `hurt_enemy` lend `event.stack` as an
+`ItemStackView` of the stack that reached the action. `get_enchantment_level` and
+`item_attribute_modifier` likewise lend the queried stack; their output collections are
+unchanged. `living_incoming_damage` lends optional views of the direct weapon and causing
+weapon at the hit. Use `stack.get(&component)` to read an override or `stack.project()` when
+you need an owned value.
+
 ## Hand, break and name on the client
 
 Three client-side methods change how the local player's client shows and handles a held stack. Each `event` field
@@ -265,20 +281,54 @@ lookup.
   from the stack alone, and fast.
 
 ```rust,ignore
+struct DataModelMob;
+
+impl Component for DataModelMob {
+    type Value = JavaString;
+    fn id(&self) -> &str { "mymod:data_model" }
+    fn decode(&self, tag: &Tag) -> Option<JavaString> {
+        match tag {
+            Tag::String(name) => Some(name.clone()),
+            _ => None,
+        }
+    }
+    fn encode(&self, name: JavaString) -> Tag { Tag::String(name) }
+}
+
 struct DataModel;
 
 #[mod_api::sunrise_part]
 impl ItemPart for DataModel {
     fn item_name(&self, _context: &dyn LoopContext, event: &mut ItemNameEvent<'_>) {
         // The mob in the stack's own component names it: "Zombie Data Model".
-        let id = ComponentId::new("mymod:data_model").expect("a component id");
-        if let Some(Tag::String(mob)) = ItemResource::of(event.stack).component(&id) {
+        if let Some(mob) = event.stack.get(&DataModelMob) {
             let mob = Text::translate(format!("entity.{}", mob.to_string_lossy().replace(':', ".")), Vec::new());
             *event.name = Some(Text::translate("item.mymod.data_model.named", vec![mob]));
         }
     }
 }
 ```
+
+## Continuing a use
+
+`ItemPart::can_continue_using` is `IItemExtension.canContinueUsing`: whether a use (eating, drawing a bow, raising
+a shield) goes on now that the used hand holds `event.held`. `event.stack` is the stack the use goes on with, and
+only the parts of its item are asked. `event.can_continue` arrives as vanilla's answer, `true` for the same item, and
+the part may set it either way. `true` goes on with `event.held` as the use's stack, so the next tick asks the parts
+of that item; `false` stops the use as another item would, without a release. It is asked each tick of a use, on the
+server and on a server's client, before `living_entity_use_item_tick`; `event.entity` is `None` for a player. An
+emptied hand stops the use without asking, and so does a hotbar switch, which stops a main-hand use first.
+
+## Stopping a use
+
+`ItemPart::on_stop_using` is `IItemExtension.onStopUsing`: the use of `event.stack` in `event.hand` is over, with
+`event.time_left` ticks of it left (0 for a finished use). It comes once per stop, where `LivingEntity.stopUsingItem`
+runs, whatever stopped the use: a release, a finish, another item in the hand, a brush with nothing to brush, a
+mob's release (`event.entity` is `Some`) and the server's own stops (a hotbar switch, swapped hands, a disabled
+shield, spectator mode, a dimension trip). The use is already cleared, so releasing again from here finds nothing,
+and it comes after `release_using` and `living_entity_use_item_finish`. An emptied hand is a used-up stack, not a
+stop. On a server's client it comes where the client ends its own use; change the world only on the server side of
+`HostSide`.
 
 ## Grindstone, repair combining and container items
 
@@ -287,7 +337,10 @@ sides, the server's menus and the client's own result display, so they take the 
 answer from `event.stack` and `context` alone, and fast. Each `event` field arrives holding vanilla's answer, which
 the part may set either way, and an item with no such part costs one table lookup.
 
-A client without this mod predicts vanilla here; the server corrects it.
+`event.stack` is a borrowed `ItemStackView`: read the item, count or damage directly, use
+`get` for a single component override, and use `project` only when you need an owned stack.
+`crafting_remainder` also lends its consumed stack; its replacement remainder is still an
+owned stack. A client without the menu Part predicts vanilla here; the server corrects it.
 
 - `ItemPart::can_grindstone_repair` is `IItemExtension.canGrindstoneRepair`. `event.can_repair` starts with
   whether the stack is damageable. It is asked for the top input when both grindstone inputs are single stacks of
@@ -357,61 +410,18 @@ need to keep it afterwards. The input views and staged edits are not Wire record
 
 ## Stacking onto another item in a menu
 
-`ItemPart::item_stacked_on_other` shares the `item_stacked_on_other` hook, event and
-decide/fire/apply transaction with `Hooks::item_stacked_on_other` (NeoForge's
-`ItemStackedOnOtherEvent`), covering vanilla 26.3's `Item.overrideStackedOnOther` and
-`Item.overrideOtherStackedOnMe` on both sides:
+`ItemPart::item_stacked_on_other` shares the `item_stacked_on_other` hook and its transaction
+with `Hooks::item_stacked_on_other` (NeoForge's `ItemStackedOnOtherEvent`), covering vanilla
+26.3's `Item.overrideStackedOnOther` and `Item.overrideOtherStackedOnMe`. It runs on the server
+and in the client's click prediction (`HostSide::Client`), where the server stays authoritative.
 
-- **Server (authoritative)**: single-player integrated server, LAN host and dedicated server
-  receive `HostSide::Server`.
-- **Client**: ordinary container/inventory click prediction and creative Survival Inventory tab or
-  Item Tab hotbar pickups receive `HostSide::Client`. During client prediction, server
-  reconciliation remains authoritative. Creative catalogue display slots are not pickup overrides.
-
-Dispatch runs at the resolved pickup moment: both a direct left/right `Pickup` when no drag is
-active and a one-slot left/right `QuickCraft` drag release (matching vanilla
-`AbstractContainerMenu.doClick`). Multi-slot drags, middle-button drags and direct pickups that
-only reset an active drag do not dispatch.
-
-On each resolved pickup, dispatch follows vanilla
-`AbstractContainerMenu.tryItemClickBehaviourOverride` order inside one transaction:
-
-1. Global `Hooks::item_stacked_on_other` listeners (`event.event.direction == StackedOnOtherDirection::Event`),
-   authoritative server side only.
-2. The carried (cursor) stack's `ItemPart::item_stacked_on_other` (`StackedOnOtherDirection::CarriedOnOther`).
-3. Vanilla's carried override (`BundleItem.overrideStackedOnOther`, dispatched by item type rather
-   than mere `bundle_contents` component presence), using its real outcome to decide whether to
-   stop before step 4.
-4. The clicked slot stack's `ItemPart::item_stacked_on_other` (`StackedOnOtherDirection::OtherStackedOnMe`).
-5. Vanilla's clicked override (`BundleItem.overrideOtherStackedOnMe`), then the plain pickup click.
-
-`ItemPart` overrides represent both vanilla outcomes inside the transaction:
-
-- **Handled (stop)**: set `event.result.handled = true`, set `event.result.carried` via
-  `StackResult::Set(...)` and/or `event.result.clicked` via `ClickedStackResult::Set(...)` or
-  `ClickedStackResult::Take(count)`, and return `Flow::Cancel`. Stops later overrides and plain
-  pickup.
-- **Not handled (continue, optionally with edits)**: leave `event.result.handled = false`,
-  optionally edit `event.result.carried` and/or `event.result.clicked`, and return
-  `Flow::Continue`. Later overrides and plain pickup observe the edited stacks.
-
-For `event.result.clicked`, direct writes and slot takes are distinct:
-
-- `ClickedStackResult::Set(stack)` writes the clicked slot directly (`Slot.set`), without running
-  `Slot.onTake` side effects — clearing an occupied furnace or crafting result slot with
-  `ClickedStackResult::Set(None)` produces no smelting experience, leaves `recipes_used` untouched,
-  and fires no take hooks.
-- `ClickedStackResult::Take(count)` takes `count` items from the clicked slot via `Slot.safeTake` /
-  `Slot.onTake` (spawning furnace XP, clearing `recipes_used`, consuming crafting inputs, and
-  firing take hooks such as `item_smelted` and `furnace_extract`). `ClickedStackResult::Take` is
-  refused for global listeners.
-
-Contradictory `ItemPart` answers (`Flow::Cancel` with `handled = false`, or `Flow::Continue` with
-`handled = true`), writing through the host to what the click read, returning an invalid stack,
-failing slot placement/pickup rules, or panicking refuses the click and rolls back every write.
-Global `Hooks::item_stacked_on_other` listeners preserve their separate contract (stacks may only
-be set on `Flow::Cancel` + `handled = true`, result/potion slots cannot be edited directly, and
-`Flow::Cancel` with `handled = false` skips vanilla bundle overrides and runs plain pickup).
+`event.click` lends the cursor and the clicked slot for the call. Read them with `carried()` and
+`clicked()`, and change them with `set_carried`, `set_clicked` (a direct `Slot.set`, without take
+side effects) and `take_clicked` (a `Slot.safeTake`, with furnace experience, crafting remainders
+and `item_smelted` when the removed count is nonzero). A Part answers like vanilla's override
+returns a boolean: `Flow::Cancel` takes the click, `Flow::Continue` goes on with its edits. The
+phase order, the global listener's `handled` rules and what refuses a click are in the hook's
+documentation (`Hooks::item_stacked_on_other`).
 
 For an authoritative mount-menu pickup, the saddle, body equipment and chest slots belong to
 the mount, but roll back together with the player's inventory and cursor if the click is refused

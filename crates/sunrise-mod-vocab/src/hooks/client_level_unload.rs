@@ -1,5 +1,4 @@
 //! The `client_level_unload` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0141
 
 pub trait Hooks {
     /// The client is dropping its level for `dimension` (`LevelEvent.Unload`

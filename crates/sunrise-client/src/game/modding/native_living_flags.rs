@@ -233,7 +233,7 @@ impl Game<'_> {
     /// entity slept; false for a fake player, another mob, an armor stand
     /// or the dragon. Normal server guests in the level in place use the
     /// same wake-up path; guests in another level are refused.
-    pub(super) fn living_stop_sleeping(&mut self, living: LivingRef) -> bool {
+    pub(in crate::game) fn living_stop_sleeping(&mut self, living: LivingRef) -> bool {
         match self.native_living_target(living) {
             Some(target @ (Target::Player | Target::Guest(_))) => {
                 self.native_player_sleep_write(target, |game| {
@@ -315,6 +315,16 @@ impl Game<'_> {
             Target::Player => Some(self.player.as_ref()?.jumping),
             Target::Guest(_) => Some(false),
             Target::Mob(_) => Some(false),
+            _ => None,
+        }
+    }
+    /// `LivingEntity.noJumpDelay`: ticks before a held jump can jump again.
+    pub(super) fn living_no_jump_delay(&self, living: LivingRef) -> Option<i32> {
+        match self.native_living_read_target(living)? {
+            Target::Player => Some(self.player.as_ref()?.no_jump_delay),
+            Target::Mob(id) if self.is_logical_server() => {
+                Some(self.mobs.iter().find(|m| m.id == id)?.ai.no_jump_delay)
+            }
             _ => None,
         }
     }
@@ -465,7 +475,7 @@ impl ClimbingWorld for FlagClimbing<'_> {
 #[cfg(test)]
 pub(in crate::game) mod tests {
     use super::super::Game;
-    use super::super::native_entity_refs::tests::{record_key, with_game};
+    use super::super::native_entity_refs::tests::{fixture_resident_column, record_key, with_game};
     use mod_api::{
         BlockPart, EntityRef, Hooks, LivingRef, LoopContext, MakesOpenTrapdoorAboveClimbableEvent,
         Registrar, WorldEpoch,
@@ -478,6 +488,7 @@ pub(in crate::game) mod tests {
 
     /// A live cow `id` at `(5.5, 64, 5.5)`, with its handle.
     fn cow(game: &mut Game<'_>, id: u32) -> LivingRef {
+        fixture_resident_column(&mut game.world, (0, 0));
         let kind = game.res.mob_types().get("minecraft:cow").unwrap().clone();
         game.mobs
             .push(Mob::new(id, kind, Vec3::new(5.5, 64.0, 5.5), 0.0));
@@ -624,7 +635,8 @@ pub(in crate::game) mod tests {
                 event: &mut EntityJoinLevelEvent<'_>,
             ) -> Flow {
                 if event.kind == "minecraft:zombie"
-                    && let Some(er) = mod_api::prelude::EntitiesHost::entity(&*host, event.entity)
+                    && let Some(er) =
+                        mod_api::prelude::EntitiesHost::entity(&*host, event.subject.id())
                     && let Some(m) = mod_api::prelude::MobsHost::mob(&*host, er)
                 {
                     let _ = m.set_persistence_required(&mut *host);
@@ -638,6 +650,7 @@ pub(in crate::game) mod tests {
             vec![ModEntry::new("join_persist", Box::new(Joiner))].into(),
             || {
                 with_game(|game| {
+                    fixture_resident_column(&mut game.world, (0, 0));
                     let before = game.mobs.len();
                     game.spawn_mob_spawned(
                         "zombie",
@@ -701,7 +714,7 @@ pub(in crate::game) mod tests {
             seed: 0,
             max_players: 2,
             integrated: !dedicated,
-            levels: game.level_shapes,
+            levels: game.level_shapes.clone(),
             level_seeds: game.levels.runtime.seeds(),
         };
         game.lan_host(settings, net, config).unwrap();
@@ -1082,7 +1095,7 @@ pub(in crate::game) mod tests {
         sleeping: bool,
         jumping: Option<bool>,
         bed: Option<[i32; 3]>,
-        timer: u32,
+        timer: i32,
         spawn: Option<Vec3>,
         woke_from: Option<[i32; 3]>,
         awaiting_teleport: Option<(i32, [f64; 3])>,

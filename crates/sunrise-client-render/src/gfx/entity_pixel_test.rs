@@ -1188,9 +1188,11 @@ fn probe_frame(hud: &HudBatch) -> super::Frame<'_> {
         camera: glam::DVec3::new(0.5, 100.0, 0.5),
         yaw: 0.0,
         pitch: 0.0,
+        roll: 0.0,
         fov_degrees: 90.0,
         cull_fov_degrees: 90.0,
         bob: Mat4::IDENTITY,
+        view_transform: Mat4::IDENTITY,
         spin: Mat4::IDENTITY,
         sky: crate::environment::Sky::default(),
         distance: 12.0,
@@ -1842,6 +1844,7 @@ pub fn render_hud(
         &frame.atlas,
         &sampler,
         false,
+        Vec::new(),
     )
     .map_err(|error| error.to_string())?;
     // As the game's renderer has it (gfx.rs): the batch's atlas patches, a map's or a mod's
@@ -2039,7 +2042,9 @@ pub fn render_entity_world(draw: EntityWorldDraw<'_>) -> std::result::Result<Vec
         ],
     });
     let mut batch = EntityBatch::default();
-    let counts = batch.update(draw.vertices, &[], &[], &[], draw.oit);
+    let counts = batch
+        .update_within(draw.vertices, &[], &[], &[], &[], draw.oit, usize::MAX)
+        .materials;
     let [
         entity_quads,
         _,

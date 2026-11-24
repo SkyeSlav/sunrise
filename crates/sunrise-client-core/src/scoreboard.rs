@@ -976,18 +976,23 @@ impl Scoreboard {
             }
         }
     }
-    /// `listPlayerScores(objective)`, in `playerScores.forEach` order.
-    pub fn list_scores(&self, objective: &str) -> Vec<ScoreEntry> {
+    /// The resident score rows in `playerScores.forEach` order.
+    pub fn score_rows<'a>(
+        &'a self,
+        objective: &'a str,
+    ) -> impl Iterator<Item = (&'a str, &'a Score)> {
         self.holder_order
             .iter()
-            .filter_map(|owner| {
-                let s = self.scores.get(owner)?.get(objective)?;
-                Some(ScoreEntry {
-                    owner: owner.to_owned(),
-                    value: s.value,
-                    display: s.display.clone(),
-                    number_format: s.number_format.clone(),
-                })
+            .filter_map(move |owner| Some((owner, self.scores.get(owner)?.get(objective)?)))
+    }
+    /// `listPlayerScores(objective)`, in `playerScores.forEach` order.
+    pub fn list_scores(&self, objective: &str) -> Vec<ScoreEntry> {
+        self.score_rows(objective)
+            .map(|(owner, score)| ScoreEntry {
+                owner: owner.to_owned(),
+                value: score.value,
+                display: score.display.clone(),
+                number_format: score.number_format.clone(),
             })
             .collect()
     }
