@@ -284,6 +284,7 @@ pub struct LootData {
     global_modifiers: Arc<global_modifiers::GlobalLootModifiers>,
     modifiers: Arc<HashMap<String, Value>>,
     predicates: Arc<HashMap<String, Value>>,
+    slot_sources: HashMap<String, Value>,
     items: HashMap<String, ItemFacts>,
     /// Enchantments in registry (identifier) order.
     enchantments: Vec<Enchantment>,
@@ -882,6 +883,11 @@ impl LootData {
         let mut predicates = load_predicates(root, overlay)?;
         predicates
             .retain(|id, value| retain_valid("predicate", id, validate_loot_condition(value)));
+        let mut slot_sources = types::load_files(root, overlay, "slot_source", |bytes| {
+            serde_json::from_slice(bytes)
+        })?;
+        slot_sources
+            .retain(|id, value| retain_valid("slot source", id, validate_slot_source(value)));
         let items = defaults
             .entries()
             .iter()
@@ -1015,6 +1021,7 @@ impl LootData {
             global_modifiers: Arc::default(),
             modifiers: Arc::new(modifiers),
             predicates: Arc::new(predicates),
+            slot_sources,
             items,
             enchantments,
             primary_answers: Default::default(),
@@ -1071,6 +1078,10 @@ impl LootData {
 
     pub fn item_modifiers(&self) -> &HashMap<String, Value> {
         &self.modifiers
+    }
+
+    pub fn slot_sources(&self) -> &HashMap<String, Value> {
+        &self.slot_sources
     }
 
     /// The table snapshot used by this loot data.

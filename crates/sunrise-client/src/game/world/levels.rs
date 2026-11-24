@@ -863,12 +863,14 @@ impl Game<'_> {
         let overrides = match &self.world_tables {
             Some(tables) => tables.biomes.overrides.clone(),
             None => {
+                let base_conditions = self.worldgen_base_conditions()?;
                 super::world_loading::worldgen_overrides_of(
                     &self.world_root,
                     &self.options.resources,
                     biomes,
                     &self.level.enabled_features,
                     &self.pack.additional_data,
+                    &base_conditions,
                 )
                 .0
             }

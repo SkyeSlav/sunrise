@@ -589,13 +589,23 @@ fn command_datastore_filters_winning_files_without_lower_pack_fallback() {
     );
     let low = DataPack::from_source("low".into(), ResourceSource::directory(low));
     let high = DataPack::from_source("high".into(), ResourceSource::directory(high));
-    let (store, messages) = capture(|| DataStore::load(&[&low, &high]));
-    assert!(!store.item_modifiers.contains_key("minecraft:override"));
-    assert!(store.item_modifiers.contains_key("minecraft:z_good"));
-    assert!(!store.predicates.contains_key("minecraft:bad_predicate"));
-    assert!(store.predicates.contains_key("minecraft:z_good"));
-    assert!(!store.slot_sources.contains_key("minecraft:bad_slots"));
-    assert!(store.slot_sources.contains_key("minecraft:z_good"));
+    let empty_root = root.path().join("empty_root");
+    std::fs::create_dir_all(&empty_root).unwrap();
+    std::fs::write(empty_root.join("items.json"), "{}").unwrap();
+    let defaults = sunrise_world::item_defaults::read(&empty_root).unwrap();
+    let load_loot = || {
+        let store = DataStore::load(&[&low, &high]);
+        let files: Vec<_> = store.files.into_iter().collect();
+        let overlay = sunrise_world::loot::PackOverlay::new(&files);
+        sunrise_world::loot::LootData::load(&empty_root, &overlay, &defaults).unwrap()
+    };
+    let (loot, messages) = capture(load_loot);
+    assert!(!loot.item_modifiers().contains_key("minecraft:override"));
+    assert!(loot.item_modifiers().contains_key("minecraft:z_good"));
+    assert!(!loot.predicates().contains_key("minecraft:bad_predicate"));
+    assert!(loot.predicates().contains_key("minecraft:z_good"));
+    assert!(!loot.slot_sources().contains_key("minecraft:bad_slots"));
+    assert!(loot.slot_sources().contains_key("minecraft:z_good"));
     diagnostic(
         &messages,
         "item modifier minecraft:override",
@@ -611,9 +621,10 @@ fn command_datastore_filters_winning_files_without_lower_pack_fallback() {
         "slot source minecraft:bad_slots",
         "minecraft:creative_slot_lock",
     );
-    let (reloaded, messages) = capture(|| DataStore::load(&[&low, &high]));
-    assert_eq!(reloaded.item_modifiers.len(), 1);
-    assert_eq!(reloaded.predicates.len(), 1);
+    let (reloaded, messages) = capture(load_loot);
+    assert_eq!(reloaded.item_modifiers().len(), 1);
+    assert_eq!(reloaded.predicates().len(), 1);
+    assert_eq!(reloaded.slot_sources().len(), 1);
     diagnostic(
         &messages,
         "item modifier minecraft:override",

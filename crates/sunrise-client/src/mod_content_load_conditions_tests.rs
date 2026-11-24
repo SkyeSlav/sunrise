@@ -374,3 +374,108 @@ fn no_vanilla_tag_folder_keeps_vanilla_references() {
     );
     assert!(warnings.is_empty(), "{warnings:?}");
 }
+
+#[test]
+fn content_mod_worldgen_bundles_and_additions_evaluate_load_conditions() {
+    let scratch = tempfile::tempdir().unwrap();
+    let base = resources(scratch.path());
+    fs::create_dir_all(base.join("worldgen")).unwrap();
+    fs::write(base.join("worldgen/features.json"), "{}").unwrap();
+    fs::write(
+        base.join("worldgen/template_pools.json"),
+        r#"{"minecraft:test_pool":{"name":"minecraft:test_pool","fallback":"minecraft:empty","elements":[]}}"#,
+    )
+    .unwrap();
+    let package = folder_mod(
+        &scratch.path().join("mod"),
+        &[
+            ("sunrise-mod.toml", &manifest("boiler", "")),
+            (
+                "data/boiler/worldgen/feature/gated_ore.json",
+                r#"{"neoforge:conditions":[{"type":"neoforge:mod_loaded","modid":"chemlib"}],"type":"minecraft:no_op","config":{}}"#,
+            ),
+            (
+                "data/boiler/worldgen/template_pool/pool_add.json",
+                r#"{"neoforge:conditions":[{"type":"neoforge:mod_loaded","modid":"chemlib"}],"sunrise:add_to":"minecraft:test_pool","elements":[{"weight":1,"element":{"element_type":"minecraft:empty_pool_element"}}]}"#,
+            ),
+        ],
+    );
+    let inventory_on = sunrise_mod_package::enabled::EnabledMods::new([
+        ("boiler".into(), mod_api::Side::Both),
+        ("chemlib".into(), mod_api::Side::Both),
+    ]);
+    let out_on = scratch.path().join("out_on");
+    super::super::build_with_conditions(
+        &base,
+        Path::new(""),
+        std::slice::from_ref(&package),
+        &out_on,
+        &inventory_on,
+        &LoadConditions::new(["boiler", "chemlib"]),
+    )
+    .unwrap();
+    let features_on: serde_json::Value =
+        serde_json::from_slice(&fs::read(out_on.join("worldgen/features.json")).unwrap()).unwrap();
+    assert!(features_on.get("boiler:gated_ore").is_some());
+    let pools_on: serde_json::Value =
+        serde_json::from_slice(&fs::read(out_on.join("worldgen/template_pools.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        pools_on["minecraft:test_pool"]["elements"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let inventory_off =
+        sunrise_mod_package::enabled::EnabledMods::new([("boiler".into(), mod_api::Side::Both)]);
+    let out_off = scratch.path().join("out_off");
+    super::super::build_with_conditions(
+        &base,
+        Path::new(""),
+        std::slice::from_ref(&package),
+        &out_off,
+        &inventory_off,
+        &LoadConditions::new(["boiler"]),
+    )
+    .unwrap();
+    let features_off: serde_json::Value =
+        serde_json::from_slice(&fs::read(out_off.join("worldgen/features.json")).unwrap()).unwrap();
+    assert!(features_off.get("boiler:gated_ore").is_none());
+    let pools_off: serde_json::Value =
+        serde_json::from_slice(&fs::read(out_off.join("worldgen/template_pools.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        pools_off["minecraft:test_pool"]["elements"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+
+    // Malformed condition JSON fails atomically.
+    let broken = folder_mod(
+        &scratch.path().join("broken_mod"),
+        &[
+            ("sunrise-mod.toml", &manifest("broken", "")),
+            (
+                "data/broken/worldgen/feature/bad.json",
+                r#"{"neoforge:conditions":[{"type":"unknown:bogus"}],"type":"minecraft:no_op","config":{}}"#,
+            ),
+        ],
+    );
+    let out_err = scratch.path().join("out_err");
+    let err = super::super::build_with_conditions(
+        &base,
+        Path::new(""),
+        std::slice::from_ref(&broken),
+        &out_err,
+        &sunrise_mod_package::enabled::EnabledMods::new([("broken".into(), mod_api::Side::Both)]),
+        &LoadConditions::new(["broken"]),
+    );
+    assert!(
+        err.is_err(),
+        "unknown condition in content-mod worldgen must fail atomically"
+    );
+}
