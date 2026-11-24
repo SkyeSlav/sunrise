@@ -379,12 +379,12 @@ ported file:
 
 ## fdlibm
 
-`crates/sunrise-core/src/jmath/fdlibm.rs` and the `fdlibm_atan` and `fdlibm_atan2`
-functions in `crates/sunrise-core/src/geometry/trig.rs` are Rust ports of
+`crates/sunrise-core/src/jmath/fdlibm.rs` and the `fdlibm_asin`, `fdlibm_atan` and
+`fdlibm_atan2` functions in `crates/sunrise-core/src/geometry/trig.rs` are Rust ports of
 [fdlibm](https://www.netlib.org/fdlibm/) 5.3, Sun's freely distributable math library, whose
 results the Java SE API specifies for `StrictMath`. `fdlibm.rs` ports `e_log.c`, `e_log10.c`,
 `s_cbrt.c` and `e_hypot.c`, and, with fused multiply-adds, `s_sin.c`, `s_cos.c`, `k_sin.c`,
-`k_cos.c` and `e_rem_pio2.c`; `trig.rs` ports `s_atan.c` and `e_atan2.c`.
+`k_cos.c` and `e_rem_pio2.c`; `trig.rs` ports `e_asin.c`, `s_atan.c` and `e_atan2.c`.
 
 The strict additions in `crates/sunrise-core/src/jmath/fdlibm/strict_exp_pow.rs`
 adapt netlib's original `e_exp.c` 1.6 (2004-04-22), `e_pow.c` 1.5

@@ -43,8 +43,6 @@ sunrise-client game::gui_clips::dispatch_tests::a_hook_call_clips_what_its_mod_d
 sunrise-client game::gui_entity::tests::a_screen_draws_a_mob_by_type_once_and_refuses_what_it_cant_draw lib daily game-boot
 sunrise-client game::host::draw::tests::a_wrapped_label_measures_and_draws_its_own_height lib daily resources
 sunrise-client game::host::draw::tests::scaled_text_is_the_text_scaled_about_its_corner lib daily game-boot
-sunrise-client game::lan_actions::tick::equipment_tick_tests::a_new_slot_takes_its_items_attributes_at_the_guests_tick lib daily resources
-sunrise-client game::lan_actions::tick::equipment_tick_tests::gear_swapped_and_swapped_back_before_the_tick_keeps_its_modifiers lib daily resources
 sunrise-client game::launch_api::tests::developer_offline_never_consumes_inherited_sessions lib daily child-process
 sunrise-client game::maps::tests::map_on_banner_in_adventure_mode_honours_can_place_on lib daily game-boot
 sunrise-client game::mods::tests::a_shared_missing_jar_stops_native_load_and_refuses_each_content_mod_row lib daily child-process

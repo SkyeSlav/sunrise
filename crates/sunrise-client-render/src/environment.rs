@@ -970,27 +970,18 @@ impl Environment {
         let mut biomes = HashMap::new();
         let mut post = HashMap::new();
         let tags = std::cell::RefCell::new(HashMap::new());
-        for file in root.list_under("data", &["worldgen/biome"]) {
-            let Some((namespace, name)) = file
-                .strip_prefix("data/")
-                .and_then(|s| s.split_once("/worldgen/biome/"))
-                .and_then(|(namespace, s)| Some((namespace, s.strip_suffix(".json")?)))
+        for file in root.list("data/minecraft/worldgen/biome/") {
+            let Some(name) = file
+                .strip_prefix("data/minecraft/worldgen/biome/")
+                .and_then(|s| s.strip_suffix(".json"))
             else {
                 continue;
             };
-            // One unreadable biome file is skipped with a warning, not the whole environment.
-            let biome = match root
-                .read(&file)
-                .map_err(|e| e.to_string())
-                .and_then(|bytes| serde_json::from_slice::<Json>(&bytes).map_err(|e| e.to_string()))
-            {
-                Ok(biome) => biome,
-                Err(e) => {
-                    log::warn!("biome {file}: {e}");
-                    continue;
-                }
-            };
-            let name = format!("{namespace}:{name}");
+            if name.contains('/') {
+                continue;
+            }
+            let biome: Json = serde_json::from_slice(&root.read(&file)?)?;
+            let name = format!("minecraft:{name}");
             let mut map = match AttributeMap::parse(&biome["attributes"]) {
                 Ok(map) => map,
                 Err(e) => {
@@ -1323,70 +1314,6 @@ mod tests {
             sky_at(&plain, "minecraft:plains", 0.0).sky_color,
             [GRAY_40; 3]
         );
-    }
-
-    #[test]
-    fn biomes_load_from_every_namespace_with_their_whole_path() {
-        use sunrise_assets::resource_source::Resource;
-        let file =
-            |path: &str, text: &str| (path.to_owned(), Resource::bytes(text.as_bytes().to_vec()));
-        let source = ResourceSource::indexed(std::collections::BTreeMap::from([
-            file(
-                "data/minecraft/dimension_type/overworld.json",
-                r##"{"attributes": {"minecraft:visual/sky_color": "#808080"}}"##,
-            ),
-            file(
-                "data/minecraft/worldgen/biome/plains.json",
-                r##"{"attributes": {"minecraft:visual/sky_color": "#404040"}}"##,
-            ),
-            file(
-                "data/example/worldgen/biome/test.json",
-                r##"{"attributes": {"minecraft:visual/sky_color": "#ff0000"}}"##,
-            ),
-            file(
-                "data/example/worldgen/biome/region/test.json",
-                r##"{"attributes": {"minecraft:visual/sky_color": "#00ff00"}}"##,
-            ),
-        ]));
-        let env = Environment::load(&source).unwrap();
-        assert_eq!(
-            sky_at(&env, "minecraft:plains", 0.0).sky_color,
-            [GRAY_40; 3]
-        );
-        assert!(
-            env.biome("example:test").is_some(),
-            "example:test never loaded"
-        );
-        assert_eq!(sky_at(&env, "example:test", 0.0).sky_color, [1.0, 0.0, 0.0]);
-        assert!(
-            env.biome("example:region/test").is_some(),
-            "example:region/test never loaded"
-        );
-        assert_eq!(
-            sky_at(&env, "example:region/test", 0.0).sky_color,
-            [0.0, 1.0, 0.0]
-        );
-    }
-
-    #[test]
-    fn a_malformed_biome_file_is_skipped_and_its_neighbours_still_load() {
-        use sunrise_assets::resource_source::Resource;
-        let file =
-            |path: &str, text: &str| (path.to_owned(), Resource::bytes(text.as_bytes().to_vec()));
-        let source = ResourceSource::indexed(std::collections::BTreeMap::from([
-            file(
-                "data/minecraft/dimension_type/overworld.json",
-                r##"{"attributes": {"minecraft:visual/sky_color": "#808080"}}"##,
-            ),
-            file("data/example/worldgen/biome/broken.json", "{ not json"),
-            file(
-                "data/example/worldgen/biome/test.json",
-                r##"{"attributes": {"minecraft:visual/sky_color": "#ff0000"}}"##,
-            ),
-        ]));
-        let env = Environment::load(&source).unwrap();
-        assert!(env.biome("example:broken").is_none());
-        assert_eq!(sky_at(&env, "example:test", 0.0).sky_color, [1.0, 0.0, 0.0]);
     }
 
     #[test]

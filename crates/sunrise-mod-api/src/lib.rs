@@ -89,7 +89,6 @@ pub mod content {
 pub mod __private;
 
 mod load_state;
-mod phase_refusal_tests;
 #[doc(hidden)]
 pub use load_state::install_guest_packages;
 

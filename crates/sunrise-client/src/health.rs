@@ -1137,6 +1137,23 @@ impl PlayerMotion {
             level, resources, rules, source, amount, blocking, false, 0, false,
         )
     }
+    /// [`hurt_blocking`](Self::hurt_blocking) from a source whose hit was a
+    /// creative player's (`DamageSource.isCreativePlayer`): it passes the
+    /// invulnerability the victim has (`Entity.isInvulnerableToBase`'s one
+    /// exception, #916).
+    pub fn hurt_blocking_creative(
+        &mut self,
+        level: &mut DamageLevel<'_>,
+        resources: &HealthResources,
+        rules: HealthRules,
+        source: DamageTypeId,
+        amount: f32,
+        blocking: Option<Blocking>,
+    ) -> Result<BlockOutcome> {
+        self.hurt_caused_by(
+            level, resources, rules, source, amount, blocking, false, 0, true,
+        )
+    }
     /// `hurt_blocking` from a source whose causing entity is a living
     /// non-player (`living_cause`), which the `when_caused_by_living_non_player`
     /// damage types scale with the difficulty. `causing` is that entity's id
@@ -1939,19 +1956,10 @@ impl HurtWorld for Environment<'_> {
             .level
             .attack()
             .player_source(&self.source.definition().name, self.causing);
-        // `applyItemBlocking` calls `hurtBlockingItem` with what the item stopped,
-        // nothing included (a hit from behind): the item is used all the same.
-        // Only a block a mod's hook turned off leaves it unused.
-        let reached =
-            vanilla <= 0.0 && matches!(&self.blocking, Some(b) if !b.bypassed && !b.pierce);
         let Some(block) =
             self.level
                 .shield_block(Hurting::Player(self.entity, source), damage, block)
         else {
-            if reached {
-                self.blocking_item_used = true;
-                self.shield_damage = shield_damage;
-            }
             return Ok(0.0);
         };
         self.blocking_item_used = true;

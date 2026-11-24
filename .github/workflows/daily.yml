@@ -3,10 +3,9 @@ run-name: daily ${{ inputs.commit || github.sha }}${{ github.event_name == 'work
 # The daily tier (CI tiers, owner 2026-11-13; docs/release-flow.md "Daily run"): every in-game test, once a day on
 # main's head and by root's dispatch. Its legs include the ignored-tests data shards, the wasm fixture and guest
 # stacks, fn-replace-check, the game's Windows runtime-lease tests (windows-runtime-leases.yml), cargo-sunrise-mod's
-# archives for every platform (cargo-sunrise-mod-build.yml; a pull request builds only Linux x86_64), the wasm std
-# member's names built on Linux and on Windows (wasm-std-names.yml), the machine sample built against this API
-# (machine-sample.yml) and the prebuilt SDK of the commit (prebuilt-game-build.yml), which the nightly needs. The SDK's
-# Linux and Windows client jobs run the native linkage probe before packing.
+# archives for every platform (cargo-sunrise-mod-build.yml; a pull request builds only Linux x86_64), the machine
+# sample built against this API (machine-sample.yml) and the prebuilt SDK of the commit (prebuilt-game-build.yml),
+# which the nightly needs. The SDK's Linux and Windows client jobs run the native linkage probe before packing.
 # The summary then moves the tag `daily-green` to the commit when every leg passed, or files one issue per failing
 # test (tools/ci/daily_summary.py), and on all green the nightly is published from that commit (release.yml).
 # Only a run on main with dry_run false writes anything: tags, issues, the nightly.
@@ -76,9 +75,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       # The pool's routing for a leg that starts late (fn-replace-check waits for the SDK's Linux legs), decided now:
-      # the lease snapshot is judged only within an hour of the attempt's creation or start (tools/ci/dyna_ci_route.sh),
-      # and a route of its own an hour or more later sent fn-replace-check to GitHub's runners (daily 44065326913,
-      # 44145360054).
+      # the run's lease snapshot is judged only within an hour of the run's creation (tools/ci/dyna_ci_route.sh), and
+      # a route of its own an hour or more later sent fn-replace-check to GitHub's runners (daily 44065326913, 44145360054).
       - id: route
         env:
           GH_TOKEN: ${{ github.token }}
@@ -126,7 +124,7 @@ jobs:
     if: needs.resolve.outputs.skip == 'false'
     permissions:
       contents: read
-      actions: read  # its routing reads this attempt's creation or start time (tools/ci/dyna_ci_route.sh)
+      actions: read  # its routing reads this run's creation time (tools/ci/dyna_ci_route.sh)
     uses: ./.github/workflows/ignored-tests.yml
     with:
       commit: ${{ needs.resolve.outputs.commit }}
@@ -145,7 +143,7 @@ jobs:
     if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.resolve.outputs.skip == 'false' }}
     permissions:
       contents: read
-      actions: read  # its routing reads this attempt's creation or start time (tools/ci/dyna_ci_route.sh)
+      actions: read  # its routing reads this run's creation time (tools/ci/dyna_ci_route.sh)
     uses: ./.github/workflows/fn-replace-check.yml
     with:
       commit: ${{ needs.resolve.outputs.commit }}
@@ -166,14 +164,6 @@ jobs:
     uses: ./.github/workflows/cargo-sunrise-mod-build.yml
     with:
       commit: ${{ needs.resolve.outputs.commit }}
-  # The wasm std member built on Linux and on Windows has exactly the same import and export name lists
-  # (wasm-std-names.yml).
-  wasm-std-names:
-    needs: resolve
-    if: needs.resolve.outputs.skip == 'false'
-    uses: ./.github/workflows/wasm-std-names.yml
-    with:
-      commit: ${{ needs.resolve.outputs.commit }}
   # sunrise-org/sunrise-machine-sample at its pin, compiled against this commit's mod API: a red means the sample must
   # follow an API change (its issue says so), never that the change was wrong.
   machine-sample:
@@ -181,7 +171,7 @@ jobs:
     if: needs.resolve.outputs.skip == 'false'
     permissions:
       contents: read
-      actions: read  # its routing reads this attempt's creation or start time (tools/ci/dyna_ci_route.sh)
+      actions: read  # its routing reads this run's creation time (tools/ci/dyna_ci_route.sh)
     uses: ./.github/workflows/machine-sample.yml
     with:
       commit: ${{ needs.resolve.outputs.commit }}
@@ -222,8 +212,8 @@ jobs:
   summary:
     # The resolved commit names the job: what a scheduled run's lookup (daily_summary.py --seen) matches.
     name: summary ${{ needs.resolve.outputs.commit }}${{ needs.resolve.outputs.dry_run == 'true' && ' (dry run)' || '' }}
-    needs: [resolve, shards, wasm-mods, fn-replace-check, windows-runtime-leases, cargo-sunrise-mod, wasm-std-names,
-            machine-sample, sdk, sdk-windows-macos, parity]
+    needs: [resolve, shards, wasm-mods, fn-replace-check, windows-runtime-leases, cargo-sunrise-mod, machine-sample,
+            sdk, sdk-windows-macos, parity]
     # Not on a cancelled run: its legs did not fail, they were stopped, and a stopped leg says nothing about the commit.
     if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.resolve.outputs.skip == 'false' }}
     runs-on: ubuntu-latest

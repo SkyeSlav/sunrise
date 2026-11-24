@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use sunrise_mod_package::mod_surface::{
     self,
-    uses::{self, Fit, Misfit, UsesError, UsesTable},
+    uses::{self, Fit, Misfit, UsesTable},
 };
 
 /// How a mod stands against the build an instance plays.
@@ -19,14 +19,8 @@ pub enum Verdict {
     Fits { made_for: String },
     /// It changes game code or names the game's internals (`why`: the table that does, or `internals`): it works on the build it was made for only.
     Exact { made_for: String, why: &'static str },
-    /// Its package doesn't say enough about what it uses (`why`): it works on the build it was made for only.
-    NoList {
-        made_for: String,
-        why: Unlisted,
-        /// With [`Unlisted::HookVersions`]: the hooks whose version the list does not hold.
-        #[serde(skip_serializing_if = "Vec::is_empty")]
-        hooks: Vec<String>,
-    },
+    /// Its package doesn't say what it uses (no list at all, or a list for another build than its pin): it works on the build it was made for only.
+    NoList { made_for: String },
     /// Items it uses changed in this build.
     DoesNotFit {
         made_for: String,
@@ -43,39 +37,14 @@ impl Verdict {
     }
 }
 
-/// Why a package's list of what the mod uses cannot show that the mod fits another build.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Unlisted {
-    /// The package carries no list.
-    Missing,
-    /// Its list cannot be read.
-    Unreadable,
-    /// Its list has a schema newer than this build's tool reads: a newer game build reads it.
-    NewerSchema,
-    /// Its list was made for another build than the mod pins.
-    OtherBuild,
-    /// Nothing the list can judge changed, but it holds no version of some hook it names: packing the mod again writes them.
-    HookVersions,
-}
-
-/// The uses table `dir` carries, or why it gives none this build reads; then the mod works on its own build only.
-pub fn table(dir: &Path) -> Result<UsesTable, Unlisted> {
-    let file = std::fs::File::open(dir.join(uses::USES_FILE)).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            Unlisted::Missing
-        } else {
-            Unlisted::Unreadable
-        }
-    })?;
+/// The uses table `dir` carries, when it carries one this build reads; any other is no table, so the mod works on its own build only.
+pub fn table(dir: &Path) -> Option<UsesTable> {
+    let file = std::fs::File::open(dir.join(uses::USES_FILE)).ok()?;
     let mut bytes = Vec::new();
     file.take(uses::MAX_USES_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| Unlisted::Unreadable)?;
-    UsesTable::read(&bytes).map_err(|error| match error {
-        UsesError::Schema(schema) if schema > uses::USES_SCHEMA => Unlisted::NewerSchema,
-        _ => Unlisted::Unreadable,
-    })
+        .ok()?;
+    UsesTable::read(&bytes).ok()
 }
 
 /// How `project` stands against build `build`, whose surface `surface` gives (asked for only when the mod was made for another build) and whose build data `catalog` holds.
@@ -92,21 +61,12 @@ pub fn judge<E>(
     if let Some(why) = prebuilt::changes_game(project) {
         return Ok(Verdict::Exact { made_for, why });
     }
-    let unlisted = |why, hooks| Verdict::NoList {
-        made_for: made_for.clone(),
-        why,
-        hooks,
+    let Some(table) = table(&project.bundle.dir).filter(|table| table.made_for == made_for) else {
+        return Ok(Verdict::NoList { made_for });
     };
-    let table = match table(&project.bundle.dir) {
-        Ok(table) if table.made_for == made_for => table,
-        Ok(_) => return Ok(unlisted(Unlisted::OtherBuild, Vec::new())),
-        Err(why) => return Ok(unlisted(why, Vec::new())),
-    };
-    match uses::fits(&table.entries, surface()?.as_ref()) {
-        Fit::Fits => {}
-        Fit::DoesNotFit(misfits) => return Ok(Verdict::DoesNotFit { made_for, misfits }),
-        // The build the list was made for, which has the versions, is not at hand here.
-        Fit::Unversioned(hooks) => return Ok(unlisted(Unlisted::HookVersions, hooks)),
+    let target = surface()?;
+    if let Fit::DoesNotFit(misfits) = uses::fits(&table.entries, target.as_ref()) {
+        return Ok(Verdict::DoesNotFit { made_for, misfits });
     }
     if !project.bundle.manifest.inject.is_empty()
         && let Err(error) = catalog()?.check(&project.bundle.manifest)
@@ -281,9 +241,7 @@ mod tests {
         assert_eq!(
             elsewhere.mods[0].verdict,
             Some(Verdict::NoList {
-                made_for: crate::tests::A.to_string(),
-                why: Unlisted::Missing,
-                hooks: Vec::new(),
+                made_for: crate::tests::A.to_string()
             }),
             "no uses table: made for its own build only"
         );

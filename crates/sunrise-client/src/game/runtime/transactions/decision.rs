@@ -133,6 +133,13 @@ impl Menu {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::game) enum ActionKind {
+    Placement,
+    QuickMove,
+    RecipePlacement,
+}
+
 #[derive(Clone, Debug)]
 pub(in crate::game) enum Mutation {
     Cursor(Option<ItemStack>),
@@ -149,12 +156,13 @@ pub(in crate::game) enum Step {
 }
 
 pub(in crate::game) struct Plan {
+    kind: ActionKind,
     steps: Vec<Step>,
 }
 
 impl Plan {
-    pub(in crate::game) fn new(steps: Vec<Step>) -> Self {
-        Self { steps }
+    pub(in crate::game) fn new(kind: ActionKind, steps: Vec<Step>) -> Self {
+        Self { kind, steps }
     }
 }
 
@@ -320,6 +328,7 @@ impl<T, R, P> Proposed<T, R, P> {
 /// Only a structurally validated plan can enter an opaque decision. Listener
 /// output cannot mutate it, so apply need only recheck the live preconditions.
 pub(in crate::game) struct FrozenPlan {
+    kind: ActionKind,
     steps: Vec<Step>,
 }
 
@@ -337,7 +346,10 @@ impl Plan {
                 validate_state(&preview)?;
             }
         }
-        Ok(FrozenPlan { steps: self.steps })
+        Ok(FrozenPlan {
+            kind: self.kind,
+            steps: self.steps,
+        })
     }
 }
 

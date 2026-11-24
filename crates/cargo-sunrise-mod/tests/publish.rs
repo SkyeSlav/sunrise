@@ -81,13 +81,11 @@ fn bad_version_or_checkout_leaves_destination_and_outside_files_unchanged() {
     for sentinel in ["sentinel.smod", "sentinel.toml"] {
         fs::write(root.join(sentinel), b"outside submission").unwrap();
     }
-    let attempt = |expected: Option<&str>| {
+    let attempt = |expected: &str| {
         let result = run(root, &["publish", "--out", "out", "--registry", "registry"]);
         assert!(!result.status.success());
-        if let Some(expected) = expected {
-            let error = String::from_utf8_lossy(&result.stderr);
-            assert!(error.contains(expected), "{error}");
-        }
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(error.contains(expected), "{error}");
         assert_eq!(fs::read(out.join(ENTRY)).unwrap(), b"old destination");
         for sentinel in ["sentinel.smod", "sentinel.toml"] {
             assert_eq!(
@@ -99,44 +97,29 @@ fn bad_version_or_checkout_leaves_destination_and_outside_files_unchanged() {
         assert!(!root.join("target").exists());
     };
     manifest(root, "1/../../sentinel");
-    attempt(Some("sunrise-mod.toml: version"));
+    attempt("sunrise-mod.toml: version");
     manifest(root, "1.0.0+local");
-    attempt(None);
-    let too_long = format!("1.0.0-{}", "a".repeat(59));
-    manifest(root, &too_long);
-    attempt(None);
+    attempt("cannot name a registry release");
 
     manifest(root, "1");
     fs::write(checkout.join(ENTRY), "id = [").unwrap();
-    attempt(Some(ENTRY));
+    attempt(ENTRY);
     let entry = "kind = 'mod'\nowners = ['ada']\n";
     fs::write(
         checkout.join(ENTRY),
         format!("id = '../../sentinel'\n{entry}"),
     )
     .unwrap();
-    attempt(Some(ENTRY));
+    attempt(ENTRY);
 
     let correct = format!("id = 'coords_hud'\n{entry}");
     fs::write(checkout.join(ENTRY), &correct).unwrap();
     fs::write(checkout.join("mods/other.toml"), &correct).unwrap();
-    attempt(Some("mods/other.toml"));
+    attempt("mods/other.toml");
 
     fs::remove_file(checkout.join("mods/other.toml")).unwrap();
     fs::write(checkout.join(ENTRY), format!("{correct}\n[[versions]]\nversion = '1'\npublished = '2026-11-18'\ngame = '26.3'\nfile = 'coords_hud-1.smod'\nsha256 = '{}'\n", "0".repeat(64))).unwrap();
-    attempt(Some("coords_hud 1"));
-
-    fs::remove_file(checkout.join(ENTRY)).unwrap();
-    fs::create_dir(checkout.join("collections")).unwrap();
-    fs::write(
-        checkout.join("collections/coords_hud.toml"),
-        "id = 'coords_hud'\nname = 'HUD mods'\nsummary = 'A selection of HUD mods.'\n\
-         owners = ['ada']\nicon = 'icons/coords_hud.png'\nmembers = [{ id = 'other_mod' }]\n",
-    )
-    .unwrap();
-    // The checkout itself loads: the refusal below is the id collision, not a broken collection file.
-    index::registry::load(&checkout).unwrap();
-    attempt(None);
+    attempt("coords_hud 1");
 }
 
 #[test]

@@ -36,23 +36,16 @@ def limits(data, at):
     return at
 
 
-def value_type(data, at):
-    """Skip a value or reference type: one byte, or `ref`/`ref null` (0x64/0x63) and its LEB heap type."""
-    if data[at] in (0x63, 0x64):
-        return leb(data, at + 1)[1]
-    return at + 1
-
-
 def import_type(data, at, kind):
     """Skip the descriptor of an import of `kind`."""
     if kind == 0:
         return leb(data, at)[1]
     if kind == 1:
-        return limits(data, value_type(data, at))
+        return limits(data, at + 1)
     if kind == 2:
         return limits(data, at)
     if kind == 3:
-        return value_type(data, at) + 1
+        return at + 2
     if kind == 4:
         return leb(data, at + 1)[1]
     raise ValueError(f"unknown import kind {kind}")

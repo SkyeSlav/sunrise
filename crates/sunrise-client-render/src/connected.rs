@@ -206,7 +206,7 @@ impl ConnectedTextures {
                 .state(BlockStateId(id))
                 .map(|s| (s.name.as_str(), &s.properties))
         });
-        let mut out = Self::build(loaded, states, |name| sprites.model_layer(name));
+        let mut out = Self::build(loaded, states, |name| sprites.layers.get(name).copied());
         if out
             .rules
             .iter()
@@ -1397,119 +1397,5 @@ mod tests {
             sprite_name("assets/minecraft/optifine/ctm/glass/0.png"),
             "assets/minecraft/optifine/ctm/glass/0.png"
         );
-    }
-    #[test]
-    fn a_named_rule_matches_the_baked_face_and_draws_its_unstitched_tile() {
-        // A red/green sheet: the face's model material is the items atlas's red cut, not the
-        // blocks atlas's green cut of the same id. The replacement tile is another named cut.
-        let root =
-            std::env::temp_dir().join(format!("sunrise-ctm-unstitch-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let textures = root.join("assets/demo/textures/block");
-        let atlases = root.join("assets/minecraft/atlases");
-        let models = root.join("assets/demo/models/block");
-        std::fs::create_dir_all(&textures).unwrap();
-        std::fs::create_dir_all(&atlases).unwrap();
-        std::fs::create_dir_all(&models).unwrap();
-        std::fs::write(
-            models.join("panel.json"),
-            r##"{"textures":{"panel":"demo:block/panel"},"elements":[
-                {"from":[0,0,0],"to":[16,16,16],"faces":{"north":{"texture":"#panel"}}}]}"##,
-        )
-        .unwrap();
-        let pixels: Vec<u8> = (0..32 * 16)
-            .flat_map(|i| {
-                if i % 32 < 16 {
-                    [255, 0, 0, 255]
-                } else {
-                    [0, 255, 0, 255]
-                }
-            })
-            .collect();
-        let mut encoder = png::Encoder::new(
-            std::fs::File::create(textures.join("sheet.png")).unwrap(),
-            32,
-            16,
-        );
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        encoder
-            .write_header()
-            .unwrap()
-            .write_image_data(&pixels)
-            .unwrap();
-        std::fs::write(
-            atlases.join("items.json"),
-            r#"{"sources":[{"type":"minecraft:unstitch","resource":"demo:block/sheet","divisor_x":2,
-                "regions":[{"sprite":"demo:block/panel","x":0,"y":0,"width":1,"height":1}]}]}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            atlases.join("blocks.json"),
-            r#"{"sources":[{"type":"minecraft:unstitch","resource":"demo:block/sheet","divisor_x":2,
-                "regions":[{"sprite":"demo:block/panel","x":1,"y":0,"width":1,"height":1},
-                           {"sprite":"demo:block/panel_0","x":1,"y":0,"width":1,"height":1}]}]}"#,
-        )
-        .unwrap();
-        let rule = Rule::parse(
-            "assets/minecraft/optifine/ctm/panel.properties",
-            &Properties::parse(
-                "matchTiles=demo:block/panel\nmethod=fixed\ntiles=demo:block/panel_0",
-            ),
-        )
-        .unwrap()
-        .unwrap();
-        let registry = BlockRegistry::from_nbt(&sunrise_core::nbt::Tag::compound([
-            (
-                "DataVersion",
-                sunrise_core::nbt::Tag::Int(sunrise_world::DATA_VERSION),
-            ),
-            (
-                "states",
-                sunrise_core::nbt::Tag::List(vec![sunrise_core::nbt::Tag::String(
-                    "minecraft:air".into(),
-                )]),
-            ),
-            (
-                "defaults",
-                sunrise_core::nbt::Tag::compound([(
-                    "minecraft:air",
-                    sunrise_core::nbt::Tag::Int(0),
-                )]),
-            ),
-        ]))
-        .unwrap();
-        let source = ResourceSource::directory(root.clone());
-        let mut sprites = Sprites::new(source.clone());
-        let rules = vec![rule];
-        sprites.keep_apart(ConnectedTextures::matched_sprites(&rules));
-        let mut catalog = crate::models::StateModels::default();
-        catalog
-            .bake_standalone(
-                &source,
-                &mut sprites,
-                &crate::model_library::ParsedModels::default(),
-                &["demo:block/panel".into()],
-            )
-            .unwrap();
-        let face = &catalog.standalone("demo:block/panel").unwrap().faces[0];
-        assert_ne!(face.layer, sprites.layers["demo:block/panel"]);
-        let ctm = ConnectedTextures::load(&source, rules, &registry, &mut sprites, |_, _| None);
-        let Pick::Tile(TileLayer::Layer { layer, .. }) = ctm.pick(
-            0,
-            u16::try_from(face.layer).unwrap(),
-            Face::North,
-            [0; 3],
-            |_| 0,
-            || None,
-            || None,
-            |_| {},
-        ) else {
-            panic!("the named rule must match the baked face");
-        };
-        sprites.finish();
-        let at = layer as usize * (sprites.size * sprites.size * 4) as usize;
-        assert_eq!(sprites.pixels[at..at + 4], [0, 255, 0, 255]);
-        std::fs::remove_dir_all(&root).unwrap();
     }
 }

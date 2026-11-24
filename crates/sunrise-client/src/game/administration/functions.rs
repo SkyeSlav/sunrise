@@ -1258,12 +1258,11 @@ impl Game<'_> {
         let previous_vanilla_disabled = self.cmds.vanilla_disabled;
         // `DataPackCommand.listAvailablePacks`: a feature pack the world's
         // features do not cover is not available.
-        let mut available: Vec<String> = std::iter::once("vanilla".to_owned())
+        let available: Vec<String> = std::iter::once("vanilla".to_owned())
             .chain(self.fns.packs.iter().map(|p| p.id.clone()))
             .filter(|p| !selected.contains(p))
             .filter(|p| self.missing_pack_features(p).is_empty())
             .collect();
-        available.sort_by(|a, b| datapack::compare_ids(a, b));
         let known = |g: &Self, n: &str| n == "vanilla" || g.fns.packs.iter().any(|p| p.id == n);
         match id {
             "datapack.create" => self.create_pack(ctx),

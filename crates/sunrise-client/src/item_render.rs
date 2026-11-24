@@ -32,6 +32,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use sunrise_assets::{
+    animation::AnimationMetadata,
     item_bake::{BakedItemModel, SpriteLookup, SpriteMask, bake_item_model, bake_sprite_layer},
     item_model::{
         ClientItem, Context, DisplayContext, FoilType, ItemEnv, ItemModels, LayerContent,
@@ -39,6 +40,7 @@ use sunrise_assets::{
         StackView,
     },
     model::Direction,
+    palette::PalettedPermutations,
     resolve::{MISSING_MODEL, ModelLibrary},
 };
 use sunrise_core::nbt::Tag;
@@ -546,11 +548,11 @@ fn submit_quads(
 // Sprites for baking
 // ---------------------------------------------------------------------------
 
-/// The alpha masks of item and block sprites as the items and blocks atlases finish them (every
-/// unique animation frame): the same sprites the block models and the HUD atlas draw.
+/// The alpha masks of item and block sprites, read from the texture files
+/// (every unique animation frame) and the items atlas's palette sprites.
 struct FileSprites {
     root: ResourceSource,
-    materials: crate::atlas_sources::Materials,
+    permutations: Vec<PalettedPermutations>,
     cache: Mutex<HashMap<String, Option<SpriteMask>>>,
     /// Sprites with a pixel that is neither fully transparent nor opaque
     /// (`Transparency.hasTranslucent`), filled in as sprites load.
@@ -578,14 +580,6 @@ fn argb_pixels(rgba: &[u8]) -> Vec<u32> {
         .collect()
 }
 impl FileSprites {
-    fn new(root: ResourceSource) -> Self {
-        Self {
-            materials: crate::atlas_sources::Materials::new(&root),
-            root,
-            cache: Mutex::default(),
-            translucent: Mutex::default(),
-        }
-    }
     fn translucent(&self, sprite: &str) -> bool {
         let known = |this: &Self| this.translucent.lock().ok()?.get(sprite).copied();
         known(self).unwrap_or_else(|| {
@@ -593,19 +587,39 @@ impl FileSprites {
             known(self).unwrap_or(false)
         })
     }
+    fn png(&self, sprite: &str, directory: &str) -> String {
+        crate::atlas_sources::texture_resource(sprite, directory)
+    }
+    fn image(&self, sprite: &str, directory: &str) -> Option<(usize, usize, Vec<u32>)> {
+        let (w, h, rgba) =
+            crate::hud::decode_bytes(&self.root.read(&self.png(sprite, directory)).ok()?).ok()?;
+        Some((w as usize, h as usize, argb_pixels(&rgba)))
+    }
     fn load(&self, sprite: &str) -> Option<SpriteMask> {
-        // A candidate whose frames don't fit already gave way to the next atlas.
-        let crate::atlas_sources::Material {
-            image: (iw, ih, rgba),
-            animation,
-            ..
-        } = self.materials.finish(&self.root, sprite)?;
-        let (iw, ih, argb) = (iw as usize, ih as usize, argb_pixels(&rgba));
+        let png = self.png(sprite, "textures");
+        let (iw, ih, argb) = match self.image(sprite, "textures") {
+            Some(image) => image,
+            None => {
+                let p = self.permutations.iter().find_map(|s| s.find(sprite))?;
+                let (w, h, mut pixels) = self.image(p.base, "textures")?;
+                let (_, _, key) = self.image(p.palette_key, "textures/palettes")?;
+                let (_, _, target) = self.image(p.palette, "textures/palettes")?;
+                sunrise_assets::palette::apply_palette(&mut pixels, &key, &target)?;
+                (w, h, pixels)
+            }
+        };
         let translucent = argb.iter().any(|p| matches!(p >> 24, 1..=254));
         if let Ok(mut cache) = self.translucent.lock() {
             cache.insert(sprite.to_owned(), translucent);
         }
         let alpha: Vec<u8> = argb.iter().map(|p| (p >> 24) as u8).collect();
+        let animation = self
+            .root
+            .read_to_string(&format!("{png}.mcmeta"))
+            .ok()
+            .and_then(|m| serde_json::from_str::<Value>(&m).ok())
+            .and_then(|m| m.get("animation").map(Value::to_string))
+            .and_then(|a| AnimationMetadata::from_json(&a).ok());
         let (w, h) = match &animation {
             Some(a) => {
                 let [w, h] = a.frame_size(iw as i32, ih as i32);
@@ -790,6 +804,12 @@ impl ItemRenderer {
         } else {
             (library?, None)
         };
+        let permutations = PalettedPermutations::from_atlas(
+            &root
+                .source()
+                .read_to_string("assets/minecraft/atlases/items.json")
+                .unwrap_or_default(),
+        );
         let mut parts = if drawn {
             entity_models.map_or_else(
                 || special::load_parts(root.prepared()),
@@ -833,7 +853,12 @@ impl ItemRenderer {
             item_ids,
             models,
             library,
-            sprites: FileSprites::new(root.source().clone()),
+            sprites: FileSprites {
+                root: root.source().clone(),
+                permutations,
+                cache: Mutex::default(),
+                translucent: Mutex::default(),
+            },
             baked: Mutex::default(),
             extents: Mutex::default(),
             gui_drawn: Mutex::default(),
@@ -1570,112 +1595,6 @@ mod tests {
     /// Item definitions are read again on every load: a node of a registered type keeps its
     /// `models` as the packs now give them, and a definition with a type no mod registered isn't
     /// loaded, so its item draws the missing model.
-    /// A renamed file whose animation frames can't tile it is no candidate: the blocks atlas's
-    /// sprite of the id is the mask, and nothing divides by zero.
-    #[test]
-    fn a_renamed_file_with_unfitting_frames_leaves_the_blocks_sprite() {
-        let root = std::env::temp_dir().join(format!("sunrise-mask-frames-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        let textures = root.join("assets/demo/textures/item");
-        let atlases = root.join("assets/minecraft/atlases");
-        fs::create_dir_all(&textures).unwrap();
-        fs::create_dir_all(&atlases).unwrap();
-        let write = |name: &str, width: u32, height: u32, pixels: &[u8]| {
-            let mut encoder = png::Encoder::new(
-                fs::File::create(textures.join(name)).unwrap(),
-                width,
-                height,
-            );
-            encoder.set_color(png::ColorType::Rgba);
-            encoder.set_depth(png::BitDepth::Eight);
-            encoder
-                .write_header()
-                .unwrap()
-                .write_image_data(pixels)
-                .unwrap();
-        };
-        // A 1 x 1 file declaring frames 2 wide, and a 2 x 1 sheet: opaque, then transparent.
-        write("tiny.png", 1, 1, &[255; 4]);
-        fs::write(
-            textures.join("tiny.png.mcmeta"),
-            r#"{"animation":{"width":2}}"#,
-        )
-        .unwrap();
-        write("sheet.png", 2, 1, &[255, 0, 0, 255, 0, 255, 0, 0]);
-        fs::write(
-            atlases.join("items.json"),
-            r#"{"sources":[{"type":"minecraft:single","resource":"demo:item/tiny","sprite":"demo:item/target"}]}"#,
-        )
-        .unwrap();
-        fs::write(
-            atlases.join("blocks.json"),
-            r#"{"sources":[{"type":"minecraft:unstitch","resource":"demo:item/sheet","divisor_x":2,
-                "regions":[{"sprite":"demo:item/target","x":1,"y":0,"width":1,"height":1}]}]}"#,
-        )
-        .unwrap();
-        let sprites = FileSprites::new(ResourceSource::directory(root.clone()));
-        let mask = sprites.mask("demo:item/target").unwrap();
-        assert_eq!((mask.width, mask.height), (1, 1));
-        assert_eq!(mask.frames, vec![vec![true]]);
-        fs::remove_dir_all(&root).unwrap();
-    }
-    /// The items atlas's cut of an id is the mask, not the blocks atlas's; a sprite only an
-    /// atlas cut makes has one at all.
-    #[test]
-    fn a_mask_follows_the_items_atlas_then_the_blocks_atlas() {
-        let root =
-            std::env::temp_dir().join(format!("sunrise-mask-atlases-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        let textures = root.join("assets/demo/textures/item");
-        let atlases = root.join("assets/minecraft/atlases");
-        fs::create_dir_all(&textures).unwrap();
-        fs::create_dir_all(&atlases).unwrap();
-        // 2 x 1 sheet: an opaque texel, then a fully transparent one.
-        let mut encoder =
-            png::Encoder::new(fs::File::create(textures.join("sheet.png")).unwrap(), 2, 1);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        encoder
-            .write_header()
-            .unwrap()
-            .write_image_data(&[255, 0, 0, 255, 0, 255, 0, 0])
-            .unwrap();
-        let cut = |sprite: &str, x: u8| {
-            format!(
-                r#"{{"type":"minecraft:unstitch","resource":"demo:item/sheet","divisor_x":2,
-                "regions":[{{"sprite":"demo:item/{sprite}","x":{x},"y":0,"width":1,"height":1}}]}}"#
-            )
-        };
-        fs::write(
-            atlases.join("items.json"),
-            format!(r#"{{"sources":[{}]}}"#, cut("both", 1)),
-        )
-        .unwrap();
-        fs::write(
-            atlases.join("blocks.json"),
-            format!(
-                r#"{{"sources":[{},{}]}}"#,
-                cut("both", 0),
-                cut("blocks_only", 0)
-            ),
-        )
-        .unwrap();
-        let sprites = FileSprites::new(ResourceSource::directory(root.clone()));
-        // `true` marks a fully transparent texel.
-        assert_eq!(
-            sprites.mask("demo:item/both").unwrap().frames,
-            vec![vec![true]]
-        );
-        assert_eq!(
-            sprites.mask("demo:item/blocks_only").unwrap().frames,
-            vec![vec![false]]
-        );
-        assert!(
-            sprites.mask("demo:item/sheet").is_none(),
-            "no atlas lists the sheet"
-        );
-        fs::remove_dir_all(&root).unwrap();
-    }
     #[test]
     fn a_registered_item_model_type_is_read_again_on_each_load() {
         use sunrise_assets::resource_source::Resource;
@@ -1817,9 +1736,7 @@ mod tests {
             ("assets/example/textures/item/mask.png", png.as_slice()),
             (
                 "assets/example/textures/item/mask.png.mcmeta",
-                br#"{"animation":{"width":1,"height":1,"frames":[0,1]}}
-// High Contrast pack signature"#
-                    .as_slice(),
+                br#"{"animation":{"width":1,"height":1,"frames":[0,1]}}"#.as_slice(),
             ),
             (
                 "assets/example/items/nested/mask.json",
@@ -1840,7 +1757,12 @@ mod tests {
         let source = ResourceSource::archive(&jar).unwrap();
         fs::remove_file(&jar).unwrap();
         assert!(load_definitions(&source).contains_key("example:nested/mask"));
-        let sprites = FileSprites::new(source.clone());
+        let sprites = FileSprites {
+            root: source.clone(),
+            permutations: Vec::new(),
+            cache: Mutex::default(),
+            translucent: Mutex::default(),
+        };
         let mask = sprites.mask("example:item/mask").unwrap();
         assert_eq!((mask.width, mask.height), (1, 1));
         assert_eq!(mask.frames, vec![vec![true], vec![false]]);

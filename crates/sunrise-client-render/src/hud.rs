@@ -111,19 +111,11 @@ pub struct HudAtlas {
     /// A resource pack's own `core/rendertype_lines` shader for the block outline, translated;
     /// none draws the outline natively.
     pub lines_shader: Option<std::sync::Arc<crate::core_shader::CoreProgram>>,
-    /// Its Polytone expression uniforms (`shader_modifiers`), resolved when it loaded.
-    pub lines_expressions: Vec<crate::polytone_post::ExpressionUniform>,
     /// The packs' `core/sky` and `core/stars`, when a pack replaces them.
     pub sky_shader: Option<std::sync::Arc<crate::core_shader::CoreProgram>>,
     pub stars_shader: Option<std::sync::Arc<crate::core_shader::CoreProgram>>,
-    /// Their Polytone expression uniforms, resolved when they loaded.
-    pub sky_expressions: Vec<crate::polytone_post::ExpressionUniform>,
-    pub stars_expressions: Vec<crate::polytone_post::ExpressionUniform>,
     /// The packs' `core/lightmap` (with `core/screenquad`), when a pack replaces either stage.
     pub lightmap_shader: Option<std::sync::Arc<crate::core_shader::CoreProgram>>,
-    /// Its Polytone expression uniforms (`shader_modifiers`), resolved when it loaded: the
-    /// blocks its stages read, with their programs.
-    pub lightmap_expressions: Vec<crate::polytone_post::ExpressionUniform>,
     /// The packs' Polytone screen sprite modifiers.
     pub sprite_modifiers: std::sync::Arc<sprite_modifiers::SpriteModifiers>,
     /// The packs' OptiFine random entity textures, whose variants this atlas packs.
@@ -220,71 +212,6 @@ fn check_fetched_size(width: u64, height: u64) -> Result<()> {
     Ok(())
 }
 
-/// A pack image may claim no side an atlas would refuse, nor more pixels than
-/// the largest atlas holds: the PNG reader alone would trust the header and
-/// allocate it, as its own limit covers one row.
-pub(crate) fn check_pack_size(width: u32, height: u32) -> Result<()> {
-    use crate::atlas_sources::MAX_SPRITE_SIDE;
-    if i64::from(width.max(height)) > MAX_SPRITE_SIDE {
-        return Err(OverSizeLimit(format!(
-            "a {width}x{height} image exceeds the {MAX_SPRITE_SIDE}-pixel sprite side"
-        ))
-        .into());
-    }
-    if u64::from(width) * u64::from(height) > u64::from(MAX_ATLAS_SIZE).pow(2) {
-        return Err(OverSizeLimit(format!(
-            "a {width}x{height} image has more pixels than a {MAX_ATLAS_SIZE}x{MAX_ATLAS_SIZE} atlas"
-        ))
-        .into());
-    }
-    Ok(())
-}
-
-/// The most bytes any one buffer of a pack image may take (the decoder's, its RGBA copy, its
-/// frames made square): 8192x8192 RGBA, 256 MiB. That is far past the panorama faces and
-/// animated strips packs ship, where the 16384x16384 pixels [`check_pack_size`] lets through
-/// would hold 1 GiB per buffer, two buffers per image and several images loading in parallel.
-pub(crate) const MAX_IMAGE_BYTES: usize = 256 << 20;
-
-/// A pack image refused for its size: past a side, pixel or byte limit, or a buffer the
-/// allocator would not give.
-#[derive(Debug)]
-pub struct OverSizeLimit(String);
-
-impl std::fmt::Display for OverSizeLimit {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for OverSizeLimit {}
-
-/// The bytes of a buffer the product of `factors` long, refused (an overflow too) past
-/// `budget`.
-pub(crate) fn image_bytes(factors: &[usize], budget: usize) -> Result<usize> {
-    factors
-        .iter()
-        .try_fold(1usize, |bytes, &factor| bytes.checked_mul(factor))
-        .filter(|&bytes| bytes <= budget)
-        .ok_or_else(|| {
-            OverSizeLimit(format!(
-                "an image buffer of {factors:?} is over the {budget}-byte size limit"
-            ))
-            .into()
-        })
-}
-
-/// An empty buffer with room for the product of `factors` values of `T`, refused past `budget`
-/// bytes or when the allocator refuses it: a load error rather than an abort.
-pub(crate) fn image_buffer<T>(factors: &[usize], budget: usize) -> Result<Vec<T>> {
-    let bytes = image_bytes(&[factors, &[size_of::<T>()]].concat(), budget)?;
-    let mut buffer = Vec::new();
-    buffer
-        .try_reserve_exact(bytes / size_of::<T>())
-        .map_err(|e| OverSizeLimit(format!("an image buffer of {bytes} bytes: {e}")))?;
-    Ok(buffer)
-}
-
 /// A WebP image as RGBA8. Still frames and animations both decode; an
 /// animation gives its first frame, as an animated PNG would.
 fn decode_webp(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
@@ -363,22 +290,14 @@ pub fn decode_image_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
 
 /// A PNG in memory as RGBA pixels.
 pub fn decode_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
-    decode_bytes_within(data, MAX_IMAGE_BYTES)
-}
-
-/// [`decode_bytes`], each of its buffers held to `budget` bytes.
-fn decode_bytes_within(data: &[u8], budget: usize) -> Result<(u32, u32, Vec<u8>)> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(data));
     decoder.ignore_checksums(true);
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info()?;
-    check_pack_size(reader.info().width, reader.info().height)?;
-    let size = reader.output_buffer_size().unwrap_or(usize::MAX);
-    let mut bytes = image_buffer(&[size], budget)?;
-    bytes.resize(size, 0);
+    let mut bytes = vec![0; reader.output_buffer_size().ok_or("image too large")?];
     let info = reader.next_frame(&mut bytes)?;
     let channels = info.color_type.samples();
-    let mut rgba = image_buffer(&[info.width as usize, info.height as usize, 4], budget)?;
+    let mut rgba = Vec::with_capacity((info.width * info.height * 4) as usize);
     for p in bytes[..info.buffer_size()].chunks_exact(channels) {
         rgba.extend(match channels {
             4 => [p[0], p[1], p[2], p[3]],
@@ -440,45 +359,28 @@ fn walk(source: &ResourceSource, directory: &str, out: &mut Vec<String>) {
             .filter(|name| name.ends_with(".png")),
     );
 }
-pub(crate) fn decode_resource(source: &ResourceSource, name: &str) -> Result<(u32, u32, Vec<u8>)> {
+fn decode_resource(source: &ResourceSource, name: &str) -> Result<(u32, u32, Vec<u8>)> {
     decode_bytes(&source.read(name)?)
 }
 /// A packed atlas image: sprite name, size and RGBA pixels.
 type PackedImage = (String, u32, u32, Vec<u8>);
-/// A frame at `x, y`, sampled as if squared to its longer side and then resized
-/// to `output_side`, without making the intermediate square. The output is held
-/// to `budget` bytes before it is made.
-pub(crate) fn strip_frame(
-    pixels: &[u8],
-    stride: u32,
-    x: u32,
-    y: u32,
-    w: u32,
-    h: u32,
-    output_side: u32,
-    budget: usize,
-) -> Result<Vec<u8>> {
+/// A frame of an animated strip at `x, y`, nearest-resampled to the longer
+/// side of the frame: array layers are square, as `Sprites::load` keeps them
+/// for the world's sprite arrays.
+fn strip_frame(pixels: &[u8], stride: u32, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
     let side = w.max(h);
-    let mut out = image_buffer(&[output_side as usize, output_side as usize, 4], budget)?;
-    // Keep the two nearest-neighbour roundings when shrinking a rectangular frame.
-    let index = |i| {
-        if output_side == side {
-            i
-        } else {
-            i * side / output_side
-        }
-    };
-    for row in 0..output_side {
-        let source_row = y + index(row) * h / side;
-        for column in 0..output_side {
-            let at = ((source_row * stride + x + index(column) * w / side) * 4) as usize;
+    let mut out = Vec::with_capacity((side * side * 4) as usize);
+    for row in 0..side {
+        let source_row = y + row * h / side;
+        for column in 0..side {
+            let at = ((source_row * stride + x + column * w / side) * 4) as usize;
             out.extend_from_slice(&pixels[at..at + 4]);
         }
     }
-    Ok(out)
+    out
 }
 /// The `animation` section of a texture's `.mcmeta`.
-pub(crate) fn animation_of(mcmeta: Option<&str>) -> Option<AnimationMetadata> {
+fn animation_of(mcmeta: Option<&str>) -> Option<AnimationMetadata> {
     let meta: serde_json::Value = crate::packs::first_json(mcmeta?.as_bytes()).ok()?;
     AnimationMetadata::from_json(&meta.get("animation")?.to_string()).ok()
 }
@@ -488,7 +390,7 @@ pub(crate) fn animation_of(mcmeta: Option<&str>) -> Option<AnimationMetadata> {
 fn first_frame(
     (w, h, pixels): (u32, u32, Vec<u8>),
     animation: Option<&AnimationMetadata>,
-) -> Result<(u32, u32, Vec<u8>)> {
+) -> (u32, u32, Vec<u8>) {
     let [fw, fh] = animation.map_or([w.min(h) as i32; 2], |meta| {
         meta.frame_size(w as i32, h as i32)
     });
@@ -497,10 +399,9 @@ fn first_frame(
             if fw > 0 && fh > 0 && w % fw == 0 && h % fh == 0 && (fw, fh) != (w, h) =>
         {
             let side = fw.max(fh);
-            let frame = strip_frame(&pixels, w, 0, 0, fw, fh, side, MAX_IMAGE_BYTES)?;
-            Ok((side, side, frame))
+            (side, side, strip_frame(&pixels, w, 0, 0, fw, fh))
         }
-        _ => Ok((w, h, pixels)),
+        _ => (w, h, pixels),
     }
 }
 /// `image` inside a one-texel border copied from its opposite edges, the
@@ -630,13 +531,7 @@ fn cit_sprite(
     // Only an animation is cut to its first frame: a still CIT texture is drawn whole, and
     // armour layers are twice as wide as they are tall.
     let (w, h, pixels) = match &animation {
-        Some(animation) => match first_frame(image, Some(animation)) {
-            Ok(image) => image,
-            Err(e) => {
-                log::warn!("skipped custom item texture {}: {e}", path);
-                return None;
-            }
-        },
+        Some(animation) => first_frame(image, Some(animation)),
         None => image,
     };
     if !fits(w, h) {
@@ -701,138 +596,40 @@ fn walked_minecraft_texture(name: &str) -> bool {
         .any(|folder| name.starts_with(folder) && name.as_bytes().get(folder.len()) == Some(&b'/'))
 }
 
-/// Whether the file a walk packed under its own name tiles into its animation's frames.
-fn walked_frames_fit(root: &ResourceSource, texture: &str) -> bool {
-    let file = crate::atlas_sources::texture_resource(texture, "textures");
-    let mcmeta = root.read_to_string(&format!("{file}.mcmeta")).ok();
-    png_size(root, &file).is_some_and(|size| {
-        crate::atlas_sources::frames_fit(size, animation_of(mcmeta.as_deref()).as_ref())
-    })
-}
-/// What the atlas definitions (`atlases/*.json`) change in the texture files already packed:
-/// the sprites to add (generated ones such as the armour trim palettes and `unstitch` regions,
-/// and files listed under another id), the animated ones' names, and the packed names to drop.
-///
-/// A model's material is one finished sprite, the one the item masks resolve: the items atlas's
-/// first, then the blocks atlas's. The walked file of its name stands only when that is the
-/// winning origin; a rename, a cut or a palette replaces it, and a walked block or item texture
-/// no atlas keeps is dropped, as the model baker would find it missing.
-fn atlas_sprites(
-    root: &ResourceSource,
-    packed: &[PackedImage],
-) -> (
-    Vec<PackedImage>,
-    Vec<String>,
-    HashSet<String>,
-    HashMap<String, TextureFlags>,
-) {
-    use crate::atlas_sources::{self, Materials, SpriteOrigin};
-    let have: HashSet<&str> = packed.iter().map(|i| i.0.as_str()).collect();
-    let mut listed = atlas_sources::listed(root);
-    let materials = Materials::take(root, &mut listed);
-    let ids: Vec<&str> = materials.ids().into_iter().collect();
-    // Each id's winner, all at once: `None` where no origin finishes, `Some(None)` where the
-    // file already walked stands.
-    let winners: HashMap<&str, Option<Option<atlas_sources::Material>>> = ids
-        .iter()
-        .copied()
-        .zip(crate::par::par_map(&ids, |id| {
-            let name = id.strip_prefix("minecraft:").unwrap_or(id);
-            materials.resolve(id, |origin| match origin {
-                // The walked file stands if its frames tile it, as a finished sprite's do.
-                SpriteOrigin::File(texture)
-                    if texture == id && have.contains(name) && walked_frames_fit(root, texture) =>
-                {
-                    Some(None)
-                }
-                // A file under a walked folder is packed under its own name or was too large
-                // for the atlas: either way it is not added again.
-                SpriteOrigin::File(texture)
-                    if texture.strip_prefix("minecraft:") == Some(name)
-                        && walked_minecraft_texture(name) =>
-                {
-                    None
-                }
-                origin => atlas_sources::finish_origin(root, origin).map(Some),
-            })
-        }))
-        .collect();
-    let model_names: HashSet<&str> = winners
-        .keys()
-        .map(|id| id.strip_prefix("minecraft:").unwrap_or(id))
-        .collect();
-    let mut dropped = HashSet::new();
-    let mut out = Vec::new();
-    let mut animated = Vec::new();
-    let mut flags = HashMap::new();
-    if !materials.is_bare() {
-        for (name, ..) in packed {
-            let path = name.split_once(':').map_or(name.as_str(), |(_, p)| p);
-            let winner = winners
-                .get(atlas_sources::qualified(name).as_str())
-                .and_then(|w| w.as_ref());
-            let stands = matches!(winner, Some(None));
-            let replaced = matches!(winner, Some(Some(_)));
-            if replaced || (!stands && (path.starts_with("block/") || path.starts_with("item/"))) {
-                dropped.insert(name.clone());
-            }
-        }
-        for (id, winner) in winners {
-            let Some(Some(material)) = winner else {
+/// Sprites the atlas definitions (`atlases/*.json`) add beyond the texture
+/// files already packed: generated ones (`paletted_permutations` such as the
+/// armour trim sprites, `unstitch` regions) and files listed under another id,
+/// such as other namespaces' item textures; and the animated ones' names.
+fn atlas_sprites(root: &ResourceSource, packed: &[PackedImage]) -> (Vec<PackedImage>, Vec<String>) {
+    use crate::atlas_sources::{self, SpriteOrigin, unasked};
+    let have: std::collections::HashSet<&str> = packed.iter().map(|i| i.0.as_str()).collect();
+    let textures = atlas_sources::list_textures(root);
+    // Each new name with its origins in the atlases' order: the first that
+    // loads is the sprite. They load at once (a content pack's atlases list
+    // tens of thousands of files), and come out in the order a load of one
+    // after another would give.
+    let mut names: Vec<(String, Vec<(usize, SpriteOrigin)>)> = Vec::new();
+    let mut slots = std::collections::HashMap::new();
+    let mut order = 0;
+    for (atlas, sources) in atlas_sources::atlases(root) {
+        // The other atlases' renamed files (GUI sprites, particles...) are
+        // looked up by their texture paths here.
+        let item_models = atlas == "minecraft:blocks" || atlas == "minecraft:items";
+        for (id, origin) in atlas_sources::list(&sources, &textures, &mut unasked) {
+            if !item_models && matches!(origin, SpriteOrigin::File(_)) {
                 continue;
-            };
-            let name = id.strip_prefix("minecraft:").unwrap_or(id).to_owned();
-            let path = id.split_once(':').map_or(id, |(_, p)| p);
-            let image = match &material.resource {
-                Some(file) => {
-                    // Animated strips keep their first frame and animate, like the packed
-                    // files, under any folder: vanilla animates every sprite of these atlases
-                    // (a server pack's `wynn/...` as well as `item/...`).
-                    let mcmeta = root.read_to_string(&format!("{file}.mcmeta")).ok();
-                    let animation = material.animation.as_ref();
-                    let image = if animation.is_some()
-                        || path.starts_with("block/")
-                        || path.starts_with("item/")
-                    {
-                        match first_frame(material.image, animation) {
-                            Ok(image) => image,
-                            Err(error) => {
-                                log::warn!("skipped GUI texture {file}: {error}");
-                                continue;
-                            }
-                        }
-                    } else {
-                        material.image
-                    };
-                    if animation.is_some() {
-                        animated.push(name.clone());
-                    }
-                    // The winner's own render flags (blur, clamp), as the walk reads them.
-                    if let Some(texture_flags) =
-                        mcmeta.as_deref().and_then(TextureFlags::from_mcmeta)
-                    {
-                        flags.insert(name.clone(), texture_flags);
-                    }
-                    image
-                }
-                None => material.image,
-            };
-            out.push((name, image.0, image.1, image.2));
-        }
-        out.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-    }
-    // The other atlases' generated sprites (GUI sprites, particles...), by the first origin
-    // that loads, in the atlases' order; they load at once (a content pack's atlases list
-    // tens of thousands of files).
-    let mut names: Vec<(String, Vec<SpriteOrigin>)> = Vec::new();
-    let mut slots = HashMap::new();
-    for (_, listing) in listed {
-        for (id, origin) in listing {
+            }
             let name = id.strip_prefix("minecraft:").unwrap_or(&id).to_owned();
-            // A model's sprite is the model atlases' winner above, not another atlas's output.
-            if matches!(origin, SpriteOrigin::File(_))
-                || have.contains(name.as_str())
-                || model_names.contains(name.as_str())
+            if have.contains(name.as_str()) {
+                continue;
+            }
+            // A file under a walked folder is packed under its own name already:
+            // only a renamed one is new. Other namespaces' files (content mods)
+            // are never in those folders, nor are extra directories a pack adds
+            // to the blocks atlas (`custom/...`).
+            if let SpriteOrigin::File(texture) = &origin
+                && texture.strip_prefix("minecraft:") == Some(name.as_str())
+                && walked_minecraft_texture(name.as_str())
             {
                 continue;
             }
@@ -840,23 +637,55 @@ fn atlas_sprites(
                 names.push((name, Vec::new()));
                 names.len() - 1
             });
-            names[slot].1.push(origin);
+            names[slot].1.push((order, origin));
+            order += 1;
         }
     }
-    let load = |texture: &str| {
-        decode_resource(root, &atlas_sources::texture_resource(texture, "textures")).ok()
+    let load = |texture: &str, directory: &str| {
+        decode_resource(root, &atlas_sources::texture_resource(texture, directory)).ok()
     };
-    out.extend(
-        crate::par::par_map(&names, |(name, origins)| {
-            origins
-                .iter()
-                .find_map(|origin| atlas_sources::generate(origin, &load))
-                .map(|(w, h, pixels)| (name.clone(), w, h, pixels))
+    let first = |(name, origins): &(String, Vec<(usize, SpriteOrigin)>)| {
+        origins.iter().find_map(|(order, origin)| {
+            let mut animated = false;
+            let image = match origin {
+                SpriteOrigin::File(texture) => {
+                    // Its path under `textures/` in any namespace (a server
+                    // pack's `lobby:item/...` as well as vanilla's).
+                    let path = texture.split_once(':').map_or(texture.as_str(), |(_, p)| p);
+                    let file = atlas_sources::texture_resource(texture, "textures");
+                    decode_resource(root, &file).ok().map(|image| {
+                        // Animated strips keep their first frame and animate, like the
+                        // packed files, under any folder: vanilla animates every sprite of
+                        // these atlases (a server pack's `wynn/...` as well as `item/...`).
+                        let mcmeta = root.read_to_string(&format!("{file}.mcmeta")).ok();
+                        let animation = animation_of(mcmeta.as_deref());
+                        animated = animation.is_some();
+                        if animated || path.starts_with("block/") || path.starts_with("item/") {
+                            first_frame(image, animation.as_ref())
+                        } else {
+                            image
+                        }
+                    })
+                }
+                generated => atlas_sources::generate(generated, &load),
+            };
+            image.map(|(w, h, pixels)| (*order, (name.clone(), w, h, pixels), animated))
         })
+    };
+    let mut out: Vec<_> = crate::par::par_map(&names, first)
         .into_iter()
-        .flatten(),
-    );
-    (out, animated, dropped, flags)
+        .flatten()
+        .collect();
+    out.sort_unstable_by_key(|(order, ..)| *order);
+    let animated = out
+        .iter()
+        .filter(|(.., animated)| *animated)
+        .map(|(_, image, _)| image.0.clone())
+        .collect();
+    (
+        out.into_iter().map(|(_, image, _)| image).collect(),
+        animated,
+    )
 }
 /// `MissingTextureAtlasSprite`: what a sprite the atlas lacks draws as.
 pub const MISSING_SPRITE: &str = "sunrise/missing";
@@ -1137,13 +966,9 @@ impl HudAtlas {
             glint_armor: (Vec::new(), 1, 1),
             text_shaders: Default::default(),
             lines_shader: None,
-            lines_expressions: Vec::new(),
             sky_shader: None,
             stars_shader: None,
-            sky_expressions: Vec::new(),
-            stars_expressions: Vec::new(),
             lightmap_shader: None,
-            lightmap_expressions: Vec::new(),
             sprite_modifiers: Default::default(),
             random_textures: Default::default(),
             emissive: Arc::default(),
@@ -1212,13 +1037,9 @@ impl HudAtlas {
             white,
             text_shaders: Default::default(),
             lines_shader: None,
-            lines_expressions: Vec::new(),
             sky_shader: None,
             stars_shader: None,
-            sky_expressions: Vec::new(),
-            stars_expressions: Vec::new(),
             lightmap_shader: None,
-            lightmap_expressions: Vec::new(),
             sprite_modifiers: Default::default(),
             random_textures: Default::default(),
             emissive: Default::default(),
@@ -1439,8 +1260,6 @@ impl HudAtlas {
                 animation.is_some() || name.starts_with("block/") || name.starts_with("item/");
             let (w, h, pixels) = if frames {
                 first_frame(image, animation.as_ref())
-                    .map_err(|e| log::warn!("skipped GUI texture {}: {e}", path))
-                    .ok()?
             } else {
                 image
             };
@@ -1519,15 +1338,9 @@ impl HudAtlas {
         }
         let mut cit_names = HashSet::new();
         if full {
-            let (more, more_animated, dropped, more_flags) = atlas_sprites(root, &images);
-            images.retain(|image| !dropped.contains(&image.0));
-            flags.retain(|name, _| !dropped.contains(name));
-            gui_sizes.retain(|name, _| !dropped.contains(name));
-            maps.retain(|name, _| !dropped.contains(name));
-            animated.retain(|name| !dropped.contains(name));
+            let (more, more_animated) = atlas_sprites(root, &images);
             images.extend(more);
             animated.extend(more_animated);
-            flags.extend(more_flags);
             for (image, image_flags, is_animated) in cit_sprites(root, &images) {
                 cit_names.insert(image.0.clone());
                 if let Some(f) = image_flags {
@@ -1653,10 +1466,7 @@ impl HudAtlas {
             } else {
                 format!("minecraft:{name}")
             };
-            // A block or item sprite as its atlas finishes it; the other atlases' are files.
-            let Ok(layer) = loaded.try_insert(&id).or_else(|_| {
-                loaded.insert_file(&crate::atlas_sources::texture_resource(&id, "textures"))
-            }) else {
+            let Ok(layer) = loaded.insert(&id) else {
                 continue;
             };
             let Some(animation) = loaded.animations.iter().find(|a| a.layer == layer).cloned()
@@ -1728,13 +1538,9 @@ impl HudAtlas {
             glint_armor,
             text_shaders: Default::default(),
             lines_shader: None,
-            lines_expressions: Vec::new(),
             sky_shader: None,
             stars_shader: None,
-            sky_expressions: Vec::new(),
-            stars_expressions: Vec::new(),
             lightmap_shader: None,
-            lightmap_expressions: Vec::new(),
             sprite_modifiers: Default::default(),
             random_textures,
             emissive,
@@ -3274,141 +3080,6 @@ mod coverage_tests;
 
 #[cfg(test)]
 mod tests {
-    /// A scratch tree with a 2 x 1 sheet (an opaque red texel, then a transparent green one) and
-    /// the two atlas definitions.
-    fn model_atlas_root(tag: &str, items: &str, blocks: &str) -> std::path::PathBuf {
-        let root = std::env::temp_dir().join(format!("sunrise-hud-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let textures = root.join("assets/demo/textures/item");
-        let atlases = root.join("assets/minecraft/atlases");
-        std::fs::create_dir_all(&textures).unwrap();
-        std::fs::create_dir_all(&atlases).unwrap();
-        let mut encoder = png::Encoder::new(
-            std::fs::File::create(textures.join("sheet.png")).unwrap(),
-            2,
-            1,
-        );
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        encoder
-            .write_header()
-            .unwrap()
-            .write_image_data(&[255, 0, 0, 255, 0, 255, 0, 0])
-            .unwrap();
-        std::fs::write(atlases.join("items.json"), items).unwrap();
-        std::fs::write(atlases.join("blocks.json"), blocks).unwrap();
-        root
-    }
-    fn cut(sprite: &str, x: u8) -> String {
-        format!(
-            r#"{{"sources":[{{"type":"minecraft:unstitch","resource":"demo:item/sheet","divisor_x":2,
-            "regions":[{{"sprite":"{sprite}","x":{x},"y":0,"width":1,"height":1}}]}}]}}"#
-        )
-    }
-    /// A model's material is the items atlas's cut when it has one: it replaces both the blocks
-    /// atlas's cut and the walked file of that name, which is dropped from the pack.
-    #[test]
-    fn the_items_atlas_cut_replaces_a_packed_file_and_the_blocks_cut() {
-        let root = model_atlas_root(
-            "cut-wins",
-            &cut("demo:item/cut", 1),
-            &cut("demo:item/cut", 0),
-        );
-        let packed = vec![("demo:item/cut".to_owned(), 1, 1, vec![9, 9, 9, 9])];
-        let (images, _, dropped, _) =
-            atlas_sprites(&ResourceSource::directory(root.clone()), &packed);
-        assert_eq!(
-            images,
-            [("demo:item/cut".to_owned(), 1, 1, vec![0, 255, 0, 0])]
-        );
-        assert_eq!(dropped, HashSet::from(["demo:item/cut".to_owned()]));
-        std::fs::remove_dir_all(&root).unwrap();
-    }
-    /// A walked file whose animation frames can't tile it does not stand: as the item mask does,
-    /// the pack takes the blocks atlas's sprite of the id instead.
-    #[test]
-    fn a_walked_file_with_unfitting_frames_gives_way_to_the_blocks_cut() {
-        let items =
-            r#"{"sources":[{"type":"minecraft:single","resource":"minecraft:item/target"}]}"#;
-        let root = model_atlas_root("unfitting", items, &cut("minecraft:item/target", 1));
-        let textures = root.join("assets/minecraft/textures/item");
-        std::fs::create_dir_all(&textures).unwrap();
-        // A file the HUD walk really packs: 1 x 1, declaring frames 2 wide.
-        write_strip(
-            &textures.join("target.png"),
-            1,
-            1,
-            &[[9, 9, 9, 9]],
-            Some(r#"{"animation":{"width":2}}"#),
-        );
-        let atlas = HudAtlas::build(&ResourceSource::directory(root.clone())).unwrap();
-        let rect = atlas.sprites["item/target"];
-        assert_eq!(rect.texels((atlas.width, atlas.height)), (1, 1));
-        assert_eq!(texel_at(&atlas, rect, 0, 0), [0, 255, 0, 0]);
-        std::fs::remove_dir_all(&root).unwrap();
-    }
-    /// The winning renamed file's own render flags come with its pixels, and another atlas's
-    /// output of a model id does not replace the model atlases' winner.
-    #[test]
-    fn a_winner_carries_its_flags_and_no_other_atlas_replaces_it() {
-        let items = r#"{"sources":[
-            {"type":"minecraft:single","resource":"demo:item/sheet","sprite":"demo:item/blurred"}]}"#;
-        let root = model_atlas_root("flags", items, &cut("demo:item/cut", 0));
-        std::fs::write(
-            root.join("assets/demo/textures/item/sheet.png.mcmeta"),
-            r#"{"texture":{"blur":true,"clamp":true},"animation":{"width":1,"height":1}}
-// High Contrast pack signature"#,
-        )
-        .unwrap();
-        // The GUI atlas cuts the other quadrant under the id the blocks atlas cuts.
-        std::fs::write(
-            root.join("assets/minecraft/atlases/gui.json"),
-            cut("demo:item/cut", 1),
-        )
-        .unwrap();
-        let atlas = HudAtlas::build(&ResourceSource::directory(root.clone())).unwrap();
-        assert_eq!(
-            texel_at(&atlas, atlas.sprites["demo:item/cut"], 0, 0),
-            [255, 0, 0, 255],
-            "the blocks atlas's quadrant, not the GUI atlas's"
-        );
-        let rect = atlas.sprites["demo:item/blurred"];
-        assert_eq!(rect.texels((atlas.width, atlas.height)), (1, 1));
-        assert_eq!(texel_at(&atlas, rect, 0, 0), [255, 0, 0, 255]);
-        assert_eq!(
-            atlas.flags["demo:item/blurred"],
-            TextureFlags {
-                blur: true,
-                clamp: true,
-            }
-        );
-        let (_, animation) = atlas
-            .sprite_animations
-            .iter()
-            .find(|(r, _)| r.u0 == rect.u0 && r.v0 == rect.v0)
-            .expect("the renamed sprite animates");
-        assert_eq!(animation.frame_count(), 2);
-        std::fs::remove_dir_all(&root).unwrap();
-    }
-    /// The items atlas keeps the walked file of its name; the blocks atlas's lower cut of that
-    /// name adds nothing and drops nothing. A walked item texture neither atlas lists is dropped.
-    #[test]
-    fn a_walked_file_the_items_atlas_keeps_stands_and_an_unlisted_one_goes() {
-        let items = r#"{"sources":[{"type":"minecraft:single","resource":"demo:item/kept"}]}"#;
-        let root = model_atlas_root("walked", items, &cut("demo:item/kept", 0));
-        let textures = root.join("assets/demo/textures/item");
-        std::fs::copy(textures.join("sheet.png"), textures.join("kept.png")).unwrap();
-        let packed = vec![
-            ("demo:item/kept".to_owned(), 1, 1, vec![9, 9, 9, 9]),
-            ("item/unlisted".to_owned(), 1, 1, vec![8, 8, 8, 8]),
-            ("gui/not_a_model".to_owned(), 1, 1, vec![7, 7, 7, 7]),
-        ];
-        let (images, _, dropped, _) =
-            atlas_sprites(&ResourceSource::directory(root.clone()), &packed);
-        assert_eq!(images, []);
-        assert_eq!(dropped, HashSet::from(["item/unlisted".to_owned()]));
-        std::fs::remove_dir_all(&root).unwrap();
-    }
     use super::*;
 
     #[test]
@@ -3425,7 +3096,7 @@ mod tests {
         let animation = animation_of(Some(meta)).expect("the first JSON value is metadata");
         assert_eq!(animation.frame_size(8, 4), [2, 2]);
         let pixels = (0..8 * 4).flat_map(|i| [i as u8, 0, 0, 255]).collect();
-        let (_, height, first) = first_frame((8, 4, pixels), Some(&animation)).unwrap();
+        let (_, height, first) = first_frame((8, 4, pixels), Some(&animation));
         assert_eq!(height, 2);
         assert_eq!(first.len(), 2 * 2 * 4);
     }
@@ -3595,89 +3266,6 @@ mod tests {
             refused.to_string().contains("too large to decode"),
             "{refused}"
         );
-    }
-
-    /// A pack PNG is refused by the side its header claims when no atlas would
-    /// take it: the reader sizes the whole pixel buffer from that header, and
-    /// its own limit covers one row.
-    #[test]
-    fn a_pack_png_claiming_a_side_no_atlas_takes_is_refused() {
-        let png = |width: u32| {
-            let mut bytes = Vec::new();
-            let mut encoder = png::Encoder::new(&mut bytes, width, 1);
-            encoder.set_color(png::ColorType::Grayscale);
-            encoder.set_depth(png::BitDepth::Eight);
-            let mut writer = encoder.write_header().unwrap();
-            writer.write_image_data(&vec![0; width as usize]).unwrap();
-            writer.finish().unwrap();
-            bytes
-        };
-        assert_eq!(decode_bytes(&png(32_768)).unwrap().0, 32_768);
-        let refused = decode_bytes(&png(40_000)).map(|(width, height, _)| (width, height));
-        assert!(
-            refused.as_ref().is_err_and(|e| e.is::<OverSizeLimit>()),
-            "{refused:?}"
-        );
-    }
-
-    /// A header within the side limit can still claim gigabytes: 32768 x 32768
-    /// is refused by its pixel count before the reader sizes a buffer from it.
-    #[test]
-    fn a_pack_png_claiming_more_pixels_than_an_atlas_is_refused() {
-        let mut header = Vec::new();
-        {
-            let mut encoder = png::Encoder::new(&mut header, 32_768, 32_768);
-            encoder.set_color(png::ColorType::Grayscale);
-            encoder.set_depth(png::BitDepth::Eight);
-            let mut writer = encoder.write_header().unwrap();
-            // No pixels, only an empty IDAT: `read_info` reads up to the image data.
-            writer.write_chunk(png::chunk::IDAT, &[]).unwrap();
-        }
-        let refused = decode_bytes(&header).map(|(width, height, _)| (width, height));
-        assert!(
-            refused.as_ref().is_err_and(|e| e.is::<OverSizeLimit>()),
-            "{refused:?}"
-        );
-    }
-
-    /// The decoder's buffer and the RGBA copy are each held to the byte budget before they are
-    /// made: a 64x64 grey PNG decodes to 4096 bytes and converts to 16384.
-    #[test]
-    fn a_pack_png_past_the_byte_budget_is_refused_before_its_buffers() {
-        let mut png = Vec::new();
-        {
-            let mut encoder = png::Encoder::new(&mut png, 64, 64);
-            encoder.set_color(png::ColorType::Grayscale);
-            encoder.set_depth(png::BitDepth::Eight);
-            let mut writer = encoder.write_header().unwrap();
-            writer.write_image_data(&[7; 64 * 64]).unwrap();
-        }
-        let over =
-            |budget| decode_bytes_within(&png, budget).is_err_and(|e| e.is::<OverSizeLimit>());
-        assert_eq!(
-            decode_bytes_within(&png, 64 * 64 * 4).unwrap().2.len(),
-            64 * 64 * 4
-        );
-        assert!(over(64 * 64 * 4 - 1), "the RGBA copy");
-        assert!(over(64 * 64 - 1), "the decoder's buffer");
-    }
-
-    /// A narrow frame widens to a square: its bytes are held to the budget before it is made, and
-    /// a size no address holds is refused rather than wrapped.
-    #[test]
-    fn a_strip_frame_made_square_is_held_to_the_budget() {
-        let pixels = vec![9; 64 * 2 * 4];
-        let over = |w, budget| {
-            strip_frame(&pixels, 64, 0, 0, w, 1, w, budget).is_err_and(|e| e.is::<OverSizeLimit>())
-        };
-        assert_eq!(
-            strip_frame(&pixels, 64, 0, 0, 64, 1, 64, 64 * 64 * 4)
-                .unwrap()
-                .len(),
-            64 * 64 * 4
-        );
-        assert!(over(64, 64 * 64 * 4 - 1));
-        assert!(over(u32::MAX, usize::MAX));
     }
 
     /// Only the network path reads WebP and JPEG: a resource pack's texture

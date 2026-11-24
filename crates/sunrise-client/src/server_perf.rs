@@ -4,9 +4,8 @@ use crate::spans::Span;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::thread::{self, JoinHandle};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use sunrise_client_render::perf_gpu;
-use sunrise_java_properties::now_millis;
 use sunrise_perf_format::files;
 use sunrise_perf_format::v1::{
     BenchResult, GpuMode, Kind, Mark, MemorySnapshot, Options, Overhead, Side, Start, Stop,
@@ -356,7 +355,7 @@ impl ServerPerf {
         if self.session.is_some() {
             return Err(std::io::Error::other("a capture is already running"));
         }
-        let now_ms = now_millis();
+        let now_ms = unix_ms();
         let (file, path) = match &options.file {
             Some(path) => (files::create_at(path)?, path.clone()),
             None => files::create(dir, now_ms.div_euclid(1000))?,
@@ -400,7 +399,7 @@ impl ServerPerf {
         dir: &Path,
         options: CaptureOptions,
     ) {
-        let now_ms = now_millis();
+        let now_ms = unix_ms();
         let sampling = options
             .samples
             .then(|| {
@@ -822,6 +821,12 @@ impl Session {
         };
         Ok(Saved { path, deleted })
     }
+}
+
+fn unix_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
 }
 
 /// Keeps the calling thread's allocations out of the heap samples: it is one of the profiler's own.

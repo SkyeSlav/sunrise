@@ -1,14 +1,14 @@
 //! Decoded block sprites kept on disk between launches (M-11): reading and
 //! decoding ~1300 small PNGs is most of `Sprites::load`. One file per resource
-//! cache location, valid only while the resource source's textures and atlas
-//! definitions have the same identities/change stamps (or open archive contents)
-//! and format version; anything else (missing, corrupt, stale, unwritable) means the normal decoding path.
+//! cache location, valid only while the resource source's textures have the
+//! same identities/change stamps (or open archive contents) and format version; anything
+//! else (missing, corrupt, stale, unwritable) means the normal decoding path.
 use crate::{mipmap::Strategy, resource_source::ResourceRoot};
 use std::{collections::HashMap, fs, path::PathBuf};
 
 const MAGIC: &[u8; 4] = b"HSPR";
 /// Bump when `Decoded` or the decoding in `Sprites::decode` changes.
-const VERSION: u32 = 3;
+const VERSION: u32 = 2;
 const FILE: &str = "sunrise-sprites.cache";
 
 /// What decoding one texture gives, before it takes a layer.
@@ -36,11 +36,7 @@ impl SpriteCache {
     /// The cache of `root`: its stored entries when still valid, else empty.
     /// `None` when the textures cannot be fingerprinted (no caching then).
     pub fn open(root: &ResourceRoot) -> Option<Self> {
-        // The atlas definitions too: a sprite they cut or recolour changes with them as well
-        // as with its sheet.
-        let fingerprint = root
-            .source()
-            .fingerprint_under("assets", &["atlases", "textures"])?;
+        let fingerprint = root.source().fingerprint_under("assets", &["textures"])?;
         fs::create_dir_all(root.cache()).ok()?;
         let path = root.cache().join(FILE);
         let entries = fs::read(&path)

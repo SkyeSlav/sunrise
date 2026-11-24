@@ -12,15 +12,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tests.test_ci_concurrency import ROOT, yaml
 from tools import sunrise_mod_binstall
 from tools.ci import daily_summary as summary, parity_verdict
 
 COMMIT = "c" * 40
-DAILY = yaml.load((ROOT / ".github/workflows/daily.yml").read_text(), Loader=yaml.BaseLoader)
-# toJSON(needs) of a green run, as the summary job gets it: every call it needs but `resolve`, whose outputs only
-# a parity skip reads.
-LEGS = {name: {"result": "success"} for name in DAILY["jobs"]["summary"]["needs"] if name != "resolve"}
+LEGS = {leg: {"result": "success"} for leg in summary.LEGS}
 PARITY_JOB = "parity / vanilla-parity"
 PARITY_PASS = {"passed": ["loot_a"], "failed": [], "complete": True}
 
@@ -36,8 +32,6 @@ GREEN_JOBS = [job("shards / plan"), job("shards / ignored-tests-shards (sunrise-
               job("windows-runtime-leases / test"),
               job("windows-runtime-leases / runtime-leases"), job("windows-runtime-leases / launcher-processes"),
               job("cargo-sunrise-mod / plan"),
-              job("wasm-std-names / build (linux)"), job("wasm-std-names / build (windows)"),
-              job("wasm-std-names / compare"),
               job("machine-sample / route"), job("machine-sample / build"),
               job("sdk / fresh"), job("sdk / build linux"), job("sdk / build linux-server"),
               job("sdk / fresh"), job("sdk / build windows"), job("sdk / build macos"), job(PARITY_JOB)]
@@ -613,32 +607,6 @@ class DailySummaryTests(unittest.TestCase):
         self.assertEqual([body["title"] for _, path, body in api.writes if path == "issues"],
                          [f"Daily: {failed} did not complete"])
 
-    def test_a_comparison_skipped_by_a_failed_build_is_not_its_own_issue_but_one_that_failed_or_skipped_alone_is(self):
-        def run(**replace):
-            jobs = [job(entry["name"], *replace[entry["name"]]) if entry["name"] in replace else entry
-                    for entry in GREEN_JOBS]
-            api = Api(jobs)
-            _, out = self.run_summary(api, results=dict(LEGS, **{"wasm-std-names": {"result": "failure"}}))
-            return sorted(body["title"] for _, path, body in api.writes if path == "issues"), out.splitlines()
-        build, compare = "wasm-std-names / build (windows)", "wasm-std-names / compare"
-        self.assertEqual(run(**{build: ("failure", ["Build the std member"]), compare: ("skipped", [])}),
-                         ([f"Daily: {build} did not complete"], ["green=false", "sdk_green=true"]))
-        self.assertEqual(run(**{compare: ("failure", ["Linux's and Windows' std members have the same import and "
-                                                       "export names"])}),
-                         ([f"Daily: {compare} did not complete"], ["green=false", "sdk_green=true"]))
-        self.assertEqual(run(**{compare: ("skipped", [])}),
-                         ([f"Daily: {compare} did not complete"], ["green=false", "sdk_green=true"]))
-
-    def test_a_job_skipped_beside_another_leg_jobs_failure_is_still_its_own_issue(self):
-        fixture, stack = "wasm-mods / fixture", "wasm-mods / Guest stack / ubuntu-latest"
-        jobs = [job(fixture, "failure", ["Build tool and shared member"]) if entry["name"] == fixture
-                else job(stack, "skipped") if entry["name"] == stack else entry for entry in GREEN_JOBS]
-        api = Api(jobs)
-        _, out = self.run_summary(api, results=dict(LEGS, **{"wasm-mods": {"result": "failure"}}))
-        self.assertEqual(sorted(body["title"] for _, path, body in api.writes if path == "issues"),
-                         [f"Daily: {stack} did not complete", f"Daily: {fixture} did not complete"])
-        self.assertEqual(out.splitlines(), ["green=false", "sdk_green=true"])
-
     def test_a_shard_killed_for_memory_says_by_what_with_its_memory_time_and_running_tests(self):
         stuck = [f"game::slow::case_{n}" for n in range(7)]
         incomplete = {"shard": "sunrise-world", "reason": "a test process crashed", "ended_by": "signal 9 (SIGKILL)",
@@ -1189,20 +1157,12 @@ class DailyWorkflowTests(unittest.TestCase):
                     self.assertIn(f"parity_required={required}", out.read_text().splitlines())
 
     def test_every_leg_is_a_called_workflow_with_the_commit(self):
-        # The summary's needs are the legs (daily_summary.daily_legs): each a called workflow given the resolved
-        # commit, and every called workflow is one of them.
         jobs = self.workflow["jobs"]
-        needs = jobs["summary"]["needs"]
-        self.assertEqual(set(needs), {"resolve"} | {name for name, job in jobs.items() if "uses" in job
-                                                     and name not in ("sdk-publish", "nightly")})
-        for leg in needs:
-            if leg == "resolve":
-                continue
+        for leg in summary.LEGS:
             with self.subTest(leg=leg):
                 self.assertTrue(jobs[leg]["uses"].startswith("./.github/workflows/"))
                 self.assertEqual(jobs[leg]["with"]["commit"], "${{ needs.resolve.outputs.commit }}")
-        self.assertEqual(summary.daily_legs({name: {} for name in needs}),
-                         tuple(name for name in needs if name not in ("resolve", *summary.PART_OF)))
+                self.assertIn(leg, jobs["summary"]["needs"])
 
 
 if __name__ == "__main__":

@@ -450,12 +450,18 @@ impl Game<'_> {
             &mut self.applied_modifiers,
             std::mem::take(&mut play.modifiers),
         );
-        // Its equipment's modifiers on its attributes from its first turn. A later change
-        // waits for the guest's body tick (`equipment_changed`, tick.rs).
-        if play.equipped.is_none() {
-            let held = self.inventory.get(self.selected).and_then(Option::as_ref);
-            equipment_changed(&mut play.equipped, &self.armor, held, self.offhand.as_ref());
-            self.put_equipment_modifiers();
+        // Its worn armour on its attributes, when it changed.
+        let selected_item = self.inventory.get(self.selected).and_then(Option::as_ref);
+        let unchanged = play.equipped.as_deref().is_some_and(|eq| {
+            eq.len() == self.armor.len() + 1
+                && eq[..self.armor.len()] == self.armor[..]
+                && eq[self.armor.len()].as_ref() == selected_item
+        });
+        if !unchanged {
+            let mut equipped: Vec<Option<ItemStack>> = self.armor.to_vec();
+            equipped.push(selected_item.cloned());
+            self.apply_equipment();
+            play.equipped = Some(equipped);
         }
         // The player's effects are on the new body before anything it does
         // (the movement that brought it, a landing): vanilla keeps the same

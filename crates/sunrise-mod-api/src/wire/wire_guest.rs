@@ -13,7 +13,7 @@ mod prepared;
 pub use prepared::PreparedSlots;
 
 mod generated {
-    #![allow(clippy::all, unused, non_snake_case)]
+    #![allow(clippy::all, unused, dead_code, non_snake_case)]
     use crate::__private::game::{BackendMutRefOf, BackendRefOf, ClientBackendMutRefOf};
     use crate::*;
     include!(concat!(env!("OUT_DIR"), "/wire_guest_generated.rs"));

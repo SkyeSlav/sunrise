@@ -939,7 +939,7 @@ impl MeshTables {
         mod_tint_values: Option<ModTintValues>,
     ) -> crate::Result<Self> {
         // Terrain vertices keep the sprite layer below `OPAQUE_LAYER`.
-        let layers = render.texture_layers;
+        let layers = render.sprite_layers.values().max().map_or(0, |l| l + 1);
         if layers > u32::from(OPAQUE_LAYER) {
             return Err(
                 format!("{layers} block sprites, terrain vertices index {OPAQUE_LAYER}").into(),

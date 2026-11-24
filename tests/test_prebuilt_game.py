@@ -173,7 +173,6 @@ class StageToolTests(unittest.TestCase):
                 return "staged fixture\n"
 
             with patch.object(prebuilt_game, "ROOT", source), \
-                 patch.object(prebuilt_game, "rustc_host", return_value="x86_64-unknown-linux-gnu"), \
                  patch.object(prebuilt_game, "run", side_effect=capture):
                 staged = prebuilt_game.stage(target, stage_tool=tool)
                 self.assertEqual(staged, target / "stage")
@@ -203,32 +202,6 @@ class StageToolTests(unittest.TestCase):
 
 
 class RegistryPatchTests(unittest.TestCase):
-    def test_a_crate_beside_the_base_library_stays_inside_the_library_above_it(self):
-        """`call` and `core` both use `digest` and neither links the other: as two libraries each would hold a
-        copy, which rustc refuses. `call` is not split out, so the library above it holds it. A derive both
-        use is no copy: it runs in the compiler."""
-        def package(name, *dependencies, kind="lib"):
-            return ({"id": name, "name": name, "manifest_path": "", "targets": [{"kind": [kind]}]},
-                    {"id": name, "deps": [{"pkg": dependency, "dep_kinds": [{"kind": None}]}
-                                          for dependency in dependencies]})
-        packages, nodes = zip(
-            package("sunrise-mod-api", "sunrise-core", "vocab"),
-            package("sunrise-mod-points", "sunrise-mod-api", "call"),
-            package("vocab", "sunrise-core"), package("call", "sha2", "derive"), package("sha2", "digest"),
-            package("sunrise-core", "md-5", "derive"), package("md-5", "digest"), package("digest"),
-            package("derive", "syn", kind="proc-macro"), package("syn"),
-            package("sunrise-mod-wasm", "sunrise-mod-points", "call", "sha2"),
-            package("sunrise-mod-host", "sunrise-mod-wasm", "sunrise-mod-api"))
-        metadata = {"packages": list(packages), "resolve": {"nodes": list(nodes)}}
-        split = prebuilt_game.sdk_dylibs(metadata)
-        self.assertEqual(split, {"sunrise-core", "vocab", "sunrise-mod-api", "sunrise-mod-points", "sunrise-mod-wasm"})
-        self.assertIsNone(prebuilt_game.shared_twice(metadata, split | {"sunrise-mod-host"}))
-        clash = prebuilt_game.shared_twice(metadata, split | {"sunrise-mod-host", "call"})
-        for crate in ("call", "sunrise-core", "digest"):
-            self.assertIn(crate, clash)
-        for crate in ("derive", "syn", "sha2", "md-5"):
-            self.assertNotIn(crate, clash)
-
     def test_sdk_carries_only_patched_crate_and_resolution_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

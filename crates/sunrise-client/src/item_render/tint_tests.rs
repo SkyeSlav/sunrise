@@ -161,14 +161,7 @@ fn a_fluid_containers_fluid_layer_takes_the_fluids_sprite_and_tint() {
         fs::write(path, data).unwrap();
     };
     write("items.json", "{}");
-    write(
-        "assets/minecraft/atlases/items.json",
-        r#"{"sources":[{"type":"directory","source":"item","prefix":"item/"}]}"#,
-    );
-    write(
-        "assets/minecraft/atlases/blocks.json",
-        r#"{"sources":[{"type":"directory","source":"block","prefix":"block/"}]}"#,
-    );
+    write("assets/minecraft/atlases/items.json", r#"{"sources":[]}"#);
     // A fully opaque base and mask: both layers cover the item, so each extrudes
     // 16*4 edge faces and a front and back face.
     super::glint_tests::png(

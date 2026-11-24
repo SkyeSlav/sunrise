@@ -38,7 +38,6 @@ impl Game<'_> {
             ]
         });
         let context = AttributeTooltipContext {
-            gather_when_hidden: false,
             player_base,
             advanced,
             creative,

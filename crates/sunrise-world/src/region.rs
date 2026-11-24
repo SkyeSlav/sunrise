@@ -640,12 +640,6 @@ impl RegionWriter {
         Ok(())
     }
 
-    /// The `c.X.Z.mcc` files of the oversized chunks written so far, next to
-    /// the destination.
-    pub(crate) fn externals(&self) -> &[PathBuf] {
-        &self.externals
-    }
-
     pub fn finish(mut self) -> io::Result<()> {
         if self.failed {
             return Err(invalid("cannot publish a failed region writer"));

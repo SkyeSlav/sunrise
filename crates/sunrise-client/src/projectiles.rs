@@ -1663,6 +1663,11 @@ impl Projectile {
         self.no_deflect_ticks = self.no_deflect_ticks.saturating_sub(1);
         result
     }
+    /// `Projectile.deflect`, which `WindCharge` refuses while its
+    /// `noDeflectTicks` last.
+    pub fn deflectable(&self) -> bool {
+        self.no_deflect_ticks == 0
+    }
     /// `applyEffectsFromBlocks` after the tick's move, for its cobwebs and
     /// powder snow (`makeStuckInBlock`): the last such block its box (deflated
     /// by 1e-5, `checkInsideBlocks`) met between `from` and where it is now

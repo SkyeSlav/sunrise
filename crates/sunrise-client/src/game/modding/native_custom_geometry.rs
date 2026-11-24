@@ -356,7 +356,7 @@ mod tests {
         ModelRef, Overlay, SubmitCustomGeometryEvent, WorldDrawContext,
     };
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use sunrise_client::mesher::Vertex;
 
     static FILL_MODEL: Mutex<Option<ModelRef>> = Mutex::new(None);
@@ -1339,73 +1339,6 @@ mod tests {
             assert_eq!(draw.usage().instances_used, 0);
             assert_eq!(entities.len(), 4);
             assert_eq!(game.prepared_model_draws.borrow()[0].cpu_vertices, 4);
-        });
-    }
-
-    static GATED_BEFORE: AtomicUsize = AtomicUsize::new(0);
-    static GATED_AFTER: AtomicUsize = AtomicUsize::new(0);
-
-    /// Asks the Host for a level in both geometry hooks, and counts the calls that came back.
-    struct Gated;
-    #[mod_api::__subscriptions]
-    impl Hooks for Gated {
-        fn submit_custom_geometry(
-            &self,
-            host: &dyn ClientHost,
-            _: &mut SubmitCustomGeometryEvent<'_>,
-        ) {
-            GATED_BEFORE.fetch_add(1, Ordering::Relaxed);
-            let _ = host.level("minecraft:overworld");
-            GATED_AFTER.fetch_add(1, Ordering::Relaxed);
-        }
-        fn render_level_stage(
-            &self,
-            host: &dyn ClientHost,
-            _: &mut mod_api::RenderLevelStageEvent<'_>,
-        ) {
-            GATED_BEFORE.fetch_add(1, Ordering::Relaxed);
-            let _ = host.level("minecraft:overworld");
-            GATED_AFTER.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    /// Custom geometry runs in frames, after the thread reached World. Fired in Setup and in Reloading
-    /// anyway, a listener's world read is refused inside the hook's own containment (the listener
-    /// never gets past it), never the no-scope panic; in World the same read is answered.
-    #[test]
-    #[ignore = "daily"]
-    fn custom_geometry_outside_the_world_is_refused_not_a_panic() {
-        use mod_api::__private::{ModPhase, PhaseOwner};
-        super::super::native_entity_refs::tests::with_client_game(|game| {
-            mod_platform::__private::install(vec![ModEntry::new("gated", Box::new(Gated))].into());
-            let fill = |game: &mut Game<'_>| {
-                game.fill_world_geometry(
-                    false,
-                    [0.0; 3],
-                    Mat4::IDENTITY,
-                    0.0,
-                    &mut WorldGeometry::default(),
-                    &mut Vec::new(),
-                );
-            };
-            for reloading in [false, true] {
-                let setup = PhaseOwner::scope(ModPhase::Setup);
-                let _reload = reloading.then(|| setup.reloading().unwrap());
-                GATED_BEFORE.store(0, Ordering::Relaxed);
-                GATED_AFTER.store(0, Ordering::Relaxed);
-                fill(game);
-                assert!(GATED_BEFORE.load(Ordering::Relaxed) > 0, "the hooks fired");
-                assert_eq!(GATED_AFTER.load(Ordering::Relaxed), 0, "every read refused");
-            }
-            let _world = PhaseOwner::scope(ModPhase::World);
-            GATED_BEFORE.store(0, Ordering::Relaxed);
-            GATED_AFTER.store(0, Ordering::Relaxed);
-            fill(game);
-            assert_eq!(
-                GATED_AFTER.load(Ordering::Relaxed),
-                GATED_BEFORE.load(Ordering::Relaxed),
-                "in World the read is answered"
-            );
         });
     }
 }

@@ -6,7 +6,7 @@
 //!
 //! usage: creative_search_fixture RESOURCES CREATIVE_JSON VANILLA_JSON OUTPUT [permissions]
 use serde_json::{Value, json};
-use std::{fs, path::PathBuf, sync::Arc};
+use std::{fs, path::PathBuf};
 use sunrise_client::{
     creative::{Creative, Names},
     item_data::canon_stack,
@@ -25,11 +25,11 @@ pub fn main() -> sunrise_client::Result<()> {
     let catalog_json = fs::read(args.get(2).ok_or(usage)?)?;
     let mut creative = Creative::from_json(&serde_json::from_slice(&catalog_json)?)?;
     let defaults = sunrise_world::item_defaults::read(&resources)?;
-    let items = Arc::new(Items::catalog(
+    let items = Items::catalog(
         &resources,
         &sunrise_world::loot::PackOverlay::NONE,
         &defaults,
-    )?);
+    )?;
     let permissions = args.get(5).is_some_and(|a| a == "permissions");
     let vanilla: Value = serde_json::from_slice(&fs::read(args.get(3).ok_or(usage)?)?)?;
     let holders: Holders = serde_json::from_value(vanilla["holders"].clone())?;
@@ -44,7 +44,7 @@ pub fn main() -> sunrise_client::Result<()> {
         None,
         |_, _, _| {},
     );
-    creative.publish(lists, holders.into(), items.clone(), &names);
+    creative.publish(lists, holders.into(), &names);
     let tabs: Vec<Value> = creative
         .tabs
         .iter()

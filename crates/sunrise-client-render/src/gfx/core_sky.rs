@@ -4,7 +4,6 @@
 //! terrain.wgsl, stars.rs).
 
 use crate::core_shader::{CoreProgram, Glue};
-use crate::polytone_post::ExpressionUniform;
 use glam::Mat4;
 use wgpu::util::DeviceExt;
 
@@ -17,6 +16,10 @@ pub(crate) const GLUE: Glue = Glue {
     finish: "",
     vertex_id: "int(gl_VertexIndex)",
 };
+
+/// Each uniform block's offset in the one buffer (`core_shader::BLOCKS` order).
+const BLOCK_OFFSETS: [u64; 4] = [0, 256, 512, 768];
+const BLOCK_SIZES: [u64; 4] = [48, 64, 160, 48];
 
 /// `SkyRenderer.buildSkyDisc(16)`: a fan around the point 16 above the camera, out to 512 every
 /// 45 degrees, as a triangle list.
@@ -38,8 +41,6 @@ struct Part {
     pipeline: wgpu::RenderPipeline,
     group: wgpu::BindGroup,
     uniform: wgpu::Buffer,
-    /// The packs' expression uniforms its stages read (`shader_modifiers`).
-    extra: super::expression_blocks::ExpressionBlocks,
     vertices: wgpu::Buffer,
     count: u32,
 }
@@ -48,7 +49,7 @@ impl Part {
     fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
-        (program, expressions): (&CoreProgram, &[ExpressionUniform]),
+        program: &CoreProgram,
         name: &str,
         blend: Option<wgpu::BlendState>,
         triangles: &[[f32; 3]],
@@ -65,15 +66,17 @@ impl Part {
         let vertex = module("vertex", &program.vertex);
         let fragment = module("fragment", &program.fragment);
         // Vanilla's SKY and STARS pipelines have no samplers: a pack that reads one is not used.
-        // Each block a stage reads is bound to the stages reading it: vanilla's four, then the
-        // expression uniforms.
-        let extra = super::expression_blocks::ExpressionBlocks::new(expressions, 1024);
-        let blocks = super::expression_blocks::vanilla_blocks(program);
-        let entries: Vec<wgpu::BindGroupLayoutEntry> = (blocks.iter())
-            .map(|&(binding, _, size, stages)| {
-                super::expression_blocks::block_entry(binding, size, stages)
+        let entries: Vec<wgpu::BindGroupLayoutEntry> = (0..4)
+            .map(|binding| wgpu::BindGroupLayoutEntry {
+                binding,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(BLOCK_SIZES[binding as usize]),
+                },
+                count: None,
             })
-            .chain(extra.layout())
             .collect();
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some(name),
@@ -81,20 +84,19 @@ impl Part {
         });
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(name),
-            size: extra.size(),
+            size: 1024,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let resources: Vec<wgpu::BindGroupEntry> = (blocks.iter())
-            .map(|&(binding, offset, size, _)| wgpu::BindGroupEntry {
-                binding,
+        let resources: Vec<wgpu::BindGroupEntry> = (0..4)
+            .map(|i| wgpu::BindGroupEntry {
+                binding: i as u32,
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                     buffer: &uniform,
-                    offset,
-                    size: wgpu::BufferSize::new(size),
+                    offset: BLOCK_OFFSETS[i],
+                    size: wgpu::BufferSize::new(BLOCK_SIZES[i]),
                 }),
             })
-            .chain(extra.entries(&uniform))
             .collect();
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some(name),
@@ -156,7 +158,6 @@ impl Part {
             pipeline,
             group,
             uniform,
-            extra,
             vertices,
             count: triangles.len() as u32,
         })
@@ -176,30 +177,13 @@ pub(super) struct CoreSky {
     stars: Option<Part>,
 }
 
-/// The packs' sky and stars on the renderer.
-impl super::Renderer {
-    /// The resource packs' `core/sky` and `core/stars` (`HudAtlas::sky_shader`,
-    /// `stars_shader`, each with the expression uniforms resolved for it), or the built-in sky
-    /// and stars.
-    pub fn set_sky_shaders(
-        &mut self,
-        disc: Option<(&CoreProgram, &[ExpressionUniform])>,
-        stars: Option<(&CoreProgram, &[ExpressionUniform])>,
-    ) {
-        // As `set_lines_shader`: not on a frame of linear light.
-        let keep = !self.output.frame.linear_light;
-        let (disc, stars) = (disc.filter(|_| keep), stars.filter(|_| keep));
-        self.core_sky = CoreSky::new(&self.device, self.output.frame.format, disc, stars);
-    }
-}
-
 impl CoreSky {
     /// `None` when neither shader is replaced or neither builds.
     pub(super) fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
-        disc: Option<(&CoreProgram, &[ExpressionUniform])>,
-        stars: Option<(&CoreProgram, &[ExpressionUniform])>,
+        disc: Option<&CoreProgram>,
+        stars: Option<&CoreProgram>,
     ) -> Option<Self> {
         let disc = disc.and_then(|program| {
             // RenderPipelines.SKY: ColorTargetState.DEFAULT, no blending.
@@ -233,8 +217,7 @@ impl CoreSky {
         self.stars.is_some()
     }
 
-    /// Uploads the disc's and the stars' blocks: `sky` and `stars` from [`uniforms`], then each
-    /// one's expression uniforms.
+    /// Uploads the disc's and the stars' blocks: `sky` and `stars` from [`uniforms`].
     pub(super) fn prepare(
         &self,
         uploads: &mut super::upload::Uploads,
@@ -244,22 +227,10 @@ impl CoreSky {
     ) {
         if let Some(disc) = &self.disc {
             uploads.buffer(encoder, &disc.uniform, 0, sky);
-            disc.extra.upload(uploads, encoder, &disc.uniform);
         }
         if let (Some(part), Some(data)) = (&self.stars, stars) {
             uploads.buffer(encoder, &part.uniform, 0, data);
-            part.extra.upload(uploads, encoder, &part.uniform);
         }
-    }
-
-    /// The disc's and the stars' expression uniforms.
-    pub(super) fn expression_blocks(
-        &mut self,
-    ) -> impl Iterator<Item = &mut super::expression_blocks::ExpressionBlocks> {
-        [self.disc.as_mut(), self.stars.as_mut()]
-            .into_iter()
-            .flatten()
-            .map(|part| &mut part.extra)
     }
 
     /// The disc, in place of the native sky colour. The caller sets its own group 0 again after.
@@ -370,8 +341,7 @@ mod tests {
         };
         const SIZE: u32 = 64;
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        let sky =
-            CoreSky::new(&device, format, Some((&program, &[])), None).expect("the sky pipeline");
+        let sky = CoreSky::new(&device, format, Some(&program), None).expect("the sky pipeline");
         let projection = crate::gfx::world_projection(90.0, 1.0, 2048.0);
         let data = uniforms(
             [0; 48],
@@ -465,7 +435,3 @@ mod tests {
         assert_eq!(at(32, 60), vec![0, 0, 0, 0]);
     }
 }
-
-#[cfg(test)]
-#[path = "core_sky_expression_tests.rs"]
-mod expression_tests;

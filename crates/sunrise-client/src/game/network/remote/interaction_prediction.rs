@@ -221,8 +221,9 @@ impl Game<'_> {
             // Player.isSecondaryUseActive with something in either hand
             // keeps the block from reacting by default; an explicit block
             // allow overrides that skip, and False always skips the block.
-            let block_used =
-                canceled.is_none() && use_block.or(!self.remote_secondary_use_skips_block());
+            let sneaking = self.remote_shift_down();
+            let hands_full = self.stack_in(self.selected).is_some() || self.offhand.is_some();
+            let block_used = canceled.is_none() && use_block.or(!(sneaking && hands_full));
             let item_forced = use_item == TriState::True;
             let item_used = canceled.is_none()
                 && use_item.or(true)
@@ -268,15 +269,10 @@ impl Game<'_> {
             } else {
                 // useItemOn runs for the off hand too (useWithoutItem doesn't):
                 // RespawnAnchorBlock.useItemOn charges an anchor with its
-                // glowstone, SUCCESS; the blocks of `client_block_answer` answer too.
+                // glowstone, SUCCESS.
                 let charges = vanilla_block && self.anchor_takes(hit.pos, held.as_ref());
                 let result = if charges {
                     InteractionResult::Success
-                } else if let Some(answer) = (vanilla_block && !spectator)
-                    .then(|| self.client_block_answer(&hit, held.as_ref()))
-                    .flatten()
-                {
-                    answer
                 } else {
                     InteractionResult::Pass
                 };

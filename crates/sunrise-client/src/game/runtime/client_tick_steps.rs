@@ -12,12 +12,6 @@ impl Game<'_> {
         steps: u32,
         event_loop: Option<&dyn EventLoopCtl>,
     ) -> Result<()> {
-        if steps != 0 {
-            // Client hooks run in menus too. Their Host can read the world-rest tables even
-            // before a level is open, so every entry path (not only the desktop loading
-            // window) must publish those tables before the first tick is dispatched.
-            self.join_world_rest()?;
-        }
         for _ in 0..steps {
             let started = Instant::now();
             sunrise_client::social::set_presence_status(self.presence_status());

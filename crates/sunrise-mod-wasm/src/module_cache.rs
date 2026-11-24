@@ -147,13 +147,15 @@ impl ModuleCache {
         engine: &Engine,
         bytes: &[u8],
     ) -> wasmtime::Result<(Module, Source)> {
-        // Without a compiler executable, compile in-process without a time budget.
-        // The result is cached when caching is enabled.
         #[cfg(unix)]
-        let child = (!cfg!(test) && crate::compile_child::compiler_executable()).then_some((
-            production_command as fn(&Path, &str) -> std::process::Command,
-            self.budget.limit,
-        ));
+        let child = if cfg!(test) {
+            None
+        } else {
+            Some((
+                production_command as fn(&Path, &str) -> std::process::Command,
+                self.budget.limit,
+            ))
+        };
         #[cfg(not(unix))]
         let child = None;
         self.load_with_child(engine, bytes, child)

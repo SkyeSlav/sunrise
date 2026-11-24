@@ -68,6 +68,7 @@ prebuilt = ["dep:cap-std", "dep:tar", "dep:xz4rust"]
 index = ["dep:minisign-verify", "dep:sunrise-shader-api", "dep:libc"]
 
 [dev-dependencies]
+sunrise-mod-api = { path = "../sunrise-mod-api" }
 wat = "1"
 tempfile = "3.27.0"
 

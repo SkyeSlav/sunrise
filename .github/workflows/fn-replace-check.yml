@@ -42,14 +42,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      actions: read  # the attempt's creation or start time (tools/ci/dyna_ci_route.sh)
+      actions: read  # the run's creation time (tools/ci/dyna_ci_route.sh)
     outputs:
       self_hosted: ${{ steps.runner.outputs.self_hosted }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      # The pool's switch and lease (tools/ci/dyna_ci_route.sh): a snapshot is judged at the attempt's creation (a re-run's start), so a
+      # The pool's switch and lease (tools/ci/dyna_ci_route.sh): a snapshot is judged at the run's creation, so a
       # run that waited in a concurrency group or GitHub's queue is not sent off the pool by a lease that lapsed
       # meanwhile.
       - id: runner

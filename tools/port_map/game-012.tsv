@@ -1,6 +1,6 @@
 Fox.defineSynchedData	port	crates/sunrise-client/src/game/network/lan/mod.rs::mob_meta	gap: minor: the type and the flags byte are synced; the two trusted-entity slots are not
 Fox.canEat	inline	crates/sunrise-client/src/mobs/fox.rs::ai_step	held food (eats), no target, on the ground and awake, tested in the eating block of ai_step
-Fox.populateDefaultEquipmentSlots	port	crates/sunrise-client/src/mobs/finalize.rs::populate	Ctx::finalize calls Ctx::populate for fox equipment: one fox in five (nextFloat below 0.2) holds, by a second draw, an emerald (below 0.05), egg (0.2), rabbit foot or hide (0.4, by nextBoolean), wheat (0.6), leather (0.8) or feather
+Fox.populateDefaultEquipmentSlots	port	crates/sunrise-client/src/mobs/fox.rs::populate_default_equipment	called for a live spawn by spawning.rs::finalize; Ctx::populate has its own copy of the same draws for a structure mob: one fox in five (nextFloat below 0.2) holds, by a second draw, an emerald (below 0.05), egg (0.2), rabbit foot or hide (0.4, by nextBoolean), wheat (0.6), leather (0.8) or feather
 Fox.handleEntityEvent	port	crates/sunrise-client/src/mobs/fox.rs::ai_step	ticked in #3512; `Fox.handleEntityEvent` is cited at crates/sunrise-client/src/mobs/fox.rs:227 (in a comment, so `where` names the enclosing fn)
 Fox.createAttributes	skip:data		attributes come from entity-types.json
 Fox.checkFoxSpawnRules	port	crates/sunrise-client/src/mobs/spawn_rules.rs::check_spawn_rules	foxes_spawnable_on below and bright enough

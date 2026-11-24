@@ -1281,6 +1281,21 @@ impl Package {
         }
         Ok(package)
     }
+    /// Whether the mod at `path` (a `.smod` or a folder) has a [`MANIFEST`].
+    pub fn has_manifest(path: &Path) -> bool {
+        if path.is_dir() {
+            return path.join(MANIFEST).is_file();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::fs::File::open(path)
+                .ok()
+                .and_then(|f| zip::ZipArchive::new(f).ok())
+                .is_some_and(|mut zip| zip.by_name(MANIFEST).is_ok())
+        }
+        #[cfg(target_arch = "wasm32")]
+        false
+    }
     /// Select and validate a flat project's source and resource files deterministically.
     pub fn directory_files(
         &self,

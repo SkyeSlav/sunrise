@@ -1133,45 +1133,28 @@ impl PostEffects {
         decoder.ignore_checksums(true);
         decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
         let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
-        let (width, height) = (reader.info().width, reader.info().height);
-        crate::hud::check_pack_size(width, height).map_err(|e| e.to_string())?;
-        // The decode ceiling is not this device's: an image no texture of it holds is refused
-        // before its pixels are made, not handed to validation.
-        let max = device.limits().max_texture_dimension_2d;
-        if width.max(height) > max {
-            return Err(format!(
-                "a {width}x{height} image is larger than this device's {max}-pixel textures"
-            ));
-        }
-        let buffer = |factors: &[usize]| {
-            crate::hud::image_buffer::<u8>(factors, crate::hud::MAX_IMAGE_BYTES)
-                .map_err(|e| e.to_string())
-        };
-        let size = reader.output_buffer_size().unwrap_or(usize::MAX);
-        let mut data = buffer(&[size])?;
-        data.resize(size, 0);
+        let mut data = vec![0; reader.output_buffer_size().ok_or("a huge image")?];
         let info = reader.next_frame(&mut data).map_err(|e| e.to_string())?;
-        let pixels = &data[..info.buffer_size()];
-        let mut rgba = buffer(&[info.width as usize, info.height as usize, 4])?;
-        match info.color_type {
-            png::ColorType::Rgba => rgba.extend_from_slice(pixels),
-            png::ColorType::Rgb => rgba.extend(
-                pixels
-                    .as_chunks::<3>()
-                    .0
-                    .iter()
-                    .flat_map(|p| [p[0], p[1], p[2], 255]),
-            ),
-            png::ColorType::Grayscale => rgba.extend(pixels.iter().flat_map(|g| [*g, *g, *g, 255])),
-            png::ColorType::GrayscaleAlpha => rgba.extend(
-                pixels
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .flat_map(|p| [p[0], p[0], p[0], p[1]]),
-            ),
+        let rgba: Vec<u8> = match info.color_type {
+            png::ColorType::Rgba => data[..info.buffer_size()].to_vec(),
+            png::ColorType::Rgb => data[..info.buffer_size()]
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .flat_map(|p| [p[0], p[1], p[2], 255])
+                .collect(),
+            png::ColorType::Grayscale => data[..info.buffer_size()]
+                .iter()
+                .flat_map(|g| [*g, *g, *g, 255])
+                .collect(),
+            png::ColorType::GrayscaleAlpha => data[..info.buffer_size()]
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .flat_map(|p| [p[0], p[0], p[0], p[1]])
+                .collect(),
             png::ColorType::Indexed => return Err("an indexed image".into()),
-        }
+        };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Post effect image"),
             size: wgpu::Extent3d {

@@ -78,8 +78,6 @@ OUT_DIR file checked by the generator before writing it.
 | `runtime.rs::TEST_MODS` | `std::cell::Cell<Option<&'staticInstalled>>` | dispatch table | Thread-local dispatch inventory for isolated engine tests. |
 | `wire/wire_resources.rs::ACCESS` | `OnceLock<ResourceAccess>` | set-once socket | Set-once platform callback registration; mutable platform storage lives above the engine. |
 | `wire/wire_resources.rs::shared::MARKER` | `std::sync::OnceLock<std::sync::Arc<Unsupported>>` | immutable cache | Shared immutable unsupported-resource marker with no writable payload. |
-| `world/phase_refusal.rs::SCOPE` | `Cell<Option<Scope>>` | reentrancy guard | Per-thread record of the mod and hook whose listener call is in flight and whether a refusal has latched, which the gate reads to contain a wrong-phase Host call. |
-| `world/phase_refusal.rs::report::LOGGED` | `OnceLock<Mutex<HashSet<(&'staticstr,&'staticstr)>>>` | reentrancy guard | Process-wide set of the (mod, operation) pairs whose refusal has been logged, so a refusing hook names the operation once and not on every call. |
 | `world/server_reload.rs::first::ID` | `LazyLock<Identifier>` | immutable cache | Immutable vanilla reload-boundary identifier, allocated once and shared by anchor declarations. |
 | `world/server_reload.rs::functions::ID` | `LazyLock<Identifier>` | immutable cache | Immutable vanilla reload-boundary identifier, allocated once and shared by anchor declarations. |
 | `world/server_reload.rs::last::ID` | `LazyLock<Identifier>` | immutable cache | Immutable vanilla reload-boundary identifier, allocated once and shared by anchor declarations. |

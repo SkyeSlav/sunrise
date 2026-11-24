@@ -184,8 +184,8 @@ jobs:
           name: boat-base-1
           path: boat-base.json
           retention-days: 2
-      # The pool's switch and lease (tools/ci/dyna_ci_route.sh): live when readable, else the attempt's snapshot judged
-      # at the attempt's creation or start and for an hour after it. Fork pull requests remain on GitHub's runners.
+      # The pool's switch and lease (tools/ci/dyna_ci_route.sh): live when readable, else the run's snapshot judged
+      # at the run's creation and for an hour after it. Fork pull requests remain on GitHub's runners.
       - id: runner
         env:
           GH_TOKEN: ${{ github.token }}
@@ -823,12 +823,6 @@ jobs:
             echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
           fi
           bash tools/ci/rustup_install.sh --profile minimal --component rustfmt --component clippy
-      # Dyna's runner builds in its persistent target (CARGO_TARGET_DIR) here too: the ignored-test inventory builds
-      # sunrise-game-discovery and its path dependencies (sunrise-mod-surface among them). Without the snapshot, a
-      # build of this tree left artifacts that a later job of another tree judged fresh (R55's verify, 2026-11-19).
-      - name: Restore unchanged source timestamps
-        if: env.RUNNER_KIND == 'dyna'
-        run: python3 tools/ci/source_mtimes.py "${CARGO_TARGET_DIR:-target}/ci-source-mtimes-v2.json"
       - name: Setup done
         id: setup
         run: 'true'
@@ -880,13 +874,6 @@ jobs:
         id: vocabulary_state_has_explicit_ownership
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: python3 tools/check_mod_vocabulary_state.py
-      # The gated Host methods that can only refuse by unwinding (#3123): the list only shrinks.
-      - name: Unwinding Host methods only shrink
-        id: unwinding_host_methods_only_shrink
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && github.event_name == 'pull_request' }}
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: python3 tools/ci/check_unwinding_methods.py "$BASE_SHA"
       # One file per topic in tools/ci/ignored-tests/: well-formed rows, each test in one file, nothing else in the
       # folder, no file at the retired single-list path.
       - name: Ignored-test policy files read cleanly

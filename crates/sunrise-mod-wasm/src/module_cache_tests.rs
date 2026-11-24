@@ -579,21 +579,6 @@ fn internal_compiler_flag_refuses_malformed_arguments() {
 }
 
 #[test]
-fn a_compiler_executable_exists_only_where_the_game_entry_installed_one() {
-    use crate::compile_child::runs_compiler;
-    // Android has no executable to run; a program that never installed the entry has none.
-    assert!(!runs_compiler(true, true));
-    assert!(!runs_compiler(false, false));
-    assert!(runs_compiler(false, true));
-    // Installing the entry is what makes this process one.
-    let _ = crate::compile_child([std::ffi::OsString::from("--help")]);
-    assert_eq!(
-        crate::compile_child::compiler_executable(),
-        !cfg!(target_os = "android")
-    );
-}
-
-#[test]
 fn compiler_refuses_correctly_keyed_input_outside_cache_folder() {
     let dir = tempfile::tempdir().unwrap();
     let bytes = wasm(42);

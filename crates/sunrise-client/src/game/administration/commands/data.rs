@@ -1317,8 +1317,7 @@ impl Game<'_> {
     ) -> bool {
         let state = self.world.block(key.0, key.1, key.2);
         let name = &self.res.facts().get(state).name;
-        let previous = self.world.block_entities.get(&key);
-        let Some((_, mut new)) = save::decode_block_entity_replacing(tag, name, previous) else {
+        let Some((_, mut new)) = save::decode_block_entity_for_block(tag, name) else {
             return false;
         };
         self.take_loot_table(key, tag, &mut new);

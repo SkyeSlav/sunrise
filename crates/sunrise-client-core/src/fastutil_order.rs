@@ -2,11 +2,7 @@
 //! its names in: fastutil's `Object2ObjectOpenHashMap<String, _>` (open
 //! addressing with linear probing, backward-shift deletion and rehashing at
 //! the load factor) and `java.util.HashSet<String>` (chained buckets split on
-//! resize). `/team list` walks team names in fastutil iterator order;
-//! `scoreboard.dat` saves them in fastutil's forward stream order and saves
-//! team members in Java HashSet order. `/team list <team>` sorts the members.
-
-use sunrise_core::{java_hash_set::JavaHashSet, random::java_string_hash};
+//! resize). Commands list, and `scoreboard.dat` saves, in these orders.
 
 /// The keys of a fastutil open hash map in their table slots.
 #[derive(Clone, Debug, PartialEq)]
@@ -21,6 +17,11 @@ impl Default for OpenOrder {
     fn default() -> Self {
         Self::new(16, 0.75)
     }
+}
+/// `String.hashCode`.
+pub fn java_hash(s: &str) -> i32 {
+    s.encode_utf16()
+        .fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(i32::from(c)))
 }
 /// `HashCommon.mix`.
 fn mix(x: i32) -> usize {
@@ -53,7 +54,7 @@ impl OpenOrder {
         self.size == 0
     }
     fn slot(&self, key: &str) -> usize {
-        mix(java_string_hash(key.encode_utf16())) & (self.keys.len() - 1)
+        mix(java_hash(key)) & (self.keys.len() - 1)
     }
     pub fn contains(&self, key: &str) -> bool {
         let mask = self.keys.len() - 1;
@@ -133,7 +134,7 @@ impl OpenOrder {
         let mask = new_n - 1;
         // `for (int j = realSize(); j-- != 0;) { while (key[--i] == null); ... }`
         for key in old.into_iter().rev().flatten() {
-            let mut pos = mix(java_string_hash(key.encode_utf16())) & mask;
+            let mut pos = mix(java_hash(&key)) & mask;
             while self.keys[pos].is_some() {
                 pos = (pos + 1) & mask;
             }
@@ -150,28 +151,73 @@ impl OpenOrder {
     }
 }
 
-/// Score holder names in `java.util.HashSet<String>` traversal order.
+/// The keys of a `java.util.HashSet<String>` in their buckets.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct HashSetOrder(JavaHashSet<String>);
-
+pub struct HashSetOrder {
+    /// Empty until the first insertion (`HashMap.resize` on first `put`).
+    table: Vec<Vec<String>>,
+    size: usize,
+}
+/// `HashMap.hash`.
+fn spread(s: &str) -> usize {
+    let h = java_hash(s) as u32;
+    (h ^ (h >> 16)) as usize
+}
 impl HashSetOrder {
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.size
     }
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.size == 0
     }
     pub fn contains(&self, key: &str) -> bool {
-        self.0.contains(key)
+        if self.table.is_empty() {
+            return false;
+        }
+        let i = spread(key) & (self.table.len() - 1);
+        self.table[i].iter().any(|k| k == key)
     }
     pub fn insert(&mut self, key: &str) -> bool {
-        self.0.insert(key.to_owned())
+        if self.table.is_empty() {
+            self.table = vec![Vec::new(); 16];
+        }
+        let i = spread(key) & (self.table.len() - 1);
+        if self.table[i].iter().any(|k| k == key) {
+            return false;
+        }
+        self.table[i].push(key.to_owned());
+        self.size += 1;
+        if self.size > self.table.len() * 3 / 4 {
+            self.resize();
+        }
+        true
+    }
+    /// Doubles the table; each bucket splits into its low and high halves in order.
+    fn resize(&mut self) {
+        let old = std::mem::take(&mut self.table);
+        let n = old.len() * 2;
+        self.table = vec![Vec::new(); n];
+        for bucket in old {
+            for key in bucket {
+                let i = spread(&key) & (n - 1);
+                self.table[i].push(key);
+            }
+        }
     }
     pub fn remove(&mut self, key: &str) -> bool {
-        self.0.remove(key)
+        if self.table.is_empty() {
+            return false;
+        }
+        let i = spread(key) & (self.table.len() - 1);
+        let Some(at) = self.table[i].iter().position(|k| k == key) else {
+            return false;
+        };
+        self.table[i].remove(at);
+        self.size -= 1;
+        true
     }
     pub fn iter(&self) -> impl Iterator<Item = &String> {
-        self.0.iter()
+        self.table.iter().flatten()
     }
 }
 
@@ -180,31 +226,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn team_names_follow_java_hashset_tree_order() {
-        let keys: Vec<String> = (0..16)
-            .map(|i| {
-                (0..4)
-                    .map(|b| if i & (1 << b) == 0 { "Aa" } else { "BB" })
-                    .collect()
-            })
-            .collect();
-        let mut members = HashSetOrder::default();
-        for k in &keys {
-            assert!(members.insert(k));
-        }
-        // Temurin 25.0.5, HashSet populated by adding keys 0 through 15.
-        let order = [1, 0, 2, 3, 13, 4, 12, 5, 6, 14, 7, 15, 11, 8, 9, 10];
-        assert!(members.iter().eq(order.iter().map(|&i| &keys[i])));
-        assert!(members.contains(&keys[11]));
-        assert!(members.remove(&keys[11]));
-        assert!(!members.contains(&keys[11]));
-        assert!(!members.remove(&keys[11]));
-    }
-
-    #[test]
     fn hash_and_order() {
-        // String.hashCode over UTF-16 code units: the emoji is two surrogates.
-        assert_eq!(java_string_hash("\u{1F600}".encode_utf16()), 1_772_899);
+        assert_eq!(java_hash("harness"), {
+            "harness"
+                .chars()
+                .fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(c as i32))
+        });
         let mut o = OpenOrder::new(16, 0.5);
         for k in ["harness", "harness_h"] {
             o.insert(k);

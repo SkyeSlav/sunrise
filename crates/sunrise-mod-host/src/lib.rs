@@ -3,7 +3,7 @@
 #![deny(unsafe_code)]
 
 #[allow(unsafe_code)]
-pub mod native_libraries;
+mod native_libraries;
 pub use native_libraries::{GAME_BUILD_ID, RUSTC_VERSION, main};
 
 mod loading;

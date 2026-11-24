@@ -1418,14 +1418,11 @@ sunrise-client game::native_hooks::base::screen_open_tests::an_interaction_key_r
 sunrise-client game::native_hooks::base::screen_open_tests::an_overlay_fires_init_post_after_it_opens lib daily resources
 sunrise-client game::native_hooks::base::screen_open_tests::an_overlay_fires_opening_before_it_opens lib daily resources
 sunrise-client game::native_hooks::base::screen_open_tests::an_overlay_fires_opening_then_closing_through_the_observer lib daily resources
-sunrise-client game::native_hooks::base::screen_open_tests::an_overlay_replaced_by_a_vanilla_screen_fires_its_init_post lib daily resources
 sunrise-client game::native_hooks::base::screen_open_tests::cancelling_opening_keeps_an_overlay_shut lib daily resources
 sunrise-client game::native_hooks::base::screen_open_tests::cancelling_opening_keeps_the_current_screen lib daily resources
 sunrise-client game::native_hooks::base::screen_open_tests::client_gui_state_matches_screen_init_hook lib daily resources
 sunrise-client game::native_hooks::base::screen_open_tests::no_mods_is_a_plain_assignment lib daily resources
-sunrise-client game::native_hooks::base::screen_open_tests::replacing_a_title_screen_opens_the_mods_screen_over_the_title lib daily resources
 sunrise-client game::native_hooks::base::screen_open_tests::replacing_opening_of_an_overlay_opens_the_mods_screen lib daily resources
-sunrise-client game::native_hooks::base::screen_open_tests::replacing_opening_opens_another_vanilla_screen_where_it_can lib daily resources
 sunrise-client game::native_hooks::base::screen_open_tests::replacing_opening_opens_the_mods_screen_instead lib daily resources
 sunrise-client game::native_hooks::base::screen_open_tests::the_creative_screen_excludes_its_two_tab_rows lib daily resources
 sunrise-client game::native_hooks::base::screen_open_tests::the_same_screen_again_fires_nothing lib daily resources
@@ -1474,9 +1471,6 @@ sunrise-client game::native_hooks::death_source_tests::player_bow_death_retains_
 sunrise-client game::native_hooks::death_source_tests::skeleton_arrow_death_credits_the_skeleton_not_the_player lib daily resources
 sunrise-client game::native_hooks::death_source_tests::zombie_ai_melee_armor_hurt_retains_the_real_source lib daily resources
 sunrise-client game::native_hooks::enchanted_block_loot::tests::a_listener_sets_the_level_a_block_table_reads lib daily resources
-sunrise-client game::native_hooks::enchantment_and_lang_tests::a_trait_mod_measures_text_through_its_draw_context lib daily resources
-sunrise-client game::native_hooks::enchantment_and_lang_tests::enchantment_registry_returns_records_and_unknown_cost lib daily resources
-sunrise-client game::native_hooks::enchantment_and_lang_tests::translate_gives_the_text_of_a_defined_key_and_none_otherwise lib daily resources
 sunrise-client game::native_hooks::entity_inside::entity_inside_tests::landing_writes_apply_at_the_batch_end lib daily resources
 sunrise-client game::native_hooks::entity_inside::sweep_tests::a_killing_write_stops_the_flush lib daily resources
 sunrise-client game::native_hooks::entity_inside::sweep_tests::a_killing_write_stops_the_items_flush lib daily resources
@@ -1513,7 +1507,6 @@ sunrise-client game::native_hooks::level_tick_tests::tests::server_hook_resolves
 sunrise-client game::native_hooks::living_death_post::tests::living_death_post_fires_once_after_each_finished_death lib daily resources
 sunrise-client game::native_hooks::living_death_post::tests::living_death_post_hears_a_player_death_after_the_message_and_loot lib daily resources
 sunrise-client game::native_hooks::math::tests::game_host_math_profile_matches_platform_and_is_stable lib daily resources
-sunrise-client game::native_hooks::mod_block_entity_payload_tests::replacing_mod_block_entity_payload_keeps_its_type_and_saved_identity lib daily resources
 sunrise-client game::native_hooks::mod_mismatch::tests::a_resolved_missing_mod_is_not_asked_about lib daily resources
 sunrise-client game::native_hooks::mod_mismatch::tests::existing_lists_fire_on_client_and_dedicated_even_without_differences lib daily resources
 sunrise-client game::native_hooks::on_block_placed_by_tests::block_items_notify_after_setup_and_before_consumption lib daily resources
@@ -1549,10 +1542,14 @@ sunrise-client game::native_hooks::runtime_environment_tests::client_host_reads_
 sunrise-client game::native_hooks::runtime_environment_tests::client_host_reads_playing_and_key_mappings lib daily resources
 sunrise-client game::native_hooks::server_tick_rate_changed::server_tick_rate_changed_tests::a_listener_runs_before_the_autosave_wait_is_adjusted lib daily resources
 sunrise-client game::native_hooks::server_tick_rate_changed::server_tick_rate_changed_tests::a_mod_hears_every_route_of_on_tick_rate_changed_once lib daily resources
+sunrise-client game::native_hooks::tests::a_trait_mod_measures_text_through_its_draw_context lib daily resources
 sunrise-client game::native_hooks::tests::declared_types_create_tick_and_reload_through_game lib daily resources
+sunrise-client game::native_hooks::tests::enchantment_registry_returns_records_and_unknown_cost lib daily resources
 sunrise-client game::native_hooks::tests::generated_fire_matches_dispatch lib daily resources
 sunrise-client game::native_hooks::tests::mod_sign_constructor_prioritizes_templates_over_suffixes lib daily resources
 sunrise-client game::native_hooks::tests::no_item_is_hovered_without_a_window lib daily resources
+sunrise-client game::native_hooks::tests::replacing_mod_block_entity_payload_keeps_its_type_and_saved_identity lib daily resources
+sunrise-client game::native_hooks::tests::translate_gives_the_text_of_a_defined_key_and_none_otherwise lib daily resources
 sunrise-client game::native_hooks::tick_target_millis::tick_target_millis_tests::a_client_mod_sets_how_long_a_client_tick_lasts lib daily resources
 sunrise-client game::native_hooks::trident_family_tests::accepted_player_and_mob_tridents_keep_type_entities_position_and_full_weapon lib daily resources
 sunrise-client game::native_hooks::trident_family_tests::actual_arrows_still_bounce_off_powered_wither_and_closed_shulker lib daily resources
@@ -2285,7 +2282,6 @@ sunrise-client game::remote::player_tick_tests::client_player_ticks_on_the_death
 sunrise-client game::remote::player_tick_tests::guest_tick_brackets_sleep_cooldowns_pickups_and_death lib daily resources
 sunrise-client game::remote::player_tick_tests::the_name_tag_over_a_player_shows_the_name_a_mod_formats lib daily resources
 sunrise-client game::remote::respawn_motion_tests::a_portals_respawn_keeps_the_players_motion_and_a_deaths_does_not lib daily resources
-sunrise-client game::remote::rider_tick_tests::a_boat_clamps_the_riders_yaw_without_changing_the_previous_yaw lib daily resources
 sunrise-client game::remote::rider_tick_tests::a_riders_move_takes_the_look_of_the_tick_and_leaves_it_off_the_ground lib daily resources
 sunrise-client game::remote::tables::tests::a_servers_block_and_item_tags_replace_the_games lib daily resources
 sunrise-client game::remote::tests::a_servers_client_takes_its_speed_from_the_attributes_not_the_effect lib daily resources

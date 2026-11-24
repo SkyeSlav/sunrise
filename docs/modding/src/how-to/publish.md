@@ -1,15 +1,11 @@
 # Publishing your mod
 
 Sunrise's registry, [sunrise-org/sunrise-mods](https://github.com/sunrise-org/sunrise-mods), lists mods, modpacks,
-resource packs and shader packs at [playsunrise.net/mods](https://playsunrise.net/mods). The
-[registry submission form](https://playsunrise.net/mods/submit) uploads your package and opens a pull request for a
-person to review. To prepare a mod submission locally, follow the steps below with `cargo sunrise-mod publish`,
-then upload the package and open the pull request yourself.
+resource packs and shader packs at [playsunrise.net/mods](https://playsunrise.net/mods). Listing a project is a pull
+request that a person reviews. `cargo sunrise-mod publish` prepares the submission locally; it never uploads or opens
+the pull request for you.
 
 ## 1. Build and write the submission
-
-Set `version` in `sunrise-mod.toml` to a SemVer without `+build` metadata, at most 64 characters after
-padding missing parts (for example, `1.2` becomes `1.2.0`). The registry uses that version in the release name.
 
 In your mod's folder (content, native or wasm; add `--wasm` for a wasm mod, as for `build`):
 
@@ -83,9 +79,6 @@ folder separate from the checkout. For a signed project, [build and sign first](
 version row to the entry from the checkout, leaving all existing fields and rows in place. The printed local check
 reads only the new file, so you do not need to download the old files or copy over the icon and screenshots.
 Repeat steps 2 to 4.
-
-`--registry <checkout>` also checks a first listing's id against the checkout's collection ids; without it, the
-registry's CI checks the id when the pull request opens.
 
 Published versions never change and are never removed: a version already in the entry is refused by name, and a file
 that must go is taken down by the registry's maintainers in `revoked.toml`.

@@ -2,7 +2,7 @@
 
 Use the registry to distribute content and native mods (`.smod`), modpacks (`.spack`),
 resource packs, data packs, shaders-folder packs and Sunrise shader packs (`.sshader`).
-Use the [registry submission form](https://playsunrise.net/mods/submit) or stage a mod locally with `cargo sunrise-mod publish`.
+Submit your project page and version file through the registry submission form.
 Versions are pinned by SHA-256. The launcher and website read schema 1 of `index.json`.
 The format is defined by `sunrise_mod_package::index` and `sunrise_mod_package::modpack`.
 
@@ -214,9 +214,8 @@ sits in a linked folder, refuses the import before anything is written.
 ## Submitting a project
 
 A project is a file `mods/<id>.toml` in [sunrise-org/sunrise-mods](https://github.com/sunrise-org/sunrise-mods),
-added by a pull request that a person reviews. The [registry submission form](https://playsunrise.net/mods/submit)
-opens the pull request for you. For a mod, you can instead stage it with `cargo sunrise-mod publish` and open the
-pull request yourself. See [Publishing your mod](../how-to/publish.md) for the steps. Its page needs:
+added by a pull request that a person reviews ([Publishing your mod](../how-to/publish.md) is the task page, and
+`cargo sunrise-mod publish` writes the entry). Its page needs:
 
 - A description of 50–10,000 characters after trimming.
 - 1–3 categories from your project kind’s list and up to 10 lowercase tags.

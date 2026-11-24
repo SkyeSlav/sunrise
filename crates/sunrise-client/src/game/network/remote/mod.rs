@@ -1797,11 +1797,6 @@ impl Game<'_> {
             .as_ref()
             .is_some_and(|r| r.last_input & SHIFT_INPUT != 0)
     }
-    /// Whether secondary use skips a block's default interaction on this client.
-    pub(super) fn remote_secondary_use_skips_block(&self) -> bool {
-        self.remote_shift_down()
-            && (self.stack_in(self.selected).is_some() || self.offhand.is_some())
-    }
     fn next_sequence(&mut self) -> i32 {
         let r = self.remote.as_mut().expect("remote");
         r.sequence += 1;
@@ -8435,11 +8430,10 @@ impl Game<'_> {
         if !self.anchor_takes(hit.pos, held) && self.anchor_takes(hit.pos, self.offhand.as_ref()) {
             return (InteractionResult::Pass, DryUse::default());
         }
-        // BeehiveBlock.useItemOn: a glass bottle on a full hive (honey level 5)
-        // is SUCCESS, so the click ends after UseItemOn and no UseItem follows.
-        // Shears harvest only on a server level (`use_beehive`): on the client
-        // they fall through to the empty-hand use, and the click goes on.
-        if held.is_some_and(|s| &*s.item == "minecraft:glass_bottle")
+        // BeehiveBlock.useItemOn: shears or a glass bottle on a full hive
+        // (honey level 5) is SUCCESS, so the click ends after UseItemOn and
+        // no UseItem follows (the server does the harvest, see `use_beehive`).
+        if held.is_some_and(|s| matches!(&*s.item, "minecraft:shears" | "minecraft:glass_bottle"))
             && self
                 .hive_state(hit.pos)
                 .is_some_and(|(honey, _)| honey == Some(5))
@@ -8452,55 +8446,11 @@ impl Game<'_> {
         if self.composter_takes(hit.pos, held) {
             return (InteractionResult::Success, DryUse::default());
         }
-        if let Some(result) = self.client_block_answer(hit, held) {
-            return (result, DryUse::default());
-        }
         self.remote_block_template(hit, held, false, asks_mods)
     }
 
     /// The shared dry-level boundary for a normal block use or the empty
     /// method requested by a canceled `BLOCK` phase's `TryWithEmptyHand`.
-    /// The `useItemOn` answers a client level gives without changing a block, for either hand:
-    /// - VaultBlock: something in the hand on an ACTIVE vault is SUCCESS_SERVER (no swing here);
-    /// - RedStoneOreBlock: SUCCESS, unless a block item goes in the cell beside it
-    ///   (`BlockPlaceContext.canPlace`), PASS;
-    /// - PumpkinBlock: shears are SUCCESS (only the server carves it);
-    /// - WeatheringCopperGolemStatueBlock: an axe on an unaffected statue is SUCCESS (the server
-    ///   lets the golem out).
-    pub(super) fn client_block_answer(
-        &self,
-        hit: &super::Hit,
-        held: Option<&ItemStack>,
-    ) -> Option<InteractionResult> {
-        if self.vault_takes_click(hit.pos, held) {
-            return Some(InteractionResult::Consume);
-        }
-        let name = self.block_name(hit.pos);
-        match &*name {
-            "minecraft:redstone_ore" | "minecraft:deepslate_redstone_ore" => {
-                let beside = [0, 1, 2].map(|i| hit.pos[i] + hit.face[i]);
-                let takes = self
-                    .res
-                    .facts()
-                    .get(self.world.block(beside[0], beside[1], beside[2]))
-                    .replaceable;
-                let places =
-                    held.is_some_and(|s| self.res.items().block_items.contains_key(&*s.item));
-                Some(if places && takes {
-                    InteractionResult::Pass
-                } else {
-                    InteractionResult::Success
-                })
-            }
-            "minecraft:pumpkin" => held
-                .is_some_and(|s| &*s.item == "minecraft:shears")
-                .then_some(InteractionResult::Success),
-            "minecraft:copper_golem_statue" => held
-                .is_some_and(|s| self.item_in_tag("minecraft:axes", &s.item))
-                .then_some(InteractionResult::Success),
-            _ => None,
-        }
-    }
     pub(super) fn remote_block_template(
         &mut self,
         hit: &super::Hit,
@@ -11443,8 +11393,6 @@ fn client_fluid_step(
     }
 }
 
-#[cfg(test)]
-mod frozen_screen_effects_tests;
 #[cfg(test)]
 mod placement_prediction_tests;
 #[cfg(test)]

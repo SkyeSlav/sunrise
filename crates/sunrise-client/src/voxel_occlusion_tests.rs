@@ -99,18 +99,27 @@ fn bounds_handle_a_single_vertex_and_nonzero_start() {
 }
 
 #[test]
-fn completed_mesh_culling_ignores_the_prefix_and_keeps_protruding_parts_visible() {
+fn completed_mesh_culling_preserves_prior_geometry_and_protruding_parts() {
     let prior = vertex([0.0; 3]);
     let body = [vertex([8.0, -1.0, -1.0]), vertex([10.0, 1.0, 1.0])];
     let wall = |p: [i32; 3]| p[0] == 4 && (-1..=0).contains(&p[1]);
-    let mut vertices = vec![prior];
-    vertices.extend(body);
-    assert!(Culler::new([0.0; 3], 1_000).hidden(&vertices, 1, wall));
+    let mut hidden = vec![prior];
+    hidden.extend(body);
+    assert!(Culler::new([0.0; 3], 1_000).cull_vertices(&mut hidden, 1, wall));
+    assert_eq!(hidden.len(), 1);
+    assert_eq!(hidden[0].pos, prior.pos);
 
     // A held item or animated part beyond the wall keeps the whole model.
-    vertices.push(vertex([8.0, 5.0, 0.0]));
-    assert!(!Culler::new([0.0; 3], 1_000).hidden(&vertices, 1, wall));
-    assert!(!Culler::new([0.0; 3], 0).hidden(&vertices, 1, |_| panic!()));
+    let mut exposed = vec![prior];
+    exposed.extend(body);
+    exposed.push(vertex([8.0, 5.0, 0.0]));
+    let before = exposed.clone();
+    assert!(!Culler::new([0.0; 3], 1_000).cull_vertices(&mut exposed, 1, wall));
+    assert_eq!(
+        bytemuck::cast_slice::<_, u8>(&exposed),
+        bytemuck::cast_slice::<_, u8>(&before)
+    );
+    assert!(!Culler::new([0.0; 3], 0).cull_vertices(&mut exposed, 1, |_| panic!()));
 }
 
 #[test]

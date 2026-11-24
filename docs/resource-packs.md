@@ -80,41 +80,13 @@ harness named checks that loader against vanilla).
 | Paintings, mob effect icons | `atlases/paintings.json`, `textures/mob_effect/` | works | loaded from the overlay |
 | Locator bar styles | `waypoint_style/` | works | `locator_bar.rs` loads `waypoint_style/*.json` (`WaypointStyleManager`); `game/locator_bar.rs` draws the bar |
 | Post effects (spectating a creeper, spider or enderman; glowing outlines) | `post_effect/`, `shaders/post/` | works | `post_chain.rs` reads `post_effect/*.json` and `post_glsl.rs` translates the `shaders/post/*.vsh`/`.fsh` with naga, with depth inputs, persistent targets and `TextureInput` |
-| Core shaders | `shaders/core/`, `shaders/include/` | partly | `core/text` draws the GUI's text (HUDs moved by its vertex shader, text effects), `core/rendertype_lines` the block outline (both strokes of a high contrast one; hitboxes, chunk borders and other debug lines still draw natively), `core/sky` and `core/stars` the overworld's sky disc and stars, and `core/lightmap` (with `core/screenquad`) the 16x16 light texture from `LightmapInfo`; each of these but the text takes the packs' Polytone expression uniforms on its own shaders (`polytone/shader_modifiers`, `polytone_post.rs`, `gfx/expression_blocks.rs`), translated by naga (`sunrise-client-render` `core_shader.rs`, `hud/pack_text.rs`, `gfx/core_lines.rs`, `gfx/core_sky.rs`, `gfx/core_lightmap.rs`); the other core shaders aren't run (#13218) |
+| Core shaders | `shaders/core/`, `shaders/include/` | partly | `core/text` draws the GUI's text (HUDs moved by its vertex shader, text effects), `core/rendertype_lines` the block outline (both strokes of a high contrast one; hitboxes, chunk borders and other debug lines still draw natively), `core/sky` and `core/stars` the overworld's sky disc and stars, and `core/lightmap` (with `core/screenquad`) the 16x16 light texture from `LightmapInfo`, translated by naga (`sunrise-client-render` `core_shader.rs`, `hud/pack_text.rs`, `gfx/core_lines.rs`, `gfx/core_sky.rs`, `gfx/core_lightmap.rs`); the other core shaders aren't run (#13218) |
 | OptiFine / CIT Resewn custom item textures (`type=item`: `texture`, `model`, `texture.<name>`, `model.<name>`; `type=armor`: `texture`, `texture.<layer>` with the pre-1.21.2 layer names such as `diamond_layer_1`, `leather_layer_2_overlay`; `type=elytra`: `texture`; `type=enchantment` layers on GUI items; `useGlint=false` in `cit.properties`, which removes vanilla's glint from items) | `optifine/cit/`, `mcpatcher/cit/`, `citresewn/cit/` | partly | `item_render/cit.rs`, `cit_armor.rs`, `cit_glint.rs` and `hud/cit_glint.rs` tests; enchantment layers on held, dropped, framed and worn items, and `anim/` glints, come later; special renderers (heads, shields, banners) keep their vanilla look; only players and armour stands wear CIT armour and elytra, other mobs keep vanilla's; worn trims are unchanged; armour textures above 1024x512 (16 times vanilla's 64x32) draw vanilla |
 | GPU warn list, regional compliance | `gpu_warnlist.json`, `regional_compliancies.json` | n/a | OpenGL driver warnings and play-time notices for some regions; not used |
 
 Summary: 50 rows; 42 work, 7 partly (OptiFine/EMF entity models, random entity textures, connected textures,
 emissive textures, CIT, GUI sprite scaling, core shaders), 1 doesn't apply. Every vanilla loader in the list above
 reads the pack; what is left is the GUI scaling types and the core shaders, plus the OptiFine-format extras.
-
-### Polytone expression uniforms on core shaders
-
-A pack's `assets/<ns>/polytone/shader_modifiers/<shader>.json` (`minecraft/.../core/lightmap.json` is the shader
-`minecraft:core/lightmap`) maps uniform block names to expressions (wiki "Expression Uniforms on Any Shader"). The
-packs' lightmap (`core/lightmap` with `core/screenquad`), sky (`core/sky`), stars (`core/stars`) and block outline
-(`core/rendertype_lines`) take them, each from its own shaders' files (`gfx/expression_blocks.rs`); the GUI's text
-doesn't yet:
-
-- A block one of its stages reads, declared `uniform Name { float value; };`, holds its expression's value each
-  frame. The sky, stars and outline each use a single modifier file. Only the lightmap uses two files: for a block
-  read by both stages or defined in both files, it looks in the fragment shader's (`core/lightmap`) first, then in
-  the vertex shader's (`core/screenquad`). Otherwise, it uses the file for the stage that reads the block. A block
-  no stage reads is not bound, and a stage that only declares it doesn't decide its shape. If a block a stage reads
-  is not one float, or has no expression, the affected pipeline uses its built-in shader.
-- Each block, vanilla's and `LightmapInfo` included, of each of these pipelines is bound only to the stages that read it, and counts against
-  the device's limit of uniform blocks per stage (`max_uniform_buffers_per_shader_stage`, 12 by default) for those
-  stages only: a shader over it in either stage is refused.
-- The expression context is the frame's, as the packs' post chains and particles see it: the weather, the game and
-  day time, the dimension and its sky, the player's place and motion, the camera's light, biome and climate, and
-  the packs' config entries (`polytone/config_entries`). Fullbright skips only the lightmap's expressions.
-- Limits: a file is read up to 64 KiB, with at most 16 uniforms, each a GLSL identifier of at most 64 characters
-  not starting `gl_`. An expression has at most 1024 tokens; its tree is at most 64 levels high and its parse
-  nests at most 16 levels deep (a statement, its expression, each bracket and each unary operator), both checked as
-  it is parsed. A file over any of these, or whose path names no shader, is refused whole, named by its path in the
-  log.
-- The programs are resolved once when the pack's shaders load. Each frame evaluates them for the installed pack
-  pipelines; each pipeline uploads 16 bytes per expression uniform when it prepares a draw.
 
 ## Gaps and their work
 

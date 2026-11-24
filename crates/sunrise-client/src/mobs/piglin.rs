@@ -25,6 +25,17 @@ const CONVERSION: i32 = 300;
 /// `DANCING` memories last.
 const CELEBRATION: i32 = 300;
 
+/// `ZombifiedPiglin.populateDefaultEquipmentSlots`: a golden sword, or one
+/// time in 20 a golden spear, off `random` (`Pig.thunderHit` passes the pig's
+/// own, `this.getRandom()`).
+pub fn default_equipment(random: &mut impl RandomSource) -> &'static str {
+    if random.next_int_bound(20).unwrap_or(1) == 0 {
+        "minecraft:golden_spear"
+    } else {
+        "minecraft:golden_sword"
+    }
+}
+
 /// `PiglinAi.BARTERING_ITEM`: vanilla's barter currency, compared by item.
 pub const BARTERING_ITEM: &str = "minecraft:gold_ingot";
 

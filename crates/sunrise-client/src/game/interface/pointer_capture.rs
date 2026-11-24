@@ -147,11 +147,9 @@ impl Game<'_> {
         }
         // MouseHandler.grabMouse never captures an inactive window, and vanilla
         // grabs only on `setScreen(null)`: the pack prompt and server dialogs
-        // are screens over the world that keep the pointer, as does a screen a
-        // mod's `screen_opening` answer kept or opened in place of none.
+        // are screens over the world that keep the pointer.
         if capture
-            && ((self.screen_state.answered.get() && self.screen != Screen::Playing)
-                || (!self.focused && !self.unclaimed_window && !self.scripted_run())
+            && ((!self.focused && !self.unclaimed_window && !self.scripted_run())
                 || self.server_packs.prompt.is_some()
                 || self.dialog_open()
                 || self.command_prompt.is_some())

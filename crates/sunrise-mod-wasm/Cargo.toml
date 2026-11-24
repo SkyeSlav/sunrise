@@ -32,6 +32,7 @@ rustix = { version = "1", default-features = false, features = ["std", "process"
 [dev-dependencies]
 sunrise-threads = { path = "../sunrise-threads" }
 sunrise-engine-slots = { path = "../sunrise-engine-slots" }
+sunrise-world = { path = "../sunrise-world" }
 tempfile = "3.27.0"
 libc = "0.2"
 sunrise-mod-api-gen = { path = "../sunrise-mod-api-gen" }

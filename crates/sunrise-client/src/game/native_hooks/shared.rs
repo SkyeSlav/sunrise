@@ -13,12 +13,6 @@ use level_helpers::block_entity_for_block;
 #[cfg(test)]
 #[path = "shared/audio_math_tests.rs"]
 mod audio_math_tests;
-#[cfg(test)]
-#[path = "shared/block_property_tests.rs"]
-mod block_property_tests;
-#[cfg(test)]
-#[path = "shared/gameplay_hook_tests.rs"]
-mod gameplay_hook_tests;
 #[path = "shared/item_fallthrough.rs"]
 mod item_fallthrough;
 #[cfg(test)]
@@ -35,9 +29,6 @@ mod runtime_environment_tests;
 #[cfg(test)]
 #[path = "shared/screen_position_tests.rs"]
 mod screen_position_tests;
-#[cfg(test)]
-#[path = "shared/screen_slot_tests.rs"]
-mod screen_slot_tests;
 #[cfg(test)]
 #[path = "shared/slot_icon_tests.rs"]
 mod slot_icon_tests;
@@ -76,22 +67,6 @@ enum ScreenDecision {
     Keep,
     /// `ModScreen`: this mod's own screen opens instead.
     ModScreen(&'static str),
-    /// `Vanilla`: this vanilla screen opens instead.
-    Vanilla(ScreenTarget),
-}
-
-/// The title screen a `ScreenOpening::Vanilla` target is (its id), or None
-/// for a world's screen.
-fn title_target_id(target: ScreenTarget) -> Option<&'static str> {
-    match target {
-        ScreenTarget::Title => Some("title"),
-        ScreenTarget::WorldSelect => Some("world_select"),
-        ScreenTarget::WorldCreate => Some("world_create"),
-        ScreenTarget::Multiplayer => Some("multiplayer"),
-        ScreenTarget::AddServer => Some("add_server"),
-        ScreenTarget::DirectConnect => Some("direct_connect"),
-        _ => None,
-    }
 }
 
 pub(super) fn observed_overlay_id(overlays: &[(bool, &'static str)]) -> Option<&'static str> {
@@ -160,17 +135,6 @@ impl Game<'_> {
                     screen = Screen::Mod;
                     owner = Some(mod_id);
                 }
-                ScreenDecision::Vanilla(target) => {
-                    before(self);
-                    self.open_screen_target(target);
-                    if self.title.is_some() {
-                        // A title screen: told here, so the frame's observer
-                        // doesn't announce it again.
-                        self.screen_state.observed = self.observed_now();
-                        self.shown_init_post();
-                    }
-                    return;
-                }
                 ScreenDecision::Open => {}
             }
         }
@@ -185,34 +149,24 @@ impl Game<'_> {
     }
     /// Whether a change of screen asks the screen hooks: a mod listens to
     /// `screen_opening` or `screen_closing`, on a client's own `Game` (not a
-    /// server's, not on a guest's behalf, not the screen a mod's `Vanilla`
-    /// answer opens). Otherwise it is a plain assignment.
-    pub(in crate::game) fn screen_hooks_heard(&self) -> bool {
+    /// server's, not on a guest's behalf). Otherwise it is a plain assignment.
+    fn screen_hooks_heard(&self) -> bool {
         (mod_api::__private::listened(mod_api::HookId::ScreenOpening)
             || mod_api::__private::listened(mod_api::HookId::ScreenClosing))
             && self.options.execution_role.is_client()
             && self.lan_acting.is_none()
-            && !self.screen_state.replacing
     }
     /// The hooks' answer to a change from `current` to `new`, for every path
     /// that changes the screen: `screen_change` (Opening, then Closing for
-    /// `current` when `closes`), then what `screen_decision` makes of it.
+    /// `current` when `closes`), and a `ModScreen` answer only where a mod's
+    /// screen can open (`mod_screen_blocked`), else the change goes ahead.
     fn decide_screen(
         &self,
         current: &ScreenView<'_>,
         new: &ScreenView<'_>,
         closes: bool,
     ) -> ScreenDecision {
-        self.screen_decision(self.screen_change(current, new, true, closes))
-    }
-    /// What a mod's `screen_opening` answer does here: a `ModScreen` only
-    /// where a mod's screen can open (`mod_screen_blocked`), a `Vanilla`
-    /// target only where it opens (a title screen while the title shows, a
-    /// world's screen where a mod's could open in a world), else the change
-    /// goes ahead and the refused target is logged. Records whether a mod's
-    /// answer changed what shows (`ScreenState::answered`).
-    fn screen_decision(&self, answer: Option<Answered<ScreenOpening>>) -> ScreenDecision {
-        let decision = match answer {
+        match self.screen_change(current, new, true, closes) {
             Some(Answered {
                 answer: ScreenOpening::Cancel,
                 ..
@@ -222,69 +176,8 @@ impl Game<'_> {
                 mod_id,
                 ..
             }) if !self.mod_screen_blocked() => ScreenDecision::ModScreen(mod_id),
-            Some(Answered {
-                answer: ScreenOpening::Vanilla(target),
-                mod_id,
-                ..
-            }) => {
-                let opens = match title_target_id(target) {
-                    // An overlay over the title would stay in front of it.
-                    Some(_) => self.title.is_some() && !self.screen_over_playing(),
-                    None => self.title.is_none() && !self.mod_screen_blocked(),
-                };
-                if opens {
-                    ScreenDecision::Vanilla(target)
-                } else {
-                    log::warn!(
-                        "Sunrise: mod {mod_id} answered screen_opening with {target:?}, which can't open here; the screen asked for opens"
-                    );
-                    ScreenDecision::Open
-                }
-            }
             _ => ScreenDecision::Open,
-        };
-        self.screen_state
-            .answered
-            .set(!matches!(decision, ScreenDecision::Open));
-        decision
-    }
-    /// Opens vanilla screen `target` as it opens on its own, in place of the
-    /// one asked for (`ScreenOpening::Vanilla`, which `screen_decision` let
-    /// through): the change fires no screen hook again.
-    fn open_screen_target(&mut self, target: ScreenTarget) {
-        self.screen_state.replacing = true;
-        match target {
-            ScreenTarget::Pause => {
-                self.pause_focus = None;
-                self.set_screen(Screen::Paused);
-                self.pause_menu = true;
-            }
-            ScreenTarget::Options => self.open_options(false),
-            ScreenTarget::Inventory => {
-                // A menu the server opened for the screen asked for (a crafting
-                // table) closes: the inventory shows the player's own. With
-                // only the player's own open, there is nothing to close.
-                if self.remote_menu_type().is_some() {
-                    self.close_container();
-                }
-                self.open_player_inventory();
-            }
-            ScreenTarget::Advancements => self.open_advancements(false),
-            ScreenTarget::Stats => self.open_stats(),
-            ScreenTarget::Chat => self.begin_chat_screen("", false),
-            _ => {
-                // A title screen: one of the game's own screens over the title goes.
-                self.set_screen(Screen::Playing);
-                if let (Some(title), Some(id)) = (self.title.as_mut(), title_target_id(target)) {
-                    title.open_by_id(id);
-                }
-                self.build_screen();
-            }
         }
-        // Every target takes the pointer, even one opened in place of a
-        // request that grabbed none (a mod's screen asked for while playing).
-        self.capture(false);
-        self.screen_state.replacing = false;
     }
     /// What `set_screen` does once the hooks have answered: `screen` opens,
     /// and the mod `owner`'s own screen when one answered `ModScreen`.
@@ -341,23 +234,33 @@ impl Game<'_> {
             ),
             None => [0.0; 4],
         };
-        let mut view = self.screen_view_at(screen, rect);
-        if screen == Screen::Playing {
-            view.slots = 0;
-        }
-        view
+        let none = screen == Screen::Playing;
+        ScreenView::from(mod_api::__private::built::ScreenView {
+            id: screen.id(),
+            menu: self.remote_menu_type().filter(|m| !none && !m.is_empty()),
+            title: self
+                .remote
+                .as_ref()
+                .and_then(|r| r.menu_title_snapshot())
+                .filter(|_| !none),
+            rect,
+            slots: if none { 0 } else { self.slot_count() },
+            mouse: self.cursor(),
+            partial_tick: self.clock.fraction() as f32,
+        })
     }
     #[cfg(test)]
     pub(super) fn test_observed_title(&self) -> Option<std::sync::Arc<mod_api::Text>> {
         self.observe_view(self.screen_change_view(self.screen))
             .title
     }
-    /// A mod's own screen cannot open now: over a book, a sign editor, a
-    /// dialog or a prompt, with neither the title nor a player, with a
+    /// A mod's own screen cannot open now: over the title screen, a book, a
+    /// sign editor, a dialog or a prompt, with no player or a
     /// world loading, or on a guest's behalf.
     fn mod_screen_blocked(&self) -> bool {
-        self.lan_acting.is_some()
-            || (self.player.is_none() && self.title.is_none())
+        self.title.is_some()
+            || self.lan_acting.is_some()
+            || self.player.is_none()
             || self.screen_over_playing()
             || self.remote_loading()
     }
@@ -368,8 +271,7 @@ impl Game<'_> {
     /// a screen: `screen_opening` fires first with `id` as the new screen,
     /// then `screen_closing` for an overlay it replaces. A mod's `Cancel`
     /// keeps what is open and `open` never runs; `ModScreen` opens the
-    /// mod's own screen instead, unless one can't open now, and `Vanilla` its
-    /// vanilla screen. Otherwise `open`
+    /// mod's own screen instead, unless one can't open now. Otherwise `open`
     /// sets the overlay and `screen_init_post` follows. Returns whether
     /// `open` ran. With no mod loaded, on a server's `Game` and on a guest's
     /// behalf, `open` just runs.
@@ -403,12 +305,6 @@ impl Game<'_> {
             ScreenDecision::ModScreen(mod_id) => {
                 self.apply_screen(Screen::Mod, Some(mod_id));
                 self.screen_state.observed = self.observed_now();
-                return false;
-            }
-            ScreenDecision::Vanilla(target) => {
-                self.open_screen_target(target);
-                self.screen_state.observed = self.observed_now();
-                self.shown_init_post();
                 return false;
             }
             ScreenDecision::Open => {}
@@ -449,8 +345,8 @@ impl Game<'_> {
     /// `Minecraft.setScreen` opens the title's screens: `screen_opening` fires
     /// from the title screen shown to the new one, then `screen_closing` for
     /// the one it leaves, and the change applies unless a mod answered
-    /// `Cancel`; `ModScreen` opens the mod's own screen over the title instead,
-    /// and `Vanilla` another title screen. Then `screen_init_post` follows and the
+    /// `Cancel`. A mod's own screen can't open over the title, so `ModScreen`
+    /// opens the screen asked for. Then `screen_init_post` follows and the
     /// frame's observer is told, so it does not announce it again. Each call
     /// also sets the title's gate: when no mod listens to the screen hooks
     /// (`screen_hooks_heard`), `set_mode` applies at once. Run after each window
@@ -474,29 +370,16 @@ impl Game<'_> {
             let to = screen_view_with_id(&none, id);
             self.decide_screen(&from, &to, true)
         };
-        match decision {
-            ScreenDecision::Keep => return,
-            ScreenDecision::ModScreen(mod_id) => self.apply_screen(Screen::Mod, Some(mod_id)),
-            ScreenDecision::Vanilla(target) => self.open_screen_target(target),
-            ScreenDecision::Open => {
-                if let Some(title) = self.title.as_mut() {
-                    title.mode = mode;
-                }
-                self.build_screen();
-            }
+        if let ScreenDecision::Keep = decision {
+            return;
         }
+        if let Some(title) = self.title.as_mut() {
+            title.mode = mode;
+        }
+        self.build_screen();
         self.screen_state.observed = self.observed_now();
-        self.shown_init_post();
-    }
-    /// `screen_init_post` for what shows now, once a change was told to the
-    /// frame's observer: a title screen, a mod's, or the game's own.
-    fn shown_init_post(&self) {
-        let view = self.screen_change_view(self.screen);
-        let id = match &self.title {
-            Some(title) if self.screen == Screen::Playing => title.mode.id(),
-            _ => view.id,
-        };
-        self.native_screen_init_post(&screen_view_with_id(&view, id));
+        let none = self.screen_change_view(Screen::Playing);
+        self.native_screen_init_post(&screen_view_with_id(&none, id));
     }
 
     /// Shows `title`, as `Minecraft.setScreen(new TitleScreen())` (or the
@@ -504,8 +387,8 @@ impl Game<'_> {
     /// does at startup and when a world closes. `screen_opening` fires to its
     /// screen, then `screen_closing` for an overlay it replaces, before it
     /// shows; `screen_init_post` follows. With no world open nothing else can
-    /// show, so a mod's `Cancel` doesn't keep it shut; `ModScreen` opens the
-    /// mod's own screen over it, and `Vanilla` another title screen.
+    /// show, so a mod's `Cancel` or its own screen doesn't keep it shut (a
+    /// mod's screen can't open over the title).
     pub(super) fn show_title(&mut self, mut title: sunrise_client::title::Title) {
         title.set_rule_registry(Arc::new(crate::game::api_values::game_rule_registry()));
         self.show_title_with_registry(title);
@@ -527,9 +410,8 @@ impl Game<'_> {
         self.screen_state.observed = self.observed_now();
     }
     /// The hooks of the title appearing (`to` is its screen) or going
-    /// (`None`), from what shows now, and a mod's answer. What changed before
-    /// is told first.
-    fn title_change(&mut self, to: Option<&'static str>) -> Option<Answered<ScreenOpening>> {
+    /// (`None`), from what shows now. What changed before is told first.
+    fn title_change(&mut self, to: Option<&'static str>) {
         let now = self.observed_now();
         self.observe_change(now);
         let none = self.screen_change_view(Screen::Playing);
@@ -551,7 +433,7 @@ impl Game<'_> {
             to.as_ref().unwrap_or(&none),
             true,
             from.is_some(),
-        )
+        );
     }
 
     pub(super) fn observe_screen(&mut self) {
@@ -1120,19 +1002,10 @@ impl Game<'_> {
     /// container build tells a mod the panel it is about to draw, not the one
     /// the previous frame drew.
     pub(super) fn screen_view_at(&self, screen: Screen, rect: [f32; 4]) -> ScreenView<'_> {
-        // Only the inventory screen shows a server's menu: a menu staged for
-        // a screen a mod replaced is not the pause or chat screen's.
-        let menu_shown = screen == Screen::Inventory;
         ScreenView::from(mod_api::__private::built::ScreenView {
             id: screen.id(),
-            menu: self
-                .remote_menu_type()
-                .filter(|m| menu_shown && !m.is_empty()),
-            title: self
-                .remote
-                .as_ref()
-                .and_then(|r| r.menu_title_snapshot())
-                .filter(|_| menu_shown),
+            menu: self.remote_menu_type().filter(|m| !m.is_empty()),
+            title: self.remote.as_ref().and_then(|r| r.menu_title_snapshot()),
             rect,
             slots: self.slot_count(),
             mouse: self.cursor(),
@@ -3370,6 +3243,62 @@ fn packet_view(
 mod tests {
     #[test]
     #[ignore = "daily"]
+    fn enchantment_registry_returns_records_and_unknown_cost() {
+        super::super::native_entity_refs::tests::with_game(|game| {
+            let all = game.enchantments();
+            let sharpness = all.iter().find(|e| e.id == "minecraft:sharpness").unwrap();
+            assert_eq!((sharpness.max_level, sharpness.curse), (5, false));
+            let binding = all
+                .iter()
+                .find(|e| e.id == "minecraft:binding_curse")
+                .unwrap();
+            assert!(binding.curse);
+            assert!(
+                game.enchantment_min_cost("minecraft:sharpness", 1)
+                    .is_some()
+            );
+            assert_eq!(game.enchantment_min_cost("missing:unknown", 1), None);
+        });
+    }
+    #[test]
+    #[ignore = "daily"]
+    fn translate_gives_the_text_of_a_defined_key_and_none_otherwise() {
+        use sunrise_client::lang::{Language, ResourceSource, scoped};
+        struct Empty;
+        impl ResourceSource for Empty {
+            fn read(&self, _: &str) -> Option<Vec<u8>> {
+                None
+            }
+        }
+        super::super::native_entity_refs::tests::with_game(|game| {
+            let (got, _) = scoped(Language::load(&[&Empty], "en_us"), || {
+                (
+                    game.translate("sunrise.options.controller"),
+                    game.translate("missing.key"),
+                )
+            });
+            assert_eq!(got, (Some("Controller".to_owned()), None));
+        });
+    }
+    #[test]
+    #[ignore = "daily"]
+    fn a_trait_mod_measures_text_through_its_draw_context() {
+        use super::super::host::draw::GameDrawContext;
+        use super::super::native_entity_refs::tests::with_game;
+        use mod_api::DrawContext;
+
+        with_game(|game| {
+            let mut batch = sunrise_client::hud::HudBatch::scratch([320, 240]);
+            let draw = GameDrawContext::new(game, &mut batch);
+            // A server's HUD atlas is metrics-only (upstream 2e5a2629a): no sprite sheets,
+            // while an upper-case A still advances 6 GUI pixels.
+            assert_eq!(draw.text_width("AA"), 12.0);
+            assert_eq!(draw.text_width(""), 0.0);
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
     fn declared_types_create_tick_and_reload_through_game() {
         use super::super::native_entity_refs::tests::{record_key, run_fresh_cases, with_game_at};
         use mod_api::{self, *};
@@ -3661,6 +3590,51 @@ mod tests {
                 });
             },
         );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn replacing_mod_block_entity_payload_keeps_its_type_and_saved_identity() {
+        use super::super::native_entity_refs::tests::with_game;
+        use std::sync::Arc;
+        use sunrise_client::chunk::Chunk;
+        use sunrise_client::containers::{BlockEntity, ModBlockEntity, ModBlockEntityFields};
+        use sunrise_client::save::{block_entity_encode, decode_block_entity};
+
+        with_game(|game| {
+            game.world
+                .chunks
+                .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+            let pos = (1, 64, 1);
+            let machine = ModBlockEntity::new("test:machine".into(), Default::default());
+            let made = machine.revision();
+            game.world
+                .block_entities
+                .insert(pos, BlockEntity::Mod(Box::new(machine)));
+            assert_eq!(
+                game.native_with_mod_block_entity([1, 64, 1], |entity| {
+                    **entity = ModBlockEntityFields {
+                        data: vec![7],
+                        ..Default::default()
+                    };
+                    assert_eq!(entity.id(), "test:machine");
+                }),
+                Some(())
+            );
+            let entity = game.world.block_entities.get(&pos).unwrap();
+            let BlockEntity::Mod(machine) = entity else {
+                panic!("not a mod block entity");
+            };
+            assert_eq!(machine.id(), "test:machine");
+            assert_eq!(machine.data, [7]);
+            assert_ne!(machine.revision(), made);
+            assert!(game.world.modified.contains(&(0, 0)));
+            let saved =
+                block_entity_encode::encode(pos, entity, "minecraft:stone", &Default::default());
+            let (saved_pos, loaded) = decode_block_entity(&saved).unwrap();
+            assert_eq!(saved_pos, pos);
+            assert_eq!(loaded.id(), "test:machine");
+        });
     }
 
     #[test]
@@ -3978,5 +3952,381 @@ mod tests {
         )
         .unwrap();
         assert_eq!(game.screen_hovered_item(), None);
+    }
+
+    /// The characters a `ScreenEvent.CharacterTyped.Pre` sees are the
+    /// printable ones of a text: a cancelled one leaves that text and a
+    /// control character (a key, not text) is never offered a hook.
+    #[test]
+    fn typed_text_keeps_control_characters_and_drops_cancelled_ones() {
+        let mut offered = Vec::new();
+        let left = super::screen_text_hooked("a\u{7f}b\u{1b}c", |c| {
+            offered.push(c);
+            c == 'b'
+        });
+        assert_eq!(offered, ['a', 'b', 'c']);
+        assert_eq!(left.as_deref(), Some("a\u{7f}\u{1b}c"));
+        // Every printable character cancelled: no text is left to type.
+        assert_eq!(super::screen_text_hooked("ab", |_| true), None);
+        // Nothing to offer: an empty text stays empty and keys alone stay whole.
+        assert_eq!(super::screen_text_hooked("", |_| true).as_deref(), Some(""));
+        assert_eq!(
+            super::screen_text_hooked("\u{7f}\t", |_| true).as_deref(),
+            Some("\u{7f}\t")
+        );
+        // What no hook cancels is handed back as it came in.
+        assert_eq!(
+            super::screen_text_hooked("hello", |_| false).as_deref(),
+            Some("hello")
+        );
+    }
+
+    /// The window's key path: only a key's printable characters go on to the
+    /// hook and the text box.
+    #[test]
+    fn a_key_offers_only_its_printable_characters() {
+        // Backspace, Escape and the like are keys, not text.
+        assert_eq!(super::chars_to_type("a\u{7f}\u{1b}b", true), "ab");
+        // Nothing typed: nothing to hand over.
+        assert_eq!(super::chars_to_type("", true), "");
+        // Ctrl+A is a shortcut: its `a` reaches no hook and no box.
+        assert_eq!(super::chars_to_type("a", false), "");
+    }
+
+    /// A mod's camera replaces vanilla's value by value; one that isn't finite keeps vanilla's.
+    #[test]
+    fn a_mod_camera_replaces_each_finite_value() {
+        use super::posed_camera;
+        let vanilla = (glam::DVec3::new(1.0, 2.0, 3.0), 10.0, 20.0);
+        assert_eq!(
+            posed_camera(vanilla, [-40.5, 90.0, 1e7], 270.0, -35.0),
+            (glam::DVec3::new(-40.5, 90.0, 1e7), 270.0, -35.0)
+        );
+        assert_eq!(
+            posed_camera(
+                vanilla,
+                [f64::NAN, 5.0, f64::INFINITY],
+                f32::NAN,
+                f32::NEG_INFINITY
+            ),
+            (glam::DVec3::new(1.0, 5.0, 3.0), 10.0, 20.0)
+        );
+    }
+
+    /// A mod's property write: none for a key or value the block lacks, the
+    /// state itself when it already has the value, else the new state.
+    #[test]
+    fn with_property_finds_the_state() {
+        let facts = br#"{"defaults":{"minecraft:air":0,"test:crop":1},"states":[
+            ["air",true,false,"","minecraft:air"],
+            ["crop0",false,false,"",{"id":"test:crop","properties":{"age":"0"}}],
+            ["crop1",false,false,"",{"id":"test:crop","properties":{"age":"1"}}]
+        ]}"#;
+        let registry = sunrise_world::registry::BlockRegistry::from_facts_json(&facts[..]).unwrap();
+        use sunrise_world::registry::BlockStateId;
+        let (age0, age1) = (BlockStateId(1), BlockStateId(2));
+        assert_eq!(
+            super::with_property(&registry, age0, "age", "0"),
+            Some(age0)
+        );
+        assert_eq!(
+            super::with_property(&registry, age0, "age", "1"),
+            Some(age1)
+        );
+        assert_eq!(super::with_property(&registry, age0, "age", "9"), None);
+        assert_eq!(super::with_property(&registry, age0, "lit", "true"), None);
+        // What both property setters write: nothing (false) when the
+        // property already has the value, as `Level.setBlock`.
+        assert_eq!(super::property_change(&registry, age0, "age", "0"), None);
+        assert_eq!(
+            super::property_change(&registry, age0, "age", "1"),
+            Some(age1)
+        );
+        assert_eq!(super::property_change(&registry, age0, "age", "9"), None);
+        assert_eq!(super::property_change(&registry, age0, "lit", "true"), None);
+    }
+
+    /// The state a mod block is placed in is built from its own default state
+    /// and one of its properties, its declared ones (`state_properties` in its
+    /// block file) included, and keeps the properties it already had.
+    #[test]
+    fn a_placement_state_is_built_from_a_blocks_own_properties() {
+        let facts = br#"{"defaults":{"minecraft:air":0,"test:pipe":1},"states":[
+            ["air",true,false,"","minecraft:air"],
+            ["north_gas",false,false,"",{"id":"test:pipe","properties":{"carries":"gas","facing":"north"}}],
+            ["east_gas",false,false,"",{"id":"test:pipe","properties":{"carries":"gas","facing":"east"}}],
+            ["north_items",false,false,"",{"id":"test:pipe","properties":{"carries":"items","facing":"north"}}],
+            ["east_items",false,false,"",{"id":"test:pipe","properties":{"carries":"items","facing":"east"}}]
+        ]}"#;
+        let registry = sunrise_world::registry::BlockRegistry::from_facts_json(&facts[..]).unwrap();
+        use sunrise_world::registry::BlockStateId;
+        let (north_gas, east_gas, east_items) = (BlockStateId(1), BlockStateId(2), BlockStateId(4));
+        // The declared property changes, and `carries` stays as it was.
+        assert_eq!(
+            super::with_property(&registry, north_gas, "facing", "east"),
+            Some(east_gas)
+        );
+        assert_eq!(
+            super::with_property(&registry, east_gas, "carries", "items"),
+            Some(east_items)
+        );
+        // A value the property does not have builds nothing.
+        assert_eq!(
+            super::with_property(&registry, east_gas, "facing", "up"),
+            None
+        );
+    }
+    /// Both property setters return false for a write that changes nothing:
+    /// each goes through `property_change`, none returns true on its own.
+    #[test]
+    fn property_setters_refuse_no_change() {
+        // A Windows checkout has CRLF line ends: the searches below look for "\n".
+        let source = include_str!("base.rs").replace("\r\n", "\n");
+        let code = source.split("#[cfg(test)]").next().unwrap_or_default();
+        for head in [
+            "    pub(in crate::game) fn native_set_block_property(\n        &mut self,\n        ticks:",
+            "    pub(in crate::game) fn set_block_property_with(",
+        ] {
+            let body = code.split(head).nth(1).expect(head);
+            let body = &body[..body.find("\n    }\n").expect(head)];
+            assert!(body.contains("property_change("), "{head}");
+            assert!(!body.contains("return true"), "{head}");
+        }
+    }
+    /// A data packet for an old window leaves the open mod screen alone.
+    #[test]
+    fn mod_screen_data_is_its_windows_only() {
+        let mut s = super::OpenNativeScreen {
+            slot_moves: Default::default(),
+            layout_revision: 0,
+            key: (0, 0, 0),
+            window: 4,
+            menu: "gtmod:menu".into(),
+            block: Some("gtmod:machine".into()),
+            screen: mod_api::Screen::default(),
+            data: Vec::new(),
+            extra: None,
+        };
+        assert!(s.set_data(4, 1, 7));
+        assert!(!s.set_data(3, 1, 99));
+        assert_eq!(s.data, [0, 7]);
+    }
+
+    /// A slot move changes only a shown slot, to a finite position, takes
+    /// effect at the commit, and counts only what changed a position (a
+    /// repeat of the effective position, declared or moved, keeps the layout).
+    #[test]
+    fn slot_moves_refuse_what_the_screen_does_not_show() {
+        let declared = [
+            Some(mod_api::ScreenSlot {
+                position: [8.0, 18.0],
+                ..Default::default()
+            }),
+            None,
+            Some(mod_api::ScreenSlot {
+                position: [26.0, 18.0],
+                ..Default::default()
+            }),
+        ];
+        use mod_api::ScreenSlotRefusal::*;
+        let moves = super::SlotMoves::default();
+        // The current place again changes nothing, not even the count.
+        assert_eq!(moves.set(&declared, 0, Some([8.0, 18.0])), Ok(()));
+        assert_eq!(moves.count.get(), 0);
+        assert_eq!(moves.set(&declared, 2, Some([100.5, -4.0])), Ok(()));
+        assert_eq!(moves.count.get(), 1);
+        // Pending until the build commits it; the read-back sees it at once.
+        assert_eq!(moves.position(2, [26.0, 18.0]), Some([26.0, 18.0]));
+        assert_eq!(moves.latest(&declared, 2), Some([100.5, -4.0]));
+        moves.commit();
+        assert_eq!(moves.position(2, [26.0, 18.0]), Some([100.5, -4.0]));
+        assert_eq!(moves.position(0, [8.0, 18.0]), Some([8.0, 18.0]));
+        // Refusals change nothing.
+        for (slot, pos, refusal) in [
+            (1, Some([0.0, 0.0]), HiddenAtOpen),
+            (3, Some([0.0, 0.0]), NoSuchSlot),
+            (usize::MAX, None, NoSuchSlot),
+            (0, Some([f32::NAN, 0.0]), BadPosition),
+            (0, Some([0.0, f32::INFINITY]), BadPosition),
+        ] {
+            assert_eq!(
+                moves.set(&declared, slot, pos),
+                Err(refusal),
+                "{slot} {pos:?}"
+            );
+        }
+        assert_eq!(moves.count.get(), 1);
+        assert_eq!(moves.position(0, [8.0, 18.0]), Some([8.0, 18.0]));
+        // Hiding a slot hidden at open is already so.
+        assert_eq!(moves.set(&declared, 1, None), Ok(()));
+        assert_eq!(moves.count.get(), 1);
+        // Hidden, then shown again where the mod puts it.
+        assert_eq!(moves.set(&declared, 2, None), Ok(()));
+        assert_eq!(moves.count.get(), 2);
+        assert_eq!(moves.set(&declared, 2, None), Ok(()));
+        assert_eq!(moves.count.get(), 2);
+        moves.commit();
+        assert_eq!(moves.position(2, [26.0, 18.0]), None);
+        assert_eq!(moves.set(&declared, 2, Some([26.0, 18.0])), Ok(()));
+        moves.commit();
+        assert_eq!(moves.position(2, [26.0, 18.0]), Some([26.0, 18.0]));
+        assert_eq!(moves.count.get(), 3);
+    }
+
+    #[test]
+    fn native_breathing_stays_hookable() {
+        let source = include_str!("../../breathing.rs").replace("\r\n", "\n");
+        let hook = source.find("pub fn native_living_breathe(").unwrap();
+        // From its doc comment's first line, so an attribute above it counts.
+        let start = source[..hook].find("/// An entity's breathing").unwrap();
+        let body = &source[start..hook + source[hook..].find("\n}\n").unwrap()];
+        assert!(body.contains("#[inline(never)]"));
+        for line in body.lines() {
+            assert!(!line.contains("cfg"), "a cfg in the breathing hook: {line}");
+            for mac in ["!(", "![", "! {", "!{"] {
+                assert!(!line.contains(mac), "a macro in the breathing hook: {line}");
+            }
+        }
+    }
+
+    #[test]
+    fn native_ingredient_stays_hookable() {
+        let source = include_str!("../../crafting/native_hooks.rs").replace("\r\n", "\n");
+        let at = source.find("pub fn native_ingredient(").unwrap();
+        let start = source[..at].rfind("///").unwrap();
+        let body = &source[start..start + source[start..].find("\n}\n").unwrap()];
+        for line in body.lines() {
+            assert!(
+                !line.contains("cfg"),
+                "a cfg in the ingredient hook: {line}"
+            );
+            for mac in ["!(", "![", "! {", "!{"] {
+                assert!(!line.contains(mac), "a macro: {line}");
+            }
+        }
+    }
+
+    #[test]
+    fn loot_table_load_stays_hookable() {
+        let source = include_str!("../../../../sunrise-world/src/loot.rs").replace("\r\n", "\n");
+        // From its doc comment's last line, so an attribute above it counts.
+        let hook = source.find("pub fn native_loot_table_load(").unwrap();
+        let start = source[..hook].rfind("///").unwrap();
+        let end = source[start..]
+            .find("\n}\n")
+            .or_else(|| source[start..].find("\r\n}\r\n"))
+            .unwrap();
+        let body = &source[start..start + end];
+        for line in body.lines() {
+            assert!(
+                !line.contains("cfg"),
+                "a cfg in the loot hook point: {line}"
+            );
+            for mac in ["!(", "![", "! {", "!{"] {
+                assert!(
+                    !line.contains(mac),
+                    "a macro in the loot hook point: {line}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lifecycle_source_stays_hookable() {
+        let source = include_str!("../modding/native_lifecycle.rs");
+        let code = source.split("#[cfg(test)]").next().unwrap_or_default();
+        for line in code.lines().filter(|l| !l.trim_start().starts_with("//")) {
+            assert!(!line.contains("cfg"), "a cfg in lifecycle source: {line}");
+            for mac in ["!(", "![", "! {", "!{"] {
+                assert!(!line.contains(mac), "a macro in lifecycle source: {line}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_damage_hook_names_the_source() {
+        use super::{Attack, HurtSource, Hurting, hurt_server_args, mob_source};
+        use sunrise_client::health::NO_ATTACK;
+        use sunrise_client::mobs::{Damage, DamageKind as K, Who};
+        let source = |kind, attacker| {
+            let s = mob_source(
+                &Damage {
+                    kind,
+                    attacker,
+                    from: None,
+                    attacker_species: None,
+                },
+                &Attack {
+                    attacker: 7,
+                    projectile: None,
+                    direct: None,
+                    player_uuid: None,
+                    held: Default::default(),
+                    ..Default::default()
+                },
+            );
+            (s.damage_type, s.causing, s.direct)
+        };
+        let zombie = Some(Who::Mob(3));
+        // A registered type of a datapack reaches the hook under its own id.
+        let scorch = K::Named(sunrise_client::mobs::NamedDamage::new("demo:scorch", 0));
+        assert_eq!(source(scorch, None), ("demo:scorch", 0, 0));
+        assert_eq!(source(scorch, zombie), ("demo:scorch", 3, 0));
+        assert_eq!(source(K::MobAttack, zombie), ("minecraft:mob_attack", 3, 3));
+        assert_eq!(source(K::Thorns, zombie), ("minecraft:thorns", 3, 3));
+        assert_eq!(source(K::Arrow, zombie), ("minecraft:arrow", 3, 0));
+        let during = |kind| {
+            let s = mob_source(
+                &Damage {
+                    kind,
+                    attacker: zombie,
+                    from: None,
+                    attacker_species: None,
+                },
+                &Attack {
+                    attacker: 7,
+                    projectile: Some(912),
+                    direct: None,
+                    player_uuid: None,
+                    held: Default::default(),
+                    ..Default::default()
+                },
+            );
+            (s.damage_type, s.direct)
+        };
+        // The impact's projectile is the direct entity only when the type names it.
+        assert_eq!(during(K::Arrow), ("minecraft:arrow", 912));
+        assert_eq!(during(K::WitherSkull), ("minecraft:wither_skull", 912));
+        assert_eq!(during(K::IndirectMagic), ("minecraft:indirect_magic", 912));
+        // magic() and a blast do not, even while that projectile's attack is in scope.
+        assert_eq!(during(K::Magic), ("minecraft:magic", 0));
+        assert_eq!(during(K::Explosion), ("minecraft:player_explosion", 0));
+        let blast = source(K::Explosion, zombie);
+        assert_eq!(blast, ("minecraft:player_explosion", 3, 0));
+        // A player behind a mob's hit is the one whose attack the level lends; a fall has no
+        // source.
+        let hit = source(K::PlayerAttack, Some(Who::Player));
+        assert_eq!(hit, ("minecraft:player_attack", 7, 7));
+        assert_eq!(source(K::Fall, None), ("minecraft:fall", 0, 0));
+        let arrow = HurtSource {
+            damage_type: "minecraft:arrow",
+            causing: 4,
+            direct: 0,
+            position: None,
+        };
+        let player = (2, "minecraft:player", arrow);
+        assert_eq!(
+            hurt_server_args(Hurting::Player(2, arrow), &NO_ATTACK),
+            player
+        );
+        let dragon = (5, "minecraft:ender_dragon", arrow);
+        assert_eq!(
+            hurt_server_args(Hurting::Dragon(5, arrow), &NO_ATTACK),
+            dragon
+        );
+        assert_eq!(
+            hurt_server_args(Hurting::Entity(6, "minecraft:item", arrow), &NO_ATTACK),
+            (6, "minecraft:item", arrow)
+        );
     }
 }

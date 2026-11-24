@@ -408,9 +408,6 @@ pub(super) fn areas_source(root: &Path) -> Result<String, String> {
 /// Generate every area impl explicitly. Full-path calls plus a hard recursion lint
 /// refuse a missing inherent implementation instead of inheriting a trait default.
 pub(super) fn game_forwarders(root: &Path) -> Result<String, String> {
-    // The gated methods with no refusal-shaped `Result`: a refused call unwinds out of them
-    // (#3123).
-    let mut unwinding = std::collections::BTreeSet::new();
     let mut code = String::from(
         "use crate::game::Game;\nuse crate::game::api_values::{call_stack_write, call_state_write, call_write, TryIntoApi, TryIntoEngine};\nuse mod_api::*;\n",
     );
@@ -519,9 +516,6 @@ pub(super) fn game_forwarders(root: &Path) -> Result<String, String> {
                 let typed_access_error = result_error(&entry.sig.output).filter(|error| {
                     outer_type(error, "LevelReadError") || outer_type(error, "LevelWriteError")
                 });
-                if typed_access_error.is_none() {
-                    unwinding.insert(format!("{}::{name}", area.stem));
-                }
                 let access = if let Some(error) = typed_access_error {
                     let error = error.to_token_stream();
                     format!(
@@ -593,48 +587,10 @@ pub(super) fn game_forwarders(root: &Path) -> Result<String, String> {
             }
         }
     }
-    check_unwinding(root, &unwinding)?;
     let parsed = syn::parse_file(&code).map_err(|e| e.to_string())?;
     let imports = standard_imports(&parsed);
     let parsed = syn::parse_file(&(imports + &code)).map_err(|e| e.to_string())?;
     Ok(prettyplease::unparse(&parsed))
-}
-
-/// Where the gated methods that may unwind are listed, one `area::method` per line. The list
-/// only shrinks: `tools/ci/check_unwinding_methods.py` refuses a line added since the base.
-const UNWINDING_METHODS: &str = "crates/sunrise-mod-api-gen/unwinding-methods.txt";
-
-/// A gated method that returns no `Result` with a refusal error (`LevelReadError` or
-/// `LevelWriteError`, whose `Unavailable` the forwarder returns) can only refuse a wrong-phase
-/// call by unwinding. A new one is refused unless it is listed; a listed one that has gained a
-/// refusal, or is gone, must leave the list.
-fn check_unwinding(
-    root: &Path,
-    unwinding: &std::collections::BTreeSet<String>,
-) -> Result<(), String> {
-    let path = root.join(UNWINDING_METHODS);
-    crate::rerun_if_changed(&path.display());
-    let text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let listed: std::collections::BTreeSet<String> = text
-        .lines()
-        .filter(|line| !line.starts_with('#') && !line.is_empty())
-        .map(str::to_owned)
-        .collect();
-    let added: Vec<_> = unwinding.difference(&listed).cloned().collect();
-    if !added.is_empty() {
-        return Err(format!(
-            "gated methods without a refusal-shaped Result: return `Result<_, LevelReadError>` or `Result<_, LevelWriteError>` so a wrong-phase call refuses instead of unwinding; the list in {UNWINDING_METHODS} only shrinks:\n{}",
-            added.join("\n")
-        ));
-    }
-    let stale: Vec<_> = listed.difference(unwinding).cloned().collect();
-    if !stale.is_empty() {
-        return Err(format!(
-            "remove these from {UNWINDING_METHODS}: each now returns a refusal-shaped Result or is gone:\n{}",
-            stale.join("\n")
-        ));
-    }
-    Ok(())
 }
 
 /// API records whose game representation is owned by another crate. Conversions are

@@ -44,18 +44,11 @@ pub(crate) struct Attributed<N, T> {
 }
 
 impl<N: LoopMod, T> Attributed<N, T> {
-    /// Runs `call` on the slot, marked as inside the mod. Outside the world (a reload or setup) a
-    /// Host call the slot makes is refused by the phase gate: that is no answer, `None`.
+    /// Runs `call` on the slot, marked as inside the mod.
     #[inline(always)]
-    pub(crate) fn call<R>(&mut self, call: impl FnOnce(&mut T) -> R) -> Option<R> {
+    pub(crate) fn call<R>(&mut self, call: impl FnOnce(&mut T) -> R) -> R {
         let _inside = mod_api::content::crash::enter_native_mod(N::CALL);
-        match mod_api::__private::contain_outside_world(|| call(&mut self.slot)) {
-            Ok(answer) => Some(answer),
-            Err(refusal) => {
-                refusal.report();
-                None
-            }
-        }
+        call(&mut self.slot)
     }
 }
 
@@ -365,13 +358,10 @@ mod tests {
         type Slots = (Attributed<A, Count>, ());
         let mut owner = Owner::default();
         for _ in 0..2 {
-            run::<Slots>(&mut owner, |slots| {
-                slots.0.call(|count| count.0 += 1).unwrap();
-            })
-            .unwrap();
+            run::<Slots>(&mut owner, |slots| slots.0.call(|count| count.0 += 1)).unwrap();
         }
         run::<Slots>(&mut owner, |slots| {
-            assert_eq!(slots.0.call(|count| count.0), Some(2))
+            assert_eq!(slots.0.call(|count| count.0), 2)
         })
         .unwrap();
         assert_eq!((owner.slotted, owner.vanilla), (3, 0));
@@ -453,7 +443,7 @@ mod tests {
         // The outer run puts them back; the next run has them.
         owner.states.put("l", Cell::Ready(outer.unwrap()));
         run::<Slots>(&mut owner, |slots| {
-            assert_eq!(slots.0.call(|count| count.0), Some(0))
+            assert_eq!(slots.0.call(|count| count.0), 0)
         })
         .unwrap();
         assert_eq!((owner.slotted, owner.vanilla), (2, 0));

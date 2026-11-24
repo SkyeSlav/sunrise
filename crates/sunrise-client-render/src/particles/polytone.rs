@@ -2417,10 +2417,14 @@ mod tests {
         let scene = scene(blocks);
         let mut engine = rain_engine(pack, blocks);
         engine.polytone_entity(&level(&scene), "minecraft:player", [1.0, 64.0, 1.0]);
+        for shader in engine.polytone_shaders() {
+            shader.set_drawn(true);
+        }
         let camera = DVec3::new(1.0, 70.0, 1.0);
-        let mut renderer = gpu_frame_tests::Fake::default();
-        let quads = gpu_frame_tests::frame(&mut engine, Some(&mut renderer), camera, &|_, _| 0);
-        (renderer.batches, quads)
+        let batches = engine.polytone_shader_batches(camera, 0.0, &|_| 0xF0);
+        let mut out = Vec::new();
+        engine.render(camera, glam::Quat::IDENTITY, 0.0, &|_| 0xF0, &mut out);
+        (batches, out.len() / 4)
     }
 
     /// Wiki "GPU Particles": a GPU type's own shader translates from the pack with the
@@ -2491,7 +2495,141 @@ mod tests {
         assert!(read_shader_file(&pack, "assets/test/shaders/core/rain.fsh").is_ok());
     }
 
-    mod gpu_frame_tests;
+    /// Wiki "GPU Particles": the motion-blocking heights of the 128 by 128 columns around the
+    /// camera, refilled every half second (10 ticks) or when the world's bottom changes, and only
+    /// while a type with live records draws with a shader that samples them (`Sampler1`).
+    #[test]
+    fn the_heightmap_is_due_every_half_second_while_a_shader_samples_it() {
+        let blocks = blocks();
+        let scene = scene(blocks);
+        let level = level(&scene);
+        let due = |fsh: &str, uniforms: serde_json::Value| {
+            let pack = shader_pack("rain", fsh, uniforms, &[]);
+            let mut engine = engine(Registry::read(&pack, Default::default(), blocks));
+            engine.polytone_entity(&level, "minecraft:player", [1.0, 64.0, 1.0]);
+            engine
+        };
+        let camera = DVec3::new(10.5, 70.0, -3.5);
+        let mut engine = due(HEIGHT_FSH, serde_json::json!({}));
+        let refresh = engine.polytone_heightmap_due(camera, 128, -64).unwrap();
+        assert!(refresh.for_shaders);
+        let area = refresh.area;
+        assert_eq!(area.origin, [-54, -68]);
+        assert_eq!((area.size, area.min_y), (128, -64));
+        for _ in 0..9 {
+            engine.tick(&level);
+            assert_eq!(engine.polytone_heightmap_due(camera, 128, -64), None);
+        }
+        assert_eq!(
+            engine
+                .polytone_heightmap_due(camera, 128, 0)
+                .map(|r| r.area.min_y),
+            Some(0),
+            "another world's bottom"
+        );
+        engine.tick(&level);
+        assert!(engine.polytone_heightmap_due(camera, 128, 0).is_none());
+        for _ in 0..10 {
+            engine.tick(&level);
+        }
+        assert!(engine.polytone_heightmap_due(camera, 128, 0).is_some());
+        // The records' 40 ticks over: no live type reads it.
+        for _ in 0..20 {
+            engine.tick(&level);
+        }
+        assert_eq!(engine.polytone_gpu_records(), 0);
+        assert_eq!(engine.polytone_heightmap_due(camera, 128, 0), None);
+        // A shader that doesn't sample it, and a type whose shader was refused, read none.
+        let uniforms = serde_json::json!({"Brightness": "1"});
+        let mut unsampled = due(BRIGHT_FSH, uniforms);
+        assert_eq!(unsampled.polytone_heightmap_due(camera, 128, -64), None);
+        let mut refused = due(BRIGHT_FSH, serde_json::json!({}));
+        assert_eq!(refused.polytone_heightmap_due(camera, 128, -64), None);
+    }
+
+    /// A `kill_below_heightmap` type drawn as quads reads the heightmap too: it is due while
+    /// such a type has live records (for its quads, not the shaders' texture), and the heights
+    /// handed back hide its quads under the ground and not above it.
+    #[test]
+    fn rain_drawn_as_quads_reads_the_heightmap() {
+        use sunrise_assets::resource_source::{Resource, ResourceSource};
+        let blocks = blocks();
+        let scene = scene(blocks);
+        let level = level(&scene);
+        let rain = serde_json::json!({
+            "type": "gpu", "texture": "test:textures/particle/rain.png",
+            "kill_below_heightmap": true, "initializer": {"lifetime": "20", "size": "0.5"}
+        });
+        let emitter = serde_json::json!({"emitters": [{"particle": "test:rain"}]});
+        let pack = ResourceSource::indexed(
+            [
+                ("assets/test/polytone/custom_particles/rain.json", rain),
+                (
+                    "assets/minecraft/polytone/entity_modifiers/player.json",
+                    emitter,
+                ),
+            ]
+            .into_iter()
+            .map(|(path, json)| {
+                (
+                    path.to_owned(),
+                    Resource::bytes(json.to_string().into_bytes()),
+                )
+            })
+            .collect(),
+        );
+        let mut engine = rain_engine(&pack, blocks);
+        let camera = DVec3::new(1.0, 70.0, 1.0);
+        assert_eq!(
+            engine.polytone_heightmap_due(camera, 4, 0),
+            None,
+            "no rain yet"
+        );
+        engine.polytone_entity(&level, "minecraft:player", [1.0, 64.0, 1.0]);
+        let refresh = engine.polytone_heightmap_due(camera, 4, 0).unwrap();
+        assert!(!refresh.for_shaders, "only the quads read it");
+        let quads = |engine: &ParticleEngine| {
+            let mut out = Vec::new();
+            engine.render(camera, glam::Quat::IDENTITY, 0.0, &|_| 0xF0, &mut out);
+            out.len() / 4
+        };
+        engine.set_polytone_surface(refresh.area, &[60; 16]);
+        assert_eq!(quads(&engine), 1, "above the ground");
+        engine.set_polytone_surface(refresh.area, &[70; 16]);
+        assert_eq!(quads(&engine), 0, "under it");
+        // Its 20 ticks over: nothing reads the heightmap.
+        for _ in 0..20 {
+            engine.tick(&level);
+        }
+        assert_eq!(engine.polytone_heightmap_due(camera, 4, 0), None);
+        // A level change forgets the heights with the records.
+        engine.clear();
+        assert_eq!(quads(&engine), 0);
+        engine.polytone_entity(&level, "minecraft:player", [1.0, 64.0, 1.0]);
+        assert_eq!(quads(&engine), 1, "the old level's heights are gone");
+    }
+
+    /// Clearing the particles (a mod's clear, a level left or switched) forgets the GPU
+    /// records and the heightmap too, even for a level with the same bottom.
+    #[test]
+    fn clearing_forgets_the_gpu_records_and_the_heightmap() {
+        let blocks = blocks();
+        let scene = scene(blocks);
+        let pack = shader_pack("rain", HEIGHT_FSH, serde_json::json!({}), &[]);
+        let mut engine = rain_engine(&pack, blocks);
+        engine.polytone_entity(&level(&scene), "minecraft:player", [1.0, 64.0, 1.0]);
+        let camera = DVec3::new(1.0, 70.0, 1.0);
+        assert!(engine.polytone_heightmap_due(camera, 128, -64).is_some());
+        assert_eq!(engine.polytone_gpu_records(), 1);
+        engine.clear();
+        assert_eq!(engine.polytone_gpu_records(), 0);
+        assert!(engine.polytone_shaders().is_empty());
+        engine.polytone_entity(&level(&scene), "minecraft:player", [1.0, 64.0, 1.0]);
+        assert!(
+            engine.polytone_heightmap_due(camera, 128, -64).is_some(),
+            "refilled at once for the new level"
+        );
+    }
 
     #[test]
     fn a_gpu_particle_is_a_record_drawn_until_its_life_ends() {
@@ -2547,13 +2685,6 @@ mod tests {
         // No engine particle: a record each; the rain drawn as its area's three quads.
         assert!(engine.pending.is_empty());
         assert_eq!(engine.polytone_gpu_records(), 2);
-        // The frame's verdict on its quads, as the game asks it before building them.
-        let source = super::super::polytone_gpu::HeightmapSource {
-            size: 4,
-            min_y: 0,
-            top: &|_, _| 0,
-        };
-        engine.polytone_gpu_decide(None, DVec3::new(1.0, 70.0, 1.0), &source);
         let mut out = Vec::new();
         engine.render(
             DVec3::new(1.0, 70.0, 1.0),

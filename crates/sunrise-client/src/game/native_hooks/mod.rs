@@ -39,9 +39,9 @@ use mod_api::{
     InsideEffects, InteractionAttempt, InteractionKey, ItemEntityRef, JsonAnimationType,
     LayerDefinition, LifecycleContext, LivingRef, LoadConditions, NoteBlockChange,
     ParticleProviders, PathComputationType, Placement, PlayerRef, PoiTypeExtensions,
-    RecipeBookCategory, ScreenId, ScreenOpening, ScreenTarget, ScreenshotImage,
-    ServerReloadListeners, ServerTickPhase, SpecialModelRenderers, TicketController, ToolUse,
-    VillagerProfessions, WorldPhase,
+    RecipeBookCategory, ScreenId, ScreenOpening, ScreenshotImage, ServerReloadListeners,
+    ServerTickPhase, SpecialModelRenderers, TicketController, ToolUse, VillagerProfessions,
+    WorldPhase,
 };
 use mod_api::{
     ActiveEffect, AttachmentStore, BlockClick, BlockUpdateFlags, BonemealSource, ChunkRef,

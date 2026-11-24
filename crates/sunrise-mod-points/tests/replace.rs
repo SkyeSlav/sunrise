@@ -2,7 +2,7 @@
 //! launcher and `cargo sunrise-mod build --wasm` both emit: the body never runs, the listener's
 //! value reaches the caller, and a second replace at the same place is refused.
 // Generated fixtures exercise every shape; TODO(#2273): make the generator emit clippy-clean code.
-#![allow(clippy::all, unused_comparisons, unreachable_patterns)]
+#![allow(clippy::all, unused_comparisons, unreachable_patterns, dead_code)]
 use mod_api::__private::points::register;
 use mod_points::RegisterError;
 use std::sync::atomic::{AtomicUsize, Ordering};

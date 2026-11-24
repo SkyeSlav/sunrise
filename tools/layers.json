@@ -148,11 +148,13 @@
   "allowed": [
     "sunrise-client -> sunrise-dualsense",
     "sunrise-client -> sunrise-friends",
+    "sunrise-client -> sunrise-hdr",
     "sunrise-client -> sunrise-optifine",
     "sunrise-client -> sunrise-shader-api",
     "sunrise-client -> sunrise-shaders",
     "sunrise-client -> sunrise-theme",
     "sunrise-client-lib -> sunrise-dualsense",
+    "sunrise-client-lib -> sunrise-hdr",
     "sunrise-client-lib -> sunrise-mcp",
     "sunrise-client-lib -> sunrise-optifine",
     "sunrise-client-lib -> sunrise-shader-api",

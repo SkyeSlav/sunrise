@@ -1,12 +1,7 @@
 //! Creative inventory (CreativeModeInventoryScreen): vanilla's tabs and their
 //! contents as built by the game's own display generators
 //! (`creative-inventory.json`), a 9x5 scrolling grid and the search tab.
-use crate::{
-    Result, item_tooltip,
-    items::{ItemStack, Items},
-    lang,
-    ui::EditBox,
-};
+use crate::{Result, enchant::Enchantments, items::ItemStack, lang, ui::EditBox};
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -88,7 +83,6 @@ pub struct Creative {
     search_index: Vec<SearchEntry>,
     /// Definitions from the same catalog snapshot, rendered in the active language.
     holders: Arc<sunrise_items::creative_catalog::Holders>,
-    items: Arc<Items>,
     catalog: Arc<Catalog>,
     headers: Vec<Tab>,
     /// Prepared search presentation only, keyed by item and exact components.
@@ -443,7 +437,6 @@ impl Creative {
             search_items: Vec::new(),
             search_index: Vec::new(),
             holders: Default::default(),
-            items: Default::default(),
             catalog,
             headers,
             metadata,
@@ -507,7 +500,6 @@ impl Creative {
     pub fn reset_contents(&mut self) {
         self.contents = None;
         self.holders = Arc::default();
-        self.items = Arc::default();
         self.project();
     }
 
@@ -538,11 +530,7 @@ impl Creative {
                         | "minecraft:splash_potion"
                         | "minecraft:lingering_potion"
                         | "minecraft:tipped_arrow"
-                ) || !stack.stored_enchantments().is_empty()
-                    || !stack.enchantments().is_empty()
-                    || stack.data().is_some_and(|data| {
-                        data.ominous_banner || data.other("minecraft:instrument").is_some()
-                    });
+                ) || stack.data().is_some_and(|data| data.ominous_banner);
                 if let Some(tags) = &self.item_tags {
                     entry.tags = tags.get(stack.item.as_ref()).cloned().unwrap_or_default();
                 }
@@ -619,7 +607,6 @@ impl Creative {
         &mut self,
         contents: Arc<[Arc<TabContents>]>,
         holders: Arc<sunrise_items::creative_catalog::Holders>,
-        items: Arc<Items>,
         names: &Names,
     ) {
         if self
@@ -632,7 +619,6 @@ impl Creative {
         let row = self.first_row(names);
         self.contents = Some(contents);
         self.holders = holders;
-        self.items = items;
         self.project();
         if !self.select_default_if_missing() {
             // ItemPickerMenu.getScrollForRowIndex.
@@ -807,19 +793,111 @@ impl Creative {
     /// `SessionSearchTrees.getTooltipLines`: holder-dependent entries use only
     /// the active definitions and the selected language, never their prepared names.
     fn localized_lines(&self, translate: &dyn Fn(&str) -> Option<String>) -> Arc<[Vec<String>]> {
+        use crate::{item_tooltip, text::Text};
+        use sunrise_core::nbt::Tag;
+        let unenchanted = Enchantments::default();
+        let plain = |component: &Value| crate::scoreboard::comp_text(component).plain();
+        let tr = |key: &str| translate(key).unwrap_or_else(|| key.to_owned());
         self.search_items
             .iter()
             .map(|stack| {
-                let lines = item_tooltip::lines(
-                    stack,
-                    self.items.get(&stack.item),
-                    &item_tooltip::NoAttributeListener,
-                    item_tooltip::TooltipHolders::Live(&self.holders),
-                    true,
-                    translate,
-                    // The search cache has no attribute catalog.
-                    &|_| None,
-                );
+                let display = item_tooltip::tooltip_display(stack);
+                let named = || {
+                    let mut lines = vec![item_tooltip::name_line(stack, translate)];
+                    if display.shows("minecraft:lore") {
+                        lines.extend(
+                            item_tooltip::lore_texts(stack)
+                                .into_iter()
+                                .map(|text| text.plain()),
+                        );
+                    }
+                    lines
+                };
+                let lines = match stack.item.as_ref() {
+                    "minecraft:enchanted_book" => {
+                        let mut lines = named();
+                        if display.shows("minecraft:stored_enchantments") {
+                            for (id, level) in stack.stored_enchantments() {
+                                let Some(holder) = self
+                                    .holders
+                                    .enchantments
+                                    .iter()
+                                    .find(|holder| holder.id == id.as_ref())
+                                else {
+                                    continue;
+                                };
+                                let mut name = plain(&holder.description);
+                                if *level != 1 || holder.max_level.get() != 1 {
+                                    name.push(' ');
+                                    name.push_str(&tr(&format!("enchantment.level.{level}")));
+                                }
+                                lines.push(name);
+                            }
+                        }
+                        lines
+                    }
+                    "minecraft:goat_horn" => {
+                        let mut lines = named();
+                        if display.shows("minecraft:instrument") {
+                            if let Some(description) = crate::items::inline_instrument(stack)
+                                .and_then(|n| n.get("description"))
+                            {
+                                lines.push(plain(&crate::scoreboard::tag_to_json(description)));
+                            } else if let Some(description) = crate::items::instrument_id(stack)
+                                .and_then(|id| self.holders.instrument_descriptions.get(&id))
+                            {
+                                lines.push(plain(description));
+                            }
+                        }
+                        lines
+                    }
+                    "minecraft:painting" => {
+                        let mut lines = named();
+                        if display.shows("minecraft:painting/variant") {
+                            match stack
+                                .data()
+                                .and_then(|data| data.other("minecraft:painting/variant"))
+                            {
+                                Some(Tag::String(id)) => {
+                                    let id = id.to_string_lossy();
+                                    if let Some(painting) =
+                                        self.holders.paintings.iter().find(|p| p.id == id)
+                                    {
+                                        lines.extend(
+                                            painting
+                                                .title
+                                                .iter()
+                                                .chain(&painting.author)
+                                                .map(plain),
+                                        );
+                                        lines.push(
+                                            crate::text::format_translation(
+                                                &tr("painting.dimensions"),
+                                                &[
+                                                    Text::literal(painting.width.to_string()),
+                                                    Text::literal(painting.height.to_string()),
+                                                ],
+                                            )
+                                            .plain(),
+                                        );
+                                    }
+                                }
+                                None => lines.push(tr("painting.random")),
+                                Some(_) => {}
+                            }
+                        }
+                        lines
+                    }
+                    _ => item_tooltip::lines(
+                        stack,
+                        None,
+                        &item_tooltip::NoAttributeListener,
+                        &unenchanted,
+                        translate,
+                        // The search cache has no attribute catalog: vanilla's look.
+                        &|_| None,
+                    ),
+                };
                 lines
                     .iter()
                     .map(|line| java_trim(line))
@@ -1438,7 +1516,7 @@ mod tests {
             ]
         });
         let mut c = Creative::from_json(&raw).unwrap();
-        let items = Arc::new(Items::empty());
+        let items = crate::items::Items::empty();
         let names = Names::default();
         let mut rebuild = |description: &str| {
             let dynamic = Dynamic {
@@ -1466,7 +1544,7 @@ mod tests {
                 None,
                 |_, _, _| {},
             );
-            c.publish(lists, Arc::new(holders), items.clone(), &names);
+            c.publish(lists, Arc::new(holders), &names);
             assert_eq!(
                 c.search_items()[0].stored_enchantments(),
                 [(Arc::from("minecraft:sharpness"), 5)]
@@ -1493,152 +1571,6 @@ mod tests {
             creative.search_results("under moonlight", &Names::default()),
             [0]
         );
-    }
-
-    #[test]
-    fn search_matches_a_written_book_s_author_only_while_its_content_is_visible() {
-        let book = |hidden: &str| {
-            format!(
-                r#"{{id:"minecraft:written_book",count:1,components:{{"minecraft:enchantments":{{"minecraft:sharpness":1}},"minecraft:written_book_content":{{title:{{raw:"Notes"}},author:"Ada Lovelace",pages:[{{raw:"one"}}]}}{hidden}}}}}"#
-            )
-        };
-        let visible = book("");
-        let hidden = book(
-            r#","minecraft:tooltip_display":{hidden_components:["minecraft:written_book_content"]}"#,
-        );
-        let creative = fixture(serde_json::json!([
-            {"id":"minecraft:ingredients", "type":"CATEGORY", "build":[row(&visible), row(&hidden)]},
-            {"id":"minecraft:search", "type":"SEARCH", "build":[]}
-        ]));
-        assert_eq!(creative.search_items().len(), 2);
-        let language = lang::Language::of("en_us", [("book.byAuthor".into(), "by %1$s".into())]);
-        lang::scoped(language, || {
-            assert_eq!(
-                creative.search_results("by ada lovelace", &Names::default()),
-                [0]
-            );
-        });
-    }
-
-    #[test]
-    fn search_matches_visible_attributes_alongside_live_painting_lines() {
-        use sunrise_items::creative_catalog::{Holders, Painting};
-        let stack = |hidden: &str| {
-            format!(
-                r#"{{id:"minecraft:painting",count:1,components:{{
-                    "minecraft:painting/variant":"test:mural",
-                    "minecraft:attribute_modifiers":[{{type:"minecraft:armor",id:"test:bonus",
-                        amount:2.0d,operation:"add_value",slot:"head"}}],
-                    "minecraft:tooltip_display":{{hidden_components:[{hidden}]}}
-                }}}}"#
-            )
-        };
-        let mut creative = fixture(serde_json::json!([
-            {"id":"minecraft:ingredients", "type":"CATEGORY", "build":[
-                row(stack("")),
-                row(stack(r#""minecraft:attribute_modifiers""#)),
-                row(stack(r#""minecraft:painting/variant""#))
-            ]},
-            {"id":"minecraft:search", "type":"SEARCH", "build":[]}
-        ]));
-        creative.holders = Arc::new(Holders {
-            paintings: vec![Painting {
-                id: "test:mural".into(),
-                width: 3.try_into().unwrap(),
-                height: 2.try_into().unwrap(),
-                placeable: true,
-                title: Some(serde_json::json!("Winter Orchard")),
-                author: Some(serde_json::json!("Yuki Tanaka")),
-            }],
-            ..Default::default()
-        });
-        let names = Names {
-            map: HashMap::from([
-                ("attribute.name.armor".into(), "Armor".into()),
-                ("attribute.modifier.plus.0".into(), "+%s %s".into()),
-                ("painting.dimensions".into(), "%s by %s".into()),
-            ]),
-        };
-        let local = creative.localized_lines(&|key| names.get(key).map(str::to_owned));
-        let search = |term| creative.search_results_in(term, &names, &local, false);
-        assert_eq!(search("+2 armor"), [0, 2]);
-        assert_eq!(search("winter orchard"), [0, 1]);
-        assert_eq!(search("yuki tanaka"), [0, 1]);
-        assert_eq!(search("3 by 2"), [0, 1]);
-    }
-
-    #[test]
-    fn search_uses_the_active_language_for_an_applied_enchantment() {
-        use sunrise_items::creative_catalog::{Enchantment, Holders};
-        let tool = r#"{id:"minecraft:wooden_pickaxe",count:1,components:{"minecraft:enchantments":{"test:veins":2},"minecraft:unbreakable":{}}}"#;
-        let mut creative = Creative::from_json(&serde_json::json!({
-            "schema":4, "item_features":{}, "potion_features":{}, "tabs":[
-                {"id":"minecraft:ingredients", "type":"CATEGORY", "build":[row(tool)]},
-                {"id":"minecraft:search", "type":"SEARCH", "build":[], "search_metadata":[
-                    {"stack":tool, "lines":["Wooden Pickaxe", "Stale Vein Finder II"]}
-                ]}
-            ]
-        }))
-        .unwrap();
-        let holders = Holders {
-            enchantments: vec![Enchantment {
-                id: "test:veins".into(),
-                max_level: 3.try_into().unwrap(),
-                description: serde_json::json!({"translate":"test.enchantment.veins"}),
-            }],
-            ..Default::default()
-        };
-        let fixture = tempfile::tempdir().unwrap();
-        let root = fixture.path();
-        fs::create_dir_all(root.join("data/minecraft/loot_table")).unwrap();
-        fs::write(
-            root.join("items.json"),
-            r#"{"minecraft:wooden_pickaxe":{"minecraft:attribute_modifiers":[{
-                "type":"minecraft:attack_damage","id":"minecraft:base_attack_damage",
-                "amount":3.0,"operation":"add_value","slot":"mainhand"
-            }]}}"#,
-        )
-        .unwrap();
-        let defaults = sunrise_world::item_defaults::read(root).unwrap();
-        let items = Arc::new(
-            Items::catalog(root, &sunrise_world::loot::PackOverlay::NONE, &defaults).unwrap(),
-        );
-        let lists = creative.catalog().build(
-            Parameters {
-                features: &[],
-                operator: false,
-                holders: &holders,
-                items: &items,
-            },
-            None,
-            |_, _, _| {},
-        );
-        let names = Names::default();
-        creative.publish(lists, Arc::new(holders), items, &names);
-        let language = lang::Language::of(
-            "en_us",
-            [
-                ("test.enchantment.veins".into(), "Ore Sense".into()),
-                ("enchantment.level.2".into(), "II".into()),
-                (
-                    "attribute.name.attack_damage".into(),
-                    "Attack Damage".into(),
-                ),
-                ("attribute.modifier.plus.0".into(), "+%s %s".into()),
-                ("item.unbreakable".into(), "Unbreakable".into()),
-            ],
-        );
-        lang::scoped(language, || {
-            assert_eq!(creative.search_results("ore sense ii", &names), [0]);
-            assert_eq!(creative.search_results("+3 attack damage", &names), [0]);
-            assert_eq!(creative.search_results("unbreakable", &names), [0]);
-            assert!(
-                creative
-                    .search_results("stale vein finder", &names)
-                    .is_empty()
-            );
-            assert!(creative.search_results("veins", &names).is_empty());
-        });
     }
 
     #[test]
@@ -2011,7 +1943,7 @@ mod tests {
                 append_unique(&mut current.search, &stacks);
             },
         );
-        c.publish(lists, Arc::default(), Arc::default(), names);
+        c.publish(lists, Arc::default(), names);
     }
 
     fn publish(c: &mut Creative, permissions: bool, names: &Names) {

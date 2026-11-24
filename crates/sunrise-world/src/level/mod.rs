@@ -2099,8 +2099,6 @@ pub(crate) struct Sim<'a, L: LevelAccess + ?Sized> {
     pub b: &'a Behaviours,
     pub level: &'a mut L,
     pub ticks: &'a mut Ticks,
-    /// A dry placement keeps its effects in `ticks` but reads live signal inputs.
-    signal_reads: Option<&'a Ticks>,
     /// The carried block being settled, before it is written into the cell.
     landing_block: Option<(BlockPos, BlockStateId)>,
     /// `RedstoneWireBlock.shouldSignal` is false while a wire samples its
@@ -2130,21 +2128,22 @@ impl<'a, L: LevelAccess + ?Sized> Sim<'a, L> {
     /// Signal trees, which ask a wire's shape from every direction they probe,
     /// start at [`Self::query_signals`].
     pub(crate) fn signals(&self) -> Signals<'_, L> {
-        let mut signals = self
-            .b
-            .uncached_signals(&*self.level, self.signal_reads.unwrap_or(self.ticks));
-        signals.wire_signal_off = self.wire_signal_off.get();
-        signals
+        Signals {
+            b: self.b,
+            level: &*self.level,
+            ticks: &*self.ticks,
+            wire_signal_off: self.wire_signal_off.get(),
+            view: 0,
+            unknown_output: std::cell::Cell::new(false),
+        }
     }
     /// A view for one signal tree: the wire shapes it computes are memoized for
     /// as long as it lives. See [`redstone::WireConnections`].
     pub(crate) fn query_signals(&self) -> Signals<'_, L> {
-        let mut signals = self.signals();
-        // A preview must not populate the live level's wire-shape cache.
-        if self.signal_reads.is_none() {
-            signals.view = self.ticks.wire_connections.next_view();
+        Signals {
+            view: self.ticks.wire_connections.next_view(),
+            ..self.signals()
         }
-        signals
     }
 }
 impl Behaviours {
@@ -2154,40 +2153,14 @@ impl Behaviours {
         level: &'a L,
         ticks: &'a Ticks,
     ) -> Signals<'a, L> {
-        let mut signals = self.uncached_signals(level, ticks);
-        signals.view = ticks.wire_connections.next_view();
-        signals
-    }
-
-    /// Read signal inputs from `ticks` without touching its wire-shape cache.
-    pub fn uncached_signals<'a, L: signal_access::SignalAccess + ?Sized>(
-        &'a self,
-        level: &'a L,
-        ticks: &'a Ticks,
-    ) -> Signals<'a, L> {
         Signals {
             b: self,
             level,
             ticks,
             wire_signal_off: false,
-            view: 0,
+            view: ticks.wire_connections.next_view(),
             unknown_output: std::cell::Cell::new(false),
         }
-    }
-    /// Ask `Block.getStateForPlacement` with a resolved context, without placing the result.
-    /// Give it a scratch level to discard writes and random draws. Signals may read live ticks;
-    /// any ticks requested by the placement rule go into a separate, empty queue.
-    pub fn state_for_resolved_placement<L: LevelAccess + ?Sized>(
-        &self,
-        level: &mut L,
-        signal_reads: &Ticks,
-        block: BlockId,
-        context: &PlacementContext,
-    ) -> Option<BlockStateId> {
-        let mut ticks = Ticks::default();
-        let mut sim = self.sim(level, &mut ticks);
-        sim.signal_reads = Some(signal_reads);
-        sim.state_for_placement(block, context)
     }
     pub(crate) fn sim<'a, L: LevelAccess + ?Sized>(
         &'a self,
@@ -2198,7 +2171,6 @@ impl Behaviours {
             b: self,
             level,
             ticks,
-            signal_reads: None,
             landing_block: None,
             wire_signal_off: std::cell::Cell::new(false),
         }

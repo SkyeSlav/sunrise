@@ -78,11 +78,6 @@ jobs:
           if [[ -z "${DYNA_CI_BUILD:-}" ]]; then bash tools/ci/runner-env.sh; fi
         env:
           SUNRISE_NO_SCCACHE: ${{ inputs.trusted && '1' || '' }}
-      # A self-hosted runner's persistent target: keep its source snapshot true, as every job building there does
-      # (tools/ci/source_mtimes.py). The Nightly builds a commit that need not be main's head.
-      - name: Restore unchanged source timestamps
-        if: runner.environment == 'self-hosted'
-        run: python3 tools/ci/source_mtimes.py "${CARGO_TARGET_DIR:-target}/ci-source-mtimes-v2.json"
       - name: Build the shared wasm standard library
         shell: bash
         run: |

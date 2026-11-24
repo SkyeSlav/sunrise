@@ -366,6 +366,7 @@ impl Hooks for Mod {
 pub(crate) fn manifest(names: &[&str]) -> ManifestFacts {
     ManifestFacts {
         names: names.iter().map(|n| n.to_string()).collect(),
+        hook_versions: Default::default(),
     }
 }
 
@@ -405,7 +406,6 @@ fn words(fit: Fit) -> Vec<String> {
     match fit {
         Fit::Fits => vec![],
         Fit::DoesNotFit(misfits) => misfits.iter().map(ToString::to_string).collect(),
-        Fit::Unversioned(hooks) => panic!("no version of {hooks:?}"),
     }
 }
 
@@ -593,52 +593,21 @@ fn a_hook_fits_when_it_gains_an_argument_and_not_when_a_named_one_is_retyped() {
 }
 
 #[test]
-fn a_used_hook_whose_version_changed_is_named() {
+fn a_hook_version_counts_only_when_the_manifest_names_one() {
     let mut target = base();
     target.hooks[0].contract.version = 2;
     let version_two = target.build();
-    let made = uses(
-        [("src/lib.rs", MOD)],
-        &manifest(&["registries"]),
-        &base().build(),
-    )
-    .unwrap();
-    assert_eq!(entry(&made, "hook:player_logged_in").version, Some(1));
-    let bumped = Fit::DoesNotFit(vec![Misfit {
-        id: "hook:player_logged_in".into(),
-        change: Change::Version { named: 1, now: 2 },
-    }]);
-    assert_eq!(fits(made.entries(), &version_two), bumped);
-    // A hook the mod does not use may change its version.
-    let other = uses(
-        [("src/lib.rs", "fn f() {}")],
-        &manifest(&["registries"]),
-        &base().build(),
-    )
-    .unwrap();
-    assert_eq!(fits(other.entries(), &version_two), Fit::Fits);
-    // A list of the schema before this one holds no versions: the build it was made for gives
-    // them, and without it no target can show the hook unchanged, since the mod may have been
-    // made for any version of it.
-    let old = |pinned: bool| {
-        let mut table = UsesTable {
-            schema: 1,
-            made_for: "x".into(),
-            entries: made.entries().cloned().collect(),
-        };
-        for entry in &mut table.entries {
-            entry.version = None;
-        }
-        if pinned {
-            table.pin_hook_versions(&base().build());
-        }
-        table
-    };
-    assert_eq!(fits(&old(true).entries, &version_two), bumped);
-    assert_eq!(fits(&old(true).entries, &base().build()), Fit::Fits);
-    let unversioned = Fit::Unversioned(vec!["hook:player_logged_in".into()]);
-    assert_eq!(fits(&old(false).entries, &version_two), unversioned);
-    assert_eq!(fits(&old(false).entries, &base().build()), unversioned);
+    let source = [("src/lib.rs", MOD)];
+    let plain = uses(source, &manifest(&["registries"]), &base().build()).unwrap();
+    assert_eq!(fits(plain.entries(), &version_two), Fit::Fits);
+    let mut facts = manifest(&["registries"]);
+    facts.hook_versions.insert("player_logged_in".into(), 1);
+    let pinned = uses(source, &facts, &base().build()).unwrap();
+    assert_eq!(entry(&pinned, "hook:player_logged_in").version, Some(1));
+    assert_eq!(
+        words(fits(pinned.entries(), &version_two)),
+        ["the hook `player_logged_in` is now version 2; this mod names version 1"]
+    );
 }
 
 #[test]
@@ -1035,7 +1004,7 @@ fn a_table_reads_back_and_judges_like_the_list() {
 
 #[test]
 fn a_table_refuses_unknown_fields_and_sorts_its_entries() {
-    let text = r#"{"schema":2,"made_for":"x","entries":[{"id":"b","hash":"2"},{"id":"a","hash":"1","built":"base"}]}"#;
+    let text = r#"{"schema":1,"made_for":"x","entries":[{"id":"b","hash":"2"},{"id":"a","hash":"1","built":"base"}]}"#;
     let table = UsesTable::read(text.as_bytes()).unwrap();
     let ids: Vec<&str> = table.entries.iter().map(|e| e.id.as_str()).collect();
     assert_eq!(ids, ["a", "b"]);
@@ -1052,35 +1021,11 @@ fn a_table_refuses_unknown_fields_and_sorts_its_entries() {
 }
 
 #[test]
-fn an_older_list_cannot_tell_a_literal_from_a_doubt_so_a_new_field_is_left_to_the_compile() {
-    let mut target = wider();
-    target.replace_type(settings(
-        &[("height", "i32"), ("depth", "i32")],
-        &["Clone", "Default"],
-    ));
-    let target = target.build();
-    let made = scan_on(wider(), "fn t() { let s = Settings { height: 1 }; }");
-    let table = |schema| {
-        let table = UsesTable {
-            schema,
-            made_for: "x".into(),
-            entries: made.entries().cloned().collect(),
-        };
-        UsesTable::read(table.to_json().as_bytes()).unwrap()
-    };
-    assert!(matches!(
-        fits(&table(USES_SCHEMA).entries, &target),
-        Fit::DoesNotFit(_)
-    ));
-    assert_eq!(fits(&table(1).entries, &target), Fit::Fits);
-}
-
-#[test]
 fn bad_tables_are_refused_by_kind() {
     let refused = |text: &[u8]| UsesTable::read(text).unwrap_err();
     assert_eq!(
-        refused(br#"{"schema":3,"made_for":"x","entries":[]}"#),
-        UsesError::Schema(3)
+        refused(br#"{"schema":2,"made_for":"x","entries":[]}"#),
+        UsesError::Schema(2)
     );
     assert!(matches!(refused(b"not json"), UsesError::Json(_)));
     assert!(matches!(
@@ -1273,21 +1218,20 @@ fn full_builds_by_another_name_are_full() {
         ),
         full
     );
-    // A macro's `$t { … }` names no struct: the compile judges it.
+    // A macro's `$t { … }` and a literal of a name the scan cannot place.
     assert_eq!(
         built(
             "macro_rules! make { ($t:ty) => { $t { height: 1 } } }\nfn f(s: Settings) {}",
             "type:Settings"
         ),
-        Some(Built::None)
+        full
     );
-    // A literal of a name the scan cannot place builds nothing the list records.
     assert_eq!(
         built(
             "fn f(s: Settings) { let w = Wrapper { a: 1 }; }",
             "type:Settings"
         ),
-        Some(Built::None)
+        full
     );
     // The mod's own struct, or its own enum's variant, is placed.
     assert_eq!(
@@ -1365,29 +1309,26 @@ fn a_union_literal_is_not_a_full_build() {
     assert_eq!(entry(&uses, "type:Bits").built, Some(Built::Base));
 }
 
-/// `wider` with `Settings` closed to literals.
-fn closed_settings() -> Pieces {
-    let mut target = wider();
-    let mut record = settings(&[("height", "i32")], &["Clone", "Default"]);
-    record = Type::new(
-        record.id.clone(),
-        "",
-        None,
-        TypeContract {
-            constructible: false,
-            ..record.contract.clone()
-        },
-        record.fields.clone(),
-        vec![],
-    );
-    record.impls = vec!["Clone".into(), "Default".into()];
-    target.replace_type(record);
-    target
-}
-
 #[test]
 fn a_struct_the_mod_builds_that_can_no_longer_be_built_is_named() {
-    let unbuildable = || closed_settings().build();
+    let unbuildable = || {
+        let mut target = wider();
+        let mut record = settings(&[("height", "i32")], &["Clone", "Default"]);
+        record = Type::new(
+            record.id.clone(),
+            "",
+            None,
+            TypeContract {
+                constructible: false,
+                ..record.contract.clone()
+            },
+            record.fields.clone(),
+            vec![],
+        );
+        record.impls = vec!["Clone".into(), "Default".into()];
+        target.replace_type(record);
+        target.build()
+    };
     let builds = scan_on(
         wider(),
         "\nfn t() { let s = Settings { height: 1, ..Default::default() }; }",
@@ -1398,22 +1339,6 @@ fn a_struct_the_mod_builds_that_can_no_longer_be_built_is_named() {
     );
     let reads = scan_on(wider(), "fn f(s: &Settings) -> i32 { s.height }");
     assert_eq!(fits(reads.entries(), &unbuildable()), Fit::Fits);
-}
-
-#[test]
-fn a_literal_of_a_struct_its_own_build_keeps_closed_is_another_type_of_that_name() {
-    // `Shape` comes from another file, so the scan cannot tell `Shape::Settings` from a path to the API's struct.
-    let source = "use crate::shapes::Shape;\nuse mod_api::Settings;\nfn t(s: Shape, k: &Settings) { if let Shape::Settings { height } = s {} }";
-    assert_eq!(
-        entry(&scan_on(wider(), source), "type:Settings").built,
-        Some(Built::Full)
-    );
-    let closed = scan_on(closed_settings(), source);
-    assert_eq!(entry(&closed, "type:Settings").built, Some(Built::None));
-    assert_eq!(
-        fits(closed.entries(), &closed_settings().build()),
-        Fit::Fits
-    );
 }
 
 #[test]
@@ -1486,9 +1411,8 @@ fn built_in(files: &[(&str, &str)], id: &str) -> Option<Built> {
 }
 
 #[test]
-fn a_macro_literal_of_a_metavariable_is_left_to_the_compile() {
-    // The scan cannot place `$t { … }`: nothing is recorded, and the compile judges it.
-    let full = Some(Built::None);
+fn a_macro_literal_in_another_file_builds_every_struct_the_mod_names() {
+    let full = Some(Built::Full);
     let macros = "macro_rules! make { ($t:ident, $h:expr) => { $t { height: $h } } }";
     let world = "fn f() -> Settings { make!(Settings, 1) }";
     assert_eq!(
@@ -1788,7 +1712,7 @@ fn a_table_naming_many_routes_the_target_lacks_is_judged_without_a_walk_each() {
                     .all(|m| matches!(m.change, Change::Route { .. }))
             );
         }
-        other => panic!("{other:?}, though no named route exists"),
+        Fit::Fits => panic!("fits, though no named route exists"),
     }
 }
 
@@ -1832,7 +1756,7 @@ fn refused_for_the_new_field(fit: Fit) {
                 && matches!(&m.change, Change::Fields { gained, .. } if gained == &["ultrawarm"])),
             "{misfits:?}"
         ),
-        other => panic!("{other:?}, though the mod builds the API's struct field by field"),
+        Fit::Fits => panic!("fits, though the mod builds the API's struct field by field"),
     }
 }
 
@@ -2156,14 +2080,14 @@ fn a_macro_body_is_read_as_tokens() {
         built_in(&[("src/lib.rs", &pos)], "type:Pos"),
         Some(Built::Full)
     );
-    // A metavariable followed by `(` names no struct.
+    // A metavariable followed by `(` may be a tuple struct's name.
     let maker = "macro_rules! make { ($t:ident) => { $t(1, 2) }; }";
     assert_eq!(
         built_in(
             &[("src/m.rs", maker), ("src/lib.rs", "fn f(_: Pos) {}")],
             "type:Pos"
         ),
-        Some(Built::None)
+        Some(Built::Full)
     );
     // A `..` inside a nested bracket is a value, not a rest.
     let nested = in_macro("mod_api::Pos((..), 2)");
@@ -2171,12 +2095,33 @@ fn a_macro_body_is_read_as_tokens() {
         built_in(&[("src/lib.rs", &nested)], "type:Pos"),
         Some(Built::Full)
     );
-    // A literal of a name the scan cannot place builds nothing the list records.
+    // A literal of a name the scan cannot place may build any API struct the mod names; a
+    // brace after an unknown name that holds no fields is no literal.
     let unplaced = in_macro("let _ = Done { a: 1 };");
     assert_eq!(
         built_in(
             &[
                 ("src/m.rs", &unplaced),
+                ("src/lib.rs", "fn f(_: Settings) {}")
+            ],
+            "type:Settings"
+        ),
+        Some(Built::Full)
+    );
+    let block = in_macro("let _ = Done { 1 };");
+    assert_eq!(
+        built_in(
+            &[("src/m.rs", &block), ("src/lib.rs", "fn f(_: Settings) {}")],
+            "type:Settings"
+        ),
+        Some(Built::None)
+    );
+    // Nor is a trait's name the mod defines.
+    let traits = format!("trait Wrapper {{}}\n{}", in_macro("Wrapper { a: 1 }"));
+    assert_eq!(
+        built_in(
+            &[
+                ("src/m.rs", &traits),
                 ("src/lib.rs", "fn f(_: Settings) {}")
             ],
             "type:Settings"

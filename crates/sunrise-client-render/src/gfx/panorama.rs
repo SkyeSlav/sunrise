@@ -9,8 +9,6 @@ use wgpu::util::DeviceExt;
 const FACE_ORDER: [u8; 6] = [1, 3, 5, 4, 0, 2];
 /// Where the cube's faces live in a resource root.
 const BACKGROUND: &str = "assets/minecraft/textures/gui/title/background";
-/// The grey placeholder cube's colour.
-const PLACEHOLDER: [u8; 4] = [96, 110, 111, 255];
 
 /// The title screen's six faces. The cube is on the GPU only while the title
 /// screen shows, and its texels are decoded from the faces' files each time it
@@ -39,7 +37,7 @@ impl Faces {
                 "Sunrise: no title panorama ({error}); prepare the game again in the launcher \
                  (or run sunrise-prepare panorama)"
             );
-            Self::colour(PLACEHOLDER)
+            Self::colour([96, 110, 111, 255])
         })
     }
 
@@ -80,17 +78,19 @@ impl Faces {
         })
     }
 
-    /// The cube's texels, layer after layer, or an error if a face cannot be decoded again.
-    pub fn texels(&self) -> Result<Vec<u8>> {
+    /// The cube's texels, layer after layer.
+    pub fn texels(&self) -> Vec<u8> {
         if self.files.is_empty() {
-            return Ok(self.colour.repeat(6));
+            return self.colour.repeat(6);
         }
         let loaded = self
             .decoded
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
-        loaded.map_or_else(|| decode_faces(&self.files).map(|(_, texels)| texels), Ok)
+        loaded
+            .or_else(|| decode_faces(&self.files).ok().map(|(_, texels)| texels))
+            .unwrap_or_else(|| vec![0; (self.size * self.size * 4 * 6) as usize])
     }
 }
 
@@ -313,32 +313,13 @@ impl Panorama {
     }
 
     fn cube(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::BindGroup {
-        // Don't decode faces this device can't hold. A rejected redraw also uses the
-        // placeholder's extent and texels together.
-        let size = self.faces.size;
-        let max = device.limits().max_texture_dimension_2d;
-        let texels = if size > max {
-            log::warn!(
-                "Sunrise: the {size}-pixel title panorama is larger than this device's {max}-pixel textures"
-            );
-            None
-        } else {
-            self.faces
-                .texels()
-                .map_err(|error| {
-                    log::warn!("Sunrise: could not redraw the title panorama: {error}")
-                })
-                .ok()
-        };
-        let (size, texels) =
-            texels.map_or_else(|| (1, PLACEHOLDER.repeat(6)), |texels| (size, texels));
         let texture = device.create_texture_with_data(
             queue,
             &wgpu::TextureDescriptor {
                 label: Some("Title panorama cube"),
                 size: wgpu::Extent3d {
-                    width: size,
-                    height: size,
+                    width: self.faces.size,
+                    height: self.faces.size,
                     depth_or_array_layers: 6,
                 },
                 mip_level_count: 1,
@@ -349,7 +330,7 @@ impl Panorama {
                 view_formats: &[],
             },
             wgpu::util::TextureDataOrder::LayerMajor,
-            &texels,
+            &self.faces.texels(),
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::Cube),
@@ -493,7 +474,7 @@ mod tests {
         .unwrap();
         assert_eq!(faces.size, 1024);
         // The texels decoded while loading, then decoded again for the next cube.
-        let (loaded, again) = (faces.texels().unwrap(), faces.texels().unwrap());
+        let (loaded, again) = (faces.texels(), faces.texels());
         assert_eq!(loaded, again);
         assert_eq!(again.len(), 6 * 1024 * 1024 * 4);
         // CubeMapTexture's actual layer suffixes, with each source row flipped vertically.
@@ -536,7 +517,7 @@ mod tests {
             &ResourceSource::directory(f.0.clone()),
             &ResourceSource::directory(f.0.clone()),
         );
-        assert_eq!(fallback.texels().unwrap(), [96, 110, 111, 255].repeat(6));
+        assert_eq!(fallback.texels(), [96, 110, 111, 255].repeat(6));
         f.write(5, 2, 2);
         assert!(
             Faces::try_load(
@@ -576,7 +557,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(faces.size, 4);
-        let texels = faces.texels().unwrap();
+        let texels = faces.texels();
         assert_eq!(texels.len(), 6 * 4 * 4 * 4);
         // Each face's red channel is its index (`face` above), and the cube
         // holds them in FACE_ORDER: layer 5 is face 2, the pack's, and layer 4
@@ -608,7 +589,7 @@ mod tests {
             &ResourceSource::directory(pack.0.clone()),
             &ResourceSource::directory(vanilla.0.clone()),
         );
-        assert_eq!((fallback.size, fallback.texels().unwrap().len()), (1, 24));
+        assert_eq!((fallback.size, fallback.texels().len()), (1, 24));
     }
 
     #[test]
@@ -634,20 +615,10 @@ mod tests {
         let faces =
             Faces::try_load(&source, &ResourceSource::directory(vanilla.0.clone())).unwrap();
         fs::remove_file(&jar).unwrap();
-        let loaded = faces.texels().unwrap();
+        let loaded = faces.texels();
         assert_eq!(loaded.len(), 6 * 2 * 2 * 4);
-        assert_eq!(faces.texels().unwrap(), loaded);
+        assert_eq!(faces.texels(), loaded);
         assert_eq!(fs::read_dir(pack.background()).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn a_redraw_decode_failure_does_not_return_full_size_texels() {
-        let f = Fixture::new(2);
-        let root = ResourceSource::directory(f.0.clone());
-        let mut faces = Faces::try_load(&root, &root).unwrap();
-        assert_eq!(faces.texels().unwrap().len(), 6 * 2 * 2 * 4);
-        faces.files[0].clear();
-        assert!(faces.texels().is_err());
     }
 
     #[test]

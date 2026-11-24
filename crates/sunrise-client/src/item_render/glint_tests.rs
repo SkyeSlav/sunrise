@@ -359,8 +359,8 @@ fn invalid_and_generated_sprites_match_vanilla() {
     fs::write(path, atlas.to_string()).unwrap();
     for (name, w, h, color) in [
         ("trim", 8, 16, [255; 4]),
-        ("key", 1, 1, [255; 4]),
-        ("red", 1, 1, [255, 0, 0, 255]),
+        ("palettes/key", 1, 1, [255; 4]),
+        ("palettes/red", 1, 1, [255, 0, 0, 255]),
     ] {
         png(
             &root.join(format!("assets/test/textures/{name}.png")),
@@ -394,43 +394,6 @@ fn invalid_and_generated_sprites_match_vanilla() {
         [19.0 / 128.0, 37.0 / 64.0, 27.0 / 128.0, 53.0 / 64.0]
     );
     assert!(!atlas.contains_key("test:missing_alias"));
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn namespaces_sharing_a_prefix_are_all_listed_in_the_glint_atlas() {
-    // `a0:` sorts before `a:` as an identifier, though `assets/a/` comes first as a path.
-    let root = std::env::temp_dir().join(format!("sunrise-glint-prefix-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(root.join("assets/minecraft/atlases")).unwrap();
-    fs::write(
-        root.join("assets/minecraft/atlases/items.json"),
-        r#"{"sources":[{"type":"single","resource":"a:item/one"},{"type":"single","resource":"a0:item/two"}]}"#,
-    )
-    .unwrap();
-    png(
-        &root.join("assets/a/textures/item/one.png"),
-        16,
-        16,
-        [255; 4],
-    );
-    png(
-        &root.join("assets/a0/textures/item/two.png"),
-        16,
-        16,
-        [255; 4],
-    );
-    let atlas = glint_atlas::load(
-        &sunrise_assets::resource_source::ResourceSource::directory(root.clone()),
-        1,
-        16384,
-    )
-    .unwrap();
-    // Each is its own 16 x 16 cell; one the listing missed would be the missing sprite's.
-    let corner = |name: &str| [atlas[name].u0, atlas[name].v0];
-    assert_ne!(corner("a:item/one"), corner("a0:item/two"));
-    assert_ne!(corner("a:item/one"), corner("missingno"));
-    assert_ne!(corner("a0:item/two"), corner("missingno"));
     fs::remove_dir_all(root).unwrap();
 }
 

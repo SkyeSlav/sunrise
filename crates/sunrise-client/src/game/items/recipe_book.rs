@@ -686,10 +686,7 @@ impl Game<'_> {
                         stack,
                         self.items().get(&stack.item),
                         &crate::game::native_hooks::HookedAttributeTooltips::new(self, None),
-                        sunrise_client::item_tooltip::TooltipHolders::Definitions(
-                            self.item_enchantments(),
-                        ),
-                        false,
+                        self.item_enchantments(),
                         &|k| self.pack.names.display_get(k),
                         &|attribute| self.attribute_style(attribute, false),
                     )

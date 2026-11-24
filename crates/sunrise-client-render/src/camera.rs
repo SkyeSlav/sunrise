@@ -34,16 +34,6 @@ pub use mod_api::client::camera::{
 };
 use sunrise_core::geometry::trig;
 
-/// `AbstractBoat.clampRotation` for a rider that isn't a mob: the view kept
-/// within 105 degrees of the boat's yaw (`Mth.wrapDegrees`, then
-/// `yRot + targetDelta - delta` in that order, in floats). Returns the new yaw
-/// and the turn it made. The per-turn path also adds that turn to `yRotO`.
-pub fn clamp_boat_rotation(yaw: f32, boat_yaw: f32) -> (f32, f32) {
-    let delta = wrap_degrees(yaw - boat_yaw);
-    let target = delta.clamp(-105.0, 105.0);
-    (yaw + target - delta, target - delta)
-}
-
 /// `(float) Math.PI`.
 const PI: f32 = std::f32::consts::PI;
 /// `(float) (Math.PI / 180.0)`.

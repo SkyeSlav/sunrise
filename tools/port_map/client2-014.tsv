@@ -131,7 +131,7 @@ Screen.extractPanorama	port	crates/sunrise-client-render/src/gfx/panorama.rs::Pa
 Screen.extractMenuBackground	port	crates/sunrise-client-render/src/ui.rs::menu_background	the dirt background with blur
 Screen.extractMenuBackgroundTexture	port	crates/sunrise-client-render/src/ui.rs::menu_background	gap: minor: only the standard background texture
 Screen.isValidCharacterForName	port	crates/sunrise-client/src/game/interface/block_editor.rs::valid_character_for_name	structure and command block editors' name field: one `:` before any `/`, `/` only after it
-Screen.scheduleNarration	port	crates/sunrise-narrator/src/screen.rs::ScreenNarration::schedule	the delay, the suppression and the trigger of one narration; after_mouse_move, after_mouse_action, after_keyboard_action and after_status_change are the vanilla entry points
+Screen.scheduleNarration	port	crates/sunrise-narrator/src/screen.rs::ScreenNarration::schedule	the delay, the suppression and the trigger of one narration; schedule_now, after_mouse_move, after_mouse_action, after_keyboard_action and after_status_change are the vanilla entry points
 Screen.shouldRunNarration	port	crates/sunrise-client/src/screen_narrator.rs::ScreenNarrator::frame_with	GameNarrator.isActive decides it: while the narrator cannot speak the screens still record and the narration is marked said, so turning it on says only what changed
 Screen.handleDelayedNarration	port	crates/sunrise-narrator/src/screen.rs::ScreenNarration::due	the trigger of a narration due now, once the delay and the suppression have passed; the frame says it
 Screen.runNarration	port	crates/sunrise-narrator/src/screen.rs::ScreenNarration::run	rebuilds the narration and returns what to say now, empty for nothing

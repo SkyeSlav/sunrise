@@ -208,15 +208,5 @@
     "type": "std::cell::Cell<u64>",
     "category": "dispatch table",
     "reason": "Thread-wide count of all listeners entered, bumped by the dispatch loop; scoped engine leases (pending children) compare it so a lease never outlives one listener."
-  },
-  "world/phase_refusal.rs::report::LOGGED": {
-    "type": "OnceLock<Mutex<HashSet<(&'staticstr,&'staticstr)>>>",
-    "category": "reentrancy guard",
-    "reason": "Process-wide set of the (mod, operation) pairs whose refusal has been logged, so a refusing hook names the operation once and not on every call."
-  },
-  "world/phase_refusal.rs::SCOPE": {
-    "type": "Cell<Option<Scope>>",
-    "category": "reentrancy guard",
-    "reason": "Per-thread record of the mod and hook whose listener call is in flight and whether a refusal has latched, which the gate reads to contain a wrong-phase Host call."
   }
 }

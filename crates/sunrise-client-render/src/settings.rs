@@ -341,6 +341,12 @@ impl Settings {
             .and_then(|mode| self.video_modes.iter().position(|m| *m == mode))
             .map_or(-1, |i| i as i32)
     }
+    /// Loads only the crates' settings stores (`sunrise_hooks::settings`) from the files next to
+    /// `path`, into the local-instance index [`sunrise_hooks::seat`] reports.
+    pub fn load_stores(path: &Path) {
+        let dir = path.parent();
+        sunrise_hooks::settings::engine::load(&mut |file| fs::read_to_string(dir?.join(file)).ok());
+    }
     pub fn load(path: &Path) -> Self {
         let (extras_text, keep_extras) = path
             .parent()

@@ -23,7 +23,6 @@ libloading = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-object = { version = "0.39", default-features = false, features = ["read", "std"] }
 
 [lints]
 workspace = true
@@ -38,6 +37,7 @@ friends = ["sunrise-client/friends"]
 rng-trace = ["sunrise-client/rng-trace"]
 system-allocator = ["sunrise-client/system-allocator"]
 alloc-census = ["sunrise-client/alloc-census"]
+windows-mimalloc = ["sunrise-client/windows-mimalloc"]
 windows-segment-heap = ["sunrise-client/windows-segment-heap"]
 
 [dev-dependencies]

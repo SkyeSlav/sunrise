@@ -443,9 +443,13 @@ impl Game<'_> {
                 b = self.tick_boat(b, true);
                 b.input = [keys.left, keys.right, keys.forward, keys.backward];
             }
-            // positionRider turns and clamps the rider's yaw without changing yRotO.
+            // positionRider: the seat turns with the boat; clampRotation,
+            // which moves `yRotO` (the held lead's old look) with the view.
             self.yaw += b.delta_rotation;
-            self.yaw = sunrise_client::camera::clamp_boat_rotation(self.yaw, b.yaw).0;
+            let delta = (self.yaw - b.yaw + 180.0).rem_euclid(360.0) - 180.0;
+            let clamped = delta.clamp(-105.0, 105.0) - delta;
+            self.yaw += clamped;
+            self.rope_rot_old.0 += clamped;
             self.store_boat_back(i, b);
             // In front of a mob that shares the boat.
             Some(self.player_boat_seat(i))

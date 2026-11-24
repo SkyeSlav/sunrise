@@ -40,17 +40,6 @@ class WasmNamesTests(unittest.TestCase):
                    + section(2, bytes([1]) + string("env") + string("b") + bytes([0, 0])))
         self.assertEqual(wasm_names.names(swapped), ["export z func", "import env.b func"])
 
-    def test_a_typed_reference_table_or_global_is_skipped_whole(self):
-        # `ref null 200` and `ref 200`: the heap type is a two-byte LEB, then the next import must still read right.
-        typed = (b"\0asm\1\0\0\0"
-                 + section(2, bytes([4])
-                           + string("env") + string("t") + bytes([1, 0x63, 0xC8, 0x01, 0, 1])
-                           + string("env") + string("after_table") + bytes([0, 0])
-                           + string("env") + string("g") + bytes([3, 0x64, 0xC8, 0x01, 0])
-                           + string("env") + string("after_global") + bytes([0, 0])))
-        self.assertEqual(wasm_names.names(typed), ["import env.after_global func", "import env.after_table func",
-                                                   "import env.g global", "import env.t table"])
-
     def test_refuses_a_file_that_is_not_wasm(self):
         with self.assertRaises(ValueError):
             wasm_names.names(b"MZ\x90\0")

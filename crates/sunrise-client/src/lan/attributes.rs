@@ -5,7 +5,9 @@
 //! changed since (`getAttributesToSync`), to the trackers and the player itself.
 use sunrise_protocol::packets::play::{AttributeModifier, AttributeSnapshot};
 use sunrise_world::attributes::{
-    Instance, Modifier, Operation, entity::AttributeId, live::LiveAttributes,
+    Instance, Modifier, Operation,
+    entity::{AttributeId, EntityAttributes},
+    live::LiveAttributes,
 };
 
 /// `AttributeModifier.Operation.id`.
@@ -108,6 +110,15 @@ fn operation(id: i32) -> Operation {
         2 => Operation::AddMultipliedTotal,
         _ => Operation::AddValue,
     }
+}
+
+/// The client-syncable instances of a generic attribute map.
+pub fn generic_syncable(map: &EntityAttributes) -> impl Iterator<Item = AttributeSnapshot> + '_ {
+    let catalog = map.catalog();
+    catalog
+        .attributes()
+        .filter(|(_, a)| a.syncable)
+        .filter_map(move |(id, _)| map.instance(id).map(|i| snapshot(id, i)))
 }
 
 /// Adds a modifier to the snapshot of `attribute`, creating it with `base`.

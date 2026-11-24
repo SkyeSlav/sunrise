@@ -314,18 +314,6 @@ The veto's placement neighbour and the post-placement notice use the resolved fa
 and the notice uses the resolved click location. Neither changes the sides of the block placement or
 survival hooks.
 
-`level.state_for_placement(host, block, &context)` takes `&mut dyn ServerHost` and queries only
-the level in play. It runs the block's `Block.getStateForPlacement`, including its
-`state_for_placement` parts, without resolving the click again or placing anything. The caller
-owns the `ServerHost`; the Part still sees only its restricted `LevelHost` through `LevelSide`.
-The context's item is a registry key, not a stack or its components. The method returns
-`Result<Option<BlockState>, LevelReadError>`. `Ok(Some(state))` gives the candidate before item
-placement's additional survival, obstruction and permission checks. `Ok(None)` means there is no
-candidate or a placement input was refused. A stale handle or closed level returns `Err(LevelReadError::Stale)`; a parked level,
-an unavailable host or load phase, or a state the API cannot represent returns
-`Err(LevelReadError::Unavailable)`. A camouflage block can use this read to store a held block's
-placement state, such as a stair's facing or a log's axis.
-
 A neighbour's `BlockPart::fence_gate_in_wall` answers whether a fence gate sits at wall height
 beside that state. It runs on both sides at placement and shape updates, with a read-only `LevelSide`:
 `Some(true)` counts as a wall, `Some(false)` does not, and `None` keeps the `minecraft:walls` tag

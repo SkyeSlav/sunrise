@@ -814,32 +814,6 @@ impl Title {
     pub fn take_requested(&mut self) -> Option<Mode> {
         self.requested.take()
     }
-    /// Opens the title screen `id` names (`title`, `world_select`,
-    /// `world_create`, `multiplayer`, `add_server`, `direct_connect`: the
-    /// ones that take no arguments) at
-    /// once, past the gate: the screen a mod's `screen_opening` answer puts in
-    /// place of another, which fires nothing again. The world list opens as
-    /// Singleplayer does; the others fresh. Any other id changes nothing.
-    pub fn open_by_id(&mut self, id: &str) {
-        let gated = std::mem::replace(&mut self.gated, false);
-        match id {
-            "title" => self.set_mode(Mode::Main),
-            "world_select" => self.enter_singleplayer(),
-            "world_create" => {
-                self.create_return_to_main = true;
-                self.set_mode(self.new_world());
-            }
-            "multiplayer" => self.set_mode(Mode::Multiplayer(crate::multiplayer::Screen::list(
-                &self.saves,
-            ))),
-            "add_server" => {
-                self.set_mode(Mode::Multiplayer(crate::multiplayer::Screen::add_server()))
-            }
-            "direct_connect" => self.open_multiplayer(crate::multiplayer::Screen::direct()),
-            _ => {}
-        }
-        self.gated = gated;
-    }
     /// Supply the installed definitions for world creation.
     pub fn set_rule_registry(&mut self, registry: std::sync::Arc<crate::gamerules::RuleRegistry>) {
         fn rebind(mode: &mut Mode, registry: &std::sync::Arc<crate::gamerules::RuleRegistry>) {
@@ -3438,20 +3412,15 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             return crate::multiplayer::Outcome::None;
         };
         match screen.click(hit, x, y, size, &self.saves) {
-            crate::multiplayer::Outcome::Open(next) => {
-                self.open_multiplayer(*next);
+            crate::multiplayer::Outcome::Open(mut next) => {
+                if let crate::multiplayer::Screen::Direct { address } = &mut *next {
+                    address.clone_from(&self.last_server);
+                }
+                self.set_mode(Mode::Multiplayer(*next));
                 crate::multiplayer::Outcome::None
             }
             outcome => outcome,
         }
-    }
-    /// Opens a multiplayer screen; Direct Connection starts on the last
-    /// server joined (`lastServer`).
-    fn open_multiplayer(&mut self, mut next: crate::multiplayer::Screen) {
-        if let crate::multiplayer::Screen::Direct { address } = &mut next {
-            address.clone_from(&self.last_server);
-        }
-        self.set_mode(Mode::Multiplayer(next));
     }
     /// A left press on the game rules (they need the atlas for text): whether
     /// it lands on a button, for its sound.

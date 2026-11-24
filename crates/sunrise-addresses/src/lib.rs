@@ -15,6 +15,25 @@ pub const LICENSE: &str = "https://github.com/sunrise-org/sunrise/blob/main/LICE
 /// The repository's issue tracker, linked from the Mods screen's Sunrise row.
 pub const ISSUES: &str = "https://github.com/sunrise-org/sunrise/issues";
 
+/// The players' page on connecting an AI agent (the website's docs/agents.md).
+pub const AGENT_DOCS: &str = "https://playsunrise.net/docs/agents";
+
+/// The mod registry's policy, which the launcher's mod pages link.
+pub const MOD_POLICY: &str = "https://playsunrise.net/mods/policy";
+
+/// The mod registry's index, published by sunrise-org/sunrise-mods (`SUNRISE_MOD_INDEX` overrides it).
+pub const MOD_INDEX: &str = "https://sunrise-org.github.io/sunrise-mods/index.json";
+
+/// Where the registry's icons and screenshots are served from: the same GitHub Pages site.
+pub const MOD_IMAGES: &str = "https://sunrise-org.github.io/sunrise-mods/";
+
+/// A registry project's page on the website is `<this>/<id>`.
+pub const MOD_PAGES: &str = "https://playsunrise.net/mods";
+
+/// The registry's form for reporting a project.
+pub const MOD_REPORT: &str =
+    "https://github.com/sunrise-org/sunrise-mods/issues/new?template=report.yml";
+
 /// The telemetry ingest server (`crates/sunrise-telemetry-server`): opt-in telemetry, the
 /// "I'm playing" ping, benchmark uploads (`SUNRISE_TELEMETRY_URL` overrides it).
 pub const TELEMETRY: &str = "https://telemetry.playsunrise.net";
@@ -32,6 +51,19 @@ pub const STUN_SERVERS: &[&str] = &["stun.cloudflare.com:3478", "stun.l.google.c
 /// Play with Friends' troubleshooting page, shown to hosts nobody can reach.
 pub const FRIENDS_HELP: &str =
     "https://github.com/sunrise-org/sunrise/blob/main/docs/play-with-friends.md#troubleshooting";
+
+/// Sunrise community invite used by launcher defaults.
+pub const COMMUNITY_DISCORD: &str = "https://discord.gg/eswQcHfRKC";
+
+/// The GitHub profile of who made the launcher's look, credited in Settings' About (its picture is
+/// `<this>.png`).
+pub const LAUNCHER_LOOK_CREDIT: &str = "https://github.com/Xmilon";
+
+/// The official launcher installer's product home.
+pub const LAUNCHER_ABOUT: &str = "https://playsunrise.net";
+
+/// The separately branded arismoko fork launcher installer's product home.
+pub const FORK_LAUNCHER_ABOUT: &str = "https://github.com/sunrise-org/sunrise";
 
 /// Cargo's canonical source identity for the crates.io registry.
 pub const CARGO_CRATES_IO_SOURCE: &str = "registry+https://github.com/rust-lang/crates.io-index";

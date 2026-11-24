@@ -58,13 +58,15 @@ LABEL = "bug"
 PREFIX = "Daily: "
 UNFINISHED = " did not complete"
 DISCLOSURE = "> 🤖 Filed by Aria's agent swarm, Dyna, not by Aria."
-# The daily's legs are the jobs its summary needs (RESULTS), each a called workflow: daily_legs().
+# daily.yml's leg jobs (each a called workflow), and the called workflows' own routing jobs, which test nothing.
 PARITY = "parity"
 # The parity steps whose failure is the harness result the verdict already reports: a run that found a red
 # harness, and the job that turns the shares' verdicts into the run's one answer. Every other failed step in a
 # parity job is infrastructure — a share that wrote its verdict and then died still has to be visible beside a
 # harness failure from another share.
 PARITY_RESULT_STEPS = ("Run every automatic harness", "Fail unless every share reported and no harness failed")
+LEGS = ("shards", "wasm-mods", "fn-replace-check", "windows-runtime-leases", "cargo-sunrise-mod", "machine-sample",
+        "sdk", PARITY)
 # The legs sdk-publish waits for (output sdk_green) until a runner with prepared data exists (owner, 2026-11-16).
 SDK_LEGS = ("sdk", "machine-sample", "fn-replace-check")
 # Legs whose red is an action for someone, not a break: their one issue is titled as the action, and says what to do.
@@ -84,7 +86,6 @@ FRESH = "sdk / fresh"
 # Steps whose reports name failing tests. Failures outside those steps still need a job-level issue.
 WINDOWS_ROWS_JOB = "windows-runtime-leases / runtime-leases"
 WINDOWS_ROWS_STEP = "The Windows-only daily rows"
-WASM_STD_BUILD, WASM_STD_COMPARE = "wasm-std-names / build (", "wasm-std-names / compare"
 FIXTURE_TESTS_STEPS = ("Validate and load the fixture", "Run the client tests that load the compiled fixture")
 # The SDK legs' checks of the SDK they just built (prebuilt-game-build.yml), by step: a failed one is its own issue per
 # check and platform, `Daily: sdk <check> (<platform>)`, closed only by a run in which that step passed.
@@ -158,13 +159,6 @@ def pages(call, path, key=None):
     sys.exit(f"::error::{path} has more than {MAX_PAGES * 100} items; refusing to act on a partial listing")
 
 
-def daily_legs(needs):
-    """The legs of this run: every call the summary job needs (toJSON(needs)) but `resolve`, a call that is part of
-    another leg (PART_OF) counting as that leg. A leg added to daily.yml's summary needs is judged with no other entry;
-    a job of a leg missing there is one the summary does not know, and holds green."""
-    return tuple(name for name in needs if name != "resolve" and name not in PART_OF)
-
-
 def leg_results(needs):
     """Each leg's call result from RESULTS (toJSON(needs)), a leg made of several calls (PART_OF) taking the first that
     did not succeed."""
@@ -176,10 +170,10 @@ def leg_results(needs):
     return results
 
 
-def leg_jobs(jobs, legs):
+def leg_jobs(jobs):
     """This run's leg jobs (`<leg> / <job>`), without the called workflows' routing jobs."""
     return [job for job in jobs
-            if job["name"].split(" / ", 1)[0] in legs and " / " in job["name"]
+            if job["name"].split(" / ", 1)[0] in LEGS and " / " in job["name"]
             and job["name"].split(" / ", 1)[1] not in HELPERS]
 
 
@@ -196,9 +190,9 @@ def never_started(job):
         step.get("conclusion") not in (None, "skipped") for step in job.get("steps") or [])
 
 
-def unstarted_legs(jobs, results, legs):
+def unstarted_legs(jobs, results):
     """The legs whose call was cancelled and none of whose jobs, routing jobs included, started."""
-    return {leg for leg in legs if results.get(leg, {}).get("result") == "cancelled"
+    return {leg for leg in LEGS if results.get(leg, {}).get("result") == "cancelled"
             and all(never_started(job) for job in jobs if job["name"].partition(" / ")[0] == leg)}
 
 
@@ -207,12 +201,12 @@ def job_green(job, fresh_ok):
         job["conclusion"] == "skipped" and job["name"].startswith("sdk / ") and fresh_ok)
 
 
-def failed_helpers(jobs, legs):
+def failed_helpers(jobs):
     """leg -> its routing or helper jobs that did not succeed (whose failure skips the leg's real jobs)."""
     failed = {}
     for job in jobs:
         leg, _, rest = job["name"].partition(" / ")
-        if leg in legs and rest in HELPERS and job["conclusion"] not in ("success", "skipped") and not never_started(job):
+        if leg in LEGS and rest in HELPERS and job["conclusion"] not in ("success", "skipped") and not never_started(job):
             failed.setdefault(leg, []).append(job["name"])
     return failed
 
@@ -237,11 +231,11 @@ def report_for(job, reports):
             for key in ("problems", "passed", "incomplete")}
 
 
-def known(name, legs):
+def known(name):
     """daily.yml's own jobs and its legs' jobs; any other job is one the summary cannot judge."""
     return (name in ("resolve", "schedule-dispatch", "sdk-publish-report")
             or name.startswith(("summary ", "nightly / ", "sdk-publish / "))
-            or name.split(" / ", 1)[0] in legs and " / " in name)
+            or name.split(" / ", 1)[0] in LEGS and " / " in name)
 
 
 # A run's name and a test's name as ignored_tests.py writes them; anything else in a report is not shown.
@@ -298,24 +292,20 @@ def named(problem):
     return not problem["test"].startswith("identity withheld")
 
 
-def verdicts(jobs, reports, results, legs, parity_report, all_legs):
-    """(failing tests, unfinished legs, passing tests, green legs) of this run. `legs` are those that must pass,
-    `all_legs` every leg the run called (parity too where it may be left out).
+def verdicts(jobs, reports, results, legs, parity_report):
+    """(failing tests, unfinished legs, passing tests, green legs) of this run.
 
     A failing test is a dict of package, test, kind, panic, policy and leg; an unfinished leg is (leg, conclusion,
     failed steps, reason). Green means every leg job and every called workflow concluded success."""
     tests, unfinished, passed, green_legs = [], [], set(), set()
     fresh_ok = any(job["name"] == FRESH and job["conclusion"] == "success" for job in jobs)
-    helpers = failed_helpers(jobs, all_legs)
-    unstarted = unstarted_legs(jobs, results, all_legs)
+    helpers = failed_helpers(jobs)
+    unstarted = unstarted_legs(jobs, results)
     linux_sdk_red = {job["name"] for job in jobs if job["name"] in LINUX_SDK_JOBS and not job_green(job, fresh_ok)}
     if results.get(LINUX_SDK_CALL, {}).get("result", "success") != "success":
         linux_sdk_red.add("sdk")  # the leg's own item (its failed `fresh`, say) is the Linux legs' too
     fn_replace_blocked = False
-    # The wasm std comparison needs both builds: one that failed is the item, not the comparison it skipped.
-    std_build_failed = any(job["name"].startswith(WASM_STD_BUILD) and job["conclusion"] in ("failure", "cancelled", "timed_out")
-                           and not never_started(job) for job in jobs)
-    for job in leg_jobs(jobs, all_legs):
+    for job in leg_jobs(jobs):
         if never_started(job) or job["name"].startswith(f"{PARITY} / "):
             continue  # parity uses its own verdict, including when the job passed
         report = report_for(job, reports)
@@ -330,8 +320,6 @@ def verdicts(jobs, reports, results, legs, parity_report, all_legs):
             continue
         if job["conclusion"] == "skipped" and job["name"].split(" / ", 1)[0] in helpers:
             continue  # its leg's failed helper is the one item for it, below
-        if job["name"] == WASM_STD_COMPARE and job["conclusion"] == "skipped" and std_build_failed:
-            continue
         steps = failed_steps(job)
         problems = [dict(item, leg=job["name"]) for item in (report or {}).get("problems", ())]
         by_name = [item for item in problems if named(item)]
@@ -367,7 +355,7 @@ def verdicts(jobs, reports, results, legs, parity_report, all_legs):
         else:
             unfinished.append((job["name"], job["conclusion"], steps, "failed at the steps named"))
     for job in jobs:
-        if not known(job["name"], all_legs) and not never_started(job):
+        if not known(job["name"]) and not never_started(job):
             unfinished.append((job["name"], job["conclusion"], [], "did not report: a job the summary does not know"))
     names = {job["name"] for job in jobs}
     if "shards" not in helpers and "shards" not in unstarted:
@@ -375,7 +363,7 @@ def verdicts(jobs, reports, results, legs, parity_report, all_legs):
             if expected not in names:
                 unfinished.append((expected, "missing", [], "did not report: the daily matrix has this shard, but "
                                    "no job of that name ran"))
-    seen = {job["name"].split(" / ", 1)[0] for job in leg_jobs(jobs, all_legs)}
+    seen = {job["name"].split(" / ", 1)[0] for job in leg_jobs(jobs)}
     for leg in legs:
         result = results.get(leg, {}).get("result", "missing")
         accounted = any(item["leg"].split(" / ", 1)[0] == leg for item in tests) or any(
@@ -432,7 +420,7 @@ def legs_green(legs, jobs, results, tests, unfinished):
     """Whether every one of `legs` ran and passed: its call succeeded, each of its jobs is green, and no failing test
     or unfinished item is its own."""
     fresh_ok = any(job["name"] == FRESH and job["conclusion"] == "success" for job in jobs)
-    mine = leg_jobs(jobs, legs)
+    mine = [job for job in leg_jobs(jobs) if job["name"].split(" / ", 1)[0] in legs]
     return (all(results.get(leg, {}).get("result") == "success" for leg in legs)
             and {job["name"].split(" / ", 1)[0] for job in mine} >= set(legs)
             and all(job_green(job, fresh_ok) for job in mine)
@@ -688,13 +676,12 @@ def main(call=api, run_git=git, query=graphql):
             "run_id": env["GITHUB_RUN_ID"], "run_attempt": attempt, "commit": commit}:
         parity_report = None
     jobs = pages(call, f"actions/runs/{env['GITHUB_RUN_ID']}/jobs?filter=latest", "jobs")
-    needs = json.loads(env["RESULTS"])
-    all_legs, results = daily_legs(needs), leg_results(needs)
+    results = leg_results(json.loads(env["RESULTS"]))
     # Only a run that writes nothing may leave parity out: a writing run's skipped parity holds green and the tag.
     parity_not_applicable = (not writes and results.get("resolve", {}).get("outputs", {}).get("parity_required") == "false"
                              and results.get(PARITY, {}).get("result") == "skipped")
-    legs = tuple(leg for leg in all_legs if leg != PARITY or not parity_not_applicable)
-    tests, unfinished, passed, green_legs, green = verdicts(jobs, reports, results, legs, parity_report, all_legs)
+    legs = tuple(leg for leg in LEGS if leg != PARITY or not parity_not_applicable)
+    tests, unfinished, passed, green_legs, green = verdicts(jobs, reports, results, legs, parity_report)
     open_issues = {issue["title"]: issue["number"]
                    for issue in pages(call, f"issues?state=open&labels={LABEL}")
                    if "pull_request" not in issue and issue["title"].startswith(PREFIX)}

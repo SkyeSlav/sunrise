@@ -39,6 +39,7 @@ sunrise-perf-format = { path = "../sunrise-perf-format" }
 # One pool of helper threads for the server tick's parallel phases (`parallel.rs`): threads made
 # once, not for every phase of every tick.
 rayon = "1.10"
+sunrise-hdr = { path = "../sunrise-hdr" }
 sunrise-world = { path = "../sunrise-world" }
 sunrise-protocol = { path = "../sunrise-protocol" }
 # server.properties, eula.txt and the user lists, shared with sunrise-server.
@@ -70,6 +71,7 @@ serde_json = { version = "1.0.151", features = ["raw_value"] }
 # hlsl-out: the gfx.rs tests translate every shader as wgpu's DirectX 12 backend does. A normal feature,
 # not a dev-dependency's, so builds, tests and examples share one build of naga, wgpu and this crate.
 naga = { version = "30.0.1", features = ["wgsl-in", "hlsl-out"] }
+miniz_oxide = "0.8"
 ab_glyph = "0.2.32"
 log = "0.4"
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
@@ -88,6 +90,7 @@ gilrs = { version = "0.11", optional = true }
 sunrise-dualsense = { path = "../sunrise-dualsense", optional = true }
 # HTTPS to the Minecraft services (online-mode session join).
 ureq = { version = "2", default-features = false, features = ["tls"] }
+unicode-bidi = "0.3.18"
 # `LevelStorageAccess.estimateDiskSpace`: usable disk space, without unsafe code on Windows.
 fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
 
@@ -127,6 +130,8 @@ audio = ["sunrise-client-render/audio"]
 controllers = ["dep:gilrs", "sunrise-client-input/controllers"]
 # Records the call sites of mob random draws (`mob_ai_probe` traces).
 rng-trace = ["sunrise-core/rng-trace"]
+# Compatibility with earlier experiment commands: main already uses mimalloc.
+windows-mimalloc = []
 # Opt-in Windows heap experiment; see docs/windows-allocators.md.
 windows-segment-heap = []
 

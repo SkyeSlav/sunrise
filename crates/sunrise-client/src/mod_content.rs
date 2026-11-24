@@ -2848,8 +2848,8 @@ const COMMAND_REGISTRIES: [(&str, &str); 7] = [
 
 /// A mod file that adds to a worldgen bundle: (bundle, id).
 fn worldgen_entry(file: &str) -> Option<(&'static str, String)> {
-    let (ns, rest) = file.strip_prefix("data/")?.split_once('/')?;
-    let (kind, path) = rest.strip_prefix("worldgen/")?.split_once('/')?;
+    let (ns, rest) = file.strip_prefix("data/")?.split_once("/worldgen/")?;
+    let (kind, path) = rest.split_once('/')?;
     let (_, bundle) = WORLDGEN_BUNDLES.iter().find(|(k, _)| *k == kind)?;
     if *bundle == BIOMES && ns == "minecraft" {
         return None;
@@ -3359,8 +3359,6 @@ struct Known {
     biome_tags: std::collections::BTreeSet<String>,
     /// `data/<ns>/tags/<kind>/<path>.json` files the mods add.
     tag_files: std::collections::BTreeSet<String>,
-    /// Block and item tag paths, by kind. A missing kind means the base has no folder to consult.
-    vanilla_tags: BTreeMap<&'static str, BTreeSet<String>>,
 }
 impl Known {
     fn new(
@@ -3369,8 +3367,6 @@ impl Known {
         tags: &BTreeMap<String, TagMerge>,
         mod_biomes: impl Iterator<Item = String>,
     ) -> Result<Self> {
-        use std::io::ErrorKind::{NotADirectory, NotFound};
-
         let mut blocks: std::collections::BTreeSet<String> =
             plan.defaults.keys().cloned().collect();
         blocks.extend(plan.blocks.iter().map(|b| b.decl.id.clone()));
@@ -3390,39 +3386,19 @@ impl Known {
         };
         let mut biomes = keys(BIOMES)?;
         biomes.extend(mod_biomes);
-        let mut vanilla_tags = BTreeMap::new();
-        for kind in ["block", "item"] {
-            let dir = base.join(format!("data/minecraft/tags/{kind}"));
-            let names = if let Some(files) =
-                sunrise_core::prepared_files::files_under(&dir).filter(|files| !files.is_empty())
-            {
-                files
-                    .into_iter()
-                    .filter_map(|name| name.strip_suffix(".json").map(str::to_owned))
-                    .collect()
-            } else {
-                match sunrise_world::json_folder::list(&dir) {
-                    Ok(files) => files.into_iter().map(|(name, _)| name).collect(),
-                    Err(e) if matches!(e.kind(), NotFound | NotADirectory) => continue,
-                    Err(e) => return Err(format!("{}: {e}", dir.display()).into()),
-                }
-            };
-            vanilla_tags.insert(kind, names);
-        }
         Ok(Known {
             blocks,
             items,
             biomes,
             biome_tags: keys(BIOME_TAGS)?,
             tag_files: tags.keys().cloned().collect(),
-            vanilla_tags,
         })
     }
     /// Whether tag `file` keeps entry `v`: a known id or an existing tag,
     /// for block, item and biome tags (other registries are kept as they
     /// are). The worldgen loader refuses a biome tag naming what it lacks
     /// (another mod's biomes, a loader's tags), so those entries go.
-    fn keeps(&self, file: &str, v: &J, warnings: &mut Vec<String>) -> bool {
+    fn keeps(&self, file: &str, v: &J) -> bool {
         let id = match v {
             J::Str(s) => s.as_str(),
             J::Obj(_) => match v.get("id") {
@@ -3431,18 +3407,16 @@ impl Known {
             },
             _ => return true,
         };
-        let Some((ns, rest)) = file
+        let Some(rest) = file
             .strip_prefix("data/")
             .and_then(|r| r.split_once("/tags/"))
+            .map(|(_, rest)| rest)
         else {
             return true;
         };
-        let Some((kind, tag_path)) = rest.strip_suffix(".json").and_then(|rest| {
-            rest.strip_prefix("worldgen/biome/")
-                .map(|path| ("worldgen/biome", path))
-                .or_else(|| rest.split_once('/'))
-        }) else {
-            return true;
+        let kind = match rest.strip_prefix("worldgen/biome/") {
+            Some(_) => "worldgen/biome",
+            None => rest.split_once('/').map_or("", |(k, _)| k),
         };
         let ids = match kind {
             "block" => &self.blocks,
@@ -3454,28 +3428,11 @@ impl Known {
             Some(tag) => {
                 let (tns, path) = tag.split_once(':').unwrap_or(("minecraft", tag));
                 let rel = format!("data/{tns}/tags/{kind}/{path}.json");
-                if self.tag_files.contains(&rel) {
-                    return true;
-                }
-                match kind {
-                    "worldgen/biome" => self.biome_tags.contains(&format!("{tns}:{path}")),
-                    _ if tns != "minecraft" => false,
-                    _ => {
-                        let known = self
-                            .vanilla_tags
-                            .get(kind)
-                            .is_none_or(|tags| tags.contains(path));
-                        if !known
-                            && v.get("required") != Some(&J::Bool(false))
-                            && v.get("remove") != Some(&J::Bool(true))
-                        {
-                            warnings.push(format!(
-                                "{file}: skipped {id} in tag {ns}:{tag_path}: no such tag in the base or installed mods"
-                            ));
-                        }
-                        known
+                self.tag_files.contains(&rel)
+                    || match kind {
+                        "worldgen/biome" => self.biome_tags.contains(&format!("{tns}:{path}")),
+                        _ => tns == "minecraft",
                     }
-                }
             }
             None => ids.contains(id),
         }
@@ -3626,8 +3583,7 @@ fn load_layers<'a>(jar_store: &Path, mods: &'a [ContentMod]) -> Result<Vec<ModLa
 /// Asset layers remain in their sources and are resolved by `resolved_resources`.
 /// Each jar's file is `<sha512>.jar` in `jar_store`, where the launcher
 /// puts it. A missing file refuses the load before decoded output is written.
-/// Returns warnings for shared tag replacements, missing required vanilla tag
-/// references and duplicate asset paths.
+/// Returns warnings for shared tag replacements and duplicate asset paths.
 pub fn build(
     base: &Path,
     jar_store: &Path,

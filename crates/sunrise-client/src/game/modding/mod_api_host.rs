@@ -1214,12 +1214,7 @@ impl<
         &self,
         read: impl FnOnce(&sunrise_world::level::Signals<'_, Self>) -> R,
     ) -> Option<R> {
-        let behaviours = self.level.behaviours;
-        let signals = if self.level.native_authoritative && self.preview.is_some() {
-            behaviours.uncached_signals(self, &self.ticks)
-        } else {
-            behaviours.signals(self, &self.ticks)
-        };
+        let signals = self.level.behaviours.signals(self, &self.ticks);
         let value = read(&signals);
         (!(self.level.client_side && signals.read_unknown_output())).then_some(value)
     }

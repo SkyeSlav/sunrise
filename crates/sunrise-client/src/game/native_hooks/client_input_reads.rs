@@ -3,6 +3,7 @@ use crate::game::api_values::TryIntoApi;
 
 /// Helpers for native mods, kept as stable as the hook points.
 // Native mods use these; nothing in Sunrise does.
+#[allow(dead_code)]
 impl Game<'_> {
     /// Playing, with nothing over the world: keys and zoom apply.
     pub(in crate::game) fn playing(&self) -> bool {

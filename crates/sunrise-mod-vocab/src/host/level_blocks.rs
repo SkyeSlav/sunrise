@@ -88,28 +88,6 @@ pub trait LevelBlocksBackendMut {
         state: BlockState,
     ) -> Result<BlockState, LevelWriteError>;
     /// Side: server.
-    /// Ask `Block.getStateForPlacement(BlockPlaceContext)` without placing the block.
-    /// The placement-state parts see `block`'s default state, as in a real placement.
-    /// A registered answer belonging to another block is returned as given; an unknown
-    /// answer falls back to the block's own rule, as in a real placement.
-    /// The context is taken as written, with no target or click re-resolution. Nothing is
-    /// written, notified or loaded. No additional survival, obstruction or permission check
-    /// from `BlockItem.place` runs.
-    /// Only the level in play is queried. Returns `Err(LevelReadError::Stale)` for a
-    /// stale handle or closed level, and `Err(LevelReadError::Unavailable)` for a parked
-    /// level, an unavailable host or load phase, or a state that the API cannot represent.
-    ///
-    /// Returns `Ok(None)` for vanilla's `null`, a part's `Some(None)`, an unknown block
-    /// or item key, an unloaded or out-of-bounds destination, or a non-finite hit or
-    /// rotation. `None` in `context.item` means an empty hand.
-    #[access(WorldOnly)]
-    fn level_state_for_placement(
-        &mut self,
-        level: LevelRef,
-        block: BlockKey,
-        context: &PlacementContext,
-    ) -> Result<Option<BlockState>, LevelReadError>;
-    /// Side: server.
     /// Write `state` at `pos` as a placement does and run `Block.setPlacedBy` for it, with no
     /// player: a bed places its head, a door its upper half, a tall plant its top. The write
     /// is `level_set_block`'s with `NEIGHBORS | CLIENTS` (plus `KNOWN_SHAPE` when

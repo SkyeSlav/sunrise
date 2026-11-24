@@ -317,7 +317,7 @@ fn a_named_grid_maps_cells_to_its_slots_and_clears_the_grid_with_the_named_slots
         .in_grid(3, 2, &[7, 5, 3, 1, 0], &[2, 5], 10)
         .unwrap();
     assert!(!plan.awaits_grid());
-    assert_eq!(plan.inputs, [7, 5, 3, 1, 0]);
+    assert_eq!(plan.input_slots(), [7, 5, 3, 1, 0]);
     // Shapeless ingredients fill the first cells in order, whatever slot each cell is.
     assert_eq!(plan.cells, [(0, 7), (1, 5)]);
     assert_eq!(plan.cleared_slots(), [2, 5, 7, 3, 1, 0]);

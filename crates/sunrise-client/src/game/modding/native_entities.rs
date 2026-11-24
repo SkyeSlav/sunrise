@@ -91,6 +91,7 @@ pub(super) fn target_id(t: Target) -> Option<u32> {
     }
 }
 
+#[allow(dead_code)]
 impl Game<'_> {
     /// Whether this game simulates the level `dimension`.
     fn native_simulates_level(&self, dimension: &str) -> bool {

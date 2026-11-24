@@ -54,9 +54,7 @@ mod content {
 struct BlockEntityDraw(Vec<u32>);
 use serde_json::{Map, Value};
 use stubs::*;
-#[derive(Clone)]
 struct Text;
-#[derive(Clone)]
 struct ScreenshotImage;
 #[derive(Debug, PartialEq)]
 struct Zoom(u32);
@@ -132,7 +130,6 @@ mod generated {
         pub(super) use super::super::{
             Command, Config, Dispensed, InteractionResult, MapDecoration, MapInfo, Screen, Zoom,
         };
-        #[derive(Clone)]
         pub struct FluidModel;
         #[derive(Clone, Copy)]
         pub struct EntityRef;

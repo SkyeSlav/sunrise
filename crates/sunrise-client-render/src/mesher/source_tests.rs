@@ -94,7 +94,6 @@ fn fixture() -> (Scratch, Assets, RenderAssets, MeshTables, Biomes) {
         model_gallery: vec![],
         animations: vec![],
         sprite_layers: BTreeMap::new(),
-        file_layers: BTreeMap::new(),
         emissive: vec![],
         translucent_layers: vec![false],
         sprite_mips: vec![],

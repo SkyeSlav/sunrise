@@ -245,6 +245,23 @@ pub(crate) fn download(
     store_download(response.into_reader(), sha1, dest, overwrite).map_err(|e| format!("{url}: {e}"))
 }
 
+/// Download exactly the manifest jar through the Modrinth CDN.
+pub fn download_jar(
+    url: &str,
+    jar: &sunrise_mod_package::manifest::JarRef,
+    dest: &Path,
+) -> Result<(), String> {
+    let response =
+        crate::net::get_from_hosts(url, &["cdn.modrinth.com"])?.ok_or("Modrinth jar not found")?;
+    store::<sha2::Sha512>(
+        response.into_reader(),
+        Some(jar.sha512()),
+        dest,
+        true,
+        "SHA-512",
+    )
+}
+
 /// Hash and copy a jar stream, refusing inputs larger than 512 MiB.
 /// Pass [`io::sink()`] as the writer when only the digest is needed.
 pub fn hash_reader<D: Digest>(

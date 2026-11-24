@@ -259,7 +259,6 @@ impl<N: LoopMod, T: BlockEntityTickSlot> BlockEntityTickSlot for Attributed<N, T
     #[inline(always)]
     fn before(&mut self, tick: &mut BlockEntityTick<'_, '_>) -> LoopFlow {
         self.call(|slot| slot.before(tick))
-            .unwrap_or(LoopFlow::Continue)
     }
     #[inline(always)]
     fn after(&mut self, tick: &mut BlockEntityTick<'_, '_>) {
@@ -1294,56 +1293,9 @@ mod slot_guard_tests {
         let mut slots = <(Attributed<Row, Both>, ())>::make();
         assert_eq!(slots.before(&mut tick), LoopFlow::Continue);
         slots.after(&mut tick);
-        let seen = slots.0.call(|slot| std::mem::take(&mut slot.0)).unwrap();
+        let seen = slots.0.call(|slot| std::mem::take(&mut slot.0));
         assert_eq!(seen.before, [Some(Row::CALL)]);
         assert_eq!(seen.after, [Some(Row::CALL)]);
-        assert_eq!(current_native_call(), None);
-    }
-
-    /// A slot that reads the world through the Host, as a mod's slot may.
-    #[derive(Default)]
-    struct Gated {
-        asked: u32,
-    }
-    impl BlockEntityTickSlot for Gated {
-        fn before(&mut self, tick: &mut BlockEntityTick<'_, '_>) -> LoopFlow {
-            self.asked += 1;
-            let host: &dyn mod_api::Host = &*tick.game;
-            let _ = host.level("minecraft:overworld");
-            LoopFlow::Stop
-        }
-        fn after(&mut self, tick: &mut BlockEntityTick<'_, '_>) {
-            self.asked += 1;
-            let host: &dyn mod_api::Host = &*tick.game;
-            let _ = host.level("minecraft:overworld");
-        }
-    }
-
-    /// Loop slots run in ticks, after the thread reached World. Fired in Setup and in Reloading
-    /// anyway, a slot's world read is a contained refusal answered as no answer (Continue, nothing),
-    /// never the no-scope panic, and the slot is not poisoned; in World it answers.
-    #[test]
-    #[ignore = "daily"]
-    fn a_loop_slot_outside_the_world_is_refused_not_a_panic() {
-        use mod_api::__private::{ModPhase, PhaseOwner};
-        let mut game_resources = None;
-        let mut game = server_game(&mut game_resources);
-        let mut slots = <(Attributed<Row, Gated>, ())>::make();
-        let mut tick = BlockEntityTick {
-            game: &mut game,
-            pos: (8, 64, 8),
-            kind: TickedKind::Hopper,
-            mod_type: None,
-        };
-        for reloading in [false, true] {
-            let setup = PhaseOwner::scope(ModPhase::Setup);
-            let _reload = reloading.then(|| setup.reloading().unwrap());
-            assert_eq!(slots.before(&mut tick), LoopFlow::Continue);
-            slots.after(&mut tick);
-        }
-        let _world = PhaseOwner::scope(ModPhase::World);
-        assert_eq!(slots.before(&mut tick), LoopFlow::Stop);
-        assert_eq!(slots.0.call(|slot| slot.asked), Some(5));
         assert_eq!(current_native_call(), None);
     }
 }

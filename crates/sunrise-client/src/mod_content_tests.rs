@@ -41,14 +41,10 @@ fn a_mods_jars_layer_under_its_files_in_mod_order() {
     fs::create_dir_all(base.join("assets/minecraft/atlases")).unwrap();
     fs::write(
         base.join("assets/minecraft/atlases/blocks.json"),
-        r#"{"sources": [{"type": "directory", "source": "block", "prefix": "block/"}]}"#,
+        r#"{"sources": [{"type": "directory", "source": "block"}]}"#,
     )
     .unwrap();
-    let atlas = |source: &str| {
-        format!(
-            "{{\"sources\": [{{\"type\": \"directory\", \"source\": \"{source}\", \"prefix\": \"\"}}]}}"
-        )
-    };
+    let atlas = |source: &str| format!("{{\"sources\": [{{\"source\": \"{source}\"}}]}}");
     // A jar in the store as the launcher names it: `<sha512>.jar`, with
     // entries in any namespace (a jar is not fenced as a mod's files are).
     let jar = |name: &str, entries: &[(&str, String)]| {
@@ -4060,7 +4056,6 @@ fn creative_tabs_come_on_their_own_page() {
     );
     creative.publish(
         lists,
-        Default::default(),
         Default::default(),
         &crate::creative::Names::default(),
     );

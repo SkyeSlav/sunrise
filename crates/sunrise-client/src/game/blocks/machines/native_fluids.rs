@@ -177,6 +177,7 @@ fn write_tanks(nbt: &mut Compound, tanks: &[Tank]) {
 }
 
 // Native mods use these; nothing in Sunrise does.
+#[allow(dead_code)]
 impl Game<'_> {
     /// What holds fluids at `pos` in the level in place: a mod block's tanks (its block
     /// entity's, and not the placeholder standing in while it ticks), or a cauldron.

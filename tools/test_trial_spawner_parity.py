@@ -27,8 +27,6 @@ ominous (Bad Omen becoming Trial Omen, the spawner's mobs discarded, the
 ominous config starting over), and some spawners start ominous. Ominous
 spawners drop ominous item spawners above a player or a mob (item, exact
 position and delay compared); the item spawners themselves are not ticked.
-A paired case checks that reloading with a grown UUID table can pick a different
-player than a fresh load of the same data with the same random draw.
 
 finalizeSpawn runs with a fixed random in the oracle; its own outcomes are not
 compared. Spawned mobs get UUIDs in spawn order on both sides, so the
@@ -159,28 +157,9 @@ def players(w, rng, spos, half, height):
         w.players.append(f'{x:.3f},{y:.3f},{z:.3f}/{mode}{omen}')
 
 
-def target_order_cases():
-    w = natural.World(None)
-    # Seed 13 chooses the first player in the set's traversal order.
-    w.kv.update(spos='0,0,0', state='active', ominous=1, t0=1, seed=13)
-    # The harness gives players sequential UUIDs. Only players 1 and 16 are
-    # targets: fresh buckets 1 and 0, but buckets 1 and 16 after growth.
-    w.players = ['2.5,0,0.5/survival'] + ['0.5,0,2.5/spectator'] * 14 + ['-1.5,0,0.5/survival']
-    # No detection on tick 1 and no normal mob spawn due this tick.
-    tag = ('{registered_players:[[I;0,0,0,1],[I;0,0,0,16]],'
-           'spawn_data:{entity:{id:"minecraft:zombie"}},next_mob_spawns_at:100L}')
-    w.kv['snbt'] = base64.b64encode(tag.encode()).decode()
-    yield f'trial/target_fresh mode=trial {w.tokens()}'
-    # Thirteen distinct UUIDs grow the live table from 16 to 32. The next
-    # load clears them without shrinking the table, then replays 1 and 16.
-    ids = ','.join(f'[I;0,0,0,{i}]' for i in range(32, 45))
-    w.kv['warmup_snbt'] = base64.b64encode(f'{{registered_players:[{ids}]}}'.encode()).decode()
-    yield f'trial/target_reloaded mode=trial {w.tokens()}'
-
-
 def corpus():
     rng = random.Random(0x54524941)
-    cases = list(target_order_cases())
+    cases = []
     for k in range(2500):
         w, spos, half, height = room(rng)
         players(w, rng, spos, half, height)
@@ -246,14 +225,6 @@ def main():
     errors = [l for l in vanilla if ' error ' in l]
     if errors:
         raise SystemExit(f'oracle errors ({len(errors)}): {errors[:5]}')
-    # Require an order-sensitive pick in both cases, not just matching logs
-    # that might both omit the item-spawner event. X is logged in f64 bits.
-    for kind, x in [('fresh', 'bff8000000000000'), ('reloaded', '4004000000000000')]:
-        name = f'trial/target_{kind}'
-        log = next((line.split(' ', 1)[1] for line in vanilla if line.startswith(name + ' ')), '')
-        targets = [event.split()[4] for event in log.split(' ; ') if event.startswith('0 ispawner ')]
-        if targets != [x]:
-            raise SystemExit(f'{name}: expected exactly one item spawner at x={x}, got {targets}')
     rust = (build / 'rust.txt').read_text().splitlines()
     bad = [(a, b) for a, b in zip(vanilla, rust) if a != b]
     if bad or len(vanilla) != len(rust):

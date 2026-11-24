@@ -2379,7 +2379,7 @@ impl Game<'_> {
     /// Whether the screen under the keyboard can still be typed in.
     fn pad_has_typing_screen(&self) -> bool {
         self.text_input_focused()
-            || self.title_input_active()
+            || self.title.is_some()
             || matches!(self.screen, Screen::Options | Screen::WorldOptions)
     }
 
@@ -2545,7 +2545,7 @@ impl Game<'_> {
             if let Err(e) = result {
                 log::warn!("Sunrise: on-screen keyboard: {e}");
             }
-        } else if self.title_input_active() {
+        } else if self.title.is_some() {
             match key {
                 Some(KeyCode::Enter) => {
                     if let Some(t) = self.title.as_mut() {

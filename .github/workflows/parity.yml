@@ -202,9 +202,6 @@ jobs:
           if [ -f "$RUNNER_TEMP/plan/bucket-${BUCKET:-0}.json" ]; then
             args+=(--harness-file "$RUNNER_TEMP/plan/bucket-${BUCKET:-0}.json")
           fi
-          # The repository's keep on this CI host outlives the slot: oracle runs on byte-identical inputs replay
-          # from it (tools/parity_shim.py). Without it every oracle runs, as before.
-          if [ -n "${DYNA_CI_KEEP:-}" ]; then export PARITY_ORACLE_KEEP="$DYNA_CI_KEEP/oracles"; fi
           status=0
           python3 tools/parity.py "${args[@]}" --selection-file "$PARITY_LOG_DIR/selection.json" \
             > "$log" 2>&1 || status=$?

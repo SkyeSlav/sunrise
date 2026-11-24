@@ -1409,6 +1409,14 @@ impl Items {
             None
         }
     }
+    /// Record one prototype's `equippable` and `mob_visibility` the way `load`
+    /// reads them from the default-component report.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn insert_mob_visibility_component(&mut self, id: &str, components: &Value) {
+        if let Some(parsed) = worn_mob_visibility(components, &HashMap::new()) {
+            self.mob_visibility.insert(Arc::from(id), parsed);
+        }
+    }
     /// The instrument a goat horn plays: its `instrument` component's
     /// registry entry or inline instrument.
     pub fn instrument(&self, stack: &ItemStack) -> Option<Instrument> {

@@ -206,20 +206,26 @@ fn fixture() -> (Harness, Menu) {
 }
 
 pub(super) fn placement(view: &MenuState) -> Plan {
-    Plan::new(vec![
-        Step::Write(Mutation::Cursor(None)),
-        Step::Write(Mutation::Slot(0, view.cursor.clone())),
-        Step::Effect(packet()),
-    ])
+    Plan::new(
+        ActionKind::Placement,
+        vec![
+            Step::Write(Mutation::Cursor(None)),
+            Step::Write(Mutation::Slot(0, view.cursor.clone())),
+            Step::Effect(packet()),
+        ],
+    )
 }
 
 fn quick_move(_: &MenuState) -> Plan {
-    Plan::new(vec![
-        Step::Write(Mutation::Slot(0, None)),
-        Step::Write(Mutation::Slot(1, stack("minecraft:stone", 4))),
-        Step::Write(Mutation::Slot(2, stack("minecraft:stone", 6))),
-        Step::Effect(packet()),
-    ])
+    Plan::new(
+        ActionKind::QuickMove,
+        vec![
+            Step::Write(Mutation::Slot(0, None)),
+            Step::Write(Mutation::Slot(1, stack("minecraft:stone", 4))),
+            Step::Write(Mutation::Slot(2, stack("minecraft:stone", 6))),
+            Step::Effect(packet()),
+        ],
+    )
 }
 
 fn quick_fixture() -> (Harness, Menu) {
@@ -627,12 +633,15 @@ fn invalid_plan_suffix_has_no_partial_successful_prefix() {
         &mut host,
         &menu,
         |_| {
-            Plan::new(vec![
-                Step::Write(Mutation::Slot(0, None)),
-                Step::Effect(packet()),
-                Step::Write(Mutation::Slot(1, stack("minecraft:stone", 4))),
-                Step::Write(Mutation::Slot(2, stack("minecraft:stone", 7))),
-            ])
+            Plan::new(
+                ActionKind::QuickMove,
+                vec![
+                    Step::Write(Mutation::Slot(0, None)),
+                    Step::Effect(packet()),
+                    Step::Write(Mutation::Slot(1, stack("minecraft:stone", 4))),
+                    Step::Write(Mutation::Slot(2, stack("minecraft:stone", 7))),
+                ],
+            )
         },
         |_| panic!("invalid plan must not dispatch"),
     );
@@ -676,11 +685,14 @@ fn recipe_two_stone_accept_consumes_once_changed_input_stale_restored() {
             &mut host,
             &menu,
             |_| {
-                Plan::new(vec![
-                    Step::Write(Mutation::Slot(0, None)),
-                    Step::Write(Mutation::Slot(1, stack("minecraft:stone_button", 1))),
-                    Step::Effect(packet()),
-                ])
+                Plan::new(
+                    ActionKind::RecipePlacement,
+                    vec![
+                        Step::Write(Mutation::Slot(0, None)),
+                        Step::Write(Mutation::Slot(1, stack("minecraft:stone_button", 1))),
+                        Step::Effect(packet()),
+                    ],
+                )
             },
             |host| {
                 if changed {
@@ -834,7 +846,7 @@ fn empty_decision_dispatches_nothing() {
         run(
             &mut host,
             &menu,
-            |_| Plan::new(vec![]),
+            |_| Plan::new(ActionKind::Placement, vec![]),
             |_| panic!("no-action dispatch")
         ),
         Ok(Outcome::Canceled)

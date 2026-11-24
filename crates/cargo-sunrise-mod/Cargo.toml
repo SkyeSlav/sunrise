@@ -47,6 +47,8 @@ libc = "0.2"
 [dev-dependencies]
 base64 = "0.22"
 ring = "0.17"
+sunrise-mod-wasm = { path = "../sunrise-mod-wasm" }
+wasmtime = { package = "sunrise-wasmtime", path = "../sunrise-wasmtime" }
 zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 
 [lints]

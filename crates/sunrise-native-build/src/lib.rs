@@ -240,6 +240,21 @@ pub fn bundle_in(dir: &Path) -> Result<Option<Bundle>, String> {
     package::read(dir)
 }
 
+pub fn is_revision(text: &str) -> bool {
+    text.len() == 40 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Appends `text` to the build log, the way a compiler warning reads.
+pub fn log_warning(text: &str) {
+    if let Ok(mut log) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path())
+    {
+        let _ = writeln!(log, "warning: {text}");
+    }
+}
+
 /// Every file under `dir`, by its path relative to `dir` (with `/`), sorted. A symlink is refused:
 /// horizon-mixins refuses them too.
 fn files(dir: &Path) -> Result<Vec<(String, PathBuf)>, String> {
@@ -360,8 +375,6 @@ fn run_checked(
         let mut tail = std::collections::VecDeque::new();
         let mut errors = Vec::new();
         let mut blocked = false;
-        // Noted as the output arrives: later lines can push the linker's note out of `tail`.
-        let mut libraries = false;
         for text in BufReader::new(child.stderr.take().expect("piped"))
             .lines()
             .map_while(Result::ok)
@@ -371,7 +384,6 @@ fn run_checked(
             }
             line(&text);
             blocked |= rust::blocked_by_app_control(&text);
-            libraries |= rust::missing_system_libraries(&text);
             if text.starts_with("error") && errors.len() < 4 {
                 errors.push(text.clone());
             }
@@ -414,10 +426,6 @@ fn run_checked(
         let tail: Vec<String> = tail.into();
         let error =
             diagnostics::with_internals_hint(failure(what, &status.to_string(), &errors, &tail));
-        let error = match libraries {
-            true => with_system_libraries(error),
-            false => error,
-        };
         Err(Ran {
             error: match blocked {
                 true => with_app_control(error),
@@ -475,11 +483,6 @@ fn app_control(error: String) -> String {
 
 fn with_app_control(error: String) -> String {
     format!("{}\n\n{error}", rust::smart_app_control())
-}
-
-/// `error` led by what to install when the build's link could not find udev or ALSA.
-fn with_system_libraries(error: String) -> String {
-    format!("{}\n\n{error}", rust::system_libraries())
 }
 
 /// [`run`]'s error: the `errors` lines not already among the last ones (`tail`), then those.
@@ -1038,35 +1041,6 @@ mod tests {
         // An error still among the last lines isn't said twice.
         let e = failure("horizon-mixins", "exit status: 1", &errors, &errors);
         assert!(e.contains("The end of its output") && e.matches("alsa-sys").count() == 1);
-    }
-
-    /// The linker's note comes before more output than the error keeps, so the hint is decided
-    /// as the output arrives.
-    #[cfg(unix)]
-    #[test]
-    #[ignore = "daily"]
-    fn a_link_missing_udev_or_alsa_leads_with_what_to_install() {
-        let _guard = log_lock();
-        clear_log().unwrap();
-        // rustc's output linking a native mod's patch library in a shell without either library
-        // (Rust 1.99.1 with rust-lld, 2026-11-19), then more lines than the error's end keeps.
-        let script = |library: &str| {
-            let mut cmd = Command::new("sh");
-            cmd.args(["-c", &format!(
-                "echo 'error: linking with `cc` failed: exit status: 1' >&2
-                 echo '  = note: rust-lld: error: unable to find library {library}' >&2
-                 for i in 1 2 3 4 5 6 7 8 9 10 11 12 13; do echo \"warning: build failed, waiting ($i)\" >&2; done
-                 exit 101"
-            )]);
-            run(cmd, "Compiling the mod", |_| {}).unwrap_err()
-        };
-        for library in ["-ludev", "-lasound"] {
-            let e = script(library);
-            assert!(e.starts_with(&rust::system_libraries()), "{e}");
-            assert!(!e.contains("unable to find library"), "{e}");
-        }
-        let e = script("-lasound_extra");
-        assert!(e.starts_with("Compiling the mod failed"), "{e}");
     }
 
     /// Smart App Control refusing a build script (#5911): cargo names the crate, Windows' reason

@@ -16,9 +16,9 @@ AbstractBoat.isUnderwater	inline	crates/sunrise-client/src/game/entities/boats/m
 AbstractBoat.floatBoat	inline	crates/sunrise-client/src/game/entities/boats/mod.rs::Game::tick_boat	buoyancy, friction and the first-water-touch snap are in tick_boat
 AbstractBoat.controlBoat	inline	crates/sunrise-client/src/game/entities/boats/mod.rs::Game::tick_boat	steering, acceleration and paddle flags in the controlled branch of tick_boat
 AbstractBoat.getDismountLocationForPassenger	port	crates/sunrise-client/src/game/entities/boats/mod.rs::Game::boat_dismount_target	gap: minor: no dismount pose check; the floor and water tests are there
-AbstractBoat.clampRotation	port	crates/sunrise-client-render/src/camera.rs::clamp_boat_rotation	the rider's yaw is clamped to 105 degrees off the boat; mobs get the head clamp in boat_passengers.rs seat_boat_mobs
+AbstractBoat.clampRotation	inline	crates/sunrise-client/src/game/network/remote_vehicles.rs::Game::remote_ride	the rider's yaw is clamped to 105 degrees off the boat; mobs get the head clamp in boat_passengers.rs seat_boat_mobs
 AbstractBoat.calculatePassengerBodyYRot	inline	crates/sunrise-client/src/game/entities/boat_passengers.rs::Game::seat_boat_mobs	animal turned 90 or 270 degrees when the boat is full
-AbstractBoat.onPassengerTurned	inline	crates/sunrise-client/src/game/interface/perspective.rs::Game::turn_player	the rider's view is clamped at the end of each turn
+AbstractBoat.onPassengerTurned	inline	crates/sunrise-client/src/game/network/remote_vehicles.rs::Game::remote_ride	the rider's turn is clamped each tick
 AbstractBoat.remove	inline	crates/sunrise-client/src/game/entities/boats/mod.rs::Game::hurt_boat	destroyed boats eject mobs and drop the boat; gap: minor: no leash drop, since boats cannot be leashed here
 AbstractBoat.checkFallDamage	missing		minor: boats keep no fall distance; boats take no fall damage either way
 AbstractBoat.getPaddleState	port	crates/sunrise-client/src/game/entities/boats/mod.rs::Boat::rowing_time	paddle flag, set only while a rider drives

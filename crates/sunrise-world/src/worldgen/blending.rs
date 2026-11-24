@@ -689,6 +689,9 @@ impl Blender {
             + f64::from(noise.get3(f64::from(z), f64::from(x), f64::from(y)) * 4.0f32);
         Some(distance.distance(sx, sy, sz) < 4.0)
     }
+    pub fn has_carving_filter(&self) -> bool {
+        self.carving.is_some()
+    }
 
     /// `Blender.OutputBuffer` for the columns of `volume`: the alpha and
     /// offset fields of the density graph.

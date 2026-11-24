@@ -188,7 +188,7 @@ mod tests {
             listed["srctest:late"],
             SpriteOrigin::File("srctest:item/stick".into())
         );
-        let generated = crate::atlas_sources::generate(&listed["srctest:new"], &|_| None);
+        let generated = crate::atlas_sources::generate(&listed["srctest:new"], &|_, _| None);
         assert_eq!(
             generated,
             Some((1, 2, vec![9; 8])),

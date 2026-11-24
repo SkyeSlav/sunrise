@@ -83,3 +83,15 @@ fn partial_wall_and_budget_exhaustion_fail_open() {
     let exhausted = Culler::new([0.0; 3], 1);
     assert!(!exhausted.occluded(bounds, max, |_| true));
 }
+
+#[test]
+fn mesh_culling_keeps_geometry_before_the_entity_prefix() {
+    let prefix = vertex([0.0; 3]);
+    let mesh = [vertex([8.0, -1.0, -1.0]), vertex([10.0, 1.0, 1.0])];
+    let mut vertices = vec![prefix];
+    vertices.extend(mesh);
+    let hidden = Culler::new([0.0; 3], 1_000).cull_vertices(&mut vertices, 1, |pos| pos[0] == 4);
+    assert!(hidden);
+    assert_eq!(vertices.len(), 1);
+    assert_eq!(vertices[0].pos, prefix.pos);
+}

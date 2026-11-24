@@ -24,7 +24,7 @@ jobs:
     runs-on: ${{ vars.DYNA_CI_SELF_HOSTED == 'true' && 'dyna-small' || 'ubuntu-latest' }}
     permissions:
       contents: read
-      actions: read  # the attempt's creation or start time (tools/ci/dyna_ci_route.sh)
+      actions: read  # the run's creation time (tools/ci/dyna_ci_route.sh)
     timeout-minutes: 5
     outputs:
       self_hosted: ${{ steps.runner.outputs.self_hosted }}
@@ -37,7 +37,7 @@ jobs:
       # Dyna's runner image has no GitHub CLI; GitHub's runners do.
       - name: GitHub CLI
         run: bash tools/ci/ensure_gh.sh
-      # The pool's switch and lease (tools/ci/dyna_ci_route.sh): a snapshot is judged at the attempt's creation (a re-run's start), so a
+      # The pool's switch and lease (tools/ci/dyna_ci_route.sh): a snapshot is judged at the run's creation, so a
       # run that waited in a concurrency group or GitHub's queue is not sent off the pool by a lease that lapsed
       # meanwhile.
       - id: runner

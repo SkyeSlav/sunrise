@@ -154,37 +154,3 @@ that goes faster or turns harder than 2.0 blocks and 4 degrees a tick is not cov
 Past a second of round trip the window stops growing: a player whose copy is
 older than it reaches is judged as a walker in the frame the cap allows, not carried. A vanilla client, which sends no age, gets the
 window around the expected age.
-
-## Host calls a load phase refuses
-
-Each Host method says in which load phases it may be called (`#[access(...)]`).
-World reads and writes require the World phase. The other Host phases admit only the following classes:
-
-| Phase | Open |
-|---|---|
-| Setup | settings reads; registry and metadata reads; the client setup calls; the published resource queries |
-| Config | settings reads; the mod's own config files |
-| Reloading | settings reads; registry and metadata reads; the published resource queries |
-
-The client setup calls of Setup can have presentation effects (a sound, a narrator line, a HUD mode) that stand
-even if the hook is refused afterwards. A native mod that calls a method in a phase that does not admit it is
-**refused, not crashed**, as a wasm mod's call is:
-
-- The call ends the mod's hook call (it unwinds out of the listener; the game makes no panic report). The game logs
-  `native refusal: <mod> hook <hook>: mod API <method> is unavailable during <phase>` once for each mod and method.
-- The latch: after one refusal, every later Host call that hook call makes is refused too, whatever it asks, and the
-  refusal counts even if the mod caught the unwind itself and returned normally.
-- The listener is dropped, and the hook goes on with the next one. The event outputs the listener touched are put
-  back to what they were before its call, and the answers of earlier listeners stand. What its earlier allowed calls
-  did (a sound, a narrator line, a HUD mode) stands too, as in wasm.
-- Its return value is what a refused wasm call returns: `Flow::Continue` for a cancel hook, `None` for a replace
-  hook that answers an `Option`, and the type's default (`false`, an empty list, `()`) for any other. A hook that
-  isolates its listeners (`entity_move`) disables the refused listener for the session, and a retained callback
-  (loot types, payload handlers, selectors, command argument types) is refused for that call only.
-- A method that returns `Result<_, LevelReadError>` or `Result<_, LevelWriteError>` does not unwind: it returns
-  `Err(Unavailable)` and the mod goes on.
-
-**The limit:** if the thread is already unwinding when the call is refused (a mod's `Drop` that calls the Host while
-another panic unwinds), the game logs the same line and panics, and a panic during an unwind aborts the process.
-Do not call the Host from a `Drop`. A native mod built with `panic = "abort"`, a library that brings its own
-`#[global_allocator]`, and a library that does not use the game's `libstd` are refused at load, by name.

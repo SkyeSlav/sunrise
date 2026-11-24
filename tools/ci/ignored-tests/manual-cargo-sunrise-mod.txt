@@ -1,0 +1,2 @@
+# cargo-sunrise-mod's ignored tests that never run in the daily shards, and who runs them (README.md: `manual`).
+cargo-sunrise-mod write_launcher_actor subprocess manual # fixture writer subprocess only

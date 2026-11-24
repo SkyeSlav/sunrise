@@ -297,6 +297,10 @@ impl Renderer {
         let report = self.install_shader_pack(loading.dimension, built.map(Some));
         Some((loading.dimension, loading.label, loading.started, report))
     }
+    /// Whether a `shaders/` pack is still building (`load_shader_pack`).
+    pub fn shader_pack_loading(&self) -> bool {
+        self.pack_loading.is_some()
+    }
     /// Drops the running shader pack, of either kind.
     pub fn drop_shader_packs(&mut self) {
         self.pack_loading = None;

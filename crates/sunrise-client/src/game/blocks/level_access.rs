@@ -1310,9 +1310,7 @@ impl LevelAccess for GameLevel<'_> {
         };
         let name = &block.name;
         let tag = Tag::Compound(nbt);
-        let previous = self.world.block_entities.get(&(pos.x, pos.y, pos.z));
-        if let Some((key, entity)) =
-            sunrise_client::save::decode_block_entity_replacing(&tag, name, previous)
+        if let Some((key, entity)) = sunrise_client::save::decode_block_entity_for_block(&tag, name)
         {
             self.world.block_entities.insert(key, entity);
             self.notify_block_entity_load_additional(key);

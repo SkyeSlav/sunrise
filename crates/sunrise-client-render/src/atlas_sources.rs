@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use sunrise_assets::{animation::AnimationMetadata, palette::apply_palette};
+use sunrise_assets::palette::apply_palette;
 use sunrise_client_core::pattern::Pattern;
 use sunrise_core::nbt::Tag;
 
@@ -448,7 +448,10 @@ fn argb(rgba: &[u8]) -> Vec<u32> {
 }
 /// The pixels of a generated sprite (`Region`, `Paletted` or a mod's `Pixels`);
 /// `None` for a plain file, which loads as itself.
-pub fn generate(origin: &SpriteOrigin, load: &dyn Fn(&str) -> Option<Image>) -> Option<Image> {
+pub fn generate(
+    origin: &SpriteOrigin,
+    load: &dyn Fn(&str, &str) -> Option<Image>,
+) -> Option<Image> {
     match origin {
         SpriteOrigin::File(_) => None,
         SpriteOrigin::Pixels(image) => Some(image.clone()),
@@ -458,7 +461,7 @@ pub fn generate(origin: &SpriteOrigin, load: &dyn Fn(&str) -> Option<Image>) -> 
             divisor_x,
             divisor_y,
         } => {
-            let (w, h, pixels) = load(texture)?;
+            let (w, h, pixels) = load(texture, "textures")?;
             let x_scale = f64::from(w) / divisor_x;
             let y_scale = f64::from(h) / divisor_y;
             // A float-to-integer cast saturates (NaN is 0), so every value here is in range.
@@ -469,33 +472,39 @@ pub fn generate(origin: &SpriteOrigin, load: &dyn Fn(&str) -> Option<Image>) -> 
             if width <= 0 || height <= 0 {
                 return None;
             }
-            // The whole rectangle must lie inside the sheet, as `SpriteContents.createSubImage`
-            // takes it: a cut that doesn't fits nothing, and the sprite is absent. Checked before
-            // anything is sized, so numbers a pack made up allocate nothing.
-            if x < 0
-                || y < 0
-                || x.saturating_add(width) > i64::from(w)
-                || y.saturating_add(height) > i64::from(h)
-            {
+            // The region and divisors come from an atlas definition a mod or pack writes: refuse a
+            // sprite over the stated side before sizing anything.
+            if width > MAX_SPRITE_SIDE || height > MAX_SPRITE_SIDE {
                 log::warn!(
-                    "atlas region {} of {texture}: outside the {w}x{h} sheet; skipped",
+                    "atlas region {} of {texture}: {width}x{height} exceeds the {MAX_SPRITE_SIDE}-pixel \
+                     sprite side; skipped",
                     region.sprite
                 );
                 return None;
             }
-            // The sheet is a decoded image, so its side is within the sprite side already.
-            let (x, y, width, height) = (x as usize, y as usize, width as usize, height as usize);
+            // Up to 4 GiB at the largest side: as vanilla's `NativeImage` allocation does, a
+            // refused allocation skips the sprite instead of ending the process.
+            let bytes = (width * height * 4) as usize;
             let mut out = Vec::new();
-            if out.try_reserve_exact(width * height * 4).is_err() {
+            if out.try_reserve_exact(bytes).is_err() {
                 log::warn!(
                     "atlas region {} of {texture}: {width}x{height} could not be allocated; skipped",
                     region.sprite
                 );
                 return None;
             }
+            out.resize(bytes, 0u8);
             for row in 0..height {
-                let from = ((y + row) * w as usize + x) * 4;
-                out.extend_from_slice(&pixels[from..from + width * 4]);
+                for col in 0..width {
+                    // The offset is the pack's too: saturate, and the bounds check skips it.
+                    let (sx, sy) = (x.saturating_add(col), y.saturating_add(row));
+                    if sx < 0 || sy < 0 || sx >= i64::from(w) || sy >= i64::from(h) {
+                        continue;
+                    }
+                    let s = ((sy * i64::from(w) + sx) * 4) as usize;
+                    let d = ((row * width + col) * 4) as usize;
+                    out[d..d + 4].copy_from_slice(&pixels[s..s + 4]);
+                }
             }
             Some((width as u32, height as u32, out))
         }
@@ -504,9 +513,9 @@ pub fn generate(origin: &SpriteOrigin, load: &dyn Fn(&str) -> Option<Image>) -> 
             palette_key,
             palette,
         } => {
-            let (w, h, pixels) = load(texture)?;
-            let (_, _, key) = load(palette_key)?;
-            let (_, _, target) = load(palette)?;
+            let (w, h, pixels) = load(texture, "textures")?;
+            let (_, _, key) = load(palette_key, "textures/palettes")?;
+            let (_, _, target) = load(palette, "textures/palettes")?;
             let mut mapped = argb(&pixels);
             let key = argb(&key);
             let target = argb(&target);
@@ -545,155 +554,6 @@ pub fn atlases(
             Some((format!("{namespace}:{name}"), sources))
         })
         .collect()
-}
-
-/// Every atlas of a resource tree with the sprites its merged definition lists, from one
-/// listing of the textures: the one pass the HUD atlas and the block sprites both read.
-pub fn listed(
-    source: &crate::resource_source::ResourceSource,
-) -> Vec<(String, BTreeMap<String, SpriteOrigin>)> {
-    let mut textures = list_textures(source);
-    // `list` searches them by their identifiers, which sort differently from their paths
-    // (`a0:` before `a:`).
-    textures.sort_unstable();
-    atlases(source)
-        .into_iter()
-        .map(|(atlas, sources)| (atlas, list(&sources, &textures, &mut unasked)))
-        .collect()
-}
-
-/// The blocks and items atlases as a model material sees them: a material names no atlas, and
-/// the baker looks in the items atlas first, then the blocks atlas, then uses the missing sprite.
-pub struct Materials {
-    items: BTreeMap<String, SpriteOrigin>,
-    blocks: BTreeMap<String, SpriteOrigin>,
-    /// Whether either atlas has a definition file, however it decodes.
-    defined: bool,
-}
-
-/// A finished sprite: its pixels, its source texture file and animation metadata whose frame
-/// size fits the image. Generated sprites have neither a texture file nor animation metadata.
-pub struct Material {
-    pub image: Image,
-    pub resource: Option<String>,
-    pub animation: Option<AnimationMetadata>,
-}
-
-/// Whether a texture of `size` tiles into the frames its animation declares (the whole image
-/// when it has none): or the sprite is no sprite.
-pub fn frames_fit((width, height): (u32, u32), animation: Option<&AnimationMetadata>) -> bool {
-    let [frame_width, frame_height] = animation
-        .map_or([width as i32, height as i32], |animation| {
-            animation.frame_size(width as i32, height as i32)
-        });
-    u32::try_from(frame_width)
-        .ok()
-        .zip(u32::try_from(frame_height).ok())
-        .is_some_and(|(w, h)| w > 0 && h > 0 && width % w == 0 && height % h == 0)
-}
-
-/// The finished sprite of one origin: a file whose frames fit its size, with the resource it was
-/// read from, or the pixels a cut, a palette or a mod made. None where it can't be finished.
-pub fn finish_origin(
-    source: &crate::resource_source::ResourceSource,
-    origin: &SpriteOrigin,
-) -> Option<Material> {
-    let decode = |texture: &str| {
-        crate::hud::decode_resource(source, &texture_resource(texture, "textures")).ok()
-    };
-    match origin {
-        SpriteOrigin::File(texture) => {
-            let resource = texture_resource(texture, "textures");
-            let image = decode(texture)?;
-            let mcmeta = source.read_to_string(&format!("{resource}.mcmeta")).ok();
-            let animation = crate::hud::animation_of(mcmeta.as_deref());
-            frames_fit((image.0, image.1), animation.as_ref()).then_some(Material {
-                image,
-                resource: Some(resource),
-                animation,
-            })
-        }
-        generated => Some(Material {
-            image: generate(generated, &decode)?,
-            resource: None,
-            animation: None,
-        }),
-    }
-}
-
-impl Materials {
-    pub fn new(source: &crate::resource_source::ResourceSource) -> Self {
-        Self::take(source, &mut listed(source))
-    }
-    /// The materials of an already made [`listed`], whose other atlases are left in it.
-    pub fn take(
-        source: &crate::resource_source::ResourceSource,
-        listed: &mut Vec<(String, BTreeMap<String, SpriteOrigin>)>,
-    ) -> Self {
-        let mut take = |atlas: &str| {
-            listed
-                .iter()
-                .position(|(name, _)| name == atlas)
-                .map(|at| listed.remove(at).1)
-                .unwrap_or_default()
-        };
-        Self {
-            items: take("minecraft:items"),
-            blocks: take("minecraft:blocks"),
-            defined: ["blocks", "items"]
-                .iter()
-                .any(|atlas| source.contains(&format!("assets/minecraft/atlases/{atlas}.json"))),
-        }
-    }
-    /// Whether neither atlas has a definition: a bare resource tree, whose sprites are its files.
-    pub fn is_bare(&self) -> bool {
-        !self.defined
-    }
-    /// Whether the items atlas lists `id`: its model material is that atlas's, which may not be
-    /// the blocks atlas's sprite of the name.
-    pub fn in_items(&self, id: &str) -> bool {
-        self.items.contains_key(id)
-    }
-    /// Every id either atlas lists.
-    pub fn ids(&self) -> std::collections::BTreeSet<&str> {
-        self.items
-            .keys()
-            .chain(self.blocks.keys())
-            .map(String::as_str)
-            .collect()
-    }
-    /// `finish` of the first atlas's origin for `id` that gives a sprite, items first: an
-    /// origin that fails (a cut outside its sheet, a missing palette) leaves the blocks atlas's
-    /// sprite of that id to be found. None where no atlas lists `id`, or none finishes.
-    pub fn resolve<T>(
-        &self,
-        id: &str,
-        finish: impl FnMut(&SpriteOrigin) -> Option<T>,
-    ) -> Option<T> {
-        [&self.items, &self.blocks]
-            .into_iter()
-            .filter_map(|atlas| atlas.get(id))
-            .find_map(finish)
-    }
-    /// The same, for what names the blocks atlas itself (the fluid renderer).
-    pub fn resolve_in_blocks<T>(
-        &self,
-        id: &str,
-        finish: impl FnMut(&SpriteOrigin) -> Option<T>,
-    ) -> Option<T> {
-        self.blocks.get(id).and_then(finish)
-    }
-    /// The finished model material `id`: a bare tree reads it as a file.
-    pub fn finish(
-        &self,
-        source: &crate::resource_source::ResourceSource,
-        id: &str,
-    ) -> Option<Material> {
-        if self.is_bare() || id.starts_with("sunrise_cit:") {
-            return finish_origin(source, &SpriteOrigin::File(id.to_owned()));
-        }
-        self.resolve(id, |origin| finish_origin(source, origin))
-    }
 }
 
 #[cfg(test)]
@@ -790,7 +650,7 @@ mod tests {
     #[test]
     fn unstitch_cuts_by_divisor() {
         let pixels: Vec<u8> = (0..16u8).flat_map(|i| [i, i, i, 255]).collect();
-        let load = |_: &str| Some((4u32, 4u32, pixels.clone()));
+        let load = |_: &str, _: &str| Some((4u32, 4u32, pixels.clone()));
         let origin = SpriteOrigin::Region {
             texture: "t".into(),
             region: Region {
@@ -813,7 +673,7 @@ mod tests {
     /// An unstitch region over a 4x4 texture with divisors 1: the region's numbers are pixels.
     fn region_of(x: f64, y: f64, width: f64, height: f64) -> Option<Image> {
         let pixels: Vec<u8> = (0..16u8).flat_map(|i| [i, i, i, 255]).collect();
-        let load = |_: &str| Some((4u32, 4u32, pixels.clone()));
+        let load = |_: &str, _: &str| Some((4u32, 4u32, pixels.clone()));
         let origin = SpriteOrigin::Region {
             texture: "t".into(),
             region: Region {
@@ -843,55 +703,13 @@ mod tests {
         ] {
             assert_eq!(region_of(0.0, 0.0, width, height), None, "{width}x{height}");
         }
-        // An offset near the integer limit is outside the sheet.
-        assert_eq!(
-            region_of(i64::MAX as f64, -(i64::MAX as f64), 2.0, 2.0),
-            None
-        );
-    }
-
-    /// A cut that is not wholly inside the sheet is absent, beside one that is.
-    #[test]
-    fn a_cut_outside_the_sheet_is_absent() {
-        // Rows of the 4x4 sheet hold 0..3, 4..7, ... in every channel.
-        let (w, h, out) = region_of(1.0, 2.0, 2.0, 2.0).unwrap();
+        // The largest side is still a sprite (one row, so the test allocates little).
+        let (w, h, out) = region_of(0.0, 0.0, MAX_SPRITE_SIDE as f64, 1.0).unwrap();
+        assert_eq!((w, h), (MAX_SPRITE_SIDE as u32, 1));
+        assert_eq!(&out[..4], [0, 0, 0, 255]);
+        // An offset near the integer limit: the pixels outside the texture stay transparent.
+        let (w, h, out) = region_of(i64::MAX as f64, -(i64::MAX as f64), 2.0, 2.0).unwrap();
         assert_eq!((w, h), (2, 2));
-        let reds: Vec<u8> = out.chunks(4).map(|p| p[0]).collect();
-        assert_eq!(reds, [9, 10, 13, 14]);
-        for (x, y, width, height) in [
-            (3.0, 0.0, 2.0, 1.0),
-            (0.0, 3.0, 1.0, 2.0),
-            (-1.0, 0.0, 2.0, 2.0),
-        ] {
-            assert_eq!(
-                region_of(x, y, width, height),
-                None,
-                "{x},{y} {width}x{height}"
-            );
-        }
-    }
-
-    #[test]
-    fn listed_finds_textures_of_namespaces_that_share_a_prefix() {
-        let source = crate::resource_source::ResourceSource::indexed(
-            [
-                ("assets/a/textures/block/sheet.png", b"png".as_slice()),
-                ("assets/a0/textures/block/other.png", b"png"),
-                (
-                    "assets/minecraft/atlases/blocks.json",
-                    br#"{"sources":[{"type":"single","resource":"a:block/sheet","sprite":"x:one"},
-                        {"type":"single","resource":"a0:block/other","sprite":"x:two"}]}"#,
-                ),
-            ]
-            .map(|(name, bytes)| {
-                (
-                    name.to_owned(),
-                    sunrise_assets::resource_source::Resource::bytes(bytes.to_vec()),
-                )
-            })
-            .into(),
-        );
-        let (_, blocks) = listed(&source).into_iter().next().unwrap();
-        assert_eq!(blocks.keys().collect::<Vec<_>>(), ["x:one", "x:two"]);
+        assert!(out.iter().all(|&byte| byte == 0));
     }
 }

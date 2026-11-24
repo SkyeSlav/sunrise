@@ -48,8 +48,10 @@ pub(crate) fn scan(entry: ChildEntry, root: &Path, surface: &Surface) -> Result<
         Ok(input) => input,
         Err(scanned) => return Ok(scanned),
     };
+    // No manifest form names a hook version today (the schema refuses `hook_version`).
     let manifest = ManifestFacts {
         names: input.manifest_names,
+        hook_versions: Default::default(),
     };
     Ok(
         match uses_contained(

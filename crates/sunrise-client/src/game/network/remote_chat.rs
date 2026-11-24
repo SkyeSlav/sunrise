@@ -14,7 +14,6 @@ use sunrise_client::{
     hud::HudBatch,
     text::Text,
 };
-use sunrise_java_properties::now_millis;
 use sunrise_protocol::{
     packets::play::{self, Serverbound as S},
     secure_chat::{Body, Encoder, LastSeenTracker, Signature},
@@ -247,7 +246,7 @@ impl Game<'_> {
     /// message; the signature only with a chat session.
     pub(super) fn send_signed_chat(&mut self, content: &str) {
         let content = truncate_utf16(content, 256);
-        let (timestamp, salt) = (now_millis(), salt());
+        let (timestamp, salt) = (auth::now_millis(), salt());
         let Some(r) = self.remote.as_mut() else {
             return;
         };
@@ -296,7 +295,7 @@ impl Game<'_> {
             }));
             return;
         }
-        let (timestamp, salt) = (now_millis(), salt());
+        let (timestamp, salt) = (auth::now_millis(), salt());
         let chat = &mut r.secure_chat;
         let seen = chat.tracker.update();
         let mut signatures = Vec::new();

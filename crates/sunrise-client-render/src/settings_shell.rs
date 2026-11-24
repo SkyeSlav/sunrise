@@ -1525,6 +1525,9 @@ pub(crate) trait Hosted {
     fn typing(&self) -> bool;
     /// A key or the pad moved the focus away: the search field stops taking the keys.
     fn blur_search(&mut self);
+    /// Nothing has the focus: a touch moved off it, say.
+    #[allow(dead_code)] // For #11846's `OptionsUi::touch_start`, which cleared Graphics' focus.
+    fn clear_focus(&mut self);
     /// Text typed into the search field (the keyboard, a controller's on-screen keyboard).
     fn type_text(&mut self, text: &str);
     /// Ctrl+A/C/V/X in the search field.
@@ -2717,6 +2720,10 @@ impl<S: Screen + Default> Hosted for Shell<S> {
         if self.typing() {
             self.focus = None;
         }
+    }
+    fn clear_focus(&mut self) {
+        self.focus = None;
+        self.can_change_value = false;
     }
     fn type_text(&mut self, text: &str) {
         if !text.is_empty() {

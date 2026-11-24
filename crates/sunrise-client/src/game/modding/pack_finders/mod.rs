@@ -163,7 +163,6 @@ pub(super) fn data_repository(
 ) -> Vec<DataPack> {
     let mut packs = sunrise_client::datapack::discover_with_features(world, resources);
     packs.extend(additional.iter().map(|pack| (**pack).clone()));
-    packs.sort_by(|a, b| sunrise_client::datapack::compare_ids(&a.id, &b.id));
     packs
 }
 

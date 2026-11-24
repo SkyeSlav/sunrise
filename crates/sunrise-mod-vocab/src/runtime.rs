@@ -382,31 +382,6 @@ pub(crate) fn entered_subscribers(
     })
 }
 
-/// Whether this thread is outside `World`, where a Host call can be refused: the generated
-/// dispatch reads it once and runs its listeners through [`refusable`] only then.
-#[inline]
-pub(crate) fn outside_world() -> bool {
-    crate::world::phase::current_phase() != crate::world::phase::ModPhase::World
-}
-
-/// Runs a listener's call. With `contained` (outside `World`) a Host call the phase gate refuses
-/// comes back as `Err`, and the caller answers as a refused wasm call does; otherwise it is the
-/// plain call.
-#[inline]
-pub(crate) fn refusable<T>(
-    contained: bool,
-    call: impl FnOnce() -> T,
-) -> Result<T, crate::world::phase_refusal::PhaseRefusal> {
-    if contained {
-        crate::world::phase_refusal::contain_refusal(
-            crate::content::crash::current_native_mod().unwrap_or("unknown"),
-            call,
-        )
-    } else {
-        Ok(call())
-    }
-}
-
 pub(crate) fn mark_mod(id: &'static str, hook: &'static str) -> crate::content::crash::ModGuard {
     crate::content::crash::enter_native_mod(crate::content::crash::ModCall {
         id,

@@ -14,8 +14,7 @@ use std::{collections::BTreeSet, fs, io, path::Path, path::PathBuf};
 // Version 6 stamps vanilla's files by their metadata on Windows too.
 // Version 7 stacks blockstate files (every pack's definition, bottom first).
 // Version 8 left an atlas `single` source's renamed sprite without its texture file (#14485).
-// Version 11 has no synthetic renamed-sprite files, and validates each atlas definition alone.
-const VERSION: u32 = 11;
+const VERSION: u32 = 10;
 
 #[derive(Default, Serialize, Deserialize)]
 pub(super) struct Dependencies {

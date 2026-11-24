@@ -7,7 +7,6 @@ use std::collections::{HashMap, HashSet};
 use sunrise_client::mobs::villager as mobs_villager;
 use sunrise_client::{
     effects::{EffectInstance, OmenTick},
-    lan::playerdata::ints_uuid,
     mobs::{
         Mob, Species, raider,
         spawn_rules::{self, SpawnLevel},
@@ -730,46 +729,17 @@ impl Game<'_> {
                     raider::state_mut(m).ticks_outside_raid = ticks;
                 }
             }
-            Action::Victory { heroes, amplifier } => self.for_each_raid_hero(&heroes, |g| {
-                let mut effect =
-                    EffectInstance::new("hero_of_the_village", raid::HERO_DURATION, amplifier);
-                effect.visible = false;
-                g.potions.effects.add(effect);
-                g.award_custom_stat("raid_win", 1);
-                g.trigger_player("minecraft:hero_of_the_village");
-            }),
-        }
-    }
-
-    /// Raid.tick resolves and rewards each living hero in the set's traversal
-    /// order, not in the level's player order.
-    fn for_each_raid_hero(&mut self, heroes: &[[i32; 4]], mut reward: impl FnMut(&mut Self)) {
-        for &hero in heroes {
-            let uuid = ints_uuid(hero);
-            let acting_uuid = self
-                .lan_acting_uuid
-                .or_else(|| self.level.player_uuid.map(ints_uuid));
-            if let Some(p) = self.player.as_ref()
-                && acting_uuid == Some(uuid)
-            {
-                if !self.lan_acting_fake && !self.spectator() && !p.health.dead_or_dying() {
-                    reward(self);
+            // Raid.tick on a victory: each hero who is still alive.
+            Action::Victory { heroes, amplifier } => self.for_each_player(|g| {
+                if heroes.contains(&g.acting_uuid()) && !g.spectator() {
+                    let mut effect =
+                        EffectInstance::new("hero_of_the_village", raid::HERO_DURATION, amplifier);
+                    effect.visible = false;
+                    g.potions.effects.add(effect);
+                    g.award_custom_stat("raid_win", 1);
+                    g.trigger_player("minecraft:hero_of_the_village");
                 }
-                continue;
-            }
-            if let Some((i, conn)) = self.lan.as_ref().and_then(|host| {
-                host.hub.guests.iter().enumerate().find_map(|(i, g)| {
-                    (g.uuid == uuid
-                        && host.hub.here(g)
-                        && g.loaded
-                        && !g.dead
-                        && g.health > 0.0
-                        && !g.spectator())
-                    .then_some((i, g.conn))
-                })
-            }) {
-                let _ = self.as_guest_at(i, conn, &mut reward);
-            }
+            }),
         }
     }
     /// `Raid.playSound`: the horn, 13 blocks from each player toward the wave,
@@ -1739,10 +1709,6 @@ mod bed_loss_tests;
 #[cfg(test)]
 #[path = "tests/bar_players.rs"]
 mod bar_players_tests;
-
-#[cfg(test)]
-#[path = "tests/victory.rs"]
-mod victory_tests;
 
 #[cfg(test)]
 mod entity_ticking_tests {

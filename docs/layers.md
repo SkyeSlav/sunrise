@@ -635,8 +635,8 @@ fails both.
 
 An address is built in when the code contacts it without the player typing it. Engine code may hold vanilla's own
 endpoints. Every other built-in address belongs to the Sunrise layer, in one list file:
-`crates/sunrise-addresses/src/lib.rs` (#12993). It moves with the Sunrise layer. The standalone launcher
-has its own address crate. Platform code gets its addresses passed in.
+`crates/sunrise-addresses/src/lib.rs` (#12993). The game's Sunrise crates and the launcher read it, and it moves
+with the Sunrise layer. Platform code gets its addresses passed in.
 
 `tools/check_addresses.py` runs in CI's verify job and in `tools/pr_ready.py`. It reads the string literals of shipped
 Rust and finds every host. It skips tests, placeholders (`example.com`, `*.test`) and local IPs.
@@ -666,7 +666,7 @@ Sunrise's own and third-party addresses (Sunrise layer):
 | `playsunrise.net/perf`, `playsunrise.net/api/perf/captures` | the performance viewer Open shows a saved capture in, and the upload behind Share (`SUNRISE_PERF_VIEWER`, `SUNRISE_PERF_CAPTURES` override them) | `sunrise-addresses`, used by `sunrise-perf-share` |
 | `telemetry.playsunrise.net` | opt-in telemetry, the "I'm playing" ping, benchmark uploads | `sunrise-addresses` (#12993) |
 | `stun.cloudflare.com`, `stun.l.google.com` | Play with Friends NAT discovery | `sunrise-addresses` (#12993) |
-| `sunrise-org.github.io/sunrise-mods`, `github.com/sunrise-org/sunrise-mods`, `playsunrise.net/mods` | Sunrise's mod registry: the launcher's index, icons and screenshots, report form and project pages (`SUNRISE_MOD_INDEX` overrides the index) | `sunrise-launcher-addresses` in the launcher repository; `cargo-sunrise-mod` uses the Pages base URL to build the index |
+| `sunrise-org.github.io/sunrise-mods`, `github.com/sunrise-org/sunrise-mods`, `playsunrise.net/mods` | Sunrise's mod registry: the launcher's index, icons and screenshots, report form and project pages (`SUNRISE_MOD_INDEX` overrides the index) | `sunrise-addresses`, used by `https://github.com/sunrise-org/sunrise-launcher/tree/main/src/browser/` |
 | `horizon-rust.github.io/horizon-mods`, `github.com/horizon-rust/horizon-mods` | Horizon's mod registry, index and files: the registry tool's defaults and the submission service's | `sunrise-mods/src/index*.rs`, `cargo-sunrise-mod`, `sunrise-mod-registry` |
 | `api.modrinth.com`, `cdn.modrinth.com` | the in-game resource pack browser, modpack porting | `pack_browser.rs`, `sunrise-port-pack` |
 | `github.com`, `raw.githubusercontent.com`, `gitlab.com`, `maven.neoforged.net` | modpack porting's sources | `sunrise-port-pack` |

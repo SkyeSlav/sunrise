@@ -21,11 +21,14 @@ mod_call = { package = "sunrise-mod-call", path = "../sunrise-mod-call" }
 
 [build-dependencies]
 sunrise-mod-api-gen = { path = "../sunrise-mod-api-gen" }
+sunrise-mod-point-shape = { path = "../sunrise-mod-point-shape" }
 syn = "2"
+quote = "1"
 
 [dev-dependencies]
 sunrise-mod-api = { path = "../sunrise-mod-api", features = ["testing"] }
 sunrise-mod-api-macros = { path = "../sunrise-mod-api-macros" }
+serde_json = "1"
 
 # These call the places' dispatch themselves, so they need a build whose table has sites.
 [[test]]

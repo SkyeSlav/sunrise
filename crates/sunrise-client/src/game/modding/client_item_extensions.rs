@@ -351,99 +351,87 @@ fn dispatch_equipment<'a>(
         part: Some("ClientItemExtensions"),
     });
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        mod_api::__private::contain_refusal(part.attached.mod_id(), || {
-            let dye = provider.default_dye_color(host, stack);
-            let layer_type = match piece.kind {
-                "humanoid_baby" => EquipmentLayerType::HumanoidBaby,
-                "humanoid_leggings" => EquipmentLayerType::HumanoidLeggings,
-                _ => EquipmentLayerType::Humanoid,
-            };
-            piece.resolved_materials(
-                trim,
-                |index, layer| {
-                    let original_ref = state
-                        .texture_keys
-                        .get(&layer.texture)
-                        .map_or(ArmorTextureRef::__new(0, 0), |&index| {
-                            ArmorTextureRef::__new(state.generation, index)
-                        });
-                    let snapshot = EquipmentLayer::__new(
-                        original_ref,
-                        layer.dyeable,
-                        layer.color_when_undyed,
-                        layer.use_player_texture,
-                    );
-                    let color =
-                        provider.armor_layer_tint_color(host, stack, &snapshot, index as u32, dye);
-                    if color == 0 {
-                        return None;
-                    }
-                    let default = texture(&layer.texture);
-                    let default_ref = default
-                        .and_then(|b| state.texture_keys.get(b.name))
-                        .map_or(ArmorTextureRef::__new(0, 0), |&index| {
-                            ArmorTextureRef::__new(state.generation, index)
-                        });
-                    let selected =
-                        provider.armor_texture(host, stack, layer_type, &snapshot, default_ref);
-                    let mut selected_texture_final = selected != default_ref;
-                    let binding = if selected == default_ref {
+        let dye = provider.default_dye_color(host, stack);
+        let layer_type = match piece.kind {
+            "humanoid_baby" => EquipmentLayerType::HumanoidBaby,
+            "humanoid_leggings" => EquipmentLayerType::HumanoidLeggings,
+            _ => EquipmentLayerType::Humanoid,
+        };
+        piece.resolved_materials(
+            trim,
+            |index, layer| {
+                let original_ref = state
+                    .texture_keys
+                    .get(&layer.texture)
+                    .map_or(ArmorTextureRef::__new(0, 0), |&index| {
+                        ArmorTextureRef::__new(state.generation, index)
+                    });
+                let snapshot = EquipmentLayer::__new(
+                    original_ref,
+                    layer.dyeable,
+                    layer.color_when_undyed,
+                    layer.use_player_texture,
+                );
+                let color =
+                    provider.armor_layer_tint_color(host, stack, &snapshot, index as u32, dye);
+                if color == 0 {
+                    return None;
+                }
+                let default = texture(&layer.texture);
+                let default_ref = default
+                    .and_then(|b| state.texture_keys.get(b.name))
+                    .map_or(ArmorTextureRef::__new(0, 0), |&index| {
+                        ArmorTextureRef::__new(state.generation, index)
+                    });
+                let selected =
+                    provider.armor_texture(host, stack, layer_type, &snapshot, default_ref);
+                let mut selected_texture_final = selected != default_ref;
+                let binding = if selected == default_ref {
+                    default
+                } else {
+                    let (generation, index) = selected.__parts();
+                    let name = (generation == state.generation)
+                        .then(|| state.textures.get(index as usize))
+                        .flatten();
+                    if let Some(name) = name {
+                        bind(name)
+                    } else {
+                        report_stale();
+                        selected_texture_final = false;
                         default
+                    }
+                }?;
+                let selected =
+                    provider.armor_layer_model(host, stack, layer_type, &snapshot, index as u32);
+                let model = if selected == ArmorModelRef::VANILLA {
+                    None
+                } else {
+                    let (generation, index) = selected.__parts();
+                    let model = (generation == state.generation)
+                        .then(|| state.models.get(index as usize))
+                        .flatten();
+                    if let Some(model) = model {
+                        Some(&model.slots[piece.slot.index()])
                     } else {
-                        let (generation, index) = selected.__parts();
-                        let name = (generation == state.generation)
-                            .then(|| state.textures.get(index as usize))
-                            .flatten();
-                        if let Some(name) = name {
-                            bind(name)
-                        } else {
-                            report_stale();
-                            selected_texture_final = false;
-                            default
-                        }
-                    }?;
-                    let selected = provider.armor_layer_model(
-                        host,
-                        stack,
-                        layer_type,
-                        &snapshot,
-                        index as u32,
-                    );
-                    let model = if selected == ArmorModelRef::VANILLA {
+                        report_stale();
                         None
-                    } else {
-                        let (generation, index) = selected.__parts();
-                        let model = (generation == state.generation)
-                            .then(|| state.models.get(index as usize))
-                            .flatten();
-                        if let Some(model) = model {
-                            Some(&model.slots[piece.slot.index()])
-                        } else {
-                            report_stale();
-                            None
-                        }
-                    };
-                    let color = (color & 0xFF00_FF00)
-                        | ((color & 0x00FF_0000) >> 16)
-                        | ((color & 0x0000_00FF) << 16);
-                    Some(ResolvedEquipmentLayer {
-                        binding,
-                        color,
-                        model,
-                        final_texture: selected_texture_final,
-                    })
-                },
-                emissive,
-            )
-        })
+                    }
+                };
+                let color = (color & 0xFF00_FF00)
+                    | ((color & 0x00FF_0000) >> 16)
+                    | ((color & 0x0000_00FF) << 16);
+                Some(ResolvedEquipmentLayer {
+                    binding,
+                    color,
+                    model,
+                    final_texture: selected_texture_final,
+                })
+            },
+            emissive,
+        )
     }));
     match result {
-        Ok(Ok(materials)) => materials,
-        Ok(Err(refusal)) => {
-            refusal.report();
-            refused(&format!("callback refused: {refusal}"));
-            Vec::new()
-        }
+        Ok(materials) => materials,
         Err(_) => {
             refused("callback failed");
             Vec::new()
@@ -916,97 +904,5 @@ mod tests {
                 }
             },
         );
-    }
-
-    /// Asks the Host for a level in its tint callback.
-    struct Gated(Arc<std::sync::atomic::AtomicUsize>);
-    impl ClientItemExtensions for Gated {
-        fn armor_layer_tint_color(
-            &self,
-            host: &dyn ClientHost,
-            _: &mod_api::ItemStack,
-            _: &EquipmentLayer,
-            _: u32,
-            _: u32,
-        ) -> u32 {
-            let _ = host.level("minecraft:overworld");
-            self.0.fetch_add(1, Ordering::Relaxed);
-            0xFFFF_FFFF
-        }
-    }
-
-    /// Armour is drawn in frames, after the thread reached World. Fired in Setup and in Reloading
-    /// anyway, a callback's world read comes back as the catch arm's `PhaseRefusal` (the piece is
-    /// refused, vanilla draws), never the no-scope panic or the `callback failed` arm; in World
-    /// the same callback is answered.
-    #[test]
-    #[ignore = "daily"]
-    fn client_item_extensions_outside_the_world_are_refused_not_a_panic() {
-        use mod_api::__private::{ModPhase, PhaseOwner};
-        crate::game::native_entity_refs::tests::with_client_game(|game| {
-            mod_platform::testing::with_mods(
-                vec![mod_api::ModEntry::new("gated", Box::new(Empty))].into(),
-                || {
-                    let item = mod_api::__private::item_key("minecraft:iron_chestplate").unwrap();
-                    let layers = [EquipmentAssetLayer {
-                        texture: "original".into(),
-                        dyeable: false,
-                        use_player_texture: false,
-                        color_when_undyed: None,
-                    }];
-                    let piece = EquipmentPiece {
-                        asset: "minecraft:iron".into(),
-                        slot: ArmorSlot::Chest,
-                        kind: "humanoid",
-                        layers: &layers,
-                        overlay: 0,
-                    };
-                    let binding = Binding {
-                        name: "original",
-                        uv: [0.0, 0.0, 1.0, 1.0],
-                    };
-                    let answered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-                    for phase in [Some(false), Some(true), None] {
-                        let mut registry = Registration {
-                            state: Default::default(),
-                            sprite_exists: &|_| true,
-                            refused: None,
-                        };
-                        {
-                            let _owner = owner("gated");
-                            registry.register_texture("original").unwrap();
-                            registry
-                                .client_item_extensions(item, Arc::new(Gated(answered.clone())))
-                                .unwrap();
-                        }
-                        let part = &registry.state.items[&item];
-                        let setup =
-                            PhaseOwner::scope(phase.map_or(ModPhase::World, |_| ModPhase::Setup));
-                        let _reload = (phase == Some(true)).then(|| setup.reloading().unwrap());
-                        let out = dispatch_equipment(
-                            &*game,
-                            &registry.state,
-                            part,
-                            &mod_api::ItemStack::of(item),
-                            &piece,
-                            EquipmentBindings {
-                                trim: None,
-                                default: &mut |_| Some(binding),
-                                binding: &|_| Some(binding),
-                                emissive: &mut |_| None,
-                            },
-                        );
-                        if phase.is_some() {
-                            assert!(out.is_empty(), "a refused piece draws as vanilla");
-                            assert!(part.failed.load(Ordering::Relaxed));
-                            assert_eq!(answered.load(Ordering::Relaxed), 0, "the read was refused");
-                        } else {
-                            assert_eq!(out.len(), 1, "in World the callback is answered");
-                            assert_eq!(answered.load(Ordering::Relaxed), 1);
-                        }
-                    }
-                },
-            );
-        });
     }
 }

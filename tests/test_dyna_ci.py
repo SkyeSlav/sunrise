@@ -39,34 +39,27 @@ class DynaRoutingTests(unittest.TestCase):
             self.assertEqual(self.route("push", lease=lease), "self_hosted=false")
 
     @unittest.skipUnless(POSIX_BASH, "needs a bash that is not WSL's")
-    def test_route_reads_the_lease_live_else_judges_the_snapshot_at_the_attempts_creation(self):
+    def test_route_reads_the_lease_live_else_judges_the_snapshot_at_the_runs_creation(self):
         now = int(time.time())
-        stamp = lambda age: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - age))
-        # live lease, snapshot lease, the run's age in seconds, attempt, its start's age, expected
-        cases = (("9999999999", "0", 60, 1, 60, "true"),
-                 ("0", "9999999999", 60, 1, 60, "false"),
+        # live lease, snapshot lease, the run's age in seconds, expected
+        cases = (("9999999999", "0", 60, "true"),
+                 ("0", "9999999999", 60, "false"),
                  # The token can't read Variables: a run that waited 55 minutes keeps the lease it was created with.
-                 ("", str(now - 55 * 60 + 12 * 60), 55 * 60, 1, 60, "true"),
-                 ("", str(now - 55 * 60 - 1), 55 * 60, 1, 60, "false"),
-                 ("", "9999999999", 3601, 1, 60, "false"),
-                 # A re-run two hours after the run was created: its own snapshot, judged at the attempt's start.
-                 # Lapsed by now, valid at the attempt's start: judged at the start, not now.
-                 ("", str(now - 30), 2 * 3600, 2, 60, "true"),
-                 ("", str(now - 61), 2 * 3600, 2, 60, "false"),
-                 ("", "9999999999", 2 * 3600, 2, 3601, "false"))
+                 ("", str(now - 55 * 60 + 12 * 60), 55 * 60, "true"),
+                 ("", str(now - 55 * 60 - 1), 55 * 60, "false"),
+                 ("", "9999999999", 3601, "false"))
         with tempfile.TemporaryDirectory() as directory:
             gh = Path(directory) / "gh"
             gh.write_text('#!/usr/bin/env bash\ncase "$*" in *SELF_HOSTED*) echo "$LIVE_ENABLED";; '
-                          '*POOL_UNTIL*) echo "$LIVE";; *runs/7*.run_started_at) echo "$STARTED_AT";; '
-                          '*runs/7*.created_at) echo "$CREATED_AT";; *) exit 1;; esac\n')
+                          '*POOL_UNTIL*) echo "$LIVE";; *runs/7*) echo "$CREATED_AT";; *) exit 1;; esac\n')
             gh.chmod(0o755)
-            for live, snapshot, age, attempt, started, expected in cases:
-                with self.subTest(live=live, snapshot=snapshot, age=age, attempt=attempt):
+            for live, snapshot, age, expected in cases:
+                with self.subTest(live=live, snapshot=snapshot, age=age):
+                    created = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - age))
                     env = dict(os.environ, PATH=f"{directory}:{os.environ['PATH']}", EVENT="workflow_dispatch",
                                SAME_REPO="true", VARS_ENABLED="true", VARS_LEASE=snapshot, LIVE=live,
-                               LIVE_ENABLED="true" if live else "", CREATED_AT=stamp(age), STARTED_AT=stamp(started),
-                               GITHUB_REPOSITORY="sunrise-org/sunrise", GITHUB_RUN_ID="7",
-                               GITHUB_RUN_ATTEMPT=str(attempt), NOW=str(now))
+                               LIVE_ENABLED="true" if live else "", CREATED_AT=created,
+                               GITHUB_REPOSITORY="sunrise-org/sunrise", GITHUB_RUN_ID="7", NOW=str(now))
                     env.pop("GITHUB_OUTPUT", None)
                     result = subprocess.run(["bash", ROOT / "tools/ci/dyna_ci_route.sh"], env=env,
                                             capture_output=True, text=True, check=True)
@@ -641,31 +634,6 @@ class DynaRoutingTests(unittest.TestCase):
             subprocess.run(["bash", "-e", "-c", script], cwd=tree, env=env, check=True)
             self.assertEqual(calls.read_text().splitlines(), ["test --locked --no-run -p sunrise-client-lib --lib",
                                                              "test --locked --no-run -p sunrise-client --lib"])
-
-class PersistentTargetTests(unittest.TestCase):
-    def test_every_job_that_can_build_on_a_self_hosted_runner_keeps_the_source_snapshot_first(self):
-        # A job that builds in the runner's persistent target without tools/ci/source_mtimes.py leaves artifacts of
-        # its tree under a snapshot of another, which a later job then judges fresh: R55's verify linked a
-        # sunrise-mod-surface from a tree before 09339ddb31 (2026-11-19). The first step that can compile (cargo, or a
-        # repository tool that runs it) must come after the snapshot.
-        import re
-        from test_ci_concurrency import yaml
-        builds = re.compile(r"\bcargo (build|test|run|clippy|check|doc|fetch)\b|tools/ci/check_ignored_test_rows\.py|"
-                            r"tools/ci/check_machine_sample\.py|tools/parity\.py|tools/prebuilt_game\.py|xtask")
-        checked = 0
-        for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
-            for name, job in yaml.load(path.read_text(), Loader=yaml.BaseLoader)["jobs"].items():
-                if not re.search(r"dyna|DYNA", str(job.get("runs-on", ""))):
-                    continue
-                steps = [str(step.get("run", "")) for step in job.get("steps", [])]
-                first = next((index for index, run in enumerate(steps) if builds.search(run)), None)
-                if first is None:
-                    continue
-                checked += 1
-                with self.subTest(workflow=path.name, job=name):
-                    self.assertTrue(any("tools/ci/source_mtimes.py" in run for run in steps[:first]))
-        self.assertGreater(checked, 8)
-
 
 class ParityWorkflowTests(unittest.TestCase):
     def setUp(self):

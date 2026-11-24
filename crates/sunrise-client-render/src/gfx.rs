@@ -173,7 +173,6 @@ mod celestial;
 mod census;
 pub mod compositor;
 pub(crate) mod core_lightmap;
-pub use core_lightmap::SHADERS as LIGHTMAP_SHADERS;
 pub(crate) mod core_lines;
 mod core_particles;
 pub use core_particles::HEIGHTMAP_SIZE as POLYTONE_HEIGHTMAP_SIZE;
@@ -184,7 +183,6 @@ pub(crate) mod display_watch;
 mod dx12_compiler;
 mod end_sky;
 pub mod entity_skin;
-pub mod expression_blocks;
 pub mod external;
 mod flat;
 mod frame_gen;
@@ -1139,6 +1137,27 @@ impl Renderer {
     /// frame, empty when the world's sky has none.
     pub fn custom_sky_draws(&mut self) -> &mut Vec<crate::custom_sky::Draw> {
         &mut self.custom_sky_draws
+    }
+    /// The resource packs' `core/rendertype_lines` (`HudAtlas::lines_shader`) for the block
+    /// outline, or the built-in one.
+    pub fn set_lines_shader(&mut self, program: Option<&crate::core_shader::CoreProgram>) {
+        let format = self.output.frame.format;
+        // A pack's GLSL writes vanilla's gamma: a frame of linear light keeps the built-in one.
+        let program = program.filter(|_| !self.output.frame.linear_light);
+        self.core_lines =
+            program.and_then(|program| core_lines::CoreLines::new(&self.device, format, program));
+    }
+    /// The resource packs' `core/sky` and `core/stars` (`HudAtlas::sky_shader`,
+    /// `stars_shader`), or the built-in sky and stars.
+    pub fn set_sky_shaders(
+        &mut self,
+        disc: Option<&crate::core_shader::CoreProgram>,
+        stars: Option<&crate::core_shader::CoreProgram>,
+    ) {
+        // As `set_lines_shader`: not on a frame of linear light.
+        let keep = !self.output.frame.linear_light;
+        let (disc, stars) = (disc.filter(|_| keep), stars.filter(|_| keep));
+        self.core_sky = core_sky::CoreSky::new(&self.device, self.output.frame.format, disc, stars);
     }
     fn quad_indices(device: &wgpu::Device, quads: u32) -> wgpu::Buffer {
         surface_setup::ray_query::quad_indices(device, quads)

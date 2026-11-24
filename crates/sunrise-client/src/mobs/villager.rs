@@ -496,6 +496,16 @@ pub fn gift_table(m: &Mob, maps: &crate::neoforge_mob_maps::NeoForgeMobMaps) -> 
 pub fn food_points(items: &Items, stack: &ItemStack) -> i32 {
     stack.villager_food(items.get(&stack.item)).unwrap_or(0)
 }
+/// The farmer's `requestedItems` (`VillagerProfession.FARMER`). Food is picked
+/// up and traded separately, through its villager food value.
+pub fn farmer_items() -> &'static [&'static str] {
+    &[
+        "minecraft:wheat",
+        "minecraft:wheat_seeds",
+        "minecraft:beetroot_seeds",
+        "minecraft:bone_meal",
+    ]
+}
 /// A villager's `requestedItems` by profession.
 pub fn requested_items<'a>(m: &Mob, table: &'a ResolvedProfessions) -> &'a [String] {
     table

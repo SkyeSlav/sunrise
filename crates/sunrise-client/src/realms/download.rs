@@ -9,7 +9,7 @@
 //! (`L`). Nothing is ever extracted outside the new world folder: an entry that does not
 //! sit under `world/`, or climbs above it, is skipped as vanilla's `startsWith` check does.
 use super::client::WorldDownload;
-use crate::server_packs::download::sha1_of;
+use sha1::{Digest, Sha1};
 use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -215,7 +215,7 @@ fn fetch_to(link: &str, target: &Path, progress: &DownloadProgress) -> Result<()
 /// `FileDownload.finishResourcePackDownload`: the SHA-1 check, then the file beside the
 /// world (`LevelResource.MAP_RESOURCE_FILE`).
 fn copy_resource_pack(pack: &Path, world: &Path, expected: &str) -> Result<(), DownloadError> {
-    let actual = sha1_of(pack).map_err(DownloadError::failed)?;
+    let actual = sha1_file(pack).map_err(DownloadError::failed)?;
     if actual != expected {
         log::error!("Realms: the resource pack's hash is {actual}, not {expected}");
         return Err(DownloadError::failed("the resource pack's hash"));
@@ -226,6 +226,16 @@ fn copy_resource_pack(pack: &Path, world: &Path, expected: &str) -> Result<(), D
     }
     fs::copy(pack, &target).map_err(DownloadError::failed)?;
     Ok(())
+}
+
+fn sha1_file(path: &Path) -> io::Result<String> {
+    let mut hasher = Sha1::new();
+    io::copy(&mut File::open(path)?, &mut hasher)?;
+    Ok(hex(&hasher.finalize()))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// A new file only this account can read, never one that was already there (another local user

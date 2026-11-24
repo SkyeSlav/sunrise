@@ -6,6 +6,13 @@ use std::{collections::BTreeMap, io::Read, path::Path};
 /// of this fork's main (Diverges from upstream: horizon-rust/horizon has none).
 pub const PREBUILT_REPO: &str = "sunrise-org/sunrise";
 
+/// Every prebuilt archive's name starts with this. The `v<N>` is the package layout the launcher
+/// reads ([`crate::sdk::PACKAGE_FORMAT`], the one place it is numbered): a release made before it
+/// has no archive by this name.
+pub fn prebuilt_prefix() -> String {
+    format!("sunrise-prebuilt-v{}-", crate::sdk::PACKAGE_FORMAT)
+}
+
 /// Whether a valid package is native, irrespective of its install folder.
 pub fn holds(path: &Path) -> bool {
     crate::Package::read(path).is_ok_and(|package| package.is_native())

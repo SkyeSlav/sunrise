@@ -503,26 +503,14 @@ impl Game<'_> {
     /// inventory; for another entity the window is closed again.
     pub(in crate::game) fn remote_open_mount(&mut self, p: play::MountScreenOpen) {
         let columns = usize::try_from(p.columns).unwrap_or(0).min(5);
-        let record = |game: &mut Self| {
-            if let Some(r) = game.remote.as_mut() {
-                r.menu
-                    .set(Some((p.container, format!("{MOUNT_MENU}{columns}"))));
-                r.set_menu_title(None);
-            }
-        };
-        // With a screen hook listening, the window is recorded before the
-        // screen opens, so a mod's answer that replaces it closes this window
-        // (a rejection clears it again); otherwise after, as vanilla's order.
-        let staged = self.screen_hooks_heard();
-        if staged {
-            record(self);
-        }
         if !self.open_remote_mount_menu(p.entity as u32, columns) {
             self.remote_reject_container(p.container);
             return;
         }
-        if !staged {
-            record(self);
+        if let Some(r) = self.remote.as_mut() {
+            r.menu
+                .set(Some((p.container, format!("{MOUNT_MENU}{columns}"))));
+            r.set_menu_title(None);
         }
     }
     /// The type of the menu a server opened (`MenuType`'s id).

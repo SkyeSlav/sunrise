@@ -480,6 +480,13 @@ impl LivingAttributes {
         }
     }
 
+    /// Whether a mod's transient modifier with id `id` is on `name`.
+    pub fn has_transient(&self, name: &str, id: &str) -> bool {
+        self.transient
+            .as_ref()
+            .is_some_and(|t| t.iter().any(|(n, m)| &**n == name && m.id() == id))
+    }
+
     /// `AttributeMap.getValue` or `getBaseValue` of `name`: None for an
     /// attribute the entity type does not have. `seed` is what the entity keeps
     /// of its attributes elsewhere, in the `attributes` list's form; it is only

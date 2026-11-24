@@ -1,6 +1,5 @@
 //! Java Edition NBT with lossless UTF-16 strings and 26.3 mixed-list wrappers.
-use crate::{java_hash_map::JavaKey, random::java_string_hash};
-use std::{cmp::Ordering, collections::BTreeMap};
+use std::collections::BTreeMap;
 
 /// Java strings can contain unpaired surrogates, which Rust UTF-8 strings cannot.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -41,20 +40,6 @@ impl JavaString {
                 _ => 3,
             })
             .sum()
-    }
-}
-
-impl JavaKey for JavaString {
-    fn java_hash(&self) -> i32 {
-        java_string_hash(self.0.iter().copied())
-    }
-
-    fn comparable_compare(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-
-    fn tie_break(&self, _other: &Self) -> Ordering {
-        unreachable!("unequal strings are Comparable")
     }
 }
 
@@ -767,30 +752,12 @@ fn modified_utf8(bytes: &[u8]) -> Option<JavaString> {
 
 /// Read a file root (type, modified-UTF name, payload), returning bytes consumed.
 pub fn read_named(bytes: &[u8], limits: Limits) -> Result<(NamedTag, usize), Error> {
-    read_named_with_heap(bytes, limits, None)
-}
-
-/// [`read_named`] under a vanilla `NbtAccounter` heap quota: `quota` is in
-/// its estimated heap bytes, not encoded bytes (the root name is not charged).
-pub fn read_named_quota(
-    bytes: &[u8],
-    limits: Limits,
-    quota: u64,
-) -> Result<(NamedTag, usize), Error> {
-    read_named_with_heap(bytes, limits, Some(quota))
-}
-
-fn read_named_with_heap(
-    bytes: &[u8],
-    limits: Limits,
-    quota: Option<u64>,
-) -> Result<(NamedTag, usize), Error> {
     let mut reader = Reader {
         bytes,
         offset: 0,
         limits,
         nodes: 0,
-        heap: quota.map(|quota| (0, quota)),
+        heap: None,
         stream: None,
         bounded: None,
         strict: false,

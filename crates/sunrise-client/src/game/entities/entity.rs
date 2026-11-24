@@ -1113,6 +1113,7 @@ macro_rules! define_entity_handles {
             /// cursor per list. Static dispatch and nothing allocated. Checked:
             /// a list out of join order, or an entity that never joined, stops
             /// the walk with the entity at fault.
+            #[allow(dead_code, reason = "the tick order work that reads this has not landed yet")]
             pub(super) fn walk_in_join_order(
                 self,
                 visit: impl FnMut(EntityHandle, JoinSeq),

@@ -117,6 +117,22 @@ struct RaycastBlockCache<'b> {
     section_uniform_air: bool,
 }
 
+impl<'a> MobWorld<'a> {
+    /// Creates a lightweight view for creature despawn evaluation without entity collections.
+    pub fn despawn_view(&self) -> MobWorld<'a> {
+        MobWorld {
+            others: &[],
+            others_grid: None,
+            others_index: None,
+            others_villagers: None,
+            others_solid: None,
+            player: None,
+            teams: std::sync::Arc::clone(&self.teams),
+            ..self.clone()
+        }
+    }
+}
+
 /// Single non-spectator player position helper for creature ticking despawn checks.
 pub fn single_player_pos(players: impl IntoIterator<Item = (Vec3, bool)>) -> Option<Option<Vec3>> {
     let mut non_spec = players.into_iter().filter(|(_, spec)| !*spec);

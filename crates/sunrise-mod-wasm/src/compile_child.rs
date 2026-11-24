@@ -80,30 +80,8 @@ impl Drop for Input {
     }
 }
 
-/// Set once the executable has installed the compiler entry below: the running program is a
-/// game that serves `--compile-wasm-module`.
-static SERVES_COMPILER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Whether a compiler executable exists to re-run: the one boundary where the cache decides
-/// between a bounded child process and compiling in-process. Android has none (the game is a
-/// library inside the system's `app_process`), and neither has a host program whose entry never
-/// installed [`compile_child`] (a tool, a test harness).
-#[cfg(any(unix, test))]
-pub(crate) fn compiler_executable() -> bool {
-    runs_compiler(
-        cfg!(target_os = "android"),
-        SERVES_COMPILER.load(std::sync::atomic::Ordering::Relaxed),
-    )
-}
-
-#[cfg(any(unix, test))]
-pub(crate) fn runs_compiler(android: bool, entry_installed: bool) -> bool {
-    !android && entry_installed
-}
-
 /// Handles only the hidden compiler invocation, before game initialization.
 pub fn compile_child(args: impl IntoIterator<Item = OsString>) -> Option<i32> {
-    SERVES_COMPILER.store(true, std::sync::atomic::Ordering::Relaxed);
     let mut args = args.into_iter();
     if args.next()?.as_os_str() != "--compile-wasm-module" {
         return None;

@@ -81,7 +81,6 @@ pub struct RenderAssets {
     /// The block sprites' RGBA, layer by layer: as built until a renderer has
     /// them, then kept compressed ([`SpritePixels`]).
     pub pixels: SpritePixels,
-    /// How many array layers the block sprites take, whatever maps name them.
     pub texture_layers: u32,
     pub model_catalog: crate::models::StateModels,
     /// Shared parsed resources; item-only validation errors surface at item preparation.
@@ -90,8 +89,6 @@ pub struct RenderAssets {
     pub model_gallery: Vec<Value>,
     pub animations: Vec<crate::sprites::SpriteAnimation>,
     pub sprite_layers: std::collections::BTreeMap<String, u32>,
-    /// The layers of the texture files read on their own (emissive overlays), by raw name.
-    pub file_layers: std::collections::BTreeMap<String, u32>,
     /// OptiFine's emissive block overlays: base sprite and overlay sprite names.
     pub emissive: Vec<(String, String)>,
     pub translucent_layers: Vec<bool>,
@@ -411,7 +408,7 @@ impl RenderAssets {
             "lava_still",
             "lava_flow",
         ] {
-            sprites.insert_in_blocks(&format!("minecraft:block/{name}"))?;
+            sprites.insert(&format!("minecraft:block/{name}"))?;
         }
         for model in crate::fluid_models::resolved() {
             for name in [
@@ -422,7 +419,7 @@ impl RenderAssets {
             .into_iter()
             .flatten()
             {
-                sprites.insert_in_blocks(name)?;
+                sprites.insert(name)?;
             }
         }
         for stage in 0..10 {
@@ -495,7 +492,6 @@ impl RenderAssets {
             model_gallery: models.states,
             animations: sprites.animations,
             sprite_layers: sprites.layers,
-            file_layers: sprites.files,
             emissive,
             translucent_layers: sprites.translucent,
             sprite_mips: sprites.mips,

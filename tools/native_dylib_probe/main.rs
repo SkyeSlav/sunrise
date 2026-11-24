@@ -1,13 +1,10 @@
 //! Dev-only trusted exact-build Rust ABI probe, not a production loader.
 use std::sync::atomic::Ordering;
-mod phase;
 fn main() {
     // Ensure the actual game (including its global allocator) is a linked dependency.
     std::hint::black_box(sunrise_mod_host::main_with as *const ());
-    let args: Vec<_> = std::env::args_os().skip(1).collect();
-    let (libraries, phase_folders) = args.split_at(2);
-    let libraries: Vec<_> = libraries
-        .iter()
+    let libraries: Vec<_> = std::env::args_os()
+        .skip(1)
         .map(|path| {
             // SAFETY: harness verifies exact SDK/compiler artifacts before starting us.
             // Retain handles until process exit; no unloading Rust implementations.
@@ -67,9 +64,7 @@ fn main() {
         }
     }
     assert_eq!(probe_shared::STATE.load(Ordering::SeqCst), 2);
-    let phase_folders: Vec<_> = phase_folders.iter().map(std::path::Path::new).collect();
-    phase::run(&phase_folders);
     println!(
-        "PASS: a refused Host call in the Setup phase is contained and latched, and a panic=abort and an allocator library are refused at load; two independently loaded mods share game API, points, TLS and dependency state; cross-image allocation/drop completed"
+        "PASS: two independently loaded mods share game API, points, TLS and dependency state; cross-image allocation/drop completed"
     );
 }

@@ -816,6 +816,24 @@ impl SyncData {
         Ok(sync)
     }
 
+    /// MinecraftServer.reloadResources: `/reload` keeps the synchronized
+    /// registries the server started with (`kept`'s, its
+    /// LayeredRegistryAccess) and reads the tags against them
+    /// (TagLoader.loadTagsForExistingRegistries), the world's packs' as well
+    /// (`overlay`); the rest stays reloaded.
+    pub fn keep_registries(
+        &mut self,
+        resources: &Path,
+        kept: &SyncData,
+        overlay: &sunrise_world::loot::PackOverlay,
+    ) {
+        self.dynamic = kept.dynamic.clone();
+        self.registries = kept.registries.clone();
+        let root = resources.join("data/minecraft");
+        self.tags = Self::load_tags(&root, &self.builtin, &self.dynamic, overlay.conditions);
+        Self::merge_pack_tags(&mut self.tags, &root, overlay, &self.builtin, &self.dynamic);
+    }
+
     /// The creative builder's server view: the same ordered entries and current tags a
     /// joining client receives. The network's name-only index omits the decoded payloads.
     pub fn creative_holders(&self) -> sunrise_items::creative_catalog::Holders {
@@ -2008,10 +2026,7 @@ mod tests {
             r#"{"pack":{"description":"Moon","pack_format":1}}"#,
         );
         write("data/demo/world_clock/moon.json", "{}");
-        write(
-            "data/minecraft/world_clock/the_end.json",
-            r#"{"from":"pack"}"#,
-        );
+        write("data/minecraft/world_clock/the_end.json", "{}");
         write(
             "data/demo/dimension_type/moon.json",
             r##"{
@@ -2023,17 +2038,10 @@ mod tests {
             }"##,
         );
         let packs = crate::datapack::discover(&world);
-        let mut files = crate::datapack::DataStore::load(&packs.iter().collect::<Vec<_>>()).files;
-        // Native contributions sit below the world's enabled packs.
-        files
-            .get_mut("world_clock/minecraft:the_end")
-            .unwrap()
-            .insert(
-                0,
-                br#"{"neoforge:conditions":[{"type":"neoforge:never"}]}"#.to_vec(),
-            );
-        files.insert("world_clock/test:frozen".into(), vec![b"{}".to_vec()]);
-        let files: Vec<_> = files.into_iter().collect();
+        let files: Vec<_> = crate::datapack::DataStore::load(&packs.iter().collect::<Vec<_>>())
+            .files
+            .into_iter()
+            .collect();
         let _ = std::fs::remove_dir_all(&world);
         let sync = SyncData::load(
             &root,
@@ -2059,25 +2067,17 @@ mod tests {
             clocks
                 .iter()
                 .find(|e| e.id == name)
-                .map(|e| e.data.as_ref())
+                .map(|e| e.data.is_some())
         };
-        assert!(
-            sent(&clock).is_some_and(|data| data.is_some()),
+        assert_eq!(
+            sent(&clock),
+            Some(true),
             "no client knows the clock {clock} the dimension names"
         );
-        assert_eq!(
-            sent("minecraft:the_end"),
-            Some(Some(&json_to_nbt(&serde_json::json!({"from":"pack"})))),
-            "the enabled pack's clock wins over the false-conditioned native clock"
-        );
-        assert_eq!(
-            sent("test:frozen"),
-            Some(Some(&json_to_nbt(&serde_json::json!({})))),
-            "a clock only the native mod gives"
-        );
+        assert_eq!(sent("minecraft:the_end"), Some(true), "the replaced clock");
         assert_eq!(
             sent("minecraft:overworld"),
-            Some(None),
+            Some(false),
             "the untouched clock"
         );
     }

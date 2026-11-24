@@ -2367,6 +2367,7 @@ impl Hub {
                 carried,
             }));
             g.menu_sent = items;
+            g.sent_selected = g.selected;
         })
     }
 
@@ -4857,6 +4858,12 @@ impl Hub {
             .get("minecraft:item")?
             .name(id)
             .map(std::sync::Arc::from)
+    }
+    pub fn enchantment_name(&self, id: i32) -> Option<String> {
+        self.sync
+            .dynamic
+            .name("minecraft:enchantment", id)
+            .map(str::to_owned)
     }
     /// A stack a client sent (`SetCreativeModeSlot`), read with this
     /// server's registries.

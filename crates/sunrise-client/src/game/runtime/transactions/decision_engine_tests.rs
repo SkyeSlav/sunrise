@@ -21,7 +21,7 @@ fn fixture(game: &mut Game<'_>) -> (Target, Identity) {
         .inventory = Some(menu);
     let actor = game.player(12).unwrap().entity();
     (
-        Target::admit(game, 12).unwrap(),
+        Target::admit(game, 12, Owner::Inventory).unwrap(),
         Identity {
             side: Side::Server,
             world: actor.epoch(),
@@ -146,7 +146,10 @@ fn actual_owner_replacement_is_stale_and_same_owner_reentry_is_busy() {
                     .crafting
                     .inventory
                     .take();
-                assert!(matches!(Target::admit(host.game, 12), Err(Admission::Busy)));
+                assert!(matches!(
+                    Target::admit(host.game, 12, Owner::Inventory),
+                    Err(Admission::Busy)
+                ));
                 *host
                     .game
                     .lan

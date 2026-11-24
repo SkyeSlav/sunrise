@@ -5,10 +5,11 @@ vanilla has no screen for (the on-screen keyboard a controller types with). Ever
 and the HUD are not part of it: they are vanilla's, because parity is the point of the game, and
 Sunrise's own settings are pages built from vanilla's widgets, the way mods add theirs.
 
-The game reads Rust tokens from `crates/sunrise-theme`; the website reads the CSS custom properties
-it generates (`cargo run -p xtask -- tokens` writes `crates/sunrise-theme/tokens.css`, which the
-website's build reads from main; a test fails when the file is out of date). The standalone
-launcher has its own theme crate (`https://github.com/sunrise-org/sunrise-launcher/tree/main/crates/theme`).
+The tokens live in one place, `crates/sunrise-theme`. The launcher (`https://github.com/sunrise-org/sunrise-launcher/blob/main/src/theme.rs`)
+and the game (`crates/sunrise-client/src/ui_theme.rs`) read them as Rust constants, and the
+website reads them as CSS custom properties generated from the same crate
+(`cargo run -p xtask -- tokens` writes `crates/sunrise-theme/tokens.css`, which the website's build
+reads from main; a test fails when the file is out of date). Change a value in the crate and all three follow.
 
 ## Where it comes from
 
@@ -327,8 +328,8 @@ as `--glass-*`.
   `accent-soft` (half accent, half white in OKLab) draws progress, ticks, links and the focus ring;
   text on the accent turns dark when a player's accent is light. `Glass::new` does the mockup's
   `color-mix` sums, so a player's own accent comes out as the website's would.
-- **White text at a few opacities** (100, 80, 70, 60, 50, 45, 40 %) and white fills for states
-  (hover 5 %, field 7 %, button 8 %, selected 10 %, active 12 %).
+- **White text at a few opacities** (`glass::ink`: 100, 80, 70, 60, 50, 45, 40 %) and white fills
+  for states (`glass::fill`: hover 5 %, field 7 %, button 8 %, selected 10 %, active 12 %).
   Live `#4ade80`, busy `#f2c46b`, destructive `#ff8a8a`.
 - **Type**: Geist for everything; Bricolage Grotesque SemiBold for page, instance and dialog names,
   at the optical size a browser picks for them: `Bricolage Grotesque Display` (56) and

@@ -1,5 +1,13 @@
 [
   {
+    "package": "cargo-sunrise-mod",
+    "target": "test:internals",
+    "test": "write_launcher_actor",
+    "path": "crates/cargo-sunrise-mod/tests/internals.rs",
+    "reason": "fixture writer subprocess only",
+    "rationale": "Existing explicit manual runner subprocess in tools/ci/ignored-tests/manual-cargo-sunrise-mod.txt: fixture writer subprocess only. Not selected by daily shards."
+  },
+  {
     "package": "sunrise-client",
     "target": "lib",
     "test": "game::attachment_instruction_bench::attachment_instruction_count",

@@ -1,5 +1,5 @@
 // Generated fixtures exercise every shape; TODO(#2273): make the generator emit clippy-clean code.
-#![allow(clippy::all, unused_comparisons, unreachable_patterns)]
+#![allow(clippy::all, unused_comparisons, unreachable_patterns, dead_code)]
 use mod_api::__private::points::register;
 use mod_points::{
     __private::{ApiKind, Forward, PointHost, SlotListener, TABLE, seal},

@@ -82,71 +82,6 @@ fn a_mod_fits_a_build_where_what_it_uses_is_unchanged() {
 }
 
 #[test]
-fn a_list_that_holds_no_version_of_a_hook_cannot_show_the_mod_fits() {
-    let dir = project_dir("fit-old-list", None, None);
-    let made_for = pin(&dir);
-    let list = |schema: u32, hash: &str, version: Option<u64>| {
-        let table = serde_json::json!({
-            "schema": schema, "made_for": made_for,
-            "entries": [{"id": "hook:joined", "hash": hash, "version": version}],
-        });
-        std::fs::write(dir.join(uses::USES_FILE), table.to_string()).unwrap();
-    };
-    let target = |version: u64| -> mod_surface::Surface {
-        serde_json::from_value(serde_json::json!({
-            "schema": mod_surface::SCHEMA, "hash": "s",
-            "hooks": [{
-                "id": "hook:joined", "hash": "h1", "engine": {"target": "t"}, "call": "c",
-                "version": version, "side": "server", "contract": "listen", "cancellable": false, "arguments": [],
-            }],
-        }))
-        .unwrap()
-    };
-    let unversioned = Verdict::NoList {
-        made_for: made_for.clone(),
-        why: Unlisted::HookVersions,
-        hooks: vec!["hook:joined".into()],
-    };
-    // The mod may have been made for a later version than the first: the target's own version
-    // says nothing about it, whichever it is.
-    for schema in [1, uses::USES_SCHEMA] {
-        list(schema, "h1", None);
-        assert_eq!(judged(&dir, OTHER_BUILD, &target(1)), unversioned);
-        assert_eq!(judged(&dir, OTHER_BUILD, &target(2)), unversioned);
-    }
-    // What such a list can still judge is named.
-    list(1, "h0", None);
-    assert_eq!(
-        judged(&dir, OTHER_BUILD, &target(1)),
-        Verdict::DoesNotFit {
-            made_for: made_for.clone(),
-            misfits: vec![Misfit {
-                id: "hook:joined".into(),
-                change: Change::Changed
-            }],
-        }
-    );
-    list(uses::USES_SCHEMA, "h1", Some(1));
-    assert_eq!(
-        judged(&dir, OTHER_BUILD, &target(1)),
-        Verdict::Fits {
-            made_for: made_for.clone()
-        }
-    );
-    // A list a newer tool wrote is named as that, for a newer game build to read.
-    list(uses::USES_SCHEMA + 1, "h1", Some(1));
-    assert_eq!(
-        judged(&dir, OTHER_BUILD, &target(1)),
-        Verdict::NoList {
-            made_for,
-            why: Unlisted::NewerSchema,
-            hooks: Vec::new(),
-        }
-    );
-    std::fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
 fn the_copy_a_build_makes_is_judged_by_the_same_table() {
     let dir = project_dir("fit-copied", Some(&[("fn:give", "h1")]), None);
     let bundle = crate::bundle_in(&dir).unwrap().unwrap();
@@ -193,9 +128,7 @@ fn without_a_list_for_its_pin_a_mod_works_on_its_own_build_only() {
     assert_eq!(
         judged(&none, OTHER_BUILD, &target),
         Verdict::NoList {
-            made_for: pin(&none),
-            why: Unlisted::Missing,
-            hooks: Vec::new(),
+            made_for: pin(&none)
         }
     );
     // A list made for another build than the mod's pin says nothing about this one.
@@ -207,9 +140,7 @@ fn without_a_list_for_its_pin_a_mod_works_on_its_own_build_only() {
     assert_eq!(
         judged(&stale, OTHER_BUILD, &target),
         Verdict::NoList {
-            made_for: pin(&stale),
-            why: Unlisted::OtherBuild,
-            hooks: Vec::new(),
+            made_for: pin(&stale)
         }
     );
     // A list that does not read is no list: never a panic, never "fits".
@@ -221,9 +152,7 @@ fn without_a_list_for_its_pin_a_mod_works_on_its_own_build_only() {
     assert_eq!(
         judged(&none, OTHER_BUILD, &target),
         Verdict::NoList {
-            made_for: pin(&none),
-            why: Unlisted::Unreadable,
-            hooks: Vec::new(),
+            made_for: pin(&none)
         }
     );
     std::fs::remove_dir_all(none).unwrap();

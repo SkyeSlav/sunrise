@@ -249,40 +249,23 @@ pub(crate) fn unprovided(method: &'static str, operation: &'static str, access: 
     unimplemented!("{}", method)
 }
 
-/// One cell read at the generated API boundary, not a tick scan or registry lookup; in
-/// `World` nothing more.
-///
-/// A refused call records a [`PhaseRefusal`](super::phase_refusal::PhaseRefusal) in the
-/// thread's containment scope and unwinds with it (`resume_unwind`, so no panic hook and no
-/// crash report). The dispatcher that called the mod catches it with `contain_refusal`, drops
-/// that listener's answer and goes on. The scope latches: while it holds a refusal every later
-/// gated call in it refuses too, whatever its access class, and the refusal is reported even
-/// if the mod caught the unwind and returned normally. The wasm host dispatcher checks
+/// One cell read at the generated API boundary, not a tick scan or registry lookup.
+/// Native callers currently panic on refusal. The wasm host dispatcher checks
 /// `access_allowed` before entering these methods and returns a named phase refusal
 /// instead; the guest must never consult its own independent phase state.
-///
-/// Two cases are not contained. When the thread is already unwinding (a mod `Drop` running
-/// during a panic, say) the gate logs the named line and panics, and a panic during an unwind
-/// aborts the process. With no containment scope on the thread it panics with the named
-/// message; no production path reaches that.
 #[inline]
-pub fn check_access(operation: &'static str, access: LoadAccess) {
-    let phase = current_phase();
-    if phase != ModPhase::World
-        && (!phase_allows(phase, operation, access) || super::phase_refusal::latched())
-    {
-        super::phase_refusal::refuse(operation, phase);
-    }
+pub fn check_access(operation: &str, access: LoadAccess) {
+    assert!(
+        access_allowed(operation, access),
+        "mod API {operation} is unavailable during {:?}",
+        current_phase()
+    );
 }
 
 /// Whether an operation is available in this thread's current load phase.
 #[inline]
 pub fn access_allowed(operation: &str, access: LoadAccess) -> bool {
-    phase_allows(current_phase(), operation, access)
-}
-
-#[inline]
-fn phase_allows(phase: ModPhase, operation: &str, access: LoadAccess) -> bool {
+    let phase = current_phase();
     if phase == ModPhase::World {
         return true;
     }

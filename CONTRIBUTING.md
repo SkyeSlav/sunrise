@@ -226,11 +226,6 @@ it (edited on every push, never repeated): talk to its author in the thread befo
 - **Release labels** (we set them if you can't): `feature` also puts it under "New" in the release notes,
   `skip-release` when players see no change (tooling, docs, tests), nothing for a fix. `release-now` is for crash
   fixes that shouldn't wait. pr_ready suggests one.
-- **`breaking`** when players or server owners must do something after they update: a save or settings format that
-  changes, a removed feature, a changed command or `server.toml` key. Say what they must do under a
-  `## Breaking change` heading in the description, for example "Set your render distance again in Options." Sunrise's
-  Discord feed posts that text as a ⚠️ breaking-change notice, so write it for players. Mod API breaks don't need the
-  label: the `migrate` line of their change note in `crates/sunrise-mod-vocab/changes/` says what mod makers do.
 
 Who reviews and merges: the Sunrise Team, on CI for ordinary pull requests; risky ones (saves, network, world
 generation, the launcher's updates) wait for a local proof first ([merging](docs/release-flow.md#merging)).

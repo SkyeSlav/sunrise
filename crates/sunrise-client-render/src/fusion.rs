@@ -240,7 +240,7 @@ impl FusionTextures {
         // The layers models show the sheets as: only their models are read.
         let shown: std::collections::HashSet<u32> = textures
             .keys()
-            .filter_map(|name| sprites.model_layer(name))
+            .filter_map(|name| sprites.layers.get(name).copied())
             .collect();
         let mut models: HashMap<String, Vec<ModelFace>> = HashMap::new();
         let mut sheets: Vec<(Sheet, Connection)> = Vec::new();

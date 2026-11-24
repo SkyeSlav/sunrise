@@ -23,7 +23,6 @@ sunrise-command = { path = "../sunrise-command" }
 sunrise-core = { path = "../sunrise-core" }
 sunrise-hdr = { path = "../sunrise-hdr" }
 sunrise-items = { path = "../sunrise-items" }
-sunrise-java-properties = { path = "../sunrise-java-properties" }
 sunrise-mod-package = { path = "../sunrise-mod-package" }
 # The narrator option's status and whether the narrator is there (Options.narrator).
 sunrise-narrator = { path = "../sunrise-narrator" }
@@ -82,6 +81,8 @@ wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
 audio = ["dep:cpal"]
 # Helpers sunrise-client's tests build their fixtures with.
 test-support = []
+# The `scene_replay` example's allocator counts allocations (sunrise-threads' `alloc-count`).
+alloc-count = ["sunrise-threads/alloc-count"]
 
 [lints]
 workspace = true

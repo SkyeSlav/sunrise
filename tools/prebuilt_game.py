@@ -79,8 +79,6 @@ INPUTS = ROOT / "crates/sunrise-mod-package/src/sdk/inputs.json"
 API_ROOTS = ("sunrise-mod-api", "sunrise-mod-points")
 # The game libraries outside the API closure, in the runtime archive.
 GAME_LIBRARIES = ("sunrise_mod_host", "sunrise_mod_wasm", "sunrise_official")
-# The lowest of the libraries the prebuilt game is split into: every other one links it.
-SDK_BASE = "sunrise-core"
 # A crate the wasm runtime depends on normally links into its dylib alone, and a C library inside a Rust dylib is
 # hidden from the other: #1596 put mimalloc there and the game's library, which calls it, no longer linked. These
 # `links` keys carry no library: rayon-core and wasm-bindgen-shared keep one copy, sunrise-mod-vocab hands on a folder.
@@ -273,16 +271,12 @@ def stage(target_dir: Path, stage_tool: Path | None = None, *, sdk_dylibs: bool 
 def prepare_sdk_manifests(staged: Path) -> None:
     """Build the host and official layer as dylibs in one Cargo graph, and split out the API and
     wasm libraries. With prefer-dynamic, the official layer uses the host's engine state."""
-    metadata = json.loads(run(["cargo", "metadata", "--format-version", "1", "--filter-platform", rustc_host()],
-                              cwd=staged))
-    split = sdk_dylibs(metadata)
-    # A warning, not a refusal: this reads declared dependencies of every feature, and rustc links fewer.
-    if clash := shared_twice(metadata, split | {GAME, OFFICIAL}):
-        print(f"warning: {clash}", file=sys.stderr, flush=True)
+    metadata = json.loads(run(["cargo", "metadata", "--format-version", "1"], cwd=staged))
+    closure = api_closure(metadata)
     for package in metadata["packages"]:
         name = package["name"]
         root_dylib = name in (GAME, OFFICIAL)
-        if not root_dylib and name not in split:
+        if not root_dylib and package["id"] not in closure and name != "sunrise-mod-wasm":
             continue
         if not any(target["kind"] == ["lib"] for target in package["targets"]):
             continue
@@ -296,75 +290,6 @@ def prepare_sdk_manifests(staged: Path) -> None:
         else:
             text += f"\n[lib]\ncrate-type = {crate_types}\n"
         manifest.write_text(text)
-
-
-def normal_dependencies(metadata: dict) -> dict[str, list[str]]:
-    """Each package's normal dependencies that link into it, by package ID: never a proc macro, which runs in the
-    compiler and keeps its own dependencies inside its library."""
-    macros = {package["id"] for package in metadata["packages"]
-              if any("proc-macro" in target["kind"] for target in package["targets"])}
-    return {package["id"]: [] for package in metadata["packages"]} | {
-        node["id"]: [dependency["pkg"] for dependency in node["deps"] if dependency["pkg"] not in macros
-                     and any(kind["kind"] is None for kind in dependency["dep_kinds"])]
-        for node in metadata["resolve"]["nodes"]}
-
-
-def sdk_dylibs(metadata: dict) -> set[str]:
-    """The names of the crates split out of the game as libraries of their own: the wasm runtime, and the API
-    closure's crates that stand on `SDK_BASE`. A library holds every crate below it that no library it links
-    holds, so a crate beside the base (sunrise-mod-call, with sha2) would hold a second copy of whatever both
-    use, and rustc refuses to link two. Such a crate stays inside the first library above it."""
-    dependencies = normal_dependencies(metadata)
-    closure = api_closure(metadata)
-    base = {package["id"] for package in metadata["packages"] if package["name"] == SDK_BASE}
-
-    def stands_on_base(package_id: str) -> bool:
-        pending, seen = [package_id], set()
-        while pending:
-            current = pending.pop()
-            if current in base:
-                return True
-            if current not in seen:
-                seen.add(current)
-                pending.extend(dependencies[current])
-        return False
-
-    return {package["name"] for package in metadata["packages"]
-            if package["name"] == "sunrise-mod-wasm" or package["id"] in closure and stands_on_base(package["id"])}
-
-
-def shared_twice(metadata: dict, libraries: set[str]) -> str | None:
-    """What is wrong when two of `libraries` (package names) would each hold a copy of one crate, else None.
-    A library holds every crate it reaches without passing through another library, except what the libraries
-    it links hold."""
-    dependencies = normal_dependencies(metadata)
-    names = {package["id"]: package["name"] for package in metadata["packages"]}
-    ids = sorted(package_id for package_id, name in names.items() if name in libraries)
-
-    def reach(library: str) -> tuple[set[str], set[str]]:
-        """What `library` reaches without passing through another library, and every library it links."""
-        inside, linked, pending = set(), set(), list(dependencies[library])
-        while pending:
-            current = pending.pop()
-            if current in ids:
-                if current not in linked:
-                    linked |= {current} | reach(current)[1]
-            elif current not in inside:
-                inside.add(current)
-                pending.extend(dependencies[current])
-        return inside, linked
-
-    reached = {library: reach(library) for library in ids}
-    holds = {library: inside - set().union(*(reached[other][0] for other in linked))
-             for library, (inside, linked) in reached.items()}
-    for first in ids:
-        for second in ids:
-            if first < second and (both := holds[first] & holds[second]):
-                return (f"{names[first]} and {names[second]} are separate libraries of the prebuilt game and may "
-                        f"each hold a copy of {', '.join(sorted(names[crate] for crate in both))}: rustc refuses to "
-                        "link two copies into one program. If the build fails on these crates, one library must "
-                        "depend on the other, or stay out of `sdk_dylibs`.")
-    return None
 
 
 def cargo_features(server: bool, platform: str) -> list[str]:
@@ -852,7 +777,7 @@ def smoke(out: Path) -> None:
                  *(flag for arg in origin for flag in ("-C", f"link-arg={arg}")),
                  "-o", str(library), str(scratch / f"{mod}.rs")])
             records.append({"file": library.name, "sha256": sha256(library), "kind": "mod", "mod": mod,
-                            "identity": f"{build} unwind"})
+                            "identity": build})
             install_package(installed / "sunrise-native-mods" / mod, mod, source, dependencies)
     shutil.copy2(out / RUNTIME / EXECUTABLE, installed / EXECUTABLE)
     (installed / "native-mods.json").write_text(json.dumps({"libraries": records}))

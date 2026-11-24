@@ -10,7 +10,6 @@ use std::{
 };
 use sunrise_core::geometry::Vec3;
 use sunrise_core::random::RandomSource;
-use sunrise_core::uuid::uuid_text;
 
 #[cfg(test)]
 #[path = "tests/phantom_spawn_tests.rs"]
@@ -185,7 +184,15 @@ impl Stats {
 }
 /// `players/<dir>/<uuid>.json` of a world (advancements, stats).
 pub(super) fn player_json(world: &Path, dir: &str, uuid: [i32; 4]) -> PathBuf {
-    let text = uuid_text(uuid);
+    let hex: String = uuid.iter().map(|v| format!("{:08x}", *v as u32)).collect();
+    let text = format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    );
     world.join("players").join(dir).join(format!("{text}.json"))
 }
 /// `FileUtil.isValidPathSegment`: not `.` or `..`, and only the characters

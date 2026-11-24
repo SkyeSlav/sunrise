@@ -280,20 +280,6 @@ pub fn level_name(level: u32) -> String {
         .map_or_else(|| level.to_string(), |s| (*s).to_owned())
 }
 
-/// `Enchantment.getFullname`: append the level unless both it and the holder's maximum are one.
-pub fn format_full_name(
-    mut description: String,
-    level: u32,
-    max_level: u32,
-    suffix: impl FnOnce(u32) -> String,
-) -> String {
-    if level != 1 || max_level != 1 {
-        description.push(' ');
-        description.push_str(&suffix(level));
-    }
-    description
-}
-
 /// Decode a winning pack definition's top-level fields for registry sync.
 /// Holder sets and effect payloads are bound after the registry phase.
 pub fn decode_pack_definition(mut value: Value) -> Result<Value, String> {
@@ -852,13 +838,14 @@ impl Enchantments {
         let Some(e) = self.get(id) else {
             return (format!("{id} {}", level_name(level)), false);
         };
-        let description = tr(&e.description_key).unwrap_or_else(|| e.description.clone());
-        let name = format_full_name(description, level, e.max_level, |level| {
-            if numeric {
-                return level.to_string();
-            }
+        let mut name = tr(&e.description_key).unwrap_or_else(|| e.description.clone());
+        if (level != 1 || e.max_level != 1) && numeric {
+            name.push(' ');
+            name.push_str(&level.to_string());
+        } else if level != 1 || e.max_level != 1 {
+            name.push(' ');
             let key = format!("enchantment.level.{level}");
-            tr(&key)
+            let suffix = tr(&key)
                 .or_else(|| self.lang.get(&key).cloned())
                 .unwrap_or_else(|| {
                     if (1..=10).contains(&level) {
@@ -866,8 +853,9 @@ impl Enchantments {
                     } else {
                         key
                     }
-                })
-        });
+                });
+            name.push_str(&suffix);
+        }
         (name, self.is_curse(id))
     }
     /// Tooltip lines for a level list, in `#tooltip_order` then remaining order.

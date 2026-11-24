@@ -2,6 +2,7 @@ use super::*;
 
 /// Helpers for native mods, kept as stable as the hook points.
 // Native mods use these; nothing in Sunrise does.
+#[allow(dead_code)]
 impl Game<'_> {
     /// The width of `text` in GUI pixels, as `native_text` draws it on `draw` (`Font.width`).
     pub(in crate::game) fn native_text_width(&self, _draw: &HudBatch, text: &str) -> f32 {

@@ -6,8 +6,7 @@ name: mod tool
 # SHA256SUMS.sig, signed with the release key for the tag `mod-tool` (the message is "horizon release mod-tool\n" and
 # the sums, as an SDK's is for its tag). tool.json is in the sums, so the commit a tool says it is built from is signed.
 #
-# Runs when dyna-checks finishes a main push and by dispatch, never on a pull request (a run that starts at the push
-# would look for the gate before it had finished), and builds only when the tool changed: the folders
+# Runs on a push to main and by dispatch, never on a pull request, and builds only when the tool changed: the folders
 # are the workspace crates cargo-sunrise-mod depends on, from `cargo metadata` (tools/ci/mod_tool.py), plus the files
 # that build and sign it. Like release.yml's snapshot, it needs dyna-checks' gate green on the commit.
 # - `decide` (no secrets, a read-only token) refuses a commit that is not on main in a step of this file, before any
@@ -24,9 +23,7 @@ name: mod tool
 # A push run publishes only when the repository variable MOD_TOOL_AUTOPUBLISH is `true`; without it a push run is a dry
 # run (throwaway key, nothing published). A dispatch publishes with `-f dry_run=false` on main.
 on:
-  workflow_run:
-    workflows: [dyna-checks]
-    types: [completed]
+  push:
     branches: [main]
   workflow_dispatch:
     inputs:
@@ -48,7 +45,7 @@ concurrency:
   # One at a time: a newer push waits behind the one running (and replaces an older waiting one: its commit holds the
   # older one's changes). A dry run has a group of its own, as release.yml's: a dispatched one, a run off main, and a
   # push while MOD_TOOL_AUTOPUBLISH is off, so none of them holds up or cancels a publishing dispatch.
-  group: mod-tool${{ ((github.event_name == 'workflow_dispatch' && inputs.dry_run) || (github.event_name == 'workflow_run' && vars.MOD_TOOL_AUTOPUBLISH != 'true') || github.ref != 'refs/heads/main') && '-dry-run' || '' }}
+  group: mod-tool${{ ((github.event_name == 'workflow_dispatch' && inputs.dry_run) || (github.event_name == 'push' && vars.MOD_TOOL_AUTOPUBLISH != 'true') || github.ref != 'refs/heads/main') && '-dry-run' || '' }}
   cancel-in-progress: false
 defaults:
   run:
@@ -57,13 +54,6 @@ env:
   TAG: mod-tool
 jobs:
   decide:
-    # Of dyna-checks' runs, only this repository's main pushes that ran to the end: a pull request from a branch
-    # named main is a `pull_request` run, and a push run a newer push cancelled is covered by that push's own.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.event == 'push' &&
-       github.event.workflow_run.head_repository.full_name == github.repository &&
-       github.event.workflow_run.conclusion != 'cancelled')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -78,12 +68,12 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ inputs.commit || github.event.workflow_run.head_sha }}
+          ref: ${{ inputs.commit }}
       # Before anything of the checkout runs: the commit, as a full id, is on main. Every later job builds this id.
       - name: The commit is on main
         id: commit
         env:
-          COMMIT: ${{ inputs.commit || github.event.workflow_run.head_sha || github.sha }}
+          COMMIT: ${{ inputs.commit || github.sha }}
         run: |
           sha=$(git rev-parse --verify "$COMMIT^{commit}")
           git fetch -q --no-tags origin +refs/heads/main:refs/remotes/origin/main
@@ -107,7 +97,7 @@ jobs:
           publish=false
           if [ "$GITHUB_REF" = refs/heads/main ]; then
             if [ "$EVENT" = workflow_dispatch ] && [ "$DRY" = false ]; then publish=true; fi
-            if [ "$EVENT" = workflow_run ] && [ "$AUTO" = true ]; then publish=true; fi
+            if [ "$EVENT" = push ] && [ "$AUTO" = true ]; then publish=true; fi
           fi
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
       - id: decide

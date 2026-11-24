@@ -187,7 +187,6 @@ fn build_command(
     args: &[String],
 ) -> Result<PathBuf, String> {
     let root = Path::new(".");
-    let output = PackageOutput::in_project(root)?;
     if args.first().is_some_and(|a| a == "--wasm") {
         fetched(root)?;
         let api = pinned_surface(root)?;
@@ -213,7 +212,6 @@ fn build_command(
     let path = build(
         entry,
         &package,
-        &output,
         built.as_ref().map(|built| built.mixins.as_str()),
     )?;
     println!("Built {}", path.display());
@@ -536,7 +534,6 @@ fn new_code(
 fn build(
     entry: mod_surface::child::ChildEntry,
     package: &Package,
-    output: &PackageOutput,
     mixins: Option<&str>,
 ) -> Result<PathBuf, String> {
     let root = Path::new(".");
@@ -563,7 +560,7 @@ fn build(
     };
     pack_into(
         root,
-        output,
+        &root.join("target/sunrise-mod"),
         &package.manifest,
         uses.as_deref(),
         api.as_ref(),
@@ -574,25 +571,12 @@ fn build(
 fn build_in(root: &Path, manifest: &Manifest) -> Result<PathBuf, String> {
     pack_into(
         root,
-        &PackageOutput::in_project(root)?,
+        &root.join("target/sunrise-mod"),
         manifest,
         None,
         None,
         None,
     )
-}
-
-struct PackageOutput(PathBuf);
-
-impl PackageOutput {
-    /// Check both output components under the project before writing or unlinking packages.
-    fn in_project(root: &Path) -> Result<Self, String> {
-        let target = root.join("target");
-        internals::check_output_dir(&target)?;
-        let dir = target.join("sunrise-mod");
-        internals::check_output_dir(&dir)?;
-        Ok(Self(dir))
-    }
 }
 
 /// The manifest text a package carries: the project's with derived `api` and `capabilities`
@@ -621,13 +605,12 @@ fn completed_manifest(text: &str, mixins: Option<&str>) -> Result<String, String
 
 fn pack_into(
     root: &Path,
-    output: &PackageOutput,
+    dir: &Path,
     manifest: &Manifest,
     uses: Option<&[u8]>,
     api: Option<&mod_surface::Surface>,
     mixins: Option<&str>,
 ) -> Result<PathBuf, String> {
-    let dir = &output.0;
     // A failed build leaves no earlier package that a later `check <file>` would report as good.
     let path = dir.join(format!("{}.smod", manifest.id));
     match std::fs::remove_file(&path) {
@@ -872,38 +855,6 @@ mod tests {
         assert!(error.contains("pins no game build"), "{error}");
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn a_failed_pack_leaves_packages_in_linked_output_directories_alone() {
-        use std::{fs, os::unix::fs::symlink};
-
-        let project = tempfile::tempdir().unwrap();
-        let root = project.path().join("gems");
-        new(&[root.display().to_string()], &offline).unwrap();
-        fs::write(
-            root.join("assets/gems/models/block/glowing_amethyst.json"),
-            r#"{"parent":"minecraft:block/cube_all","textures":{"all":"gems:block/gone"}}"#,
-        )
-        .unwrap();
-
-        let outside = tempfile::tempdir().unwrap();
-        let outside_output = outside.path().join("sunrise-mod");
-        fs::create_dir(&outside_output).unwrap();
-        let previous = outside_output.join("gems.smod");
-        fs::write(&previous, b"previous package").unwrap();
-
-        let target = root.join("target");
-        symlink(outside.path(), &target).unwrap();
-        assert!(build_in(&root).is_err());
-        assert_eq!(fs::read(&previous).unwrap(), b"previous package");
-
-        fs::remove_file(&target).unwrap();
-        fs::create_dir(&target).unwrap();
-        symlink(&outside_output, target.join("sunrise-mod")).unwrap();
-        assert!(build_in(&root).is_err());
-        assert_eq!(fs::read(&previous).unwrap(), b"previous package");
-    }
-
     #[test]
     fn the_content_template_builds_and_checks_with_no_code() {
         let dir = std::env::temp_dir().join(format!("sunrise-mod-content-{}", std::process::id()));
@@ -1052,7 +1003,7 @@ mod tests {
             sunrise_native_build::MixinsIdentity::resolve([&bundle], Some(&sdk)).unwrap();
         let smod = pack_into(
             &root,
-            &PackageOutput::in_project(&root).unwrap(),
+            &dir.path().join("out"),
             &Package::read(&root).unwrap().manifest,
             None,
             None,
@@ -1101,15 +1052,7 @@ mod tests {
         assert_eq!(sdk_fetch::pin(&path).unwrap(), commit);
         // No rows: the package still carries the SDK's revision for readers that require it.
         let rev = "fedcba9876543210fedcba9876543210fedcba98";
-        let smod = pack_into(
-            &path,
-            &PackageOutput::in_project(&path).unwrap(),
-            &written,
-            None,
-            None,
-            Some(rev),
-        )
-        .unwrap();
+        let smod = pack_into(&path, &path.join("target"), &written, None, None, Some(rev)).unwrap();
         // The package carries what the tool derives, which the project did not write.
         let packed = Package::entry(&smod, MANIFEST, 1 << 20).unwrap().unwrap();
         let packed = String::from_utf8(packed).unwrap();

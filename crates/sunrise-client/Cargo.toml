@@ -37,6 +37,7 @@ sunrise-optifine = { path = "../sunrise-optifine" }
 # The server thread ahead of the workers (MinecraftServer.spin's Thread.setPriority).
 sunrise-threads = { path = "../sunrise-threads" }
 sunrise-perf-format = { path = "../sunrise-perf-format" }
+sunrise-hdr = { path = "../sunrise-hdr" }
 sunrise-world = { path = "../sunrise-world" }
 sunrise-protocol = { path = "../sunrise-protocol" }
 # server.properties, eula.txt and the user lists, shared with sunrise-server.
@@ -76,6 +77,7 @@ toml = "1.1"
 # hlsl-out: the gfx.rs tests translate every shader as wgpu's DirectX 12 backend does. A normal feature,
 # not a dev-dependency's, so builds, tests and examples share one build of naga, wgpu and this crate.
 naga = { version = "30.0.1", features = ["wgsl-in", "hlsl-out"] }
+miniz_oxide = "0.8"
 ab_glyph = "0.2.32"
 log = "0.4"
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
@@ -94,6 +96,7 @@ gilrs = { version = "0.11", optional = true }
 sunrise-dualsense = { path = "../sunrise-dualsense", optional = true }
 # HTTPS to the Minecraft services (online-mode session join).
 ureq = { version = "2", default-features = false, features = ["tls"] }
+unicode-bidi = "0.3.18"
 # `LevelStorageAccess.estimateDiskSpace`: usable disk space, without unsafe code on Windows.
 fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
 # Mod file roots are descriptor-bound: no symlink race can leave a mod's area.
@@ -150,6 +153,8 @@ alloc-count = ["sunrise-threads/alloc-count"]
 # mimalloc with a tag on each block: `sunrise-ctl memory` lists the live heap by startup step and
 # thread (`heap_by_tag_mb`). For measuring only: each block costs 16 bytes more.
 alloc-census = ["sunrise-threads/alloc-census"]
+# Compatibility with earlier experiment commands: main already uses mimalloc.
+windows-mimalloc = []
 # Opt-in Windows heap experiment; see docs/windows-allocators.md.
 windows-segment-heap = []
 

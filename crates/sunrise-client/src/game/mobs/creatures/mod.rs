@@ -249,10 +249,6 @@ pub(super) struct Creatures {
     /// Per-tick scratch retained between creature ticks.
     event_buf: Vec<MobEvent>,
     pickable_projectile_targets: Vec<(Who, Aabb)>,
-    /// For each arrow an entity hit in this projectile tick, the projectiles
-    /// that ticked after it and stayed, in order: a bounced one goes back
-    /// before the first still listed (`finish_arrow_hit`).
-    bounced_followers: Vec<(u32, Vec<u32>)>,
     pending: std::collections::HashMap<&'static str, PendingMobBatch>,
     /// The mobs whose own tick ran in the last `tick_creature_entities`:
     /// `ServerLevel.tick` ticks only the entities in entity-ticking range, so
@@ -365,18 +361,6 @@ impl ProjectileHandBack {
         );
         self.places = Some(places);
     }
-}
-
-/// Where an arrow an entity turned back goes back among `projectiles`: before
-/// the first of `followers` (the projectiles that ticked after it and stayed,
-/// in order) still listed, else last. Spawns restored ahead of the survivors
-/// and settled impacts can leave the list out of join order, so its place is
-/// taken from the tick, not from the join numbers.
-fn bounced_place(projectiles: &[Projectile], followers: &[u32]) -> usize {
-    followers
-        .iter()
-        .find_map(|id| projectiles.iter().position(|q| q.id == *id))
-        .unwrap_or(projectiles.len())
 }
 
 #[cfg(test)]
@@ -1239,18 +1223,9 @@ impl Game<'_> {
                         hook: "spawn_cluster_size",
                         part: Some(attached.type_name()),
                     });
-                // Called outside the world (a reload or setup) a refused Host call is no answer.
-                match mod_api::__private::contain_outside_world(|| {
-                    attached
-                        .part()
-                        .spawn_cluster_size(self, lent, reason, spawner, vanilla)
-                }) {
-                    Ok(answer) => answer,
-                    Err(refusal) => {
-                        refusal.report();
-                        None
-                    }
-                }
+                attached
+                    .part()
+                    .spawn_cluster_size(self, lent, reason, spawner, vanilla)
             })
         })
     }
@@ -4934,22 +4909,6 @@ impl Game<'_> {
         for (block, position, movement) in snow_contacts {
             self.powder_snow_particle(block, position, movement);
         }
-        // An arrow an entity hit leaves the batch for its hit's handling;
-        // the level never takes it out (AbstractArrow.onHitEntity), so one
-        // that flies on goes back where this tick had it.
-        self.creatures.bounced_followers.clear();
-        for (p, hit) in &hits {
-            if p.arrow.is_some()
-                && matches!(hit, Hit::Entity { .. })
-                && let Some(i) = projectiles.iter().position(|q| q.id == p.id)
-            {
-                let followers = (i + 1..projectiles.len())
-                    .filter(|&j| keep_flags[j])
-                    .map(|j| projectiles[j].id)
-                    .collect();
-                self.creatures.bounced_followers.push((p.id, followers));
-            }
-        }
         let listed = keep_flags.clone();
         let mut idx = 0;
         if impacts.is_empty() {
@@ -5042,7 +5001,6 @@ impl Game<'_> {
                 _ => self.projectile_hit(&p, hit)?,
             }
         }
-        self.creatures.bounced_followers.clear();
         self.flush_lan_explosions();
         let flushed = self.flush_wind_bursts();
         self.native_tick_post_batch(round);
@@ -5468,20 +5426,7 @@ impl Game<'_> {
             }
         }
         if keep {
-            // The arrow never left the level (AbstractArrow.onHitEntity's
-            // deflect(REVERSE), or a dodge it flies on past): it goes back
-            // where it ticked, keeping its place in EntityTickList's order,
-            // and nothing hears it launch again.
-            let followers = self
-                .creatures
-                .bounced_followers
-                .iter()
-                .position(|(id, _)| *id == arrow.id)
-                .map(|k| self.creatures.bounced_followers.swap_remove(k).1)
-                .unwrap_or_default();
-            let projectiles = &mut self.creatures.projectiles;
-            let index = bounced_place(projectiles, &followers);
-            projectiles.insert(index, arrow);
+            self.add_projectile(arrow);
         }
     }
     /// `ThrownEnderpearl.onHit` for a living non-player owner: the same hook,

@@ -1022,8 +1022,8 @@ fn spawner_case(
 
 /// `TrialSpawner.tickServer` `ticks` times from game time `t0` at `spos` on a
 /// trial spawner block in state `state` (ominous with `ominous=1`) loaded from
-/// `snbt` (base64 SNBT), as the oracle logs it. `warmup_snbt`, if provided,
-/// is loaded first on the same spawner. Every `kill` ticks the mobs it spawned die.
+/// `snbt` (base64 SNBT), as the oracle logs it. Every `kill` ticks the mobs it
+/// spawned die.
 fn trial_case(
     world: &World,
     registry: &sunrise_world::registry::BlockRegistry,
@@ -1050,17 +1050,9 @@ fn trial_case(
         .placed
         .borrow_mut()
         .push((pos, registry.resolve(&block_state(state, ominous))?));
-    let decode = |text: &str| -> sunrise_client::Result<Tag> {
-        let text = sunrise_client::skins::base64_decode(text).ok_or("bad snbt")?;
-        Ok(sunrise_core::nbt::parse_snbt(&String::from_utf8(text)?)?.0)
-    };
-    let warmup = get("warmup_snbt", "");
-    let previous = if warmup.is_empty() {
-        None
-    } else {
-        Some(TrialSpawner::load(&decode(&warmup)?, None))
-    };
-    let mut spawner = TrialSpawner::load(&decode(&get("snbt", ""))?, previous.as_ref());
+    let text = sunrise_client::skins::base64_decode(&get("snbt", "")).ok_or("bad snbt")?;
+    let tag = sunrise_core::nbt::parse_snbt(&String::from_utf8(text)?)?.0;
+    let mut spawner = TrialSpawner::load(&tag);
     let ticks: i64 = get("ticks", "1").parse()?;
     let t0: i64 = get("t0", "0").parse()?;
     let kill: i64 = get("kill", "0").parse()?;

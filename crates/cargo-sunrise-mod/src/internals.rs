@@ -197,19 +197,6 @@ pub(crate) fn atomic_write_manifest(path: &Path, contents: String) -> Result<(),
     atomic_write(&referent, contents)
 }
 
-/// An output component may be missing, but an existing one must be a real directory.
-pub(crate) fn check_output_dir(dir: &Path) -> Result<(), String> {
-    match fs::symlink_metadata(dir) {
-        Ok(meta) if meta.is_dir() => Ok(()),
-        Ok(_) => Err(format!(
-            "{} is not a real directory: replace it with one",
-            dir.display()
-        )),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(format!("{}: {e}", dir.display())),
-    }
-}
-
 /// Attempts at an unused temporary name before `atomic_write` gives up.
 const TEMPORARY_ATTEMPTS: u64 = 16;
 

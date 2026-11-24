@@ -4182,6 +4182,7 @@ impl HitLevel<'_> {
 }
 
 /// Server-level helpers for native mods.
+#[allow(dead_code)]
 impl GameLevel<'_> {
     /// Sets property `key` of the block at `pos` to `value` with
     /// `Level.setBlock(pos, state, flags)`, from a hook that gets the level's
@@ -4219,6 +4220,7 @@ impl GameLevel<'_> {
 
 /// Helpers for native mods, kept as stable as the hook points.
 // Native mods use these; nothing in Sunrise does.
+#[allow(dead_code)]
 impl Game<'_> {
     /// The server-owned holders' attachments; `TYPE.get(host, holder)` reads
     /// one. On a client it is the copy of what the server synced: `set` and

@@ -723,8 +723,9 @@ impl Game<'_> {
             .riding
             .and_then(|id| self.boats.iter().find(|b| b.id == id))
         {
-            let (yaw, clamped) = sunrise_client::camera::clamp_boat_rotation(self.yaw, b.yaw);
-            self.yaw = yaw;
+            let delta = (self.yaw - b.yaw + 180.0).rem_euclid(360.0) - 180.0;
+            let clamped = delta.clamp(-105.0, 105.0) - delta;
+            self.yaw += clamped;
             // clampRotation moves `yRotO` with the view.
             self.rope_rot_old.0 += clamped;
         }

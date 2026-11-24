@@ -62,13 +62,15 @@ After a fresh clone, run `cargo sunrise-mod check` once before opening the proje
 
 ## 4. Check that it compiles
 
+`check` compiles for wasm32 as well as for this computer, so install that target for the project's toolchain once:
+
 ```sh
+rustup target add wasm32-unknown-unknown
 cargo sunrise-mod check
 ```
 
-`check` applies the package rules, runs `cargo check` against the pinned SDK's API source, and lists what the mod
-uses of that build. Native projects check for this computer by default; wasm projects check for wasm32. Pass
-`--wasm` or `--native` to select a target explicitly, or both flags to check both. The expected end of the output:
+`check` applies the package rules, then compiles the crate with `cargo check` against the pinned SDK's API source,
+for this computer and for wasm32, and lists what the mod uses of its build. The expected end of the output (the compile runs twice, once for each target):
 
 ```text
     Checking mod-greeter v0.1.0 (…/greeter)

@@ -138,7 +138,7 @@ class ConceptPages(unittest.TestCase):
                     "https://github.com/horizon-rust/horizon-mods/releases/download/x/y.hmod",
                     "https://horizon-rust.github.io/horizon-mods/icons/coords_hud.png"):
             with self.subTest(url=url):
-                with self.assertRaises(AssertionError):
+                with self.assertRaisesRegex(AssertionError, "stale URL"):
                     pages.validate(f"[x]({url})", "concepts/parts/a-item.md", self.src, {})
 
     def test_upstream_projects_and_placeholders_keep_their_urls(self):
@@ -156,7 +156,7 @@ class ConceptPages(unittest.TestCase):
         path = output / "concepts/parts.html"
         path.parent.mkdir(parents=True)
         path.write_text('<a href="https://github.com/arismoko/horizon">x</a>')
-        with self.assertRaises(AssertionError):
+        with self.assertRaisesRegex(AssertionError, "stale URL"):
             pages.check_html(output, self.src / "concepts/..")
 
     def test_links_in_code_are_not_checked(self):

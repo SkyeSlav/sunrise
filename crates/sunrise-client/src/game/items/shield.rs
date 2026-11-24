@@ -178,8 +178,8 @@ impl Game<'_> {
         if self.remote.is_none() {
             self.award_stat("used", &stack.item, 1);
         }
-        // Component wear can apply even when no damage was blocked. A mod's wear
-        // override applies only when the hook leaves the hit blocked.
+        // ItemDamageFunction.apply (or what a native mod set, kept only for a hit
+        // the event left blocked), then hurtAndBreak.
         let item_damage = outcome.shield_damage;
         if item_damage > 0 && !self.creative {
             let (updated, broken) = self.damage_stack(&stack, item_damage, true);
