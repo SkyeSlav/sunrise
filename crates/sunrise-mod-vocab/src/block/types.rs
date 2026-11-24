@@ -11,7 +11,7 @@ impl BlockKey {
     /// Whether this block is in `tag` (`BlockState.is(TagKey)`), over `tags`'s current
     /// authoritative snapshot. An unknown tag is `Some(false)`; unavailable tags or mappings
     /// return `None`.
-    pub fn is_in_tag(self, tags: &dyn Tags, tag: TagKey) -> Option<bool> {
+    pub fn is_in_tag(self, tags: &dyn Tags, tag: TagKey<BlockKey>) -> Option<bool> {
         tags.block_in_tag(self, tag)
     }
 }

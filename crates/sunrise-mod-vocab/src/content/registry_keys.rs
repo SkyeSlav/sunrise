@@ -589,6 +589,14 @@ pub fn enchantment_keys() -> Vec<EnchantmentKey> {
     ordered_keys(&ENCHANTMENTS, EnchantmentKey)
 }
 
+/// Find a loaded enchantment by canonical registry id.
+pub fn enchantment_key(id: &str) -> Option<EnchantmentKey> {
+    let table = ENCHANTMENTS.read().ok()?;
+    let names = table.as_ref()?;
+    let slot = *names.slots.get(id)?;
+    names.order.contains(&slot).then_some(EnchantmentKey(slot))
+}
+
 impl EntityTypeKey {
     /// Validate an incoming slot against the built-in registry, not a world's mapping.
     pub(crate) fn from_slot(slot: u32) -> Result<Self, &'static str> {

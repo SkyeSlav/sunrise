@@ -142,7 +142,9 @@ fn reload_conditions_read_candidate_registries_and_bound_tags() {
                 .unwrap();
                 request.save_root = root.to_owned();
                 game.load_world(request).unwrap();
-                let item_tags = |game: &crate::game::Game<'_>, tag| mod_api::Tags::items(game, tag);
+                let item_tags = |game: &crate::game::Game<'_>, tag: mod_api::TagKey| {
+                    mod_api::Tags::items(game, tag.typed())
+                };
                 let key = |path: &str| {
                     mod_api::__private::tag_key(
                         &mod_api::Identifier::parse(&format!("reload_conditions:{path}")).unwrap(),

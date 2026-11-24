@@ -2,6 +2,10 @@
 use super::Game;
 
 impl Game<'_> {
+    pub(in crate::game) fn loaded_biome_keys(&self) -> Option<&mod_api::__private::BiomeKeys> {
+        self.loaded_data_maps().ok().map(|maps| &*maps.biome_keys)
+    }
+
     pub(in crate::game) fn biome(
         &self,
         id: &str,

@@ -78,7 +78,8 @@ fn class_tags_dispatch_and_failed_preparation_preserve_installed_snapshot() {
         let class_fence = mod_api::__private::tag_key(
             &mod_api::Identifier::parse("sunrise:class/fence").unwrap(),
         )
-        .unwrap();
+        .unwrap()
+        .typed();
         let visit = |id| {
             let mut output = 0;
             mod_api::dispatch_analog_output(

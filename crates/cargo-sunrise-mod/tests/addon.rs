@@ -1,54 +1,24 @@
-use std::{
-    fs,
-    path::Path,
-    process::{Command, Output},
-};
+#[path = "support/own_sdk.rs"]
+mod own_sdk;
+
+use own_sdk::{OwnSdkScratch, passed};
+use std::fs;
 use sunrise_mod_package::Package;
 
 #[test]
 #[ignore = "daily"]
 fn builds_and_checks_a_native_addon_with_local_libraries() {
     // book-quickstart assembles and signs this run's SDK, like the native run smoke test.
-    let target = Path::new(env!("CARGO_TARGET_TMPDIR"));
-    fs::create_dir_all(target).unwrap();
-    let scratch = tempfile::tempdir_in(target).unwrap();
-    let root = scratch.path().canonicalize().unwrap();
+    let scratch = OwnSdkScratch::new();
+    let root = scratch.root();
     let library = root.join("native");
     let addon = root.join("test_addon");
-    let tool = |dir: &Path, args: &[&str], registry: Option<&str>| {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cargo-sunrise-mod"));
-        cmd.current_dir(dir)
-            .env("SUNRISE_MOD_CACHE", root.join("cache"))
-            .env("SUNRISE_HOME", root.join("home"))
-            .env("SUNRISE_LAUNCHER_HOME", root.join("launcher"))
-            .env("SUNRISE_LAUNCHER_NO_SELF_UPDATE", "1")
-            .env("SUNRISE_NO_AUDIO", "1")
-            .env("XDG_DATA_HOME", root.join("data"))
-            .env("XDG_CONFIG_HOME", root.join("config"))
-            .env("NO_PROXY", "127.0.0.1")
-            .env("no_proxy", "127.0.0.1")
-            .args(args);
-        if let Some(registry) = registry {
-            cmd.env("SUNRISE_MOD_REGISTRY_TEST_BASE", registry);
-        }
-        cmd.output().unwrap()
+    let tool = |dir: &std::path::Path, args: &[&str], registry: Option<&str>| {
+        scratch.tool_output(dir, args, registry)
     };
-    let passed = |output: Output| {
-        assert!(
-            output.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8(output.stdout).unwrap()
-    };
+    passed(tool(root, &["new", "native", "--template", "native"], None));
     passed(tool(
-        &root,
-        &["new", "native", "--template", "native"],
-        None,
-    ));
-    passed(tool(
-        &root,
+        root,
         &["new", "test_addon", "--template", "native"],
         None,
     ));
@@ -189,18 +159,7 @@ impl mod_api::Hooks for Addon {
 
     // `run` also carries the dependencies beside the SDK's executable. Registration only needs
     // a current full-profile marker and the registries table; it exits before a world opens.
-    let resources = root.join("resources");
-    fs::create_dir(&resources).unwrap();
-    for (name, json) in [
-        (
-            "sunrise-resources.json",
-            r#"{"schema":7,"minecraft":"26.3"}"#,
-        ),
-        ("sunrise-prepare.json", r#"{"output_version":8}"#),
-        ("registries.json", "{}"),
-    ] {
-        fs::write(resources.join(name), json).unwrap();
-    }
+    let resources = scratch.stub_resources();
     let run = addon.join("target/sunrise-mod/run");
     fs::create_dir_all(run.join("game")).unwrap();
     fs::write(run.join("game/eula.txt"), "eula=true\n").unwrap();
