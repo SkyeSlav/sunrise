@@ -6,6 +6,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     marker::PhantomData,
     path::Path,
+    sync::Arc,
 };
 use sunrise_core::{
     identifier::Identifier,
@@ -15,7 +16,9 @@ use sunrise_items::{
     enchant::{Enchantments, HolderSetBinding},
     items::{Instrument, Items},
 };
-use sunrise_world::{item_defaults::ItemDefaults, loot::PackOverlay};
+use sunrise_world::{
+    environment_timeline::Timeline, item_defaults::ItemDefaults, loot::PackOverlay,
+};
 
 /// One data-driven registry kind: `RegistryDataLoader.WORLD_REGISTRIES`'s entry for a
 /// registry a world's packs add to or replace, with the typed decode of its codec.
@@ -63,6 +66,10 @@ pub const REGISTRY_KINDS: &[RegistryKind] = &[
     RegistryKind {
         key: "minecraft:world_clock",
         decode: decode_world_clock,
+    },
+    RegistryKind {
+        key: "minecraft:timeline",
+        decode: decode_timeline,
     },
 ];
 
@@ -122,6 +129,7 @@ enum Definition {
     Encoded(Tag),
     Enchantment(Value),
     Instrument(Instrument, Tag),
+    Timeline(Arc<Timeline>, Tag),
 }
 
 impl PackRegistryDefinitions {
@@ -243,7 +251,7 @@ impl PackRegistryDefinitions {
                     }
                     let definition = if kind == "enchantment" {
                         Definition::Enchantment(value)
-                    } else if from_pack {
+                    } else if from_pack || kind == "timeline" {
                         let id = format!("{}:{}", key.0, key.1);
                         match (table.decode)(&mut decoder, &id, value) {
                             Ok(definition) => definition,
@@ -355,6 +363,68 @@ impl PackRegistryDefinitions {
                 );
             }
         }
+        // WorldClock.CODEC holder binding and Timeline.validateRegistry.
+        if definitions.entries.contains_key("minecraft:timeline") {
+            let clocks = definitions.entries.get("minecraft:world_clock");
+            let mut prepared_clocks =
+                synchronized_entries(&root, resources, "minecraft:world_clock", overlay);
+            prepared_clocks.retain(|(key, ..)| !clocks.is_some_and(|c| c.contains_key(key)));
+            condition_filter::filter(
+                &mut prepared_clocks,
+                false,
+                overlay.conditions,
+                "world_clock",
+            );
+            let held_clocks: BTreeSet<String> = clocks
+                .into_iter()
+                .flatten()
+                .filter(|(_, entry)| entry.is_some())
+                .map(|((namespace, path), _)| format!("{namespace}:{path}"))
+                .chain(
+                    prepared_clocks
+                        .into_iter()
+                        .map(|((namespace, path), ..)| format!("{namespace}:{path}")),
+                )
+                .collect();
+            if let Some(entries) = definitions.entries.get_mut("minecraft:timeline") {
+                let mut rejected = Vec::new();
+                let mut valid_timelines: Vec<(String, (String, String), Arc<Timeline>)> =
+                    Vec::new();
+                for (key, entry) in entries.iter() {
+                    let Some((Definition::Timeline(timeline, _), _)) = entry.as_ref() else {
+                        continue;
+                    };
+                    let id = format!("{}:{}", key.0, key.1);
+                    if !held_clocks.contains(&timeline.clock) {
+                        errors
+                            .entry("minecraft:timeline")
+                            .or_default()
+                            .insert(id, format!("unknown world_clock {}", timeline.clock));
+                        rejected.push(key.clone());
+                    } else {
+                        valid_timelines.push((id, key.clone(), Arc::clone(timeline)));
+                    }
+                }
+                let duplicate_errors = Timeline::validate_registry(
+                    valid_timelines
+                        .iter()
+                        .map(|(id, _, timeline)| (id.as_str(), timeline.as_ref())),
+                );
+                for (id, error) in duplicate_errors {
+                    errors
+                        .entry("minecraft:timeline")
+                        .or_default()
+                        .insert(id.clone(), error);
+                    if let Some((_, key, _)) = valid_timelines.iter().find(|(tid, _, _)| *tid == id)
+                    {
+                        rejected.push(key.clone());
+                    }
+                }
+                for key in rejected {
+                    entries.insert(key, None);
+                }
+            }
+        }
         if errors.is_empty() {
             return (definitions, Ok(()));
         }
@@ -379,7 +449,10 @@ impl PackRegistryDefinitions {
     }
 
     pub(super) fn includes_prepared_entries(registry: &str) -> bool {
-        matches!(registry, "minecraft:enchantment" | "minecraft:instrument")
+        matches!(
+            registry,
+            "minecraft:enchantment" | "minecraft:instrument" | "minecraft:timeline"
+        )
     }
 
     pub fn append_encoded(&self, registry: &str, entries: &mut Vec<((String, String), Tag, bool)>) {
@@ -387,12 +460,29 @@ impl PackRegistryDefinitions {
             entries.extend(pack.iter().filter_map(|(key, value)| {
                 let (definition, from_pack) = value.as_ref()?;
                 let tag = match definition {
-                    Definition::Encoded(tag) | Definition::Instrument(_, tag) => tag.clone(),
+                    Definition::Encoded(tag)
+                    | Definition::Instrument(_, tag)
+                    | Definition::Timeline(_, tag) => tag.clone(),
                     Definition::Enchantment(json) => json_to_nbt(json),
                 };
                 Some((key.clone(), tag, *from_pack))
             }));
         }
+    }
+
+    /// Every admitted `minecraft:timeline` definition of this world, keyed by canonical id.
+    pub fn timelines(&self) -> BTreeMap<String, Arc<Timeline>> {
+        self.entries
+            .get("minecraft:timeline")
+            .into_iter()
+            .flatten()
+            .filter_map(|((namespace, path), entry)| match entry {
+                Some((Definition::Timeline(timeline, _), _)) => {
+                    Some((format!("{namespace}:{path}"), Arc::clone(timeline)))
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     /// Use the same selected definitions as the synchronized registry packets.
@@ -734,6 +824,16 @@ fn decode_world_clock(_: &mut Decoder<'_>, _: &str, value: Value) -> Result<Defi
         return Err("not a map".into());
     }
     encoded(json_to_nbt(&value))
+}
+
+/// `Timeline.DIRECT_CODEC` (full validation) and `Timeline.NETWORK_CODEC` (syncable tracks
+/// only on the wire).
+fn decode_timeline(_: &mut Decoder<'_>, _: &str, value: Value) -> Result<Definition, String> {
+    let timeline = Timeline::parse(&value)?;
+    let network = Timeline::filter_syncable_json(&value);
+    let wire = json_to_nbt(&network);
+    check_network_nbt(&wire)?;
+    Ok(Definition::Timeline(Arc::new(timeline), wire))
 }
 
 #[cfg(test)]
