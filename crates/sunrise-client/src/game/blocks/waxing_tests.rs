@@ -10,6 +10,7 @@ use sunrise_world::registry::BlockStateId;
 #[ignore = "daily"]
 fn honeycomb_and_the_axe_read_the_block_maps_before_vanillas_tables() {
     with_game(|game| {
+        game.install_root_block_transformers();
         let registry = game.pack.assets.registry;
         let state = |name: &str, props: &[(&str, &str)]| -> BlockStateId {
             let mut state = registry
