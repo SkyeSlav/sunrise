@@ -330,7 +330,8 @@ impl Game<'_> {
         tag: &str,
     ) -> Option<Vec<Identifier>> {
         let registry = normalized(registry);
-        self.visit_registry_entries(&registry, &mut |_| ControlFlow::Break(()))
+        let _ = self
+            .visit_registry_entries(&registry, &mut |_| ControlFlow::Break(()))
             .ok()?;
         let tag = normalized(tag);
         if let Some(set) = self.registry_datapacks(&registry)
@@ -478,32 +479,6 @@ fn sync_tag_ids<'a>(tags: &'a UpdateTags, registry: &str, tag: &str) -> Option<&
         .iter()
         .find(|candidate| candidate.name == tag)
         .map(|tag| tag.ids.as_slice())
-}
-
-/// TagLoader binds mod-registry tags against the already decoded candidate, before publication.
-/// No file's name can create an entry: required missing members invalidate that tag only.
-pub(super) fn bind_datapack_tags(
-    root: &std::path::Path,
-    overlay: &sunrise_world::loot::PackOverlay<'_>,
-    candidate: &mut mod_api::DatapackCandidate,
-) -> Result<(), String> {
-    for declaration in mod_api::__private::datapack_registry_declarations() {
-        let (namespace, path) = declaration
-            .key
-            .split_once(':')
-            .ok_or("invalid mod registry key")?;
-        let folder = format!("{namespace}/{path}");
-        let known: std::collections::BTreeSet<_> = candidate
-            .entries(&declaration.key)
-            .map_err(|error| format!("mod registry tags: {error:?}"))?
-            .into_iter()
-            .collect();
-        let tags = load_registry_tags(root, overlay, &folder, |id| known.contains(id))?;
-        candidate
-            .bind_tags(&declaration.key, tags)
-            .map_err(|error| format!("mod registry tags: {error:?}"))?;
-    }
-    Ok(())
 }
 
 /// Bind a mod registry's tags against the entries it just admitted. A missing
