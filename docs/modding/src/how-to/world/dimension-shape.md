@@ -171,6 +171,10 @@ clock: `Absolute(time)`, `Relative(ticks)` from the time now, or `Marker(id)`. I
 after all of them. A time before now or past `i64::MAX`, or a marker the clock does not define, is refused and the
 clock moves to the morning instead; `new_time` is that morning, read only.
 
+Before any of that, `sleep_skip_night` is asked once each tick that enough players have slept, with the
+`players_sleeping_percentage` rule and how many players sleep and count. Canceling it keeps the night for that tick:
+the clock does not move, nobody is woken and the rain goes on, and `sleep_finished_time` is not asked.
+
 ## Which level a hook is in
 
 The block-behaviour hooks (`neighbor_changed`, `random_tick`, `crop_grow`, `block_changed` and the rest) name their

@@ -8,6 +8,8 @@ use sunrise_core::nbt::Tag;
 
 #[cfg(test)]
 mod can_place_item_tests;
+#[cfg(test)]
+mod can_take_item_through_face_tests;
 pub(in crate::game) mod cauldron_contents;
 #[cfg(test)]
 mod contents_changed_tests;
@@ -717,12 +719,69 @@ impl Containers<'_> {
             return slot != 3 || &*stack.item == "minecraft:glass_bottle";
         }
         if let Some(c) = &view.container {
-            return c.outputs.contains(&slot);
+            return self
+                .ask_take_through_face(view, slot, stack, face)
+                .unwrap_or_else(|| c.outputs.contains(&slot));
         }
         view.kind != Kind::Furnace
             || face != Direction::Down
             || slot != 1
             || matches!(&*stack.item, "minecraft:water_bucket" | "minecraft:bucket")
+    }
+    /// A mod container's `can_take_item_through_face` answer, when its type listens: `None`
+    /// keeps the declared output slots, and an entity, state or stack the API cannot
+    /// represent refuses the take.
+    fn ask_take_through_face(
+        &self,
+        view: &View,
+        slot: usize,
+        stack: &ItemStack,
+        face: Direction,
+    ) -> Option<bool> {
+        use super::api_values::TryIntoApi;
+
+        if !mod_api::__private::has_part_hook(mod_api::HookId::CanTakeItemThroughFace) {
+            return None;
+        }
+        let (pos, index) = view.locate(slot)?;
+        let Some(BlockEntity::Mod(entity)) = self.world.block_entities.get(&pos) else {
+            return None;
+        };
+        if !mod_api::__private::block_entity_type_listens(
+            mod_api::HookId::CanTakeItemThroughFace,
+            entity.id(),
+        ) {
+            return None;
+        }
+        let (x, y, z) = pos;
+        let unreadable = |what: &dyn std::fmt::Debug| {
+            log::debug!("Sunrise: can_take_item_through_face could not read {what:?} at {pos:?}");
+        };
+        let Ok(snapshot) = entity.try_into_api().inspect_err(|e| unreadable(e)) else {
+            return Some(false);
+        };
+        let Ok(state) = self
+            .world
+            .block(x, y, z)
+            .try_into_api()
+            .inspect_err(|e| unreadable(e))
+        else {
+            return Some(false);
+        };
+        let Ok(offered) = stack.try_into_api().inspect_err(|e| unreadable(e)) else {
+            return Some(false);
+        };
+        let mut allowed = None;
+        Game::native_can_take_item_through_face(
+            &snapshot,
+            mod_api::BlockPos::new(x, y, z),
+            state,
+            index,
+            &offered,
+            face,
+            &mut allowed,
+        );
+        allowed
     }
     fn comparator_view(&self, pos: Pos) -> Option<View> {
         self.view(pos, true)

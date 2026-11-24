@@ -857,6 +857,19 @@ impl Game<'_> {
     pub(in crate::game) fn native_shader_params(&self, partial: f32, params: &mut [[f32; 4]; 8]) {
         self.fire_shader_params(partial, params);
     }
+    /// `WorldlyContainer.canTakeItemThroughFace` for a block entity's subscribed part: whether
+    /// `stack` in `slot` may leave through `face`, replacing the declared output slots.
+    pub(in crate::game) fn native_can_take_item_through_face(
+        entity: &ModBlockEntity,
+        pos: BlockPos,
+        state: mod_api::BlockState,
+        slot: usize,
+        stack: &mod_api::ItemStack,
+        face: Direction,
+        allowed: &mut Option<bool>,
+    ) {
+        Self::fire_can_take_item_through_face(entity, pos, state, slot, stack, face, allowed);
+    }
     /// Register namespaced NBT component types before content loads.
     pub(in crate::game) fn native_component_types(
         context: &mod_api::RegistrationContext,
@@ -2661,6 +2674,20 @@ impl Game<'_> {
         canceled: &mut bool,
     ) {
         self.fire_sleep_finished_time(dimension, current, new_time, adjustment, canceled);
+    }
+
+    /// Enough players sleep in level `dimension` to skip the night (`ServerLevel.tick`), before
+    /// the clock moves, the sleepers wake and the rain ends. Set `canceled` and none of it
+    /// happens this tick.
+    pub(in crate::game) fn native_sleep_skip_night(
+        &mut self,
+        dimension: &str,
+        percentage: i32,
+        sleeping: i64,
+        active: i64,
+        canceled: &mut bool,
+    ) {
+        self.fire_sleep_skip_night(dimension, percentage, sleeping, active, canceled);
     }
 
     /// The overworld clock is about to jump, from sleep or `/time`. Set

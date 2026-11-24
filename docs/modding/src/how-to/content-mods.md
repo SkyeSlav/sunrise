@@ -1146,7 +1146,7 @@ A code mod declares a block entity's `ModContainer` with `Registrar::block_conta
 Registration refuses more than 256 slots because the saved `Items` list uses an unsigned byte for
 each slot index (vanilla's `ItemStackWithSlot.CODEC`). Content files can declare menu layouts, not
 saved block container storage. The container's `faces` say which slots each side reaches; `inputs`
-lists the slots insertion may use.
+lists the slots insertion may use, and `outputs` the slots items may leave through a side.
 Per-slot `insert_rules` provide static admission, with missing entries treated as `Any`.
 
 For state-dependent admission, implement `BlockEntityPart::can_place_item`
@@ -1162,6 +1162,14 @@ default `ITEMS` and `STORAGE` insertion, and nonempty offers from `/loot insert`
 The default `STORAGE.space_for` does not ask the part: for subscribed slots it counts
 physical room after face and input checks. An actual insert asks with its remaining offer
 before applying the stack limit.
+
+For state-dependent extraction, implement `BlockEntityPart::can_take_item_through_face`
+(vanilla's `WorldlyContainer.canTakeItemThroughFace`). Its `CanTakeItemThroughFaceEvent` gives the
+same entity, `pos` and `state`, the queried slot, the stack in it and the `face` it would leave
+through. Returning `Some(true)` or `Some(false)` replaces whether `outputs` lists the slot; `None`
+keeps it. The face's slots still bound which slots are asked. A hopper pulling from below and
+`ITEMS` and `STORAGE` extracts through a side use this query; an extract with no side skips the
+face rules, as NeoForge's unsided item handler does, and menus use `menu_slot_rules`.
 
 The query has no Host and may run for a slot that is never written. Seed a filter from the
 accepted write, not from the query. Default `ITEMS` and `STORAGE` writes to these slots emit

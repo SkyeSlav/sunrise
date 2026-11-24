@@ -234,6 +234,23 @@ impl Game<'_> {
         sleeping >= needed && deep >= needed
     }
 
+    /// `ServerLevel.tick`'s night skip, once `enough_slept`: false when a mod's
+    /// `sleep_skip_night` canceled it for this tick.
+    pub(in crate::game) fn sleep_skips_night(&mut self) -> bool {
+        if !mod_api::__private::listened(mod_api::HookId::SleepSkipNight) {
+            return true;
+        }
+        let (active, sleeping, _) = self.sleep_counts();
+        let percentage = self
+            .ui
+            .rules
+            .int_at(sunrise_client::gamerules::vanilla::PLAYERS_SLEEPING_PERCENTAGE);
+        let mut canceled = false;
+        let dimension = self.dim.id();
+        self.native_sleep_skip_night(dimension, percentage, sleeping, active, &mut canceled);
+        !canceled
+    }
+
     /// `ServerLevel.updateSleepingPlayerList` and `announceSleepStatus`: when
     /// the players or the sleepers change, a published or dedicated world
     /// shows everyone "n/m players sleeping", or "Sleeping through this
@@ -306,3 +323,7 @@ impl Game<'_> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/sleep_skip_night_tests.rs"]
+mod sleep_skip_night_tests;

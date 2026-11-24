@@ -187,6 +187,8 @@ pub struct ModContainer {
     pub slots: usize,
     pub faces: [Vec<usize>; 6],
     pub inputs: Vec<usize>,
+    /// The slots items may leave through a side (`canTakeItemThroughFace`); a
+    /// `BlockEntityPart::can_take_item_through_face` answer replaces this per query.
     pub outputs: Vec<usize>,
     /// The admission rule for each slot, by slot index. Missing entries mean [`Any`](ModContainerInsertRule::Any).
     pub insert_rules: Vec<ModContainerInsertRule>,

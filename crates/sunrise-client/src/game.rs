@@ -10622,7 +10622,7 @@ impl Game<'_> {
             }
         }
     }
-    fn tick_sleep(&mut self) {
+    pub(in crate::game) fn tick_sleep(&mut self) {
         self.sleep_timer = tick_sleep_timer(self.sleep_timer, self.sleeping.is_some());
         if let Some(head) = self.sleeping {
             // LivingEntity.tick's checkBedExists: a sleeper whose bed is
@@ -10657,8 +10657,9 @@ impl Game<'_> {
         }
         // ServerLevel.tick: once enough of the players have slept 100 ticks,
         // skip to morning if `advance_time` is on, wake everyone, and
-        // resetWeatherCycle if `advance_weather` is on and it is raining.
-        if self.enough_slept() {
+        // resetWeatherCycle if `advance_weather` is on and it is raining,
+        // unless a mod's `sleep_skip_night` cancels it.
+        if self.enough_slept() && self.sleep_skips_night() {
             if self
                 .ui
                 .rules
