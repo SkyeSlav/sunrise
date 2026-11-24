@@ -110,6 +110,8 @@ impl PartRegistrar {
             biome_regions,
             biome_modifiers,
             datapack_registries,
+            data_maps,
+            load_conditions,
             configs,
             controllers,
             arm_poses,

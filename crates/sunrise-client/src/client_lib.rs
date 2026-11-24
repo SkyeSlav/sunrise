@@ -75,6 +75,7 @@ pub mod creative;
 pub mod cushion;
 pub mod custom_registry_net;
 pub mod data_cmd;
+pub mod data_map_net;
 pub mod datapack_net;
 pub mod debug_chart;
 pub mod debug_entries;

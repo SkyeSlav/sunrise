@@ -599,8 +599,6 @@ impl Game<'_> {
         // RegistryDataLoader.RELOADABLE_REGISTRIES: providers are staged and
         // published with the other reloadable data, including on /reload.
         let providers = Providers::load_with(root, &overlay);
-        let mut data_map_types = Vec::new();
-        self.native_data_map_types(&mut data_map_types);
         // Visit independently readable registries before consuming any result.
         // One rejected winner must not hide the other entries' diagnostics.
         let loot = sunrise_world::loot::LootData::load_candidate_with_damage(
@@ -753,12 +751,16 @@ impl Game<'_> {
                     .is_ok(),
             },
         )?;
-        let data_maps = native_data_maps::DataMaps::load(&data_map_types, &overlay, &registries)
-            .with_builtins(builtin)
-            .with_biome_keys(mod_api::__private::BiomeKeys::new(
-                next_biome_keys_session(),
-                biomes.table.registered_keys().iter().cloned(),
-            ));
+        let data_maps = native_data_maps::DataMaps::load(
+            mod_api::__private::installed_data_maps(),
+            &overlay,
+            &registries,
+        )
+        .with_builtins(builtin)
+        .with_biome_keys(mod_api::__private::BiomeKeys::new(
+            next_biome_keys_session(),
+            biomes.table.registered_keys().iter().cloned(),
+        ));
         drop(registries);
         // The API's key order is live state as well: do not change it for a
         // candidate refused by the condition readers.
@@ -825,6 +827,11 @@ impl Game<'_> {
         self.share_mob_maps();
         self.share_biome_keys();
         sunrise_client::datapack_net::serve(self.mods.datapack_registries.clone());
+        sunrise_client::data_map_net::serve(
+            self.world_tables
+                .as_ref()
+                .map(|t| Arc::new(t.data_maps.synced_snapshot())),
+        );
         Ok(())
     }
     /// Sends each joined Sunrise client the snapshot of the set just published, built from the
@@ -895,6 +902,11 @@ impl Game<'_> {
             world.pois.clear();
         }
         sunrise_client::datapack_net::serve(self.mods.datapack_registries.clone());
+        sunrise_client::data_map_net::serve(
+            self.world_tables
+                .as_ref()
+                .map(|t| Arc::new(t.data_maps.synced_snapshot())),
+        );
         self.send_datapack_snapshots();
         self.refresh_recipe_property_context();
         self.structure_spawns = structure_spawns;

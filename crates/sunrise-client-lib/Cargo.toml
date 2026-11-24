@@ -245,6 +245,10 @@ name = "custom_registry_join"
 path = "../sunrise-client/tests/custom_registry_join.rs"
 
 [[test]]
+name = "data_map_sync"
+path = "../sunrise-client/tests/data_map_sync.rs"
+
+[[test]]
 name = "datapack_join"
 path = "../sunrise-client/tests/datapack_join.rs"
 

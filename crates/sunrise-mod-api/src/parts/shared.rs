@@ -87,6 +87,8 @@ pub struct PartRegistrar {
     pub(crate) biome_regions: Vec<BiomeRegionDeclaration>,
     pub(crate) datapack_registries: Vec<crate::DatapackRegistryDeclaration>,
     pub(crate) custom_registries: Vec<PendingCustomRegistry>,
+    pub(crate) data_maps: Vec<Arc<mod_vocab::__private::RegisteredDataMap>>,
+    pub(crate) load_conditions: Vec<mod_vocab::__private::RegisteredLoadCondition>,
     pub(crate) type_identities: TypeIdentityTable,
     pub(crate) configs: Vec<mod_vocab::__private::RegisteredConfig>,
     pub(crate) consume_effects: Vec<RegisteredConsumeEffect>,
@@ -164,6 +166,8 @@ impl PartRegistrar {
             biome_regions: Vec::new(),
             datapack_registries: Vec::new(),
             custom_registries: Vec::new(),
+            data_maps: Vec::new(),
+            load_conditions: Vec::new(),
             type_identities,
             configs: Vec::new(),
             consume_effects: Vec::new(),
@@ -378,6 +382,7 @@ pub(crate) fn install_registrar(
     registrar.validate_recipe_types();
     registrar.skip_absent_effect_parts();
     registrar.order_tooltip_appenders();
+    registrar.validate_data_maps();
     let custom_registries = registrar.validate_and_freeze_custom_registries();
     if !registrar.refused.is_empty() {
         return Err(registrar.refused);
@@ -395,6 +400,8 @@ pub(crate) fn install_registrar(
         },
         datapack_registries: registrar.datapack_registries,
         custom_registries,
+        data_maps: registrar.data_maps,
+        load_conditions: registrar.load_conditions,
         configs: registrar.configs,
         consume_effects: registrar.consume_effects,
         menu_screen_factories: registrar.menu_screen_factories,

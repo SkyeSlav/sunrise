@@ -2463,7 +2463,6 @@ use self::api_values::TryIntoApi;
 pub(crate) use api_values::{block_jump_factor, block_speed_factor, is_ladder};
 pub(crate) use launch_options::Options;
 pub use native_block_entity_draw::BlockEntityDraw;
-pub use native_data_maps::DataMapType;
 pub use native_hooks::{PhantomSpawnResult, SleepProblem};
 pub use native_mob_draw::{MobRender, PlayerRender};
 use std::{

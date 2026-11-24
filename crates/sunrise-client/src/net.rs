@@ -2213,6 +2213,16 @@ fn configure(
                     .accept_chunk(&p.data)
                     .map_err(Reason::plain)?;
             }
+            cfg::Clientbound::CustomPayload(p)
+                if p.channel == crate::data_map_net::KNOWN_CHANNEL =>
+            {
+                let data =
+                    crate::data_map_net::handle_known_data_maps(&p.data).map_err(Reason::plain)?;
+                reply(cfg::Serverbound::CustomPayload(cfg::CustomPayload {
+                    channel: crate::data_map_net::KNOWN_REPLY_CHANNEL.into(),
+                    data,
+                }))?;
+            }
             cfg::Clientbound::CustomPayload(p) => {
                 let endpoint = crate::raw_payloads::Endpoint::client(
                     writer.clone(),

@@ -471,6 +471,8 @@ impl Game<'_> {
                 if let Some(remote) = &mut self.remote {
                     remote.datapacks = Default::default();
                     remote.custom_registries = Default::default();
+                    remote.client_data_maps = Default::default();
+                    remote.client_data_maps_received = false;
                     remote.has_logical_player = false;
                     remote.viewed.clear();
                     remote.far_terrain = None;

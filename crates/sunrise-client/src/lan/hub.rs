@@ -1556,6 +1556,7 @@ impl Hub {
         if g.brand == "sunrise" {
             super::recipes::send_content(g);
             super::recipes::advertise_viewer_channels(g);
+            crate::data_map_net::sync_connection(&g.sender);
         }
         self.send_permission_level(i);
         Some(i)
@@ -3963,9 +3964,12 @@ impl Hub {
     pub fn finish_reload_resources(&mut self, owners: &mut AdvancementOwners<'_>) {
         self.native_reload_pending = false;
         let sync = self.sync.clone();
-        // broadcastAll(ClientboundUpdateTagsPacket).
+        // broadcastAll(ClientboundUpdateTagsPacket), then synced data maps.
         for guest in self.online_players() {
             guest.send(&C::UpdateTags(sync.tags_for_brand(&guest.brand)));
+            if guest.brand == "sunrise" {
+                crate::data_map_net::sync_connection(&guest.sender);
+            }
         }
         // For each player: ClientboundUpdateRecipesPacket, then sendInitialRecipeBook.
         for i in 0..self.guests.len() {

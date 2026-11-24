@@ -554,23 +554,6 @@ impl Game<'_> {
     pub(in crate::game) fn native_data_pack_files(&mut self, files: &mut Vec<(String, Vec<u8>)>) {
         self.fire_data_pack_files(files);
     }
-    /// The server is assembling its data tables, as for
-    /// `native_data_pack_files` (a world's first open and every `/reload`):
-    /// push the data map types your mod registers (NeoForge's
-    /// `RegisterDataMapTypesEvent`). A type is a namespaced `id`
-    /// (`namespace:path`) for a `registry`: any the game names. Its values come
-    /// from the world's data packs'
-    /// `data/<namespace>/data_maps/<registry folder>/<path>.json`, and from
-    /// files you push through `native_data_pack_files` under the key
-    /// `data_maps/<namespace>:<registry folder>/<path>`. Each file has a `values`
-    /// object (entry IDs and `#tags` to JSON), optional boolean `replace` and
-    /// optional `remove` list. Entry conditions run before reading values and
-    /// malformed layers are skipped whole. Push a typed map's `DataMap::ty`
-    /// and read its values with `ItemKey::data` and `BlockKey::data`. Server-side,
-    /// not synced to clients.
-    pub(in crate::game) fn native_data_map_types(&mut self, types: &mut Vec<DataMapType>) {
-        self.fire_data_map_types(types);
-    }
     /// The server is about to open its worlds: nothing of the world is
     /// loaded yet (NeoForge's `ServerAboutToStartEvent`, "called before the
     /// server begins loading anything"). Vanilla's `MinecraftServer.loadLevel`

@@ -543,6 +543,8 @@ pub(super) struct Remote {
     pub(in crate::game) datapacks: sunrise_client::datapack_net::Receiver,
     pub(in crate::game) custom_registries:
         sunrise_client::custom_registry_net::SyncedCustomRegistries,
+    pub(in crate::game) client_data_maps: crate::game::native_data_maps::DataMaps,
+    pub(in crate::game) client_data_maps_received: bool,
     /// The constructor's level is visible by name during Load, before Minecraft.setLevel.
     pub(super) constructing_level: Option<ConstructingClientLevel>,
     /// `ClientPacketListener.levelLoadTracker`: the loading screen after a login
@@ -1229,6 +1231,9 @@ impl Game<'_> {
                 if let Some(remote) = &mut self.remote {
                     remote.datapacks.accept_chunk(&p.data)?;
                 }
+            }
+            C::CustomPayload(p) if p.channel == sunrise_client::data_map_net::SYNC_CHANNEL => {
+                self.apply_synced_data_maps(&p.data)?;
             }
             C::CustomPayload(p)
                 if p.channel == sunrise_client::lan::commands::selector_sync::CHANNEL =>

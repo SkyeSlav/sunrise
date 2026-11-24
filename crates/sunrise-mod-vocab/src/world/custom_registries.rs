@@ -42,9 +42,17 @@ impl<T: 'static> RegistryKey<T> {
     }
 
     /// The canonical namespaced registry identifier (e.g. `"chemlib:gas"`).
-    pub const fn id(&self) -> &'static str {
+    pub const fn id(self) -> &'static str {
         self.id
     }
+}
+
+/// Links a custom static registry's payload type to its compile-time [`RegistryKey`],
+/// enabling [`EntryKey<Self>`] to be used as a [`DataMap::Entry`](crate::DataMap::Entry)
+/// and read via [`EntryKey::data`].
+pub trait CustomRegistryEntry: Send + Sync + 'static {
+    /// The compile-time key of the static custom registry holding values of `Self`.
+    const REGISTRY: RegistryKey<Self>;
 }
 
 impl<T: 'static> Copy for RegistryKey<T> {}
@@ -205,6 +213,7 @@ pub struct CustomRegistry<T: Send + Sync + 'static> {
     sync: bool,
     default_entry_slot: Option<u32>,
     entry_ids: Vec<Identifier>,
+    entry_id_strs: Vec<Box<str>>,
     values: Vec<T>,
     by_id: HashMap<String, u32>,
 }
@@ -231,6 +240,10 @@ impl<T: Send + Sync + 'static> CustomRegistry<T> {
     ) -> Self {
         let id_str = id.to_string();
         let tag_directory = format!("{}/{}", id.namespace(), id.path());
+        let entry_id_strs = entry_ids
+            .iter()
+            .map(|entry_id| entry_id.to_string().into_boxed_str())
+            .collect();
         Self {
             slot,
             id,
@@ -239,6 +252,7 @@ impl<T: Send + Sync + 'static> CustomRegistry<T> {
             sync,
             default_entry_slot,
             entry_ids,
+            entry_id_strs,
             values,
             by_id,
         }
@@ -311,6 +325,14 @@ impl<T: Send + Sync + 'static> CustomRegistry<T> {
             return None;
         }
         self.entry_ids.get(entry_slot as usize)
+    }
+
+    pub(crate) fn id_str_of(&self, key: EntryKey<T>) -> Option<&str> {
+        let (registry_slot, entry_slot) = key.slots();
+        if registry_slot != self.slot {
+            return None;
+        }
+        self.entry_id_strs.get(entry_slot as usize).map(Box::as_ref)
     }
 
     /// Iterate `(EntryKey<T>, &Identifier, &T)` in deterministic registration order.
