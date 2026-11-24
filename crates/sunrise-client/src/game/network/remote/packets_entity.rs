@@ -392,7 +392,6 @@ impl Game<'_> {
         // (sent to the player itself): its own moves never hurt it.
         let me = self.remote.as_ref().map(|r| r.entity_id);
         let own = me == Some(p.id);
-        self.pvp_hurt(p.id, own, p.direct.map(|d| Some(d) == me));
         if own {
             // For `events`: this client has no combat tracker of its own here.
             let cause = self.remote.as_ref().and_then(|r| {

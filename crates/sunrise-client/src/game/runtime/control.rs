@@ -1230,7 +1230,6 @@ impl Game<'_> {
                     "graphics-advanced" => Page::GraphicsAdvanced,
                     "graphics-hdr" => Page::GraphicsHdr,
                     "extras" => Page::Extras,
-                    "pvp" => Page::Pvp,
                     "credits" => Page::Credits,
                     "sunrise" => Page::Sunrise,
                     "agent" => Page::Agent,
@@ -1476,7 +1475,6 @@ impl Game<'_> {
             Screen::Win => "win",
             Screen::DebugOptions => "debug-options",
             Screen::Mod => "mod",
-            Screen::HudEditor => "hud-editor",
         }
     }
 

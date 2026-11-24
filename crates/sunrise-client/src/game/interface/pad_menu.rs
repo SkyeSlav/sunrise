@@ -369,11 +369,7 @@ impl Game<'_> {
     fn pad_pointer_screen(&self) -> bool {
         matches!(
             self.screen,
-            Screen::HudEditor
-                | Screen::Inventory
-                | Screen::Creative
-                | Screen::Stats
-                | Screen::Advancements
+            Screen::Inventory | Screen::Creative | Screen::Stats | Screen::Advancements
         ) || self.book.is_some()
             || (self.screen == Screen::Options && self.ui.options.page() == Page::Packs)
     }

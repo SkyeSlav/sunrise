@@ -1600,7 +1600,6 @@ sunrise-client game::native_item_places::tests::one_by_one_shows_one_bucket_of_s
 sunrise-client game::native_item_places::tests::scoped_boat_slots_use_the_open_menu_and_refuse_a_removed_owner lib daily resources
 sunrise-client game::native_item_places::tests::stand_equipment_effects_wait_for_root_commit lib daily resources
 sunrise-client game::native_item_places::tests::whole_stack_component_edit_rolls_back_with_its_transaction lib daily resources
-sunrise-client game::native_key_mappings::tests::opening_and_closing_a_direct_screen_discards_pending_clicks lib daily resources
 sunrise-client game::native_key_mappings_tests::a_control_socket_key_counts_as_a_window_key lib daily resources
 sunrise-client game::native_knockback_tests::a_canceled_push_is_reported lib daily resources
 sunrise-client game::native_knockback_tests::a_guest_blow_on_a_guest_names_the_attacker_and_the_sword lib daily resources

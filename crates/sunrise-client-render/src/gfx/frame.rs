@@ -177,8 +177,6 @@ pub struct Frame<'a> {
     pub outline_after_terrain: bool,
     /// `BlockOutlineRenderState.highContrast`: a thick black outline under a bright one.
     pub outline_high_contrast: bool,
-    /// The PvP & HUD page's outline and hit colour (`pvp::Frame`; default: vanilla's).
-    pub pvp: crate::pvp::Frame,
     /// `lines` with a colour and pixel width (`gizmos::camera_relative`):
     /// the fishing line and debug gizmos, depth tested, then gizmos drawn
     /// over everything.

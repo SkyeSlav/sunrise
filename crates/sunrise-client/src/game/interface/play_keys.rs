@@ -84,7 +84,7 @@ impl Game<'_> {
             return Ok(());
         }
         if sunrise_client::keybinds::key_name(key)
-            .is_some_and(|name| self.hud_editor_key_press(name) || self.shader_pack_key_press(name))
+            .is_some_and(|name| self.shader_pack_key_press(name))
         {
             return Ok(());
         }
@@ -159,7 +159,6 @@ impl Game<'_> {
                 Screen::Win => self.close_win_screen()?,
                 Screen::DebugOptions => self.close_debug_options(),
                 Screen::Mod => self.close_mod_screen(),
-                Screen::HudEditor => self.close_hud_editor(),
             },
             KeyCode::F11 => self.toggle_fullscreen(),
             KeyCode::KeyE

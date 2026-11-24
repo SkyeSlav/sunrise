@@ -78,7 +78,7 @@ impl Game<'_> {
             "first_quarter",
             "waxing_gibbous",
         ];
-        let phase = phases[(self.view_day_time() / 24000).rem_euclid(8) as usize];
+        let phase = phases[(self.world.day_time / 24000).rem_euclid(8) as usize];
         let moon = format!("environment/celestial/moon/{phase}");
         let (out, bodies) = celestial_bodies(&self.gui.atlas.sprites, sky, &moon, body_color);
         // SkyRenderer.renderStars: the static star buffer on the same frame.
@@ -225,21 +225,6 @@ impl Game<'_> {
             .is_some_and(|p| p.auto_spin_attack_ticks > 0);
         let items = self.visible_hand_items();
         let off_hand_empty = items[1].is_none();
-        // Combat feel Legacy: a sword is held up while use is held, as 1.8.9's block looked.
-        // Only the picture changes: the clicks and what they send stay 26.3's.
-        let legacy_block = self.pvp_legacy_look()
-            && self.mapped_key_down("key.use")
-            && self.screen == Screen::Playing
-            && items[0]
-                .as_ref()
-                .is_some_and(|s| s.item.ends_with("_sword"))
-            && match used_hand {
-                None => true,
-                Some(Hand::Off) => items[1]
-                    .as_ref()
-                    .is_some_and(|s| &*s.item == "minecraft:shield"),
-                Some(Hand::Main) => false,
-            };
         for (i, (hand, item)) in Hand::BOTH.into_iter().zip(items).enumerate() {
             if !shown[i] {
                 continue;
@@ -294,10 +279,6 @@ impl Game<'_> {
             };
             // The main hand on its arm, the off hand on the other one.
             let left = self.settings.main_hand_left != (hand == Hand::Off);
-            // A Legacy sword held up hides the off hand's shield.
-            if hand == Hand::Off && legacy_block {
-                continue;
-            }
             let Some(stack) = item else {
                 // renderArmWithItem: only the main hand's empty arm shows,
                 // on the main arm (the left one with the main hand set to
@@ -406,13 +387,8 @@ impl Game<'_> {
                 }
                 _ => ItemPose::Swing,
             };
-            let mut m = to_world
+            let m = to_world
                 * sunrise_client::first_person::item_pose(left, inverse_height, attack, pose);
-            // PvP & HUD's shield size (100% is vanilla's), toward the hand holding it.
-            let shield_size = self.pvp_shield_size();
-            if shield_size != 100 && &*stack.item == "minecraft:shield" {
-                m *= glam::Mat4::from_scale(glam::Vec3::splat(f32::from(shield_size) / 100.0));
-            }
             // Seeded by the player id plus the context ordinal.
             let (context, seed) = if left {
                 (
@@ -431,23 +407,6 @@ impl Game<'_> {
                 sunrise_client::cit::Hand::Main
             };
             let state = self.resolve_item_in_hand(&stack, context, Some(&owner), seed, cit_hand);
-            // Combat feel Legacy: 1.8.9's pose for a flat item drawn with vanilla's display.
-            if self.pvp_legacy_look()
-                && !state.layers.is_empty()
-                && state
-                    .layers
-                    .iter()
-                    .all(|l| sunrise_client::first_person::is_modern_flat_display(&l.matrix, left))
-                && let Some(legacy) = sunrise_client::first_person::legacy_item_pose(
-                    left,
-                    inverse_height,
-                    attack,
-                    pose,
-                    hand == Hand::Main && legacy_block,
-                )
-            {
-                m = to_world * legacy;
-            }
             runs.push((out.len() as u32, item_id));
             let light = self.world.light(
                 eye[0].floor() as i32,
@@ -476,7 +435,7 @@ impl Game<'_> {
         alpha: f64,
     ) -> Vec<sunrise_client::weather::Vertex> {
         use sunrise_client::weather;
-        let (intensity, _) = self.view_weather(alpha as f32);
+        let (intensity, _) = self.weather_levels(alpha as f32);
         if intensity <= 0.0 {
             return Vec::new();
         }

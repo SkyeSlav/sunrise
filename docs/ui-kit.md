@@ -60,7 +60,7 @@ let room = Room::new(320.0, 240.0).with(Keep::BossBars, [69.0, 0.0, 182.0, 36.0]
 assert_eq!(room.below_top(18.0), 38.0); // below two bars
 ```
 
-The other HUD boxes (the PvP & HUD widgets, mods' corner panels) don't use the room
+The other HUD boxes (mods' corner panels) don't use the room
 yet. Chat, the hotbar, effect icons and subtitles aren't keep-outs yet either. #10125 asks for
 these push-aside points for mods.
 

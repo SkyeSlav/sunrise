@@ -126,8 +126,6 @@ pub mod post_glsl;
 pub mod potent_sulfur;
 pub mod preedit;
 pub mod providers;
-pub mod pvp;
-pub mod pvp_hud;
 pub mod spectator_shaders;
 pub use sunrise_assets::resource_source;
 pub mod api_context;

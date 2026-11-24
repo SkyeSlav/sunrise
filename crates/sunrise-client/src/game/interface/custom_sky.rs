@@ -53,7 +53,7 @@ impl Game<'_> {
                 Weather::Clear
             };
             let conditions = Conditions {
-                day_time: self.view_day_time(),
+                day_time: self.world.day_time,
                 weather,
                 biome: self.biome_at(camera),
                 y: camera[1].floor() as i32,

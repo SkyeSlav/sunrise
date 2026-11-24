@@ -27,9 +27,7 @@ impl Game<'_> {
 
     /// `C::Sound`: its arms of `apply_packet`, guard and order kept.
     pub(super) fn apply_sound_packet(&mut self, p: play::Sound) {
-        if let Some(name) = self.remote_sound_name(&p.sound)
-            && !self.pvp_mutes_sound(&name)
-        {
+        if let Some(name) = self.remote_sound_name(&p.sound) {
             let at = [
                 f64::from(p.x) / 8.0,
                 f64::from(p.y) / 8.0,
@@ -47,9 +45,7 @@ impl Game<'_> {
 
     /// `C::SoundEntity`: its arms of `apply_packet`, guard and order kept.
     pub(super) fn apply_sound_entity_packet(&mut self, p: play::SoundEntity) {
-        if let Some(name) = self.remote_sound_name(&p.sound)
-            && !self.pvp_mutes_sound(&name)
-        {
+        if let Some(name) = self.remote_sound_name(&p.sound) {
             let mut sound = LevelSound::new(&name, [0.0; 3], p.volume, p.pitch);
             sound.emitter = Some(p.id as u32);
             if let Ok(source) = usize::try_from(p.source)

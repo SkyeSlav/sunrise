@@ -117,9 +117,7 @@ impl Game<'_> {
         level: i32,
         p: ViewedSound<'_>,
     ) -> Option<ViewedPlay> {
-        let name = self
-            .remote_sound_name(p.sound)
-            .filter(|name| !self.pvp_mutes_sound(name))?;
+        let name = self.remote_sound_name(p.sound)?;
         let sound = Identifier::parse(&name).ok()?;
         let handle = self.viewed_level_handle(level)?;
         let mut source = LevelSound::new(&name, p.position, p.volume, p.pitch).source;

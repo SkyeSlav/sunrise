@@ -245,7 +245,7 @@ Splitscreen is temporarily unavailable; it returns as an official mod.
   the world, like vanilla's HUD. Extras in the top left corner give way to the
   debug screen (F3), which shows the FPS anyway.
 - Corners stack: extras placed in the same corner stack downward (top corners)
-  or upward (bottom corners) in the order the PvP HUD widgets, then mods' panels. The top
+  or upward (bottom corners). The top
   right corner starts below the status effect icons.
 
 ## Perf budget

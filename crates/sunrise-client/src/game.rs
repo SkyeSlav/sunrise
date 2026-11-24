@@ -698,8 +698,6 @@ mod hook_meddler_tests;
 mod host;
 #[path = "game/runtime/hot_paths/mod.rs"]
 mod hot_paths;
-#[path = "game/interface/hud_editor.rs"]
-mod hud_editor;
 #[path = "game/interface/hud_render.rs"]
 mod hud_render;
 #[path = "game/interface/hud_room.rs"]
@@ -1958,8 +1956,6 @@ mod published_loops;
 mod published_shape_game_tests;
 #[path = "game/blocks/pumpkin.rs"]
 mod pumpkin;
-#[path = "game/entities/pvp.rs"]
-mod pvp;
 #[path = "game/interface/quick_actions.rs"]
 mod quick_actions;
 #[path = "game/mobs/raids/mod.rs"]
@@ -2569,8 +2565,6 @@ enum Screen {
     /// A screen of a native mod's own (`mod_screen_open`): it draws and
     /// takes its input through the screen hooks.
     Mod,
-    /// PvP & HUD's widget editor (game/interface/hud_editor.rs).
-    HudEditor,
 }
 impl Screen {
     /// The id native mods see for this screen (`ScreenView.id`, the
@@ -2600,7 +2594,6 @@ impl Screen {
             Screen::Win => "win",
             Screen::DebugOptions => "debug_options",
             Screen::Mod => "mod",
-            Screen::HudEditor => "hud_editor",
         }
     }
 }
@@ -4095,8 +4088,6 @@ struct Game<'a> {
     pending_bench: Option<(Instant, std::sync::mpsc::Sender<String>, bool)>,
     /// Settings and HUD state: `game/interface/extras.rs`.
     extras: extras::ExtrasState,
-    /// The PvP & HUD options' state (`game/entities/pvp.rs`).
-    pvp: pvp::PvpState,
     /// Sunrise mods (`game/modding/mods/mod.rs`), none running unless turned on.
     mods: mods::ModsState,
     /// The in-game browser's worker, separate from the cloneable reload inputs.
@@ -7450,7 +7441,6 @@ impl Game<'_> {
         self.input_hud_begin();
         self.subtitles.deferred.set(false);
         let mut batch = HudBatch::new(size, self.settings.gui_scale_inputs());
-        batch.glint_colour = self.pvp_glint_texel();
         // GlobalSettingsUniform's GameTime, for a resource pack's text shader.
         batch.game_time = ((self.world.game_time.rem_euclid(24000)) as f32
             + self.clock.fraction() as f32)
@@ -7581,8 +7571,7 @@ impl Game<'_> {
                 self.draw_spyglass(&mut batch);
                 guide_from = batch.vertices.len();
             }
-            // Combat feel Legacy hides the attack indicator unless the player keeps it.
-            let indicator = if show_hud && !self.pvp_hides_attack_indicator() {
+            let indicator = if show_hud {
                 self.settings.attack_indicator
             } else {
                 0
@@ -7612,14 +7601,7 @@ impl Game<'_> {
                         crosshair_attack.map(|(strength, _)| strength),
                         full,
                     );
-                    // The custom crosshair takes the sprite's place (the first draw); the
-                    // attack indicator stays.
-                    if g.custom_crosshair() {
-                        g.draw_custom_crosshair(batch, wi, hi);
-                        hud_layout::paint(batch, &g.gui.atlas, &draws[1..]);
-                    } else {
-                        hud_layout::paint(batch, &g.gui.atlas, &draws);
-                    }
+                    hud_layout::paint(batch, &g.gui.atlas, &draws);
                 }
             });
             self.gui_layer(VanillaGuiLayer::Hotbar, &mut batch, &mut |g, batch| {
@@ -7654,8 +7636,7 @@ impl Game<'_> {
                 }
             });
             self.gui_layer(VanillaGuiLayer::Effects, &mut batch, &mut |g, batch| {
-                // The PvP & HUD effects widget takes the icons' place.
-                if show_hud && !g.pvp_effects_shown() {
+                if show_hud {
                     g.draw_effect_icons(batch);
                 }
             });
@@ -7960,7 +7941,6 @@ impl Game<'_> {
             Screen::CommandBlock => self.draw_command_block(&mut batch),
             Screen::BlockEditor => self.draw_block_editor(&mut batch),
             Screen::DebugOptions => self.draw_debug_options(&mut batch),
-            Screen::HudEditor => self.draw_hud_editor(&mut batch),
             Screen::Inventory => {
                 let from = batch.vertices.len();
                 if self.draw_inventory(&mut batch) {
@@ -11195,7 +11175,7 @@ impl Game<'_> {
                 post_blend.accumulate(weight, post_of(b));
             }
         }
-        let (rain, thunder) = self.view_weather(alpha as f32);
+        let (rain, thunder) = self.weather_levels(alpha as f32);
         // What the packs' attribute expressions read (only a pack's stack has any).
         let mut polytone_frame = None;
         if self.pack.environments.is_some()
@@ -11230,7 +11210,7 @@ impl Game<'_> {
             biome_name.clone_from(&info.name);
             (*temperature, *downfall) = (info.temperature, info.downfall);
             (*frame_rain, *frame_thunder) = (rain, thunder);
-            (*game_time, *day_time) = (self.world.game_time, self.view_day_time());
+            (*game_time, *day_time) = (self.world.game_time, self.world.day_time);
             *render_distance = effective_render_distance;
             *sky_type = match self.dimension_type().skybox {
                 sunrise_world::dimension_type::Skybox::Overworld => 1,
@@ -11257,7 +11237,7 @@ impl Game<'_> {
             polytone_frame = Some(&frame);
         }
         let mut sky = environment.sample(&sunrise_client::environment::Sample {
-            day_time: self.view_day_time(),
+            day_time: self.world.day_time,
             rain,
             thunder,
             blend: Some(&blend),
@@ -11463,7 +11443,7 @@ impl Game<'_> {
         // renderer keeps the bytes in each reading core pipeline's blocks, which write them to
         // the GPU when that pipeline uploads its blocks for its draw; a post pass writes them
         // when it draws.
-        let (sun_angle, day_time) = (sky.sun_angle, self.view_day_time());
+        let (sun_angle, day_time) = (sky.sun_angle, self.world.day_time);
         let player = (self.player.as_ref()).map_or(camera.to_array(), |p| {
             [p.position.x, p.position.y, p.position.z]
         });
@@ -11598,7 +11578,6 @@ impl Game<'_> {
         if !title {
             self.eye_geometry(camera, &mut entities);
         }
-        self.outline_fill(&outline, camera, &mut entities);
         pr.lap("pr_screen_end");
         let weather = if !title && self.can_have_weather() && self.settings.sunrise.weather {
             sunrise_client::spans::time("weather", || self.weather_geometry(camera, alpha))
@@ -11738,7 +11717,6 @@ impl Game<'_> {
             outline,
             outline_after_terrain,
             outline_high_contrast: self.settings.file.bool("highContrastBlockOutline"),
-            pvp: self.pvp_render_frame(),
             debug_lines: &debug_lines,
             debug_lines_on_top: &debug_lines_on_top,
             debug_crosshair: &debug_crosshair,
@@ -12372,10 +12350,7 @@ impl Game<'_> {
             // Neither edge of a bound button is an ordinary slot click.
             return Ok(true);
         }
-        if pressed
-            && (self.sort_mouse_press(button)
-                || self.hud_editor_key_press(&sunrise_client::keybinds::mouse_name(button)))
-        {
+        if pressed && self.sort_mouse_press(button) {
             return Ok(true);
         }
         // AbstractContainerScreen.mouseClicked (also Creative's fallback) handles
@@ -12424,12 +12399,6 @@ impl Game<'_> {
             Screen::ServerLinks if left_press => self.server_links_click()?,
             Screen::DebugOptions if left_press => self.debug_options_click(),
             Screen::DebugOptions if left => self.debug_options_release(),
-            Screen::HudEditor
-                if pressed && matches!(button, MouseButton::Left | MouseButton::Right) =>
-            {
-                self.hud_editor_press(!left)
-            }
-            Screen::HudEditor if left => self.hud_editor_release(),
             Screen::ConfirmLink if left_press => self.confirm_link_click(),
             Screen::DemoIntro if left_press => self.demo_intro_click(),
             Screen::DialogWarning if left_press => self.dialog_warning_click()?,
@@ -12781,7 +12750,6 @@ impl Game<'_> {
                         Screen::WorldOptions if d != 0.0 => self.world_options_scroll(d),
                         Screen::ServerLinks if d != 0.0 => self.server_links_scroll(d),
                         Screen::DebugOptions if d != 0.0 => self.debug_options_scroll(d),
-                        Screen::HudEditor if d != 0.0 => self.hud_editor_scroll(f64::from(d)),
                         Screen::Advancements => self.advancements_scroll(scroll[0] as f32, d),
                         _ => false,
                     };
@@ -13265,7 +13233,6 @@ impl Game<'_> {
             Screen::Advancements if left => self.advancements_drag(),
             Screen::Stats if left => self.stats_drag(),
             Screen::DebugOptions if left => self.debug_options_drag(),
-            Screen::HudEditor if left => self.hud_editor_drag(),
             Screen::WorldOptions if left => self.world_options_drag(),
             Screen::Options if left => self.options_drag()?,
             Screen::Creative => {
@@ -14163,7 +14130,6 @@ impl<'a> Game<'a> {
             pending_uploads_order: None,
             upload_pace: Default::default(),
             extras: Default::default(),
-            pvp: Default::default(),
             mods: mod_sources,
             mod_jobs: Default::default(),
             recipe_tables: Default::default(),

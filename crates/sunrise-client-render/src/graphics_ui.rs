@@ -1245,7 +1245,7 @@ impl Item {
         match self {
             Item::Vanilla(o) => o.cycle(s, back, framebuffer),
             Item::Sunrise(h) => h.cycle(s, back, out),
-            Item::Extra(e) => e.cycle(&mut s.extras, back),
+            Item::Extra(e) => e.cycle(&mut s.extras),
         }
         self.touched(s);
     }

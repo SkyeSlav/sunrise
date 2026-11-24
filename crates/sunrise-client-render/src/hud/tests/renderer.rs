@@ -290,7 +290,6 @@ fn container_origins_use_java_integer_division() {
             blends: Vec::new(),
             end_portal: EndPortalFill::default(),
             glint_alpha: 0.75,
-            glint_colour: 0,
             game_time: 0.0,
             blur_at: 0,
             inline_profiles: Vec::new(),

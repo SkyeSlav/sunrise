@@ -95,12 +95,6 @@ impl Game<'_> {
         // along the look it last heard (the jab sends none of its own) while
         // this client swings, plays the sound and starts its charge again.
         if let Some(kinetic) = spear {
-            if let Some((i, distance, _)) = self.mob_hit()
-                && self.before_block(distance)
-                && self.held_range_allows(distance)
-            {
-                self.pvp_attacked(self.mobs[i].id as i32, distance);
-            }
             // ServerboundPlayerActionPacket.Action.STAB.
             self.send(S::PlayerAction(play::PlayerAction {
                 action: 8,

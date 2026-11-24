@@ -84,8 +84,6 @@ pub struct Extras {
     /// The file is there but couldn't be read whole (an I/O error, or bytes that aren't UTF-8):
     /// it is never written over, so nothing in it is lost.
     keep_file: bool,
-    /// The PvP & HUD page's options (`pvp`).
-    pub pvp: crate::pvp::Pvp,
 }
 impl Default for Extras {
     fn default() -> Self {
@@ -115,7 +113,6 @@ impl Default for Extras {
             music_page: false,
             unknown: Vec::new(),
             keep_file: false,
-            pvp: Default::default(),
         }
     }
 }
@@ -188,11 +185,7 @@ impl Extras {
                         .collect()
                 }
                 "musicPage" => e.music_page = flag(e.music_page),
-                key => {
-                    if !e.pvp.parse_line(key, value) {
-                        e.unknown.push((key.to_owned(), raw.to_owned()));
-                    }
-                }
+                key => e.unknown.push((key.to_owned(), raw.to_owned())),
             }
         }
         e
@@ -236,7 +229,6 @@ impl Extras {
         );
         push("musicOff", &self.music_off.join(","));
         push("musicPage", &bool_text(self.music_page));
-        self.pvp.serialize(&mut text);
         // As written: only the file's last record can lack a line end, and nothing follows it here.
         for (key, raw) in &self.unknown {
             if !owned(key) {
@@ -251,7 +243,6 @@ impl Extras {
         match name {
             SORT_KEY => self.sort_key = value,
             SHADER_PACK_KEY => self.shader_pack_key = value,
-            crate::pvp::HUD_EDITOR_KEY => self.pvp.editor_key = value,
             _ => return false,
         }
         true
@@ -431,8 +422,6 @@ pub enum Item {
     /// The Select Resource Packs screen's Add button (Modrinth).
     PackBrowser,
     Pregen,
-    /// On the PvP & HUD page (`pvp::rows`).
-    Pvp(crate::pvp::Opt),
 }
 /// The Extras page: headers (language keys) and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
@@ -486,7 +475,6 @@ impl Item {
             Item::WheelCyclesSettings => "sunrise.extras.wheel_cycles_settings",
             Item::PackBrowser => "sunrise.extras.pack_browser",
             Item::Pregen => "sunrise.extras.pregen",
-            Item::Pvp(o) => o.caption_key(),
         }
     }
     /// The language key of the description shown as the row's tooltip.
@@ -511,7 +499,6 @@ impl Item {
             Item::WheelCyclesSettings => "sunrise.extras.wheel_cycles_list_settings.tooltip",
             Item::PackBrowser => "sunrise.extras.pack_browser.tooltip",
             Item::Pregen => "sunrise.extras.pregen.tooltip",
-            Item::Pvp(o) => o.description_key(),
         }
     }
     /// The caption in the current language (English when the key is missing).
@@ -545,7 +532,6 @@ impl Item {
             Item::WheelCyclesSettings => "Scroll wheel changes settings",
             Item::PackBrowser => "Resource pack browser",
             Item::Pregen => "Chunk pregeneration",
-            Item::Pvp(o) => o.caption(),
         }
     }
     /// The switch this setting belongs to: it does nothing while that is off.
@@ -555,7 +541,6 @@ impl Item {
             UiSoundReserve => return None,
             MouseTweaksWheel => MouseTweaks,
             SortKey => Sort,
-            Pvp(o) => return o.parent().map(Pvp),
             Fullbright | DynamicLights | OwnNameTag | HideBlockParticles | MouseTweaks | Sort
             | ChatAnimation | ChatIndicator | NoAi | AgentControl | ReproKeys
             | WheelCyclesSettings | MusicPage | PackBrowser | Pregen | ShaderPackKey => {
@@ -613,7 +598,6 @@ impl Item {
             Item::ReproKeys => {
                 "F3+R starts or stops a repro recording and F3+E writes its bundle. Off by default: a recording copies the world."
             }
-            Item::Pvp(o) => o.description(),
             Item::WheelCyclesSettings => {
                 "The scroll wheel over a button in the settings changes its value, as in vanilla. Off, the wheel only scrolls the list."
             }
@@ -660,7 +644,6 @@ impl Item {
             Item::WheelCyclesSettings => e.wheel_cycles_settings,
             Item::PackBrowser => e.pack_browser,
             Item::Pregen => e.pregen,
-            Item::Pvp(o) => return o.switch(&e.pvp),
             _ => return None,
         })
     }
@@ -669,16 +652,14 @@ impl Item {
         match self {
             Item::SortKey => crate::keybinds::display_name(&e.sort_key).plain(),
             Item::ShaderPackKey => crate::keybinds::display_name(&e.shader_pack_key).plain(),
-            Item::Pvp(o) if o.switch(&e.pvp).is_none() => o.value(&e.pvp).unwrap_or_default(),
             other => match other.switch(e) {
                 Some(true) => crate::lang::get_or("On", "On"),
                 _ => crate::lang::get_or("Off", "Off"),
             },
         }
     }
-    /// A click (`back` for the right button: a PvP & HUD choice steps back; a switch flips
-    /// either way). The sort key binds instead.
-    pub fn cycle(self, e: &mut Extras, back: bool) {
+    /// A click flips a switch. The sort key binds instead.
+    pub fn cycle(self, e: &mut Extras) {
         match self {
             Item::Fullbright => e.fullbright = !e.fullbright,
             Item::DynamicLights => e.dynamic_lights = !e.dynamic_lights,
@@ -697,7 +678,6 @@ impl Item {
             Item::WheelCyclesSettings => e.wheel_cycles_settings = !e.wheel_cycles_settings,
             Item::PackBrowser => e.pack_browser = !e.pack_browser,
             Item::Pregen => e.pregen = !e.pregen,
-            Item::Pvp(o) => o.cycle(&mut e.pvp, back),
             Item::SortKey | Item::ShaderPackKey => {}
         }
     }
@@ -706,7 +686,6 @@ impl Item {
         match self {
             Item::SortKey => Some(SORT_KEY),
             Item::ShaderPackKey => Some(SHADER_PACK_KEY),
-            Item::Pvp(crate::pvp::Opt::HudEditorKey) => Some(crate::pvp::HUD_EDITOR_KEY),
             _ => None,
         }
     }
@@ -771,8 +750,6 @@ mod tests {
         let out = e.serialize();
         assert_eq!(out.matches("\nsortKey:").count(), 1, "{out}");
         assert!(!out.contains("foo"));
-        let e = Extras::parse("hudEditorKey:foo\n");
-        assert!(e.unknown.is_empty());
     }
 
     fn scratch(name: &str) -> std::path::PathBuf {
@@ -863,17 +840,17 @@ mod tests {
         assert_eq!(Extras::parse(""), d);
         assert_eq!(Extras::parse(&d.serialize()), d);
         let mut e = d.clone();
-        Item::Fullbright.cycle(&mut e, false);
+        Item::Fullbright.cycle(&mut e);
         assert_eq!(Item::Fullbright.switch(&e), Some(true));
-        Item::DynamicLights.cycle(&mut e, false);
+        Item::DynamicLights.cycle(&mut e);
         assert_eq!(Item::DynamicLights.switch(&e), Some(true));
         assert_eq!(Extras::parse(&e.serialize()), e);
-        Item::Pregen.cycle(&mut e, false);
+        Item::Pregen.cycle(&mut e);
         assert_eq!(Item::Pregen.switch(&e), Some(true));
-        Item::OwnNameTag.cycle(&mut e, false);
+        Item::OwnNameTag.cycle(&mut e);
         assert_eq!(Item::OwnNameTag.switch(&e), Some(true));
         assert_eq!(Item::HideBlockParticles.switch(&e), Some(false));
-        Item::HideBlockParticles.cycle(&mut e, false);
+        Item::HideBlockParticles.cycle(&mut e);
         assert!(e.hide_block_particles);
         assert_eq!(Item::HideBlockParticles.switch(&e), Some(true));
         let only = Extras::parse("hideBlockParticles:true\n");
@@ -884,14 +861,14 @@ mod tests {
         e.sort_key = "key.keyboard.r".into();
         e.chat_animation = true;
         e.chat_indicator = false;
-        Item::WheelCyclesSettings.cycle(&mut e, false);
+        Item::WheelCyclesSettings.cycle(&mut e);
         assert_eq!(Item::WheelCyclesSettings.switch(&e), Some(true));
         e.music_off = vec![
             "minecraft:music/game/calm1".into(),
             "minecraft:music.menu".into(),
         ];
         assert!(!e.music_page);
-        Item::MusicPage.cycle(&mut e, false);
+        Item::MusicPage.cycle(&mut e);
         assert_eq!(Item::MusicPage.switch(&e), Some(true));
         assert_eq!(Extras::parse(&e.serialize()), e);
     }
@@ -981,7 +958,7 @@ mod tests {
     #[test]
     fn items_cycle_through_their_values() {
         let mut e = Extras::default();
-        Item::Sort.cycle(&mut e, true);
+        Item::Sort.cycle(&mut e);
         assert_eq!(Item::Sort.value(&e), "On");
         for item in rows().into_iter().flatten() {
             assert!(!item.caption().is_empty() && !item.description().is_empty());

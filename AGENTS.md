@@ -279,7 +279,7 @@ state stays separate from the library tests. This compiles gameplay twice for ex
 | Resource packs | L: `packs.rs` + `packs/`, `pack_screen.rs`, `atlas_sources.rs`, `sprites.rs`, `mipmap.rs`, `model_library.rs`, `font.rs`, `mobs/cem.rs` + `mobs/cem_anim.rs` (OptiFine/EMF entity models and their animations); `sunrise-client-core/src/lang.rs`; crates `sunrise-assets`, `sunrise-optifine`; G: `packs.rs` |
 | Agent control | L: `control.rs` (socket), `bin/sunrise-ctl/`; G: `control.rs`, `agent.rs`, `events.rs`, `ui_control.rs` ([docs/agent-control.md](docs/agent-control.md)) |
 | Mods | crate `sunrise-mod-package`; G: `modding/mods/mod.rs` (content and mod load), `modding/mods/standalone.rs` (standalone model registration); L: `mod_content.rs`, `mod_list.rs` |
-| Sunrise extras, settings | L: `extras.rs`, `graphics.rs`, `settings.rs`; G: `interface/extras.rs` + `interface/extras/` (each extra's glue: `mouse_tweaks.rs`, `sorting.rs`, `pvp.rs`), `options.rs` |
+| Sunrise extras, settings | L: `extras.rs`, `graphics.rs`, `settings.rs`; G: `interface/extras.rs` + `interface/extras/` (each extra's glue: `mouse_tweaks.rs`, `sorting.rs`), `options.rs` |
 
 ## How `Game` is organised
 

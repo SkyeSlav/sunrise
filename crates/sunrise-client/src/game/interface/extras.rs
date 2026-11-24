@@ -52,7 +52,6 @@ impl Game<'_> {
         // A clear a mod asked for (in this frame's `RenderFrameEvent.Pre`, or after the last
         // frame was drawn) lands before this frame's particles are drawn, paused or not.
         self.apply_mod_particle_clear();
-        self.pvp_frame();
         self.recipes_received_now();
     }
     /// The frame counter for mods: fps, min, 1% low.
@@ -91,10 +90,9 @@ impl Game<'_> {
     pub(super) fn zoom_turn_scale(&self) -> f64 {
         self.zoom_now().2
     }
-    /// The PvP HUD widgets and the engine's extra corner panels. The caller hides
-    /// these with F1, and hands the remaining corner space to the whole-HUD Post hook.
+    /// The engine's extra corner panels. The caller hides these with F1, and hands the
+    /// remaining corner space to the whole-HUD Post hook.
     pub(super) fn draw_extras(&mut self, batch: &mut HudBatch, corners: &mut Corners) {
-        self.draw_pvp_hud(batch, corners);
         // The layers crates registered (`sunrise_hooks::hud`): none, no canvas.
         let layers = sunrise_hooks::hud::engine::all();
         if !layers.is_empty() {
@@ -106,7 +104,7 @@ impl Game<'_> {
     /// (`Hud.extractEffects`: beneficial at y 1, harmful at y 26).
     pub(super) fn effect_rows_height(&self) -> f32 {
         let effects = &self.potions.effects.list;
-        if effects.is_empty() || self.screen != Screen::Playing || self.pvp_effects_shown() {
+        if effects.is_empty() || self.screen != Screen::Playing {
             return 0.0;
         }
         let harmful = effects.iter().any(|e| {

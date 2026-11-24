@@ -82,9 +82,6 @@ impl OptionsUi {
                 _ => unreachable!(),
             }
         } else {
-            if page == Page::Pvp {
-                self.wide_extras = wide_extras(s, |t| atlas.font.width(t));
-            }
             let layout = self.built_layout(s, w, h);
             let (_, top, bottom, _) = layout.parts();
             self.size = (w, h);
