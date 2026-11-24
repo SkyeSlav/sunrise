@@ -15,7 +15,7 @@ pub trait Hooks {
     /// `attachment` (the entity's `NAME_TAG` attachment, relative to that pose) plus 0.5 up,
     /// facing the camera, scaled `0.025`; the camera itself is `host.camera()`.
     /// `partial_tick` is the frame's. What `draw` draws is kept, depth tested in the entity pass.
-    /// Set `canceled` to skip vanilla's drawing of this line alone (its text, background and
+    /// Set `cancelled` to skip vanilla's drawing of this line alone (its text, background and
     /// see-through copy); the other line still draws where it would have.
     #[hook(
         receiver = "read",

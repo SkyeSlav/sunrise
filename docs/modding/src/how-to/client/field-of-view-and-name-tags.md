@@ -50,7 +50,7 @@ and settings would show it.
 | `attachment` | Where vanilla draws the text, relative to `draw`'s pose; the text sits 0.5 above it, facing the camera |
 | `partial_tick` | The frame's partial tick |
 | `draw` | A draw posed at the entity's render origin, not turned, raised one line for the name when there is a score line |
-| `canceled` | Set it to skip vanilla's drawing of this line only |
+| `cancelled` | Set it to skip vanilla's drawing of this line only |
 
 What `draw` draws is kept and depth tested with the entity. Canceling the score line leaves the name where it was,
 one line up, as vanilla does. The camera is `host.camera()`. Nothing is asked when no mod listens.
