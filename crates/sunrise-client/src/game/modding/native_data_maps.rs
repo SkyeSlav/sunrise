@@ -514,7 +514,7 @@ impl Game<'_> {
         let (registry, maps) = match sunrise_client::data_map_net::decode_sync_payload(data) {
             Ok(decoded) => decoded,
             Err(error) => {
-                self.refuse_remote_input(&format!(
+                self.refuse_remote_input(format!(
                     "Failed to handle registry data map sync: {error}"
                 ))?;
                 return Ok(());
