@@ -11,14 +11,14 @@ use std::any::TypeId;
 // hidden: typed helpers live on `dyn Registrar`; this object-safe layer is internal plumbing.
 #[doc(hidden)]
 pub trait CustomRegistriesRegistrar {
-    /// Declare a static custom registry with its type identity and typed freezer callback.
+    /// Declare a static custom registry with its type identity and boxed typed freezer.
     fn declare_custom_registry_erased(
         &mut self,
         id: &'static str,
         type_id: TypeId,
         type_name: &'static str,
         options: RegistryOptions,
-        freeze: CustomRegistryFreezer,
+        freeze: Box<dyn Any + Send + Sync>,
     );
 
     /// Register one boxed entry into a declared static custom registry.
@@ -49,7 +49,7 @@ impl dyn Registrar + '_ {
             TypeId::of::<T>(),
             type_name::<T>(),
             options,
-            freeze_typed::<T>,
+            Box::new(freeze_typed::<T> as CustomRegistryFreezer),
         );
     }
 

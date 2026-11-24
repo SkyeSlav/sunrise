@@ -344,34 +344,36 @@ pub trait RegistryDirectory: Send + Sync {
     fn as_any(&self) -> &(dyn Any + Send + Sync);
 }
 
-impl<T: Send + Sync + 'static> RegistryDirectory for CustomRegistry<T> {
+struct FrozenCustomRegistryDir<T: Send + Sync + 'static>(CustomRegistry<T>);
+
+impl<T: Send + Sync + 'static> RegistryDirectory for FrozenCustomRegistryDir<T> {
     fn id(&self) -> &str {
-        &self.id_str
+        &self.0.id_str
     }
 
     fn sync(&self) -> bool {
-        self.sync
+        self.0.sync
     }
 
     fn entry_ids(&self) -> &[Identifier] {
-        &self.entry_ids
+        &self.0.entry_ids
     }
 
     fn contains_id(&self, id: &str) -> bool {
-        self.by_id.contains_key(id)
+        self.0.by_id.contains_key(id)
     }
 
     fn tag_directory(&self) -> &str {
-        &self.tag_directory
+        &self.0.tag_directory
     }
 
     fn as_any(&self) -> &(dyn Any + Send + Sync) {
-        self
+        &self.0
     }
 }
 
 /// Typed freezer callback captured at [`Registrar::declare_registry`](crate::Registrar::declare_registry)
-/// so startup freeze constructs a real `Arc<CustomRegistry<T>>` without unsafe code.
+/// so startup freeze constructs a real `Arc<dyn RegistryDirectory>` without unsafe code.
 // no wire: startup-only function pointer.
 pub type CustomRegistryFreezer = fn(
     u32,
@@ -399,7 +401,7 @@ pub(crate) fn freeze_typed<T: Send + Sync + 'static>(
             .expect("custom registry entry type was validated at registration");
         values.push(value);
     }
-    Arc::new(CustomRegistry::from_frozen(
+    Arc::new(FrozenCustomRegistryDir(CustomRegistry::from_frozen(
         slot,
         id,
         sync,
@@ -407,7 +409,7 @@ pub(crate) fn freeze_typed<T: Send + Sync + 'static>(
         entry_ids,
         values,
         by_id,
-    ))
+    )))
 }
 
 /// All frozen custom static registries held by an [`Installed`](crate::parts::Installed) epoch.

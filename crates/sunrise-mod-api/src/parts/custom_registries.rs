@@ -19,8 +19,16 @@ impl CustomRegistriesRegistrar for PartRegistrar {
         type_id: TypeId,
         type_name: &'static str,
         options: crate::RegistryOptions,
-        freeze: mod_vocab::__private::CustomRegistryFreezer,
+        freeze: Box<dyn Any + Send + Sync>,
     ) {
+        let Ok(freeze) = freeze.downcast::<mod_vocab::__private::CustomRegistryFreezer>() else {
+            self.refused.push(format!(
+                "mod {} passed an invalid custom registry freezer for {id:?}",
+                self.mod_id
+            ));
+            return;
+        };
+        let freeze = *freeze;
         let Some(parsed) = Identifier::parse_namespaced(id) else {
             self.refused.push(format!(
                 "mod {} declared custom registry {id:?}, which is not a valid namespaced identifier",
