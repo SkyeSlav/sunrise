@@ -1234,6 +1234,9 @@ impl OpenNativeScreen {
     /// Menu slot of the player's inventory slot `slot` (0..9 the hotbar, 9..36
     /// the main inventory), None when the menu has no such player slot.
     fn player_menu_slot(&self, slot: usize) -> Option<usize> {
+        if slot >= 9 + MAIN_INVENTORY_SLOTS {
+            return None;
+        }
         let player = if slot >= 9 {
             slot - 9
         } else {
