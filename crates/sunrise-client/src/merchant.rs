@@ -473,13 +473,10 @@ impl Trades {
     pub fn load(root: &Path, overlay: &sunrise_world::loot::PackOverlay) -> Self {
         let data = root.join("data/minecraft");
         let mut trades = walk(&data.join("villager_trade"));
-        let raw_tags = walk(&data.join("tags/villager_trade"));
         let mut sets = walk(&data.join("trade_set"));
-        let raw_potions = walk(&data.join("tags/potion"));
         // The packs' trade files: a trade or set's top pack file replaces
         // the game's own (`SimpleJsonResourceReloadListener` sees one
-        // resource per id), a tag's entries join in pack order with a
-        // `replace` file dropping the lower sources' (`TagLoader.load`).
+        // resource per id).
         for (id, files) in overlay.kind("villager_trade") {
             if let Ok(v) = serde_json::from_slice(PackOverlay::top(files)) {
                 trades.insert(id.to_owned(), v);
@@ -490,78 +487,28 @@ impl Trades {
                 sets.insert(id.to_owned(), v);
             }
         }
-        let values = |v: Value| -> Vec<String> {
-            v["values"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|e| e.as_str().map(str::to_owned))
-                .collect()
+        // Their tags bind through the one tag loader (`TagLoader.load` and `build`).
+        let registries = sunrise_world::tag_layers::builtin_ids(root).unwrap_or_else(|error| {
+            log::warn!("Sunrise: registry report unavailable: {error}");
+            Default::default()
+        });
+        let potions = registries.get("potion");
+        let bind = |registry: &str, contains: &dyn Fn(&str) -> bool| {
+            sunrise_world::tag_layers::load(root, registry, overlay, contains).unwrap_or_else(
+                |error| {
+                    log::warn!("Sunrise: {registry} tags unavailable: {error}");
+                    HashMap::new()
+                },
+            )
         };
-        let mut raw_potions: HashMap<String, Vec<String>> = raw_potions
-            .into_iter()
-            .map(|(k, v)| (k, values(v)))
-            .collect();
-        let mut raw: HashMap<String, Vec<String>> = raw_tags
-            .into_iter()
-            .map(|(k, v)| {
-                (
-                    k,
-                    v["values"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|e| e.as_str().map(str::to_owned))
-                        .collect(),
-                )
-            })
-            .collect();
-        for (registry, raw) in [("villager_trade", &mut raw), ("potion", &mut raw_potions)] {
-            for (id, files) in overlay.tag_kind(registry) {
-                let slot = raw.entry(id).or_default();
-                for bytes in files {
-                    let Ok(v) = serde_json::from_slice::<Value>(bytes) else {
-                        continue;
-                    };
-                    if v["replace"].as_bool() == Some(true) {
-                        slot.clear();
-                    }
-                    if let Some(vs) = v["values"].as_array() {
-                        slot.extend(vs.iter().filter_map(|e| e.as_str().map(str::to_owned)));
-                    }
-                }
-            }
-        }
-        fn expand(
-            name: &str,
-            raw: &HashMap<String, Vec<String>>,
-            out: &mut Vec<String>,
-            depth: u32,
-        ) {
-            for v in raw.get(name).into_iter().flatten() {
-                match v.strip_prefix('#') {
-                    Some(t) if depth < 16 => expand(t, raw, out, depth + 1),
-                    Some(_) => {}
-                    None if !out.contains(v) => out.push(v.clone()),
-                    None => {}
-                }
-            }
-        }
-        let expand_all = |raw: &HashMap<String, Vec<String>>| {
-            raw.keys()
-                .map(|k| {
-                    let mut v = Vec::new();
-                    expand(k, raw, &mut v, 0);
-                    (k.clone(), v)
-                })
-                .collect()
-        };
+        let tags = bind("villager_trade", &|id| trades.contains_key(id));
+        let potion_tags = bind("potion", &|id| potions.is_none_or(|ids| ids.contains(id)));
         Self {
             trades,
-            tags: expand_all(&raw),
+            tags,
             professions: std::sync::Arc::new(crate::mobs::villager::ResolvedProfessions::vanilla()),
             sets,
-            potion_tags: expand_all(&raw_potions),
+            potion_tags,
         }
     }
     /// The random sequence of a trade set (`TradeSet.randomSequence`).
