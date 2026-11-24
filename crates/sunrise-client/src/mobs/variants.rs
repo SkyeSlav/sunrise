@@ -617,80 +617,891 @@ impl WolfSoundVariant {
     }
 }
 
+fn decode_asset_field(obj: &serde_json::Map<String, Value>, key: &str) -> Result<String, String> {
+    let raw = obj
+        .get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{key}: a string is required"))?;
+    let id =
+        Identifier::parse(raw).map_err(|e| format!("{key}: invalid identifier {raw:?}: {e}"))?;
+    Ok(id.as_str().to_owned())
+}
+
+fn read_nbt_string(tag: &Tag, key: &str) -> Option<String> {
+    match tag.get(key) {
+        Some(Tag::String(s)) => Some(s.to_string_lossy()),
+        _ => None,
+    }
+}
+
+fn read_nbt_sound(tag: &Tag, key: &str) -> Option<String> {
+    match tag.get(key) {
+        Some(Tag::String(s)) => Some(s.to_string_lossy()),
+        Some(Tag::Compound(_)) => match tag.get(key)?.get("sound_id") {
+            Some(Tag::String(s)) => Some(s.to_string_lossy()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn strip_minecraft_prefix(asset: &str) -> &str {
+    asset.strip_prefix("minecraft:").unwrap_or(asset)
+}
+
+/// `PigVariant.ModelType`: `normal` or `cold`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PigModelType {
+    #[default]
+    Normal,
+    Cold,
+}
+
+impl PigModelType {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Cold => "cold",
+        }
+    }
+
+    fn parse(raw: &str) -> Result<Self, String> {
+        match raw {
+            "normal" => Ok(Self::Normal),
+            "cold" => Ok(Self::Cold),
+            other => Err(format!("model: unknown pig model type {other:?}")),
+        }
+    }
+
+    fn decode(obj: &serde_json::Map<String, Value>) -> Result<Self, String> {
+        match obj.get("model") {
+            None => Ok(Self::Normal),
+            Some(v) => Self::parse(v.as_str().ok_or("model: a string is required")?),
+        }
+    }
+
+    fn decode_nbt(tag: &Tag) -> Option<Self> {
+        match tag.get("model") {
+            None => Some(Self::Normal),
+            Some(Tag::String(s)) => Self::parse(&s.to_string_lossy()).ok(),
+            _ => None,
+        }
+    }
+}
+
+/// `PigVariant`: model type, adult/baby texture asset ids, and spawn conditions.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PigVariant {
+    pub model: PigModelType,
+    pub asset_id: String,
+    pub baby_asset_id: String,
+    pub spawn_conditions: Vec<SpawnSelector>,
+}
+
+impl HasSpawnConditions for PigVariant {
+    fn spawn_conditions(&self) -> &[SpawnSelector] {
+        &self.spawn_conditions
+    }
+}
+
+impl PigVariant {
+    fn missing() -> Self {
+        Self {
+            model: PigModelType::Normal,
+            asset_id: String::new(),
+            baby_asset_id: String::new(),
+            spawn_conditions: Vec::new(),
+        }
+    }
+
+    /// `PigVariant.DIRECT_CODEC`.
+    pub fn decode(value: &Value) -> Result<Self, String> {
+        let obj = value.as_object().ok_or("not a map")?;
+        let model = PigModelType::decode(obj)?;
+        let asset_id = decode_asset_field(obj, "asset_id")?;
+        let baby_asset_id = decode_asset_field(obj, "baby_asset_id")?;
+        let spawn_conditions = decode_spawn_conditions(
+            obj.get("spawn_conditions")
+                .ok_or("spawn_conditions is required")?,
+        )?;
+        Ok(Self {
+            model,
+            asset_id,
+            baby_asset_id,
+            spawn_conditions,
+        })
+    }
+
+    /// `PigVariant.NETWORK_CODEC`: `model`, `asset_id`, and `baby_asset_id`.
+    pub fn to_network_nbt(&self) -> Tag {
+        Tag::compound([
+            ("model", Tag::String(JavaString::from(self.model.as_str()))),
+            (
+                "asset_id",
+                Tag::String(JavaString::from(self.asset_id.as_str())),
+            ),
+            (
+                "baby_asset_id",
+                Tag::String(JavaString::from(self.baby_asset_id.as_str())),
+            ),
+        ])
+    }
+
+    /// Decode a client's synced `PigVariant.NETWORK_CODEC` NBT entry.
+    pub fn decode_network_nbt(tag: &Tag) -> Option<Self> {
+        Some(Self {
+            model: PigModelType::decode_nbt(tag)?,
+            asset_id: read_nbt_string(tag, "asset_id")?,
+            baby_asset_id: read_nbt_string(tag, "baby_asset_id")?,
+            spawn_conditions: Vec::new(),
+        })
+    }
+
+    /// `PigRenderer.getTextureLocation`.
+    pub fn texture(&self, baby: bool) -> &str {
+        let asset = if baby {
+            &self.baby_asset_id
+        } else {
+            &self.asset_id
+        };
+        strip_minecraft_prefix(asset)
+    }
+
+    /// `PigRenderer.bakeModels` / `submit`.
+    pub fn model_key(&self, baby: bool) -> &'static str {
+        if baby {
+            "pig_baby#main"
+        } else if self.model == PigModelType::Cold {
+            "cold_pig#main"
+        } else {
+            "pig#main"
+        }
+    }
+}
+
+/// `PigSoundVariant.PigSoundSet`: the five sound event ids of an age set.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PigSoundSet {
+    pub ambient: String,
+    pub hurt: String,
+    pub death: String,
+    pub step: String,
+    pub eat: String,
+}
+
+impl PigSoundSet {
+    fn missing() -> Self {
+        Self {
+            ambient: String::new(),
+            hurt: String::new(),
+            death: String::new(),
+            step: String::new(),
+            eat: String::new(),
+        }
+    }
+
+    fn decode_with(
+        field: &str,
+        value: &Value,
+        decode_sound: &mut impl FnMut(&str, &Value) -> Result<(String, Tag), String>,
+    ) -> Result<(Self, Tag), String> {
+        let obj = value
+            .as_object()
+            .ok_or_else(|| format!("{field}: not a map"))?;
+        let mut wire = Compound::new();
+        let mut read = |key: &str| -> Result<String, String> {
+            let path = format!("{field}.{key}");
+            let raw = obj.get(key).ok_or_else(|| format!("{path} is required"))?;
+            let (id, tag) = decode_sound(&path, raw)?;
+            wire.insert(key.into(), tag);
+            Ok(id)
+        };
+        let set = Self {
+            ambient: read("ambient_sound")?,
+            hurt: read("hurt_sound")?,
+            death: read("death_sound")?,
+            step: read("step_sound")?,
+            eat: read("eat_sound")?,
+        };
+        Ok((set, Tag::Compound(wire)))
+    }
+
+    fn decode_nbt(tag: &Tag) -> Option<Self> {
+        Some(Self {
+            ambient: read_nbt_sound(tag, "ambient_sound")?,
+            hurt: read_nbt_sound(tag, "hurt_sound")?,
+            death: read_nbt_sound(tag, "death_sound")?,
+            step: read_nbt_sound(tag, "step_sound")?,
+            eat: read_nbt_sound(tag, "eat_sound")?,
+        })
+    }
+
+    pub fn by_kind(&self, kind: &str) -> Option<&str> {
+        let sound = match kind {
+            "ambient" => &self.ambient,
+            "hurt" => &self.hurt,
+            "death" => &self.death,
+            "step" => &self.step,
+            "eat" => &self.eat,
+            _ => return None,
+        };
+        (!sound.is_empty()).then_some(sound.as_str())
+    }
+}
+
+/// `PigSoundVariant`: adult and baby sound sets.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PigSoundVariant {
+    pub adult_sounds: PigSoundSet,
+    pub baby_sounds: PigSoundSet,
+}
+
+impl PigSoundVariant {
+    fn missing() -> Self {
+        Self {
+            adult_sounds: PigSoundSet::missing(),
+            baby_sounds: PigSoundSet::missing(),
+        }
+    }
+
+    /// `PigSoundVariant.DIRECT_CODEC` / `NETWORK_CODEC`.
+    pub fn decode_with(
+        value: &Value,
+        mut decode_sound: impl FnMut(&str, &Value) -> Result<(String, Tag), String>,
+    ) -> Result<(Self, Tag), String> {
+        let obj = value.as_object().ok_or("not a map")?;
+        let (adult_sounds, adult_tag) = PigSoundSet::decode_with(
+            "adult_sounds",
+            obj.get("adult_sounds").ok_or("adult_sounds is required")?,
+            &mut decode_sound,
+        )?;
+        let (baby_sounds, baby_tag) = PigSoundSet::decode_with(
+            "baby_sounds",
+            obj.get("baby_sounds").ok_or("baby_sounds is required")?,
+            &mut decode_sound,
+        )?;
+        let wire = Tag::compound([("adult_sounds", adult_tag), ("baby_sounds", baby_tag)]);
+        Ok((
+            Self {
+                adult_sounds,
+                baby_sounds,
+            },
+            wire,
+        ))
+    }
+
+    /// Decode a client's synced `PigSoundVariant.NETWORK_CODEC` NBT entry.
+    pub fn decode_network_nbt(tag: &Tag) -> Option<Self> {
+        Some(Self {
+            adult_sounds: PigSoundSet::decode_nbt(tag.get("adult_sounds")?)?,
+            baby_sounds: PigSoundSet::decode_nbt(tag.get("baby_sounds")?)?,
+        })
+    }
+
+    /// `Pig.getSoundSet`: the sound id for `kind` (`ambient`, `hurt`, `death`, `step`, `eat`).
+    pub fn sound(&self, baby: bool, kind: &str) -> Option<&str> {
+        let set = if baby {
+            &self.baby_sounds
+        } else {
+            &self.adult_sounds
+        };
+        set.by_kind(kind)
+    }
+}
+
+/// `CowVariant.ModelType`: `normal`, `cold`, or `warm`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CowModelType {
+    #[default]
+    Normal,
+    Cold,
+    Warm,
+}
+
+impl CowModelType {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Cold => "cold",
+            Self::Warm => "warm",
+        }
+    }
+
+    fn parse(raw: &str) -> Result<Self, String> {
+        match raw {
+            "normal" => Ok(Self::Normal),
+            "cold" => Ok(Self::Cold),
+            "warm" => Ok(Self::Warm),
+            other => Err(format!("model: unknown cow model type {other:?}")),
+        }
+    }
+
+    fn decode(obj: &serde_json::Map<String, Value>) -> Result<Self, String> {
+        match obj.get("model") {
+            None => Ok(Self::Normal),
+            Some(v) => Self::parse(v.as_str().ok_or("model: a string is required")?),
+        }
+    }
+
+    fn decode_nbt(tag: &Tag) -> Option<Self> {
+        match tag.get("model") {
+            None => Some(Self::Normal),
+            Some(Tag::String(s)) => Self::parse(&s.to_string_lossy()).ok(),
+            _ => None,
+        }
+    }
+}
+
+/// `CowVariant`: model type, adult/baby texture asset ids, and spawn conditions.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CowVariant {
+    pub model: CowModelType,
+    pub asset_id: String,
+    pub baby_asset_id: String,
+    pub spawn_conditions: Vec<SpawnSelector>,
+}
+
+impl HasSpawnConditions for CowVariant {
+    fn spawn_conditions(&self) -> &[SpawnSelector] {
+        &self.spawn_conditions
+    }
+}
+
+impl CowVariant {
+    fn missing() -> Self {
+        Self {
+            model: CowModelType::Normal,
+            asset_id: String::new(),
+            baby_asset_id: String::new(),
+            spawn_conditions: Vec::new(),
+        }
+    }
+
+    /// `CowVariant.DIRECT_CODEC`.
+    pub fn decode(value: &Value) -> Result<Self, String> {
+        let obj = value.as_object().ok_or("not a map")?;
+        let model = CowModelType::decode(obj)?;
+        let asset_id = decode_asset_field(obj, "asset_id")?;
+        let baby_asset_id = decode_asset_field(obj, "baby_asset_id")?;
+        let spawn_conditions = decode_spawn_conditions(
+            obj.get("spawn_conditions")
+                .ok_or("spawn_conditions is required")?,
+        )?;
+        Ok(Self {
+            model,
+            asset_id,
+            baby_asset_id,
+            spawn_conditions,
+        })
+    }
+
+    /// `CowVariant.NETWORK_CODEC`: `model`, `asset_id`, and `baby_asset_id`.
+    pub fn to_network_nbt(&self) -> Tag {
+        Tag::compound([
+            ("model", Tag::String(JavaString::from(self.model.as_str()))),
+            (
+                "asset_id",
+                Tag::String(JavaString::from(self.asset_id.as_str())),
+            ),
+            (
+                "baby_asset_id",
+                Tag::String(JavaString::from(self.baby_asset_id.as_str())),
+            ),
+        ])
+    }
+
+    /// Decode a client's synced `CowVariant.NETWORK_CODEC` NBT entry.
+    pub fn decode_network_nbt(tag: &Tag) -> Option<Self> {
+        Some(Self {
+            model: CowModelType::decode_nbt(tag)?,
+            asset_id: read_nbt_string(tag, "asset_id")?,
+            baby_asset_id: read_nbt_string(tag, "baby_asset_id")?,
+            spawn_conditions: Vec::new(),
+        })
+    }
+
+    /// `CowRenderer.getTextureLocation`.
+    pub fn texture(&self, baby: bool) -> &str {
+        let asset = if baby {
+            &self.baby_asset_id
+        } else {
+            &self.asset_id
+        };
+        strip_minecraft_prefix(asset)
+    }
+
+    /// `CowRenderer.bakeModels` / `submit`.
+    pub fn model_key(&self, baby: bool) -> &'static str {
+        match (self.model, baby) {
+            (CowModelType::Warm, false) => "warm_cow#main",
+            (CowModelType::Warm, true) => "warm_cow_baby#main",
+            (CowModelType::Cold, false) => "cold_cow#main",
+            (CowModelType::Cold, true) => "cold_cow_baby#main",
+            (CowModelType::Normal, false) => "cow#main",
+            (CowModelType::Normal, true) => "cow_baby#main",
+        }
+    }
+}
+
+/// `CowSoundVariant`: flat set of four sound event ids (no adult/baby split in 26.3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CowSoundVariant {
+    pub ambient: String,
+    pub hurt: String,
+    pub death: String,
+    pub step: String,
+}
+
+impl CowSoundVariant {
+    fn missing() -> Self {
+        Self {
+            ambient: String::new(),
+            hurt: String::new(),
+            death: String::new(),
+            step: String::new(),
+        }
+    }
+
+    /// `CowSoundVariant.DIRECT_CODEC` / `NETWORK_CODEC`.
+    pub fn decode_with(
+        value: &Value,
+        mut decode_sound: impl FnMut(&str, &Value) -> Result<(String, Tag), String>,
+    ) -> Result<(Self, Tag), String> {
+        let obj = value.as_object().ok_or("not a map")?;
+        let mut wire = Compound::new();
+        let mut read = |key: &str| -> Result<String, String> {
+            let raw = obj.get(key).ok_or_else(|| format!("{key} is required"))?;
+            let (id, tag) = decode_sound(key, raw)?;
+            wire.insert(key.into(), tag);
+            Ok(id)
+        };
+        let variant = Self {
+            ambient: read("ambient_sound")?,
+            hurt: read("hurt_sound")?,
+            death: read("death_sound")?,
+            step: read("step_sound")?,
+        };
+        Ok((variant, Tag::Compound(wire)))
+    }
+
+    /// Decode a client's synced `CowSoundVariant.NETWORK_CODEC` NBT entry.
+    pub fn decode_network_nbt(tag: &Tag) -> Option<Self> {
+        Some(Self {
+            ambient: read_nbt_sound(tag, "ambient_sound")?,
+            hurt: read_nbt_sound(tag, "hurt_sound")?,
+            death: read_nbt_sound(tag, "death_sound")?,
+            step: read_nbt_sound(tag, "step_sound")?,
+        })
+    }
+
+    /// `Cow.getSoundSet`: the sound id for `kind` (`ambient`, `hurt`, `death`, `step`).
+    pub fn sound(&self, kind: &str) -> Option<&str> {
+        let sound = match kind {
+            "ambient" => &self.ambient,
+            "hurt" => &self.hurt,
+            "death" => &self.death,
+            "step" => &self.step,
+            _ => return None,
+        };
+        (!sound.is_empty()).then_some(sound.as_str())
+    }
+}
+
+/// `ChickenVariant.ModelType`: `normal` or `cold`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ChickenModelType {
+    #[default]
+    Normal,
+    Cold,
+}
+
+impl ChickenModelType {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Cold => "cold",
+        }
+    }
+
+    fn parse(raw: &str) -> Result<Self, String> {
+        match raw {
+            "normal" => Ok(Self::Normal),
+            "cold" => Ok(Self::Cold),
+            other => Err(format!("model: unknown chicken model type {other:?}")),
+        }
+    }
+
+    fn decode(obj: &serde_json::Map<String, Value>) -> Result<Self, String> {
+        match obj.get("model") {
+            None => Ok(Self::Normal),
+            Some(v) => Self::parse(v.as_str().ok_or("model: a string is required")?),
+        }
+    }
+
+    fn decode_nbt(tag: &Tag) -> Option<Self> {
+        match tag.get("model") {
+            None => Some(Self::Normal),
+            Some(Tag::String(s)) => Self::parse(&s.to_string_lossy()).ok(),
+            _ => None,
+        }
+    }
+}
+
+/// `ChickenVariant`: model type, adult/baby texture asset ids, and spawn conditions.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChickenVariant {
+    pub model: ChickenModelType,
+    pub asset_id: String,
+    pub baby_asset_id: String,
+    pub spawn_conditions: Vec<SpawnSelector>,
+}
+
+impl HasSpawnConditions for ChickenVariant {
+    fn spawn_conditions(&self) -> &[SpawnSelector] {
+        &self.spawn_conditions
+    }
+}
+
+impl ChickenVariant {
+    fn missing() -> Self {
+        Self {
+            model: ChickenModelType::Normal,
+            asset_id: String::new(),
+            baby_asset_id: String::new(),
+            spawn_conditions: Vec::new(),
+        }
+    }
+
+    /// `ChickenVariant.DIRECT_CODEC`.
+    pub fn decode(value: &Value) -> Result<Self, String> {
+        let obj = value.as_object().ok_or("not a map")?;
+        let model = ChickenModelType::decode(obj)?;
+        let asset_id = decode_asset_field(obj, "asset_id")?;
+        let baby_asset_id = decode_asset_field(obj, "baby_asset_id")?;
+        let spawn_conditions = decode_spawn_conditions(
+            obj.get("spawn_conditions")
+                .ok_or("spawn_conditions is required")?,
+        )?;
+        Ok(Self {
+            model,
+            asset_id,
+            baby_asset_id,
+            spawn_conditions,
+        })
+    }
+
+    /// `ChickenVariant.NETWORK_CODEC`: `model`, `asset_id`, and `baby_asset_id`.
+    pub fn to_network_nbt(&self) -> Tag {
+        Tag::compound([
+            ("model", Tag::String(JavaString::from(self.model.as_str()))),
+            (
+                "asset_id",
+                Tag::String(JavaString::from(self.asset_id.as_str())),
+            ),
+            (
+                "baby_asset_id",
+                Tag::String(JavaString::from(self.baby_asset_id.as_str())),
+            ),
+        ])
+    }
+
+    /// Decode a client's synced `ChickenVariant.NETWORK_CODEC` NBT entry.
+    pub fn decode_network_nbt(tag: &Tag) -> Option<Self> {
+        Some(Self {
+            model: ChickenModelType::decode_nbt(tag)?,
+            asset_id: read_nbt_string(tag, "asset_id")?,
+            baby_asset_id: read_nbt_string(tag, "baby_asset_id")?,
+            spawn_conditions: Vec::new(),
+        })
+    }
+
+    /// `ChickenRenderer.getTextureLocation`.
+    pub fn texture(&self, baby: bool) -> &str {
+        let asset = if baby {
+            &self.baby_asset_id
+        } else {
+            &self.asset_id
+        };
+        strip_minecraft_prefix(asset)
+    }
+
+    /// `ChickenRenderer.bakeModels` / `submit`.
+    pub fn model_key(&self, baby: bool) -> &'static str {
+        if baby {
+            "chicken_baby#main"
+        } else if self.model == ChickenModelType::Cold {
+            "cold_chicken#main"
+        } else {
+            "chicken#main"
+        }
+    }
+}
+
+/// `ChickenSoundVariant.ChickenSoundSet`: the four sound event ids of an age set.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChickenSoundSet {
+    pub ambient: String,
+    pub hurt: String,
+    pub death: String,
+    pub step: String,
+}
+
+impl ChickenSoundSet {
+    fn missing() -> Self {
+        Self {
+            ambient: String::new(),
+            hurt: String::new(),
+            death: String::new(),
+            step: String::new(),
+        }
+    }
+
+    fn decode_with(
+        field: &str,
+        value: &Value,
+        decode_sound: &mut impl FnMut(&str, &Value) -> Result<(String, Tag), String>,
+    ) -> Result<(Self, Tag), String> {
+        let obj = value
+            .as_object()
+            .ok_or_else(|| format!("{field}: not a map"))?;
+        let mut wire = Compound::new();
+        let mut read = |key: &str| -> Result<String, String> {
+            let path = format!("{field}.{key}");
+            let raw = obj.get(key).ok_or_else(|| format!("{path} is required"))?;
+            let (id, tag) = decode_sound(&path, raw)?;
+            wire.insert(key.into(), tag);
+            Ok(id)
+        };
+        let set = Self {
+            ambient: read("ambient_sound")?,
+            hurt: read("hurt_sound")?,
+            death: read("death_sound")?,
+            step: read("step_sound")?,
+        };
+        Ok((set, Tag::Compound(wire)))
+    }
+
+    fn decode_nbt(tag: &Tag) -> Option<Self> {
+        Some(Self {
+            ambient: read_nbt_sound(tag, "ambient_sound")?,
+            hurt: read_nbt_sound(tag, "hurt_sound")?,
+            death: read_nbt_sound(tag, "death_sound")?,
+            step: read_nbt_sound(tag, "step_sound")?,
+        })
+    }
+
+    pub fn by_kind(&self, kind: &str) -> Option<&str> {
+        let sound = match kind {
+            "ambient" => &self.ambient,
+            "hurt" => &self.hurt,
+            "death" => &self.death,
+            "step" => &self.step,
+            _ => return None,
+        };
+        (!sound.is_empty()).then_some(sound.as_str())
+    }
+}
+
+/// `ChickenSoundVariant`: adult and baby sound sets.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChickenSoundVariant {
+    pub adult_sounds: ChickenSoundSet,
+    pub baby_sounds: ChickenSoundSet,
+}
+
+impl ChickenSoundVariant {
+    fn missing() -> Self {
+        Self {
+            adult_sounds: ChickenSoundSet::missing(),
+            baby_sounds: ChickenSoundSet::missing(),
+        }
+    }
+
+    /// `ChickenSoundVariant.DIRECT_CODEC` / `NETWORK_CODEC`.
+    pub fn decode_with(
+        value: &Value,
+        mut decode_sound: impl FnMut(&str, &Value) -> Result<(String, Tag), String>,
+    ) -> Result<(Self, Tag), String> {
+        let obj = value.as_object().ok_or("not a map")?;
+        let (adult_sounds, adult_tag) = ChickenSoundSet::decode_with(
+            "adult_sounds",
+            obj.get("adult_sounds").ok_or("adult_sounds is required")?,
+            &mut decode_sound,
+        )?;
+        let (baby_sounds, baby_tag) = ChickenSoundSet::decode_with(
+            "baby_sounds",
+            obj.get("baby_sounds").ok_or("baby_sounds is required")?,
+            &mut decode_sound,
+        )?;
+        let wire = Tag::compound([("adult_sounds", adult_tag), ("baby_sounds", baby_tag)]);
+        Ok((
+            Self {
+                adult_sounds,
+                baby_sounds,
+            },
+            wire,
+        ))
+    }
+
+    /// Decode a client's synced `ChickenSoundVariant.NETWORK_CODEC` NBT entry.
+    pub fn decode_network_nbt(tag: &Tag) -> Option<Self> {
+        Some(Self {
+            adult_sounds: ChickenSoundSet::decode_nbt(tag.get("adult_sounds")?)?,
+            baby_sounds: ChickenSoundSet::decode_nbt(tag.get("baby_sounds")?)?,
+        })
+    }
+
+    /// `Chicken.getSoundSet`: the sound id for `kind` (`ambient`, `hurt`, `death`, `step`).
+    pub fn sound(&self, baby: bool, kind: &str) -> Option<&str> {
+        let set = if baby {
+            &self.baby_sounds
+        } else {
+            &self.adult_sounds
+        };
+        set.by_kind(kind)
+    }
+}
+
 /// The frozen world variant tables converted onto `REGISTRY_KINDS`.
 #[derive(Clone, Debug, Default)]
 pub struct VariantTables {
     pub wolf: VariantTable<WolfVariant>,
     pub wolf_sound: VariantTable<WolfSoundVariant>,
+    pub pig: VariantTable<PigVariant>,
+    pub pig_sound: VariantTable<PigSoundVariant>,
+    pub cow: VariantTable<CowVariant>,
+    pub cow_sound: VariantTable<CowSoundVariant>,
+    pub chicken: VariantTable<ChickenVariant>,
+    pub chicken_sound: VariantTable<ChickenSoundVariant>,
 }
 
 impl VariantTables {
+    pub fn is_empty(&self) -> bool {
+        self.wolf.is_empty()
+            && self.wolf_sound.is_empty()
+            && self.pig.is_empty()
+            && self.pig_sound.is_empty()
+            && self.cow.is_empty()
+            && self.cow_sound.is_empty()
+            && self.chicken.is_empty()
+            && self.chicken_sound.is_empty()
+    }
+
     /// Load the prepared vanilla tables (`data/minecraft/<registry>/`) for worlds
     /// without packs, worldgen helpers and standalone probes.
     pub fn load_prepared(root: &Path) -> Self {
         let data = root.join("data/minecraft");
-        let wolf = load_prepared_table(&data.join("wolf_variant"), WolfVariant::decode);
-        let wolf_sound =
-            load_prepared_table(&data.join("wolf_sound_variant"), decode_prepared_wolf_sound);
-        Self { wolf, wolf_sound }
+        Self {
+            wolf: load_prepared_table(&data.join("wolf_variant"), WolfVariant::decode),
+            wolf_sound: load_prepared_table(&data.join("wolf_sound_variant"), |v| {
+                WolfSoundVariant::decode_with(v, decode_prepared_sound_holder).map(|(d, _)| d)
+            }),
+            pig: load_prepared_table(&data.join("pig_variant"), PigVariant::decode),
+            pig_sound: load_prepared_table(&data.join("pig_sound_variant"), |v| {
+                PigSoundVariant::decode_with(v, decode_prepared_sound_holder).map(|(d, _)| d)
+            }),
+            cow: load_prepared_table(&data.join("cow_variant"), CowVariant::decode),
+            cow_sound: load_prepared_table(&data.join("cow_sound_variant"), |v| {
+                CowSoundVariant::decode_with(v, decode_prepared_sound_holder).map(|(d, _)| d)
+            }),
+            chicken: load_prepared_table(&data.join("chicken_variant"), ChickenVariant::decode),
+            chicken_sound: load_prepared_table(&data.join("chicken_sound_variant"), |v| {
+                ChickenSoundVariant::decode_with(v, decode_prepared_sound_holder).map(|(d, _)| d)
+            }),
+        }
     }
 
     /// Build a client's variant tables from the server's synchronized `Dynamic`
     /// registries, keeping the server's exact network id order and resolving
     /// known-pack omitted entries from `fallback`.
     pub fn from_synced(registries: &Dynamic, fallback: &VariantTables) -> Self {
-        let wolf = registries
-            .registries
-            .get("minecraft:wolf_variant")
-            .map(|entries| {
-                VariantTable::from_synced(
-                    entries
-                        .iter()
-                        .map(|(id, data)| {
-                            let entry = data
-                                .as_ref()
-                                .and_then(WolfVariant::decode_network_nbt)
-                                .or_else(|| {
-                                    fallback
-                                        .wolf
-                                        .lookup(id)
-                                        .and_then(|r| fallback.wolf.get(r))
-                                        .cloned()
-                                })
-                                .unwrap_or_else(WolfVariant::missing);
-                            (id.clone(), entry)
-                        })
-                        .collect(),
-                )
-            })
-            .unwrap_or_default();
-        let wolf_sound = registries
-            .registries
-            .get("minecraft:wolf_sound_variant")
-            .map(|entries| {
-                VariantTable::from_synced(
-                    entries
-                        .iter()
-                        .map(|(id, data)| {
-                            let entry = data
-                                .as_ref()
-                                .and_then(WolfSoundVariant::decode_network_nbt)
-                                .or_else(|| {
-                                    fallback
-                                        .wolf_sound
-                                        .lookup(id)
-                                        .and_then(|r| fallback.wolf_sound.get(r))
-                                        .cloned()
-                                })
-                                .unwrap_or_else(WolfSoundVariant::missing);
-                            (id.clone(), entry)
-                        })
-                        .collect(),
-                )
-            })
-            .unwrap_or_default();
-        Self { wolf, wolf_sound }
+        Self {
+            wolf: from_synced_table(
+                registries,
+                "minecraft:wolf_variant",
+                &fallback.wolf,
+                WolfVariant::decode_network_nbt,
+                WolfVariant::missing,
+            ),
+            wolf_sound: from_synced_table(
+                registries,
+                "minecraft:wolf_sound_variant",
+                &fallback.wolf_sound,
+                WolfSoundVariant::decode_network_nbt,
+                WolfSoundVariant::missing,
+            ),
+            pig: from_synced_table(
+                registries,
+                "minecraft:pig_variant",
+                &fallback.pig,
+                PigVariant::decode_network_nbt,
+                PigVariant::missing,
+            ),
+            pig_sound: from_synced_table(
+                registries,
+                "minecraft:pig_sound_variant",
+                &fallback.pig_sound,
+                PigSoundVariant::decode_network_nbt,
+                PigSoundVariant::missing,
+            ),
+            cow: from_synced_table(
+                registries,
+                "minecraft:cow_variant",
+                &fallback.cow,
+                CowVariant::decode_network_nbt,
+                CowVariant::missing,
+            ),
+            cow_sound: from_synced_table(
+                registries,
+                "minecraft:cow_sound_variant",
+                &fallback.cow_sound,
+                CowSoundVariant::decode_network_nbt,
+                CowSoundVariant::missing,
+            ),
+            chicken: from_synced_table(
+                registries,
+                "minecraft:chicken_variant",
+                &fallback.chicken,
+                ChickenVariant::decode_network_nbt,
+                ChickenVariant::missing,
+            ),
+            chicken_sound: from_synced_table(
+                registries,
+                "minecraft:chicken_sound_variant",
+                &fallback.chicken_sound,
+                ChickenSoundVariant::decode_network_nbt,
+                ChickenSoundVariant::missing,
+            ),
+        }
     }
+}
+
+fn from_synced_table<T: Clone>(
+    registries: &Dynamic,
+    registry: &str,
+    fallback: &VariantTable<T>,
+    decode_nbt: impl Fn(&Tag) -> Option<T>,
+    missing: impl Fn() -> T,
+) -> VariantTable<T> {
+    registries
+        .registries
+        .get(registry)
+        .map(|entries| {
+            VariantTable::from_synced(
+                entries
+                    .iter()
+                    .map(|(id, data)| {
+                        let entry = data
+                            .as_ref()
+                            .and_then(&decode_nbt)
+                            .or_else(|| fallback.lookup(id).and_then(|r| fallback.get(r)).cloned())
+                            .unwrap_or_else(&missing);
+                        (id.clone(), entry)
+                    })
+                    .collect(),
+            )
+        })
+        .unwrap_or_default()
 }
 
 fn load_prepared_table<T>(
@@ -720,8 +1531,8 @@ fn load_prepared_table<T>(
     VariantTable::from_entries(entries)
 }
 
-fn decode_prepared_wolf_sound(value: &Value) -> Result<WolfSoundVariant, String> {
-    let (decoded, _) = WolfSoundVariant::decode_with(value, |field, raw| match raw {
+fn decode_prepared_sound_holder(field: &str, raw: &Value) -> Result<(String, Tag), String> {
+    match raw {
         Value::String(s) => {
             let id = Identifier::parse(s)
                 .map_err(|e| format!("{field}: invalid sound identifier {s:?}: {e}"))?;
@@ -743,8 +1554,7 @@ fn decode_prepared_wolf_sound(value: &Value) -> Result<WolfSoundVariant, String>
             ))
         }
         _ => Err(format!("{field}: a sound event is required")),
-    })?;
-    Ok(decoded)
+    }
 }
 
 #[cfg(test)]
