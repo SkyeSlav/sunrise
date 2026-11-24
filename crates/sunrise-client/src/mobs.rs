@@ -1401,6 +1401,24 @@ pub struct Extra {
     /// holder; `None` before initialization resolves to `minecraft:classic`
     /// (or the registry's first entry).
     pub wolf_sound_variant: Option<crate::lan::data::RegistryRef<variants::WolfSoundVariant>>,
+    /// `Pig.DATA_VARIANT_ID`: the world's `minecraft:pig_variant` holder;
+    /// `None` resolves to `minecraft:temperate` (or the registry's first entry).
+    pub pig_variant: Option<crate::lan::data::RegistryRef<variants::PigVariant>>,
+    /// `Pig.DATA_SOUND_VARIANT_ID`: the world's `minecraft:pig_sound_variant`
+    /// holder; `None` resolves to `minecraft:classic` (or the first entry).
+    pub pig_sound_variant: Option<crate::lan::data::RegistryRef<variants::PigSoundVariant>>,
+    /// `Cow.DATA_VARIANT_ID`: the world's `minecraft:cow_variant` holder;
+    /// `None` resolves to `minecraft:temperate` (or the registry's first entry).
+    pub cow_variant: Option<crate::lan::data::RegistryRef<variants::CowVariant>>,
+    /// `Cow.DATA_SOUND_VARIANT_ID`: the world's `minecraft:cow_sound_variant`
+    /// holder; `None` resolves to `minecraft:classic` (or the first entry).
+    pub cow_sound_variant: Option<crate::lan::data::RegistryRef<variants::CowSoundVariant>>,
+    /// `Chicken.DATA_VARIANT_ID`: the world's `minecraft:chicken_variant` holder;
+    /// `None` resolves to `minecraft:temperate` (or the registry's first entry).
+    pub chicken_variant: Option<crate::lan::data::RegistryRef<variants::ChickenVariant>>,
+    /// `Chicken.DATA_SOUND_VARIANT_ID`: the world's `minecraft:chicken_sound_variant`
+    /// holder; `None` resolves to `minecraft:classic` (or the first entry).
+    pub chicken_sound_variant: Option<crate::lan::data::RegistryRef<variants::ChickenSoundVariant>>,
     /// `Zombie.canBreakDoors`.
     pub can_break_doors: bool,
     /// A goat's `IsScreamingGoat` and the horns it lost (left, right).
@@ -5662,6 +5680,66 @@ impl Mob {
     ) -> Option<crate::lan::data::RegistryRef<variants::WolfSoundVariant>> {
         self.extra
             .wolf_sound_variant
+            .or_else(|| table.default_or_any("minecraft:classic"))
+    }
+    /// `Pig.getVariant` resolved against `table`: the stored holder, or
+    /// `VariantUtils.getDefaultOrAny(..., PigVariants.DEFAULT)` when unset.
+    pub fn pig_variant(
+        &self,
+        table: &variants::VariantTable<variants::PigVariant>,
+    ) -> Option<crate::lan::data::RegistryRef<variants::PigVariant>> {
+        self.extra
+            .pig_variant
+            .or_else(|| table.default_or_any("minecraft:temperate"))
+    }
+    /// `Pig.getSoundVariant` resolved against `table`: the stored holder, or
+    /// `PigSoundVariants.CLASSIC` (else any entry) when unset.
+    pub fn pig_sound_variant(
+        &self,
+        table: &variants::VariantTable<variants::PigSoundVariant>,
+    ) -> Option<crate::lan::data::RegistryRef<variants::PigSoundVariant>> {
+        self.extra
+            .pig_sound_variant
+            .or_else(|| table.default_or_any("minecraft:classic"))
+    }
+    /// `Cow.getVariant` resolved against `table`: the stored holder, or
+    /// `VariantUtils.getDefaultOrAny(..., CowVariants.DEFAULT)` when unset.
+    pub fn cow_variant(
+        &self,
+        table: &variants::VariantTable<variants::CowVariant>,
+    ) -> Option<crate::lan::data::RegistryRef<variants::CowVariant>> {
+        self.extra
+            .cow_variant
+            .or_else(|| table.default_or_any("minecraft:temperate"))
+    }
+    /// `Cow.getSoundVariant` resolved against `table`: the stored holder, or
+    /// `CowSoundVariants.CLASSIC` (else any entry) when unset.
+    pub fn cow_sound_variant(
+        &self,
+        table: &variants::VariantTable<variants::CowSoundVariant>,
+    ) -> Option<crate::lan::data::RegistryRef<variants::CowSoundVariant>> {
+        self.extra
+            .cow_sound_variant
+            .or_else(|| table.default_or_any("minecraft:classic"))
+    }
+    /// `Chicken.getVariant` resolved against `table`: the stored holder, or
+    /// `VariantUtils.getDefaultOrAny(..., ChickenVariants.DEFAULT)` when unset.
+    pub fn chicken_variant(
+        &self,
+        table: &variants::VariantTable<variants::ChickenVariant>,
+    ) -> Option<crate::lan::data::RegistryRef<variants::ChickenVariant>> {
+        self.extra
+            .chicken_variant
+            .or_else(|| table.default_or_any("minecraft:temperate"))
+    }
+    /// `Chicken.getSoundVariant` resolved against `table`: the stored holder, or
+    /// `ChickenSoundVariants.CLASSIC` (else any entry) when unset.
+    pub fn chicken_sound_variant(
+        &self,
+        table: &variants::VariantTable<variants::ChickenSoundVariant>,
+    ) -> Option<crate::lan::data::RegistryRef<variants::ChickenSoundVariant>> {
+        self.extra
+            .chicken_sound_variant
             .or_else(|| table.default_or_any("minecraft:classic"))
     }
 }

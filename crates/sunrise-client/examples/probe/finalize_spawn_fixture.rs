@@ -185,17 +185,47 @@ fn variant(
     let var = format!("minecraft:{}", finalize::variant_name(s, m.extra.variant));
     match s {
         S::Pig => {
+            let var = m
+                .pig_variant(&variants.pig)
+                .and_then(|r| variants.pig.id(r))
+                .unwrap_or("minecraft:temperate")
+                .to_owned();
+            let snd = m
+                .pig_sound_variant(&variants.pig_sound)
+                .and_then(|r| variants.pig_sound.id(r))
+                .unwrap_or("minecraft:classic")
+                .to_owned();
             v.push(var);
-            v.push(named(&regs.pig_sound, m.extra.sound_variant));
+            v.push(snd);
         }
         S::Cow => {
+            let var = m
+                .cow_variant(&variants.cow)
+                .and_then(|r| variants.cow.id(r))
+                .unwrap_or("minecraft:temperate")
+                .to_owned();
+            let snd = m
+                .cow_sound_variant(&variants.cow_sound)
+                .and_then(|r| variants.cow_sound.id(r))
+                .unwrap_or("minecraft:classic")
+                .to_owned();
             v.push(var);
-            v.push(named(&regs.cow_sound, m.extra.sound_variant));
+            v.push(snd);
         }
         S::Mooshroom => v.push(if m.extra.variant == 0 { "red" } else { "brown" }.into()),
         S::Chicken => {
+            let var = m
+                .chicken_variant(&variants.chicken)
+                .and_then(|r| variants.chicken.id(r))
+                .unwrap_or("minecraft:temperate")
+                .to_owned();
+            let snd = m
+                .chicken_sound_variant(&variants.chicken_sound)
+                .and_then(|r| variants.chicken_sound.id(r))
+                .unwrap_or("minecraft:classic")
+                .to_owned();
             v.push(var);
-            v.push(named(&regs.chicken_sound, m.extra.sound_variant));
+            v.push(snd);
             v.push(format!("jockey={}", m.extra.jockey));
         }
         S::Cat => {
