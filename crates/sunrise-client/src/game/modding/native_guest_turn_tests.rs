@@ -1206,7 +1206,7 @@ fn server_services_preserve_identity_and_message_delivery() {
         assert!(game.commands().run_command("list"));
         game.chat_capture = Some(Vec::new());
         game.commands()
-            .feedback(Text::literal("command answer"))
+            .feedback(Text::literal("command answer"), false)
             .unwrap();
         assert_eq!(
             game.chat_capture.take().unwrap()[0].plain(),

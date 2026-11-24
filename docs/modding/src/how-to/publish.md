@@ -37,19 +37,19 @@ https://github.com/<owner>/<repository>
 
 ### Package folders
 
-_No response_
-
-### Branch
-
 _No response_"
 ```
 
 Leave `_No response_` under **Package folders** for a mod at the repository's root; otherwise list one folder per
-line, each holding a `sunrise-mod.toml`. Leave it under **Branch** unless the mod is not on the default branch.
-The registry then checks that you administer the repository, opens the registration pull request and answers on the issue. Registering
-lists nothing: your project appears on Discover once its first release is reviewed and merged.
+line, each holding a `sunrise-mod.toml`. Registration reads the default branch only. A maintainer then checks that
+you administer the repository, opens the registration pull request and links it on the issue, so this route waits
+for a person where the form answers at once. Registering lists nothing: your project appears on Discover once its
+first release is reviewed and merged.
 
 ## Releasing
+
+`release` is in the [newest tool from main](../start/install-tool.md#newest-tool-from-main). A Nightly's tool that
+lacks it answers `"release" is not a cargo sunrise-mod command`.
 
 Commit your mod's source, its page, and `Cargo.lock` for a native mod. From the mod's folder on a clean branch
 that is up to date with its upstream:

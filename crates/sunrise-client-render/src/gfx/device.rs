@@ -253,9 +253,9 @@ pub(crate) fn draws_frame(format: wgpu::TextureFormatFeatures) -> bool {
     )
 }
 
-/// The frame of a renderer made under `SUNRISE_HDR_FRAME=float` (docs/design/hdr-linear-light.md)
-/// with a shader API 0.2 pack picked, or with HDR on and no pack: float, so values over 1
-/// survive from the world to the tonemap and the HDR pass.
+/// The frame of a renderer made under `SUNRISE_HDR_FRAME=float` with a shader API 0.2 pack picked,
+/// or with HDR on and no pack: float, so values over 1 survive from the world to the tonemap and
+/// the HDR pass.
 pub(crate) const LINEAR_FRAME: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// Opens a device on the first of `backend_order`'s backends that gives one.

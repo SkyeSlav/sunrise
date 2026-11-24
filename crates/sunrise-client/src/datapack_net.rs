@@ -9,8 +9,7 @@
 //!
 //! A `/reload` that publishes a new set sends each joined Sunrise client a new snapshot
 //! on the same channel, built from the offer owned by its live connection. The
-//! client checks it as at the join and swaps its set in one step, or ends the connection. See
-//! `docs/design/mod-api/mod-datapack-registries.md`.
+//! client checks it as at the join and swaps its set in one step, or ends the connection.
 use std::sync::{Arc, Mutex};
 
 /// The snapshot, server to client.

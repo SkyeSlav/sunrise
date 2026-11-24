@@ -1340,6 +1340,18 @@ impl Hub {
         });
     }
 
+    /// `PlayerList.isOp`: an entry of the operator list, a level-0 one too, or
+    /// the integrated server's owner while the world allows commands (the
+    /// owner's entry is kept at level 0 while it does not). Opening a world to
+    /// LAN with commands raises the guests' permission level; it does not make
+    /// them operators.
+    pub fn is_op(&self, uuid: u128) -> bool {
+        if self.config.integrated && self.singleplayer_owner == Some(uuid) {
+            return self.ops.get(&uuid).is_some_and(|&level| level > 0);
+        }
+        self.ops.contains_key(&uuid)
+    }
+
     /// Whether a player of `permission` sees the player `uuid`: not one a
     /// native mod hid from players below a higher level.
     pub fn sees(&self, permission: u8, uuid: u128) -> bool {
@@ -5809,6 +5821,35 @@ mod tests {
             sunrise_protocol::registry::Ids::from_names(vec!["minecraft:speed".to_string()]),
         );
         hub_with_sync(sync)
+    }
+
+    #[test]
+    fn is_op_follows_player_list_on_integrated_and_dedicated_servers() {
+        let (mut hub, _rx) = hub_with_a_guest();
+        let owner = 1u128;
+        let level_0_op = 2u128;
+        let guest = 3u128;
+
+        hub.config.integrated = true;
+        hub.config.guest_commands = true;
+        hub.singleplayer_owner = Some(owner);
+        hub.ops.insert(owner, 0);
+        hub.ops.insert(level_0_op, 0);
+
+        assert!(!hub.is_op(owner), "owner at level 0 while commands off");
+        assert!(hub.is_op(level_0_op), "explicit level-0 op is still op");
+        assert!(
+            !hub.is_op(guest),
+            "LAN guest_commands does not make guest op"
+        );
+
+        hub.ops.insert(owner, 4);
+        assert!(hub.is_op(owner), "owner at level 4 while commands on");
+
+        hub.config.integrated = false;
+        hub.ops.insert(owner, 0);
+        assert!(hub.is_op(owner), "dedicated level-0 op is op");
+        assert!(!hub.is_op(guest), "dedicated non-op is not op");
     }
 
     #[test]

@@ -647,8 +647,7 @@ The choice for a missing mod is saved in the world, so it holds even if the sett
 Substitution keeps the missing region's slot and weight; a returning mod does not undo it.
 Adoption keeps saved weights for returning regions, takes declared weights for new regions and
 drops absent regions. Completed chunks keep their saved biomes and blocks. New generation may
-differ in surface material, carving, features and structures. The
-[design note](design/mod-api/mod-biome-regions.md) lists record limits and fixture coverage.
+differ in surface material, carving, features and structures.
 
 ### Worlds saved with mods that are gone: `[missing_mods]`
 

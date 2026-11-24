@@ -14,6 +14,8 @@ pub struct FakeCommands {
     pub ran: Vec<String>,
     /// Each feedback line given, in order.
     pub feedback: Vec<Text>,
+    /// Each feedback line's `broadcast_to_admins`, in the same order.
+    pub feedback_broadcast: Vec<bool>,
     /// Each failure line given, in order.
     pub failure: Vec<Text>,
 }
@@ -34,9 +36,14 @@ impl Commands for FakeCommands {
     fn run_command_with_output(&mut self, line: &str) -> CommandResult {
         CommandResult::new(self.run_command(line), Vec::new())
     }
-    fn feedback(&mut self, line: Text) -> Result<(), crate::text::TextFormError> {
+    fn feedback(
+        &mut self,
+        line: Text,
+        broadcast_to_admins: bool,
+    ) -> Result<(), crate::text::TextFormError> {
         line.validate_depth()?;
         self.feedback.push(line);
+        self.feedback_broadcast.push(broadcast_to_admins);
         Ok(())
     }
     fn failure(&mut self, line: Text) -> Result<(), crate::text::TextFormError> {

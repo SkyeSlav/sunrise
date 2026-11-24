@@ -386,7 +386,7 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   `player.tell(host, text)` sends a system line to one player, also the acting player inside their hook;
   `host.messages().broadcast(text)`, to every player and the server's
   log; `native_server_event(name, uuid, message)`, an `announce` event on a dedicated server's event stream, which the Discord
-  bridge relays when `[discord] events` lists `announce`; `host.commands().feedback(text)`, the command's answer to the player whose command it is; `native_world_dir()`, the
+  bridge relays when `[discord] events` lists `announce`; `host.commands().feedback(text, broadcast_to_admins)`, the command's answer to the player whose command it is (and, broadcast, the other operators' `[name: text]` line); `native_world_dir()`, the
   open world's folder, where a server mod keeps its data in a folder of its own so the world's backups carry it.
 - Items: a player's inventory is their [`ENTITY_ITEMS`](../concepts/capabilities/entity-items.md) handler, from any server hook.
 - Experience: `native_experience_orbs(dimension, min, max)`, the orbs in a box (id, position, `value`, and `count`

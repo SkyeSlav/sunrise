@@ -129,7 +129,7 @@ impl Game<'_> {
         for line in &lines {
             self.native_send(uuid, system_chat(line));
         }
-        self.send_admin_feedback(self.lan_acting);
+        self.send_admin_feedback();
         self.admin_feedback = outer_admins;
         (ok, lines)
     }

@@ -199,6 +199,8 @@ fn tag_list_is_not_repeated_to_the_operators() {
         assert!(game.run_command(
             "summon pig 4.5 200 4.5 {UUID:[I;329,0,0,4],NoAI:1b,Silent:1b,NoGravity:1b}"
         ));
+        // The summon's own line (a player informs the operators), sent on a tick.
+        game.admin_feedback.clear();
         // A source that informs the operators (`shouldInformAdmins`).
         game.console_broadcast = Some(true);
         assert!(game.run_command("tag 00000149-0000-0000-0000-000000000004 add audit"));

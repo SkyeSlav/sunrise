@@ -1,6 +1,5 @@
 //! A world's biome regions: `data/sunrise/biome_regions.dat`, the region layout of each
 //! dimension fixed when the world was created and changed only by its owner's recorded choice.
-//! Design: `docs/design/mod-api/mod-biome-regions.md`.
 use super::{DatIssue, Result, Tag, write_dat_durable};
 use mod_api::__private::BiomeRegionDeclaration;
 use std::io::Read;

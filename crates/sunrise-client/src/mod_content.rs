@@ -3973,8 +3973,7 @@ pub fn resolved_resources(
 /// The root to load: `base` itself with no content, else the mods' overlay
 /// over it, built in `cache/mod-content/<stamp>`: one folder per mod set, so
 /// a running game keeps reading the root it was given while a switch builds
-/// another (docs/design/mod-hotload.md). Roots of other sets unused for a day
-/// are removed.
+/// another. Roots of other sets unused for a day are removed.
 ///
 /// The root is built once and kept: later starts with the same build, base
 /// and mod files reuse it. With ATM10's carried mods a build takes about
@@ -4017,10 +4016,10 @@ fn real_base(base: &Path) -> Result<PathBuf> {
     Ok(fs::canonicalize(base).map_err(|e| format!("{}: {e}", base.display()))?)
 }
 
-/// Whether turning a content mod on or off can apply in a running game
-/// (docs/design/mod-hotload.md): its assets and data can, through the
-/// resource reload and the server's data reload. What a world numbers or
-/// generates from cannot yet: then the translation key of why.
+/// Whether turning a content mod on or off can apply in a running game:
+/// its assets and data can, through the resource reload and the server's data
+/// reload. What a world numbers or generates from cannot yet: then the
+/// translation key of why.
 pub fn live_switch(content: &Content) -> std::result::Result<(), &'static str> {
     if !content.blocks.is_empty()
         || !content.items.is_empty()

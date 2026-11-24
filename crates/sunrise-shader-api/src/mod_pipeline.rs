@@ -5,7 +5,7 @@
 //! pipelines from the result and `cargo sunrise-mod check` runs the same code, so a file is
 //! refused with the same message in both.
 //!
-//! Colour follows the mod render colour rule (docs/design/mod-api/mod-render-colour.md):
+//! Colour follows the mod render colour rule:
 //! the mod's function reads and returns linear light, and the generated entry points convert
 //! from the quad's vanilla-space colour and to the frame, which stores vanilla's 2.2 encoding
 //! in every format the renderer draws today.

@@ -1,7 +1,6 @@
 //! The registries a server sends its clients: a snapshot of the synchronized registries of one published set, encoded with the
 //! wire format, and the checks a client makes before it activates anything. Negotiating which
-//! registries a peer gets and carrying the bytes are the game's. See
-//! `docs/design/mod-api/mod-datapack-registries.md`.
+//! registries a peer gets and carrying the bytes are the game's.
 use super::datapack_registry::{
     DatapackEntry, DatapackField, DatapackRegistryDeclaration, DatapackRegistrySync, DatapackValue,
     valid_namespaced,

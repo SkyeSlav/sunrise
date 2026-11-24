@@ -1,4 +1,4 @@
-//! Frozen mesh visibility plans (`section_visibility`, docs/design/mod-api/mesh-visibility.md).
+//! Frozen mesh visibility plans (`section_visibility`).
 //!
 //! The world thread captures a section's raw input ([`capture_input`]), asks the mods, combines
 //! their checked answers in a [`SectionPlanBuilder`] and freezes one [`SectionVisibilityPlan`]

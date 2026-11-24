@@ -1950,17 +1950,14 @@ impl Game<'_> {
         super::dedicated::events::record("announce", name, uuid, json!({ "message": message }));
         true
     }
-    /// A command's success feedback, routed to its originating source using
-    /// vanilla's silence, send-command-feedback and block/cart track-output rules.
-    pub(super) fn native_feedback(&mut self, line: Text) {
+    /// A command's success feedback: `CommandSourceStack.sendSuccess(line,
+    /// broadcast_to_admins)` from the executor's source, the line to its
+    /// originating source and, with `broadcast_to_admins`, the other operators
+    /// and the log (`send_success`). The executing level is in place: the
+    /// entity's name is read there, the origin block or minecart in its own.
+    pub(super) fn native_feedback(&mut self, line: Text, broadcast_to_admins: bool) {
         let source = self.command_source.unwrap_or_else(|| self.player_source());
-        self.with_source(
-            super::commands::execute::Source {
-                dimension: source.origin_dimension,
-                ..source
-            },
-            |game| game.feedback_unbroadcast(line),
-        );
+        self.with_source(source, |game| game.send_success(line, broadcast_to_admins));
     }
     /// `CommandSourceStack.sendFailure` for a mod's executor: the red line to the originating
     /// source, using vanilla's silence and block/cart track-output rules. The command's result
@@ -2858,7 +2855,9 @@ mod tests {
                     block.track_output = track;
                     block.last_output = None;
                 }
-                game.with_source(source, |game| game.native_feedback(Text::literal("answer")));
+                game.with_source(source, |game| {
+                    game.native_feedback(Text::literal("answer"), false)
+                });
                 let Some(BlockEntity::CommandBlock(block)) =
                     game.world.block_entities.get(&(1, 64, 1))
                 else {
@@ -2873,7 +2872,7 @@ mod tests {
                     block: None,
                     ..source
                 },
-                |game| game.native_feedback(Text::literal("silent")),
+                |game| game.native_feedback(Text::literal("silent"), false),
             );
             assert!(game.chat_capture.take().unwrap().is_empty());
             assert!(game.command_source.is_none());
@@ -4542,7 +4541,7 @@ mod tests {
                                   _: &mod_api::CommandInvocation| {
                                 heard.lock().unwrap().push(source.clone());
                                 host.commands()
-                                    .feedback(mod_api::Text::literal("source answer"))
+                                    .feedback(mod_api::Text::literal("source answer"), false)
                                     .unwrap();
                                 Ok(1)
                             };

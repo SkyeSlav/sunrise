@@ -45,7 +45,7 @@ fn pipeline_fragment(input: PipelineInput) -> vec4<f32> {
 `PipelineInput` has `uv` (the quad's texture coordinate), `color` (the quad's colour) and
 `position` (blocks, relative to the camera). `frame.time` is seconds, wrapping every hour, and
 `frame.viewport` is the world picture's size in pixels. Colours follow the
-mod render colour rule (`docs/design/mod-api/mod-render-colour.md`): the function reads and returns linear
+mod render colour rule: the function reads and returns linear
 light, 1.0 is paper white, more is brighter, and alpha is coverage. A file that declares its own
 bindings or entry points is refused, and so is one over 20,000 expressions or 64 texture reads, or
 that SPIR-V, MSL or HLSL translation refuses (the refusal names the backend), or one over 131,072

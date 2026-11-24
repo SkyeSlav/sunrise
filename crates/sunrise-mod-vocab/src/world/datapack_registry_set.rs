@@ -2,7 +2,7 @@
 //! a candidate built from the winning pack files and checked
 //! as a whole, then published as a set and read directly by `(registry, entry)`. Nothing here
 //! touches the world; the game builds a candidate before it commits any table and keeps the old
-//! set when building fails. See `docs/design/mod-api/mod-datapack-registries.md`.
+//! set when building fails.
 use super::datapack_registry::{
     DatapackDecodeError, DatapackEntry, DatapackRegistryDeclaration, valid_namespaced,
 };

@@ -276,8 +276,18 @@ thread_local! {
     static CAPTURE: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) };
 }
 
+/// An INFO line in the log that an RCON command's reply (`rcon`: one is
+/// running) does not take, as `dedicated_console_say`'s.
+pub(in crate::game) fn log_outside_rcon_reply(rcon: bool, message: &str) {
+    let held = rcon.then(|| CAPTURE.take());
+    log("INFO", message);
+    if let Some(held) = held {
+        CAPTURE.set(held);
+    }
+}
+
 /// Runs `f` and returns the lines it logged.
-fn capture_log(f: impl FnOnce()) -> Vec<String> {
+pub(in crate::game) fn capture_log(f: impl FnOnce()) -> Vec<String> {
     CAPTURE.set(Some(Vec::new()));
     f();
     CAPTURE.take().unwrap_or_default()
@@ -1728,7 +1738,7 @@ impl Game<'_> {
         });
         if self.lan.is_some() {
             self.run_level_teleports();
-            self.send_admin_feedback(None);
+            self.send_admin_feedback();
         }
         self.admin_feedback.clear();
     }
@@ -2117,26 +2127,33 @@ impl Game<'_> {
                 ));
             }
             "say" if !rest.is_empty() => self.dedicated_console_say(rest.join(" ")),
-            _ => {
-                // The game's dispatcher, captured for the console.
-                self.chat_capture = Some(Vec::new());
-                // A command a native mod registered goes to the mods first,
-                // looked up by the same first word the match above read.
-                if !self.perform_native_console_command(line.trim()) {
-                    self.as_console_in_spawn_level(|g| g.run_command(line));
-                }
-                for text in self.chat_capture.take().unwrap_or_default() {
-                    self.console_reply(text);
-                }
-                // ServerPlayer.onEffectAdded and onEffectUpdated send an effect
-                // the command gave as it was given: vanilla's console runs after
-                // the players' tick (`DedicatedServer.tickConnection`), so the
-                // next tick is the first to count it down. A player's own
-                // commands sync theirs the same way (`run_guest_command`).
-                if let Some(h) = self.lan.as_mut() {
-                    h.hub.sync_all_effects();
-                }
-            }
+            _ => self.console_dispatch(line),
+        }
+    }
+
+    /// A console line none of the dedicated-only commands took: a native mod's
+    /// command, else the game's dispatcher. Its output is the console's
+    /// (`MinecraftServer.sendSystemMessage`), logged once; `send_success` has
+    /// already told the operators of what it broadcasts, so it is not filtered
+    /// through `console_reply` again.
+    pub(in crate::game) fn console_dispatch(&mut self, line: &str) {
+        // The game's dispatcher, captured for the console.
+        self.chat_capture = Some(Vec::new());
+        // A command a native mod registered goes to the mods first,
+        // looked up by the same first word the match above read.
+        if !self.perform_native_console_command(line.trim()) {
+            self.as_console_in_spawn_level(|g| g.run_command(line));
+        }
+        for text in self.chat_capture.take().unwrap_or_default() {
+            log("INFO", &format!("System chat: {}", text.plain()));
+        }
+        // ServerPlayer.onEffectAdded and onEffectUpdated send an effect
+        // the command gave as it was given: vanilla's console runs after
+        // the players' tick (`DedicatedServer.tickConnection`), so the
+        // next tick is the first to count it down. A player's own
+        // commands sync theirs the same way (`run_guest_command`).
+        if let Some(h) = self.lan.as_mut() {
+            h.hub.sync_all_effects();
         }
     }
 

@@ -24,8 +24,15 @@ impl Commands for Game<'_> {
     fn refresh_commands(&mut self) {
         self.native_refresh_commands()
     }
-    fn feedback(&mut self, line: Text) -> Result<(), mod_api::text::TextFormError> {
-        self.native_feedback(sunrise_client_lib::api_text::to_serialized_engine(&line)?);
+    fn feedback(
+        &mut self,
+        line: Text,
+        broadcast_to_admins: bool,
+    ) -> Result<(), mod_api::text::TextFormError> {
+        self.native_feedback(
+            sunrise_client_lib::api_text::to_serialized_engine(&line)?,
+            broadcast_to_admins,
+        );
         Ok(())
     }
     fn failure(&mut self, line: Text) -> Result<(), mod_api::text::TextFormError> {

@@ -52,10 +52,10 @@ impl Game<'_> {
             Ok(renderer)
         })
     }
-    /// Under `SUNRISE_HDR_FRAME=float` the frame follows what draws the picture
-    /// (docs/design/hdr-linear-light.md, "When it changes"): when HDR, Smooth Gradients or the
-    /// pick (unless refused) call for another frame than the renderer's, it is made again before
-    /// this frame draws. Without the switch a frame stays until the next start, as before.
+    /// Under `SUNRISE_HDR_FRAME=float` the frame follows what draws the picture: when HDR,
+    /// Smooth Gradients or the pick (unless refused) call for another frame than the renderer's,
+    /// it is made again before this frame draws. Without the switch a frame stays until the next
+    /// start, as before.
     pub(super) fn follow_frame(&mut self) {
         if !native_shaders::linear_frame_switch() {
             return;

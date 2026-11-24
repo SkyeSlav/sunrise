@@ -343,6 +343,8 @@ pub struct BlockEntityDraw {
     spins: Vec<(usize, Option<Spin>)>,
     /// `level_light` is on: elements drawn now are lit by the level.
     level_lit: bool,
+    /// `unlit` is on: elements drawn now skip face shading and draw full bright.
+    unlit: bool,
     /// Each element drawn under `level_light` (vertex range and local centre),
     /// beside `spins`.
     lit: Vec<LitElement>,
@@ -580,6 +582,7 @@ impl BlockEntityDraw {
             kept: false,
             spins: Vec::new(),
             level_lit: false,
+            unlit: false,
             lit: Vec::new(),
             prepared: false,
             records: Vec::new(),
@@ -598,7 +601,7 @@ impl BlockEntityDraw {
 
     /// Record a prepared copy at the current vertex, unless this draw is CPU-only or spinning.
     fn defer_model(&mut self, slot: u32, generation: u64, tint: u32) -> bool {
-        if !self.prepared || self.spinning() || self.level_lit {
+        if !self.prepared || self.spinning() || self.level_lit || self.unlit {
             return false;
         }
         self.records.push(PreparedRecord {
@@ -813,6 +816,22 @@ impl BlockEntityDraw {
     fn level_light(&mut self) {
         self.level_lit = true;
     }
+    /// What is drawn next skips directional shading and draws full bright (`native_draw_unlit`).
+    pub(super) fn unlit(&mut self, on: bool) {
+        self.unlit = on;
+    }
+    /// The vertices from `start` of an element `unlit` covers: under `unlit` they lose their
+    /// shading normal and draw full bright (their colours carry no shade), else `lit_since`.
+    /// `terrain_model` keeps its own shading and calls `lit_since` directly.
+    fn drawn_since(&mut self, start: usize, centre: impl FnOnce() -> DVec3, ambient: u32) {
+        if !self.unlit {
+            return self.lit_since(start, centre, ambient);
+        }
+        for v in &mut self.vertices[start..] {
+            v.normal = [0; 4];
+            v.light = sunrise_client::mobs::render::FULL_BRIGHT;
+        }
+    }
     /// Records one element and its fixed fallback only if there are vertices to relight.
     pub(super) fn lit_since(&mut self, start: usize, centre: impl FnOnce() -> DVec3, ambient: u32) {
         if self.level_lit && self.vertices.len() > start {
@@ -862,7 +881,7 @@ impl BlockEntityDraw {
     fn quad(&mut self, corners: [[f32; 3]; 4], uv: [[f32; 2]; 4], sprite: Rect, tint: u32) {
         let start = self.vertices.len();
         self.emit_quad(corners, uv, sprite, tint, self.element_ambient());
-        self.lit_since(
+        self.drawn_since(
             start,
             || {
                 corners
@@ -904,7 +923,9 @@ impl BlockEntityDraw {
         // normal, the shader shades it, as `draw_block`'s faces are); a part
         // standing still keeps its shading in its colour. Its light is fixed
         // unless `level_light` is on.
-        let (color, normal) = if self.spinning() {
+        let (color, normal) = if self.unlit {
+            (shaded(tint, 1.0), [0; 4])
+        } else if self.spinning() {
             let n = (normal * 127.0).round();
             (shaded(tint, 1.0), [n.x as i8, n.y as i8, n.z as i8, 127])
         } else {
@@ -919,7 +940,11 @@ impl BlockEntityDraw {
                 ],
                 layer: 0,
                 color,
-                light,
+                light: if self.unlit {
+                    sunrise_client::mobs::render::FULL_BRIGHT
+                } else {
+                    light
+                },
                 normal,
                 glint_uv: [0.0, 0.0],
             });
@@ -937,7 +962,7 @@ impl BlockEntityDraw {
             &mut self.vertices,
         );
         super::minecarts::scale_tint_alpha(&mut self.vertices[start..], faces, tint);
-        self.lit_since(start, Self::cell_centre, self.light & 0xffff);
+        self.drawn_since(start, Self::cell_centre, self.light & 0xffff);
     }
 }
 
@@ -1097,6 +1122,7 @@ impl KeptGeometry {
         draw.kept = false;
         draw.spins.clear();
         draw.level_lit = false;
+        draw.unlit = false;
         draw.lit.clear();
         draw.records.clear();
         submit(draw);
@@ -1215,6 +1241,7 @@ impl Game<'_> {
             kept: false,
             spins: Vec::new(),
             level_lit: false,
+            unlit: false,
             lit: Vec::new(),
             prepared: prepared_route(
                 self.pack_ids.is_some(),
@@ -1421,6 +1448,11 @@ impl Game<'_> {
     pub(super) fn native_draw_level_light(&self, draw: &mut BlockEntityDraw) {
         draw.level_light();
     }
+    /// What is drawn next skips directional shading and draws full bright while `on`
+    /// (`BlockEntityDrawContext::unlit`).
+    pub(super) fn native_draw_unlit(&self, draw: &mut BlockEntityDraw, on: bool) {
+        draw.unlit(on);
+    }
     /// Draws a quad with `corners` in blocks under `draw`'s pose, in a model
     /// face's order (top left, bottom left, bottom right, top right as seen
     /// from its front), textured with the `uv` rectangle (u0, v0, u1, v1 in
@@ -1566,7 +1598,7 @@ impl Game<'_> {
                 draw.emit_quad(quad.positions, quad.uv, rect, tint, ambient);
             }
         }
-        draw.lit_since(
+        draw.drawn_since(
             start,
             || {
                 (DVec3::from_array(from.map(f64::from)) + DVec3::from_array(to.map(f64::from)))
@@ -1616,7 +1648,7 @@ impl Game<'_> {
             true,
             &mut draw.vertices,
         );
-        draw.lit_since(start, BlockEntityDraw::cell_centre, draw.light & 0xffff);
+        draw.drawn_since(start, BlockEntityDraw::cell_centre, draw.light & 0xffff);
         true
     }
 
@@ -1791,7 +1823,12 @@ impl Game<'_> {
             return false;
         }
         let pose = draw.pose();
-        self.submit_item_world(&item, pose, draw.light, &mut draw.vertices);
+        if draw.unlit {
+            let full = sunrise_client::mobs::render::FULL_BRIGHT;
+            self.submit_item_unlit(&item, pose, full, &mut draw.vertices);
+        } else {
+            self.submit_item_world(&item, pose, draw.light, &mut draw.vertices);
+        }
         true
     }
 
@@ -1874,6 +1911,7 @@ mod tests {
             kept: false,
             spins: Vec::new(),
             level_lit: false,
+            unlit: false,
             lit: Vec::new(),
             prepared: false,
             records: Vec::new(),
@@ -3349,6 +3387,160 @@ mod tests {
         let up = diffuse(Vec3::Y, diffuse_lights(false));
         assert_eq!(v.color, shaded(0xFFFFFF, up));
         assert_eq!(v.color >> 24, 0xFF);
+    }
+
+    /// A quad (what `cube` and `model_part` emit) drawn after `unlit(true)` has no shading
+    /// normal, its plain tint and full bright light, even under `level_light`; after
+    /// `unlit(false)` a bottom face is shaded (vanilla's 0.4) and lit by the draw's light again.
+    #[test]
+    fn an_unlit_quad_is_unshaded_and_full_bright_until_unlit_false() {
+        use sunrise_client::mobs::render::FULL_BRIGHT;
+        let bottom = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0],
+        ];
+        let uv = [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]];
+        let mut d = draw();
+        d.set_light(0x3070);
+        d.level_light();
+        d.unlit(true);
+        d.quad(bottom, uv, sprite(), 0x80C0FF);
+        // A turning part keeps a shading normal, so `unlit` must clear that one too.
+        d.spin([1.0, 0.0, 0.0], [0.5; 3], 1.0, 0.0);
+        d.quad(bottom, uv, sprite(), 0x80C0FF);
+        d.still();
+        assert_eq!(d.vertices.len(), 8);
+        assert!(d.lit.is_empty(), "nothing left for the level to relight");
+        for v in &d.vertices {
+            assert_eq!(v.normal, [0; 4]);
+            assert_eq!(v.color, 0xFFFF_C080);
+            assert_eq!(v.light, FULL_BRIGHT);
+        }
+
+        d.unlit(false);
+        d.set_light(0x3070);
+        d.quad(bottom, uv, sprite(), 0x80C0FF);
+        for v in &d.vertices[8..] {
+            assert_eq!(v.normal, [0; 4], "a still quad's shade is in its colour");
+            assert_eq!(v.color, 0xFF66_4C33);
+            assert_eq!(v.light, 0x3070);
+        }
+    }
+
+    /// A model drawn under `unlit` is drawn on the CPU (no prepared copy), with no shading
+    /// normal, its plain colour and full bright light, and nothing for `level_light` to relight.
+    #[test]
+    fn an_unlit_model_skips_its_prepared_copy_shading_and_light() {
+        use sunrise_client::mobs::render::FULL_BRIGHT;
+        let quad = bake_flat_face(
+            [0.0; 3],
+            [16.0; 3],
+            [0.0, 0.0, 16.0, 16.0],
+            Direction::Down,
+            Material {
+                sprite: String::new(),
+                force_translucent: false,
+            },
+            -1,
+        )
+        .unwrap();
+        let face = super::super::minecarts::PreparedModelFace::new(&quad, sprite());
+        let mut d = draw();
+        d.prepared = true;
+        d.set_light(0x3070);
+        d.unlit(true);
+        assert!(
+            !d.defer_model(0, 1, u32::MAX),
+            "unlit alone keeps it on the CPU"
+        );
+        d.level_light();
+        d.model(&[face], u32::MAX);
+        assert_eq!(d.vertices.len(), 4);
+        assert!(d.lit.is_empty());
+        for v in &d.vertices {
+            assert_eq!(v.normal, [0; 4]);
+            assert_eq!(v.color, u32::MAX);
+            assert_eq!(v.light, FULL_BRIGHT);
+        }
+    }
+
+    /// `unlit` lasts to the end of one block entity's draw: the next one kept in the frame,
+    /// drawn through the same scratch draw, is lit again.
+    #[test]
+    fn unlit_ends_with_the_block_entity_that_turned_it_on() {
+        use sunrise_client::mobs::render::FULL_BRIGHT;
+        let level = LevelLight {
+            origin: DVec3::ZERO,
+            light_at: &|_| 0,
+        };
+        let mut kept = KeptGeometry::default();
+        let mut draw = draw();
+        let key = KeptKey {
+            light: 0x3070,
+            ..KEY
+        };
+        for (pos, unlit) in [([0, 64, 0], true), ([1, 64, 0], false)] {
+            kept.render(
+                pos,
+                key,
+                machine(),
+                &mut draw,
+                Vec3::ZERO,
+                &level,
+                || DEFAULT_BOUNDS,
+                |_, _| true,
+                |draw| {
+                    if unlit {
+                        draw.unlit(true);
+                    }
+                    draw.quad(LIGHT_QUAD, [[0.0; 2]; 4], sprite(), 0xFFFFFF);
+                },
+            );
+        }
+        let lights = draw.vertices.iter().map(|v| v.light).collect::<Vec<_>>();
+        assert_eq!(lights, [[FULL_BRIGHT; 4], [0x3070; 4]].concat());
+    }
+
+    /// An item drawn under `unlit` comes out the same in the dark (block 0, sky 0) as at
+    /// full light (15/15), while a lit item's light follows the setting.
+    #[test]
+    #[ignore = "daily"]
+    fn an_unlit_item_draws_the_same_in_the_dark_as_at_full_light() {
+        super::super::native_entity_refs::tests::with_game(|game| {
+            game.gui
+                .atlas
+                .sprites
+                .insert("misc/missingno".into(), sprite());
+            let stack = ItemStack::new("minecraft:stick", 1);
+            let item = |game: &Game<'_>, light: u32, unlit: bool| {
+                let mut d = draw();
+                d.set_light(light);
+                d.unlit(unlit);
+                assert!(game.native_draw_item(&mut d, &stack, DisplayContext::Fixed, None, 0));
+                d.vertices
+                    .iter()
+                    .map(|v| (v.color, v.light, v.normal))
+                    .collect::<Vec<_>>()
+            };
+            let dark = item(game, 0, true);
+            assert!(!dark.is_empty());
+            assert_eq!(dark, item(game, 0xF0F0, true));
+            let full = sunrise_client::mobs::render::FULL_BRIGHT;
+            // An untinted stick unshaded: every face its plain white (its normal is only
+            // the back-face marker, `CULL_BACK`).
+            assert!(
+                dark.iter().all(|&(c, l, _)| (c, l) == (u32::MAX, full)),
+                "{dark:?}"
+            );
+            let lit = item(game, 0xF0F0, false);
+            assert!(
+                lit.iter().any(|&(color, ..)| color != u32::MAX),
+                "lit faces are shaded"
+            );
+            assert!(item(game, 0, false).iter().all(|&(_, light, _)| light == 0));
+        });
     }
 
     /// A frustum that sees nothing.

@@ -7,10 +7,9 @@
 //! namespace and name and its value as an NBT compound, or no tag for a
 //! removal.
 //!
-//! The channel is an engine declaration in the negotiated payload table
-//! (docs/design/mod-api/typed-payloads.md): only a peer that offers it at
-//! [`VERSION`] is sent anything, and a message is bounded by the connection's
-//! frame limits, not by a body cap of its own.
+//! The channel is an engine declaration in the negotiated payload table:
+//! only a peer that offers it at [`VERSION`] is sent anything, and a message
+//! is bounded by the connection's frame limits, not by a body cap of its own.
 use {
     sunrise_core::{nbt, nbt::Tag},
     sunrise_mod_runtime::attachments::{AttachmentSync, Holder},

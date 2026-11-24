@@ -1535,7 +1535,7 @@ impl Game<'_> {
             self.console_broadcast = Some(true);
             self.broadcast_to_admins(text);
             self.console_broadcast = None;
-            self.send_admin_feedback(None);
+            self.send_admin_feedback();
             self.admin_feedback.clear();
         }
     }
@@ -1554,11 +1554,7 @@ impl Game<'_> {
                 });
             });
             if delivered.is_some() {
-                let issuer = match recipient {
-                    Target::Guest(conn) => Some(conn),
-                    _ => None,
-                };
-                self.send_admin_feedback(issuer);
+                self.send_admin_feedback();
             }
         } else if !context.source.silent {
             self.with_source(context.source, |g| {

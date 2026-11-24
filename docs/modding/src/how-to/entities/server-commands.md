@@ -137,8 +137,33 @@ host borrow. A [custom test host](../../concepts/testing.md) can lend a profile 
 
 `host.advancement(&id)` returns a loaded
 `AdvancementInfo`: its parent, display (title, description, icon stack with its components, frame and
-flags), criterion names and requirements, from the set the last `/reload` built. Feedback through
-`host.commands().feedback` honours the underlying source's silence and track-output.
+flags), criterion names and requirements, from the set the last `/reload` built.
+
+## Success feedback and the operators
+
+`host.commands().feedback(text, broadcast_to_admins)` is vanilla's
+`CommandSourceStack.sendSuccess(() -> text, broadcast_to_admins)`: Java's
+`source.sendSuccess(() -> msg, true)` is `feedback(msg, true)`. Pass `false` for a query or a
+list, as vanilla does. A silent source (an `execute` fork, a function, a mod's
+`suppress_output` run) gets nothing and tells no one.
+
+| Line | Who gets it | When |
+| --- | --- | --- |
+| `text` | the originating source: a player, the console or RCON, a command block or minecart | a player, and a block or minecart that tracks output, while `sendCommandFeedback` is on; the console and RCON always. Never the `execute as` entity. |
+| `[name: text]` | every operator but the source player (`PlayerList.isOp`: a level-0 operator too, never a non-operator) | `broadcast_to_admins`, the origin informs operators, and `sendCommandFeedback` is on |
+| `[name: text]` | the server's log | `broadcast_to_admins`, the origin informs operators, and `logAdminCommands` is on; never when the console is the source |
+
+The `[name: text]` line is `chat.type.admin`, gray and italic, with the display name of the
+`execute as` entity, else the command block's or minecart's name, `Server` or `Rcon`. A player
+always informs the operators; a command block or minecart does while it tracks output and
+`commandBlockOutput` is on; the console and RCON follow `broadcast-console-to-ops` and
+`broadcast-rcon-to-ops`. The two game rules are independent: with `sendCommandFeedback` off,
+the log still records an operator's command. Sending to no one is still `Ok(())`, and the
+executor's return value alone is the command's result.
+
+```rust,ignore
+host.commands().feedback(Text::translate("mymod.team.disbanded", vec![team_name]), true)?;
+```
 
 ## Run a command as a player
 
@@ -244,7 +269,7 @@ impl Hooks for MyMod {
                     return Err(Text::translate("example.commands.machine.missing", vec![]).into());
                 };
                 host.commands()
-                    .feedback(Text::literal(value.as_str()))
+                    .feedback(Text::literal(value.as_str()), false)
                     .map_err(|_| Text::translate("example.commands.machine.feedback_failed", vec![]))?;
                 Ok(1)
             },

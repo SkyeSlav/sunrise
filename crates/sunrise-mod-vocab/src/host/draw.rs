@@ -366,6 +366,19 @@ pub trait BlockEntityDrawContext {
     fn level_light(&mut self) {
         unimplemented!("BlockEntityDrawContext::draw_level_light")
     }
+    /// While `on`, what is drawn next by `item`, `block`, `cube`, `quad`, `model` and
+    /// `model_part` skips directional face shading (brightness 1.0) and draws at full-bright
+    /// light (block and sky 15), whatever the light setting or [`Self::level_light`]. The
+    /// lightmap is still sampled there, so what changes its top cell (night, `darkness`,
+    /// coloured lights) still reaches it. Stands for NeoForge's unlit render types
+    /// (`NeoForgeRenderTypes.getItemCutoutUnlit`, `getItemTranslucentUnlit`, their glint
+    /// variants, `getEntityUnlitTranslucent`): a hologram, a glowing display, a projected item.
+    /// An item's enchantment glint still draws over it; `terrain_model` keeps its own
+    /// shading option and text its own `glowing`. Off by default; lasts until `unlit(false)`
+    /// or the end of the draw. A client's call.
+    fn unlit(&mut self, on: bool) {
+        unimplemented!("BlockEntityDrawContext::draw_unlit")
+    }
     /// Draws a quad with `corners` in blocks under `draw`'s pose, in a model
     /// face's order (top left, bottom left, bottom right, top right as seen
     /// from its front), textured with the `uv` rectangle (u0, v0, u1, v1 in

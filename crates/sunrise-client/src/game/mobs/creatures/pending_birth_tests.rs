@@ -1,6 +1,5 @@
 //! Real-route fixtures for the pending-children hooks: `mob_split` through the slime/magma/sulfur
-//! split and `baby_entity_spawn` through breeding. Each test is named for its row of the
-//! acceptance matrix in docs/design/mod-api/pending-children.md. The expected values are
+//! split and `baby_entity_spawn` through breeding. The expected values are
 //! written out: the seeds' draws come from Java's `java.util.Random` (`new Random(2)` gives
 //! `nextInt(3) = 1`, so three children; then three `nextFloat() * 360.0F` yaws;
 //! see `YAWS`), and the offsets are vanilla's `setUpSplitCube` arithmetic spelled out in the test.

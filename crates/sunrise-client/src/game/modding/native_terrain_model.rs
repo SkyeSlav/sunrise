@@ -244,6 +244,39 @@ mod tests {
         }
     }
 
+    /// `unlit` covers the helpers' draws, not `terrain_model`: its shading and light stay as
+    /// `TerrainModelOptions` and the draw's light give them.
+    #[test]
+    fn unlit_leaves_a_terrain_models_shading_and_light() {
+        let faces = [face(None, -1)];
+        let drawn = |unlit: bool| {
+            let mut draw = BlockEntityDraw::posed(
+                0.0,
+                0,
+                0x3070,
+                [0; 3],
+                Mat4::IDENTITY,
+                diffuse_lights(false),
+                Vec::new(),
+            );
+            draw.unlit(unlit);
+            let options = TerrainModelOptions::default().with_shade(TerrainShade::Model);
+            assert_eq!(
+                draw_terrain_model(&mut draw, &faces, sprite, options),
+                Ok(())
+            );
+            draw.into_vertices()
+        };
+        let unlit = drawn(true);
+        let bytes = |v: &[Vertex]| bytemuck::cast_slice::<_, u8>(v).to_vec();
+        assert_eq!(bytes(&unlit), bytes(&drawn(false)));
+        assert!(
+            unlit[0].glint_uv != [0.0; 2] || unlit[0].normal != [0; 4],
+            "still shaded"
+        );
+        assert!(unlit.iter().all(|v| v.light == 0x3070));
+    }
+
     #[test]
     fn the_tint_multiplies_only_quads_with_a_tint_index() {
         let (result, vertices) = drawn(

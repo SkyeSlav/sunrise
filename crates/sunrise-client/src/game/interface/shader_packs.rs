@@ -167,8 +167,7 @@ pub(crate) struct PickedPack {
     /// the frame is float.
     pub linear: Option<sunrise_shader_api::Blend>,
     /// Under `SUNRISE_HDR_FRAME=float`, with no pack available or a 0.2 one: the frame is the
-    /// layered float one where HDR output is on (docs/design/hdr-linear-light.md, The HUD and
-    /// menus; the renderer decides, `FrameRequest::hdr_float`).
+    /// layered float one where HDR output is on (the renderer decides, `FrameRequest::hdr_float`).
     pub hdr_float: bool,
 }
 impl PickedPack {

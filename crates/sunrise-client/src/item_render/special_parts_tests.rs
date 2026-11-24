@@ -1144,8 +1144,8 @@ fn a_registered_special_model_draws_its_renderers_resource_models() {
     fs::remove_dir_all(root).unwrap();
 }
 
-/// Row 5 of the matrix (`docs/design/mod-api/resource-renderers.md`), an old state across a
-/// reload. A part's quads are CPU vertices submitted every frame, not prepared GPU models, so the
+/// An old special item renderer state across a reload. A part's quads are CPU vertices submitted
+/// every frame, not prepared GPU models, so the
 /// state's own `Arc<BakedItemModel>` is the only lease and there is no retirement step: a state
 /// resolved before a reload still draws its 12 quads after it, the old baked model is released
 /// exactly once, when the last state holding it drops, and a new resolve draws the reload's 18.

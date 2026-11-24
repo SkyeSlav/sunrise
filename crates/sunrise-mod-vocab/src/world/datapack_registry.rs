@@ -2,7 +2,7 @@
 //! of the mod's own, whose entries are JSON files in data packs. The mod
 //! declares a record schema once at startup (scalars, and lists, maps and
 //! records of them, nested as deep as the schema says); the game decodes every
-//! entry against it without running mod code. See `docs/design/mod-api/mod-datapack-registries.md`.
+//! entry against it without running mod code.
 use serde_json::Value;
 use sunrise_core::identifier::Identifier;
 

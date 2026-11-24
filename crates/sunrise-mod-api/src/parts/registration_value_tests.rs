@@ -161,7 +161,9 @@ fn server_services_forward_commands_messages_and_player_identity() {
     assert!(result.success);
     assert!(result.feedback.is_empty());
     assert!(!host.commands().run_command_with_output("missing").success);
-    host.commands().feedback(Text::literal("answer")).unwrap();
+    host.commands()
+        .feedback(Text::literal("answer"), false)
+        .unwrap();
     host.messages()
         .broadcast(Text::literal("everyone"))
         .unwrap();

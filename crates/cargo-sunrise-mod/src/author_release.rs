@@ -20,8 +20,7 @@ const DEFAULT_WORKFLOW: &str = "sunrise-org/sunrise-mods/.github/workflows/relea
 const CALLER: &str = ".github/workflows/sunrise-release.yml";
 const CALLER_MARK: &str =
     "# Written by `cargo sunrise-mod release`, which rewrites it: edits here are replaced.\n";
-const NOT_REGISTERED: &str =
-    "This repository isn't registered yet: register it at https://playsunrise.net/mods/submit";
+const NOT_REGISTERED: &str = "This repository isn't registered yet: register it at https://playsunrise.net/mods/submit, or with a Register issue on https://github.com/sunrise-org/sunrise-mods";
 
 type Fetch<'a> = &'a dyn Fn(&str) -> Result<Option<String>, String>;
 

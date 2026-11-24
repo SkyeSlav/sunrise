@@ -1487,7 +1487,7 @@ impl Game<'_> {
                 self.console_broadcast = Some(true);
                 self.sprint_report(&report);
                 self.console_broadcast = None;
-                self.send_admin_feedback(None);
+                self.send_admin_feedback();
                 self.admin_feedback.clear();
                 // Then onTickRateChanged, its mods outside the server's broadcast.
                 self.on_tick_rate_changed();
