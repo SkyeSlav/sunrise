@@ -143,4 +143,12 @@ pub trait ClientViewClientHost {
     /// contextual bar reads the same fact. Which bar the HUD shows is not exposed: vanilla's
     /// `Hud.nextContextualInfoState` is private.
     fn has_waypoints(&self) -> bool;
+    /// Side: client.
+    /// The ticks left before the local player's next block starts breaking
+    /// (`MultiPlayerGameMode.destroyDelay`): 5 after a block breaks or creative's instant break
+    /// starts, then one less for each tick the attack key keeps continuing the destroy
+    /// (`continueDestroyBlock`), until 0 lets the next block start. While it is above 0 a
+    /// held attack starts no break. Read-only: vanilla has no public setter. 0 outside a
+    /// client world.
+    fn mining_destroy_delay(&self) -> u32;
 }

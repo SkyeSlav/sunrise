@@ -43,6 +43,12 @@ impl Game<'_> {
         }
     }
 
+    /// `MultiPlayerGameMode.destroyDelay`: the ticks left before the local player's next block
+    /// starts breaking. 0 outside a world.
+    pub(in crate::game) fn mining_destroy_delay(&self) -> u32 {
+        self.remote.as_ref().map_or(0, |r| r.destroy_delay)
+    }
+
     /// MultiPlayerGameMode.startDestroyBlock / continueDestroyBlock.
     pub(in crate::game) fn remote_mining(&mut self, start: bool) -> bool {
         let debug_stick = self

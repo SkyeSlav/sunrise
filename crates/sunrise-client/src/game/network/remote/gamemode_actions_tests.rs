@@ -2,7 +2,7 @@
 use crate::game::Game;
 use crate::game::native_entity_refs::tests::with_client_game;
 use crate::game::native_hotbar_slot::hotbar_slot_tests::logged_in;
-use mod_api::InteractionAttempt;
+use mod_api::{ClientHost, InteractionAttempt};
 use std::sync::Arc;
 use std::time::Duration;
 use sunrise_client::{chunk::Chunk, first_person::Hand, items::ItemStack};
@@ -364,6 +364,40 @@ fn spectator_entity_use_sends_both_hands_without_feeding_or_swinging() {
                     );
                     assert_eq!(game.swings_started, swings);
                 }
+            });
+        },
+    );
+}
+
+/// `MultiPlayerGameMode.destroyDelay` through the mod host: 0 outside a world, 5 after a
+/// creative attack, one less for each continued-destroy tick.
+#[test]
+#[ignore = "daily"]
+fn mining_destroy_delay_reads_five_after_a_creative_attack_then_counts_down() {
+    crate::game::in_own_process(
+        "game::remote::gamemode_actions_tests::mining_destroy_delay_reads_five_after_a_creative_attack_then_counts_down",
+        || {
+            with_client_game(|game| {
+                let read = |game: &Game<'_>| {
+                    let host: &dyn ClientHost = game;
+                    host.mining_destroy_delay()
+                };
+                assert_eq!(read(game), 0);
+                let _reader = logged_in(game);
+                game.inventory[game.selected] = Some(ranged_stick(1.5, 2.5, 0.125));
+                add_entity(game, 101, "minecraft:armor_stand", [0.5, 65.0, 2.5]);
+                game.handle_packet(C::PlayerAbilities(play::PlayerAbilities {
+                    flags: 8,
+                    flying_speed: 0.05,
+                    walking_speed: 0.1,
+                }))
+                .unwrap();
+                assert_eq!(read(game), 0);
+                game.hand_strength.ticker = 100;
+                assert!(game.remote_attack_entity(101, 2.0));
+                assert_eq!(read(game), 5);
+                assert!(game.remote_mining(false));
+                assert_eq!(read(game), 4);
             });
         },
     );
