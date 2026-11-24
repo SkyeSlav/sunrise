@@ -88,9 +88,6 @@ pub(super) struct LanHost {
     pub commands: Vec<super::lan_actions::GuestCommand>,
     /// Mods' quiet commands waiting to run a few a tick (game/network/lan_quiet.rs).
     pub quiet: std::collections::VecDeque<super::lan_quiet::QuietBatch>,
-    /// Far terrain sampled for Sunrise clients (game/network/lan_far.rs); None when
-    /// `sunrise-lod-distance` is 0.
-    pub far: Option<sunrise_client::lod_net::Service>,
     /// Native mods' commands and the level each needs, once asked (game/modding/native_server.rs).
     /// The generation of the session's mod commands the hub was given.
     pub(super) native_commands_sent: Option<u64>,
@@ -1302,8 +1299,6 @@ impl Game<'_> {
                 .clone(),
         );
         self.lan_update_tag_sources(&mut encoder);
-        let far = (net.lod_distance > 0)
-            .then(|| sunrise_client::lod_net::Service::new(net.lod_distance, biome_names.clone()));
         let lan = super::lan_configuration_tasks::start(sync.clone(), net)?;
         let mut hub = Hub::new(lan, sync, encoder, config, self.loop_context.clone());
         hub.dispatch_move_effects = true;
@@ -1334,7 +1329,6 @@ impl Game<'_> {
             border_sent: None,
             commands: Vec::new(),
             quiet: std::collections::VecDeque::new(),
-            far,
             native_commands_sent: None,
             sleep_ignored: Default::default(),
             states: Default::default(),
@@ -3169,7 +3163,6 @@ impl Game<'_> {
         self.lan_sync_border();
         drop(holding);
         self.flush_attachment_sync();
-        self.flush_far_terrain();
         if let Some(host) = self.lan.as_ref() {
             lan::flush_all(host.hub.guests.iter().map(|g| &g.sender));
         }
@@ -3945,7 +3938,6 @@ pub(in crate::game) mod tests {
                 border_sent: None,
                 commands: Default::default(),
                 quiet: Default::default(),
-                far: None,
                 native_commands_sent: None,
                 sleep_ignored: Default::default(),
                 states: Default::default(),
@@ -5370,7 +5362,6 @@ pub(in crate::game) mod tests {
                 let net = NetConfig {
                     listen: false,
                     announce: false,
-                    lod_distance: 0,
                     ..NetConfig::lan(0, String::new(), 3)
                 };
                 let config = HubConfig {
@@ -5639,7 +5630,6 @@ pub(in crate::game) mod tests {
             let net = NetConfig {
                 listen: false,
                 announce: false,
-                lod_distance: 0,
                 ..NetConfig::lan(0, String::new(), 2)
             };
             let config = HubConfig {
@@ -6649,7 +6639,6 @@ mod merchant_packet_tests {
                 border_sent: None,
                 commands: Default::default(),
                 quiet: Default::default(),
-                far: None,
                 native_commands_sent: None,
                 sleep_ignored: Default::default(),
                 states: Default::default(),

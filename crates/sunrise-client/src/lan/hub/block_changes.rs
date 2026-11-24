@@ -243,20 +243,6 @@ impl Hub {
             keys
         };
         if !bulk.is_empty() {
-            // The single-player window's far terrain draws a column it isn't sent as the window last saw it: it is
-            // handed the column to summarize again (`handoff::changed`).
-            let unsent = |g: &Guest, key: &(i32, i32)| {
-                self.here(g)
-                    && g.address() == crate::lan::conn::MEMORY_ADDRESS
-                    && !g.sent_chunks.contains(key)
-            };
-            for key in &bulk {
-                if let Some(chunk) = world.chunks.get(key)
-                    && self.guests.iter().any(|g| unsent(g, key))
-                {
-                    crate::lan::handoff::changed(chunk);
-                }
-            }
             let columns: Vec<&Chunk> = bulk
                 .iter()
                 .filter_map(|k| world.chunks.get(k).map(|c| &**c))

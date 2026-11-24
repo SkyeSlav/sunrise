@@ -375,7 +375,6 @@ mod tests {
         let net = NetConfig {
             listen: false,
             announce: false,
-            lod_distance: 0,
             ..NetConfig::lan(0, String::new(), 3)
         };
         let config = HubConfig {
@@ -498,7 +497,6 @@ mod tests {
                 let net = NetConfig {
                     listen: false,
                     announce: false,
-                    lod_distance: 0,
                     ..NetConfig::lan(0, String::new(), 3)
                 };
                 let config = HubConfig {

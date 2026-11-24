@@ -348,7 +348,7 @@ fn a_clients_frames_tick_its_declared_copies_until_they_go() {
         );
 
         // The server forgets the column: its hums are not told again, the other column's is.
-        game.forget_remote_columns(&mut [CHUNK].into_iter().collect(), true);
+        game.forget_remote_columns(&mut [CHUNK].into_iter().collect());
         for _ in 0..2 {
             assert_eq!(frame(game, 1), ticked(&[(OTHER, 40), (CRATE_AT, 50)]));
         }

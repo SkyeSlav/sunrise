@@ -164,7 +164,7 @@ mod shadow_caster_tests {
             }
             let cull = ShadowCull::new(Frustum::from_planes([Vec4::W; 6])).with_reach(Some(reach));
             let mut out = Vec::new();
-            sections.visible(camera, 12, &cull, |_| true, |_, _| false, &mut out);
+            sections.visible(camera, 12, &cull, |_| true, &mut out);
             let mut kept: Vec<_> = out.iter().map(|v| (v.key.0, v.key.2)).collect();
             kept.sort_unstable();
             kept
@@ -199,12 +199,12 @@ mod shadow_caster_tests {
         let all = Frustum::from_planes([Vec4::W; 6]);
         let shadow = ShadowCull::new(all).with_casters(Some(shadow_casters(up, Vec3::Y)));
         assert_eq!(
-            drawn(&|out| sections.visible(camera, 4, &shadow, |_| true, |_, _| false, out)),
+            drawn(&|out| sections.visible(camera, 4, &shadow, |_| true, out)),
             [key]
         );
         // The camera's own view goes by the terrain's box, which lies below it.
         assert!(
-            drawn(&|out| sections.visible(camera, 4, &view, |_| true, |_, _| false, out))
+            drawn(&|out| sections.visible(camera, 4, &view, |_| true, out))
                 .is_empty()
         );
     }
@@ -301,19 +301,19 @@ mod shadow_caster_tests {
             keys
         };
         assert_eq!(
-            keys_of(&|out| sections.visible(camera, rd, &eye, |_| true, |_, _| false, out)),
+            keys_of(&|out| sections.visible(camera, rd, &eye, |_| true, out)),
             [receiver]
         );
         let all = ShadowCull::new(Frustum::from_planes([Vec4::W; 6])).with_reach(Some(96.0));
         assert_eq!(
-            keys_of(&|out| sections.visible(camera, rd, &all, |_| true, |_, _| false, out)),
+            keys_of(&|out| sections.visible(camera, rd, &all, |_| true, out)),
             [receiver, caster]
         );
         let light = ShadowCull::new(Frustum::from_planes([Vec4::W; 6]))
             .with_casters(Some(shadow_casters(up, Vec3::Y)))
             .with_reach(Some(96.0));
         assert_eq!(
-            keys_of(&|out| sections.visible(camera, rd, &light, |_| true, |_, _| false, out)),
+            keys_of(&|out| sections.visible(camera, rd, &light, |_| true, out)),
             [receiver, caster]
         );
     }
@@ -339,7 +339,7 @@ mod shadow_caster_tests {
 
         let all = Frustum::from_planes([Vec4::W; 6]);
         let mut eye_out = Vec::new();
-        sections.visible(camera, 4, &all, |_| true, |_, _| false, &mut eye_out);
+        sections.visible(camera, 4, &all, |_| true, &mut eye_out);
         assert!(
             eye_out.is_empty(),
             "eye walk at effective distance 4 excludes a column five chunks away"

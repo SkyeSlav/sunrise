@@ -3,14 +3,14 @@
 //! replay").
 //!
 //! The renderer keeps no CPU copy of the meshes it uploads, so while capturing is on
-//! (`Renderer::keep_capture_copies`) it keeps one of every section and far tile mesh as it is
-//! handed over, at the mesher-to-renderer seam. A capture writes those of the sections and
-//! tiles it holds, the frame's camera and inputs, and the settings that change GPU work. Only
-//! the build that wrote a capture reads it.
+//! (`Renderer::keep_capture_copies`) it keeps one of every section mesh as it is handed over,
+//! at the mesher-to-renderer seam. A capture writes those of the sections it holds, the
+//! frame's camera and inputs, and the settings that change GPU work. Only the build that
+//! wrote a capture reads it.
 //!
-//! Files: `scene.json` (`Scene`), `sections.json` and `tiles.json` (one `MeshRecord` per mesh,
-//! in order), `sections.bin` and `tiles.bin` (each mesh's solid then translucent
-//! `TerrainVertex`es), `celestial.bin` (the sun and moon `Vertex`es).
+//! Files: `scene.json` (`Scene`), `sections.json` (one `MeshRecord` per mesh, in order),
+//! `sections.bin` (each mesh's solid then translucent `TerrainVertex`es), `celestial.bin` (the
+//! sun and moon `Vertex`es).
 use super::{Frame, Renderer, SectionKey};
 use crate::{
     Result,
@@ -19,7 +19,6 @@ use crate::{
     fog::FogData,
     graphics::GraphicsApi,
     hud::HudBatch,
-    lod::TileKey,
     mesher::{SectionMesh, Sides, TerrainVertex, Vertex},
 };
 use glam::{DVec3, Mat4, Vec3};
@@ -34,7 +33,6 @@ use std::{
 #[derive(Default)]
 pub(crate) struct Copies {
     sections: FxHashMap<SectionKey, SectionMesh>,
-    tiles: FxHashMap<TileKey, SectionMesh>,
 }
 
 impl Copies {
@@ -50,15 +48,6 @@ impl Copies {
         self.sections
             .retain(|&(x, _, z), _| !gone.contains(&(x, z)));
     }
-    pub(super) fn tile(&mut self, key: TileKey, mesh: &SectionMesh) {
-        self.tiles.insert(key, copy(mesh));
-    }
-    pub(super) fn forget_tile(&mut self, key: TileKey) {
-        self.tiles.remove(&key);
-    }
-    pub(super) fn clear_tiles(&mut self) {
-        self.tiles.clear();
-    }
 }
 
 fn copy(mesh: &SectionMesh) -> SectionMesh {
@@ -69,14 +58,12 @@ fn copy(mesh: &SectionMesh) -> SectionMesh {
         translucent: mesh.translucent.clone(),
         translucent_sources: mesh.translucent_sources.clone(),
         packed: mesh.packed.clone(),
-        packed_far: mesh.packed_far,
         solid_tints: Vec::new(),
         visibility: mesh.visibility,
         block_entities: mesh.block_entities.clone(),
         lights: mesh.lights.clone(),
         sprite_layers: mesh.sprite_layers.clone(),
         bounds: mesh.bounds,
-        keep: mesh.keep,
     }
 }
 
@@ -103,7 +90,6 @@ pub struct Settings {
     pub upscale: f32,
     /// Chunks.
     pub render_distance: i32,
-    pub lod_distance: u32,
     /// The game's prepared resources, where the replay loads the block sprites from.
     pub resources: PathBuf,
     /// The block sprites the meshes were made against.
@@ -278,16 +264,13 @@ pub struct Scene {
     pub renderer: RendererState,
     pub frame: FrameInputs,
     pub sections: usize,
-    pub tiles: usize,
-    /// The chunk columns far tiles leave out for full-detail sections.
-    pub lod_cutout: Vec<(i32, i32)>,
     /// `celestial.bin`.
     #[serde(skip)]
     pub celestial: Vec<Vertex>,
 }
 
-/// One mesh of `sections.json` or `tiles.json`; its vertices follow the previous mesh's in
-/// the `.bin` file. `key` is (x, section y, z) for a section, (x, z, level) for a tile.
+/// One mesh of `sections.json`; its vertices follow the previous mesh's in the `.bin` file.
+/// `key` is (x, section y, z).
 #[derive(Serialize, Deserialize)]
 struct MeshRecord {
     key: [i32; 3],
@@ -299,7 +282,6 @@ struct MeshRecord {
     lights: Vec<([i32; 3], u32)>,
     sprite_layers: Vec<u16>,
     bounds: Option<[[f32; 3]; 2]>,
-    keep: bool,
 }
 
 /// Writes `name.json` and `name.bin`: (meshes, vertex bytes).
@@ -329,7 +311,6 @@ fn write_meshes<'m>(
             bounds: mesh
                 .bounds
                 .map(|[min, max]| [min.to_array(), max.to_array()]),
-            keep: mesh.keep,
         });
     }
     blob.flush()?;
@@ -372,7 +353,6 @@ pub fn read_meshes(
                 bounds: record
                     .bounds
                     .map(|[min, max]| [Vec3::from_array(min), Vec3::from_array(max)]),
-                keep: record.keep,
                 ..Default::default()
             },
         );
@@ -404,23 +384,13 @@ impl Renderer {
             .ok_or("no mesh copies kept: render-capture on first")?;
         let dir = &request.dir;
         fs::create_dir_all(dir)?;
-        let (sections, section_bytes) = write_meshes(
+        let (sections, vertex_bytes) = write_meshes(
             dir,
             "sections",
             copies
                 .sections
                 .iter()
                 .map(|(&(x, y, z), mesh)| ([x, y, z], mesh)),
-        )?;
-        let standing = self.standing_lods();
-        let (tiles, tile_bytes) = write_meshes(
-            dir,
-            "tiles",
-            copies
-                .tiles
-                .iter()
-                .filter(|(key, _)| standing.contains(*key))
-                .map(|(key, mesh)| ([key.x, key.z, i32::from(key.level)], mesh)),
         )?;
         fs::write(
             dir.join("celestial.bin"),
@@ -446,8 +416,6 @@ impl Renderer {
             },
             frame: FrameInputs::record(frame),
             sections,
-            tiles,
-            lod_cutout: self.lod_cutout.iter().copied().collect(),
             celestial: Vec::new(),
         };
         let mut out = BufWriter::new(File::create(dir.join("scene.json"))?);
@@ -457,8 +425,7 @@ impl Renderer {
             "ok": true,
             "dir": dir.display().to_string(),
             "sections": sections,
-            "tiles": tiles,
-            "vertex_bytes": section_bytes + tile_bytes,
+            "vertex_bytes": vertex_bytes,
             "shader_pack_left_out": scene.renderer.shader_pack,
         }))
     }

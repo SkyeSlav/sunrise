@@ -94,7 +94,6 @@ fn two_guests(game: &mut super::Game<'_>) -> (mpsc::Receiver<Out>, mpsc::Receive
     let net = NetConfig {
         listen: false,
         announce: false,
-        lod_distance: 0,
         ..NetConfig::lan(0, String::new(), 3)
     };
     let config = sunrise_client::lan::hub::HubConfig {

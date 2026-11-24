@@ -687,7 +687,6 @@ impl Game<'_> {
             game.recipe_ui.reset_screen();
             game.refresh_remote_language();
             game.audio.reload_with(&game.pack.source, sounds);
-            game.clear_lod();
             // A pack that may replace leaf models falls back to `Off` before the
             // reload marks every section dirty.
             game.streaming.leaf_culling = game.effective_leaf_culling();

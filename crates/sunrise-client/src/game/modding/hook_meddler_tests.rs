@@ -95,7 +95,6 @@ pub(in crate::game) fn with_meddler(
                 sunrise_client::lan::NetConfig {
                     listen: false,
                     announce: false,
-                    lod_distance: 0,
                     ..sunrise_client::lan::NetConfig::lan(0, String::new(), 2)
                 },
                 sunrise_client::lan::hub::HubConfig {

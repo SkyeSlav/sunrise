@@ -27,14 +27,13 @@ pub(super) fn compiled_and_visible(
 }
 /// What a section's fade depends on besides the section itself
 /// (`SectionGpu::drawn_faded`): the time, the chunk fade-in time, the sections'
-/// first uploads (`Renderer::section_uploaded`) and those held while far
-/// terrain comes in (`Renderer::lod_retiring`).
+/// first uploads (`Renderer::section_uploaded`).
 #[derive(Clone, Copy)]
 pub(super) struct FadeInputs<'a> {
     pub(super) now: Instant,
     pub(super) fade_ms: u64,
     pub(super) uploaded: &'a FxHashMap<super::SectionKey, Instant>,
-    pub(super) retiring: &'a crate::fast_hash::FxHashSet<super::SectionKey>,
+
 }
 /// The flagged sections by when their fade is over at the latest (gfx.rs
 /// `SectionGpu::fade_end`), for gfx.rs `mark_fades` to look at them again

@@ -35,7 +35,6 @@ pub(in crate::game) fn with_guests_at(
         let net = NetConfig {
             listen: false,
             announce: false,
-            lod_distance: 0,
             ..NetConfig::lan(0, String::new(), 2)
         };
         let config = HubConfig {

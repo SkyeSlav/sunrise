@@ -136,9 +136,10 @@ pub struct Frame<'a> {
     pub shadow_cache: bool,
     /// Render distance in blocks (fog end).
     pub distance: f32,
-    /// Full-detail terrain distance in blocks; distant LODs bypass the cave graph.
+    /// The effective render distance in blocks (`Options.getEffectiveRenderDistance`): how far
+    /// the cave-culling graph reaches.
     pub detail_distance: f32,
-    /// Shadow caster selection distance in blocks; defaults to the effective eye distance
+    /// Shadow caster selection distance in blocks; defaults to the effective render distance
     /// (`detail_distance`) when `None`.
     pub shadow_distance: Option<f32>,
     /// `Camera.depthFar`: the far plane (`crate::camera::depth_far`).

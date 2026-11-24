@@ -53,7 +53,7 @@ mod static_entity;
 
 pub(crate) use section_gpu::collect_animated_layers;
 use section_gpu::{
-    Part, SectionGpu, begin_shrink, decide_fade, forget_records, hold_fading, mark_fades,
+    Part, SectionGpu, begin_shrink, decide_fade, forget_records, mark_fades,
 };
 use static_entity::{GpuStaticEntitySection, StaticEntityUniform};
 pub mod outline;
@@ -227,7 +227,6 @@ mod hdr_start;
 mod hdr_stats;
 pub(crate) mod hud_coverage;
 mod in_flight;
-mod sourced_geometry;
 use display_watch::DisplayWatch;
 #[cfg(test)]
 use display_watch::{macos_hdr, os_reported};
@@ -243,7 +242,6 @@ mod linear_blend;
 #[cfg(test)]
 use frame_policy::frame_format;
 use frame_policy::{frame_configuration, overlay_format, sunrise_tone_curve};
-mod lod;
 pub mod mod_pipelines;
 mod native_material;
 mod native_pack;

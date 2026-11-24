@@ -80,9 +80,6 @@ impl Game<'_> {
             || !self.world.dirty_sections.is_empty()
         {
             Some("screenshot-sequence needs a loaded world in play, with nothing left to load")
-        } else if self.lod.is_some() || self.far_terrain_choice().0 > 0 {
-            // Far tiles load and fade in on the wall clock.
-            Some("screenshot-sequence needs far terrain off (LOD Distance 0)")
         } else if self.settings.chunk_fade != 0.0 || g.shadow_cache {
             Some("screenshot-sequence needs chunk fade 0 and the shadow cache off")
         } else if g.taa || g.frame_generation != sunrise_client::graphics::FrameGeneration::Off {

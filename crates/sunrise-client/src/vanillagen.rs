@@ -4,7 +4,7 @@ use crate::{
     biome::Biomes,
     chunk::{BIOME_STRATEGY, Chunk, ColumnLayout, Section},
     save::SavedProto,
-    streaming::{ChunkGenerator, LodSampler, Proto},
+    streaming::{ChunkGenerator, Proto},
 };
 use std::{path::Path, sync::Arc};
 use sunrise_core::{
@@ -29,9 +29,7 @@ use {
         },
     },
 };
-mod lod;
 mod structure_mobs;
-use lod::VanillaLodSampler;
 use structure_mobs::StructureMobFinalizer;
 
 /// The references a saved chunk keeps for its structure start: `(structure, chunk x, chunk z)`.
@@ -89,13 +87,6 @@ pub struct VanillaTerrain {
     flat: bool,
     /// A mod's chunk generator with vanilla stages: its terrain is no noise to draw far away.
     mod_terrain: bool,
-}
-/// The far ring of a mod's terrain: none, as for the mod's terrain alone.
-struct NoFarGround;
-impl LodSampler for NoFarGround {
-    fn sample(&mut self, _: i32, _: i32) -> Option<crate::columns::Surface> {
-        None
-    }
 }
 /// A proto chunk, or the position of one whose generation failed.
 enum VanillaProto {
@@ -322,8 +313,7 @@ impl VanillaTerrain {
         self.generator.sea_level()
     }
     /// Whether the terrain is the noise's: not a superflat world's layers or a mod's chunk
-    /// generator's terrain, whose `spawnOriginalMobs` places nothing and whose far ring is not
-    /// the noise's.
+    /// generator's terrain, whose `spawnOriginalMobs` places nothing.
     pub fn noise_ground(&self) -> bool {
         !self.flat && !self.mod_terrain
     }
@@ -973,28 +963,11 @@ impl ChunkGenerator for VanillaTerrain {
         worker.set_structure_mobs(self.structure_mobs.clone());
         worker
     }
-    fn lod_sampler(self: Arc<Self>) -> Box<dyn LodSampler> {
-        if self.mod_terrain {
-            return Box::new(NoFarGround);
-        }
-        Box::new(VanillaLodSampler::new(self))
-    }
     fn idle(&self, worker: &mut GeneratorWorker) {
         worker.release();
     }
     fn all_idle(&self) {
         self.generator.release_caches();
-    }
-    fn lod_surface(
-        &self,
-        worker: &mut GeneratorWorker,
-        x: i32,
-        z: i32,
-    ) -> Option<crate::columns::Surface> {
-        if self.mod_terrain {
-            return None;
-        }
-        Some(self.client_surface(worker.surface_sample(x, z)?))
     }
     /// The structure starts a saved chunk references, as vanilla reads them
     /// with the chunk: read from the owning chunk's save (or regenerated for

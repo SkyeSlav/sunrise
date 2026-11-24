@@ -80,7 +80,6 @@ fn open_hub(game: &mut super::Game<'_>, role: ExecutionRole) {
     let net = NetConfig {
         listen: false,
         announce: false,
-        lod_distance: 0,
         singleplayer_profile,
         ..NetConfig::lan(0, String::new(), 4)
     };

@@ -8,7 +8,7 @@ use sunrise_protocol::{
 #[test]
 fn every_registered_engine_codec_refuses_a_hostile_oversized_body() {
     type Rejects = fn(&[u8]) -> bool;
-    let cases: [(&str, Rejects); 15] = [
+    let cases: [(&str, Rejects); 14] = [
         ("minecraft:brand", |body| {
             let mut packet = Writer::new();
             packet.string("minecraft:brand");
@@ -45,11 +45,6 @@ fn every_registered_engine_codec_refuses_a_hostile_oversized_body() {
         ("sunrise:carry_age", |body| {
             protocol::carry_age::decode(body).is_err()
         }),
-        ("sunrise:lod", |body| {
-            crate::lod_net::Offer::decode(body).is_none()
-                && crate::lod_net::Request::decode(body).is_err()
-                && crate::lod_net::decode_reply(body, &Default::default(), 1).is_err()
-        }),
         ("sunrise:block_registry", |body| {
             crate::content_identity::decode_payload(body).is_err()
         }),
@@ -70,9 +65,4 @@ fn every_registered_engine_codec_refuses_a_hostile_oversized_body() {
     for (channel, rejects) in cases {
         assert!(rejects(&body), "{channel} accepted an oversized body");
     }
-    // A real LOD offer with trailing bytes must also fail. Its decoder used
-    // to accept its prefix and ignore the rest (without allocating it).
-    let mut offer = crate::lod_net::Offer::new(16).encode();
-    offer.append(&mut body);
-    assert!(crate::lod_net::Offer::decode(&offer).is_none());
 }

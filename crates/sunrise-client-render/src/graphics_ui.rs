@@ -7,7 +7,7 @@
 use crate::{
     gfx::EffectiveOutput,
     graphics::{
-        EntityCullingMode, FarDetail, FrameGeneration, GpuCullingMode, GraphicsApi, HdrMode,
+        EntityCullingMode, FrameGeneration, GpuCullingMode, GraphicsApi, HdrMode,
         HdrSetup as Setup, LeafCullingMode, Pacing, ParallelTickMode, ParticleCullingMode,
         PresentMode, Preset, Upscaling,
     },
@@ -70,9 +70,6 @@ impl Page {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum H {
     Preset,
-    LodDistance,
-    FarDetail,
-    BlueMapRadius,
     CaveCulling,
     GpuCulling,
     EntityCulling,
@@ -163,12 +160,6 @@ fn e(item: crate::extras::Item, cost: Cost) -> Setting {
 /// Every page's settings, in named groups of related rows.
 pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
     use Cost::*;
-    // Suggested, never switched on, where far terrain costs the GPU most.
-    let far = if crate::graphics::reduced_far_detail_suggested() {
-        "Reduced draws far terrain coarser: faster on this integrated GPU."
-    } else {
-        "Reduced draws far terrain coarser, for GPUs it slows down."
-    };
     let mut pages = vec![
         (
             Page::General,
@@ -194,18 +185,7 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         v(
                             Opt::RenderDistance,
                             High,
-                            "Full-detail terrain range. LOD Distance can extend local worlds farther.",
-                        ),
-                        h(
-                            H::LodDistance,
-                            Medium,
-                            "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.",
-                        ),
-                        h(H::FarDetail, Medium, far),
-                        h(
-                            H::BlueMapRadius,
-                            None,
-                            "How far around you BlueMap tiles are downloaded. Next join.",
+                            "How far chunks load and are drawn, in chunks.",
                         ),
                         v(
                             Opt::SimulationDistance,
@@ -649,28 +629,7 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
     pages
 }
 
-/// BlueMap download radii, in chunks.
-const BLUE_MAP_RADII: [u32; 5] = [16, 32, 64, 128, 256];
 const UPLOAD_STEPS: [u32; 8] = [0, 256, 512, 1024, 2048, 4096, 8192, 16384];
-/// What the LOD Distance slider stops at, in chunks: off, fine steps up to 256
-/// for a short ring of far terrain past a small render distance (a phone or an
-/// integrated GPU at 8 chunks wants LOD to 12 or 16, not 64), then 512 and the
-/// farthest far terrain plans.
-const LOD_STEPS: [u32; 12] = [
-    0,
-    16,
-    24,
-    32,
-    48,
-    64,
-    96,
-    128,
-    192,
-    256,
-    512,
-    crate::lod::MAX_CHUNKS,
-];
-
 /// `out`: the output of the renderer the settings are shown for, with what its display reports.
 fn setup(s: &Settings, out: &EffectiveOutput) -> Setup {
     s.sunrise.hdr_setup(out.reported)
@@ -781,13 +740,6 @@ impl H {
                     .unwrap_or(UPLOAD_STEPS.len() - 1);
                 Some(i as f32 / (UPLOAD_STEPS.len() - 1) as f32)
             }
-            H::LodDistance => {
-                let i = LOD_STEPS
-                    .iter()
-                    .position(|&d| d >= g.lod_distance)
-                    .unwrap_or(LOD_STEPS.len() - 1);
-                Some(i as f32 / (LOD_STEPS.len() - 1) as f32)
-            }
             H::Workers => Some(g.workers as f32 / max_workers() as f32),
             H::ResolutionScale => Some((g.resolution_scale as f32 - 50.0) / 150.0),
             H::TargetFps => Some((g.target_fps as f32 - 30.0) / 210.0),
@@ -806,7 +758,6 @@ impl H {
     }
     pub fn slider_steps(self) -> Option<u32> {
         match self {
-            H::LodDistance => Some((LOD_STEPS.len() - 1) as u32),
             H::ChunkUpdates => Some(64),
             H::EntityCullingPrecheck => Some(32),
             H::UploadBudget => Some((UPLOAD_STEPS.len() - 1) as u32),
@@ -838,15 +789,6 @@ impl H {
         let g = &s.sunrise;
         match self {
             H::Preset => labelled("Sunrise Preset", g.preset.label()),
-            H::LodDistance => match g.lod_distance {
-                0 => labelled("LOD Distance", "Off"),
-                n => labelled("LOD Distance", lang::tr("%s chunks", &[&n])),
-            },
-            H::FarDetail => labelled("Far Detail", g.far_detail.label()),
-            H::BlueMapRadius => labelled(
-                "BlueMap Radius",
-                lang::tr("%s chunks", &[&g.blue_map.radius_chunks()]),
-            ),
             H::CaveCulling => labelled("Cave Culling", on_off(g.cave_culling)),
             // Greyed out where it isn't offered (`Item::blocked`): Off, as it is there, while
             // the saved value waits.
@@ -968,9 +910,6 @@ impl H {
                 g.upload_budget_kib =
                     UPLOAD_STEPS[(v * (UPLOAD_STEPS.len() - 1) as f32).round() as usize]
             }
-            H::LodDistance => {
-                g.lod_distance = LOD_STEPS[(v * (LOD_STEPS.len() - 1) as f32).round() as usize]
-            }
             H::Workers => g.workers = (v * max_workers() as f32).round() as u32,
             H::ResolutionScale => g.resolution_scale = (50.0 + (v * 30.0).round() * 5.0) as u32,
             H::TargetFps => g.target_fps = (30.0 + (v * 42.0).round() * 5.0) as u32,
@@ -1001,12 +940,6 @@ impl H {
         }
         let g = &mut s.sunrise;
         match self {
-            H::FarDetail => {
-                g.far_detail = step(&[FarDetail::Full, FarDetail::Reduced], g.far_detail, back)
-            }
-            H::BlueMapRadius => {
-                g.blue_map.radius = step(&BLUE_MAP_RADII, g.blue_map.radius_chunks(), back)
-            }
             H::CaveCulling => g.cave_culling = !g.cave_culling,
             H::GpuCulling => g.gpu_culling = step(&GpuCullingMode::ALL, g.gpu_culling, back),
             H::EntityCulling => {
@@ -1211,13 +1144,6 @@ impl Item {
     }
     pub fn label(self, s: &Settings, out: &EffectiveOutput) -> Text {
         match self {
-            // Far terrain renames the row; its value stays vanilla's `options.chunks`.
-            Item::Vanilla(Opt::RenderDistance) if s.sunrise.lod_distance > 0 => {
-                Text::option_name_value(
-                    Text::literal(lang::get("Full Detail Distance")),
-                    Text::tr("options.chunks", &[&s.render_distance]),
-                )
-            }
             Item::Vanilla(o) => o.label(s),
             Item::Sunrise(h) => h.label(s, out),
             Item::Extra(e) => Text::option_name_value(
@@ -1256,7 +1182,6 @@ impl Item {
             Item::Extra(_)
                 | Item::Sunrise(
                     H::Preset
-                        | H::BlueMapRadius
                         | H::ScreenshotQuality
                         | H::Pacing
                         | H::PresentMode
@@ -1455,7 +1380,6 @@ impl Screen for GraphicsScreen {
             self.output,
             g::translucent_batching_offered(),
             g::gpu_culling_offer(),
-            g::reduced_far_detail_suggested(),
         );
         shell::stamp_of(&(read(s), s.fullbright_held, offers))
     }
@@ -2144,111 +2068,13 @@ mod tests {
     #[test]
     fn rows_split_vanilla_labels_into_name_and_value() {
         let s = Settings::default();
-        let (name, value) = parts(Item::Sunrise(H::LodDistance), &s, &NONE);
+        let (name, value) = parts(Item::Sunrise(H::Preset), &s, &NONE);
         assert_eq!(
             (name.as_str(), value.as_deref()),
-            ("LOD Distance", Some("Off"))
+            ("Sunrise Preset", Some("Custom"))
         );
         let (name, value) = parts(Item::Sunrise(H::HdrCalibrate), &s, &NONE);
         assert!(!name.is_empty() && value.is_none());
-    }
-
-    #[test]
-    fn lod_distance_slides_after_render_distance_without_changing_it() {
-        let mut s = Settings::default();
-        let item = Item::Sunrise(H::LodDistance);
-        let near = s.render_distance;
-        assert_eq!(item.label(&s, &NONE).plain(), "LOD Distance: Off");
-        assert_eq!(item.slider(&s), Some(0.0));
-        let items: Vec<_> = items().into_iter().map(|(_, i)| i).collect();
-        let render = items
-            .iter()
-            .position(|i| *i == Item::Vanilla(Opt::RenderDistance))
-            .unwrap();
-        assert_eq!(items[render + 1], item);
-        // Every stop is reachable and reads back as the same position.
-        for (i, &distance) in LOD_STEPS.iter().enumerate() {
-            let at = i as f32 / (LOD_STEPS.len() - 1) as f32;
-            item.set_slider(&mut s, f64::from(at), &NONE);
-            assert_eq!(s.sunrise.lod_distance, distance);
-            assert_eq!(item.slider(&s), Some(f64::from(at)));
-            assert_eq!(s.render_distance, near);
-        }
-        // The ends are off and the farthest far terrain plans.
-        item.set_slider(&mut s, 0.0, &NONE);
-        assert_eq!(s.sunrise.lod_distance, 0);
-        item.set_slider(&mut s, 1.0, &NONE);
-        assert_eq!(s.sunrise.lod_distance, crate::lod::MAX_CHUNKS);
-        assert_eq!(
-            item.label(&s, &NONE).plain(),
-            format!("LOD Distance: {} chunks", crate::lod::MAX_CHUNKS)
-        );
-        // The fine stops: a ring of far terrain just past a small render
-        // distance, which the doubling steps skipped (#9694).
-        item.set_slider(&mut s, 1.0 / 11.0, &NONE);
-        assert_eq!(s.sunrise.lod_distance, 16);
-        assert_eq!(item.label(&s, &NONE).plain(), "LOD Distance: 16 chunks");
-        item.set_slider(&mut s, 2.0 / 11.0, &NONE);
-        assert_eq!(s.sunrise.lod_distance, 24);
-        // A distance between stops (from the file) sits on the next one.
-        s.sunrise.lod_distance = 300;
-        assert_eq!(item.slider(&s), Some(f64::from(10.0_f32 / 11.0)));
-        s.sunrise.lod_distance = 12;
-        assert_eq!(item.slider(&s), Some(f64::from(1.0_f32 / 11.0)));
-    }
-
-    /// With far terrain on, Render Distance reads "Full Detail Distance" but keeps vanilla's
-    /// `options.chunks` value: it was Sunrise's "%s chunks", so "12 Chunks" became "12 chunks"
-    /// (#14880).
-    #[test]
-    fn full_detail_distance_keeps_the_vanilla_chunk_count() {
-        struct Vanilla;
-        impl lang::ResourceSource for Vanilla {
-            fn read(&self, path: &str) -> Option<Vec<u8>> {
-                (path == "assets/minecraft/lang/en_us.json").then(|| {
-                    serde_json::to_vec(&serde_json::json!({
-                        "options.renderDistance": "Render Distance",
-                        "options.chunks": "%s Chunks",
-                        "options.generic_value": "%s: %s"
-                    }))
-                    .unwrap()
-                })
-            }
-        }
-        let mut s = Settings::default();
-        let near = s.render_distance;
-        let render = Item::Vanilla(Opt::RenderDistance);
-        let ((off, on), _) = lang::scoped(lang::Language::load(&[&Vanilla], "en_us"), || {
-            let off = render.label(&s, &NONE).plain();
-            s.sunrise.lod_distance = 256;
-            (off, render.label(&s, &NONE).plain())
-        });
-        assert_eq!(off, format!("Render Distance: {near} Chunks"));
-        assert_eq!(on, format!("Full Detail Distance: {near} Chunks"));
-    }
-
-    #[test]
-    fn blue_map_settings_sit_with_far_terrain() {
-        let mut s = Settings::default();
-        let radius = Item::Sunrise(H::BlueMapRadius);
-        let distance: Vec<Item> = rows()
-            .into_iter()
-            .flat_map(|(_, groups)| groups)
-            .find(|(name, _)| *name == "Distance")
-            .unwrap()
-            .1
-            .iter()
-            .map(|r| r.item)
-            .collect();
-        assert!(distance.contains(&radius));
-        assert!(distance.contains(&Item::Sunrise(H::FarDetail)));
-        assert_eq!(radius.label(&s, &NONE).plain(), "BlueMap Radius: 64 chunks");
-        radius.cycle(&mut s, false, FB, &NONE);
-        assert_eq!(s.sunrise.blue_map.radius, 128);
-        radius.cycle(&mut s, true, FB, &NONE);
-        radius.cycle(&mut s, true, FB, &NONE);
-        assert_eq!(radius.label(&s, &NONE).plain(), "BlueMap Radius: 32 chunks");
-        assert_eq!(s.sunrise.preset, Preset::Custom);
     }
 
     #[test]
@@ -2277,7 +2103,7 @@ mod tests {
         // Ultra keeps the optimizations that leave the picture as it is, and no others.
         assert_eq!(s.sunrise.entity_culling, EntityCullingMode::Asynchronous);
         assert_eq!(s.sunrise.gpu_culling, GpuCullingMode::Auto);
-        assert_eq!((s.sunrise.lod_distance, s.sunrise.fxaa), (128, true));
+        assert!(s.sunrise.fxaa);
         assert_eq!(
             (s.sunrise.resolution_scale, s.sunrise.opaque_ice),
             (100, false)
@@ -2746,7 +2572,6 @@ mod tests {
         // HDR's sliders step only where the display offers HDR.
         let out = offering(true, None);
         let options = [
-            H::LodDistance,
             H::ChunkUpdates,
             H::UploadBudget,
             H::Workers,

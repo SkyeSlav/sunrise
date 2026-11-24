@@ -27,7 +27,7 @@ impl Game<'_> {
                         .copied()
                         .filter(|&key| !range.contains(key))
                         .collect();
-                    self.forget_remote_columns(&mut gone, true);
+                    self.forget_remote_columns(&mut gone);
                 }
                 self.update_remote_chunk_view(range);
             }
@@ -56,7 +56,7 @@ impl Game<'_> {
                 for &(x, z) in &gone {
                     self.forget_chunk_passages(x, z);
                 }
-                self.forget_remote_columns(&mut gone, true);
+                self.forget_remote_columns(&mut gone);
                 self.update_remote_chunk_view(range);
             }
         }
@@ -78,26 +78,25 @@ impl Game<'_> {
         positions.retain(|&(x, z)| {
             self.remote_chunk_in_range(x, z) && self.world.chunks.contains_key(&(x, z))
         });
-        self.forget_remote_columns(positions, true);
+        self.forget_remote_columns(positions);
     }
 
     /// Every column goes with the client level, including hidden ring slots.
     pub(in crate::game) fn forget_all_remote_columns(&mut self) -> Vec<Column> {
         self.clear_remote_light();
         let mut gone = self.world.chunks.resident_keys().collect();
-        self.forget_remote_columns(&mut gone, false)
+        self.forget_remote_columns(&mut gone)
     }
 
     /// Forgets the `gone` columns (and empties the set): their chunks (freed on a thread
     /// of their own when there are many), their sections in the renderer and their block
-    /// entities, each store once for all of them. When the level stays open,
-    /// far terrain keeps their last state (`server_terrain`). Returns the
-    /// positions it freed, in `gone`'s order: only those still resident,
-    /// so a later forget of the same positions frees nothing.
+    /// entities, each store once for all of them. Returns the positions it
+    /// freed, in `gone`'s order: only those still resident, so a later forget
+    /// of the same positions frees nothing.
     pub(in crate::game) fn forget_remote_columns(
         &mut self,
         gone: &mut FxHashSet<Column>,
-        keep_terrain: bool,
+        level_stays: bool,
     ) -> Vec<Column> {
         if gone.is_empty() {
             return Vec::new();
@@ -110,24 +109,19 @@ impl Game<'_> {
             .copied()
             .collect();
         for &(x, z) in &freed_at {
-            self.client_chunk_unload(x, z, keep_terrain);
+            self.client_chunk_unload(x, z, level_stays);
         }
-        self.free_remote_columns(gone, keep_terrain);
+        self.free_remote_columns(gone);
         freed_at
     }
 
-    fn free_remote_columns(&mut self, gone: &mut FxHashSet<Column>, keep_terrain: bool) {
+    fn free_remote_columns(&mut self, gone: &mut FxHashSet<Column>) {
         if gone.is_empty() {
             return;
         }
         let freed =
             sunrise_client::streaming::Streaming::take_remote_columns(&mut self.world, gone);
         self.streaming.forget_columns(&mut self.world, gone);
-        if keep_terrain && let Some(lod) = &mut self.lod {
-            for chunk in &freed {
-                lod.observe(chunk.clone(), self.res.facts());
-            }
-        }
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.remove_columns(gone.iter().copied());
         }

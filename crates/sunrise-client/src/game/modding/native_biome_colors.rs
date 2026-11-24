@@ -35,7 +35,6 @@ impl Game<'_> {
             self.pack.context = self.pack.context_with(biomes);
         }
         let context = self.worker_context();
-        self.clear_lod();
         self.streaming.reload_resources(&mut self.world, context);
     }
 }

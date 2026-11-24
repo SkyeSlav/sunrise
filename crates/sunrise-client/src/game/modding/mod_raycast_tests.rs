@@ -58,7 +58,7 @@ fn game<'a>(resources: &'a mut Option<Arc<crate::game::Resources>>) -> Game<'a> 
 
 #[test]
 #[ignore = "daily"]
-fn mod_raycasts_hit_loaded_blocks_only_with_far_terrain_on_or_off() {
+fn mod_raycasts_hit_loaded_blocks_only() {
     let mut resources = None;
     let mut game = game(&mut resources);
     // Looking straight down at the stone under the player.
@@ -72,20 +72,9 @@ fn mod_raycasts_hit_loaded_blocks_only_with_far_terrain_on_or_off() {
         (without.1.block_x, without.1.block_y, without.1.block_z),
         (0, 99, 0)
     );
-    assert_eq!(game.raycast(8.0), Some(without.1.clone()));
-    assert_eq!(game.raycast(1.0), None, "past the distance asked for");
-    game.settings.sunrise.lod_distance = 256;
-    game.lod = Some(sunrise_client::lod::Lod::new(
-        game.streaming.lod_source(),
-        game.worker_context(),
-    ));
-    assert_eq!(
-        game.view_hit(),
-        Some(without.clone()),
-        "far terrain changes nothing"
-    );
     assert_eq!(game.raycast(8.0), Some(without.1));
-    // Over a chunk that isn't loaded, far terrain or not, there is nothing to hit.
+    assert_eq!(game.raycast(1.0), None, "past the distance asked for");
+    // Over a chunk that isn't loaded, there is nothing to hit.
     at(&mut game, 40.5);
     assert_eq!(game.view_hit(), None);
     assert_eq!(game.raycast(1024.0), None);

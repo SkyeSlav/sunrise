@@ -423,8 +423,6 @@ pub(super) struct Remote {
         Option<(Dim, sunrise_client_render::moving_colliders::Prepared)>,
     /// How old the copy of the collider carrying the player is (`sunrise:carry_age`).
     pub carry_age: sunrise_client::colliders::CarryAge,
-    /// The server samples far terrain for us, this far at most (`lod_net`).
-    pub far_terrain: Option<sunrise_client::lod_net::Offer>,
     pub(super) builtin: Arc<Builtin>,
     lang: Arc<Language>,
     pub(in crate::game) registries: Arc<Dynamic>,
@@ -491,9 +489,6 @@ pub(super) struct Remote {
     logged_out: bool,
     /// The other levels' worlds the server opened on `sunrise:levels` (`viewed_worlds`).
     pub(in crate::game) viewed: super::viewed_worlds::ViewedWorlds,
-    /// The level's hashed seed (login, respawn): the folder of its kept chunks
-    /// (`server_terrain::level_dir`).
-    pub(super) hashed_seed: i64,
     /// `ClientLevel.getSeaLevel`: from the packet that created this level.
     pub(in crate::game) sea_level: i32,
     /// What chunk packets decode with (the dimension's height and sky, the

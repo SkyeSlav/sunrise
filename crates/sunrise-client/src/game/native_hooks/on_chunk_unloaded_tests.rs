@@ -225,7 +225,7 @@ fn a_client_tells_a_forgotten_column_but_not_its_level_going() {
             .block_entities
             .insert((x, y, z), BlockEntity::Chest(vec![]));
 
-        game.forget_remote_columns(&mut [CHUNK].into_iter().collect(), true);
+        game.forget_remote_columns(&mut [CHUNK].into_iter().collect());
         let mut calls = std::mem::take(&mut *CALLS.lock().unwrap());
         calls.sort();
         assert_eq!(

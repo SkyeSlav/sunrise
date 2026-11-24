@@ -189,10 +189,10 @@ fn a_client_tells_a_chunk_packet_and_its_forget_once() {
         );
 
         let mut gone = [(3, 4)].into_iter().collect();
-        game.forget_remote_columns(&mut gone, true);
+        game.forget_remote_columns(&mut gone);
         assert_eq!(take_calls(), [unload([3, 4], Some("minecraft:stone"))]);
         let mut gone = [(3, 4)].into_iter().collect();
-        game.forget_remote_columns(&mut gone, true);
+        game.forget_remote_columns(&mut gone);
         assert!(take_calls().is_empty(), "a column already gone is not told");
 
         // A respawn into another level drops the old level's columns, told as the old
@@ -236,20 +236,20 @@ fn cache_packets_hide_replace_and_resize_slots() {
 
                 game.apply_packet(radius(1)).unwrap();
                 assert_eq!(game.effective_render_distance(), 1);
-                assert_eq!(game.terrain_distance(), 1);
+                assert_eq!(game.effective_render_distance(), 1);
                 assert!(std::sync::Arc::ptr_eq(&origin, &game.world.chunks[&(0, 0)]));
                 game.apply_packet(radius(0)).unwrap();
-                assert_eq!(game.terrain_distance(), 8);
+                assert_eq!(game.effective_render_distance(), 8);
                 game.settings.render_distance = 10;
                 game.apply_settings();
                 assert_eq!(game.streaming.radius, 10);
                 game.apply_packet(radius(4)).unwrap();
                 game.settings.render_distance = 11;
                 game.apply_settings();
-                assert_eq!(game.terrain_distance(), 4);
+                assert_eq!(game.effective_render_distance(), 4);
                 assert_eq!(game.streaming.radius, 5);
                 game.apply_packet(radius(14)).unwrap();
-                assert_eq!(game.terrain_distance(), 11);
+                assert_eq!(game.effective_render_distance(), 11);
                 game.apply_packet(radius(2)).unwrap();
 
                 game.apply_packet(center(11)).unwrap();

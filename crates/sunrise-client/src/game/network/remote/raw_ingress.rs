@@ -419,11 +419,6 @@ impl Game<'_> {
                     remote.custom_books = true;
                 }
             }
-            Event::FarTerrain(offer) => {
-                if let Some(remote) = &mut self.remote {
-                    remote.far_terrain = Some(offer);
-                }
-            }
             Event::Cookie(task) => task.handle(),
             Event::Configuration(task) => {
                 if let Some(effect) = task.handle() {
@@ -444,15 +439,10 @@ impl Game<'_> {
                 if let Some(remote) = &mut self.remote {
                     remote.has_logical_player = false;
                     remote.viewed.clear();
-                    remote.far_terrain = None;
                     remote.quiet_commands = false;
                     remote.custom_books = false;
                     remote.cauldron_entries = None;
                     remote.pending_cauldrons.get_mut().clear();
-                }
-                self.clear_lod();
-                if let Some(remote) = &self.remote {
-                    remote.session.reset_far_terrain();
                 }
                 self.remove_local_player_body();
                 self.post_effects.clear();

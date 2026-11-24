@@ -188,7 +188,7 @@ impl Game<'_> {
         }
         // Camera.depthFar, as the renderer's far plane.
         let depth_far =
-            sunrise_client::camera::depth_far(self.terrain_distance(), self.settings.cloud_range);
+            sunrise_client::camera::depth_far(self.effective_render_distance(), self.settings.cloud_range);
         if !self
             .border_renderer
             .prepare(&self.border_state, camera, distance, depth_far)

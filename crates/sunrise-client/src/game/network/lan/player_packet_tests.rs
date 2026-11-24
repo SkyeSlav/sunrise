@@ -779,7 +779,6 @@ fn run_witness() {
                 NetConfig {
                     listen: false,
                     announce: false,
-                    lod_distance: 0,
                     ..NetConfig::lan(0, String::new(), 16)
                 },
                 HubConfig {

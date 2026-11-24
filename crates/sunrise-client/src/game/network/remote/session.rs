@@ -226,7 +226,6 @@ impl Game<'_> {
         self.set_screen(Screen::Playing);
         self.hide_title();
         self.dim = Dim::Overworld;
-        self.clear_lod();
         self.pending_uploads.clear();
         if let Some(r) = self.renderer.as_mut() {
             r.clear_sections(self.world.layout());
@@ -255,7 +254,6 @@ impl Game<'_> {
             colliders: HashMap::new(),
             collider_shove_start: None,
             carry_age: Default::default(),
-            far_terrain: None,
             builtin,
             status: lang
                 .get("connect.connecting")
@@ -284,7 +282,6 @@ impl Game<'_> {
             facts_cache: Default::default(),
             added_levels: Default::default(),
             viewed: Default::default(),
-            hashed_seed: 0,
             sea_level: 63,
             chunk_format: Arc::new(ChunkFormat::new(
                 &DimensionType::vanilla("minecraft:overworld"),
@@ -513,7 +510,6 @@ impl Game<'_> {
         self.set_screen(Screen::Playing);
         self.title = None;
         self.dim = Dim::Overworld;
-        self.clear_lod();
         self.pending_uploads.clear();
         if let Some(r) = self.renderer.as_mut() {
             r.clear_sections(self.world.layout());
@@ -540,7 +536,6 @@ impl Game<'_> {
             colliders: HashMap::new(),
             collider_shove_start: None,
             carry_age: Default::default(),
-            far_terrain: None,
             builtin,
             status: "Playing Studio Replay".into(),
             lang,
@@ -567,7 +562,6 @@ impl Game<'_> {
             facts_cache: Default::default(),
             added_levels: Default::default(),
             viewed: Default::default(),
-            hashed_seed: 0,
             sea_level: 63,
             chunk_format: Arc::new(ChunkFormat::new(
                 &DimensionType::vanilla("minecraft:overworld"),
@@ -826,7 +820,6 @@ impl Game<'_> {
         self.border = Default::default();
         self.set_screen(Screen::Playing);
         self.container = None;
-        self.clear_lod();
         self.pending_uploads.clear();
         if let Some(r) = self.renderer.as_mut() {
             r.clear_sections(self.world.layout());
@@ -911,8 +904,7 @@ impl Game<'_> {
             !matches!(entry, RemoteDimensionEntry::Login) || !r.has_logical_player;
         if !same {
             r.collider_shove_start = None;
-            // A same-level respawn keeps the existing ClientLevel's seed and sea level.
-            r.hashed_seed = spawn.seed;
+            // A same-level respawn keeps the existing ClientLevel's sea level.
             r.sea_level = spawn.sea_level;
         }
         // A Sunrise server's bulk edit sends whole columns with the light
@@ -1024,7 +1016,6 @@ impl Game<'_> {
                 r.chunk_center = (0, 0);
                 r.awaiting_viewed_chunk_center = false;
             }
-            self.clear_lod();
             self.pending_uploads.clear();
             if let Some(renderer) = self.renderer.as_mut() {
                 renderer.clear_sections(self.world.layout());

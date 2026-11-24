@@ -105,7 +105,6 @@ fn with_server(role: ExecutionRole, test: impl FnOnce(&mut Game<'_>)) {
             NetConfig {
                 listen: false,
                 announce: false,
-                lod_distance: 0,
                 ..NetConfig::lan(0, String::new(), 2)
             },
             config,

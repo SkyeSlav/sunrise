@@ -1,107 +1,8 @@
 //! The frame's world update (`update_world`): what arrived from the server, the chunks that
 //! streamed in and the meshes handed to the renderer, the columns that unload (their entities
-//! and block entities saved out first); and far terrain (`prepare_lod`, `clear_lod`).
+//! and block entities saved out first).
 use super::*;
 
-impl Game<'_> {
-    pub(super) fn clear_lod(&mut self) {
-        // The samplers waiting on the server stop first: dropping the far
-        // terrain joins them.
-        if let Some(remote) = &self.remote {
-            remote.session.cancel_far_terrain();
-        }
-        self.lod = None;
-        self.lod_source_attempted = false;
-        self.lod_observe.clear();
-        self.lod_blue_map = None;
-        self.lod_covered_at = None;
-        if let Some(renderer) = &mut self.renderer {
-            renderer.clear_lods();
-        }
-    }
-    pub(super) fn prepare_lod(&mut self) {
-        let enabled = self.far_terrain_choice().0 > 0
-            && self.renderer.is_some()
-            && self.player.is_some()
-            && self.title.is_none();
-        if !enabled {
-            if self.lod.is_some() || self.lod_source_attempted {
-                self.clear_lod();
-            }
-            return;
-        }
-        // Another level: its own kept chunks. (Another world at the same
-        // address, a proxy's next server, comes through a new login; a seed
-        // changed at a respawn of the same level is a plugin hiding it.)
-        if self
-            .lod_level
-            .as_ref()
-            .is_some_and(|level| self.remote.as_ref().is_some_and(|r| r.level != *level))
-        {
-            self.clear_lod();
-        }
-        if self.lod_source_attempted {
-            return;
-        }
-        self.lod_source_attempted = true;
-        self.lod_level = None;
-        let dim = self.dim;
-        let source = match (&self.integrated, self.server_far_terrain(), &self.remote) {
-            (Some(server), ..) => server
-                .ask(|reply| super::owner_link::OwnerRequest::LodSource(dim, reply))
-                .flatten(),
-            (None, Some(offer), Some(remote)) => {
-                let states = self.res.facts().states.len() as u32;
-                let biomes = self.res.biomes().index.clone();
-                let source: Arc<dyn sunrise_client::streaming::LodSource> =
-                    remote.session.far_terrain(offer, biomes, states);
-                Some(source)
-            }
-            // A friend's world has a new code at every share: nothing to keep.
-            (None, None, Some(remote))
-                if remote
-                    .session
-                    .address
-                    .starts_with(sunrise_client::net::FRIEND) =>
-            {
-                None
-            }
-            // No offer from a server: draw what it sent, on this visit and before.
-            (None, None, Some(remote)) => std::env::current_dir().ok().map(|home| {
-                use sunrise_client::server_terrain as terrain;
-                let address = &remote.session.address;
-                let root = home.join("server-terrain");
-                let dir = terrain::level_dir(&root, address, remote.hashed_seed, &remote.level);
-                self.lod_level = Some(remote.level.clone());
-                // Past them, the server's BlueMap, if the player named it.
-                let maps = root.join(terrain::server_folder(address)).join("BlueMap");
-                let settings = &self.settings.sunrise.blue_map;
-                let blue_map = settings.server(address).map(|server| {
-                    use sunrise_client::bluemap;
-                    // The map's address only at debug: logs land in crash reports.
-                    log::info!("Sunrise: far terrain also draws {}'s BlueMap", remote.level);
-                    log::debug!("Sunrise: BlueMap at {}", server.url);
-                    let map = Arc::new(bluemap::BlueMap::new(
-                        &server.url,
-                        &remote.level,
-                        server.maps.clone(),
-                        maps,
-                        settings.radius_blocks(),
-                        bluemap::Palette::from_game(self.pack.assets.registry, self.res.biomes()),
-                    ));
-                    map.start();
-                    map
-                });
-                self.lod_blue_map = blue_map.clone();
-                terrain::ServerTerrain::new(dir, blue_map) as _
-            }),
-            _ => Some(self.streaming.lod_source()),
-        };
-        if let Some(source) = source {
-            self.lod = Some(sunrise_client::lod::Lod::new(source, self.worker_context()));
-            self.lod_observe.extend(self.world.chunks.keys().copied());
-        }
-    }
     pub(super) fn update_world(&mut self) {
         if let Err(e) = sunrise_client::spans::time("poll_remote", || self.poll_remote()) {
             log::warn!("Sunrise: {e}");
@@ -111,39 +12,17 @@ impl Game<'_> {
         }
         self.poll_remote_light();
         // The renderer laid translucent quads out again (a shader pack's flat terrain came
-        // or went) and dropped every section and far tile: meshed again, as for a new one.
+        // or went) and dropped every section: meshed again, as for a new one.
         if self
             .renderer
             .as_mut()
             .is_some_and(Renderer::take_dropped_sections)
         {
-            self.clear_lod();
             self.all_sections_changed();
-        }
-        sunrise_client::spans::time("prepare_lod", || self.prepare_lod());
-        // The columns the single-player server changed in bulk without sending them, which far terrain still drew
-        // as this window last saw them: summarized again (taken every tick, far terrain on or off, so none waits).
-        if self.remote.is_some() {
-            let changed = sunrise_client::lan::handoff::take_changed();
-            if let Some(lod) = &mut self.lod {
-                for chunk in changed {
-                    let column = (chunk.x, chunk.z);
-                    if self.world.chunks.contains_key(&column) {
-                        continue;
-                    }
-                    lod.observe(chunk, self.res.facts());
-                }
-            }
         }
         self.observe_light_edits();
         self.ask_edited_light_emission();
         let camera_pos = self.visual_camera_position();
-        if let (Some(map), Some(pos), Some(lod)) = (&self.lod_blue_map, camera_pos, &mut self.lod) {
-            map.set_center(pos[0].floor() as i32, pos[2].floor() as i32);
-            for change in map.take_changed() {
-                lod.refresh(change.area, change.widths);
-            }
-        }
         if let Some(pos) = camera_pos {
             self.streaming.center = ((pos[0].floor() as i32) >> 4, (pos[2].floor() as i32) >> 4);
             self.streaming.center_y = pos[1].floor() as i32;
@@ -250,32 +129,6 @@ impl Game<'_> {
         for chunk in &unloaded {
             self.world.modified.unloaded(&(chunk.x, chunk.z));
         }
-        if let Some(lod) = &mut self.lod {
-            self.lod_observe
-                .extend(uploads.iter().map(|upload| (upload.key.0, upload.key.2)));
-            for chunk in &unloaded {
-                self.lod_observe.remove(&(chunk.x, chunk.z));
-            }
-            // Unloaded columns first (their summaries are all that remains),
-            // then a few resident ones (an edit copies a chunk the worker
-            // still holds). The worker summarizes them.
-            sunrise_client::spans::time("lod_observe", || {
-                for chunk in &unloaded {
-                    lod.observe(chunk.clone(), self.res.facts());
-                }
-                while lod.observing() < sunrise_client::lod::OBSERVE_AHEAD
-                    && let Some(&key) = self.lod_observe.iter().next()
-                {
-                    self.lod_observe.remove(&key);
-                    if let Some(chunk) = self.world.chunks.get(&key) {
-                        lod.observe(chunk.clone(), self.res.facts());
-                    }
-                }
-            });
-        }
-        for chunk in &unloaded {
-            self.world.modified.unloaded(&(chunk.x, chunk.z));
-        }
         sunrise_client::spans::time("unload_entities", || self.unload_entities(&unloaded));
         if !unloaded.is_empty() {
             let gone: sunrise_client::fast_hash::FxHashSet<(i32, i32)> =
@@ -296,8 +149,6 @@ impl Game<'_> {
         if self.remote.is_none() {
             sunrise_client::spans::time("sync_tick_chunks", || self.sync_tick_chunks());
         }
-        let (far_distance, far_reduced) =
-            sunrise_client::spans::time("far_terrain_choice", || self.far_terrain_choice());
         // Terrain still on its way from the server (single player's integrated one
         // too): the view's outermost columns not all in, or its events not all handled.
         let radius = match &self.remote {
@@ -312,11 +163,6 @@ impl Game<'_> {
             let _span = sunrise_client::spans::guard("view_arrival");
             self.view_arrival.arriving(view, now, has) || self.remote_backlog() > 0
         };
-        // Which far tiles a zoom magnifies (`lod::ZoomAim`), read before
-        // `self.renderer.as_mut()` below borrows self mutably for the rest of
-        // this function. Cheap: trigonometry on one angle, or None when the
-        // view is not zoomed.
-        let lod_aim = camera_pos.and_then(|camera| self.lod_aim(camera));
         if let Some(renderer) = self.renderer.as_mut() {
             let g = &self.settings.sunrise;
             let budgeted = g.chunk_updates > 0 || g.upload_budget_kib > 0;
@@ -421,52 +267,7 @@ impl Game<'_> {
             renderer.remove_columns(unloaded.iter().map(|c| (c.x, c.z)));
             // Meshes in the works are the view's terrain while it is new, then edits'.
             let meshing = self.streaming.busy() || !self.pending_uploads.is_empty();
-            let sampling = self.lod.as_ref().is_some_and(|lod| lod.sampling());
-            renderer.set_terrain_loading(
-                arriving || (meshing && self.view_arrival.recent(now)) || sampling,
-            );
-            if let (Some(lod), Some(player)) = (&mut self.lod, &self.player) {
-                let lod_distance =
-                    sunrise_client::graphics::lod_distance_capped(far_distance, &renderer.info);
-                lod.set_near_loading(self.streaming.terrain_loading());
-                lod.set_reduced_detail(far_reduced);
-                // The covered columns change only with the complete ones and
-                // the render area: rebuilt then, not every frame.
-                let at = (
-                    renderer.lod_detail_revision(),
-                    self.streaming.center,
-                    self.streaming.radius,
-                );
-                let covered = (self.lod_covered_at != Some(at)).then(|| {
-                    self.lod_covered_at = Some(at);
-                    sunrise_client::spans::time("lod_covered_set", || {
-                        renderer
-                            .lod_detail_columns()
-                            .filter(|&(x, z)| {
-                                sunrise_client::streaming::in_view_distance(at.1, at.2, x, z)
-                            })
-                            .collect()
-                    })
-                });
-                // Far terrain's finest tiles stand where full-detail terrain
-                // ends: on a server, where it stops sending chunks, often well
-                // inside the render distance. Thousands of chunk-sized tiles
-                // between the two filled in long after the coarser ones.
-                let detail = self.remote.as_ref().map_or(self.streaming.radius, |r| {
-                    self.streaming.radius.min(r.sent_radius())
-                });
-                let camera =
-                    camera_pos.unwrap_or([player.position.x, player.position.y, player.position.z]);
-                let meshes = sunrise_client::spans::time("lod_update", || {
-                    lod.update(camera, detail, lod_distance, covered, lod_aim)
-                });
-                renderer.queue_lods(meshes, lod.removed(), lod.take_cutout());
-                // A finished job can hold hundreds of tiles: spread them
-                // over frames rather than stall one.
-                sunrise_client::spans::time("lod_upload", || {
-                    renderer.upload_lods(std::time::Duration::from_millis(2))
-                });
-            }
+            renderer.set_terrain_loading(arriving || (meshing && self.view_arrival.recent(now)));
         }
     }
 }

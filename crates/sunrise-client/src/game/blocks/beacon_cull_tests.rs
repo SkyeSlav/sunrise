@@ -89,11 +89,6 @@ fn a_beam_draws_inside_the_render_distance_only_and_leaves_with_its_column() {
     // The streaming radius keeps a chunk past the render distance, as a server's view distance can.
     game.settings.render_distance = 4;
     game.streaming.radius = 5;
-    game.settings.sunrise.lod_distance = 256;
-    game.lod = Some(sunrise_client::lod::Lod::new(
-        game.streaming.lod_source(),
-        game.worker_context(),
-    ));
     let beacon = || {
         BlockEntity::Beacon(Box::new(Beacon {
             levels: 1,
@@ -116,9 +111,9 @@ fn a_beam_draws_inside_the_render_distance_only_and_leaves_with_its_column() {
         both,
         "the one at 64 blocks is culled"
     );
-    // Unloaded with its far terrain kept, the beam goes though the camera is in range.
+    // Unloaded, the beam goes though the camera is in range.
     let mut gone = [(3, 0)].into_iter().collect();
-    game.forget_remote_columns(&mut gone, true);
+    game.forget_remote_columns(&mut gone);
     assert_eq!(
         beam_vertices(&mut game),
         0,

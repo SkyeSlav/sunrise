@@ -559,7 +559,7 @@ fn client_tick_case(
             match op[0].as_str().unwrap() {
                 "forget" => {
                     let at = (int(&op[1]), int(&op[2]));
-                    game.forget_remote_columns(&mut [at].into_iter().collect(), true);
+                    game.forget_remote_columns(&mut [at].into_iter().collect());
                 }
                 "send" => {
                     let listed: Vec<usize> = op[3]

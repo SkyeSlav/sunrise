@@ -458,7 +458,6 @@ mod tests {
                     8,
                     &transforms.cull_frustum,
                     |_| true,
-                    |_, _| false,
                     &mut visible_unposed,
                 );
                 let mut visible_bobbed = Vec::new();
@@ -467,7 +466,6 @@ mod tests {
                     8,
                     &bobbed_frustum,
                     |_| true,
-                    |_, _| false,
                     &mut visible_bobbed,
                 );
                 let mut visible_narrow = Vec::new();
@@ -476,7 +474,6 @@ mod tests {
                     8,
                     &raw_fov_frustum,
                     |_| true,
-                    |_, _| false,
                     &mut visible_narrow,
                 );
                 assert_eq!(

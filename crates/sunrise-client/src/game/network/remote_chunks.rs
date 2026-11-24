@@ -136,7 +136,7 @@ impl Game<'_> {
                 // ClientLevel.unload disables the old slot's column, not its successor.
                 r.chunk_light.columns.remove(&alias);
             }
-            self.forget_remote_columns(&mut [alias].into_iter().collect(), true);
+            self.forget_remote_columns(&mut [alias].into_iter().collect());
         }
         let previous = self.world.chunks.get(&key);
         let resident = previous.is_some();

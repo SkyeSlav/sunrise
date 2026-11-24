@@ -22,12 +22,12 @@ fn forgetting_and_closing_remote_columns_clear_their_data() {
                 assert!(game.world.chunks.contains_key(&(0, 0)));
                 assert!(game.streaming.is_lit(0, 0));
                 let mut forgotten = [(0, 0)].into_iter().collect();
-                game.forget_remote_columns(&mut forgotten, true);
+                game.forget_remote_columns(&mut forgotten);
                 assert!(!game.world.chunks.contains_key(&(0, 0)));
                 assert!(!game.world.block_entities.contains_key(&(0, 64, 0)));
                 assert!(!game.streaming.is_lit(0, 0));
                 assert!(game.world.chunks.contains_key(&(1, 0)));
-                game.forget_remote_columns(&mut [(0, 0)].into_iter().collect(), true);
+                game.forget_remote_columns(&mut [(0, 0)].into_iter().collect());
                 game.forget_all_remote_columns();
                 assert!(game.world.chunks.is_empty());
                 assert!(game.world.block_entities.is_empty());
@@ -50,9 +50,9 @@ fn every_free_route_returns_the_columns_it_freed_once() {
                         .insert_remote(&mut game.world, Chunk::empty(x, 0));
                 }
                 let mut gone = [(0, 0)].into_iter().collect();
-                assert_eq!(game.forget_remote_columns(&mut gone, true), [(0, 0)]);
+                assert_eq!(game.forget_remote_columns(&mut gone), [(0, 0)]);
                 let mut gone = [(0, 0)].into_iter().collect();
-                assert!(game.forget_remote_columns(&mut gone, true).is_empty());
+                assert!(game.forget_remote_columns(&mut gone).is_empty());
                 assert_eq!(game.forget_all_remote_columns(), [(1, 0)]);
                 assert!(game.world.chunks.is_empty());
                 assert!(game.world.block_entities.is_empty());
@@ -76,7 +76,7 @@ fn streaming_adoption_and_resend_stay_resident_until_the_forget() {
             .replace_remote(&mut game.world, Chunk::empty(0, 0));
         assert!(game.world.chunks.contains_key(&(0, 0)));
         let mut gone = [(0, 0)].into_iter().collect();
-        assert_eq!(game.forget_remote_columns(&mut gone, true), [(0, 0)]);
+        assert_eq!(game.forget_remote_columns(&mut gone), [(0, 0)]);
     });
 }
 

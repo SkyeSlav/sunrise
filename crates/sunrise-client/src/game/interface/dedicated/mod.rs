@@ -1143,9 +1143,6 @@ impl Game<'_> {
                 .raw
                 .get(sunrise_client::lan::SUNRISE_CLIENTS_ONLY)
                 .is_some_and(|v| v.trim().eq_ignore_ascii_case("true")),
-            lod_distance: sunrise_client::lod_net::distance_property(
-                props.raw.get(sunrise_client::lod_net::PROPERTY).as_deref(),
-            ),
             server_links: if props.bug_report_link.is_empty() {
                 Vec::new()
             } else if super::server_links::valid_untrusted_uri(&props.bug_report_link) {
@@ -1263,11 +1260,7 @@ impl Game<'_> {
                 self.options.spikes.unwrap_or(SLOW_TICK_MS),
             ),
             perf_epoch: Instant::now(),
-            sunrise: sunrise_client::server_perf::sunrise_options(
-                sunrise_client::lod_net::distance_property(
-                    props.raw.get(sunrise_client::lod_net::PROPERTY).as_deref(),
-                ),
-            ),
+            sunrise: sunrise_client::server_perf::sunrise_options(),
             compression: props.network_compression_threshold,
             view: (
                 props.view_distance.clamp(2, 32) as u32,

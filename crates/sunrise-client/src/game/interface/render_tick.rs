@@ -274,8 +274,7 @@ impl Game<'_> {
             sky,
             water_fog_color,
             biome,
-            render_distance_chunks: self.terrain_distance(),
-            distant_terrain: self.lod.is_some() && self.overworld_skybox(),
+            render_distance_chunks: self.effective_render_distance(),
             cloud_range_chunks: self.settings.cloud_range,
             camera_y: camera.y,
             min_y: self.level_min_y(),
@@ -548,7 +547,7 @@ impl Game<'_> {
                 near_yaw,
                 near_pitch,
                 sunrise_client::camera::depth_far(
-                    self.terrain_distance(),
+                    self.effective_render_distance(),
                     self.settings.cloud_range,
                 ),
             );

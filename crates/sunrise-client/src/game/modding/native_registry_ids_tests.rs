@@ -29,7 +29,6 @@ fn serve(game: &mut super::Game<'_>) {
     let net = NetConfig {
         listen: false,
         announce: false,
-        lod_distance: 0,
         ..NetConfig::lan(0, String::new(), 2)
     };
     let config = HubConfig {

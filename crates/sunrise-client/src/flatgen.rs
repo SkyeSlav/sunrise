@@ -393,9 +393,6 @@ impl ChunkGenerator for FlatTerrain {
     fn light_view(&self, proto: &crate::streaming::Proto) -> Option<Chunk> {
         proto.downcast_ref::<Chunk>().cloned()
     }
-    fn lod_surface(&self, _: &mut (), _: i32, _: i32) -> Option<crate::columns::Surface> {
-        self.surface
-    }
     fn proto(&self, _: &mut (), cx: i32, cz: i32) -> crate::streaming::Proto {
         let mut chunk = Chunk::with_layout(cx, cz, self.shape.column());
         for s in &mut chunk.sections {

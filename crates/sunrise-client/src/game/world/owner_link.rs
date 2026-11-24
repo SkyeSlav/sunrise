@@ -46,11 +46,6 @@ pub(super) enum OwnerRequest {
         wanted: Snapshot,
         done: Reply<()>,
     },
-    /// Far terrain for a client in `dim`.
-    LodSource(
-        Dim,
-        Reply<Option<Arc<dyn sunrise_client::streaming::LodSource>>>,
-    ),
     /// The pregen commands are on or off.
     SetPregen(bool),
     /// A live content mod switch: the data packs reload from the new root.
@@ -162,9 +157,6 @@ impl Game<'_> {
             } => {
                 self.apply_world_options(&before, &wanted);
                 let _ = done.send(());
-            }
-            OwnerRequest::LodSource(dim, reply) => {
-                let _ = reply.send(self.lod_source_in(dim));
             }
             OwnerRequest::SetPregen(enabled) => self.set_pregen_commands(enabled),
             OwnerRequest::ReloadMods(reload) => self.apply_mods_reload(*reload),

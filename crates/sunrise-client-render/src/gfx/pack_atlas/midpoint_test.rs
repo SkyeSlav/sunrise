@@ -97,12 +97,8 @@ fn mid_tex_coord_follows_each_quads_mapped_corners() {
         })
         .collect();
     let mut failures = Vec::new();
-    // Positive origins encode fade bits beside the power-of-two scale. Negative origins
-    // use the older fractional scale encoding. Both must match the mapped vertex UVs.
-    for origin in [
-        f32::from_bits((1. / UV_STEPS).to_bits() | 0x12345),
-        -3. - 1. / UV_STEPS,
-    ] {
+    // The origin's fade bits (beside the power-of-two scale) leave the mapped vertex UVs alone.
+    for origin in [f32::from_bits((1. / UV_STEPS).to_bits() | 0x12345)] {
         for flat in [true, false] {
             for shadow in [false, true] {
                 let pixels = sample(&device, &queue, &atlas, &vertices, origin, [flat, shadow]);

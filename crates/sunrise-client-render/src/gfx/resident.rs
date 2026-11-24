@@ -538,37 +538,18 @@ fn in_view_with_bounds(
     if key.1 < lo_y || key.1 > hi_y {
         return None;
     }
-    in_frustum(key, crate::chunk::MIN_Y, camera, frustum, false, bounds)
-}
-
-/// `in_view` without the distance test; `inside`: the section's column is
-/// entirely inside the frustum, so the section is too.
-#[cfg(test)]
-fn in_frustum(
-    key: SectionKey,
-    min_y: i32,
-    camera: DVec3,
-    frustum: &impl Cull,
-    inside: bool,
-    bounds: Option<[Vec3; 2]>,
-) -> Option<(f64, Vec3)> {
-    let origin = origin(key, min_y, camera);
+    let origin = origin(key, crate::chunk::MIN_Y, camera);
     let min = origin.as_vec3();
-    if !inside {
-        let (bmin, bmax) = section_box(min, bounds);
-        if !frustum.intersects(bmin, bmax) {
-            return None;
-        }
+    let (bmin, bmax) = section_box(min, bounds);
+    if !frustum.intersects(bmin, bmax) {
+        return None;
     }
     Some(((origin + DVec3::splat(8.0)).length_squared(), min))
 }
 
 impl<T> Resident<T> {
     /// Appends the sections `in_view` and `reachable` to `out`, nearest
-    /// first (ties by key, so the order never depends on storage), and the
-    /// sections in the frustum of columns past the render distance that
-    /// `beyond` keeps (distant terrain still leaves them out; the occlusion
-    /// graph never reaches them).
+    /// first (ties by key, so the order never depends on storage).
     ///
     /// Columns are tested first, with the same distance test (it depends
     /// only on x and z) and a box spanning their sections: every section box
@@ -582,10 +563,9 @@ impl<T> Resident<T> {
         radius: i32,
         frustum: &impl Cull,
         reachable: impl Fn(SectionKey) -> bool,
-        beyond: impl Fn(i32, i32) -> bool,
         out: &mut Vec<Visible>,
     ) {
-        self.walk(camera, radius, frustum, reachable, beyond, false, out);
+        self.walk(camera, radius, frustum, reachable, false, out);
     }
     /// `visible`, less the sections within the render distance that are not
     /// marked (`insert_marked`) when `marked_only_near`, in the same order: GPU
@@ -597,7 +577,6 @@ impl<T> Resident<T> {
         radius: i32,
         frustum: &impl Cull,
         reachable: impl Fn(SectionKey) -> bool,
-        beyond: impl Fn(i32, i32) -> bool,
         marked_only_near: bool,
         out: &mut Vec<Visible>,
     ) {
@@ -613,22 +592,16 @@ impl<T> Resident<T> {
             .flatten();
         let tree_frustum = outside_tree.and_then(|_| frustum.offset_for_camera_cube(camera, 8));
         for column in &self.columns {
-            let near = in_view_distance(from, radius, column.x, column.z);
-            if !near && !beyond(column.x, column.z) {
+            if !in_view_distance(from, radius, column.x, column.z) {
                 continue;
             }
-            let (lo_y, hi_y) = if near {
-                let Some((lo, hi)) = vertical else {
-                    continue;
-                };
-                if column.high < lo || column.low > hi {
-                    continue;
-                }
-                (lo, hi)
-            } else {
-                (i32::MIN, i32::MAX)
+            let Some((lo_y, hi_y)) = vertical else {
+                continue;
             };
-            let list = if marked_only_near && near {
+            if column.high < lo_y || column.low > hi_y {
+                continue;
+            }
+            let list = if marked_only_near {
                 &column.marked
             } else {
                 &column.sections
@@ -636,8 +609,7 @@ impl<T> Resident<T> {
             if list.is_empty() {
                 continue;
             }
-            let use_tree_frustum = near && outside_tree.is_some();
-            let tree_state = if let Some(tree) = outside_tree.filter(|_| near) {
+            let tree_state = if let Some(tree) = outside_tree {
                 let state = match &tree_frustum {
                     Some(offset) => tree.branch_state(column.x, column.z, camera, offset),
                     None => tree.branch_state(column.x, column.z, camera, frustum),
@@ -663,7 +635,7 @@ impl<T> Resident<T> {
             let max = Vec3::new(min_x + 16.0, high_oy + 16.0, min_z + 16.0);
             let inside = if tree_state == BRANCH_INSIDE {
                 true
-            } else if use_tree_frustum && let Some(offset) = &tree_frustum {
+            } else if let Some(offset) = &tree_frustum {
                 let whole = offset.contains(min, max);
                 if !whole && !offset.intersects(min, max) {
                     continue;
@@ -682,11 +654,11 @@ impl<T> Resident<T> {
 
             if inside {
                 for &(y, slot) in list {
-                    if near && (y < lo_y || y > hi_y) {
+                    if y < lo_y || y > hi_y {
                         continue;
                     }
                     let key = (column.x, y, column.z);
-                    if near && !reachable(key) {
+                    if !reachable(key) {
                         continue;
                     }
                     let oy = (i64::from(self.min_y) + i64::from(y) * 16) as f64 - camera.y;
@@ -702,19 +674,18 @@ impl<T> Resident<T> {
                 }
             } else {
                 for &(y, slot) in list {
-                    if near && (y < lo_y || y > hi_y) {
+                    if y < lo_y || y > hi_y {
                         continue;
                     }
                     let key = (column.x, y, column.z);
-                    if near && !reachable(key) {
+                    if !reachable(key) {
                         continue;
                     }
                     let oy = (i64::from(self.min_y) + i64::from(y) * 16) as f64 - camera.y;
                     let min = Vec3::new(min_x, oy as f32, min_z);
-                    let bounds =
-                        self.bounds[slot as usize].filter(|_| frustum.tight() && !use_tree_frustum);
+                    let bounds = self.bounds[slot as usize].filter(|_| frustum.tight());
                     let (bmin, bmax) = section_box(min, bounds);
-                    let seen = if use_tree_frustum && let Some(offset) = &tree_frustum {
+                    let seen = if let Some(offset) = &tree_frustum {
                         offset.intersects(bmin, bmax)
                     } else {
                         frustum.intersects(bmin, bmax)
@@ -796,31 +767,15 @@ mod tests {
                 let view = crate::camera::view_matrix(yaw, pitch);
                 let frustum = Frustum::from_planes(super::super::frustum(projection * view));
                 let mut fast = Vec::new();
-                // Columns past the distance kept for distant terrain.
-                let beyond = |x: i32, z: i32| (x + z).rem_euclid(3) == 0;
-                r.visible(camera, radius, &frustum, reachable, beyond, &mut fast);
+                r.visible(camera, radius, &frustum, reachable, &mut fast);
                 let mut slow: Vec<(SectionKey, f64, [f32; 3])> = r
                     .items
                     .iter()
                     .enumerate()
                     .filter_map(|(slot, &(k, _))| {
-                        let near = in_view_distance(camera_column(camera), radius, k.0, k.2);
-                        if near {
-                            in_view_with_bounds(k, camera, radius, &frustum, r.bounds[slot])
-                                .filter(|_| reachable(k))
-                        } else if beyond(k.0, k.2) {
-                            in_frustum(
-                                k,
-                                crate::chunk::MIN_Y,
-                                camera,
-                                &frustum,
-                                false,
-                                r.bounds[slot],
-                            )
-                        } else {
-                            None
-                        }
-                        .map(|(d, o)| (k, d, o.to_array()))
+                        in_view_with_bounds(k, camera, radius, &frustum, r.bounds[slot])
+                            .filter(|_| reachable(k))
+                            .map(|(d, o)| (k, d, o.to_array()))
                     })
                     .collect();
                 slow.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
@@ -866,7 +821,7 @@ mod tests {
             .count();
         assert!(inside > 50 && inside < r.columns.len(), "{inside}");
         let mut fast = Vec::new();
-        r.visible(camera, 12, &frustum, |_| true, |_, _| false, &mut fast);
+        r.visible(camera, 12, &frustum, |_| true, &mut fast);
         let mut slow: Vec<_> = r
             .items
             .iter()
@@ -1080,7 +1035,6 @@ mod tests {
             }
         }
         let reachable = |k: SectionKey| (3 * k.0 + k.1 + 5 * k.2).rem_euclid(7) != 0;
-        let beyond = |x: i32, z: i32| (x - z).rem_euclid(3) == 0;
         let projection = super::super::world_projection(70.0, 16.0 / 9.0, 512.0);
         let (mut kept, mut dropped, mut inside) = (0, 0, 0);
         for (camera, yaw, pitch) in [
@@ -1103,15 +1057,10 @@ mod tests {
                 .count();
             for radius in [3, 7, 12] {
                 let (mut all, mut marked) = (Vec::new(), Vec::new());
-                r.visible(camera, radius, &view, reachable, beyond, &mut all);
-                r.walk(camera, radius, &view, reachable, beyond, true, &mut marked);
-                let from = camera_column(camera);
-                let near = |v: &Visible| in_view_distance(from, radius, v.key.0, v.key.2);
-                let expected: Vec<Visible> = all
-                    .iter()
-                    .copied()
-                    .filter(|v| r.is_marked(v.key) || !near(v))
-                    .collect();
+                r.visible(camera, radius, &view, reachable, &mut all);
+                r.walk(camera, radius, &view, reachable, true, &mut marked);
+                let expected: Vec<Visible> =
+                    all.iter().copied().filter(|v| r.is_marked(v.key)).collect();
                 assert_eq!(marked, expected, "{camera} {yaw} {pitch} {radius}");
                 kept += marked.len();
                 dropped += all.len() - marked.len();
@@ -1165,7 +1114,7 @@ mod tests {
             old = old.min(t.elapsed());
             let t = Instant::now();
             list.clear();
-            r.visible(camera, 32, &frustum, |_| true, |_, _| false, &mut list);
+            r.visible(camera, 32, &frustum, |_| true, &mut list);
             for v in &list {
                 sum += i64::from(r.get(v.slot)[1] + r.get(v.slot)[0]);
             }
@@ -1194,7 +1143,7 @@ mod tests {
 
         // Tight bounds culls the section whose geometry is entirely outside the frustum
         let mut out = Vec::new();
-        r.visible(camera, 4, &frustum, |_| true, |_, _| false, &mut out);
+        r.visible(camera, 4, &frustum, |_| true, &mut out);
         assert!(
             out.is_empty(),
             "tight bounds should cull section whose geometry is below frustum"
@@ -1203,7 +1152,7 @@ mod tests {
         // With fallback 16x16x16 bounds, the section intersects the frustum and is visible
         r.insert_with_bounds(key, (), None);
         out.clear();
-        r.visible(camera, 4, &frustum, |_| true, |_, _| false, &mut out);
+        r.visible(camera, 4, &frustum, |_| true, &mut out);
         assert_eq!(
             out.len(),
             1,
@@ -1223,7 +1172,6 @@ mod tests {
             2,
             &all,
             |_| true,
-            |_, _| false,
             &mut out,
         );
         assert_eq!(out.iter().map(|v| v.key).collect::<Vec<_>>(), [(0, 23, 0)]);
@@ -1233,7 +1181,6 @@ mod tests {
             2,
             &all,
             |_| true,
-            |_, _| false,
             &mut out,
         );
         assert_eq!(out.iter().map(|v| v.key).collect::<Vec<_>>(), [(0, 0, 0)]);
@@ -1253,7 +1200,7 @@ mod tests {
             projection * crate::camera::view_matrix(0.0, 90.0),
         ));
         let mut out = Vec::new();
-        r.visible(camera, 2, &frustum, |_| true, |_, _| false, &mut out);
+        r.visible(camera, 2, &frustum, |_| true, &mut out);
         let kept: HashSet<SectionKey> = out.iter().map(|v| v.key).collect();
         assert!(kept.contains(&(0, 23, 0)), "center seed stays visible");
         assert!(
@@ -1279,7 +1226,7 @@ mod tests {
             "tight X=46..47 bounds alone miss the offset frustum"
         );
         out.clear();
-        below.visible(camera, 2, &frustum, |_| true, |_, _| false, &mut out);
+        below.visible(camera, 2, &frustum, |_| true, &mut out);
         assert_eq!(
             out.iter().map(|v| v.key).collect::<Vec<_>>(),
             [(2, 0, 0)],
@@ -1299,7 +1246,7 @@ mod tests {
             nether.insert((0, y, 0), ());
         }
         let mut out = Vec::new();
-        nether.visible(camera, 3, &all, |_| true, |_, _| false, &mut out);
+        nether.visible(camera, 3, &all, |_| true, &mut out);
         let mut ys: Vec<i32> = out.iter().map(|v| v.key.1).collect();
         ys.sort_unstable();
         assert_eq!(ys, [12, 13, 14, 15]);
@@ -1311,7 +1258,7 @@ mod tests {
             default_height.insert((0, y, 0), ());
         }
         out.clear();
-        default_height.visible(camera, 3, &all, |_| true, |_, _| false, &mut out);
+        default_height.visible(camera, 3, &all, |_| true, &mut out);
         assert!(
             out.iter().any(|v| v.key == (0, 16, 0)),
             "row y=16 catches omitting set_sections(16)"
@@ -1369,7 +1316,6 @@ mod tests {
                 radius,
                 &frustum,
                 |_| true,
-                |_, _| false,
                 &mut out_fallback,
             );
             r_tight.visible(
@@ -1377,7 +1323,6 @@ mod tests {
                 radius,
                 &frustum,
                 |_| true,
-                |_, _| false,
                 &mut out_tight,
             );
 
@@ -1398,7 +1343,6 @@ mod tests {
                     radius,
                     &frustum,
                     |_| true,
-                    |_, _| false,
                     &mut out_fallback,
                 );
             }
@@ -1412,7 +1356,6 @@ mod tests {
                     radius,
                     &frustum,
                     |_| true,
-                    |_, _| false,
                     &mut out_tight,
                 );
             }

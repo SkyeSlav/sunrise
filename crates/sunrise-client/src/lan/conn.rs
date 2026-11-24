@@ -1609,16 +1609,6 @@ fn login_and_configure(
         c.ask_viewed_levels().map_err(e)?;
         c.ask_menu_extra_rev().map_err(e)?;
     }
-    // And how far it samples far terrain for it (crate::lod_net).
-    if brand == "sunrise" && shared.config.lod_distance > 0 {
-        send(
-            c,
-            cfg::Clientbound::CustomPayload(cfg::CustomPayload {
-                channel: crate::lod_net::CHANNEL.into(),
-                data: crate::lod_net::Offer::new(shared.config.lod_distance).encode(),
-            }),
-        )?;
-    }
     let difference = sunrise_protocol::mod_list::compare(&server_mods, &client_mods);
     if !difference.is_empty() {
         let text = mod_mismatch(&difference);

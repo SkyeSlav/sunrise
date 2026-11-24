@@ -571,8 +571,6 @@ impl Game<'_> {
             view_distance: Some(s.render_distance.max(0) as u32),
             loaded_view_distance: Some(self.streaming.radius.max(0) as u32),
             simulation_distance: Some(s.simulation_distance.max(0) as u32),
-            far_terrain_distance: Some(self.lod_distance()),
-            far_terrain_active: Some(self.lod.is_some()),
             graphics_preset: s.graphics_preset.clone(),
         }
     }

@@ -1,5 +1,5 @@
 //! The renderer and its settings: building it for the window, applying the video settings and a
-//! shader pack's translucent layers, and the far terrain (LOD) distances.
+//! shader pack's translucent layers.
 use super::*;
 
 #[derive(Default)]
@@ -183,49 +183,6 @@ impl Game<'_> {
         if *layers != *self.streaming.translucent_layers {
             self.streaming.translucent_layers = layers.into();
             self.all_sections_changed();
-        }
-    }
-
-    /// LOD Distance and Far Detail Reduced as the player chose them, the
-    /// distance no farther than a server sampling far terrain for us allows.
-    pub(super) fn far_terrain_choice(&self) -> (u32, bool) {
-        let g = &self.settings.sunrise;
-        let reduced = g.far_detail == sunrise_client::graphics::FarDetail::Reduced;
-        let distance = match self.server_far_terrain() {
-            Some(offer) => g.lod_distance.min(offer.distance),
-            None => g.lod_distance,
-        };
-        (distance, reduced)
-    }
-
-    /// The far terrain another machine's server samples for us
-    /// (`lod_net`): a client of a dedicated server or of a LAN world, not of
-    /// its own server thread, which hands its generator over directly.
-    pub(super) fn server_far_terrain(&self) -> Option<sunrise_client::lod_net::Offer> {
-        if self.integrated.is_some() {
-            return None;
-        }
-        self.remote.as_ref()?.far_terrain
-    }
-
-    /// LOD Distance as far terrain uses it (`graphics::lod_distance_capped`).
-    pub(super) fn lod_distance(&self) -> u32 {
-        let (distance, _) = self.far_terrain_choice();
-        match &self.renderer {
-            Some(renderer) => {
-                sunrise_client::graphics::lod_distance_capped(distance, &renderer.info)
-            }
-            None => distance.min(sunrise_client::lod::MAX_CHUNKS),
-        }
-    }
-
-    /// Only enabled LOD worlds extend the renderer's range, never simulation.
-    pub(super) fn terrain_distance(&self) -> i32 {
-        let distance = self.effective_render_distance();
-        if self.lod.is_some() {
-            distance.max(self.lod_distance() as i32)
-        } else {
-            distance
         }
     }
 

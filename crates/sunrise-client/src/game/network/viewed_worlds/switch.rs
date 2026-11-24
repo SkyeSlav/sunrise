@@ -86,7 +86,7 @@ impl Game<'_> {
             .resident_keys()
             .filter(|key| !self.world.chunks.contains_key(key))
             .collect();
-        self.forget_remote_columns(&mut hidden, false);
+        self.forget_remote_columns(&mut hidden);
         let mut columns: Vec<(i32, i32)> = self.world.chunks.keys().copied().collect();
         columns.sort_unstable();
         for (x, z) in columns {

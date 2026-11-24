@@ -584,8 +584,6 @@ mod falling_tick;
 mod falling_tick_tests;
 #[path = "game/mobs/fangs.rs"]
 mod fangs;
-#[path = "game/world/far_terrain_edits.rs"]
-mod far_terrain_edits;
 #[cfg(test)]
 #[path = "game/mobs/fence_leash_force_tests.rs"]
 mod fence_leash_force_tests;
@@ -3383,15 +3381,6 @@ struct Game<'a> {
     /// `world_biomes` as the biome files made it, before `native_biome_colors`.
     world_biomes_base: Option<Arc<Biomes>>,
     streaming: Streaming,
-    lod: Option<sunrise_client::lod::Lod>,
-    lod_source_attempted: bool,
-    lod_observe: sunrise_client::fast_hash::FxHashSet<(i32, i32)>,
-    /// The server level far terrain keeps the chunks of.
-    lod_level: Option<String>,
-    /// The server's BlueMap far terrain draws from, when the player named one.
-    lod_blue_map: Option<Arc<sunrise_client::bluemap::BlueMap>>,
-    /// The detail revision, centre and radius `Lod::update` last had covered for.
-    lod_covered_at: Option<(u64, (i32, i32), i32)>,
     /// Whether the view's columns have all arrived, and how new it is: large
     /// translucent pages wait for both before they shrink (`set_terrain_loading`).
     view_arrival: sunrise_client::streaming::ViewArrival,
@@ -9448,7 +9437,6 @@ impl Game<'_> {
         self.using = None;
         self.set_screen(Screen::Playing);
         self.hide_title();
-        self.clear_lod();
         self.pending_uploads.clear();
         if let Some(r) = self.renderer.as_mut() {
             r.clear_sections(self.world.layout());
@@ -9501,7 +9489,6 @@ impl Game<'_> {
         self.player_beds.clear();
         self.clear_entities();
         self.set_screen(Screen::Playing);
-        self.clear_lod();
         self.pending_uploads.clear();
         if let Some(r) = self.renderer.as_mut() {
             r.clear_sections(self.world.layout());
@@ -11389,10 +11376,11 @@ impl Game<'_> {
         } else {
             self.spinning_matrix(alpha as f32)
         };
-        let terrain_distance = self.terrain_distance();
-        let distance = (terrain_distance * 16) as f32;
-        let depth_far =
-            sunrise_client::camera::depth_far(terrain_distance, self.settings.cloud_range);
+        let distance = (self.effective_render_distance() * 16) as f32;
+        let depth_far = sunrise_client::camera::depth_far(
+            self.effective_render_distance(),
+            self.settings.cloud_range,
+        );
         let mods_read_camera = !mod_api::__private::mods().is_empty();
         self.screen_blur_requested.set(false);
         self.native_camera_frame = (mods_read_camera && !title).then(|| {
@@ -13745,12 +13733,6 @@ impl<'a> Game<'a> {
             panorama_rotation: Default::default(),
             world,
             streaming,
-            lod: None,
-            lod_source_attempted: false,
-            lod_observe: Default::default(),
-            lod_level: None,
-            lod_blue_map: None,
-            lod_covered_at: None,
             view_arrival: Default::default(),
             options,
             player: None,

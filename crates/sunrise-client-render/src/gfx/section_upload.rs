@@ -166,21 +166,14 @@ impl Renderer {
             copies.section(key, mesh);
         }
         let facts = MeshFacts::of(mesh);
-        let fading = self.before_mesh(key, &facts);
+        self.before_mesh(key, &facts);
         let section = self.upload_mesh(mesh);
-        self.after_mesh(key, &facts, section, fading);
+        self.after_mesh(key, &facts, section);
     }
     /// Section `key`'s new mesh drawn from now on, its quads uploaded (`section`: none when it
     /// has none, or the arena had no room).
-    fn after_mesh(
-        &mut self,
-        key: SectionKey,
-        mesh: &MeshFacts,
-        section: Option<SectionGpu>,
-        fading: Option<Instant>,
-    ) {
+    fn after_mesh(&mut self, key: SectionKey, mesh: &MeshFacts, section: Option<SectionGpu>) {
         self.ray_mark(key);
-        let section = section.map(|section| SectionGpu { fading, ..section });
         self.set_detail(key, section.is_some() || mesh.empty);
         if let Some(mut section) = section {
             let sections = self.layout.sections();
@@ -194,7 +187,6 @@ impl Renderer {
                         now: Instant::now(),
                         fade_ms,
                         uploaded: &self.section_uploaded,
-                        retiring: &self.lod_retiring,
                     };
                     section.gpu_fading = decide_fade(&section, key, &mut gpu.fades, f);
                 }
@@ -360,7 +352,6 @@ impl Renderer {
             solid,
             solid_slots,
             packed,
-            packed_far: packed && mesh.packed_far,
             sides: if mesh.sides.quads() == solid {
                 mesh.sides
             } else {
@@ -378,8 +369,6 @@ impl Renderer {
             flat_id,
             gpu_id: None,
             gpu_fading: false,
-            fading: None,
-            leaving: None,
             animated_layers,
         })
     }
@@ -537,8 +526,8 @@ impl Renderer {
         }
     }
     /// Video memory the arena keeps because fragmentation holds its pages
-    /// partly used (a render distance that went down, far tiles that were
-    /// replaced): moves the meshes off the sparsest page, a few MiB a frame,
+    /// partly used (a render distance that went down): moves the meshes off the
+    /// sparsest page, a few MiB a frame,
     /// and `Arena::trim` returns the page once it is empty. Frames with the
     /// arena in system memory (video memory full) are slow, so this is what
     /// keeps the terrain in video memory. The section arena's: the large pages
@@ -560,13 +549,8 @@ impl Renderer {
                     label: Some("Section uploads"),
                 })
         });
-        // GPU culling's records move with the sections, sourced geometry's with its meshes.
-        let (sourced, sourced_ids) = self.sourced.moves();
-        let meshes = self.sections.values_mut().map(|s| (s, None)).chain(
-            self.lods
-                .iter_mut()
-                .flat_map(|(key, tile)| tile.recorded_meshes_mut(sourced_ids(*key))),
-        );
+        // GPU culling's records move with the sections.
+        let meshes = self.sections.values_mut();
         let flat = self
             .flat
             .as_mut()
@@ -579,7 +563,6 @@ impl Renderer {
             encoder,
             flat,
             gpu,
-            sourced,
             meshes,
             page,
             part,
@@ -615,10 +598,7 @@ impl Renderer {
             // The next start in a second, or `SHRINK_RETRY` after a try found no room.
             let mut wait = SHRINK_SETTLE;
             for (arena, part) in &mut arenas {
-                let meshes = self
-                    .sections
-                    .values_mut()
-                    .chain(self.lods.values_mut().flat_map(|tile| tile.meshes_mut()));
+                let meshes = self.sections.values_mut();
                 match begin_shrink(arena, &self.device, meshes, *part) {
                     Some(true) => break,
                     Some(false) => wait = SHRINK_RETRY, // the other arena may still go
@@ -639,11 +619,7 @@ impl Renderer {
                     label: Some("Section uploads"),
                 })
         });
-        let meshes = self
-            .sections
-            .values_mut()
-            .chain(self.lods.values_mut().flat_map(|tile| tile.meshes_mut()))
-            .map(|s| (s, None));
+        let meshes = self.sections.values_mut();
         // As many quads a frame either way: a quad's indices are a quarter of its bytes.
         let cap = match part {
             Part::Indices => COMPACT_BUDGET / 4,
@@ -661,7 +637,6 @@ impl Renderer {
             arena,
             encoder,
             flat,
-            None,
             None,
             meshes,
             page,
@@ -757,15 +732,6 @@ impl Renderer {
             && self
                 .newest_upload
                 .is_some_and(|t| (now.saturating_duration_since(t).as_millis() as u64) < fade_ms)
-    }
-    /// Whether a section may be fading in or out over far terrain (`SectionGpu::fade`):
-    /// otherwise every section's code is 0.
-    pub(super) fn sections_fading_over_lods(&self, now: std::time::Instant) -> bool {
-        !self.lod_retiring.is_empty()
-            || !self.lod_leaving.is_empty()
-            || self
-                .newest_lod_fade
-                .is_some_and(|t| now.saturating_duration_since(t) < lod::FADE)
     }
     /// Block entities of every section in range of `camera`, restricting ordinary block entities
     /// to eye-visible sections (`LevelExtractor.extractVisibleBlockEntities`) while keeping global
@@ -882,20 +848,10 @@ impl Renderer {
         self.block_entity_membership_revisions.clear();
         self.section_uploaded.clear();
         self.newest_upload = None;
-        self.newest_lod_fade = None;
         self.block_entity_revision = next_block_entity_revision();
         self.sections.clear();
-        self.ray_clear();
-        self.lods.clear();
-        self.lod_vertex_bytes = 0;
-        self.lod_cells.clear();
-        self.sourced.clear();
-        self.lod_cutout.clear();
-        self.lod_retiring.clear();
-        self.lod_leaving.clear();
-        self.lod_pending = None;
         self.detail_columns.clear();
-        self.detail_revision += 1;
+        self.ray_clear();
         // A dimension change drops every page at once: freed later, off this thread.
         self.graveyard.add(self.arena.clear());
         if let Some(gpu) = &mut self.gpu_culling {
@@ -921,8 +877,8 @@ impl Renderer {
         }
     }
     /// Lays the sections out as `translucent_split` says for the shader pack that
-    /// runs, before a world frame draws them. A change drops every section and far
-    /// tile, as a new renderer has none, and changes the sorted indices' arena with
+    /// runs, before a world frame draws them. A change drops every section, as a
+    /// new renderer has none, and changes the sorted indices' arena with
     /// them (large pages beside the translucent arena, else pages flat draws bind):
     /// the game meshes them again (`take_dropped_sections`).
     pub(super) fn follow_translucent_layout(&mut self) {
@@ -938,8 +894,7 @@ impl Renderer {
         if split == self.translucent_arena.is_some() {
             return;
         }
-        self.sections_dropped |=
-            self.sections.len() > 0 || !self.lods.is_empty() || self.lod_pending.is_some();
+        self.sections_dropped |= self.sections.len() > 0;
         self.clear_sections(self.layout);
         (self.sorted_indices, self.translucent_arena) = arena::Arena::translucent_arenas(
             &self.device,
@@ -978,8 +933,7 @@ impl Renderer {
         if storage == self.arena_storage {
             return;
         }
-        self.sections_dropped |=
-            self.sections.len() > 0 || !self.lods.is_empty() || self.lod_pending.is_some();
+        self.sections_dropped |= self.sections.len() > 0;
         self.clear_sections(self.layout);
         self.arena = arena::Arena::new(
             &self.device,
@@ -992,7 +946,7 @@ impl Renderer {
     /// Uploads solid quads in the compact layout (`packed_quads`) unless a pack reads the
     /// arena's vertices as `TerrainVertex`es: a `shaders/` pack's terrain and shadow
     /// programs outside flat draws (flat ones unpack the records, `pack_atlas::PULL_FLAT`).
-    /// Leaving it drops every section and far tile for the game to mesh again.
+    /// Leaving it drops every section for the game to mesh again.
     pub(super) fn follow_packed_layout(&mut self) {
         let pack = self.pack_post.as_ref().and_then(|p| p.1.as_ref()).is_some();
         let want = self.flat.is_some() && (!pack || self.pack_terrain_flat) && self.packed_on;
@@ -1005,15 +959,14 @@ impl Renderer {
         );
         self.packed_quads = want;
         packed::pack_quads(want);
-        let laid_out = self.sections.values().any(|s| s.packed)
-            || self.lods.values().any(|t| t.holds_packed());
+        let laid_out = self.sections.values().any(|s| s.packed);
         if !want && laid_out {
             self.sections_dropped = true;
             self.clear_sections(self.layout);
         }
     }
-    /// Allows the compact layout of solid quads or not, for A/B checks: every section and far
-    /// tile is meshed again in the layout that follows. Replies whether sections now use it.
+    /// Allows the compact layout of solid quads or not, for A/B checks: every section is
+    /// meshed again in the layout that follows. Replies whether sections now use it.
     pub fn set_packed_layout(&mut self, on: bool) -> bool {
         if on != self.packed_on {
             self.packed_on = on;
@@ -1023,16 +976,14 @@ impl Renderer {
         }
         self.packed_quads
     }
-    /// Whether every section and far tile was dropped since the last call, to be
-    /// laid out again (`follow_translucent_layout`): the game meshes them again,
-    /// as for a new renderer.
+    /// Whether every section was dropped since the last call, to be laid out again
+    /// (`follow_translucent_layout`): the game meshes them again, as for a new renderer.
     pub fn take_dropped_sections(&mut self) -> bool {
         std::mem::take(&mut self.sections_dropped)
     }
     /// Whether terrain is on its way (the view not all in, events, chunks or
-    /// uploads still waiting, far tiles sampled): a large translucent page shrinks
-    /// once that, new translucent sections (`upload`) and far tiles to upload
-    /// (`upload_lods`) have been over for `SHRINK_SETTLE`, not at the low point
+    /// uploads still waiting): a large translucent page shrinks once that and new
+    /// translucent sections (`upload`) have been over for `SHRINK_SETTLE`, not at the low point
     /// between a view's columns leaving and the next one's arriving, after which
     /// it would grow back by whole copies.
     pub fn set_terrain_loading(&mut self, loading: bool) {
@@ -1040,21 +991,7 @@ impl Renderer {
             self.shrink_gate.wait(Instant::now(), SHRINK_SETTLE);
         }
     }
-    /// A column whose every section has its mesh (`lod_detail_columns`).
-    fn complete_column(&self) -> SectionMask {
-        SectionMask::below(self.layout.sections())
-    }
-    pub fn lod_detail_columns(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
-        let complete = self.complete_column();
-        self.detail_columns
-            .iter()
-            .filter_map(move |(&column, &mask)| (mask == complete).then_some(column))
-    }
-    /// Changes whenever `lod_detail_columns` does.
-    pub fn lod_detail_revision(&self) -> u64 {
-        self.detail_revision
-    }
-    /// Whether the section at `key` has its mesh, for `lod_detail_columns`.
+    /// Whether the section at `key` has its mesh (`LevelRenderer.isSectionCompiledAndVisible`).
     fn set_detail(&mut self, key: SectionKey, meshed: bool) {
         let column = (key.0, key.2);
         let mask = self
@@ -1068,10 +1005,6 @@ impl Renderer {
         } else {
             next.remove(key.1 as usize);
         }
-        let complete = self.complete_column();
-        if (mask == complete) != (next == complete) {
-            self.detail_revision += 1;
-        }
         if next.is_empty() {
             self.detail_columns.remove(&column);
         } else {
@@ -1081,43 +1014,6 @@ impl Renderer {
     /// Every section of these columns goes: one lookup per column where the
     /// tables are by column, and the meshes' ranges freed in one batch. A
     /// teleport removes a few thousand columns in one frame.
-    /// A section whose column far terrain now draws fades out over it, chunk by
-    /// chunk as it came, and is released once it has (`release_left`): taken
-    /// away at once, the column's detail dropped to the far terrain's in one
-    /// frame.
-    pub(super) fn leave_section(&mut self, key: SectionKey) {
-        let now = std::time::Instant::now();
-        if let Some(section) = self.sections.find_mut(key)
-            && section.leaving.is_none()
-        {
-            section.leaving = Some(now);
-            self.lod_leaving.push((key, now));
-            if let Some(gpu) = &mut self.gpu_culling {
-                hold_fading(&mut self.sections, &mut gpu.records, key);
-            }
-        }
-    }
-    /// Releases the sections that have faded out (`leave_section`).
-    pub(super) fn release_left(&mut self, now: std::time::Instant) {
-        let mut done = Vec::new();
-        self.lod_leaving.retain(|&(key, since)| {
-            let left = now.saturating_duration_since(since) >= lod::FADE;
-            if left {
-                done.push((key, since));
-            }
-            !left
-        });
-        for (key, since) in done {
-            // Meshed again since (the player came back): it stays.
-            if self
-                .sections
-                .find(key)
-                .is_some_and(|s| s.leaving == Some(since))
-            {
-                self.release_section(key);
-            }
-        }
-    }
     pub fn remove_columns(&mut self, columns: impl IntoIterator<Item = (i32, i32)>) {
         let columns: Vec<(i32, i32)> = columns.into_iter().collect();
         if let Some(copies) = &mut self.capture_copies {
@@ -1125,23 +1021,17 @@ impl Renderer {
         }
         // Most of the view at once (a teleport at render distance 32 drops some 3700
         // columns): a pass over each store instead of a lookup per section key, which
-        // took 10 ms of one frame. Far terrain fades the sections out instead.
+        // took 10 ms of one frame.
         let keys = columns.len() * self.layout.sections();
-        if self.lods.is_empty()
-            && self.lod_cutout.is_empty()
-            && keys >= self.sections.len().max(BULK_REMOVAL_KEYS)
-        {
+        if keys >= self.sections.len().max(BULK_REMOVAL_KEYS) {
             self.remove_columns_at_once(&columns);
             return;
         }
         let mut released = Vec::new();
         let mut block_entities = false;
         for (x, z) in columns {
-            if self.detail_columns.remove(&(x, z)) == Some(self.complete_column()) {
-                self.detail_revision += 1;
-            }
+            self.detail_columns.remove(&(x, z));
             self.occlusion.remove_column(x, z);
-            let retiring = !self.lod_cutout.is_empty() && self.lod_cutout.contains(&(x, z));
             for sy in 0..self.layout.sections() as i32 {
                 let key = (x, sy, z);
                 block_entities |= self.block_entities.remove(&key);
@@ -1151,16 +1041,7 @@ impl Renderer {
                     self.light_revision += 1;
                 }
                 self.section_uploaded.remove(&key);
-                if retiring {
-                    // Distant tiles still leave its column out: drawn until they don't.
-                    self.lod_retiring.insert(key);
-                    if let Some(gpu) = &mut self.gpu_culling {
-                        hold_fading(&mut self.sections, &mut gpu.records, key);
-                    }
-                } else if !self.lods.is_empty() && self.sections.contains(key) {
-                    // Far terrain draws the column: it fades out over it.
-                    self.leave_section(key);
-                } else if let Some(section) = self.sections.remove(key) {
+                if let Some(section) = self.sections.remove(key) {
                     released.push(section);
                 }
             }
@@ -1174,11 +1055,8 @@ impl Renderer {
     /// once by column.
     fn remove_columns_at_once(&mut self, columns: &[(i32, i32)]) {
         let gone: crate::fast_hash::FxHashSet<(i32, i32)> = columns.iter().copied().collect();
-        let complete = self.complete_column();
         for &(x, z) in columns {
-            if self.detail_columns.remove(&(x, z)) == Some(complete) {
-                self.detail_revision += 1;
-            }
+            self.detail_columns.remove(&(x, z));
         }
         self.occlusion.remove_columns(&gone);
         let kept = |key: &SectionKey| !gone.contains(&(key.0, key.2));
