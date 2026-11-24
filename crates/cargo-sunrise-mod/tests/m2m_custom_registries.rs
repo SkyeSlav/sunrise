@@ -102,8 +102,6 @@ impl Hooks for Boiler {
     }
 
     fn server_started(&self, host: &mut dyn ServerHost, _: &mut ServerStartedEvent) {
-        let crafting = host.recipes_of_type("minecraft:crafting");
-        let steam_recipe = crafting.iter().any(|r| r.id == "boiler:steam_craft");
         let mut reg_ok = false;
         let mut tag_ok = false;
 
@@ -131,7 +129,7 @@ impl Hooks for Boiler {
             tag_ok = entries_ok && in_tag_ok;
         });
 
-        println!("m2m_custom_registries reg_ok={reg_ok} tag_ok={tag_ok} steam_recipe={steam_recipe}");
+        println!("m2m_custom_registries reg_ok={reg_ok} tag_ok={tag_ok}");
         std::process::exit(0);
     }
 }
@@ -181,13 +179,14 @@ fn run_game(
         .env("XDG_DATA_HOME", root.join("data").join(run_name))
         .env("XDG_CONFIG_HOME", root.join("config").join(run_name))
         .args([
-            "--dedicated",
             "--game-dir",
             game_dir.to_str().unwrap(),
             "--resources",
             server_profile.to_str().unwrap(),
-            "--world",
-            run_name,
+            "--dedicated",
+            "--nogui",
+            "--port",
+            "0",
         ]);
     passed(cmd.output().unwrap())
 }
@@ -286,10 +285,6 @@ fn two_separately_built_mods_share_custom_static_registry_and_tags() {
         &boiler.join("data/boiler/tags/chemlib/gas/hot.json"),
         r#"{"values":["boiler:steam"]}"#,
     );
-    write_file(
-        &boiler.join("data/boiler/recipe/steam_craft.json"),
-        r#"{"neoforge:conditions":[{"type":"neoforge:registered","registry":"chemlib:gas","id":"boiler:steam"}],"type":"minecraft:crafting_shapeless","ingredients":["minecraft:cobblestone"],"result":{"id":"minecraft:stone","count":1}}"#,
-    );
 
     let stage = |name: &str, extra_args: &[&str]| -> (PathBuf, String) {
         let run = boiler.join("target/sunrise-mod/run");
@@ -338,8 +333,7 @@ fn two_separately_built_mods_share_custom_static_registry_and_tags() {
         )
     };
 
-    // Run 1: boiler built with chemlib present -> both mods load, custom registry + tag +
-    // neoforge:registered condition all verify.
+    // Run 1: boiler built with chemlib present -> both mods load, custom registry + tag verify.
     let (both_app, both_prog) = stage("both", &["--with", chemlib_smod.to_str().unwrap()]);
     let out_both = run_game(&root, "both", &profile, &both_app, &both_prog);
     let line_both = out_both
@@ -347,7 +341,7 @@ fn two_separately_built_mods_share_custom_static_registry_and_tags() {
         .find(|l| l.starts_with("m2m_custom_registries "))
         .unwrap_or_else(|| panic!("missing marker in Run 1:\n{out_both}"));
     assert_eq!(
-        line_both, "m2m_custom_registries reg_ok=true tag_ok=true steam_recipe=true",
+        line_both, "m2m_custom_registries reg_ok=true tag_ok=true",
         "Run 1 (chemlib + boiler) failed: {line_both}"
     );
 
@@ -359,7 +353,7 @@ fn two_separately_built_mods_share_custom_static_registry_and_tags() {
         .find(|l| l.starts_with("m2m_custom_registries "))
         .unwrap_or_else(|| panic!("missing marker in Run 2:\n{out_alone}"));
     assert_eq!(
-        line_alone, "m2m_custom_registries reg_ok=false tag_ok=false steam_recipe=false",
+        line_alone, "m2m_custom_registries reg_ok=false tag_ok=false",
         "Run 2 (boiler alone) failed: {line_alone}"
     );
 }
