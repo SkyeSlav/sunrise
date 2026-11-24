@@ -1399,4 +1399,46 @@ mod enchant_select_tests {
         assert!(stack.enchantments().is_empty());
         assert_eq!(random.next_long(), expected.next_long());
     }
+
+    /// Potion and villager trade tags bind through `TagLoader`: a pack's file removes and adds
+    /// entries, and a tag with a missing required member is dropped.
+    #[test]
+    fn pack_potion_and_trade_tags_bind_like_tag_loader() {
+        let root = tempfile::tempdir().unwrap();
+        let write = |path: &str, text: &str| {
+            let path = root.path().join("data/minecraft").join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        write("villager_trade/offer.json", "{}");
+        write(
+            "tags/potion/pool.json",
+            r#"{"values":["minecraft:swiftness","minecraft:strength"]}"#,
+        );
+        write(
+            "tags/villager_trade/offers.json",
+            r#"{"values":["minecraft:offer"]}"#,
+        );
+        let files = [
+            (
+                "tags/minecraft:potion/pool".to_owned(),
+                vec![br#"{"values":["minecraft:luck"],"remove":["minecraft:swiftness"]}"#.to_vec()],
+            ),
+            (
+                "tags/minecraft:villager_trade/offers".to_owned(),
+                vec![br#"{"values":[{"id":"minecraft:absent","required":true}]}"#.to_vec()],
+            ),
+            (
+                "tags/minecraft:villager_trade/extra".to_owned(),
+                vec![br##"{"values":[{"id":"minecraft:absent","required":false},"#minecraft:offers"]}"##.to_vec()],
+            ),
+        ];
+        let trades = Trades::load(root.path(), &PackOverlay::new(&files));
+        assert_eq!(
+            trades.potion_tags["minecraft:pool"],
+            ["minecraft:strength", "minecraft:luck"]
+        );
+        assert!(!trades.tags.contains_key("minecraft:offers"));
+        assert!(!trades.tags.contains_key("minecraft:extra"));
+    }
 }
