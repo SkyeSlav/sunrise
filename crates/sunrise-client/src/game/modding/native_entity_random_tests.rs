@@ -21,6 +21,10 @@ fn a_draw_through_with_random_advances_the_entitys_own_random() {
         || {
             with_guests(|game| {
                 game.options.dedicated = Some(Vec::new());
+                game.world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)),
+                );
                 let kind = game.res.mob_types().get("minecraft:cow").unwrap().clone();
                 let mut cow = Mob::new(40, kind, Vec3::new(3.0, 64.0, 4.0), 0.0);
                 cow.random = LegacyRandom::new(COW_SEED);
@@ -77,6 +81,10 @@ fn with_random_refuses_a_stale_handle_without_drawing() {
         || {
             with_guests(|game| {
                 game.options.dedicated = Some(Vec::new());
+                game.world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)),
+                );
                 let kind = game.res.mob_types().get("minecraft:cow").unwrap().clone();
                 let mut cow = Mob::new(40, kind, Vec3::new(3.0, 64.0, 4.0), 0.0);
                 cow.random = LegacyRandom::new(COW_SEED);
