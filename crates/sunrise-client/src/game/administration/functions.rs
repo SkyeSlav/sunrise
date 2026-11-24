@@ -1338,11 +1338,28 @@ impl Game<'_> {
             })
             .unwrap_or_default()
     }
+    /// `PackRepository.reload`: scan the pack folders again; the selection
+    /// keeps the packs that still exist.
+    fn reload_pack_repository(&mut self) {
+        let additional = super::pack_finders::data_packs(&self.mods);
+        let packs = super::pack_finders::data_repository(
+            &self.world_root,
+            &self.options.resources,
+            &additional,
+        );
+        self.fns.packs = packs.into_iter().map(Arc::new).collect();
+        self.fns.enabled =
+            datapack::selected_ids(self.fns.packs.iter().map(Arc::as_ref), &self.fns.enabled);
+    }
     pub(super) fn cmd_datapack(&mut self, id: &str, ctx: &Context) -> R<i32> {
         let name = match ctx.get("name") {
+        let known = |g: &Self, n: &str| n == "vanilla" || g.fns.packs.iter().any(|p| p.id == n);
             Some(Arg::Str(n)) => Some(n.clone()),
             _ => None,
         };
+        if id == "datapack.list" {
+            self.reload_pack_repository();
+        }
         let selected = self.selected_packs();
         let mut enabled = self.fns.enabled.clone();
         // `DataPackCommand.listAvailablePacks`: a feature pack the world's
@@ -1353,7 +1370,6 @@ impl Game<'_> {
             .filter(|p| self.missing_pack_features(p).is_empty())
             .collect();
         available.sort_by(|a, b| datapack::compare_ids(a, b));
-        let known = |g: &Self, n: &str| n == "vanilla" || g.fns.packs.iter().any(|p| p.id == n);
         match id {
             "datapack.create" => self.create_pack(ctx),
             "datapack.list" => {
@@ -1453,22 +1469,6 @@ impl Game<'_> {
             }
             _ => {
                 let name = name.unwrap_or_default();
-                if !known(self, &name) {
-                    return Err(err("commands.datapack.unknown", &[&name]));
-                }
-                if !selected.contains(&name) {
-                    return Err(err("commands.datapack.disable.failed", &[&name]));
-                }
-                if self
-                    .fns
-                    .packs
-                    .iter()
-                    .find(|pack| pack.id == name)
-                    .and_then(|pack| pack.selection.as_ref())
-                    .is_some_and(|info| info.required)
-                {
-                    return Err(err("sunrise.datapack.required", &[&name]));
-                }
                 if self
                     .fns
                     .packs
@@ -1485,6 +1485,22 @@ impl Game<'_> {
                         "commands.datapack.enable.failed.no_flags",
                         &[&name, &missing.join(", ")],
                     ));
+                }
+                if !known(self, &name) {
+                    return Err(err("commands.datapack.unknown", &[&name]));
+                }
+                if !selected.contains(&name) {
+                    return Err(err("commands.datapack.disable.failed", &[&name]));
+                }
+                if self
+                    .fns
+                    .packs
+                    .iter()
+                    .find(|pack| pack.id == name)
+                    .and_then(|pack| pack.selection.as_ref())
+                    .is_some_and(|info| info.required)
+                {
+                    return Err(err("sunrise.datapack.required", &[&name]));
                 }
                 let vanilla_disabled = name == "vanilla" || self.cmds.vanilla_disabled;
                 enabled.retain(|p| p != &name);
@@ -2662,6 +2678,60 @@ mod tests {
             );
         });
         assert!(ran, "the prepared-resource fixture must run this case");
+    }
+
+    /// A fresh scratch world folder holding the data packs `names`.
+    fn datapack_world(label: &str, names: &[&str]) -> std::path::PathBuf {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for name in names {
+            add_datapack(&root, name);
+        }
+        std::fs::create_dir_all(root.join("datapacks")).unwrap();
+        root
+    }
+    fn add_datapack(root: &std::path::Path, name: &str) {
+        let pack = root.join("datapacks").join(name);
+        std::fs::create_dir_all(pack.join("data")).unwrap();
+        std::fs::write(
+            pack.join("pack.mcmeta"),
+            r#"{"pack":{"description":"Fixture"}}"#,
+        )
+        .unwrap();
+    }
+    fn open_datapack_world(game: &mut Game<'_>, root: &std::path::Path) {
+        let mut request = crate::game::world_loading::WorldRequest::new(
+            "test",
+            Some("test"),
+            Some(1),
+            true,
+            None,
+            std::sync::Arc::new(sunrise_client::gamerules::RuleRegistry::vanilla()),
+        )
+        .unwrap();
+        request.save_root = root.to_path_buf();
+        game.load_world(request).unwrap();
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn datapack_list_scans_the_folder_again_so_a_copied_pack_enables() {
+        use crate::game::native_entity_refs::tests::with_game;
+        let root = datapack_world("datapack-rescan", &["a"]);
+        with_game(|game| {
+            open_datapack_world(game, &root);
+            add_datapack(&root, "b");
+            // `getPack` reads the repository as it stands: not yet scanned.
+            assert!(!game.run_command("datapack enable \"file/b\""));
+            assert!(game.run_command("datapack list available"));
+            assert!(game.fns.packs.iter().any(|pack| pack.id == "file/b"));
+            assert!(game.run_command("datapack enable \"file/b\""));
+            assert_eq!(game.fns.enabled.last().map(String::as_str), Some("file/b"));
+        });
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
