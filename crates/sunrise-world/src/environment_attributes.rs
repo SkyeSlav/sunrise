@@ -1070,6 +1070,21 @@ impl Attribute {
         self.id == "gameplay/natural_mob_spawns"
     }
 
+    /// `EnvironmentAttribute.isSyncable`: whether this attribute's tracks are kept by
+    /// `Timeline.NETWORK_CODEC` (`Timeline.filterSyncableTracks`).
+    pub fn is_syncable(&self) -> bool {
+        self.id.starts_with("visual/")
+            || self.id.starts_with("audio/")
+            || matches!(
+                self.id,
+                "gameplay/sky_light_level"
+                    | "gameplay/water_evaporates"
+                    | "gameplay/fast_lava"
+                    | "gameplay/piglins_zombify"
+                    | "gameplay/creaking_active"
+            )
+    }
+
     /// `AttributeType`'s lerps. Floats and angles use `Mth.lerp`, colors `ARGB.srgbLerp`
     /// (`(to - from) * alpha + from` per channel); the types `ofNotInterpolated` step to `to`
     /// once alpha reaches 1 (keyframes), 0 (state changes) or 0.5 (biomes).
