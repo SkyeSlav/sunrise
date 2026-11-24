@@ -1,5 +1,5 @@
 pub use world::custom_registries::{
-    CustomRegistry, EntryKey, HostRegistries, RegistryKey, RegistryOptions,
+    CustomRegistry, CustomRegistryEntry, EntryKey, HostRegistries, RegistryKey, RegistryOptions,
 };
 
 mod __private {
