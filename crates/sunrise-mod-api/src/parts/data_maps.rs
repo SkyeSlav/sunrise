@@ -395,4 +395,161 @@ mod tests {
             "expected refusal for reloadable datapack registry, got: {err:?}"
         );
     }
+
+    #[test]
+    fn entry_key_data_map_and_reload_context_decode_and_refuse_invalid_keys() {
+        use crate::{
+            CustomRegistryEntry, DataMapError, EntryKey, Host, RegistryKey, RegistryOptions,
+        };
+        use std::sync::OnceLock;
+
+        struct Gas;
+        const GASES: RegistryKey<Gas> = RegistryKey::new("chemlib:gas");
+        impl CustomRegistryEntry for Gas {
+            const REGISTRY: RegistryKey<Self> = GASES;
+        }
+
+        struct OtherFluid;
+        const OTHER: RegistryKey<OtherFluid> = RegistryKey::new("other:fluid");
+        impl CustomRegistryEntry for OtherFluid {
+            const REGISTRY: RegistryKey<Self> = OTHER;
+        }
+
+        struct GasHeatMap;
+        impl DataMap for GasHeatMap {
+            type Entry = EntryKey<Gas>;
+            type Value = i32;
+            fn id(&self) -> &str {
+                "chemlib:gas_heat"
+            }
+            fn decode(&self, value: &Tag) -> Option<i32> {
+                match value {
+                    Tag::Int(n) => Some(*n),
+                    _ => None,
+                }
+            }
+        }
+
+        static STEAM: OnceLock<EntryKey<Gas>> = OnceLock::new();
+        static OXYGEN: OnceLock<EntryKey<Gas>> = OnceLock::new();
+
+        struct Setup;
+        impl Hooks for Setup {
+            fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
+                r.declare_registry(GASES, RegistryOptions::new());
+                r.declare_registry(OTHER, RegistryOptions::new());
+                let _ = STEAM.set(r.register_entry(GASES, "boiler:steam", Gas));
+                let _ = OXYGEN.set(r.register_entry(GASES, "chemlib:oxygen", Gas));
+                let _ = r.register_entry(OTHER, "other:water", OtherFluid);
+                r.register_data_map(GasHeatMap);
+            }
+        }
+
+        install_with(vec![ModEntry::new("setup", Box::new(Setup))]).unwrap();
+        let steam = *STEAM.get().unwrap();
+        let oxygen = *OXYGEN.get().unwrap();
+
+        struct GasMapsHost {
+            rows: [(String, Tag); 1],
+        }
+        impl crate::prelude::DataMapsBackend for GasMapsHost {
+            fn data_map_value(
+                &self,
+                registry: &str,
+                entry: &str,
+                map: &str,
+            ) -> Result<Option<&Tag>, DataMapError> {
+                Ok(self
+                    .data_map_entries(registry, map)?
+                    .iter()
+                    .find_map(|(id, tag)| (id == entry).then_some(tag)))
+            }
+            fn data_map_entries(
+                &self,
+                registry: &str,
+                map: &str,
+            ) -> Result<&[(String, Tag)], DataMapError> {
+                match (registry, map) {
+                    ("chemlib:gas", "chemlib:gas_heat") => Ok(&self.rows),
+                    _ => Err(DataMapError::UnknownType),
+                }
+            }
+        }
+        impl Host for GasMapsHost {
+            fn backend(&self) -> Option<crate::BackendRef<'_>> {
+                Some(crate::BackendRef::of(self))
+            }
+        }
+        crate::impl_host_areas!(GasMapsHost);
+        crate::impl_backend_areas!(GasMapsHost, except(data_maps));
+        impl crate::Backend for GasMapsHost {}
+
+        struct BareHost;
+        impl Host for BareHost {}
+        crate::impl_host_areas!(BareHost);
+
+        let host = GasMapsHost {
+            rows: [("boiler:steam".to_owned(), Tag::Int(373))],
+        };
+        assert_eq!(steam.data(&host, &GasHeatMap), Ok(Some(373)));
+        assert_eq!(oxygen.data(&host, &GasHeatMap), Ok(None));
+        assert_eq!(
+            steam.data(&BareHost, &GasHeatMap),
+            Err(DataMapError::Unavailable)
+        );
+        // Reinstalling a fresh epoch without chemlib:gas makes the old EntryKey invalid.
+        install_with(vec![]).unwrap();
+        assert_eq!(
+            steam.data(&host, &GasHeatMap),
+            Err(DataMapError::InvalidKey)
+        );
+    }
+
+    #[test]
+    fn two_threads_with_separate_test_parts_do_not_see_each_others_registries() {
+        use crate::{Host, HostRegistries, RegistryKey, RegistryOptions};
+        use std::sync::{Arc, Barrier};
+
+        struct RegA;
+        struct RegB;
+        const KEY_A: RegistryKey<RegA> = RegistryKey::new("thread_a:reg");
+        const KEY_B: RegistryKey<RegB> = RegistryKey::new("thread_b:reg");
+
+        struct ModA;
+        impl Hooks for ModA {
+            fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
+                r.declare_registry(KEY_A, RegistryOptions::new());
+                r.register_entry(KEY_A, "thread_a:item", RegA);
+            }
+        }
+        struct ModB;
+        impl Hooks for ModB {
+            fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
+                r.declare_registry(KEY_B, RegistryOptions::new());
+                r.register_entry(KEY_B, "thread_b:item", RegB);
+            }
+        }
+
+        struct DummyHost;
+        impl Host for DummyHost {}
+        crate::impl_host_areas!(DummyHost);
+
+        let barrier = Arc::new(Barrier::new(2));
+        let b1 = Arc::clone(&barrier);
+        let t1 = std::thread::spawn(move || {
+            install_with(vec![ModEntry::new("thread_a", Box::new(ModA))]).unwrap();
+            b1.wait();
+            assert!(DummyHost.registry(KEY_A).is_some());
+            assert!(DummyHost.registry(KEY_B).is_none());
+        });
+        let b2 = Arc::clone(&barrier);
+        let t2 = std::thread::spawn(move || {
+            install_with(vec![ModEntry::new("thread_b", Box::new(ModB))]).unwrap();
+            b2.wait();
+            assert!(DummyHost.registry(KEY_B).is_some());
+            assert!(DummyHost.registry(KEY_A).is_none());
+        });
+        t1.join().unwrap();
+        t2.join().unwrap();
+    }
 }

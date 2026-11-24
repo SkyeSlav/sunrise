@@ -449,3 +449,59 @@ pub fn sync_connection(sender: &crate::lan::Out) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mod_api::{DataMapSync, Identifier, RawDataMap};
+
+    #[test]
+    fn network_value_projection_transforms_and_omits_failed_entries() {
+        let reg = mod_api::__private::RegisteredDataMap::from_raw(
+            "test",
+            Identifier::parse_namespaced("minecraft:item").unwrap(),
+            Identifier::parse_namespaced("test:projected").unwrap(),
+            RawDataMap::new("minecraft:item", "test:projected")
+                .sync(DataMapSync::Optional)
+                .network_value(|tag| match tag {
+                    Tag::Int(v) if *v >= 0 => Some(Tag::Int(v * 2)),
+                    _ => None,
+                }),
+        );
+        assert_eq!(
+            reg.project_network_value("minecraft:coal", &Tag::Int(5)),
+            Some(Tag::Int(10))
+        );
+        assert_eq!(
+            reg.project_network_value("minecraft:stick", &Tag::Int(-1)),
+            None
+        );
+    }
+
+    #[test]
+    fn sync_payload_round_trips_and_rejects_trailing_bytes() {
+        let encoded = encode_sync_payload(
+            "minecraft:item",
+            &[(
+                "chemlib:fuel".to_owned(),
+                vec![
+                    ("minecraft:stick".to_owned(), Tag::Int(100)),
+                    ("minecraft:coal".to_owned(), Tag::Int(1600)),
+                ],
+            )],
+        )
+        .unwrap();
+        let (registry, maps) = decode_sync_payload(&encoded).unwrap();
+        assert_eq!(registry, "minecraft:item");
+        assert_eq!(
+            maps["chemlib:fuel"],
+            vec![
+                ("minecraft:coal".to_owned(), Tag::Int(1600)),
+                ("minecraft:stick".to_owned(), Tag::Int(100)),
+            ]
+        );
+        let mut with_trailing = encoded;
+        with_trailing.push(0xAA);
+        assert!(decode_sync_payload(&with_trailing).is_err());
+    }
+}
