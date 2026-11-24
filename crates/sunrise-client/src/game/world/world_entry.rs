@@ -827,6 +827,11 @@ impl Game<'_> {
         self.share_mob_maps();
         self.share_biome_keys();
         sunrise_client::datapack_net::serve(self.mods.datapack_registries.clone());
+        sunrise_client::data_map_net::serve(
+            self.world_tables
+                .as_ref()
+                .map(|t| Arc::new(t.data_maps.synced_snapshot())),
+        );
         Ok(())
     }
     /// Sends each joined Sunrise client the snapshot of the set just published, built from the
@@ -897,6 +902,11 @@ impl Game<'_> {
             world.pois.clear();
         }
         sunrise_client::datapack_net::serve(self.mods.datapack_registries.clone());
+        sunrise_client::data_map_net::serve(
+            self.world_tables
+                .as_ref()
+                .map(|t| Arc::new(t.data_maps.synced_snapshot())),
+        );
         self.send_datapack_snapshots();
         self.refresh_recipe_property_context();
         self.structure_spawns = structure_spawns;

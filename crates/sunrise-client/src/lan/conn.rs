@@ -340,6 +340,8 @@ pub struct PlayerSender {
     wire: Option<Arc<Counters>>,
     /// Registry negotiation belongs to this live connection, never a process-wide UUID cache.
     pub datapack_offer: Option<Arc<[u8]>>,
+    /// Synced data maps the client advertised during configuration (`RegistryManager.ATTRIBUTE_KNOWN_DATA_MAPS`).
+    pub known_data_maps: Option<Arc<crate::data_map_net::KnownDataMaps>>,
     /// The plugin channels the client announced, in configuration and play.
     pub announced: Arc<super::announced_channels::AnnouncedChannels>,
     /// Its `sunrise:levels` answer: its revision and the levels besides its own it can view.
@@ -422,6 +424,7 @@ impl PlayerSender {
             payload_transport: Transport::empty(),
             virtual_host: None,
             datapack_offer: None,
+            known_data_maps: None,
             announced: Arc::default(),
             viewed_levels: Default::default(),
             menu_extra_rev: 0,
@@ -463,6 +466,7 @@ impl PlayerSender {
             ),
             wire: None,
             datapack_offer: None,
+            known_data_maps: None,
             announced: Arc::default(),
             viewed_levels: Default::default(),
             menu_extra_rev: 0,
@@ -488,6 +492,7 @@ impl PlayerSender {
             payload_transport: Transport::empty(),
             virtual_host: None,
             datapack_offer: None,
+            known_data_maps: None,
             announced: Arc::default(),
             viewed_levels: Default::default(),
             menu_extra_rev: 0,
@@ -1381,6 +1386,7 @@ struct Parts {
     info: ClientInformation,
     brand: String,
     datapack_offer: Option<Vec<u8>>,
+    known_data_maps: Option<crate::data_map_net::KnownDataMaps>,
     configured: Option<super::configuration_tasks::Configured>,
     channels: super::config_payloads::EngineChannels,
 }
@@ -1739,6 +1745,30 @@ fn login_and_configure(
             )?;
         }
     }
+    // Synced registry data maps negotiation (`RegistryDataMapNegotiation.run:36-62`).
+    let known_data_maps = if brand != "sunrise" {
+        if let Some(text) = crate::data_map_net::refuse_vanilla_reason() {
+            let reason =
+                sunrise_core::nbt::Tag::String(sunrise_core::nbt::JavaString::from(text.as_str()));
+            let _ = send(c, cfg::Clientbound::Disconnect(cfg::Disconnect { reason }));
+            lost(shared, &format!("{name} ({})", uuid_string(uuid)), &text);
+            return Ok(None);
+        }
+        None
+    } else {
+        let entries = crate::data_map_net::server_known_entries();
+        if entries.is_empty() {
+            None
+        } else {
+            Some(negotiate_data_maps(
+                c,
+                &entries,
+                &mut info,
+                &payload_transport,
+                &mut payload_negotiation,
+            )?)
+        }
+    };
     for packet in sync.registry_packets(known_pack, &shared.config.levels) {
         send(c, cfg::Clientbound::RegistryData(packet))?;
     }
@@ -1815,6 +1845,7 @@ fn login_and_configure(
         info,
         brand,
         datapack_offer,
+        known_data_maps,
         configured,
     }))
 }
@@ -2047,6 +2078,42 @@ fn offer_pack(
 /// ServerboundAcceptCodeOfConductPacket (`handleAcceptCodeOfConduct`),
 /// keeping the connection alive while the player reads. Finishing the
 /// configuration first is `finishCurrentTask` of the wrong task type, an
+/// Negotiate synced data maps with a Sunrise client (`RegistryDataMapNegotiation.run`).
+fn negotiate_data_maps(
+    c: &mut ConfigIo<'_>,
+    entries: &[crate::data_map_net::KnownEntry],
+    info: &mut ClientInformation,
+    transport: &Transport,
+    negotiation: &mut sunrise_protocol::payload_negotiation::Negotiation,
+) -> Result<crate::data_map_net::KnownDataMaps, String> {
+    let e = |e: sunrise_protocol::Error| e.to_string();
+    let data = crate::data_map_net::encode_known(entries)?;
+    c.send(
+        &cfg::Clientbound::CustomPayload(cfg::CustomPayload {
+            channel: crate::data_map_net::KNOWN_CHANNEL.into(),
+            data,
+        })
+        .encode(),
+    )
+    .map_err(e)?;
+    wait_alive(c, transport, negotiation, |packet| match packet {
+        Ok(cfg::Serverbound::CustomPayload(p))
+            if p.channel == crate::data_map_net::KNOWN_REPLY_CHANNEL =>
+        {
+            Some(crate::data_map_net::decode_known_reply(&p.data))
+        }
+        Ok(cfg::Serverbound::FinishConfiguration(_)) => {
+            Some(Err("Unexpected configuration task".to_owned()))
+        }
+        Ok(cfg::Serverbound::ClientInformation(i)) => {
+            *info = i;
+            None
+        }
+        Ok(_) => None,
+        Err(err) => Some(Err(err)),
+    })
+}
+
 /// error that drops the connection.
 fn accept_code_of_conduct(
     c: &mut ConfigIo<'_>,
@@ -2248,6 +2315,7 @@ fn play(
         payload_transport: parts.payload_transport.clone(),
         virtual_host: virtual_host.map(Arc::new),
         datapack_offer: parts.datapack_offer.map(Into::into),
+        known_data_maps: parts.known_data_maps.map(Arc::new),
         announced: parts.channels.announced.clone().unwrap_or_default(),
         viewed_levels: parts.channels.viewed_levels.answer(),
         menu_extra_rev: parts.channels.menu_extra_rev.revision(),
@@ -4109,6 +4177,7 @@ mod outgoing_budget_tests {
             ),
             wire: None,
             datapack_offer: None,
+            known_data_maps: None,
             announced: Arc::default(),
             viewed_levels: Default::default(),
             menu_extra_rev: 0,

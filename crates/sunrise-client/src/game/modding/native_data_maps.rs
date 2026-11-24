@@ -380,6 +380,43 @@ impl DataMaps {
         self.maps.insert(registry, maps);
     }
 
+    /// Build the network-projected snapshot of all synced (`Optional` and `Required`) maps
+    /// for server-to-client synchronization.
+    pub(crate) fn synced_snapshot(&self) -> sunrise_client::data_map_net::SyncedDataMapsSnapshot {
+        let registered = mod_api::__private::installed_data_maps();
+        let mut registries = BTreeMap::new();
+        for (registry, by_map) in &self.maps {
+            let mut out_maps = Vec::new();
+            for (map_id, entries) in by_map {
+                if let Some(reg) = registered
+                    .iter()
+                    .find(|r| r.registry() == registry && r.id_str() == map_id)
+                {
+                    if reg.sync() == mod_api::DataMapSync::ServerOnly {
+                        continue;
+                    }
+                    let projected: Vec<(String, Tag)> = entries
+                        .iter()
+                        .filter_map(|(entry_id, tag)| {
+                            reg.project_network_value(entry_id, tag)
+                                .map(|projected| (entry_id.clone(), projected))
+                        })
+                        .collect();
+                    out_maps.push((map_id.clone(), projected));
+                } else if sunrise_client::data_map_net::BUILTIN_SYNCED_MAPS
+                    .contains(&(registry.as_str(), map_id.as_str()))
+                {
+                    out_maps.push((map_id.clone(), entries.clone()));
+                }
+            }
+            if !out_maps.is_empty() {
+                out_maps.sort_by(|a, b| a.0.cmp(&b.0));
+                registries.insert(registry.clone(), out_maps);
+            }
+        }
+        sunrise_client::data_map_net::SyncedDataMapsSnapshot { registries }
+    }
+
     pub(crate) fn with_builtins(mut self, builtin: super::neoforge_mob_maps::Loaded) -> Self {
         for (definition, values) in builtin.values {
             if self
@@ -456,16 +493,46 @@ impl Game<'_> {
 }
 
 impl Game<'_> {
-    /// The server's merged data maps, none unless this is a server whose
-    /// tables were built from packs and mods' files.
+    /// The server's merged data maps on a logical server, or the synced data maps received
+    /// from the server on a connected remote client (cleared on disconnect).
     pub(super) fn loaded_data_maps(&self) -> Result<&DataMaps, mod_api::DataMapError> {
-        if self.serving.is_none() && self.options.dedicated.is_none() {
-            return Err(mod_api::DataMapError::Unavailable);
+        if self.serving.is_some() || self.options.dedicated.is_some() {
+            return self
+                .world_tables
+                .as_ref()
+                .map(|tables| &tables.data_maps)
+                .ok_or(mod_api::DataMapError::Unavailable);
         }
-        self.world_tables
+        self.remote
             .as_ref()
-            .map(|tables| &tables.data_maps)
+            .filter(|remote| remote.client_data_maps_received)
+            .map(|remote| &remote.client_data_maps)
             .ok_or(mod_api::DataMapError::Unavailable)
+    }
+
+    /// Apply one `sunrise:data_map_sync` play payload on a remote client
+    /// (`ClientRegistryManager.handleDataMapSync:39-53`).
+    pub(in crate::game) fn apply_synced_data_maps(
+        &mut self,
+        data: &[u8],
+    ) -> sunrise_client::Result<()> {
+        let (registry, maps) = match sunrise_client::data_map_net::decode_sync_payload(data) {
+            Ok(decoded) => decoded,
+            Err(error) => {
+                self.refuse_remote_input(&format!(
+                    "Failed to handle registry data map sync: {error}"
+                ))?;
+                return Ok(());
+            }
+        };
+        if let Some(remote) = &mut self.remote {
+            remote
+                .client_data_maps
+                .replace_registry(registry.clone(), maps);
+            remote.client_data_maps_received = true;
+        }
+        self.native_data_maps_updated(&registry, mod_api::DataMapsUpdateCause::ClientSync);
+        Ok(())
     }
     /// Entry `entry` of `registry`: its published NBT value in data map `map`, or
     /// `Ok(None)` where the map gives it none.
