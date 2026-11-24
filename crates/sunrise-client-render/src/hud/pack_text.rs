@@ -28,6 +28,7 @@ const GLUE: Glue = Glue {
     // GL's clip depth runs from -w to w, wgpu's from 0 to w; GUI text has no depth test.
     finish: "gl_Position.z = 0.5 * gl_Position.w;",
     vertex_id: "hz_vertex_id()",
+    fragment_finish: None,
     interface: sunrise_shaders::DEVICELESS_INTERFACE_LIMITS,
 };
 

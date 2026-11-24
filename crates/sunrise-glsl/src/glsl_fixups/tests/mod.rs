@@ -192,6 +192,7 @@ fn translate(fsh: &str) -> Result<crate::Translated, String> {
         setup: "Position = hz_position;",
         finish: "",
         vertex_id: "int(gl_VertexIndex)",
+        fragment_finish: None,
         interface: crate::tests::LIMITS,
     };
     crate::tests::translate_core(vsh, fsh, &[], &|_| None, &glue)

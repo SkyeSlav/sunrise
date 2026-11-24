@@ -22,6 +22,7 @@ pub(crate) const WORLD_GLUE: Glue = Glue {
     setup: "Position = hz_pos; Color = hz_color; UV0 = hz_uv; UV2 = ivec2(hz_light.y, hz_light.x);",
     finish: "",
     vertex_id: "int(gl_VertexIndex)",
+    fragment_finish: None,
     interface: sunrise_shaders::DEVICELESS_INTERFACE_LIMITS,
 };
 
@@ -33,6 +34,7 @@ pub(crate) const SEE_THROUGH_GLUE: Glue = Glue {
     setup: "Position = hz_pos; Color = hz_color; UV0 = hz_uv;",
     finish: "",
     vertex_id: "int(gl_VertexIndex)",
+    fragment_finish: None,
     interface: sunrise_shaders::DEVICELESS_INTERFACE_LIMITS,
 };
 

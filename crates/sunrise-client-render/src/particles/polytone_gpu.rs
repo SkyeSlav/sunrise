@@ -468,6 +468,7 @@ pub const GLUE: sunrise_glsl::Glue = sunrise_glsl::Glue {
             Params = hz_params; Color = hz_color; UV2 = hz_uv2;",
     finish: "",
     vertex_id: "int(gl_VertexIndex)",
+    fragment_finish: None,
     interface: sunrise_shaders::DEVICELESS_INTERFACE_LIMITS,
 };
 

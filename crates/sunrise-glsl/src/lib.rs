@@ -69,6 +69,11 @@ pub struct Glue<'a> {
     pub finish: &'a str,
     /// The expression the program's `gl_VertexID` and `gl_VertexIndex` read.
     pub vertex_id: &'a str,
+    /// Statements run after the fragment shader's `main()` (the fragment-stage twin of
+    /// [`Self::finish`]). Occurrences of `hz_frag_out` in the snippet are replaced with the
+    /// fragment shader's location-0 `out` variable name. Skipped when the fragment shader
+    /// declares no location-0 `out` variable (for example under `OIT_ALPHA_ONLY`).
+    pub fragment_finish: Option<&'a str>,
     /// The stage interface limits the stages are translated with (a device's, or the lowest
     /// any device has when checking without one).
     pub interface: InterfaceLimits,
@@ -820,6 +825,7 @@ fn rewrite(
     // Where the program's own code starts: the glue above it is left as it is.
     let pack_start = out.len();
     let mut outputs: Vec<&str> = Vec::new();
+    let mut frag_out_loc0: Option<&str> = None;
     let explicit: Vec<u32> = if vertex {
         text.lines()
             .flat_map(declaration_lines)
@@ -950,6 +956,9 @@ fn rewrite(
                             outputs.len() - 1
                         }) as u32
                     });
+                    if location == 0 {
+                        frag_out_loc0.get_or_insert(decl.name);
+                    }
                     writeln!(
                         out,
                         "layout(location = {location}) out {} {};",
@@ -961,6 +970,16 @@ fn rewrite(
         }
     }
     if !vertex {
+        if let (Some(finish), Some(out_name)) = (
+            glue.fragment_finish.filter(|s| !s.trim().is_empty()),
+            frag_out_loc0,
+        ) {
+            let body = rename_main(&out[pack_start..]);
+            let finish = replace_ident(finish, "hz_frag_out", out_name);
+            let mut code = format!("{}{body}", &out[..pack_start]);
+            write!(code, "void main() {{\nhz_main();\n{finish}\n}}\n").unwrap();
+            return Ok(code);
+        }
         return Ok(out);
     }
     // The program's `gl_VertexID` and `gl_VertexIndex` both read the glue's expression (a
@@ -1219,6 +1238,7 @@ mod tests {
         setup: "Position = vec3(hz_pos, 0.0); Color = hz_color; UV0 = hz_uv;",
         finish: "gl_Position.z = 0.5 * gl_Position.w;",
         vertex_id: "hz_vertex_id()",
+        fragment_finish: None,
         interface: LIMITS,
     };
 
@@ -1784,6 +1804,56 @@ mod tests {
             untouched.contains("#moj_import <scale.glsl>"),
             "{untouched}"
         );
+    }
+
+    #[test]
+    fn fragment_finish_runs_after_main_on_location_zero_output_and_skips_without_one() {
+        let vsh = "#version 330\nin vec3 Position;\nout vec4 vertexColor;\n\
+            void main() { gl_Position = vec4(Position, 1.0); vertexColor = vec4(1.0); }\n";
+        let fsh = "#version 330\nin vec4 vertexColor;\n\
+            #ifndef OIT_ALPHA_ONLY\nout vec4 customOut;\n#endif\n\
+            void main() {\n#ifndef OIT_ALPHA_ONLY\n    customOut = vertexColor;\n#endif\n}\n";
+        let glue = Glue {
+            fragment_finish: Some(
+                "hz_frag_out = vec4(pow(max(hz_frag_out.rgb, vec3(0.0)), vec3(2.2)), hz_frag_out.a);",
+            ),
+            ..GLUE
+        };
+        let with_out = translate_core(vsh, fsh, &[], &include, &glue).unwrap();
+        assert!(
+            with_out
+                .fragment
+                .functions
+                .iter()
+                .any(|(_, f)| f.name.as_deref() == Some("hz_main")),
+            "fragment_finish must wrap main as hz_main when location-0 out exists"
+        );
+        assert_eq!(with_out.fragment_writes(), [0]);
+
+        // Under OIT_ALPHA_ONLY, no location-0 output is declared: fragment_finish is skipped.
+        let alpha_only = translate_core(vsh, fsh, &["OIT_ALPHA_ONLY"], &include, &glue).unwrap();
+        assert!(
+            alpha_only
+                .fragment
+                .functions
+                .iter()
+                .all(|(_, f)| f.name.as_deref() != Some("hz_main")),
+            "fragment_finish must be skipped when no location-0 out exists"
+        );
+        assert!(alpha_only.fragment_writes().is_empty());
+
+        // A fragment shader declaring only location 1 also skips fragment_finish.
+        let loc1_only = "#version 330\nin vec4 vertexColor;\n\
+            layout(location = 1) out vec4 extraOut;\n\
+            void main() { extraOut = vertexColor; }\n";
+        let loc1 = translate_core(vsh, loc1_only, &[], &include, &glue).unwrap();
+        assert!(
+            loc1.fragment
+                .functions
+                .iter()
+                .all(|(_, f)| f.name.as_deref() != Some("hz_main"))
+        );
+        assert_eq!(loc1.fragment_writes(), [1]);
     }
 }
 
