@@ -861,3 +861,7 @@ fn decode_prepared_wolf_sound(value: &Value) -> Result<WolfSoundVariant, String>
 #[cfg(test)]
 #[path = "wolf_variant_tests.rs"]
 mod wolf_variant_tests;
+
+#[cfg(test)]
+#[path = "frog_variant_tests.rs"]
+mod frog_variant_tests;
